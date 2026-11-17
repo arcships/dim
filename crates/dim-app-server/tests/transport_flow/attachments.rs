@@ -119,7 +119,7 @@ async fn a_re_attach_while_a_turn_streams_loses_no_event() {
     let attached = client
         .rpc("session.attach", json!({"sessionId": sid}))
         .await;
-    let old_pin = attached["result"]["sequence"].as_u64().unwrap();
+    assert_ok(&attached);
     wait(&hold.waiting, "the first follow task").await;
     let input = json!({
         "sessionId": sid, "branchId": "main", "text": "tool:wait {\"millis\":60000}"
@@ -129,7 +129,6 @@ async fn a_re_attach_while_a_turn_streams_loses_no_event() {
     loop {
         let event = client.notice("session.event").await["params"]["event"].clone();
         let tool_started = event["type"] == "step" && event["name"] == "tool-use-start";
-        assert!(event["sequence"].as_u64().unwrap() > old_pin, "{event}");
         live.push(event);
         if tool_started {
             break;

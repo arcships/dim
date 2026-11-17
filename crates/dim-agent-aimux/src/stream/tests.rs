@@ -813,3 +813,40 @@ fn provider_codes_and_request_ids_are_one_bounded_line() {
     );
     assert!(request_id.starts_with("first "), "{request_id}");
 }
+
+/// A recorded Chat Completions usage carrying
+/// `completion_tokens_details.reasoning_tokens` reaches the agent usage with
+/// its reasoning share.
+#[tokio::test]
+async fn recorded_reasoning_tokens_reach_the_agent_usage() {
+    let usage = NativeUsage {
+        input_tokens: InputTokenUsage {
+            total: Some(3),
+            ..Default::default()
+        },
+        output_tokens: OutputTokenUsage {
+            total: Some(6),
+            text: Some(4),
+            reasoning: Some(2),
+        },
+        raw: None,
+    };
+    let (stream, _, _, _) = fixture(vec![
+        Ok(start()),
+        Ok(finish(FinishReasonUnified::Stop, usage)),
+    ]);
+    let recorded = collect_or_stall(stream, "recorded reasoning")
+        .await
+        .into_iter()
+        .find_map(|chunk| match chunk {
+            Ok(ModelChunk::Usage(usage)) => Some(serde_json::to_value(&usage).unwrap()),
+            _ => None,
+        })
+        .expect("the reply's usage");
+    assert_eq!(recorded["completionTokens"].as_f64(), Some(6.0));
+    assert_eq!(
+        recorded["reasoningTokens"].as_f64(),
+        Some(2.0),
+        "{recorded}"
+    );
+}

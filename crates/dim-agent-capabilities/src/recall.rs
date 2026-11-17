@@ -13,7 +13,7 @@ use crate::{
     context_policy::check_cancel,
     host::{HostError, HostFuture, ToolExecutionContext},
     timeline_tree::TreeCommands,
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
+    tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use chrono::{DateTime, TimeZone, Utc};
 use dim_agent_runtime::{
@@ -169,6 +169,10 @@ impl RecallTool {
 }
 
 impl ToolHandler for RecallTool {
+    /// Recall reads this branch's Timeline and changes nothing.
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        ToolConcurrency::Concurrent
+    }
     fn execute(
         &self,
         call: ToolCall,

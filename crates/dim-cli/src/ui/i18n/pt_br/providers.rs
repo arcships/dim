@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "Atualizar lista de modelos",
+        "Model list refreshed" => "Lista de modelos atualizada",
+        "Model list refresh failed: {reason}" => "Falha ao atualizar a lista de modelos: {reason}",
+        "Refreshing model list… · esc close" => "Atualizando a lista de modelos… · Esc fecha",
         // providers_panel.rs
         "Providers" => "Provedores",
         "Enter open · Esc clear/close" => "Enter abrir · Esc limpar/fechar",
@@ -79,6 +83,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ mover · enter ativar · esc voltar",
         "↑↓ move · enter activate · esc close" => "↑↓ mover · enter ativar · esc fechar",
+        "Model id prefix" => "Prefixo de id do modelo",
+        "(none)" => "(nenhum)",
+        "identified: {model} at {provider}" => "identificado: {model} em {provider}",
+        "inferred from several rows: {model} at {provider}" => {
+            "inferido de várias linhas: {model} em {provider}"
+        }
+        "ambiguous: {candidates}" => "ambíguo: {candidates}",
+        "unidentified" => "não identificado",
+        "Identified {rule}" => "Identificado {rule}",
+        "from the Provider's own list" => "da própria lista do provedor",
+        "from the whole qualified id" => "do id qualificado completo",
+        "by its tokens" => "pelos seus tokens",
+        "by its canonical id or display name" => "pelo id canônico ou nome de exibição",
+        "from the custom-provider list" => "da lista custom-provider",
+        "by merging the rows that name it" => "mesclando as linhas que o nomeiam",
+        "ambiguous" => "ambíguo",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} fornecido por {provider}/{model}"
+        }
         "(paste here)" => "(cole aqui)",
         _ => return None,
     })

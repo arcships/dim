@@ -76,7 +76,7 @@
 
 使用 $dim-alpha-release，仅在本机 Mac 做 dry run，允许编译和校验。
 不发布 npm，不创建 GitHub tag 或 Release。</code></pre>
-  <p>手动准备版本 PR 时，先把统一版本号提交到 <code>Cargo.toml</code>、<code>Cargo.lock</code>、npm 外壳和 runtime 元数据，再合入 <code>main</code>、打对应的 <code>vX.Y.Z-alpha.N</code> tag。完整字段见<a href="README.md#version-preparation">版本准备</a>。本机脚本则临时改版本、结束时还原，两条路径不能混用。</p>
+  <p>准备一次发布时，先把统一版本号提交到 <code>Cargo.toml</code>、<code>Cargo.lock</code>、npm 外壳和 runtime 元数据，合入 <code>main</code> 后从 <code>main</code> dispatch <code>release.yml</code>：预检把取到的号与 <code>main</code> 该提交里已提交的版本比对，不相等就在构建前拒绝，并提示合并 release PR、或用 <code>-f tag=vVERSION</code> 走恢复路径。完整字段见<a href="README.md#version-preparation">版本准备</a>。本机脚本则临时改版本、结束时还原，两条路径不能混用。</p>
 
   <h2>通道规则</h2>
   <div class="table-wrap">
@@ -127,7 +127,7 @@ node scripts/publish-alpha.mjs --platform darwin-arm64  # 只发指定平台（�
     </li>
     <li>
       <strong>临时改版本号</strong>
-      编译前一次改齐 <code>Cargo.toml</code>、<code>Cargo.lock</code>、<code>npm/package.json</code>（含 6 个 optionalDependencies）、<code>runtime/package.json</code>、<code>runtime/package-lock.json</code>，结束时（不论成功失败）全部还原。不提交，仓库里的版本号保持不变；包里记录的源提交就是当前 <code>HEAD</code>。构建时设置 <code>DIM_RELEASE_BUILD=1</code>，所以发布出来的二进制报的是这里设的版本；没有这个标记的构建（例如直接 <code>cargo build</code>）报的是仓库里提交的版本加 <code>-source</code>，如 <code>0.1.0-alpha.8-source</code>。
+      编译前一次改齐 <code>Cargo.toml</code>、<code>Cargo.lock</code>、<code>npm/package.json</code>（含 6 个 optionalDependencies）、<code>runtime/package.json</code>、<code>runtime/package-lock.json</code>，结束时（不论成功失败）全部还原。不提交，仓库里的版本号保持不变；包里记录的源提交就是当前 <code>HEAD</code>。构建时设置 <code>DIM_RELEASE_BUILD=1</code>，所以发布出来的二进制报的正是这里设的版本；没有这个标记的构建（例如直接 <code>cargo build</code>）是源码构建，报的是最后一个已合并 release PR 提交的版本，再带上这个构建所在提交的短哈希，形如 <code>0.1.0-alpha.24-source+02ebd4a1</code>；拿不到 git 时退回 <code>&lt;version&gt;-source</code>。这个后缀只用于显示，渠道、默认 home 和安装包版本都不会读到它。
     </li>
     <li>
       <strong>编译 6 个平台</strong>

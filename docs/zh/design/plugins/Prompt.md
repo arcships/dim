@@ -17,7 +17,7 @@ Prompt 拥有：
 
 - 条目的措辞归写该标记的能力（§4）；
 - 请求形状归 Loop，采用的配置归 ContextPreparation，摘要路径归 ContextPolicy；
-- 状态与规则的来源、以及模型在其中读到的文字归 PromptSources；这两个标记是 Prompt 的，由它写出（§4）。
+- 状态与规则的来源、以及模型在其中读到的文字归各来源所有者；共用标记的指南条目归 `PromptGuide`（§4）。
 
 本文不含：各能力自己的模型可见文字清单与其协议/策略标记，以及该写入者自己流程里的断言（[#551](../model-prompts.md#92-每个写入面向模型文字的能力)、[#552](../model-prompts.md#94-timelinetree)、[#553](../model-prompts.md#95-goal)、[#554](../model-prompts.md#96-contextcompaction)）；移除 Prompt 的两个调用点（[#555](../model-prompts.md#97-loop-与-contextpreparation)）。
 
@@ -74,7 +74,7 @@ Prompt 组合出一段文字：框架的头、该分支生效的条目、框架�
 
 ### 3.2 顺序
 
-条目按 `order` 排序，同 `order` 的按第一个标记名排序；两者都是贡献者声明的事实，所以顺序从不取决于哪个部件先装载或先登记。内建条目用 `10` 到 `120`，步长十（§4），把中间的数留给需要插进某一组之内的贡献。
+条目按 `order` 排序，同 `order` 的按第一个标记名排序；两者都是贡献者声明的事实，所以顺序从不取决于哪个部件先装载或先登记。内建条目用 `10` 到 `130`，步长十（§4），把中间的数留给需要插进某一组之内的贡献。
 
 `10` 到 `90` 的条目组合出来的文字，除通道规则的那个例外外，与指南还是一份文件时的文字逐字节相同。它们的顺序——exec、两个 agent 标记、两条分支条目、state、rule、summary、digest——由 §4 的数字复现；措辞和位置都不变，所以这个改动不带任何策略评测（[面向模型的提示词 §8](../model-prompts.md#8-一次改动怎样判定)）。`100` 到 `120` 的条目是新的文字，对应的是那份单文件指南从未解释过的标记。
 
@@ -118,10 +118,11 @@ Prompt 自己的两个调用点留在原处：ContextPreparation 放置它发布
 | 80 | `dim-summary` | ContextCompaction 的摘要策略部件 | Session | 摘要是什么 |
 | 90 | `dim-digest` | ContextCompaction 的上下文准备部件 | 分支 | 清单是什么 |
 | 100 | `dim-shell-input` | ShellInput | Session | 操作者自己运行的 shell 命令及其输出 |
-| 110 | `dim-scheduler` | Scheduler 的 Session 部件 | Session | 定时运行携带的提示词与运行结果报告 |
+| 110 | `dim-scheduler` | Scheduler 的 Session 部件 | Session | 定时任务投递的提示词与 wakeup 的提示词 |
 | 120 | `dim-workflow` | Workflow 的 Session 部件 | Session | 运行的报告与阶段标记 |
+| 130 | `dim-event`、`dim-event-guide` | EventHub 的 Session 部件 | Session | 被投递的事件，以及投递它的来源的指南 |
 
-登记者是写该标记的部件，不是撰写该来源措辞的部件。Prompt 把任何 `Context` 或 `State` 来源写成 `<dim-rule>` 或 `<dim-state>` 输入，所以即使措辞是 PromptSources 的，这两个标记也是 Prompt 的。只装 Prompt 不装 PromptSources 的 profile 仍可能被宿主塞入上下文来源，它写出的标记需要自己的条目。
+插件专有标记的登记者是写该标记的部件，不是撰写来源措辞的部件。`PromptGuide` 拥有共用的 `dim-rule` 和 `dim-state` 条目：Prompt 为注册的来源写出这些标记，运行时部件也可以通过输入路径追加不带 key 的 `dim-state` 快照。提供任一种形式的 profile 都包含 `PromptGuide`；快照写入者复用它的条目，不重复注册。状态条目解释某来源最近观察到的值，不表示请求或授权，也不承诺保留；压缩重放由输入 key 决定（[面向模型的提示词 §3](../model-prompts.md#3-通道)）。
 
 压缩产生的替换内容属于任何策略都要经由的 ContextPolicy，而不属于某一个策略：无论哪个策略返回，清单都由 ContextPolicy 组合（[ContextCompaction §5.10](ContextCompaction.md#510-第-3a-类清单)）。因此该条目由绑定 ContextPolicy 的部件登记，且只在有策略绑定时登记——没有策略的 Session 不做压缩，也就不写清单。绑定了产品策略之外策略的 Session 仍然会发送 `<dim-digest>`，它的指南会解释它。
 

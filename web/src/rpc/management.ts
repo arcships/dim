@@ -4,20 +4,29 @@ type Json = Record<string, unknown>
 export type AccountIdentity = { issuer: string; subject: string; email?: string; name?: string }
 export type AccountState = { authenticated: boolean; recoveryRequired: boolean; identity?: AccountIdentity; preview?: string }
 export type StaticAuth = { type: string; headerName?: string; prefix?: string }
+export type ModelIdentification = {
+  rule: string; narrowedByDisplayName: boolean
+  candidates: { providerId: string; modelId: string }[]
+  filled: { field: string; value: number; providerId: string; modelId: string }[]
+}
 export type ModelEntry = {
   modelId: string; displayName: string; status: string
   capabilities: { modalities: string[]; toolCalling: boolean; streaming: boolean; structuredOutput: boolean; vision: boolean; audio: boolean; reasoning: boolean; contextWindow?: number; maxOutputTokens?: number }
-  metadata?: { reasoning?: { supported: boolean; effortOptions?: string[] }; serviceTier?: { supported: boolean; options: string[] } }
+  metadata?: { reasoning?: { supported: boolean; effortOptions?: string[] }; serviceTier?: { supported: boolean; options: string[] }; identification?: ModelIdentification; matchedProviderId?: string; matchedModelId?: string }
 }
-export type ManagementModel = { model: ModelEntry; source: string; enabled: boolean; endpoint: string | null; endpointOverride?: string; unavailableReason: string | null; missingLimits: string[]; actions: string[] }
-export type ManagementProvider = {
+export type ManagementModel = { model: ModelEntry; source: string; enabled: boolean; endpoint: string | null; endpointOverride?: string; alias?: string; catalogName?: string; unavailableReason: string | null; missingLimits: string[]; actions: string[] }
+export type ManagementInfo = {
   providerId: string; displayName: string; source: string; credentialAuthority: string; version: number | null; enabled: boolean | null; actions: string[]
   account?: { namespace: string; loginMethods: string[]; state: AccountState }
-  connection: { driverKind: string; auth: StaticAuth; baseUrl: string; credentialConfigured: boolean; headerNames: string[]; proxyUrl: string | null; proxyAuthConfigured: boolean; timeoutMs: number | null } | null
+  connection: { driverKind: string; auth: StaticAuth; baseUrl: string; credentialConfigured: boolean; headerNames: string[]; proxyUrl: string | null; proxyAuthConfigured: boolean; timeoutMs: number | null; gluedPrefix?: string } | null
+}
+export type ManagementUpdateSummary = ManagementInfo & { modelsListed?: "listed" | "bundled" | "unsupported" | "disabled" }
+export type ManagementProvider = ManagementInfo & {
   models: ManagementModel[] | null
   preferences: Record<string, { reasoningEffort?: string; serviceTier?: string }>
 }
 export type ManagementView = { drivers: { driverKind: string; authTypes: string[]; remoteModelList: boolean }[]; providers: ManagementProvider[]; errors: { providerId: string; message: string }[] }
+export type ManagementPage = Omit<ManagementView, "providers"> & { providers: ManagementInfo[]; next: string | null }
 export type LoginAttempt = { attemptId: string; expiresAt: number; authorizationUrl?: string; verificationUri?: string; verificationUriComplete?: string; userCode?: string }
 export type AccountUsage = {
   subscriptionUrl?: string; pricingUrl?: string; subscriptionId?: number
@@ -76,22 +85,44 @@ export function readModelEntry(value: unknown): ModelEntry {
     return {
       reasoning: optional(m.reasoning, (item) => { const r = object(item); return { supported: boolean(r.supported), effortOptions: optional(r.effortOptions, (v) => list(v, string)) } }),
       serviceTier: optional(m.serviceTier, (item) => { const s = object(item); return { supported: boolean(s.supported), options: s.options === undefined ? [] : list(s.options, string) } }),
+      matchedProviderId: optional(m.matchedProviderId, string),
+      matchedModelId: optional(m.matchedModelId, string),
+      identification: optional(m.identification, (item) => {
+        const i = object(item)
+        return {
+          rule: string(i.rule), narrowedByDisplayName: boolean(i.narrowedByDisplayName),
+          candidates: i.candidates === undefined ? [] : list(i.candidates, (item) => { const c = object(item); return { providerId: string(c.providerId), modelId: string(c.modelId) } }),
+          filled: i.filled === undefined ? [] : list(i.filled, (item) => { const f = object(item); return { field: string(f.field), value: number(f.value), providerId: string(f.providerId), modelId: string(f.modelId) } }),
+        }
+      }),
     }
   })
   return { modelId: string(v.modelId), displayName: string(v.displayName), status: string(v.status), capabilities: {
     modalities: list(c.modalities, string), toolCalling: boolean(c.toolCalling), streaming: boolean(c.streaming), structuredOutput: boolean(c.structuredOutput), vision: boolean(c.vision), audio: boolean(c.audio), reasoning: boolean(c.reasoning), contextWindow: optional(c.contextWindow, number), maxOutputTokens: optional(c.maxOutputTokens, number),
   }, metadata }
 }
-export function readManagementProvider(value: unknown): ManagementProvider {
-  const v = object(value), preferences = object(v.preferences)
+export function readManagementInfo(value: unknown): ManagementInfo {
+  const v = object(value)
   return {
     providerId: string(v.providerId), displayName: string(v.displayName), source: string(v.source), credentialAuthority: string(v.credentialAuthority), version: v.version === null ? null : number(v.version), enabled: v.enabled === null ? null : boolean(v.enabled), actions: list(v.actions, string),
     account: optional(v.account, (item) => { const a = object(item); return { namespace: string(a.namespace), loginMethods: list(a.loginMethods, string), state: readAccount(a.state) } }),
     connection: v.connection === null ? null : (() => {
       const c = object(v.connection), auth = object(c.auth)
-      return { driverKind: string(c.driverKind), auth: { type: string(auth.type), headerName: optional(auth.headerName, string), prefix: optional(auth.prefix, string) }, baseUrl: string(c.baseUrl), credentialConfigured: boolean(c.credentialConfigured), headerNames: list(c.headerNames, string), proxyUrl: c.proxyUrl === null ? null : string(c.proxyUrl), proxyAuthConfigured: boolean(c.proxyAuthConfigured), timeoutMs: c.timeoutMs === null ? null : number(c.timeoutMs) }
+      return { driverKind: string(c.driverKind), auth: { type: string(auth.type), headerName: optional(auth.headerName, string), prefix: optional(auth.prefix, string) }, baseUrl: string(c.baseUrl), credentialConfigured: boolean(c.credentialConfigured), headerNames: list(c.headerNames, string), proxyUrl: c.proxyUrl === null ? null : string(c.proxyUrl), proxyAuthConfigured: boolean(c.proxyAuthConfigured), timeoutMs: c.timeoutMs === null ? null : number(c.timeoutMs), gluedPrefix: optional(c.gluedPrefix, string) }
     })(),
-    models: v.models === null ? null : list(v.models, (item) => { const m = object(item); return { model: readModelEntry(m.model), source: string(m.source), enabled: boolean(m.enabled), endpoint: m.endpoint === null ? null : string(m.endpoint), endpointOverride: optional(m.endpointOverride, string), unavailableReason: m.unavailableReason === null ? null : string(m.unavailableReason), missingLimits: m.missingLimits === undefined ? [] : list(m.missingLimits, string), actions: list(m.actions, string) } }),
+  }
+}
+export function readManagementUpdateSummary(value: unknown): ManagementUpdateSummary {
+  const v = object(value)
+  const modelsListed = optional(v.modelsListed, string)
+  if (modelsListed !== undefined && modelsListed !== "listed" && modelsListed !== "bundled" && modelsListed !== "unsupported" && modelsListed !== "disabled") throw new ProtocolError("Invalid provider listing result")
+  return { ...readManagementInfo(v), modelsListed }
+}
+export function readManagementProvider(value: unknown): ManagementProvider {
+  const v = object(value), preferences = object(v.preferences)
+  return {
+    ...readManagementInfo(v),
+    models: v.models === null ? null : list(v.models, (item) => { const m = object(item); return { model: readModelEntry(m.model), source: string(m.source), enabled: boolean(m.enabled), endpoint: m.endpoint === null ? null : string(m.endpoint), endpointOverride: optional(m.endpointOverride, string), alias: optional(m.alias, string), catalogName: optional(m.catalogName, string), unavailableReason: m.unavailableReason === null ? null : string(m.unavailableReason), missingLimits: m.missingLimits === undefined ? [] : list(m.missingLimits, string), actions: list(m.actions, string) } }),
     preferences: Object.fromEntries(Object.entries(preferences).map(([id, value]) => { const p = object(value); return [id, { reasoningEffort: optional(p.reasoningEffort, string), serviceTier: optional(p.serviceTier, string) }] })),
   }
 }
@@ -100,6 +131,15 @@ export function readManagement(value: unknown): ManagementView {
   return {
     drivers: list(v.drivers, (item) => { const d = object(item); return { driverKind: string(d.driverKind), authTypes: list(d.authTypes, string), remoteModelList: boolean(d.remoteModelList) } }),
     providers: list(v.providers, readManagementProvider),
+    errors: list(v.errors, (item) => { const e = object(item); return { providerId: string(e.providerId), message: string(e.message) } }),
+  }
+}
+export function readManagementPage(value: unknown): ManagementPage {
+  const v = object(value)
+  return {
+    drivers: list(v.drivers, (item) => { const d = object(item); return { driverKind: string(d.driverKind), authTypes: list(d.authTypes, string), remoteModelList: boolean(d.remoteModelList) } }),
+    providers: list(v.providers, readManagementInfo),
+    next: v.next === null ? null : string(v.next),
     errors: list(v.errors, (item) => { const e = object(item); return { providerId: string(e.providerId), message: string(e.message) } }),
   }
 }

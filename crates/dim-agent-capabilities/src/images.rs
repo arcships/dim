@@ -1,11 +1,35 @@
-//! One scaling step for every place that turns a local image into an image
-//! block: `read` and the CLI's attachments both call it, so both send an image
-//! the same way.
+//! Shared image preparation and content references.
+use base64::Engine;
+use dim_agent_types::{ImageSource, ImageSourceType};
 use image::{
     AnimationDecoder, DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Rgb,
     RgbImage, codecs::jpeg::JpegEncoder, imageops::FilterType, metadata::Orientation,
 };
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, Cursor, Read, Seek, SeekFrom};
+
+/// Returns `img:` and the first 16 lowercase SHA-256 hex digits of the
+/// base64-decoded image file bytes, without scaling or re-encoding them.
+///
+/// Resolve file-backed sources to inline base64 before calling. URL and
+/// unresolved file sources, missing or invalid base64, and formats this build
+/// cannot decode return `None`.
+pub fn image_reference(source: &ImageSource) -> Option<String> {
+    if source.source_type != ImageSourceType::Base64
+        || !matches!(
+            source.media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+        )
+    {
+        return None;
+    }
+    let data = source.data.as_deref().filter(|data| !data.is_empty())?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .ok()?;
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    Some(format!("img:{}", &digest[..16]))
+}
 
 /// The longest edge an image may have and still be sent as it is, in pixels:
 /// within the 3,000 px the vision guide gives as safe for a many-image request

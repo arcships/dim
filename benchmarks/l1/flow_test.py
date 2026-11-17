@@ -122,10 +122,12 @@ class AgentReviewerKeyVarTest(unittest.TestCase):
 
 
 @contextmanager
-def fake_endpoint(body: dict):
+def fake_endpoint(body: dict, paths: list[str] | None = None, prefix: str = "/v1"):
     """A chat-completions endpoint that answers every request with `body`."""
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
+            if paths is not None:
+                paths.append(self.path)
             self.rfile.read(int(self.headers["Content-Length"]))
             payload = json.dumps(body).encode()
             self.send_response(200)
@@ -141,10 +143,51 @@ def fake_endpoint(body: dict):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}/v1"
+        yield f"http://127.0.0.1:{server.server_port}{prefix}"
     finally:
         server.shutdown()
         server.server_close()
+
+
+class AgentReviewerEndpointPathTest(unittest.TestCase):
+    """Provider roots produce the expected chat-completions HTTP path."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import agent_reviewer
+        self.module = agent_reviewer
+
+    def request_paths(self, suffix: str) -> list[str]:
+        paths: list[str] = []
+        body = {"choices": [{"finish_reason": "stop", "message": {"content": "{}"}}]}
+        with fake_endpoint(body, paths=paths, prefix="") as root, mock.patch.dict(os.environ, {
+            "NO_PROXY": "127.0.0.1", "no_proxy": "127.0.0.1",
+        }):
+            self.module.call_model("prompt", root + suffix, "judge", "key")
+        return paths
+
+    def test_a_version_like_hostname_is_not_a_versioned_path(self) -> None:
+        self.assertEqual(self.module._endpoint("http://v3/"),
+                         "http://v3/v1/chat/completions")
+
+    def test_a_bare_root_gets_v1(self) -> None:
+        self.assertEqual(self.request_paths(""), ["/v1/chat/completions"])
+
+    def test_a_bare_root_with_a_trailing_slash_gets_v1_once(self) -> None:
+        self.assertEqual(self.request_paths("/"), ["/v1/chat/completions"])
+
+    def test_an_existing_v1_root_is_not_versioned_again(self) -> None:
+        for suffix in ("/v1", "/v1/"):
+            with self.subTest(suffix=suffix):
+                self.assertEqual(self.request_paths(suffix),
+                                 ["/v1/chat/completions"])
+
+    def test_a_versioned_root_is_used_as_is(self) -> None:
+        for suffix in ("/api/v3", "/api/v3/"):
+            with self.subTest(suffix=suffix):
+                paths = self.request_paths(suffix)
+                self.assertEqual(paths, ["/api/v3/chat/completions"])
+                self.assertFalse(any("/v3/v1" in path for path in paths))
 
 
 def git(repo: Path, *args: str) -> str:

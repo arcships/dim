@@ -8,7 +8,7 @@
 //! profile that serves a model offers the same `auxiliaryModel` name to
 //! Session parts ([AuxiliaryModel §4.3](../../../docs/design/appserver/auxiliary-model.md#43-named-binding)).
 use crate::host::{
-    AuxiliaryError, AuxiliaryErrorCode, AuxiliaryModelHost, AuxiliaryReply, AuxiliaryRequest,
+    AuxiliaryError, AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryReply, AuxiliaryRequest,
     CompleteAuxiliary, HostError, ModelChunk, ModelHost, ModelStopReason, ModelStream,
     ResolveModelConnection,
 };
@@ -120,17 +120,14 @@ pub fn record(model: &ModelId, started: Instant, result: Result<&AuxiliaryReply,
 /// Provides one owner's operation as the Rust port and under the shared
 /// `auxiliaryModel` name Session parts inject.
 pub fn provide(ctx: &Ctx, operation: Arc<dyn CompleteAuxiliary>) -> rutis::Result<()> {
-    ctx.provide(AuxiliaryModelHost(operation.clone()))?;
+    let binding = Arc::new(AuxiliaryModel(operation));
+    ctx.provide_as::<AuxiliaryModel>(binding.clone())?;
     ctx.provide_at(
         rutis_bridge::session::host_key("auxiliaryModel"),
-        Arc::new(Binding(operation)) as Arc<dyn HostDispatch>,
+        binding as Arc<dyn HostDispatch>,
     )?;
     Ok(())
 }
-
-/// The language-neutral form of one owner's operation: the call shape, its
-/// optional cancellation function, and the error `{code, message}`.
-struct Binding(Arc<dyn CompleteAuxiliary>);
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -146,7 +143,7 @@ struct ModelInput {
     model_id: String,
 }
 
-impl HostDispatch for Binding {
+impl HostDispatch for AuxiliaryModel {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({"complete": "async"}))
     }

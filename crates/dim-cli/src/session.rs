@@ -1,4 +1,4 @@
-use crate::wire::{Attached, Created, Event, Progress};
+use crate::wire::{Attached, Created, DisplayNotice, EventNotice, Progress};
 use crate::{
     Result,
     args::{Action, Options},
@@ -8,12 +8,15 @@ use crate::{
     display::Display,
     export, goal_command,
     input::Input,
-    mcp,
+    loop_command, mcp,
     model::session::RenameReply,
     permission, permission_command,
     question::line::Questions,
 };
 use dim_agent_types::{ApprovalCallData, ContentBlock, PermissionPolicy, UserInput};
+
+/// The branch a line-mode command acts on: the prompt shows `main`.
+const MAIN_BRANCH: &str = "main";
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -30,14 +33,6 @@ enum Submission {
 pub use dim_client::wire::History;
 
 mod window;
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct EventNotice {
-    session_id: String,
-    branch_id: String,
-    event: Event,
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -229,7 +224,6 @@ pub async fn chat(
         id.clone()
     } else {
         let params = crate::session_create_from_options(client, options).await?;
-        let preferences = params.get("modelPreferences").cloned();
         let created: Created = match client.typed("session.create", params).await {
             Ok(created) => created,
             Err(error) => {
@@ -237,7 +231,6 @@ pub async fn chat(
                     client,
                     options.provider.as_deref().zip(options.model.as_deref()),
                     error,
-                    preferences.as_ref().filter(|_| options.effort.is_none()),
                 )
                 .await;
                 return Err(format!("Cannot create session: {error}. Configure a provider or use --model-config PATH with an API-key environment reference").into());
@@ -250,6 +243,16 @@ pub async fn chat(
                 crate::sanitize::safe(&created.model.model_id)
             );
         }
+        // A script reading `--json` gets the daemon's records alone.
+        if let Some(worktree) = &created.worktree
+            && !display.json
+        {
+            display.record(&format!(
+                "worktree: {}\t{}",
+                crate::sanitize::safe(&worktree.task_id),
+                crate::sanitize::safe(&worktree.root)
+            ))?;
+        }
         created.session_id
     };
     let selected = if let (Some(preset), Some(_)) = (options.permission, &options.resume) {
@@ -261,7 +264,9 @@ pub async fn chat(
         Some(
             permission::select(client, &session_id, preset)
                 .await
-                .map_err(|error| format!("Cannot set the permission preset: {error}"))?,
+                .map_err(|error| {
+                    crate::client::resume_failure("Cannot set the permission preset", error)
+                })?,
         )
     } else {
         None
@@ -296,9 +301,14 @@ pub async fn chat(
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
     }
-    let attached: Attached = client
-        .typed("session.attach", json!({"sessionId":session_id}))
-        .await?;
+    let mut params = json!({"sessionId":session_id});
+    if !display.json
+        && client.offers("session.history.display")
+        && client.offers("session.history.detail")
+    {
+        params["display"] = json!(true);
+    }
+    let attached: Attached = client.typed("session.attach", params).await?;
     let session_cwd = attached.cwd;
     if options.resume.is_some() {
         crate::session_host::adopt_startup(client, options, &session_id).await?;
@@ -381,6 +391,23 @@ pub async fn chat(
                     let text = text.as_deref().expect("plain goal command");
                     if let Err(error) =
                         goal_command::command(client, &session_id, text, &mut display, &mut interrupts).await
+                    {
+                        display.record(&format!("Error: {error}"))?;
+                    }
+                    draft.clear();
+                    continue;
+                }
+                Some("/loop") => {
+                    let text = text.as_deref().expect("plain loop command");
+                    if let Err(error) = loop_command::command(
+                        client,
+                        &session_id,
+                        MAIN_BRANCH,
+                        text,
+                        &mut display,
+                        &mut interrupts,
+                    )
+                    .await
                     {
                         display.record(&format!("Error: {error}"))?;
                     }
@@ -521,8 +548,18 @@ impl<F: FnMut(Value) -> Result<()>> HistorySink for F {
 pub async fn read_history(
     client: &mut Client,
     session_id: &str,
+    after: u64,
+    sink: &mut impl HistorySink,
+) -> Result<u64> {
+    read_history_mode(client, session_id, after, sink, false).await
+}
+
+async fn read_history_mode(
+    client: &mut Client,
+    session_id: &str,
     mut after: u64,
     sink: &mut impl HistorySink,
+    summaries: bool,
 ) -> Result<u64> {
     let mut through = None;
     loop {
@@ -531,7 +568,14 @@ pub async fn read_history(
         if let Some(through) = through {
             params["through"] = json!(through);
         }
-        let page: History = client.typed("session.history", params).await?;
+        let page: History = if summaries {
+            client
+                .typed::<crate::wire::DisplayPage>("session.history.display", params)
+                .await?
+                .into()
+        } else {
+            client.typed("session.history", params).await?
+        };
         let next = page.next(after, through)?;
         if through.is_none() {
             sink.watermark(page.through)?;
@@ -553,10 +597,17 @@ async fn configure(
     text: &str,
     display: &mut Display,
 ) -> Result<()> {
+    let summaries = !display.json
+        && client.offers("session.history.display")
+        && client.offers("session.history.detail");
     if !text.starts_with("/agent") {
-        display.cursor = read_history(client, session_id, display.cursor, &mut |value| {
-            display.event(serde_json::from_value(value)?, true)
-        })
+        display.cursor = read_history_mode(
+            client,
+            session_id,
+            display.cursor,
+            &mut |value| display.event(serde_json::from_value(value)?, true),
+            summaries,
+        )
         .await?;
         display.failed = false;
     }
@@ -565,9 +616,13 @@ async fn configure(
         display.record(line)?;
     }
     if report.changed {
-        display.cursor = read_history(client, session_id, display.cursor, &mut |value| {
-            display.event(serde_json::from_value(value)?, true)
-        })
+        display.cursor = read_history_mode(
+            client,
+            session_id,
+            display.cursor,
+            &mut |value| display.event(serde_json::from_value(value)?, true),
+            summaries,
+        )
         .await?;
         display.failed = false;
     }
@@ -595,7 +650,8 @@ async fn wait_turn(
             }
             None
         }
-        Some(Submission::Message(user)) => {
+        Some(Submission::Message(mut user)) => {
+            crate::images::import(client, session_id, &mut user.content).await?;
             let mut params = json!({"sessionId":session_id,"branchId":"main","submissionId":uuid::Uuid::new_v4().to_string(),"mode":"queue"});
             match user.content.as_slice() {
                 [ContentBlock::Text { text }] => params["text"] = json!(text),
@@ -954,11 +1010,16 @@ async fn wait_turn(
                 }
             }
             Message::Response { id, result } if Some(id) == submit => {
-                if let Err(error) = result {
-                    match error.data.as_ref().and_then(|data| data.get("appError")).and_then(Value::as_str) {
+                let written = match result {
+                    Ok(written) => written,
+                    Err(error) => match error.data.as_ref().and_then(|data| data.get("appError")).and_then(Value::as_str) {
                         Some("invalid_params" | "session_invalid_input" | "session_closed" | "session_build_failed" | "service_reloading" | "unknown_method" | "input_blocked") => return Err(error.into()),
                         _ => return Err(format!("Submission outcome could not be confirmed: {error}. The input may already be queued; resume the session instead of sending it again").into()),
-                    }
+                    },
+                };
+                // A check's warning names work the input was written without.
+                for warning in crate::wire::warnings(&written) {
+                    display.record(&warning.message)?;
                 }
                 if let Some(draft) = draft.take() {
                     draft.clear();
@@ -1211,8 +1272,8 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
             let event = &params["event"];
             if method == "session.event"
                 && params["branchId"] == "main"
-                && ((event["type"] == "turn" && event["name"] == "end")
-                    || (event["type"] == "step" && event["name"] == "model-output-end"))
+                && event["type"] == "turn"
+                && event["name"] == "end"
                 && event["data"]["status"] == "failed"
             {
                 display.failed = true;
@@ -1221,9 +1282,15 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
         return Ok(());
     }
     match method.as_str() {
-        "session.event" => {
-            let changed = permission::changed(&params["event"]);
-            let notice: EventNotice = decode(params, &method)?;
+        "session.event" | "session.display" => {
+            let changed = (method == "session.event")
+                .then(|| permission::changed(&params["event"]))
+                .flatten();
+            let notice: EventNotice = if method == "session.display" {
+                decode::<DisplayNotice>(params, &method)?.into()
+            } else {
+                decode(params, &method)?
+            };
             if notice.session_id == session_id && notice.branch_id == "main" {
                 if let Some((sequence, policy)) = changed
                     && sequence > display.cursor.max(display.permission_seen)

@@ -837,23 +837,26 @@ async fn optional_contributors_do_not_gate_the_loop_and_follow_new_generations()
         "a contributed change writes no adoption without a tool part"
     );
     let branches = session.branch_diagnostics("main").unwrap();
-    let previous_loop = branches
-        .plugins
-        .iter()
-        .find(|plugin| plugin.name == "Loop")
-        .unwrap();
-    let loop_view = root.view(previous_loop.id).unwrap();
+    let reloaded_parts = ["Loop", "ToolExecutor"].map(|name| {
+        let plugin = branches
+            .plugins
+            .iter()
+            .find(|plugin| plugin.name == name)
+            .unwrap();
+        (root.view(plugin.id).unwrap(), plugin.generation)
+    });
     let previous_provider_generation = provider.watch().borrow().generation;
     root.view(registry_id).unwrap().restart().await.unwrap();
     tokio::time::timeout(Duration::from_secs(5), async {
-        loop_view
-            .watch()
-            .wait_for(|snapshot| {
-                snapshot.generation > previous_loop.generation
-                    && snapshot.state == rutis::host::FiberState::Active
-            })
-            .await
-            .unwrap();
+        for (view, generation) in &reloaded_parts {
+            view.watch()
+                .wait_for(|snapshot| {
+                    snapshot.generation > *generation
+                        && snapshot.state == rutis::host::FiberState::Active
+                })
+                .await
+                .unwrap();
+        }
         provider
             .watch()
             .wait_for(|snapshot| {

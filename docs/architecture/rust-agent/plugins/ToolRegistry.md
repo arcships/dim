@@ -30,6 +30,38 @@ with the flow test that asserts it.
 | `S:SessionIdentity` | Supply the owning Session id in a foreign tool's neutral call and the `tool.attach` span. |
 | `S:SessionLifecycle` | `activated()` starts the background refresh task once the Session is published; `closing()` ends it. |
 
+## Handler contract
+
+A handler is `ToolHandler`. Besides `execute`, it answers three optional
+questions, all defaulted so a handler that needs none writes none:
+`resolve_write` resolves a filesystem write's target without effects, `risk`
+names the risk Approval admits the call under, and `concurrency` says whether
+the call may run beside the other calls of its batch. `claim(call, caller)`
+returns what a handler must register before its call is published; its guard
+releases on drop, and `ToolClaim::dispatch` consumes it to run the call as
+resolved and approved. The
+publish and release order is [ToolExecution](ToolExecution.md) and
+[Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact).
+
+`concurrency` decides order only. It defaults to `Exclusive`, so a handler that
+says nothing keeps the order the model wrote, and a `Concurrent` answer lets a
+call share its step with the calls around it
+([ToolExecution](ToolExecution.md#scheduling)). It is an execution property of
+the bound handler: it is not a field of `ToolDefinition`, so it is neither a
+field of a model request's declaration nor a key of a persisted configuration.
+A host tool names its class per call through `ToolDriver::concurrency`, because
+one driver serves every host tool of a Session.
+
+## Read-only source observation
+
+The same owner publishes the `toolSourcesView` data face for status snapshots and
+watch observation. Contribution registration remains on `toolRegistry`; the view
+exposes neither handlers nor registration operations. Its contract is
+[tool contributions §7.5](../tool-contributions.md#75-服务接口).
+The native `get/subscribe` binding retains the existing watch receiver directly.
+Foreign observations use the owner's existing fiber cancellation token so unload
+ends a pending callback without keeping the registry alive.
+
 ## Events and lifetime
 
 No Timeline events. The fixed table holds every host tool in the host's order.
@@ -162,6 +194,6 @@ owned by Dim and built on existing rutis effects and the bridge's calling row.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:ToolHost` |
-| 提供 | `S:ToolRegistry`、`S:ToolSourcesView`、`S:dyn HostDispatch#toolRegistry` |
-| 被注入于 | `BranchTool`、`HooksBranch`、`Questions`、`Recall`、`Skills`、`ToolBinding`、`Wait` |
+| 提供 | `S:ToolRegistry`、`S:ToolSourcesView`、`S:dyn HostDispatch#toolRegistry`、`S:dyn HostDispatch#toolSourcesView` |
+| 被注入于 | `BranchTool`、`ContextUsage`、`HooksBranch`、`Questions`、`Recall`、`Skills`、`ToolBinding`、`Wait` |
 <!-- /generated -->

@@ -1,7 +1,0 @@
-{
-  "type": "function",
-  "name": "w",
-  "inputSchema": {
-    "type": "object"
-  }
-}

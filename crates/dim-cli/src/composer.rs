@@ -530,6 +530,32 @@ impl Draft {
                 return Ok(None);
             }
         }
+        for part in &mut self.parts {
+            let Part::File { content, .. } = part else {
+                continue;
+            };
+            if !matches!(content, ContentBlock::Image { source } if source.source_type == dim_agent_types::ImageSourceType::Base64)
+            {
+                continue;
+            }
+            let import = crate::images::import(client, session, std::slice::from_mut(content));
+            tokio::pin!(import);
+            let mut cancelled = false;
+            let result = loop {
+                tokio::select! {
+                    _ = interrupts.recv() => { cancelled = true; }
+                    result = &mut import => break result,
+                }
+            };
+            if let Err(error) = result {
+                *notice = Some(format!("Image import failed: {error}; draft retained"));
+                return Ok(None);
+            }
+            if cancelled {
+                *notice = Some("Preparation cancelled; draft retained".into());
+                return Ok(None);
+            }
+        }
         let mut content = Vec::new();
         let mut text = String::new();
         for part in &self.parts {
@@ -1001,8 +1027,7 @@ pub async fn edit(
                         let result = if entry.directory {
                             entry
                                 .path
-                                .strip_prefix(base)
-                                .unwrap_or(&entry.path)
+                                .trim_prefix(base)
                                 .to_str()
                                 .ok_or_else(|| "File paths must be UTF-8".into())
                                 .map(|path| {

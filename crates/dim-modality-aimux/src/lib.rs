@@ -719,6 +719,9 @@ impl DynPlugin for AdapterPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, Result<Effect, rutis::Error>> {
         Box::pin(async move {
+            // One binding per name: a provider copy another adapter claims is
+            // one this adapter must not hold, so it provides the family copy
+            // and leaves every provider slot available (Modality A.2).
             ctx.provide(ModalityAdapterService(self.0.clone()))?;
             Ok(Effect::Done)
         })
@@ -727,8 +730,8 @@ impl DynPlugin for AdapterPlugin {
 
 /// Installs the built-in adapter as a process plugin.
 ///
-/// The host registers the service name first, and adds this plugin before
-/// Modality's own: Modality reads the service once, when it starts.
+/// Registers and provides the family copy; Modality reads it per call when
+/// no provider-specific copy is available (Modality A.2).
 pub fn install(builder: &mut AgentBuilder) {
     dim_agent_runtime::names::register::<ModalityAdapterService>(builder.catalog_mut(), None);
     builder.plugin(|_| {

@@ -230,7 +230,7 @@ impl Realtime {
             )));
         };
         crate::engine::check_spec_params(&spec, &request.params, &row.id(category.name))?;
-        let Some(adapter) = evaluation.adapter().cloned() else {
+        let Some(adapter) = evaluation.adapter(&model.provider_id) else {
             return Err(unavailable(format!(
                 "No available adapter serves {}",
                 row.id(category.name)

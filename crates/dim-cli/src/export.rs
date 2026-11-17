@@ -7,7 +7,7 @@ use crate::{
 };
 use dim_agent_types::{
     BranchCreateData, BranchCreateFailedData, ContentBlock, InputBlock, InputMessageData, TextData,
-    ToolResultData, ToolUseData,
+    ToolResultData, ToolUseData, markup,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -189,13 +189,21 @@ impl<W: Write> HistorySink for Markdown<'_, W> {
                 let data = InputMessageData::deserialize(data)?;
                 if let Some(user) = data.user {
                     self.out.write_all(b"\n\n### User\n\n")?;
-                    for block in user.content {
+                    for (index, block) in user.content.iter().enumerate() {
                         match block {
+                            // Only a hook's context leaves the section; a loaded
+                            // Skill's block stays here, as it always has.
+                            ContentBlock::Text { text }
+                                if markup::runtime_element(index, text) == Some("dim-hooks") => {}
                             ContentBlock::Text { text } => self.out.write_all(text.as_bytes())?,
                             ContentBlock::Image { source } => {
                                 write!(self.out, "\n[Image attachment: {}]\n", source.media_type)?
                             }
                         }
+                    }
+                    for body in crate::projection::hook_contexts(&user.content) {
+                        self.out.write_all(b"\n\n### Hook context\n")?;
+                        self.fence(body.trim(), "text")?;
                     }
                 }
                 for block in data.blocks {

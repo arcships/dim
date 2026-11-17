@@ -24,7 +24,7 @@ export const part = definePlugin({
   name: 'SessionTypeScriptFixture',
   inject: ['toolRegistry', 'sessionMethods', 'callChannel'],
   provides,
-  async apply(ctx, config: { badDeclaration?: boolean; badMethods?: boolean | 'unsupported'; processOwner?: boolean; namespace?: string; typeArray?: boolean; badTypeArray?: boolean }) {
+  async apply(ctx, config: { badDeclaration?: boolean; badMethods?: boolean | 'unsupported'; processOwner?: boolean; namespace?: string; typeArray?: boolean; badTypeArray?: boolean; concurrency?: boolean }) {
     const generation = crypto.randomUUID()
     const owner = config.processOwner ? ctx.use<{ status(): { generation: number } }>('exampleProcess') : undefined
     let stopped = false
@@ -71,6 +71,22 @@ export const part = definePlugin({
         return { content: JSON.stringify({ ...call, generation, calls, processGeneration: owner?.status().generation }) }
       },
     ).catch((error: Error) => { refused = error.message })
+    if (config.concurrency) {
+      for (const [name, options] of [
+        ['ts_shared', { concurrency: 'concurrent' }],
+        ['ts_alone', undefined],
+        ['ts_unknown', { concurrency: 'parallel' }],
+      ] as const) {
+        await ctx.use<ToolRegistry>('toolRegistry').register(
+          {
+            name, description: 'TypeScript ordering fixture', inputSchema: { type: 'object' },
+            source: 'extension', risk: 'session',
+          },
+          async () => ({ content: name }),
+          options,
+        ).catch((error: Error) => { refused = `${name}: ${error.message}` })
+      }
+    }
     if (config.typeArray) {
       await ctx.use<ToolRegistry>('toolRegistry').register(
         {

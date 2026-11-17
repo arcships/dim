@@ -46,6 +46,18 @@ pub fn tool_provider_changes(session: InstanceId) -> String {
     format!("dim/tools/{session}/provider-changed")
 }
 
+/// Whether a call may run beside the other calls of its batch.
+///
+/// The class decides execution order only: a `Concurrent` call shares its
+/// step with the calls around it, and an `Exclusive` call runs alone, after
+/// every call of an earlier step settled. It never grants permission, and it
+/// never reaches a model request or a persisted declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolConcurrency {
+    Concurrent,
+    Exclusive,
+}
+
 pub trait ToolHandler: Send + Sync + 'static {
     /// Resolve a filesystem write's target without effects before admission.
     fn resolve_write(&self, call: ToolCall, _: CancellationToken) -> HostFuture<'_, ToolCall> {
@@ -56,12 +68,50 @@ pub trait ToolHandler: Send + Sync + 'static {
     fn risk(&self, _: &ToolCall) -> Option<&'static str> {
         None
     }
+    /// Whether this call may run beside other calls of its batch.
+    ///
+    /// The default is [`ToolConcurrency::Exclusive`]: a handler that says
+    /// nothing keeps the order the model wrote it in, which is what a call
+    /// whose effects nobody declared needs.
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        ToolConcurrency::Exclusive
+    }
+    /// Takes whatever a client must be able to reach once the call is
+    /// published, before Loop publishes it. The default takes nothing: a
+    /// handler whose effects begin at [`Self::execute`] needs no claim.
+    ///
+    /// ToolBinding holds the claim with the request's tool snapshot, so a path
+    /// that never dispatches releases it by drop. [`ToolClaim::dispatch`]
+    /// receives the call as resolved and approved.
+    ///
+    /// A call is claimed once: Loop claims each call of a batch once, before it
+    /// appends `step/tool-call`. ToolBinding keeps one guard per call id, so a
+    /// second claim that returns a guard replaces the first rather than adding
+    /// one; a claim that returns `None` leaves the first in place.
+    fn claim(&self, _: &ToolCall, _: &ToolExecutionContext) -> Option<Box<dyn ToolClaim>> {
+        None
+    }
     fn execute(
         &self,
         call: ToolCall,
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> HostFuture<'_, ToolResult>;
+}
+
+/// What a handler registered for one call before it was published.
+///
+/// Dropping it releases the registration, which is how every path between the
+/// claim and dispatch ends.
+pub trait ToolClaim: Send + Sync {
+    /// Runs `call` as resolved and approved, keeping the registration until it
+    /// settles or the cancel token fires.
+    fn dispatch(
+        self: Box<Self>,
+        call: ToolCall,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ToolResult>;
 }
 /// A tool and its handler: a host tool, or one a part registers with
 /// [`ToolRegistry::register`].
@@ -90,25 +140,87 @@ pub struct ToolSourceSet {
 
 /// Read-only view of the source statuses for hosts; unlike `ToolRegistry`
 /// it exposes no handler, so a Session handle may obtain it.
-pub struct ToolSourcesView(watch::Receiver<ToolSourcesState>);
+pub struct ToolSourcesView {
+    state: watch::Receiver<ToolSourcesState>,
+    generation: CancellationToken,
+}
 impl ToolSourcesView {
     pub fn get(&self) -> ToolSourcesState {
-        self.0.borrow().clone()
+        self.state.borrow().clone()
     }
     pub fn subscribe(&self) -> watch::Receiver<ToolSourcesState> {
-        self.0.clone()
+        self.state.clone()
+    }
+}
+
+impl HostDispatch for ToolSourcesView {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"get": "sync", "observe": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: Value) -> Reply {
+        match method {
+            "get" => {
+                let _: crate::port_faces::Empty =
+                    crate::port_faces::request("toolSourcesView", args)?;
+                rutis_bridge::session::arg(&self.get())
+            }
+            "observe" => {
+                let args = args.list()?;
+                let [request, Value::Reference(callback)] = args.as_slice() else {
+                    return Err(crate::port_faces::invalid(
+                        "toolSourcesView",
+                        "expected a request and callback",
+                    ));
+                };
+                let _: crate::port_faces::Empty = crate::port_faces::request(
+                    "toolSourcesView",
+                    Value::List(vec![request.clone()]),
+                )?;
+                if !callback.is_function() {
+                    return Err(crate::port_faces::invalid(
+                        "toolSourcesView",
+                        "expected a callback function",
+                    ));
+                }
+                let callback = callback.clone();
+                let mut state = self.subscribe();
+                let generation = self.generation.clone();
+                let caller = rutis_bridge::session::caller_row()
+                    .map(|row| row.ctx().cancellation_token())
+                    .unwrap_or_default();
+                Ok(Value::cancellable_future(async move {
+                    tokio::select! {
+                        biased;
+                        _ = generation.cancelled() => Ok(Value::Undefined),
+                        _ = caller.cancelled() => Ok(Value::Undefined),
+                        result = async move {
+                            loop {
+                                let snapshot = state.borrow_and_update().clone();
+                                let args = Value::List(vec![rutis_bridge::session::arg(&snapshot)?]);
+                                settle(callback.call_async(args).await?).await?;
+                                if state.changed().await.is_err() {
+                                    return Ok(Value::Undefined);
+                                }
+                            }
+                        } => result,
+                    }
+                }))
+            }
+            _ => Err(crate::port_faces::unknown_method("toolSourcesView", method)),
+        }
     }
 }
 
 /// What the registry did with each source key, for management views.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSourcesState(pub BTreeMap<String, ToolSourceStatus>);
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSourceStatus {
     pub adopted: Option<String>,
     pub rejected: Option<ToolSourceRejection>,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolSourceRejection {
     pub version: String,
     pub reason: String,
@@ -144,6 +256,8 @@ pub struct ToolRegistry {
     /// registered tools it declares, in this order. `None` declares every
     /// host tool and every registered tool.
     configured: Option<Vec<String>>,
+    /// Names removed even when the mount list is absent or names them.
+    excluded: HashSet<String>,
     tools: Arc<Registrations<Arc<ToolContribution>>>,
     providers: Arc<Registrations<Arc<dyn ToolProvider>>>,
     /// The set each registered tool is offered as.
@@ -203,6 +317,7 @@ impl ToolRegistry {
         let mounted: Vec<Arc<ToolContribution>> = match &self.configured {
             Some(names) => names
                 .iter()
+                .filter(|name| !self.excluded.contains(*name))
                 .filter_map(|name| {
                     self.fixed(name).or_else(|| {
                         sources
@@ -223,13 +338,15 @@ impl ToolRegistry {
                         .filter(|set| is_contributed(&set.key))
                         .flat_map(|set| set.tools.iter().cloned()),
                 )
+                .filter(|tool| !self.excluded.contains(&tool.definition.name))
                 .collect(),
         };
         let other = sources
             .current
             .values()
             .filter(|set| !is_contributed(&set.key))
-            .flat_map(|set| set.tools.iter().cloned());
+            .flat_map(|set| set.tools.iter().cloned())
+            .filter(|tool| !self.excluded.contains(&tool.definition.name));
         mounted
             .into_iter()
             .chain(other)
@@ -238,9 +355,11 @@ impl ToolRegistry {
     }
     /// Whether the Session mounts `name`.
     fn mounts(&self, name: &str) -> bool {
-        self.configured
-            .as_ref()
-            .is_none_or(|names| names.iter().any(|mounted| mounted == name))
+        !self.excluded.contains(name)
+            && self
+                .configured
+                .as_ref()
+                .is_none_or(|names| names.iter().any(|mounted| mounted == name))
     }
     fn is_host(&self, name: &str) -> bool {
         self.host.iter().any(|tool| tool.definition.name == name)
@@ -265,6 +384,9 @@ impl ToolRegistry {
     }
     /// The current version of a registered tool.
     pub fn contributed(&self, name: &str) -> Option<Arc<ToolContribution>> {
+        if self.excluded.contains(name) {
+            return None;
+        }
         let sources = self.sources.lock().unwrap();
         let set = sources.current.get(&format!("{CONTRIBUTED}:{name}"))?;
         set.tools.first().cloned()
@@ -511,6 +633,7 @@ impl ToolRegistry {
         ctx: &Ctx,
         declaration: serde_json::Value,
         execute: Reference,
+        concurrency: ToolConcurrency,
     ) -> Result<(), Error> {
         let definition = foreign_definition(declaration)?;
         self.register(
@@ -522,9 +645,34 @@ impl ToolRegistry {
                     generation: ctx.cancellation_token(),
                     session_id: self.session_id.clone(),
                     config: self.config.clone(),
+                    concurrency,
                 }),
             },
         )
+    }
+}
+
+/// The ordering class a foreign registration asked for. It is a registration
+/// option rather than a declaration field: the class is a property of the
+/// bound handler, and `ToolDefinition` is persisted in the adopted
+/// configuration, so a key there would change a stored shape.
+fn foreign_concurrency(options: Option<serde_json::Value>) -> Result<ToolConcurrency, Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct Options {
+        concurrency: Option<String>,
+    }
+    let Some(options) = options else {
+        return Ok(ToolConcurrency::Exclusive);
+    };
+    let options: Options = serde_json::from_value(options)
+        .map_err(|error| invalid(format!("invalid tool registration options: {error}")))?;
+    match options.concurrency.as_deref() {
+        None => Ok(ToolConcurrency::Exclusive),
+        Some("concurrent") => Ok(ToolConcurrency::Concurrent),
+        Some(other) => Err(invalid(format!(
+            "unknown tool concurrency `{other}`; the declared values are `concurrent`"
+        ))),
     }
 }
 
@@ -576,6 +724,9 @@ impl ToolHandler for HostTool {
     fn resolve_write(&self, call: ToolCall, cancel: CancellationToken) -> HostFuture<'_, ToolCall> {
         self.0.0.resolve_write(call, cancel)
     }
+    fn concurrency(&self, call: &ToolCall) -> ToolConcurrency {
+        self.0.0.concurrency(call)
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -595,8 +746,12 @@ struct ForeignTool {
     generation: CancellationToken,
     session_id: String,
     config: Arc<SessionConfig>,
+    concurrency: ToolConcurrency,
 }
 impl ToolHandler for ForeignTool {
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        self.concurrency
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -642,8 +797,8 @@ impl ToolHandler for ForeignTool {
     }
 }
 
-/// `toolRegistry` for other languages: `register(declaration, execute)`
-/// registers a tool for as long as the calling row is loaded.
+/// `toolRegistry` for other languages: `register(declaration, execute,
+/// options?)` registers a tool for as long as the calling row is loaded.
 struct ForeignRegistry(Arc<ToolRegistry>);
 impl HostDispatch for ForeignRegistry {
     fn methods(&self) -> Option<serde_json::Value> {
@@ -667,15 +822,15 @@ impl HostDispatch for ForeignRegistry {
             Value::Undefined => Vec::new(),
             args => args.list()?,
         };
-        if args.len() > 2 {
+        if args.len() > 3 {
             return Err(BridgeError::Value(format!(
-                "expected at most 2 arguments, received {}",
+                "expected at most 3 arguments, received {}",
                 args.len()
             )));
         }
-        args.resize(2, Value::Undefined);
+        args.resize(3, Value::Undefined);
         let mut args = args.into_iter();
-        let declaration = args.next().expect("two arguments").json()?;
+        let declaration = args.next().expect("three arguments").json()?;
         let Some(Value::Reference(execute)) = args.next().filter(
             |execute| matches!(execute, Value::Reference(reference) if reference.is_function()),
         ) else {
@@ -683,11 +838,18 @@ impl HostDispatch for ForeignRegistry {
                 "register needs the tool's declaration and its execute function".into(),
             ));
         };
-        let registered = self
-            .0
-            .register_foreign(&caller, declaration, execute)
-            .map(|()| Value::Undefined)
-            .map_err(|error| BridgeError::Value(error.to_string()));
+        let options = match args.next().expect("three arguments") {
+            Value::Undefined => None,
+            options => Some(options.json()?),
+        };
+        let registered = foreign_concurrency(options)
+            .map_err(|error| BridgeError::Value(error.to_string()))
+            .and_then(|concurrency| {
+                self.0
+                    .register_foreign(&caller, declaration, execute, concurrency)
+                    .map_err(|error| BridgeError::Value(error.to_string()))
+            })
+            .map(|()| Value::Undefined);
         Ok(Value::future(async move { registered }))
     }
 }
@@ -767,6 +929,7 @@ impl DynPlugin for ToolRegistryPlugin {
             let registry = Arc::new(ToolRegistry {
                 host: host_tools,
                 configured: config.tools.clone(),
+                excluded: config.excluded_tools.iter().cloned().collect(),
                 tools: Arc::default(),
                 providers: Arc::default(),
                 offered: Mutex::default(),
@@ -810,9 +973,17 @@ impl DynPlugin for ToolRegistryPlugin {
                 Ok(())
             })?;
             registry.refresh();
-            ctx.provide_at(
-                self.view.clone(),
-                Arc::new(ToolSourcesView(registry.sources_state())),
+            let view = Arc::new(ToolSourcesView {
+                state: registry.sources_state(),
+                generation: ctx.cancellation_token(),
+            });
+            ctx.provide_at(self.view.clone(), view.clone())?;
+            ctx.provide_at::<dyn HostDispatch>(
+                host_key_in(
+                    &dim_agent_runtime::names::name_of::<ToolSourcesView>(),
+                    self.session,
+                ),
+                view,
             )?;
             ctx.provide_at::<dyn HostDispatch>(
                 host_key_in(
@@ -824,5 +995,91 @@ impl DynPlugin for ToolRegistryPlugin {
             ctx.provide_at(self.registry.clone(), registry)?;
             Ok(Effect::Done)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Noop;
+
+    impl ToolHandler for Noop {
+        fn execute(
+            &self,
+            _: ToolCall,
+            _: ToolExecutionContext,
+            _: CancellationToken,
+        ) -> HostFuture<'_, ToolResult> {
+            Box::pin(async { Ok(ToolResult::text("ok")) })
+        }
+    }
+
+    fn registry(tools: Option<Vec<String>>, excluded_tools: Vec<String>) -> ToolRegistry {
+        let config = Arc::new(SessionConfig {
+            tools,
+            excluded_tools,
+            ..Default::default()
+        });
+        ToolRegistry {
+            host: vec![Arc::new(ToolContribution {
+                definition: definition("codemode", "code", json!({"type": "object"})),
+                handler: Arc::new(Noop),
+            })],
+            configured: config.tools.clone(),
+            excluded: config.excluded_tools.iter().cloned().collect(),
+            tools: Arc::default(),
+            providers: Arc::default(),
+            offered: Mutex::default(),
+            missing: Mutex::default(),
+            session_id: "session".into(),
+            config,
+            refreshing: Mutex::default(),
+            sources: Mutex::default(),
+            state: watch::Sender::new(ToolSourcesState::default()),
+        }
+    }
+
+    #[test]
+    fn an_excluded_tool_is_absent_from_the_all_tools_mount() {
+        let registry = registry(None, vec!["codemode".into()]);
+        assert!(registry.definitions().is_empty());
+        assert!(registry.fixed("codemode").is_none());
+        assert!(registry.contributed("codemode").is_none());
+    }
+
+    #[test]
+    fn an_excluded_tool_is_absent_from_an_explicit_mount() {
+        let registry = registry(Some(vec!["codemode".into()]), vec!["codemode".into()]);
+        assert!(registry.definitions().is_empty());
+    }
+
+    #[test]
+    fn a_handler_that_says_nothing_is_exclusive() {
+        let call = ToolCall {
+            id: "call".into(),
+            name: "codemode".into(),
+            input: JsonObject::new(),
+        };
+        assert_eq!(Noop.concurrency(&call), ToolConcurrency::Exclusive);
+    }
+
+    #[test]
+    fn a_registration_option_names_the_class_and_an_unknown_one_is_refused() {
+        assert_eq!(
+            foreign_concurrency(None).unwrap(),
+            ToolConcurrency::Exclusive
+        );
+        assert_eq!(
+            foreign_concurrency(Some(json!({}))).unwrap(),
+            ToolConcurrency::Exclusive
+        );
+        assert_eq!(
+            foreign_concurrency(Some(json!({ "concurrency": "concurrent" }))).unwrap(),
+            ToolConcurrency::Concurrent
+        );
+        assert!(foreign_concurrency(Some(json!({ "concurrency": "parallel" }))).is_err());
+        assert!(foreign_concurrency(Some(json!({ "concurrency": 1 }))).is_err());
+        assert!(foreign_concurrency(Some(json!({ "other": true }))).is_err());
     }
 }

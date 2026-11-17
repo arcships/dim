@@ -16,7 +16,7 @@ use std::{
 };
 
 const RENAME_UNSUPPORTED: &str = "This daemon does not support renaming Sessions";
-const DELETE_UNSUPPORTED: &str = "This daemon does not support deleting Sessions";
+pub(crate) const DELETE_UNSUPPORTED: &str = "This daemon does not support deleting Sessions";
 const CLEANUP_UNSUPPORTED: &str = "This daemon does not support cleaning up Sessions";
 /// `includeClosed` and `requireInactive` land together, so a server that
 /// refuses one refuses both, and cleanup cannot delete safely there.
@@ -31,9 +31,9 @@ struct Renamed {
 /// The `session.delete` reply. An App Server before the field answers `{}`,
 /// which reads as `None` and as a delete that removed the rows.
 #[derive(Deserialize)]
-struct Deleted {
+pub(crate) struct Deleted {
     #[serde(default)]
-    deleted: Option<bool>,
+    pub(crate) deleted: Option<bool>,
 }
 
 /// One stored Session as `session.summaries` reports it.
@@ -74,15 +74,17 @@ impl Summary {
         }
         (!reasons.is_empty()).then(|| reasons.join(", "))
     }
-    /// The origin classes `/resume`'s default list keeps, which is every
-    /// origin but `internal` and `acp`
+    /// The origin classes `/resume`'s default list keeps: a conversation,
+    /// `client` or `unknown`
     /// ([classification](../../../docs/design/appserver/session-classification.md)).
     /// Cleanup selects across every workspace and removes no Session
     /// `/resume` hides: a member goes with its leader's delete, a launched
     /// Session with its plugin, and an ACP Session is deleted by its id
     /// ([session deletion and cleanup](../../../docs/design/cli-commands.md#session-deletion-and-cleanup)).
+    /// The list is positive, so a destructive command never selects an origin
+    /// it does not know.
     fn resumable(&self) -> bool {
-        !matches!(self.origin.as_deref(), Some("internal" | "acp"))
+        matches!(self.origin.as_deref(), None | Some("client" | "unknown"))
     }
 }
 
@@ -351,7 +353,7 @@ async fn summaries(client: &mut Client) -> Result<Vec<Summary>> {
 }
 
 /// The App Server's own sentence for a refused call, as one printable line.
-fn reason(error: &crate::Error) -> String {
+pub(crate) fn reason(error: &crate::Error) -> String {
     match error.downcast_ref::<RpcError>() {
         Some(error) if !error.message.is_empty() => one_line(&error.message),
         _ => one_line(&error.to_string()),

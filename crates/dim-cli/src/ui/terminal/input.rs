@@ -80,6 +80,7 @@ pub enum InputEvent {
 pub enum MouseKind {
     Press,
     Drag,
+    Move,
     Release,
     WheelUp,
     WheelDown,
@@ -493,6 +494,7 @@ fn mouse(params: &str, final_byte: u8) -> Outcome {
         (65, b'M') => MouseKind::WheelDown,
         (0, b'M') => MouseKind::Press,
         (32, b'M') => MouseKind::Drag,
+        (35, b'M') => MouseKind::Move,
         (0, b'm') => MouseKind::Release,
         _ => return Outcome::Ignored,
     };
@@ -625,6 +627,24 @@ mod tests {
     }
 
     #[test]
+    fn free_mouse_motion_is_reassembled_and_modifiers_do_not_change_it() {
+        let mut d = Decoder::new();
+        assert!(d.feed(b"\x1b[<35;10;").is_empty());
+        assert_eq!(
+            d.feed(b"2M\x1b[<63;10;2M"),
+            vec![
+                InputEvent::Mouse(MouseEvent {
+                    kind: MouseKind::Move,
+                    column: 9,
+                    row: 1,
+                });
+                2
+            ]
+        );
+        assert!(d.feed(b"\x1b[<33;10;2M\x1b[<34;10;2M").is_empty());
+    }
+
+    #[test]
     fn split_utf8_is_reassembled() {
         let mut d = Decoder::new();
         let bytes = "中".as_bytes();
@@ -696,6 +716,22 @@ mod tests {
             keys(d.feed(b"\x1b[27;5;99~")),
             vec![(KeyCode::Char('c'), Modifiers::CTRL.0)]
         );
+    }
+
+    /// Ctrl+Enter under both modern encodings, and the legacy byte that a
+    /// terminal without either sends for it: the same as plain Enter.
+    #[test]
+    fn ctrl_enter_decodes_as_enter_with_ctrl_under_both_encodings() {
+        let mut d = Decoder::new();
+        assert_eq!(
+            keys(d.feed(b"\x1b[13;5u")),
+            vec![(KeyCode::Enter, Modifiers::CTRL.0)]
+        );
+        assert_eq!(
+            keys(d.feed(b"\x1b[27;5;13~")),
+            vec![(KeyCode::Enter, Modifiers::CTRL.0)]
+        );
+        assert_eq!(keys(d.feed(b"\r")), vec![(KeyCode::Enter, 0)]);
     }
 
     #[test]

@@ -1,5 +1,446 @@
 use super::*;
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn display_windows_and_live_compaction_use_one_typed_detail_with_a_frame_budget() {
+    use dim_agent_types::{ContextCompactionData, InputMode};
+    let directory = new_directory("display");
+    let model = Arc::new(StreamingModel::default());
+    let (server, probe) = serve_streaming(&directory, model.clone()).await;
+    let mut reader = Client::new_version(&server, false, 3).await;
+    assert!(
+        reader
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.history.display"))
+    );
+    assert!(
+        reader
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.history.detail"))
+    );
+    let created = reader.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    let mut v2 = Client::new_version(&server, false, 2).await;
+    let unavailable = v2
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":"main","after":0}),
+        )
+        .await;
+    assert_eq!(unavailable["error"]["code"], -32601);
+    drop(v2);
+    turn(&mut reader, &model, id, "seed", Plan::Chunks(1)).await;
+    let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+    let input = timeline
+        .append(
+            EventKind::InputMessage(dim_agent_types::InputMessageData::text(
+                "retained",
+                Some(InputMode::Append),
+            ))
+            .into(),
+        )
+        .unwrap();
+    assert_ok(
+        &reader
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    assert_ok(
+        &reader
+            .rpc("session.attach", json!({"sessionId":id,"display":true}))
+            .await,
+    );
+    let mut legacy = Client::new_version(&server, false, 3).await;
+    assert_ok(&legacy.rpc("session.attach", json!({"sessionId":id})).await);
+    let data: ContextCompactionData = serde_json::from_value(json!({
+        "through":timeline.sequence(),"status":"completed","retain_from":input.id,
+        "replacement":[{"role":"user","content":"中".repeat(800_000)}],
+        "strategy":"summary","diagnostics":{
+            "reason":"auto","trigger":"threshold","estimatedInputTokens":700_000,
+            "entriesReplaced":1,"modelCallCount":1,"durationMs":1,"strategy":{"kind":"summary"}
+        },"context_baseline":[]
+    }))
+    .unwrap();
+    let expected = serde_json::to_value(&data).unwrap();
+    let event = timeline
+        .append(EventKind::ContextCompaction(data).into())
+        .unwrap();
+    assert_ok(
+        &reader
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let notice = reader.notice("session.display").await;
+    let summary = &notice["params"]["item"];
+    assert_eq!(summary["id"], event.id);
+    assert_eq!(summary["type"], "display");
+    assert_eq!(summary["data"], json!({"strategy":"summary"}));
+    assert!(serde_json::to_vec(&notice).unwrap().len() < 1024);
+    let original = loop {
+        let notice = legacy.notice("session.event").await;
+        if notice["params"]["event"]["id"] == event.id {
+            break notice;
+        }
+    };
+    assert!(
+        original["params"]["event"]["data"] == expected,
+        "legacy live content must be complete"
+    );
+    let params = json!({"sessionId":id,"branchId":"main","through":event.sequence,"latestTurn":true,"limit":1});
+    let display = reader.rpc("session.history.display", params.clone()).await;
+    assert_ok(&display);
+    assert_eq!(display["result"]["items"], json!([summary]));
+    let tail = reader
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":event.sequence,"limit":1
+            }),
+        )
+        .await;
+    assert_ok(&tail);
+    assert_eq!(tail["result"]["items"], json!([summary]));
+    assert!(tail["result"]["turnStart"].is_null());
+    let summary_bytes = serde_json::to_vec(&display).unwrap().len();
+    assert!(summary_bytes < 1024);
+    let full = legacy.rpc("session.history", params).await;
+    assert_ok(&full);
+    assert!(
+        full["result"]["events"][0]["data"] == expected,
+        "legacy window content must be complete"
+    );
+    for field in ["through", "nextAfter", "nextBefore", "done", "turnStart"] {
+        assert_eq!(display["result"][field], full["result"][field], "{field}");
+    }
+    drop(legacy);
+    let detail_started = std::time::Instant::now();
+    let reply = reader
+        .rpc(
+            "session.history.detail",
+            json!({"sessionId":id,"branchId":"main","eventId":event.id,"sequence":event.sequence}),
+        )
+        .await;
+    assert_ok(&reply);
+    let detail: dim_agent_types::CompactionDetail =
+        serde_json::from_value(reply["result"].clone()).unwrap();
+    assert_eq!(detail.event_id, event.id);
+    assert_eq!(detail.sequence, event.sequence);
+    assert_eq!(serde_json::to_value(&detail.data).unwrap(), expected);
+    let detail_bytes = serde_json::to_vec(&reply).unwrap().len();
+    eprintln!(
+        "compaction display: summary={summary_bytes}B, detail={detail_bytes}B/1request/{}ms",
+        detail_started.elapsed().as_millis()
+    );
+    for (event_id, sequence, error) in [
+        ("absent", event.sequence, "detail_not_found"),
+        (input.id.as_str(), input.sequence, "detail_not_found"),
+        (event.id.as_str(), event.sequence + 100, "invalid_params"),
+    ] {
+        let reply = reader
+            .rpc(
+                "session.history.detail",
+                json!({"sessionId":id,"branchId":"main","eventId":event_id,"sequence":sequence}),
+            )
+            .await;
+        if error == "invalid_params" {
+            assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        } else {
+            assert_eq!(error_name(&reply), error, "{reply}");
+        }
+    }
+    let offset = reader.rpc("session.history.detail",json!({"sessionId":id,"branchId":"main","eventId":event.id,"sequence":event.sequence,"offset":0})).await;
+    assert_eq!(offset["error"]["code"], -32602);
+    assert_ok(&reader.rpc("session.attach", json!({"sessionId":id})).await);
+    let next = timeline
+        .append(
+            EventKind::ContextCompaction(serde_json::from_value(expected.clone()).unwrap()).into(),
+        )
+        .unwrap();
+    assert_ok(
+        &reader
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let reverted = loop {
+        let notice = reader.notice("session.event").await;
+        if notice["params"]["event"]["id"] == next.id {
+            break notice;
+        }
+    };
+    assert!(
+        reverted["params"]["event"]["data"] == expected,
+        "replacement attachment must restore full events"
+    );
+    assert_ok(
+        &reader
+            .rpc("session.attach", json!({"sessionId":id,"display":true}))
+            .await,
+    );
+    let mut oversized = expected.clone();
+    oversized["replacement"][0]["content"] = json!("x".repeat(17 * 1024 * 1024));
+    let oversized = timeline
+        .append(EventKind::ContextCompaction(serde_json::from_value(oversized).unwrap()).into())
+        .unwrap();
+    assert_ok(
+        &reader
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let rejected=reader.rpc("session.history.detail",json!({"sessionId":id,"branchId":"main","eventId":oversized.id,"sequence":oversized.sequence})).await;
+    assert_eq!(error_name(&rejected), "detail_too_large", "{rejected}");
+    let summary=reader.rpc("session.history.display",json!({"sessionId":id,"branchId":"main","through":oversized.sequence,"latestTurn":true,"limit":1})).await;
+    assert_ok(&summary);
+    assert!(serde_json::to_vec(&summary).unwrap().len() < 1024);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn display_tail_pages_inside_a_batch() {
+    let directory = new_directory("display-tail");
+    let (server, probe) = serve_streaming(&directory, Arc::new(StreamingModel::default())).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.history.display.tail"))
+    );
+    let created = client.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    let timeline = probe.timeline.lock().unwrap().clone().unwrap();
+    let batch = timeline
+        .append_batch_registered(
+            (0..12)
+                .map(|i| {
+                    EventKind::InputMessage(dim_agent_types::InputMessageData::text(
+                        format!("tail-{i}"),
+                        Some(dim_agent_types::InputMode::Append),
+                    ))
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let through = batch.last().unwrap().sequence;
+    let first = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":through,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&first);
+    assert_eq!(first["result"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(first["result"]["nextBefore"], through - 2);
+    assert!(first["result"]["turnStart"].is_null());
+    let second = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"through":through,
+                "before":first["result"]["nextBefore"],"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&second);
+    assert_eq!(second["result"]["items"].as_array().unwrap().len(), 3);
+    assert_eq!(second["result"]["nextBefore"], through - 5);
+    for transcript in [false, true] {
+        let mut before = None;
+        let mut found = Vec::new();
+        for _ in 0..4 {
+            let mut params = json!({"sessionId":id,"branchId":"main","tail":true,"through":through,"limit":3,"transcript":transcript});
+            if let Some(cursor) = before {
+                params["before"] = json!(cursor);
+            }
+            let reply = client.rpc("session.history.display", params).await;
+            assert_ok(&reply);
+            let page = &reply["result"];
+            let next = page["nextBefore"].as_u64().unwrap();
+            assert!(before.is_none_or(|before| next < before));
+            before = Some(next);
+            found.extend(
+                page["items"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|event| event["sequence"].as_u64().unwrap()),
+            );
+        }
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            batch.iter().map(|event| event.sequence).collect::<Vec<_>>()
+        );
+    }
+    let expected = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"transcript":true,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&expected);
+    let hidden = timeline
+        .append_batch_registered(
+            (0..100)
+                .map(|_| {
+                    EventKind::Extension(
+                        dim_agent_types::ExtensionEvent::new(
+                            "test-hidden",
+                            "saved",
+                            json!({"payload":"not displayed"}),
+                        )
+                        .unwrap(),
+                    )
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let selected = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"transcript":true,
+                "through":hidden.last().unwrap().sequence,"limit":3
+            }),
+        )
+        .await;
+    assert_ok(&selected);
+    assert_eq!(selected["result"]["items"], expected["result"]["items"]);
+    let oversized = client
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":"main","tail":true,"transcript":true,"limit":257}),
+        )
+        .await;
+    assert_eq!(oversized["error"]["code"], -32602);
+
+    let invalid = client
+        .rpc(
+            "session.history.display",
+            json!({
+                "sessionId":id,"branchId":"main","tail":true,"latestTurn":true
+            }),
+        )
+        .await;
+    assert_eq!(invalid["error"]["code"], -32602);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[cfg(feature = "testing")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hidden_model_requests_are_not_rebuilt_for_windows_or_forward_pages() {
+    use dim_agent_runtime::{
+        QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
+        TimelineQuery, TimelineQueryScope,
+    };
+    let directory = new_directory("hidden-request");
+    let model = Arc::new(StreamingModel::default());
+    let (server, probe) = serve_streaming(&directory, model.clone()).await;
+    let storage = server
+        .service::<dim_app_server::storage::SessionStore>()
+        .unwrap();
+    let mut writer = Client::new_version(&server, false, 3).await;
+    let created = writer.rpc("session.create", create(json!([]))).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap();
+    turn(
+        &mut writer,
+        &model,
+        id,
+        &"H".repeat(2 * 1024 * 1024),
+        Plan::Chunks(1),
+    )
+    .await;
+    let timeline = probe.timeline.lock().unwrap().as_ref().unwrap().clone();
+    let through = timeline.sequence();
+    let reply = timeline
+        .query(TimelineQuery {
+            scope: TimelineQueryScope::Branch,
+            from: None,
+            through: Some(through),
+            include_publishing: false,
+            query: QuerySpec {
+                filter: Some(QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec!["model/call".into()],
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["position.sequence".into()],
+                },
+                group_by: vec![],
+                pick: Some(QueryPick::Last),
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: std::num::NonZeroU64::MIN,
+                after: None,
+            }),
+        })
+        .await
+        .unwrap();
+    let QueryOutput::Rows { rows } = reply.result else {
+        panic!("the model call position")
+    };
+    let dim_agent_runtime::QueryValue::Value { value } = &rows[0].values[0] else {
+        panic!("the call sequence")
+    };
+    let call = value.as_u64().unwrap();
+    let mut reader = Client::new_version(&server, false, 3).await;
+    assert_ok(&reader.rpc("session.attach", json!({"sessionId":id})).await);
+    for params in [
+        json!({"sessionId":id,"branchId":"main","through":through,"before":call+1,"limit":1}),
+        json!({"sessionId":id,"branchId":"main","through":call,"after":call-1,"limit":1}),
+    ] {
+        let backward = params.get("before").is_some();
+        let _ = storage.timeline_diagnostics().take_node_loads();
+        let page = reader.rpc("session.history", params).await;
+        assert_ok(&page);
+        assert!(page["result"]["events"].as_array().unwrap().is_empty());
+        assert_eq!(page["result"]["nextAfter"], call);
+        assert_eq!(page["result"]["done"], !backward);
+        if backward {
+            assert_eq!(page["result"]["nextBefore"], call);
+        }
+        assert_eq!(
+            storage.timeline_diagnostics().take_node_loads().loads,
+            0,
+            "a hidden request must not load stored message nodes"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
 /// What one model invocation streams: `chunks` thinking fragments, which are
 /// one durable event each, or one text fragment of `bytes`.
 #[derive(Clone, Copy)]
@@ -257,7 +698,7 @@ async fn the_latest_turn_window_carries_the_prompt_and_folds_like_forward_paging
     let directory = new_directory("small");
     let model = Arc::new(StreamingModel::default());
     let (server, _) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     assert!(
         client
             .features
@@ -309,6 +750,28 @@ async fn the_latest_turn_window_carries_the_prompt_and_folds_like_forward_paging
         .await;
     assert_ok(&forward);
     assert_eq!(sequences(&page), sequences(&forward));
+    for method in ["session.history", "session.history.display"] {
+        let pinned = client
+            .rpc(
+                method,
+                json!({"sessionId":id,"branchId":"main","latestTurn":true,"through":turn_start}),
+            )
+            .await;
+        assert_ok(&pinned);
+        assert_eq!(pinned["result"]["turnStart"], turn_start);
+        assert!(
+            pinned["result"][if method == "session.history" {
+                "events"
+            } else {
+                "items"
+            }]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| text_of(event) == Some("hello window")),
+            "{pinned}"
+        );
+    }
 
     server.shutdown();
     server.join().await.unwrap();
@@ -320,7 +783,7 @@ async fn a_latest_turn_waiting_for_dispatch_survives_the_line_ending() {
     let directory = new_directory("ended");
     let model = Arc::new(StreamingModel::default());
     let (server, batch) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let created = client
         .rpc("session.create", create(json!(["branch"])))
         .await;
@@ -349,7 +812,7 @@ async fn a_latest_turn_waiting_for_dispatch_survives_the_line_ending() {
         .await
         .expect("the streaming turn reaches the dispatch gate");
     let timeline = batch.timeline.lock().unwrap().clone().unwrap();
-    let mut reader = Client::new_version(&server, false, 3).await;
+    let mut reader = Client::new_version(&server, false, 4).await;
     let params = json!({"sessionId":id,"branchId":branch,"latestTurn":true});
     let waiting = reader.send("session.history", params.clone()).await;
     let future = reader
@@ -441,6 +904,22 @@ async fn a_latest_turn_waiting_for_dispatch_survives_the_line_ending() {
             .any(|event| event["type"] == "branch" && event["name"] == "end"),
         "{ended}"
     );
+
+    let transcript = client
+        .rpc(
+            "session.history.display",
+            json!({"sessionId":id,"branchId":branch,"tail":true,"transcript":true}),
+        )
+        .await;
+    assert_ok(&transcript);
+    assert!(
+        transcript["result"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["type"] == "branch" && event["name"] == "end"),
+        "{transcript}"
+    );
     let mut pinned = params;
     pinned["through"] = open["result"]["through"].clone();
     let pinned = client.rpc("session.history", pinned).await;
@@ -463,7 +942,7 @@ async fn the_latest_turn_window_bounds_a_large_turn_and_continues_with_before() 
     let directory = new_directory("large");
     let model = Arc::new(StreamingModel::default());
     let (server, _) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);
     let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
@@ -534,7 +1013,7 @@ async fn the_latest_turn_window_returns_a_batch_above_the_target_and_rejects_a_f
     let directory = new_directory("bytes");
     let model = Arc::new(StreamingModel::default());
     let (server, _) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);
     let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
@@ -597,7 +1076,7 @@ async fn the_latest_turn_window_measures_the_three_issue_sizes() {
     let directory = new_directory("measure");
     let model = Arc::new(StreamingModel::default());
     let (server, _) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let mut table = Vec::new();
     for chunks in [1_946, 3_112, 6_852] {
         let created = client.rpc("session.create", create(json!([]))).await;
@@ -638,7 +1117,7 @@ async fn a_branch_without_a_turn_returns_its_newest_events() {
     let directory = new_directory("noturn");
     let model = Arc::new(StreamingModel::default());
     let (server, _) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);
     let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
@@ -680,7 +1159,7 @@ async fn the_latest_turn_window_rejects_a_through_inside_a_batch() {
     let directory = new_directory("batch");
     let model = Arc::new(StreamingModel::default());
     let (server, batch) = serve_streaming(&directory, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);
     let id = created["result"]["sessionId"].as_str().unwrap().to_owned();

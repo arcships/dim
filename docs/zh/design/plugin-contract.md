@@ -101,11 +101,13 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | `auxiliaryModel` | 进程 | 该配置中模型选择的所有者 | 是 | 辅助模型请求 |
 | `pluginFiles` | 进程 | 宿主 | 是，当宿主提供根目录时 | 进程部件自己的文件 |
 | `workflowFiles` | 进程 | App Server | 是 | 标记了 `#[rutis::service]` |
+| `eventHub` | 进程 | EventHub | 已设计，未实现 | 生产方声明来源并发布事件；EventHub 经 Agents 的 `sessions` 把它投递给订阅了的 Session ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | 进程 | 成员提供者 | 已设计，未实现 | [ExternalAgent](plugins/ExternalAgent.md)；实现时向 Collaboration 登记（rutis 使用 R6） |
 | `treeCommands` | `session` | TimelineTree | 是 | 按分支 id 的 `input`、`create`、`list`、`info` |
 | `sessionIdentity` | `session` | SessionScope | 是 | `get()`：`{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | 是 | `activated`、`closing`、`hold`、`release`：hold 是调用方的行拥有的 id，由 `release(id)` 或该行卸载结束 |
 | `sessionConfig` | `session` | SessionScope | 是 | `get()`：创建时的配置，即工具调用携带的快照 |
+| `agentConfig` | `session` | SessionScope | 是 | `get()`：Agent 的身份与默认模型 |
 | `timeline` | `branch` | BranchScope | 是，`before` 除外 | `append`、已发布序号与事件查询（§5.4）；查询随其声明到达其他语言 |
 | `dispatcher` | `branch` | BranchScope | 是，`consume`、`listen` 和读取；它们的 Rust 形式就是同一个 `consume`，以及仅限 Rust 的 `subscribe` | 有序消费（§5.2） |
 | `branchLifecycle` | `branch` | BranchScope | 是 | `activated`、`closing` |
@@ -174,6 +176,8 @@ Dispatcher 和 Timeline 内部使用的总线名字归它们自己；任何部�
 | `settings/projects` | App Server Settings | `{root, cwd}` | 某个项目根已授权 |
 | `skills/catalog` | SkillsCatalog | 目录版本 | Skill 目录已推进 |
 | `agent/session-restored`、`agent/unloaded-session-deleted` | Agents | id | 宿主内部，由 Collaboration 消费 |
+| `agent/session-deleted` | Agents | `{agentId, sessionId}` | 一次成功的删除移除了该 Session 的数据行，无论是否已加载；宿主内部，由 EventHub 消费，见 [EventHub §3.4](plugins/EventHub.md#34-删除一个被订阅的-session) |
+| `eventhub/ready` | EventHub | 无 | 本代的 `eventHub` 服务已提供；生产方据此声明，见 [EventHub §2.1](plugins/EventHub.md#21-来源与类型的目录) |
 
 *现状：*这些事件已按上表实现，TypeScript 行直接监听它们。
 

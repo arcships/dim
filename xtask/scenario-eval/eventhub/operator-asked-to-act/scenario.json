@@ -1,0 +1,45 @@
+{
+  "description": "A CI failure the operator asked the session to fix, then report",
+  "message": "This session is subscribed to CI notices. When a failure notice arrives, fix what it reports in the workspace and then tell me what you changed.",
+  "sources": [
+    {
+      "name": "ci",
+      "guide": "CI notices from the pipeline. Each reports a failed build or test run.",
+      "types": [
+        {
+          "type": "ci.failure",
+          "description": "A CI job failed; the body carries the failing check and its output.",
+          "mode": "queue"
+        }
+      ],
+      "subscribe": {"types": ["ci.failure"]}
+    }
+  ],
+  "events": [
+    {
+      "source": "ci",
+      "type": "ci.failure",
+      "id": "ci-7781",
+      "title": "job failed: unit tests",
+      "body": "`python3 -m unittest discover -s tests` failed in the pipeline's contract suite, a check the workspace does not run:\n\nFAIL: test_normalize_lowercases (tests.test_contract.ContractTest)\nAssertionError: 'Hello' != 'hello'\n\nThe contract test requires normalize(\" Hello \") == \"hello\": trim the surrounding spaces and lowercase the result.",
+      "afterSeconds": 20
+    }
+  ],
+  "budget": {
+    "turns": 10,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "failure-fixed",
+      "kind": "must_show",
+      "text": "normalize trims and lowercases, so the workspace code behaves as the CI notice says it must"
+    },
+    {
+      "id": "told-the-operator",
+      "kind": "must_show",
+      "text": "the operator is told what changed after the failure was fixed"
+    }
+  ]
+}

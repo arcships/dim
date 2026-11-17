@@ -6,8 +6,8 @@ use dim_app_server::{
     model_catalog::BundledCatalog,
     provider::{
         LEGACY_METADATA_FIELDS, LEGACY_PROVIDER_FIELDS, LegacyRow, StaticProviderRecord,
-        convert_legacy_provider, convert_legacy_selection, legacy_omitted_fields, parse_static,
-        read_legacy_source,
+        convert_legacy_provider, convert_legacy_selection, legacy_omitted_fields,
+        read_legacy_source, read_stored_static, write_stored_static,
     },
 };
 use rusqlite::{Connection, OptionalExtension, params};
@@ -42,19 +42,8 @@ fn read_target(
     connection: &Connection,
     provider_id: &str,
 ) -> MigrationResult<Option<StaticProviderRecord>> {
-    let row: Option<(u32, String)> = connection
-        .query_row(
-            "SELECT version,record FROM providers WHERE provider_id=?1",
-            [provider_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(crate::native::failure)?;
-    row.map(|(version, body)| {
-        parse_static(provider_id, version, &body)
-            .map_err(|_| Error::Object("Unreadable native provider is preserved".into()))
-    })
-    .transpose()
+    read_stored_static(connection, provider_id)
+        .map_err(|_| Error::Object("Unreadable native provider is preserved".into()))
 }
 
 /// Keep a provider record a previous run imported for the selections that
@@ -169,7 +158,8 @@ pub(crate) async fn import(
                                 let converted = conversion.record.with_version(version);
                                 let converted_value = serde_json::to_value(&converted)
                                     .map_err(crate::native::failure)?;
-                                tx.execute("UPDATE providers SET version=?2,record=?3 WHERE provider_id=?1", params![row.id,version,converted_value.to_string()]).map_err(crate::native::failure)?;
+                                write_stored_static(&tx, &row.id, &converted)
+                                    .map_err(crate::native::failure)?;
                                 Native::save_document(
                                     &tx,
                                     &coverage_key,
@@ -204,15 +194,8 @@ pub(crate) async fn import(
                     converted_omitted = Some(conversion.omitted);
                     let converted =
                         serde_json::to_value(&conversion.record).map_err(crate::native::failure)?;
-                    tx.execute(
-                        "INSERT INTO providers VALUES (?1,?2,?3) ON CONFLICT(provider_id) DO UPDATE SET version=excluded.version,record=excluded.record",
-                        params![
-                            row.id,
-                            conversion.record.version(),
-                            converted.to_string()
-                        ],
-                    )
-                    .map_err(crate::native::failure)?;
+                    write_stored_static(&tx, &row.id, &conversion.record)
+                        .map_err(crate::native::failure)?;
                     Native::save_document(
                         &tx,
                         &coverage_key,

@@ -11,14 +11,8 @@ use super::{Modality, task};
 use crate::Result;
 use crate::args::{ModalityFlags, Options};
 use crate::client::Client;
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-
-/// The largest inline input total; a larger submission names its files by
-/// `node_path` instead (A.3).
-pub(crate) const MAX_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The input A.1 declares before the files.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -235,8 +229,7 @@ fn param(text: &str) -> Result<(String, Value)> {
 }
 
 impl Submit {
-    /// The `modality.task.submit` params (A.3). Every input goes inline when
-    /// the whole set fits 8 MiB, and by its canonical `node_path` otherwise.
+    /// The `modality.task.submit` params with local input paths.
     pub(crate) fn request(&self) -> Result<Value> {
         let mut params = Map::new();
         if let Some(positional) = &self.positional {
@@ -260,10 +253,9 @@ impl Submit {
             params.insert("mask".to_owned(), Value::String(name.clone()));
             files.push((name, mask));
         }
-        let inline = total_bytes(&files)? <= MAX_INLINE_BYTES;
         let mut inputs = Vec::with_capacity(files.len());
         for (name, path) in files {
-            inputs.push(input(name, path, inline)?);
+            inputs.push(input(name, path)?);
         }
         let mut request = json!({
             "category": self.shape.category,
@@ -297,20 +289,6 @@ pub(crate) async fn run(
     task::submit(&mut modality, request, &options.modality, output).await
 }
 
-/// The size of every input, as bytes on disk.
-fn total_bytes(files: &[(String, &Path)]) -> Result<u64> {
-    let mut total = 0;
-    for (_, path) in files {
-        let metadata =
-            std::fs::metadata(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        if !metadata.is_file() {
-            return Err(format!("{} is not a file", path.display()).into());
-        }
-        total += metadata.len();
-    }
-    Ok(total)
-}
-
 /// The name the submission gives `path`: its last component, which is what
 /// an adapter sees among the job's files.
 pub(crate) fn file_name(path: &Path) -> Result<String> {
@@ -320,25 +298,14 @@ pub(crate) fn file_name(path: &Path) -> Result<String> {
         .ok_or_else(|| format!("{} has no file name", path.display()).into())
 }
 
-/// One input file, inline or by `node_path` (A.3).
-pub(crate) fn input(name: String, path: &Path, inline: bool) -> Result<Value> {
+pub(crate) fn input(name: String, path: &Path) -> Result<Value> {
     let media_type = media_type(path)?;
-    if inline {
-        let bytes = std::fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        Ok(json!({
-            "name": name,
-            "media_type": media_type,
-            "data_base64": STANDARD.encode(bytes),
-        }))
+    let path = if path.is_absolute() {
+        path.to_owned()
     } else {
-        let canonical =
-            std::fs::canonicalize(path).map_err(|error| format!("{}: {error}", path.display()))?;
-        Ok(json!({
-            "name": name,
-            "media_type": media_type,
-            "node_path": canonical,
-        }))
-    }
+        std::env::current_dir()?.join(path)
+    };
+    Ok(json!({ "name": name, "media_type": media_type, "node_path": path }))
 }
 
 /// The media type of `path`, from its extension. The operation's accepted

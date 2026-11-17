@@ -41,6 +41,7 @@ async fn start(home: &Path) -> (dim_app_server::RunningServer, Client) {
         profile: None,
         client_kind: "cli",
         client_name: "scheduler-test",
+        protocol_version: 4,
     };
     let client = Client::connect(&config).await.unwrap();
     (server, client)
@@ -70,9 +71,9 @@ async fn ready(client: &mut Client) {
 fn job(name: &str) -> Value {
     json!({
         "name": name,
-        "schedule": {"every_minutes": 60},
+        "schedule": {"at": "2099-01-01T00:00:00Z"},
         "prompt": "Summarize the day.",
-        "cwd": "/workspace",
+        "target": {"kind": "launch", "cwd": "/workspace"},
     })
 }
 
@@ -96,7 +97,23 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     assert_eq!(saved["enabled"], true, "{created}");
     let anchor = saved["enabled_at"].as_str().unwrap().to_owned();
     assert!(anchor.ends_with('Z') && anchor.len() == 24, "{anchor}");
-    assert!(saved["policy_cap"]["preset"].is_string(), "{created}");
+    assert_eq!(
+        saved["target"],
+        json!({"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60}),
+        "{created}"
+    );
+    assert!(
+        saved["cwd"].is_null(),
+        "legacy fields are not reported: {created}"
+    );
+    assert!(
+        saved["mode"].is_null(),
+        "legacy fields are not reported: {created}"
+    );
+    assert!(
+        saved["policy_cap"].is_null(),
+        "legacy fields are not reported: {created}"
+    );
 
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     assert!(listed["jobs"][0]["next_window"].is_string(), "{listed}");
@@ -105,8 +122,8 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     let stale = client
         .rpc(
             "schedule.save",
-            json!({"job": {"id": id, "name": "nightly", "schedule": {"every_minutes": 60},
-                "prompt": "Summarize the day.", "cwd": "/workspace"}, "revision": 0}),
+            json!({"job": {"id": id, "name": "nightly", "schedule": {"at": "2099-01-01T00:00:00Z"},
+                "prompt": "Summarize the day."}, "revision": 0}),
         )
         .await
         .unwrap_err();
@@ -115,8 +132,8 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     let renamed: Value = client
         .typed(
             "schedule.save",
-            json!({"job": {"id": id, "name": "nightly-build", "schedule": {"every_minutes": 60},
-                "prompt": "Summarize the day.", "cwd": "/workspace"}, "revision": 1}),
+            json!({"job": {"id": id, "name": "nightly-build", "schedule": {"at": "2099-01-01T00:00:00Z"},
+                "prompt": "Summarize the day."}, "revision": 1}),
         )
         .await
         .unwrap();
@@ -133,12 +150,17 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
     assert_eq!(partial["job"]["name"], "nightly-partial", "{partial}");
     assert_eq!(
         partial["job"]["schedule"],
-        json!({"every_minutes": 60}),
+        json!({"at": "2099-01-01T00:00:00Z"}),
         "{partial}"
     );
     assert_eq!(partial["job"]["prompt"], "Summarize the day.", "{partial}");
     assert_eq!(partial["job"]["revision"], 3, "{partial}");
     assert_eq!(partial["job"]["enabled"], true, "{partial}");
+    assert_eq!(
+        partial["job"]["target"],
+        json!({"kind": "launch", "cwd": "/workspace", "max_run_minutes": 60}),
+        "an omitted target keeps the stored one: {partial}"
+    );
 
     let paused: Value = client
         .typed(
@@ -161,7 +183,7 @@ async fn jobs_are_saved_with_revisions_toggled_and_deleted_through_the_namespace
         .rpc(
             "schedule.save",
             json!({"job": {"name": "bad", "schedule": {"every_minutes": 0},
-                "prompt": "x", "cwd": "/workspace"}}),
+                "prompt": "x", "target": {"kind": "launch", "cwd": "/workspace"}}}),
         )
         .await
         .unwrap_err();

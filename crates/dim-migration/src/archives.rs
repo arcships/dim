@@ -108,7 +108,7 @@ impl Archive {
         let mut files = BTreeMap::new();
         let mut artifacts = Vec::new();
         for (path, kind) in paths {
-            let provenance = path.strip_prefix(&source.home).unwrap_or(&path).to_owned();
+            let provenance = path.trim_prefix(&source.home).to_owned();
             match source.artifact(&path, cancel).await {
                 Ok(bytes) => {
                     let id = format!("history:{}", fingerprint(&provenance)?);

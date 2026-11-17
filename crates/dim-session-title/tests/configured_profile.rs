@@ -150,6 +150,7 @@ fn configured_builder(directory: &Path, models: Arc<AimuxModels>) -> AgentBuilde
         &mut builder,
         ModelProviderPlugin::process,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: directory.join("outputs"),
         },
         BranchToolConfig::default(),

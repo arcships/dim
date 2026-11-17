@@ -57,6 +57,11 @@ impl OpenAICodexOAuthService {
     ) -> Result<()> {
         self.0.finish_rejected(rejected, c).await
     }
+    /// Feature `testing` only: whether a token operation has built the client.
+    #[cfg(feature = "testing")]
+    pub fn http_client_initialized(&self) -> bool {
+        self.0.client_initialized()
+    }
 }
 
 pub struct OpenAICodexOAuthPlugin {

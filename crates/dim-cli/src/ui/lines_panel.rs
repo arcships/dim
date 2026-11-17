@@ -112,8 +112,10 @@ impl LinesPanel {
         let selected = self.list.selected_id();
         self.focus = snapshot.focus.clone();
         self.lines = snapshot.lines.clone();
-        let items = tree_order(&snapshot.lines)
-            .into_iter()
+        let order = tree_order(&snapshot.lines);
+        let items = order
+            .iter()
+            .copied()
             .map(|(index, depth)| {
                 let line = &snapshot.lines[index];
                 let state = state_label(&line.state);
@@ -123,11 +125,16 @@ impl LinesPanel {
                     String::new()
                 };
                 let mut detail = String::new();
+                let unread = snapshot.unread_lines.contains(&line.id);
+                if unread {
+                    detail.push_str(t("Unread"));
+                    detail.push_str(" · ");
+                }
                 if let Some(cut) = line.cut {
-                    detail = tf(
+                    detail.push_str(&tf(
                         "after message {count}",
                         &[("count", &cut.messages.to_string())],
-                    );
+                    ));
                     detail.push_str(" · ");
                 }
                 let title = if line.purpose.is_empty() {
@@ -141,13 +148,24 @@ impl LinesPanel {
                 detail.push_str(&viewed);
                 Item::new(
                     line.id.clone(),
-                    format!("{}{title}", "  ".repeat(depth)),
+                    format!(
+                        "{}{}{title}",
+                        "  ".repeat(depth),
+                        if unread { "* " } else { "" }
+                    ),
                     detail,
                 )
             })
             .collect();
         let preselect = selected
             .filter(|id| snapshot.lines.iter().any(|line| &line.id == id))
+            .or_else(|| {
+                order
+                    .iter()
+                    .map(|(index, _)| &snapshot.lines[*index])
+                    .find(|line| snapshot.unread_lines.contains(&line.id))
+                    .map(|line| line.id.clone())
+            })
             .or_else(|| Some(self.focus.clone()));
         self.list.set_items(Ok(items), preselect.as_deref());
     }
@@ -204,7 +222,7 @@ impl LinesPanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => Effect::FocusLine(id),
+            Event::Pick { id, .. } => Effect::FocusLine(id),
         }
     }
 

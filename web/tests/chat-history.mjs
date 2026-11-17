@@ -23,20 +23,20 @@ registerHooks({
 const { useChatStore } = await import("../src/stores/chat.ts")
 const { RpcError, RpcClient, ConnectionLost } = await import("../src/rpc/client.ts")
 const event = (sequence, content) => ({ id: `e${sequence}`, sequence, createAt: sequence, content })
-const input = (sequence, text) => event(sequence, { kind: "input", text, blocks: [] })
+const input = (sequence, text) => event(sequence, { kind: "input", text, content: [{ type: "text", text }], blocks: [] })
 const page = (events, through, nextAfter = through, done = true) => ({ events, through, nextAfter, done })
 const flush = () => new Promise(resolve => setTimeout(resolve, 25))
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }
 
-function session(t, history, reads = {}) {
+function session(t, history, reads = {}, display = true, transcript = false) {
   setActivePinia(createPinia())
   globalThis.historyStores = {
-    connection: { supports: name => name !== "session.permission.get", client: { async call(method, params) {
+    connection: { supports: name => (!["session.history.display.tail", "session.history.display.transcript"].includes(name) || transcript) && name !== "session.permission.get" && (display || !["session.history.display", "session.history.detail"].includes(name)), client: { async call(method, params) {
       if (method === "session.input.pending" || method === "session.question.pending") {
         assert.deepEqual(Object.keys(params).filter(key => !["sessionId", "branchId", "through", "after"].includes(key)), [], "pending reads reject unknown wire fields")
       }
       if (reads[method]) return reads[method](params)
-      if (method === "session.history") return history(params)
+      if (method === "session.history" || method === "session.history.display") return history(params)
       if (method === "session.attach") return { providerId: "test", modelId: "test" }
       if (method === "session.methods") return ["session.input.pending", "session.question.pending", "session.turn.get", "session.goal.get"]
       if (method === "session.branches") return [{ branchId: "worker", parentBranchId: "main", branchPoint: 0, head: 0, state: "open" }]
@@ -55,6 +55,33 @@ function session(t, history, reads = {}) {
   return chat
 }
 const receive = (chat, branchId, event) => chat.receive({ method: "session.event", sessionId: "session", branchId, event })
+
+for (const display of [true, false]) test(`conversation windows negotiate ${display ? "display summaries" : "bounded legacy history"}`, async t => {
+  let attached = 0
+  let windows = 0
+  const method = display ? "session.history.display" : "session.history"
+  const chat = session(t, () => { throw new Error("unexpected history method") }, {
+    "session.attach": params => {
+      assert.deepEqual(params, { sessionId: "session", ...(display ? { display: true } : {}) })
+      attached++
+      return { providerId: "test", modelId: "test" }
+    },
+    [method]: params => {
+      assert.equal(params.latestTurn, true)
+      assert.equal(params.limit, 256)
+      windows++
+      return page([input(1, "stored"), event(2, { kind: "other" })], 2)
+    },
+  }, display)
+  await flush()
+  assert.equal(attached, 1)
+  assert.equal(windows, 1)
+  chat.receive({ method: display ? "session.display" : "session.event", sessionId: "session", branchId: "main", event: event(3, { kind: "other" }) })
+  receive(chat, "main", input(4, "after compaction"))
+  await flush()
+  assert.deepEqual(chat.views.session.rows.map(row => row.text), ["stored", "after compaction"])
+  assert.equal(chat.views.session.status, "ready")
+})
 
 test("a failed backward window remains retryable and never applies half a window", async t => {
   let calls = 0
@@ -133,6 +160,38 @@ test("main-history failure buffers live output until an explicit retry completes
   await flush()
   assert.equal(chat.views.session.status, "ready")
   assert.equal(chat.views.session.rows[0].text, "stored")
+})
+
+test("a tool start drops a stale progress tail instead of reopening the thought", async t => {
+  const chat = session(t, () => page([], 0))
+  await flush()
+  chat.receive({ method: "session.model.progress", progress: { sessionId: "session", branchId: "main", requestId: "r1", text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1 } })
+  receive(chat, "main", event(1, { kind: "thinking", requestId: "r1", delta: "weigh" }))
+  receive(chat, "main", event(2, { kind: "tool-use-start", requestId: "r1", callId: "call", name: "echo" }))
+  await flush()
+  const thoughts = chat.views.session.rows.filter(row => row.kind === "thinking")
+  assert.equal(thoughts.length, 1)
+  assert.equal(thoughts[0].streaming, false)
+})
+
+test("a loaded tool start drops a stale progress tail instead of reopening the thought", async t => {
+  const held = deferred()
+  const chat = session(t, ({ branchId }) => branchId === "main" ? page([], 0) : held.promise)
+  await flush()
+  chat.receive({ method: "session.state", sessionId: "session", branchId: "worker", running: true, stopping: false })
+  await flush()
+  chat.ensureLine("session", "worker")
+  await flush()
+  chat.receive({ method: "session.model.progress", progress: { sessionId: "session", branchId: "worker", requestId: "r1", text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1 } })
+  await flush()
+  held.resolve(page([
+    event(1, { kind: "thinking", requestId: "r1", delta: "weigh" }),
+    event(2, { kind: "tool-use-start", requestId: "r1", callId: "call", name: "echo" }),
+  ], 2))
+  await flush()
+  const thoughts = chat.views.session.branches.worker.rows.filter(row => row.kind === "thinking")
+  assert.equal(thoughts.length, 1)
+  assert.equal(thoughts[0].streaming, false)
 })
 
 test("a request timeout leaves the socket usable and reports a failure rather than a disconnect", async t => {
@@ -278,4 +337,33 @@ test("empty visible windows still pin the raw head before held live events", asy
   pageWait.resolve(page([], 100))
   await flush()
   assert.deepEqual(chat.views.session.rows.map(row => row.text), ["after snapshot"])
+})
+
+
+test("indexed transcript pages use one fixed head for initial and earlier reads", async t => {
+  const requests = []
+  const chat = session(t, params => {
+    requests.push(params)
+    assert.equal(params.tail, true)
+    assert.equal(params.transcript, true)
+    assert.equal(params.latestTurn, undefined)
+    if (params.before === undefined) {
+      assert.equal(params.limit, 32)
+      return { ...page([], 100), nextBefore: 99 }
+    }
+    if (params.before === 99) {
+      assert.equal(params.limit, 64)
+      assert.equal(params.through, 100)
+      return { ...page([input(90, "newest")], 100), nextBefore: 90 }
+    }
+    assert.equal(params.limit, 256)
+    assert.equal(params.before, 90)
+    assert.equal(params.through, 100)
+    return { ...page([input(1, "oldest")], 100), nextBefore: 1 }
+  }, {}, true, true)
+  await flush()
+  assert.equal(requests.length, 2)
+  await chat.loadEarlier("session", "main")
+  assert.equal(requests.length, 3)
+  assert.deepEqual(chat.views.session.rows.map(row => row.text), ["oldest", "newest"])
 })

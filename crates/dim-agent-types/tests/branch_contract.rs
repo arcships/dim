@@ -99,6 +99,7 @@ fn every_internal_control_is_excluded_by_the_shared_v1_boundary() {
             sequence: 9,
             create_at: 1750000000123,
             tags: None,
+            parent_call_id: None,
             kind,
         });
         assert!(v1::EventRef::new(&event).is_none());
@@ -122,6 +123,7 @@ fn a_fork_records_its_copy_boundary_as_an_internal_fact() {
         sequence: 13,
         create_at: 1750000000123,
         tags: None,
+        parent_call_id: None,
         kind: forked,
     });
     assert!(v1::EventRef::new(&event).is_none());
@@ -173,6 +175,7 @@ fn an_end_command_and_its_result_are_internal_branch_facts() {
             sequence: 9,
             create_at: 1750000000123,
             tags: None,
+            parent_call_id: None,
             kind,
         });
         assert_eq!(serde_json::to_value(&event.kind).unwrap(), payload);

@@ -2,11 +2,11 @@
 
 状态：草案。总体设计：[overview §4 插件目录](../overview.md#4-插件目录)、[ADR 002](../../adr/002-plugin-scope.md)。阶段：P3。语言：由提供方执行的类别优先使用 TypeScript（[overview 附录 C](../overview.md#附录-c-实现语言)）。
 
-> **运行时查找落地后，适配器按任务解析（[#40](https://github.com/arcships/dim/issues/40)、[#861](https://github.com/arcships/dim/issues/861)）。** [#40](https://github.com/arcships/dim/issues/40) 在 [#19](https://github.com/arcships/dim/issues/19) 中决定：Modality 在任务需要时解析该类别的适配器，而不是把所有适配器都作为依赖收集；该查找所需的运行时机制由 [#861](https://github.com/arcships/dim/issues/861) 跟踪。本设计依赖该查找，不重复定义适配器如何注册与发现。在它落地之前，图像切片每次调用读取单个进程 `modalityAdapter` 服务，缺少适配器只让其操作不可用；§1 说明当前形态与目标形态。
+> **适配器按提供方、按调用解析。** [#40](https://github.com/arcships/dim/issues/40) 在 [#19](https://github.com/arcships/dim/issues/19) 中决定：Modality 在任务需要时解析适配器，而不是把适配器收集为依赖。每次先读被调模型的提供方专属副本、再读家族名副本（A.2）。内置适配器只提供家族名副本，把提供方 key 留给专用适配器。解析到的副本通过 `operations` 回答服务什么；解析到兜底副本不代表支持未知提供方。两级读取都未取得副本时，只有受影响的操作不可用，Modality 保持 Active。这些可选读取不产生依赖或重载关系。
 
 > **P3：按 rutis 现有能力重新设计。** rutis 是外部依赖，本文向 rutis 提出的需求已撤回（[原则 §4 第 8 条](../../../architecture/rust-agent/principles.md)）。
 
-Modality 是一个进程插件（[ADR 002](../../adr/002-plugin-scope.md)：任务与提供方连接在各 Session 间共享），是九个类别非对话式多模态工作的唯一入口：图像、视频、语音、音乐、音频、3D 资产、动作、实时和 OCR。它按类别报告可用性及原因，按操作从它自己的 `modality` 设置文档解析默认模型（显式 → 配置的默认值 → 经 Provider 选择自动解析），运行异步任务（提交、状态、等待、取消）并通过 `pluginFiles`（扩展）保存，并持有绑定到发起客户端连接的实时连接。提供方适配器内置于 Modality，或由适配器插件（任意语言）以命名进程服务 `modalityAdapter` 提供；OCR 作为控制节点上的宿主任务运行，由 Modality 经 HostPlatform 的受限 spawn 启动所解析目标的 helper——Apple Vision 用本构建自带的 `dimcode` helper，插件提供的目标用其进程插件提供的 helper。它的方法是它注册到 `managementMethods` 的命名空间 `modality`：关于宿主的进程插件方法，由 Rpc 分发，从不提供给已配对的远程设备。Modality 的设置（含其操作默认值）是业务配置，存放在它自己的 Settings 业务来源中，经 Settings 类型化操作写入，在使用时读取。它没有 Session 或分支部分：不写任何 Timeline 事件，也不提供模型可见的工具。Rust 实现位于 `dim-modality` crate，它依赖 App Server 提供 Settings 服务与管理方法；OCR helper 的契约与 Apple Vision 引擎位于 `dim-ocr` crate；产品的安装器把它们与执行 aimux 媒体操作（A.2）的内置 `dim-modality-aimux` 适配器一起加入进程装配。
+Modality 是一个进程插件（[ADR 002](../../adr/002-plugin-scope.md)：任务与提供方连接在各 Session 间共享），是九个类别非对话式多模态工作的唯一入口：图像、视频、语音、音乐、音频、3D 资产、动作、实时和 OCR。它按类别报告可用性及原因，按操作从它自己的 `modality` 设置文档解析默认模型（显式 → 配置的默认值 → 经 Provider 选择自动解析），运行异步任务（提交、状态、等待、取消）并通过 `pluginFiles`（扩展）保存，并持有绑定到发起客户端连接的实时连接。提供方适配器内置于 Modality，或由进程内的 Rust 适配器插件以 `modalityAdapter` 的进程副本提供；在 Provider 暴露执行操作之前，外部语言适配器完全无法执行媒体，而 Provider 目前不提供该操作（[Provider 管理 §3.8](../appserver/provider-management.md#38-适配器的媒体执行)），因为 `submit`、`wait`、`cancelRemote` 和 `realtimeOpen` 携带不可序列化的 `ModalityConnection`；OCR 作为控制节点上的宿主任务运行，由 Modality 经 HostPlatform 的受限 spawn 启动所解析目标的 helper——Apple Vision 用本构建自带的 `dimcode` helper，插件提供的目标用其进程插件提供的 helper。它的方法是它注册到 `managementMethods` 的命名空间 `modality`：关于宿主的进程插件方法，由 Rpc 分发，从不提供给已配对的远程设备。Modality 的设置（含其操作默认值）是业务配置，存放在它自己的 Settings 业务来源中，经 Settings 类型化操作写入，在使用时读取。它没有 Session 或分支部分：不写任何 Timeline 事件，也不提供模型可见的工具。Rust 实现位于 `dim-modality` crate，它依赖 App Server 提供 Settings 服务与管理方法；OCR helper 的契约与 Apple Vision 引擎位于 `dim-ocr` crate；产品的安装器把它们与执行 aimux 媒体操作（A.2）的内置 `dim-modality-aimux` 适配器一起加入进程装配。
 
 ## 1. 结构
 
@@ -25,7 +25,7 @@ flowchart LR
     OCR["OCR helper：dimcode（Apple Vision）"]
   end
   CLI["CLI dimcode modality、image、ocr、realtime"]
-  AdPlug -->|"按任务解析（#861）"| Mod
+  AdPlug -->|"按提供方解析"| Mod
   Mod -->|"每个 OCR 任务"| HP
   HP --> OCR
   Mod -->|"校验模型、解析连接"| Prov
@@ -36,15 +36,15 @@ flowchart LR
   classDef new fill:#d3f9d8,stroke:#2b8a3e,color:#000
 ```
 
-所有依赖都是同一作用域的进程服务（[ADR 002 D3](../../adr/002-plugin-scope.md)）。适配器查找是 [#40](https://github.com/arcships/dim/issues/40) 在 [#19](https://github.com/arcships/dim/issues/19) 中决定的按任务解析；它所需的运行时机制尚未交付（[#861](https://github.com/arcships/dim/issues/861)）。本设计依赖该查找，不重复定义适配器如何注册与发现。**在它落地之前**，图像切片每次调用读取单个进程 `modalityAdapter` 服务，不声明依赖：它缺失时只有适配器操作不可用，重载由下一次调用看到，既不门控也不重载 Modality；该形态不按适配器名区分适配器。**在它落地之后**，Modality 按适配器名按任务解析操作所需的适配器，并能无需重载枚举当前可用的适配器，因此多个适配器可以各自独立服务不同操作。§4 的表、附录 B 与流程测试 8 同时说明两种形态；本页其余陈述今天即成立。Rpc 按调用在 `managementMethods` 中查找 Modality 的 `modality` 命名空间，不随它重载（[方法 §3.2](../contracts/session-boundary.md#32-管理方法)）。没有 Session 或分支插件依赖 Modality。
+所有依赖都是同一作用域的进程服务（[ADR 002 D3](../../adr/002-plugin-scope.md)）。适配器查找是 [#40](https://github.com/arcships/dim/issues/40) 在 [#19](https://github.com/arcships/dim/issues/19) 中决定的按任务解析：Modality 每次调用先读被调模型的提供方专属副本、再读家族名副本，不声明适配器依赖；两级读取都未取得副本时解析为空，因此重载由下一次调用看到，既不门控也不重载 Modality。这样每个提供方至多选中一个适配器；该适配器是否服务某个操作仍由它自己回答（A.2 `operations`）。§9.1 说明为何这不需要运行时改动。Rpc 按调用在 `managementMethods` 中查找 Modality 的 `modality` 命名空间，不随它重载（[方法 §3.2](../contracts/session-boundary.md#32-管理方法)）。没有 Session 或分支插件依赖 Modality。
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `Modality` | 进程（控制节点） | Provider 的模型选择（`ModelSelectionHost`）与非对话连接解析；`pluginFiles`（扩展：UTF-8 与二进制）；Settings 业务来源 `modality`；[#40](https://github.com/arcships/dim/issues/40) 决定、[#861](https://github.com/arcships/dim/issues/861) 跟踪的按任务适配器查找（尚未交付；落地前每次调用读取单个进程服务）；控制节点的 HostPlatform（OCR）；诊断 | `modalityTasks` 进程服务；把 `modality`（`modality.*`）注册到 `managementMethods` |
-| 适配器插件 | 进程 | 各自的提供方依赖 | `modalityAdapter` 服务，key 为适配器名，在插件的 `provides` 中声明；[#861](https://github.com/arcships/dim/issues/861) 落地后按任务解析 |
+| `Modality` | 进程（控制节点） | Provider 的模型选择（`ModelSelectionHost`）与非对话连接解析；`pluginFiles`（扩展：UTF-8 与二进制）；Settings 业务来源 `modality`；按提供方适配器副本、并以家族名副本兜底的按调用读取（[#40](https://github.com/arcships/dim/issues/40) 已决定，A.2）；控制节点的 HostPlatform（OCR）；诊断 | `modalityTasks` 与 `modalityTargets` 进程服务；把 `modality`（`modality.*`）注册到 `managementMethods` |
+| 适配器插件 | 进程 | 各自的提供方依赖 | `modalityAdapter` 提供方专属副本（以该提供方的 id 为 key）；内置适配器只提供服务没有专属副本的提供方的家族名副本（A.2） |
 
-**依赖的契约：**[方法](../contracts/session-boundary.md)契约（注册到 `managementMethods` 的命名空间、每次调用的进度接收器、绑定连接的通知）；按任务适配器查找（[#861](https://github.com/arcships/dim/issues/861)，§9.1）；Provider 的模型选择（`ResolveModelSelection::resolve`，拒绝不可选的显式模型；[AuxiliaryModel](../appserver/auxiliary-model.md)）、用于选项列表的可选模型读取（§9.2），以及每个适配器操作与实时会话所需的非对话连接解析（[overview 附录 B.2](../overview.md#b2-app-server-进程插件)，§9.3）；`pluginFiles`（扩展），含二进制原子替换与格式版本（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)）；带隔离的 HostPlatform spawn（[HostPlatform](../../../architecture/rust-agent/plugins/HostPlatform.md)，隔离补充见 [overview 附录 B.1](../overview.md#b1-session-与分支-capability)）。
-**此处定义的契约：**类别与操作标识符；`modality` 设置文档中的默认值 key `modality.<category>` 与 `modality.<category>.<operation>`（Modality 自有；Provider 不持有任何 key）；`modalityAdapter` 与 `modalityTasks` 服务（[语言中立](../../adr/002-plugin-scope.md#d5-合同语言中立)，A.2 与 A.3；Rust 绑定见附录 G）；`modality` 设置文档及其 schema；任务记录与结果格式（格式版本 1）；`modality.*` 方法与 `modality.realtime.event`、`modality.realtime.ended` 通知。Provider 对模态一无所知；Modality 在适配器之外不了解任何提供方特有语义。
+**依赖的契约：**[方法](../contracts/session-boundary.md)契约（注册到 `managementMethods` 的命名空间、每次调用的进度接收器、绑定连接的通知）；按提供方适配器副本、并以家族名副本兜底的按调用读取（[#40](https://github.com/arcships/dim/issues/40) 已决定，§1 与 A.2）；Provider 的模型选择（`ResolveModelSelection::resolve`，拒绝不可选的显式模型；[AuxiliaryModel](../appserver/auxiliary-model.md)）、用于选项列表的可选模型读取（§9.2），以及每个适配器操作与实时会话所需的非对话连接解析（[overview 附录 B.2](../overview.md#b2-app-server-进程插件)，§9.3）；`pluginFiles`（扩展），含二进制原子替换与格式版本（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)）；带隔离的 HostPlatform spawn（[HostPlatform](../../../architecture/rust-agent/plugins/HostPlatform.md)，隔离补充见 [overview 附录 B.1](../overview.md#b1-session-与分支-capability)）。
+**此处定义的契约：**类别与操作标识符；`modality` 设置文档中的默认值 key `modality.<category>` 与 `modality.<category>.<operation>`（Modality 自有；Provider 不持有任何 key）；`modalityAdapter` 与 `modalityTasks` 服务（A.2 与 A.3；`modalityAdapter` 目前是进程内 Rust 绑定，因为它的调用携带不可序列化的 `ModalityConnection`，而 `modalityTasks` 是语言中立的；Rust 绑定见附录 G）；`modality` 设置文档及其 schema；任务记录与结果格式（格式版本 1）；`modality.*` 方法与 `modality.realtime.event`、`modality.realtime.ended` 通知。Provider 对模态一无所知；Modality 在适配器之外不了解任何提供方特有语义。
 
 ## 2. 数据与状态
 
@@ -74,7 +74,7 @@ flowchart TB
   Cfg -->|"使用时读取"| Mod
 ```
 
-任务记录是唯一的持久状态；索引在 `apply` 时从记录重建，非终态记录由启动规则（§4）结算。运行中的工作与实时连接从不重建。Modality 设置（含操作默认值）是业务配置（[ADR 002 D4](../../adr/002-plugin-scope.md)），按 Modality 声明的 schema 经 Settings 类型化操作写入业务来源 `modality`：变更是带通知的数据更新，下次使用时读取，从不触发重载（A16）。适配器插件集合是 loader 行中的结构性配置。Modality 如何找到它们的 `modalityAdapter` 服务，是 [#40](https://github.com/arcships/dim/issues/40) 决定的按任务查找；其运行时机制是 [#861](https://github.com/arcships/dim/issues/861)。在它落地之前，Modality 每次调用读取这一个进程 `modalityAdapter` 服务（见 §1 与 §9.1）。任务的 `node` 指明其执行方所在的节点（A15）；OCR 在控制节点上运行，指明其他节点的任务以 `node_unavailable` 失败，因为没有别的节点的 HostPlatform 可达。没有 Timeline 状态，没有 `StateCell`；竞争写入的顺序由每任务锁下的记录 `revision` 决定。
+任务记录是唯一的持久状态；索引在 `apply` 时从记录重建，非终态记录由启动规则（§4）结算。运行中的工作与实时连接从不重建。Modality 设置（含操作默认值）是业务配置（[ADR 002 D4](../../adr/002-plugin-scope.md)），按 Modality 声明的 schema 经 Settings 类型化操作写入业务来源 `modality`：变更是带通知的数据更新，下次使用时读取，从不触发重载（A16）。适配器插件集合是 loader 行中的结构性配置。Modality 每次调用先读被调模型的提供方专属副本、再读内置适配器提供的家族名副本，不声明依赖（§1、A.2）。任务的 `node` 指明其执行方所在的节点（A15）；OCR 在控制节点上运行，指明其他节点的任务以 `node_unavailable` 失败，因为没有别的节点的 HostPlatform 可达。没有 Timeline 状态，没有 `StateCell`；竞争写入的顺序由每任务锁下的记录 `revision` 决定。
 
 `defaults` 成员按操作 key 每项一条，每项是一个 Provider 模型引用。图像操作使用按操作的 key，本设计中不设类别回退；`modality.` 前缀是设置名，不是又一层嵌套：
 
@@ -158,19 +158,21 @@ sequenceDiagram
   D-->>C: modality.realtime.ended 通知 { connection_id, reason }
 ```
 
-会话在以下情况结束：`close`；发起它的客户端连接结束，此时静默结束，因为已无处可写；提供方结束它；`direct` 连接的 `expires_at` 到期；连续 10 分钟既无 `send` 也无提供方事件（A9）；Modality 卸载，尽力以 `unloaded` 上报；以及进程退出。慢客户端会被传输的持有额度断开，其会话随之结束。会话没有任务记录、从不持久化，也不会在守护进程重启后恢复。帧有上限：`send` 的数据解码后超过 1 MiB 以 `invalid_input` 失败且会话保持打开，而提供方消息超过适配器的上限时会话以 `ended {reason: "error"}` 结束。每个进程至多四个会话；超过时 `open` 在任何提供方调用之前以 `realtime_limit` 失败。来自非发起连接的 `send` 与 `close` 以 `not_found` 拒绝。
+会话在以下情况结束：`close`；发起它的客户端连接结束，此时静默结束，因为已无处可写；提供方结束它；`direct` 连接的 `expires_at` 到期；连续 10 分钟既无 `send` 也无提供方事件（A9）；Modality 卸载，尽力以 `unloaded` 上报；以及进程退出。慢客户端会被传输的持有额度断开，其会话随之结束。会话没有任务记录、从不持久化，也不会在守护进程重启后恢复。帧有上限：`send` 的数据解码后超过 1 MiB 以 `invalid_input` 失败且会话保持打开，而提供方消息超过套接字自身的上限（WebSocket 库的默认值）属于套接字失败，会话以 `ended {reason: "error"}` 结束。每个进程至多四个会话；超过时 `open` 在任何提供方调用之前以 `realtime_limit` 失败。来自非发起连接的 `send` 与 `close` 以 `not_found` 拒绝。
 
 ### 3.4 Capability 列表与默认模型
 
 `dimcode modality` 和 Web 设置页调用 `modality.capabilities`，返回每个类别与操作及其可用性原因、可选选项、已持久化的默认值，以及任务或使用方现在会使用的模型。不隐藏任何内容，也没有 `--all`。每个不可用的类别或操作都按维度显示原因，例如“not in this build”“Apple Vision needs macOS 12 or later on Apple Silicon”“the PP-OCR plugin is not running”“the PP-OCR plugin needs an update”“no adapter”“not configured”“no adapter for the configured model”（决策 E16）。最后一项由 Modality 已采纳的业务配置（`modality` 设置文档中的默认值或显式模型，及其 Provider 连接）对照 Modality 能解析到的适配器得出（§9.1）。
 
-图像操作是第一个实现切片，产品构建现在为该切片的一部分内置了适配器：内置 `dim-modality-aimux` 适配器（A.2）经 aimux 服务 `generate`，并在提供方的包读取编辑输入文件时服务 `edit`，而 `enhance` 仍是没有任何构建服务的适配器操作，因此以 `adapter` 原因报告 `unavailable`。可用性是运行时的属性，并按模型回答：安装后 `available` 即为 true，具体服务什么由 `operations` 针对任务所指的模型决定。适配器绑定 A.2 列出的内建目录提供方，因此以规范 UUID 标识、不匹配任何绑定的自建提供方，对其声明的任何媒体模型报 `adapter` 原因，其模型在 `configure` 时也以该原因被拒绝。已收集的适配器若不为 Provider 列出的任何模型服务，不算缺少适配器，并如实说明：图像操作仍用 `adapter` 维度，报“the adapter serves no image model Provider lists”，其选项是已声明的模型——与任何没有适配器服务的操作相同。`understand` 能解析并显示其默认值，但在 §9.4 落地前没有运行时使用方。可配置性是设置的属性：只要模型在该操作的可选选项中，`configure` 就接受任何有默认 key 的 A.1 操作的默认值，因此默认值可以在运行时落地之前持久化；本构建不能运行的操作仍保持 `available: false` 及其 `build` 或 `adapter` 原因。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作，端到端流程则让内置适配器对着桩提供方运行。
+图像操作是第一个实现切片，产品构建现在为该切片的一部分内置了适配器：内置 `dim-modality-aimux` 适配器（A.2）经 aimux 服务 `generate`，并在提供方的包读取编辑输入文件时服务 `edit`，而 `enhance` 仍是没有任何构建服务的适配器操作，因此以 `adapter` 原因报告 `unavailable`。可用性是运行时的属性，并按模型回答：安装后 `available` 即为 true，具体服务什么由 `operations` 针对任务所指的模型决定。内置家族名副本为 A.2 列出的内建目录提供方回答图像 `operations`。自建提供方的 UUID 没有专属副本时，仍会解析到家族名副本；其图像模型报 `adapter` 原因是因为该副本的 `operations` 不为它们返回图像操作，而不是没有绑定。已解析的适配器若不为 Provider 列出的任何模型服务，不算缺少适配器，并如实说明：图像操作仍用 `adapter` 维度，报“the adapter serves no image model Provider lists”，其选项是已声明的模型——与任何没有适配器服务的操作相同。`understand` 为 Session 使用方解析目标（§9.4）。可配置性是设置的属性：只要模型在该操作的可选选项中，`configure` 就接受任何有默认 key 的 A.1 操作的默认值，因此默认值可以在运行时落地之前持久化；本构建不能运行的操作仍保持 `available: false` 及其 `build` 或 `adapter` 原因。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作，端到端流程则让内置适配器对着桩提供方运行。
+
+Realtime 选项跟随 Provider 的传输声明，不经解析到的适配器的 `operations` 收窄。因此，不服务 realtime 的提供方专属副本可能让声明过的模型仍出现在选项中，但 `realtime.open` 以 `unavailable` 拒绝；已存在的提供方副本缺少某个操作时，不会重试家族名副本。
 
 `dimcode modality set-default image.generate <provider>/<model>` 和 Web 页调用 `modality.configure`：它先校验该模型属于该操作的选项——适配器操作要求有可用适配器服务它；`image.understand` 要求它是可选的视觉模型；没有适配器服务的操作要求该模型在 Provider 的 modality 读取中、且其目录条目声明了 `<category>.<operation>`，这样的模型可能是执行不能选择的（非 chat 模型，或未声明文本上限的模型）——再经所有者写入（Settings CAS）把该操作 key 写入 Modality 自己的 `modality` 设置文档。`model: null` 清除该 key。回复与 `modality.capabilities` 返回的是同一个快照，含新的 `revision`，客户端无需再读一次。
 
 任务按此顺序解析模型：请求中的显式 `model`；该操作 key 已持久化的默认值；自动解析——当 Provider 的全局默认选择可选且服务该操作时用它，否则用 Provider 可选模型读取顺序中第一个可选的、服务该操作的模型。显式模型或已持久化的默认值不再可选时任务失败（`model_unavailable` 或 `default_unavailable`）；解析出的模型没有可用适配器服务时以 `unavailable` 失败。Modality 从不替换成别的模型。只有默认值缺失时才进入自动解析，因此清除默认值即恢复自动解析。解析出的模型写入任务记录，之后默认值变化不影响它。
 
-`image.understand` 使用同样的解析但没有任务：Modality 解析其默认值并在 `modality.capabilities` 中暴露，Session 的图像理解路径（附件与 `read`）是使用方。该路径尚未读取该默认值；§9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。
+`image.understand` 使用同样的解析但没有任务：Modality 经 `modality.capabilities` 与 `modalityTargets` 暴露生效目标。Session 使用方是 [ImageUnderstanding](../../../design/plugins/ImageUnderstanding.md)，它每次工具调用时解析目标（§9.4），独立于对话模型。
 
 `modality` 来源只有用户作用域：操作默认值属于用户，不属于项目。来源缺失时读为空默认值。这些方法是对 protocol-v3 的增量管理方法；旧 daemon 返回 `unknown_method`，客户端把该类别显示为不可用。旧产品的 `modality-settings.json` 不导入；将来的迁移是另一项改动。Provider 记录、模型描述符与聊天默认选择不变；Modality 不存 Provider 或 Session 状态，也不写 Timeline 事件。
 
@@ -198,11 +200,11 @@ sequenceDiagram
   end
 ```
 
-适配器那一行描述的是 [#861](https://github.com/arcships/dim/issues/861) 落地后的目标设计及落地前的当前形态；其余各行今天即成立。
+适配器那一行对每份适配器副本都成立；其余各行今天即成立。
 
 | 场景 | 结果 | 负责方 |
 | --- | --- | --- |
-| 适配器插件重载 | Modality 从不随适配器重载。运行中的适配器调用可能被中断；其任务变为 `interrupted`，从不重新提交。在 [#861](https://github.com/arcships/dim/issues/861) 之前，切片每次调用读取单个进程服务，下一个任务会重新解析它；落地后按适配器名解析，重载只影响该适配器服务的操作。两种形态下有句柄的任务都通过轮询恢复，实时连接都关闭 | Modality、运行时（[#861](https://github.com/arcships/dim/issues/861)） |
+| 适配器插件重载 | Modality 从不随适配器重载。运行中的适配器调用可能被中断；其任务变为 `interrupted`，从不重新提交。新调用先读被调模型的提供方专属副本、再读家族名副本，因此重载只影响该适配器服务的操作。有句柄的任务只通过记录的副本轮询恢复，不把句柄交给另一个副本；实时连接关闭 | Modality |
 | Modality 重载 | Modality 重新激活前 `modality.*` 返回 `unknown_method`，Rpc 不重载；在途调用遵循[方法](../contracts/session-boundary.md)契约；disposer 取消本地工作，终止运行中的 OCR helper，关闭实时连接，为宿主任务和无句柄任务写入 `interrupted` | Rpc、Modality |
 | 设置变更 | 下次使用时读取；重新计算可用性；已有任务保留其已解析的执行方；不重载 | Modality |
 | 以相同 `client_task_id` 重复 `submit` | 返回已有任务 | Modality |
@@ -223,7 +225,8 @@ sequenceDiagram
 | `modality.task.submit/status/list/wait/cancel/result` | 管理方法 | 任务生命周期；分块二进制结果取回 |
 | `modality.realtime.open/send/close`、`modality.realtime.event`、`modality.realtime.ended` | 管理方法及绑定连接的通知 | 实时会话 |
 | `modalityTasks` | 进程服务，无 key | 与任务方法相同的操作，供其他进程插件使用 |
-| `modalityAdapter` | 进程服务，key 为适配器名；[#861](https://github.com/arcships/dim/issues/861) 落地后按任务按名解析，图像切片在此之前每次调用读取单个进程服务（§9.1） | 由提供方执行的类别 |
+| `modalityTargets` | 进程服务，无 key | 向进程使用方回答某个操作当前解析到的目标，或它不可用的原因（§9.4）；无任务、无凭据 |
+| `modalityAdapter` | 进程内 Rust 绑定（A.2），进程服务，按提供方 id 的专属副本加家族名副本；按调用读取，不声明适配器依赖（§1、A.2） | 由提供方执行的类别 |
 | `ocrHelper` | 进程服务，无 key，由插件的进程行提供；Modality 每次调用时读取（§9.1） | `local/pp-ocr` 目标的描述：可执行文件、参数、可读路径（A.2.1） |
 | `modality` 设置文档 | 业务配置（Settings 来源，schema 由 Modality 声明，经 Settings 类型化操作写入） | 操作默认值、上限；使用时读取 |
 | `dimcode modality`、`image`、`video`、`speech`、`music`、`audio`、`asset`、`motion`、`ocr`、`realtime` | CLI | 方法的薄客户端 |
@@ -253,15 +256,15 @@ sequenceDiagram
 | §4.4 核心机制不带业务含义 | Modality 不要求 Timeline、Dispatcher 或 Rpc 做任何改动；Provider 不持有任何按使用方划分的 key；Modality 显式传入模型。 |
 | §4.5 决定前读完整个批次 | 不适用：Modality 不读任何 Timeline 事件。 |
 | §4.6 模型上下文只含交接后被读取的事件 | Modality 不写任何模型可见内容；结果只作为其他插件拥有的普通输入进入模型。 |
-| §4.7 插件之间只通过公开事件和服务交互 | Modality 只通过公开服务使用 Provider、Settings、`pluginFiles`、HostPlatform、它能解析到的 `modalityAdapter` 服务（§9.1）以及插件提供的 `ocrHelper` 服务。 |
-| §4.8 向机制所有者提通用需求 | 按任务适配器查找、Provider 的可选模型读取与 Provider 的非对话连接在 §9 中提出。 |
+| §4.7 插件之间只通过公开事件和服务交互 | Modality 只通过公开服务使用 Provider、Settings、`pluginFiles`、HostPlatform、先读被调模型的提供方专属副本再读家族名副本的 `modalityAdapter`（§1、A.2）以及插件提供的 `ocrHelper` 服务。 |
+| §4.8 向机制所有者提通用需求 | Provider 的可选模型读取与 Provider 的非对话连接在 §9 中提出。适配器查找不需要机制改动（§9.1）。 |
 | §4.9 只有后续决定要用的事实才进 Timeline | Modality 不写 Timeline 事件；任务记录留在 `pluginFiles`，操作默认值与其他设置在它的 Settings 业务来源中。 |
 | §1 Capability 与 App Server 边界 | Modality 是进程插件，不是 Capability；业务代码在它自己的包中，App Server 只分发它注册到 `managementMethods` 的命名空间。 |
 | ADR 002 D1 作用域跟随状态所有者 | 任务与提供方连接在各 Session 间共享，因此 Modality 是进程作用域。 |
-| ADR 002 D2 不设接线模块 | 适配器查找是由 [#861](https://github.com/arcships/dim/issues/861) 跟踪的运行时工作；本设计不设接线模块。 |
-| ADR 002 D3 依赖跟随作用域 | 所有依赖都是进程服务。适配器按调用读取，因此在 [#861](https://github.com/arcships/dim/issues/861) 前后，缺少某个适配器都只影响其操作；落地后按适配器名解析每个适配器。 |
+| ADR 002 D2 不设接线模块 | 适配器查找先读被调模型的提供方专属副本、再读家族名副本（A.2）；本设计不设接线模块。 |
+| ADR 002 D3 依赖跟随作用域 | 所有依赖都是进程服务。适配器按调用先读被调模型的提供方专属副本、再读家族名副本，因此缺少某个适配器只影响其操作。 |
 | ADR 002 D4 结构性配置与业务配置分离 | 适配器插件是 loader 行；操作默认值与上限是 `modality` 来源中的业务配置，经 Settings 写入，使用时读取。 |
-| ADR 002 D5 合同语言中立 | `modalityAdapter`、`modalityTasks` 与各方法以中立形式给出；附录 G 只是绑定。 |
+| ADR 002 D5 合同语言中立 | `modalityTasks` 与各方法以中立形式给出。`modalityAdapter` 在其调用携带 `ModalityConnection` 期间不是（§9.3，[#1613](https://github.com/arcships/dim/issues/1613)）：在 Provider 暴露执行操作之前该服务没有线上形态，因此附录 G 就是它今天的绑定。 |
 
 ## 9. 向机制所有者提出的需求
 
@@ -271,22 +274,17 @@ sequenceDiagram
 | --- | --- | --- |
 | 从对端节点导入的服务在链路断开期间保持登记，调用以 `node_unavailable` 直接失败 | rutis，[#5](https://github.com/arcships/dim/issues/5) | 见 [ExternalAgent §9](ExternalAgent.md#9-向机制所有者提出的需求) |
 | 运行时服务按名字暴露给非 Rust 插件 | 运行时，[#4](https://github.com/arcships/dim/issues/4) | 见 [session access §9](../contracts/session-access.md#9-向机制所有者提出的需求)；只有 Modality 的 TypeScript 实现需要它 |
-| 不门控 Modality 的按任务适配器查找 | 运行时/装配，[#861](https://github.com/arcships/dim/issues/861) | [§9.1](#91-按任务适配器查找) |
 | Provider 提供可选模型及其声明能力的只读契约 | Provider，[#790](https://github.com/arcships/dim/issues/790) | [§9.2](#92-provider-只读契约) |
 | Provider 的非对话连接 | Provider，[#799](https://github.com/arcships/dim/issues/799) | [§9.3](#93-provider-非对话连接) |
-| `modality.image.understand` 的 Session 图像理解使用方 | Agent/Prompt 所有者，[#798](https://github.com/arcships/dim/issues/798) | [§9.4](#94-session-图像理解使用方) |
+| `modality.image.understand` 的 Session 图像理解使用方 | Modality 提供目标读取；Agent/Prompt 所有者拥有使用方，[#798](https://github.com/arcships/dim/issues/798) | [§9.4](#94-session-图像理解使用方) |
 
 Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列在 [overview 附录 B.2](../overview.md#b2-app-server-进程插件)。
 
 ### 9.1 按任务适配器查找
 
-- **问题。** 缺失、Pending、Failed 或正在重载的适配器不得让 Modality Pending 或重载它；只有该适配器服务的操作可以变为不可用。依赖每个 `modalityAdapter` 服务的做法正好相反。
-- **现有机制。** 用 `Keyed` 声明每个适配器会在每个提供方 Active 之前门控使用方；按名称收集服务同样如此。可选的按调用读取（`Ctx::get`、`Ctx::get_at`）不门控，Rpc 与 `AgentIndex` 就以这种方式读取 `managementMethods`、`sessions` 与 `auxiliaryModel`；但目录把一个名字映射到每个副本的一个 key，桥接插件的 `provides` 条目也不带按提供方的实例 key，因此同一名字的多个提供方无法按各自的适配器名解析，使用方也无法枚举当前哪些可用。注册表（`managementMethods`、`toolRegistry`）把贡献交给所有者，但它们不是服务：适配器将不得不依赖一个表所有者并注册回调，这颠倒了声明依赖，也重复了 `modalityAdapter` 契约。
-- **需要的能力。** 按提供方标识（适配器名）对进程作用域提供方做按调用解析，既不门控使用方，也不在两个方向上建立重载关系：缺失、Pending、Failed 或正在重载的提供方在当次调用中就是解析不到，下一次调用在它回来时看到它。等价形态也可以接受，例如每个已配置提供方使用一个单独登记的名字、由所有者按调用可选读取，只要所有者能在提供方出现或消失时无需重载就枚举当前可用的提供方。
-- **顺序影响。** 适配器的卸载/重载只影响它的操作；Modality 不重载，也没有 Timeline 或批次改动；在途任务按 A.6 结算。
-- **首个切片。** 在该能力落地之前，图像切片每次调用读取单个进程 `modalityAdapter` 服务（`Ctx::get`），不声明适配器依赖：缺失时只有适配器操作不可用，不产生门控与重载关系。这是单个适配器的目标解析形态；按适配器名枚举多个适配器并按任务解析仍需本 issue。
-- **OCR helper 服务。** 插件提供的目标以同一方式读取，在每个 OCR 任务上：插件的进程行提供进程级服务 `ocrHelper`（A.2），Modality 每次调用时读取且不声明依赖；缺失、Pending、Failed 或正在重载的服务解析为空，于是只有该目标消失。一个名字只有一个提供方，不需要本 issue 的按提供方解析：helper 服务只有一个，它的缺失就是目标的缺失。
-- **所有者/issue。** 运行时/装配，[#861](https://github.com/arcships/dim/issues/861)。[#40](https://github.com/arcships/dim/issues/40) 已在 [#19](https://github.com/arcships/dim/issues/19) 中决定使用方一侧并已关闭；Modality 只声明该依赖。
+**已撤回：运行时已经提供。** 该需求是：对进程服务做按调用解析，既不门控使用方，也不产生重载关系。运行时的“在显式 key 上的可选读取”正是如此，且 Dim 已经把同一契约的多份副本放在动态 key 上——Session 的 `McpServer` 与 skill `Contribution`（[rutis 用法 §3.5](../rutis-usage.md#35-各运行时如何解析名字)）。按提供方命名每份副本还去掉了该需求唯一额外的东西：枚举当前可用的提供方——Modality 总是知道它在路由的模型的提供方，从不需要名单。§1 与 A.2 陈述由此形成的契约；不向运行时或 rutis 提任何改动。
+
+适配器 capability 的推导使用所选副本的 `available` 和 `operations`（A.2）。独立的 `ocrHelper` 也按调用可选读取：helper 缺失、Pending、Failed 或正在重载时只隐藏其目标，不门控或重载 Modality（A.2.1）。
 
 ### 9.2 Provider 只读契约
 
@@ -306,11 +304,11 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 ### 9.4 Session 图像理解使用方
 
-- **问题。** Modality 解析 `modality.image.understand`，但 Session 的图像理解路径（附件与 `read`）把图像发给 Session 采纳的模型；没有任何东西读取 Modality 的默认值。在该需求落地前，理解这一行只能解析与显示。
-- **现有机制。** `read` 把图像块返回给 Session 模型，`session.model.update` 与 Prompt 采纳的配置选择该模型。Session 路径到进程所有者默认值之间没有输入路径或类型化查找。在浏览器里选择正是该需求要排除的仅浏览器默认值。
-- **需要的能力。** Session 图像理解路径经 Modality 的 `modality.image.understand` 默认值（显式 → 默认值 → 自动）解析其模型，或等价的类型化交接。机制属于 Agent/Prompt。
-- **顺序影响。** 每次读取或附件时；无 Timeline 事件；在该需求落地前已有 Session 保持其行为；不重载。
-- **所有者/issue。** Agent/Prompt 所有者，[#798](https://github.com/arcships/dim/issues/798)。
+- **问题。** Session 图像理解使用方需要 Modality 当前的操作目标，独立于对话模型。
+- **现有机制。** `session.model.update` 与 Prompt 采纳的配置选择对话模型，而非图像理解目标。在浏览器里选择正是该需求要排除的仅浏览器默认值。
+- **需要的能力。** Session 图像理解路径经 Modality 的 `modality.image.understand` 默认值（显式 → 默认值 → 自动）解析其模型，或等价的类型化交接。该交接是一次类型化读取：进程服务 `modalityTargets` 回答某个操作当前解析到的目标，或它不可用的原因，采用与 `modality.capabilities` 相同的优先级与原因措辞，按调用读取，既不门控也不重载 Modality，也不返回凭据。Modality 拥有并提供这次读取（它是 Modality 作用域的进程服务）；使用方是 [ImageUnderstanding](../../../design/plugins/ImageUnderstanding.md)，它拥有工具及其请求。
+- **顺序影响。** 每次工具调用；不新增事件类型（普通工具调用与结果事实）；不重载。
+- **所有者/issue。** Modality 提供 `modalityTargets`；Agent/Prompt 所有者拥有使用方，[#798](https://github.com/arcships/dim/issues/798)。
 
 ## 附录 A. 接口细节
 
@@ -328,28 +326,30 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `realtime` | `realtime` | `voice`、`transcribe`、`avatar` | — | 会话 | Provider | `modality.realtime` |
 | `ocr` | `ocr` | `recognize` | 图像或 PDF | `data: { pages: [{ page, text? }], textTruncated? }`，页文本合计不超过 1 MiB，超出的页面只带 `page`；`result.json`；`text.txt`；`layout` 模式下每个栅格化页面一个 `page-NNNN.png` | 宿主 helper（`local/apple-vision`，或插件提供的目标） | `modality.ocr` |
 
-图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 Session 图像理解路径（附件与 `read`，见 [WorkspaceTools §read results and images](../../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)）；该路径尚未读取该默认值，因此 §9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）；宿主操作自行声明其参数：`ocr.recognize` 接受 `params.outputMode`，取值为 `"text"`（默认）或 `"layout"`（A.2）。CLI 只为 A.1 声明的输入提供具名参数——提示词或文本、输入文件、`image edit --mask`（一个输入文件，其名称写入 `params.mask`）以及 `image enhance MODE`（`params.mode`）——其余参数一律走 `--param KEY=VALUE`。
+图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 [ImageUnderstanding](../../../design/plugins/ImageUnderstanding.md)，通过 §9.4 的类型化交接读取。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）；宿主操作自行声明其参数：`ocr.recognize` 接受 `params.outputMode`，取值为 `"text"`（默认）或 `"layout"`（A.2）。CLI 只为 A.1 声明的输入提供具名参数——提示词或文本、输入文件、`image edit --mask`（一个输入文件，其名称写入 `params.mask`）以及 `image enhance MODE`（`params.mode`）——其余参数一律走 `--param KEY=VALUE`。
 
 操作的规范能力 id 是 `<category>.<operation>`，例如 `image.generate` 与 `realtime.voice`；Provider 的 `modalityCapabilities` 声明使用同一组字符串，快照携带这两个字段而不再重复 id。不存在别名（`image.read` 不是别名），实时子调用也没有 id：`open`、`send`、`close` 与 `event` 是方法，`realtime.voice`、`realtime.transcribe` 与 `realtime.avatar` 是实时能力。本构建通过内置适配器服务 `realtime.voice`；另外两个以 `adapter` 维度上报，其 detail 指名该操作，例如 “No available adapter serves realtime.transcribe”。
 
 ### A.2 适配器与 OCR
 
-服务 `modalityAdapter`，作用域为进程，key 为适配器名，在适配器插件的 `provides` 中声明；内置适配器提供同一服务。适配器如何注册与发现，是 [#40](https://github.com/arcships/dim/issues/40) 决定、[#861](https://github.com/arcships/dim/issues/861) 跟踪的按任务查找（§9.1）；本设计依赖它，不重复定义。在它落地之前，Modality 每次调用读取单个进程 `modalityAdapter` 服务，因此缺失或正在重载的适配器只影响其操作。落地后，Modality 在任务需要时按适配器名解析该操作的适配器。取消是一个协议动作：Modality 丢弃该调用（或发送绑定的取消请求）；适配器停止本地工作。错误是数据 `{ code, message }`，`code` 为 `invalid_input`、`unavailable`、`provider_error` 之一。
+服务 `modalityAdapter` 的作用域为进程，分两级副本：以提供方 id 为 key 的专属副本，以及专属副本不可读时使用的家族名兜底副本。Modality 先读被调模型的提供方专属副本、再读家族名副本，不声明适配器依赖。提供方副本缺失、Pending、Failed 或正在重载时可以兜底；两级读取都未取得副本时，受影响的操作不可用，Modality 保持 Active。每个 key 只有一个绑定。重复的提供方 key 使尝试绑定它的适配器行失败；必需行失败使装配失败，可选行失败只影响该行。内置适配器只提供家族名副本，把提供方 key 留给专用适配器。
+
+携带连接的调用传入的是一次调用的凭据材料，而非可序列化数据，因此媒体适配器是进程内 Rust 绑定。在 Provider 暴露执行操作之前，外部语言适配器不提供任何媒体操作（[Provider 管理 §3.8](../appserver/provider-management.md#38-适配器的媒体执行)，[#1613](https://github.com/arcships/dim/issues/1613)）。所选副本的 `operations` 回答它是否服务某个操作；已存在的提供方副本缺少该操作时，不触发家族名兜底。取消通过丢弃调用（或发送绑定的取消请求）停止适配器的本地工作。错误是数据 `{ code, message }`，`code` 为 `invalid_input`、`unavailable`、`provider_error` 之一。
 
 | 方法 | 类型 | 请求 | 回复 |
 | --- | --- | --- | --- |
 | `available` | 同步 | `{}` | `{ available: bool, reason? }`；每次使用时读取，变化时不重载 |
 | `operations` | 同步 | `{ model: {providerId, modelId} }` | `[{ category, operation, params_schema }]` |
-| `submit` | 异步 | `{ job: Job, connection: ResolvedConnection }` | `{ remote_handle? }` |
+| `submit` | 异步 | `{ job: Job, connection: ModalityConnection }` | `{ remote_handle? }` |
 | `wait` | 异步 | `{ task_id, remote_handle?, connection }`；进度以该调用上的 `{ fraction?, message? }` 通知送达 | `{ files: [{ name, media_type, path }], data? }`；`path` 位于作业的工作目录内 |
 | `cancelRemote` | 异步 | `{ remote_handle, connection }` | `{ outcome: "cancelled" \| "unsupported" \| "already_finished" }` |
 | `realtimeOpen` | 异步 | `{ connection, params }`；提供方事件以该调用上的 `{ channel_id, event }` 通知送达，直到关闭 | `{ channel_id, transport, connection? }`；`transport` 为 `relay` 或 `direct`，`connection` 是 `direct` 会话的短期提供方材料 `{ kind, url?, token?, offer?, ice_servers?, expires_at? }` |
 | `realtimeSend` | 异步 | `{ channel_id, frame: { kind: "text" \| "audio" \| "control", data } }` | `{}` |
 | `realtimeClose` | 异步 | `{ channel_id }` | `{}` |
 
-`Job` 为 `{ task_id, category, operation, model: {providerId, modelId}, params, files: [{ name, media_type, path }], work_dir }`。内联输入的 `path` 是 Modality 存放在 `modality/tasks/<task_id>/input/<name>` 的文件的绝对路径；通过 `node_path` 给出的输入记录 Modality 得到的规范路径（最后一个组件不得是链接；更早的链接会被解析），Modality 只读取一次以取得 `bytes` 与 `sha256`，从不复制，执行方就地读取。`work_dir` 是任务的 `modality/tasks/<task_id>/work` 目录，调用前创建；每个结果文件解析为其中的普通文件。`ResolvedConnection` 是 Provider 非对话连接解析返回的数据形态（`kind`、`provider_id`、`model`、端点与凭据材料，以及 `realtime.*` 用途下目录条目的 `realtime: { protocol, path }` 声明），每次调用传入，从不存储或记录日志。该声明是 Provider 对条目 `metadata.raw.realtime` 的读取；条目未声明的模型，以及从不携带它的配置模型 profile，会在适配器被调用之前以 `unavailable` 拒绝，消息为 “The model declares no realtime transport”。中继从连接的 base URL、声明的 `path` 与模型 id 组合出套接字地址，因此路径由目录条目声明，从不推导。
+`Job` 为 `{ task_id, category, operation, model: {providerId, modelId}, params, files: [{ name, media_type, path }], work_dir }`。内联输入的 `path` 是 Modality 存放在 `modality/tasks/<task_id>/input/<name>` 的文件的绝对路径；通过 `node_path` 给出的输入记录 Modality 得到的规范路径（最后一个组件不得是链接；更早的链接会被解析），Modality 只读取一次以取得 `bytes` 与 `sha256`，从不复制，执行方就地读取。`work_dir` 是任务的 `modality/tasks/<task_id>/work` 目录，调用前创建；每个结果文件解析为其中的普通文件。调用携带的 `connection` 是 `ModalityConnection`，即 Provider 非对话连接解析返回的 Rust 形态（`kind`、`provider_id`、`model`、端点与凭据材料，以及 `realtime.*` 用途下目录条目的 `realtime: { protocol, path }` 声明）。它不是数据：仅为一次调用按值传入，从不存储、记录日志、返回或序列化，这也是适配器服务目前只在进程内的原因（A.2，[#1613](https://github.com/arcships/dim/issues/1613)）。该声明是 Provider 对条目 `metadata.raw.realtime` 的读取；条目未声明的模型，以及从不携带它的配置模型 profile，会在适配器被调用之前以 `unavailable` 拒绝，消息为 “The model declares no realtime transport”。中继从连接的 base URL、声明的 `path` 与模型 id 组合出套接字地址，因此路径由目录条目声明，从不推导。
 
-产品内置适配器是 `dim-modality-aimux` crate：aimux 的词汇留在适配器内部。它服务 `image.generate`、`image.edit`、`video.generate`、`speech.synthesize` 与 `speech.transcribe`，按目录提供方 id 绑定；并对任何条目声明了 openai-realtime 传输的模型服务 `realtime.voice`，因为实时会话由连接构建，而不是由厂商行决定。中继以连接的 base URL 加声明的路径和作为查询的模型 id 连接，`http` 与 `https` 变为 `ws` 与 `wss`；它发送连接的头部与 bearer、经连接的代理连接、在套接字处以 1 MiB 限制一条提供方消息、把文本帧写成 JSON 并把音频帧写成解码后的字节，并在提供方关闭、套接字失败或十秒内写不出一帧时结束会话。它不承载控制帧——控制帧属于 `direct` 传输。凡是其媒体模型由某个 aimux 厂商包执行的内建目录提供方都有一行（openai、google、xai、grok-build、elevenlabs、fal、deepgram、assemblyai、cartesia、gladia、groq、replicate、stability-ai、recraft、black-forest-labs、luma-ai、runway、kling、hume-ai、mistral-ai、rev-ai），每行只服务其包实际实现的操作。`image.edit` 只由读取编辑输入字节的包服务：openai、google、fal、replicate、black-forest-labs 会读取；stability-ai、recraft、luma-ai 只服务 `image.generate`；包对某个模型报告不接受文件输入时，该模型也不提供 edit。xAI 的图像模型因该包回答 `NoSuchModel` 而报 `adapter`，其转录与合成模型则被服务。自建提供方的 id 是规范 UUID，不匹配任何行，因此其媒体操作报 `adapter` 原因，`configure` 也以该原因拒绝其模型。其他 A.1 类别（音乐、音频、3D 资产、动作）没有对应行，保持 `build` 原因。内建目录没有为 Amazon Bedrock 声明任何媒体模型，因此 Bedrock 连接不服务媒体操作。安装后 `available` 即为 true；服务范围按模型由 `operations` 回答，端点不可达是某次调用的失败，而不是能力。视频是唯一可恢复的操作：`submit` 把提供方的操作引用存为句柄，`wait` 轮询它并把结果流式写入文件，因此重启恢复同一作业而不会重新发起；开始后一小时仍未结束的作业以 `provider_error` 失败，避免永不结束的作业一直占用调度槽位。该上限同样约束在途的状态请求与两次轮询之间的等待，因此挂起的请求会在截止时失败，而不是跑满连接更长的超时。aimux 对已启动的视频作业不提供取消，因此 `cancelRemote` 回答 `unsupported`，提供方作业会在其一侧跑完并计费。输出文件的媒体类型从返回字节读取，提供方返回与请求不同的格式时，按实际返回记录。
+产品内置适配器是 `dim-modality-aimux` crate：aimux 的词汇留在适配器内部。它服务 `image.generate`、`image.edit`、`video.generate`、`speech.synthesize` 与 `speech.transcribe`，按目录提供方 id 绑定；并对任何条目声明了 openai-realtime 传输的模型服务 `realtime.voice`，因为实时会话由连接构建，而不是由厂商行决定。中继以连接的 base URL 加声明的路径和作为查询的模型 id 连接，`http` 与 `https` 变为 `ws` 与 `wss`；它发送连接的头部与 bearer、经连接的代理连接、把文本帧写成 JSON 并把音频帧写成解码后的字节，并在提供方关闭、套接字失败或十秒内写不出一帧时结束会话。它不承载控制帧——控制帧属于 `direct` 传输。凡是其媒体模型由某个 aimux 厂商包执行的内建目录提供方都有一行（openai、google、xai、grok-build、elevenlabs、fal、deepgram、assemblyai、cartesia、gladia、groq、replicate、stability-ai、recraft、black-forest-labs、luma-ai、runway、kling、hume-ai、mistral-ai、rev-ai），每行只服务其包实际实现的操作。`image.edit` 只由读取编辑输入字节的包服务：openai、google、fal、replicate、black-forest-labs 会读取；stability-ai、recraft、luma-ai 只服务 `image.generate`；包对某个模型报告不接受文件输入时，该模型也不提供 edit。xAI 的图像模型因该包回答 `NoSuchModel` 而报 `adapter`，其转录与合成模型则被服务。自建提供方的 id 是规范 UUID，不匹配任何行，因此其媒体操作报 `adapter` 原因，`configure` 也以该原因拒绝其模型。其他 A.1 类别（音乐、音频、3D 资产、动作）没有对应行，保持 `build` 原因。内建目录没有为 Amazon Bedrock 声明任何媒体模型，因此 Bedrock 连接不服务媒体操作。安装后 `available` 即为 true；服务范围按模型由 `operations` 回答，端点不可达是某次调用的失败，而不是能力。视频是唯一可恢复的操作：`submit` 把提供方的操作引用存为句柄，`wait` 轮询它并把结果流式写入文件，因此重启恢复同一作业而不会重新发起；开始后一小时仍未结束的作业以 `provider_error` 失败，避免永不结束的作业一直占用调度槽位。该上限同样约束在途的状态请求与两次轮询之间的等待，因此挂起的请求会在截止时失败，而不是跑满连接更长的超时。aimux 对已启动的视频作业不提供取消，因此 `cancelRemote` 回答 `unsupported`，提供方作业会在其一侧跑完并计费。输出文件的媒体类型从返回字节读取，提供方返回与请求不同的格式时，按实际返回记录。
 
 `available` 在不重载的情况下报告运行时可用性（例如提供方端点不可达）。若某个操作的可用适配器都不服务已配置或显式指定的模型，则报告为“no adapter for the configured model”，其提交以 `unavailable` 失败。`image.understand` 不是适配器操作：它由一个可选的视觉模型服务，且只做选择。OCR 不是适配器：它是宿主任务，其目标是本构建提供的宿主目标之一 `local/apple-vision` 或 `local/pp-ocr`，两者都从目标发布的描述启动（A.2.1）；当 `local/pp-ocr` 未提供时，它不是选项，`modality.ocr` 仍解析 `local/apple-vision`。指明控制节点以外节点的任务以 `node_unavailable` 失败。`wait` 以 `task_id` 指名它等待的作业；当 `submit` 返回了 `remote_handle` 时，适配器可以改用它。带已存储 `remote_handle` 的 `wait` 必须能在新一代中工作；不返回句柄的适配器以 `task_id` 记录自己进行中的工作，且仅限同一代内，因此无法恢复。
 
@@ -384,6 +384,19 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 ### A.3 方法
 
 命名空间 `modality`，注册到进程的 `managementMethods`（声明与 `call` 遵循[方法](../contracts/session-boundary.md)契约），每个方法都是管理方法。`modalityTasks`（进程，无 key）提供 `submit`、`status`、`list`、`wait`、`cancel` 与 `result`，请求与回复同下方的 `modality.task.*` 方法。`wait` 使用每次调用的进度接收器；实时使用绑定连接的通知（[方法](../contracts/session-boundary.md)）。
+
+`modalityTargets` 数据面（进程，无 key）提供一个异步方法
+`resolve({ category, operation, model? })`。回复为
+`{ status: "resolved", target: { providerId, modelId } }`，或
+`{ status: "unavailable", reasons: [{ dimension, detail }] }`。它使用快照的选项和
+有效目标：显式模型优先于持久化默认值，仅在没有默认值时自动选择。不可用的显式模型
+或默认值返回它自己的原因；否则，不可用的操作返回快照的操作原因，即使它声明的模型
+仍可配置。`image.understand` 不需要媒体适配器。
+每次调用读取当前业务设置和 Provider 状态，不创建任务、不解析连接、不写 Timeline
+事实，也不增加适配器门控或重载边。回复不含凭据。错误为 `{ code, message }`：
+wire 参数形状错误为 `invalid_params`，未知类别或操作为 `modality_unknown_operation`，
+所有者读取失败为 `modality_failed`，调用方取消为 `operation_interrupted`，所有者代际已结束为
+`service_reloading`。丢弃调用只取消该次调用自己的待完成读取，不影响其他调用。
 
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
@@ -466,6 +479,8 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 | `remote_cancel` | `"cancelled"`、`"unsupported"`、`"already_finished"` 或 null |
 | `created_at`、`updated_at`、`finished_at` | RFC 3339 |
 
+提供方执行方的 `adapter` 标识服务该任务的副本：提供方专属副本记录其提供方 id，家族名副本记录 `modalityAdapter`。既有家族名记录保持原含义。等待和远端取消使用已固定的签发句柄的副本，而非新近优先的副本。重启恢复读取记录的副本；该副本不可用时任务变为 `interrupted`，不把句柄交给兜底副本。
+
 记录与结果文件使用 `pluginFiles`（扩展）：每插件根目录、UTF-8 与二进制原子替换、锁、格式版本。保留：每次 `apply` 时以及每次终态写入之后，早于 30 天或超出最新 200 个的终态任务连同文件删除，最旧的先删（A2）；非终态任务从不删除。
 
 记录是 `modality/tasks/<task_id>/task.json`，采用宿主的版本 1 文本信封。每次写入都持有该文件的锁并比较 `revision`：第一个终态写入获胜，较晚的终态结果连同它写出的结果文件一起丢弃。`params` 以 `files` 数组携带输入文件的元数据；内联文件存放在 `input/` 下，调用方的 `node_path` 只记录路径并就地读取。`files` 键是保留的：调用方的 `params.files` 以 `invalid_input` 拒绝；记录总是携带已校验的元数据，提交没有文件时为空数组。`wait` 把适配器返回的文件从任务的工作目录流式写入 `result/<name>`，同时计算 `bytes` 与 `sha256`，随后删除工作目录。
@@ -488,7 +503,7 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 | 步骤 | 机制 |
 | --- | --- |
 | 提交 | 在边界校验；写入 `queued`（revision 1）与输入文件；返回。通过 `ctx.effect`（Cordis 的 effect 机制，[rutis 生命周期](../rutis-usage.md#4-rutis-提供的生命周期)）注册的调度器在有空闲槽位时启动它；调度器与每个运行中的任务都是 effect 工作，插件卸载时由它清理 |
-| 启动 | 写入 `running` 及已解析的执行方；解析该操作的适配器（[#861](https://github.com/arcships/dim/issues/861) 落地后按任务按名解析；在此之前来自单个进程服务）；调用 `submit`；一旦得知即写入 `remote_handle` |
+| 启动 | 写入 `running` 及已解析的执行方；先在被调模型的提供方 key、再在家族名解析该操作的适配器（A.2）；调用 `submit`；一旦得知即写入 `remote_handle` |
 | 终态 | 在每任务锁下一次写入并比较 `revision`；第一个终态写入胜出；之后的结果被丢弃，其文件被删除。保留在写入之后、状态对 `wait`/`status` 可见之前执行 |
 | 保留 | 每次 `apply` 时以及每次终态写入之后：早于 30 天或超出最新 200 个的终态任务连同其文件删除，最旧的先删（A.4，A2） |
 | 取消 | 标记已请求；取消本地令牌（中止 HTTP，或经 HostPlatform 杀死 OCR helper 的进程树）。取消后 drive 继续等待 `submit`，使执行方已接受的作业交出句柄；取消等待提交阶段结束（两者都以 3 秒为界，低于 rutis 的 10 秒卸载上限）。然后重读记录；有句柄时调用 `cancel_remote`（与调用令牌和本代 stop 竞速，挂起的提供方既拖不住客户端也拖不住卸载）；释放资源；写入 `cancelled`，带执行方的答复或 `null`。执行方回答 `unsupported` 时，提供方作业继续运行并计费；记录保留 `unsupported`，Modality 不再等待它 |
@@ -498,7 +513,7 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 
 ## 附录 B. 完整冲突表
 
-适配器那一行描述的是 [#861](https://github.com/arcships/dim/issues/861) 落地后的目标设计及落地前的当前形态；其余各行今天即成立。
+适配器那一行对每份适配器副本都成立；其余各行今天即成立。
 
 | 场景 | 顺序 | 结果 | 负责方 |
 | --- | --- | --- | --- |
@@ -510,7 +525,7 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 | 以相同 `client_task_id` 重复 `submit` | 第二次在第一次之后 | 返回已有任务 | Modality |
 | 重复 `cancel` | — | 幂等 | Modality |
 | Modality 重载期间的 `wait` | wait 挂起 | 按方法契约中断；客户端重连后再次调用 `wait` | Rpc、客户端 |
-| 适配器插件重载或被移除 | Modality 从不随适配器重载 | 卸载中断的运行中调用使其任务 `interrupted`，从不重新提交；尚未开始的任务在适配器缺失时以 `unavailable` 失败。在 [#861](https://github.com/arcships/dim/issues/861) 之前，切片每次调用读取单个进程服务，重载或移除只影响适配器操作；落地后按适配器名解析，只影响该适配器服务的操作 | Modality、运行时（[#861](https://github.com/arcships/dim/issues/861)） |
+| 适配器插件重载或被移除 | Modality 从不随适配器重载 | 卸载中断的运行中调用使其任务 `interrupted`，从不重新提交；尚未开始的任务在适配器缺失时以 `unavailable` 失败。适配器在每次调用时先于被调模型的提供方 key、再于家族名解析，因此重载或移除只影响该适配器服务的操作 | Modality |
 | 适配器在运行时报告不可用 | 标志为 false | 对它的新提交 `unavailable`；运行中任务继续 | Modality |
 | 任务中途进程重启 | `running` 记录 | 启动规则；从不重新提交 | Modality |
 | 保留策略删除了客户端仍在引用的任务 | — | 仅限终态任务；`result` 以 `not_found` 失败 | Modality |
@@ -556,7 +571,7 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 5. 启动前、运行中（本地中止、远端取消、不支持）以及对终态任务的取消；取消与完成竞争只产生一个终态。
 6. 重复 `client_task_id` 返回同一任务。
 7. 重启：宿主任务 `interrupted`；有句柄的提供方任务恢复且不发生第二次 `submit`；无句柄的 `interrupted`；`queued` 的 `interrupted`。
-8. 适配器重载与移除：Modality 从不随适配器重载。在 [#861](https://github.com/arcships/dim/issues/861) 落地前，单个进程服务按调用读取，因此重载或移除适配器插件只影响适配器操作；卸载中断的运行中调用使其任务 `interrupted`。落地后，按适配器名按任务解析：适配器被移除且已配置的默认值指向其模型时，`modality.capabilities` 报告“no adapter for the configured model”，其他操作保持可用。
+8. 适配器重载与移除：Modality 从不随适配器重载。适配器在每次调用时先于被调模型的提供方 key、再于家族名解析，因此重载或移除适配器插件只影响该适配器服务的操作；卸载中断的运行中调用使其任务 `interrupted`。该模型已无任何适配器副本且已配置的默认值指向它时，`modality.capabilities` 报告“no adapter for the configured model”，其他操作保持可用。
 9. 在控制节点上运行 OCR。`local/apple-vision` 在 Apple Silicon 上出现，其他平台以 `platform` 原因缺席，其提交以 `unavailable` 失败；任务经受限 spawn 运行 fixture Apple Vision helper 并发布其产物，取消会杀死它，指明其他节点的任务以 `node_unavailable` 失败。`local/pp-ocr` 用一个 fixture 插件演练，其进程行提供 `ocrHelper`，helper 是桩——从不加载引擎或任何下载文件：(a) 在场：目标与 `local/apple-vision` 并列列出，任务带着描述的 read 路径经受限 spawn 运行桩，其产物与 `data.pages` 被发布；(b) 缺席：fixture 插件未安装时目标不被列出，Apple Vision 仍可用，指名 `local/pp-ocr` 的提交以 `unavailable` 失败并带其 `runtime` 原因；(b2) 旧契约：`describe` 报告其他 `contract` 的 fixture 插件使目标不可用并带“the PP-OCR plugin needs an update”，提交以 `unavailable` 失败；(c) 提供方在任务读到描述之后、桩 helper 启动之前被移除：移除后取得的快照只列出 Apple Vision，下一次指名 `local/pp-ocr` 的提交失败，而已接纳的任务仍从旧副本成功完成；fixture 的描述指名一个位于插件目录之外的测试自带 gate 可执行文件，它向工作目录写入就绪标记并等待 go 标记，然后才从插件目录 exec 桩 helper，流程测试在就绪标记处移除 fixture 插件，之后再写 go 标记，因此移除正落在这个窗口内；第二个变体在就绪标记处更新 fixture 插件，任务仍用旧副本完成；gate 与桩都是 `crates/dim-modality/tests/` 下的测试代码，不新增生产钩子；桩在启动时读取其插件目录中的一个文件，因此在该窗口内被删除的副本会使任务失败；(d) helper 失败：类型化拒绝变成任务的错误码，意外退出变成任务的 `executor_error`，工作目录被删除；(e) 描述指名的目录在 spawn 之前被测试删除：spawn 拒绝该已消失的路径，任务结算为 `executor_error`，其工作目录被删除；(f) 停滞的行：fixture 的 `describe` 永不回答，图像提交完成且不读取它，而快照仍在上界内应答，不列出插件目标，`local/apple-vision` 保持原样；(g) 取消：在启动时 `describe` 仍挂起时被取消的 `local/pp-ocr` 任务结算为 `cancelled`，该读取被丢弃。
 10. 实时：会话以 `{ connectionId, transport }` 打开，把文本、音频与控制帧转发给适配器，并且只向发起连接发送提供方事件；它在 `close`、发起连接结束、提供方结束、`direct` 连接的 `expires_at` 到期、空闲上限与卸载时结束，各有自己的 `ended` 原因；超过上限的帧以 `invalid_input` 拒绝且会话保持打开；第五个会话以 `realtime_limit` 失败；其他连接的 `send` 与 `close` 为 `not_found`；没有声明的模型在适配器被调用之前使 `open` 失败；每个 `realtime.*` 提交都是 `modality_unknown_operation`。
 11. 任何 Session 中都不出现 Timeline 事件、工具声明或输入。
@@ -565,8 +580,8 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 14. 两次使用同一 revision 的 `configure`：第二次以 `modality_conflict` 失败且不写入；重新读取看到第一个写入者的值。
 15. 自动解析：没有默认值时，任务在 Provider 的全局默认选择服务该操作时使用它，否则使用 Provider 可选模型读取顺序中第一个被服务的模型；`effective.source` 为 `"automatic"` 并给出该模型。
 16. Web 入口准入：经认证的 loopback Web 入口可调用 `modality.capabilities` 与 `modality.configure`；裸与未认证的 WebSocket 不能；`modality.task.*` 与实时方法不被准入；声明与分发一致。
-17. Web 渲染：宽与紧凑布局显示所有者选项、自动生效模型与不可用原因，包括理解“尚未生效”的状态；冲突保留已输入的草稿并提供重新加载；在 Web 会话中所做的 Provider 或模型变更会刷新页面；回复不带凭据。
-18. `image.understand` 经 `modality.capabilities`/`modality.configure` 解析并显示默认值。在 §9.4 中 Agent/Prompt 的需求落地前，Session 图像理解路径继续使用 Session 模型，页面如实说明；落地后，fixture 图像理解流程使用已配置的默认值，清除它即恢复自动解析。
+17. Web 渲染：宽与紧凑布局显示所有者选项、自动生效模型与不可用原因；理解行说明该设置用于 `image_understand`，而非对话模型。冲突保留已输入的草稿并提供重新加载；在 Web 会话中所做的 Provider 或模型变更会刷新页面；回复不带凭据。
+18. `image.understand` 经 `modality.capabilities`/`modality.configure` 解析并显示默认值。fixture [图像理解流程](../../../design/plugins/ImageUnderstanding.md#9-acceptance)使用已配置的默认值，清除它即恢复自动解析，不可用的默认值从不回退。
 
 ## 附录 E. 假设
 
@@ -590,10 +605,10 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 
 ## 附录 G. Rust 绑定
 
-Rust 适配器插件可以实现生成的绑定，而不直接处理命名服务；A.2 中的中立形式是规范性的。以下类型位于 `dim-modality`；连接是 Provider 的非对话式解析每次调用返回的那个，传给适配器后不存储、不记录、不返回。
+A.2 中的方法名、请求与结果是规范性的；调用携带的 `connection` 是 Rust 的 `ModalityConnection`，因此在 Provider 暴露执行操作之前，本绑定是媒体适配器唯一可用的形态。以下类型位于 `dim-modality`；连接是 Provider 的非对话式解析每次调用返回的那个，传给适配器后不存储、不记录、不返回、不序列化。
 
 ```rust
-/// Binding for service `modalityAdapter` (process, key adapter name).
+/// In-process adapter binding: provider copies at their ids, built-in family fallback.
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AdapterError>> + Send + 'a>>;
 pub struct AdapterOperation { pub category: String, pub operation: String, pub params_schema: Value }
 pub struct JobFile { pub name: String, pub media_type: String, pub path: PathBuf }
@@ -651,7 +666,9 @@ pub trait ModalityAdapter: Send + Sync + 'static {
 }
 ```
 
-A.2 中的实时操作映射到实时方法，随它们一起绑定：适配器通过 `events` 上报事件，提供方关闭会话时上报 `Ended(Provider)`，协议失败时上报 `Ended(Error(message))`；该消息只记录日志，从不写入连接。对 Modality 结束的每个会话，Modality 都会调用 `realtime_close`，上限五秒；适配器无法完成时丢弃该会话。在 Rust 中注册以 `TypeKey::named("modalityAdapter")` 提供 `ModalityAdapter`，以适配器名作为实例 key。适配器如何注册与发现，遵循 [#40](https://github.com/arcships/dim/issues/40) 决定并由 [#861](https://github.com/arcships/dim/issues/861) 跟踪的按任务查找；本附录只绑定各操作。
+A.2 中的实时操作映射到实时方法，随它们一起绑定：适配器通过 `events` 上报事件，提供方关闭会话时上报 `Ended(Provider)`，协议失败时上报 `Ended(Error(message))`；该消息只记录日志，从不写入连接。对 Modality 结束的每个会话，Modality 都会调用 `realtime_close`，上限五秒；适配器无法完成时丢弃该会话。
+
+内置适配器在 `Key::<ModalityAdapterService>::of()` 提供家族名副本。专用适配器在 `adapter_key(provider_id)` 提供提供方副本，即 `Key::<ModalityAdapterService>::dynamic(provider_id.to_owned())`。Rust 目录注册 `names::register::<ModalityAdapterService>` 推导出的名字是 `modalityAdapterService`；`modalityAdapter` 是契约及持久化的家族执行方名字，不是传给 `Key::named` 的字符串 key。这是进程内绑定，不是 wire face。副本如何选择由 A.2 定义。
 
 Modality 自身的 `managementMethods` 使用[方法](../contracts/session-boundary.md)契约的绑定。`modalityTasks` 服务由同一实现以 `TypeKey::named("modalityTasks")` 提供，每个 `modality.task.*` 声明对应一个方法，请求与回复类型相同：
 

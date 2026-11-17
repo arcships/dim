@@ -43,7 +43,7 @@ export function resolveToolDisplay(toolName: string, input: Record<string, unkno
   return { renderer: "generic", labelKey: "prompt.useTool" }
 }
 
-/** Display lines of an edit: the tool's unified diff when it reported one, else old then new text. */
+/** Display lines of an edit: the tool's unified diff when it reported one, else the replacements it carried, in the order they applied. */
 export function diffLines(input: Record<string, unknown>, diff: string | undefined): Array<{ sign: "-" | "+" | " "; text: string }> {
   if (diff !== undefined) {
     return diff.split("\n").filter((line) => !line.startsWith("---") && !line.startsWith("+++") && !line.startsWith("@@")).map((line) => {
@@ -51,11 +51,17 @@ export function diffLines(input: Record<string, unknown>, diff: string | undefin
       return { sign, text: sign === " " ? line.replace(/^ /, "") : line.slice(1) }
     })
   }
-  const oldText = typeof input.oldText === "string" ? input.oldText : undefined
-  const newText = typeof input.newText === "string" ? input.newText : undefined
-  if (oldText === undefined || newText === undefined) return []
-  return [
-    ...oldText.split("\n").map((text) => ({ sign: "-" as const, text })),
-    ...newText.split("\n").map((text) => ({ sign: "+" as const, text })),
-  ]
+  const replacements: Array<[unknown, unknown]> = Array.isArray(input.edits)
+    ? input.edits.map((item) => {
+      const edit = typeof item === "object" && item !== null ? item as Record<string, unknown> : {}
+      return [edit.oldText, edit.newText]
+    })
+    : [[input.oldText, input.newText]]
+  return replacements.flatMap(([oldText, newText]) => {
+    if (typeof oldText !== "string" || typeof newText !== "string") return []
+    return [
+      ...oldText.split("\n").map((text) => ({ sign: "-" as const, text })),
+      ...newText.split("\n").map((text) => ({ sign: "+" as const, text })),
+    ]
+  })
 }

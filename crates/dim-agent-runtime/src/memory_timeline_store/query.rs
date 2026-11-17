@@ -242,7 +242,7 @@ impl<'a> Evaluation<'a> {
                 for record in self.source.records(None) {
                     let mut accepted = true;
                     for condition in &remaining {
-                        if !self.matches(condition, record, None, None)? {
+                        if !self.matches(condition, record, record, None, None)? {
                             accepted = false;
                             break;
                         }
@@ -282,11 +282,26 @@ impl<'a> Evaluation<'a> {
         &self,
         operand: &QueryOperand,
         record: Record<'a>,
+        root: Record<'a>,
         outer: Option<Record<'a>>,
         element: Option<Element<'_>>,
     ) -> Result<QueryValue> {
         match operand {
             QueryOperand::Field { path } => record.field(path),
+            QueryOperand::Root { path } => root.field(path),
+            QueryOperand::Concat { parts } => {
+                let mut text = String::new();
+                for part in parts {
+                    let QueryValue::Value {
+                        value: Value::String(value),
+                    } = self.operand(part, record, root, outer, element)?
+                    else {
+                        return Ok(QueryValue::Missing);
+                    };
+                    text.push_str(&value);
+                }
+                Ok(QueryValue::Value { value: text.into() })
+            }
             QueryOperand::Outer { path } => {
                 outer.expect("validated correlated operand").field(path)
             }
@@ -304,10 +319,11 @@ impl<'a> Evaluation<'a> {
         &self,
         filter: &QueryFilter,
         record: Record<'a>,
+        root: Record<'a>,
         outer: Option<Record<'a>>,
         element: Option<Element<'_>>,
     ) -> Result<bool> {
-        let operand = |value| self.operand(value, record, outer, element);
+        let operand = |value| self.operand(value, record, root, outer, element);
         Ok(match filter {
             QueryFilter::Compare {
                 left,
@@ -372,7 +388,7 @@ impl<'a> Evaluation<'a> {
             }
             QueryFilter::And { conditions } => {
                 for condition in conditions {
-                    if !self.matches(condition, record, outer, element)? {
+                    if !self.matches(condition, record, root, outer, element)? {
                         return Ok(false);
                     }
                 }
@@ -380,13 +396,15 @@ impl<'a> Evaluation<'a> {
             }
             QueryFilter::Or { conditions } => {
                 for condition in conditions {
-                    if self.matches(condition, record, outer, element)? {
+                    if self.matches(condition, record, root, outer, element)? {
                         return Ok(true);
                     }
                 }
                 false
             }
-            QueryFilter::Not { condition } => !self.matches(condition, record, outer, element)?,
+            QueryFilter::Not { condition } => {
+                !self.matches(condition, record, root, outer, element)?
+            }
             QueryFilter::Exists { condition } => {
                 if let Some(index) = self
                     .related
@@ -401,7 +419,7 @@ impl<'a> Evaluation<'a> {
                     join_key(values).is_some_and(|key| index.keys.contains(&key))
                 } else {
                     for inner in self.source.records(None) {
-                        if self.matches(condition, inner, Some(record), None)? {
+                        if self.matches(condition, inner, root, Some(record), None)? {
                             return Ok(true);
                         }
                     }
@@ -427,6 +445,7 @@ impl<'a> Evaluation<'a> {
                     if self.matches(
                         condition,
                         record,
+                        root,
                         outer,
                         Some(Element {
                             index,
@@ -443,11 +462,18 @@ impl<'a> Evaluation<'a> {
 }
 
 fn element_paths<'a>(filter: &'a QueryFilter, paths: &mut BTreeMap<&'a str, bool>) {
-    let mut operand = |operand: &'a QueryOperand, value| {
-        if let QueryOperand::Element { path } = operand {
-            *paths.entry(path).or_default() |= value;
+    fn visit<'a>(operand: &'a QueryOperand, value: bool, paths: &mut BTreeMap<&'a str, bool>) {
+        match operand {
+            QueryOperand::Element { path } => *paths.entry(path).or_default() |= value,
+            QueryOperand::Concat { parts } => {
+                for part in parts {
+                    visit(part, value, paths);
+                }
+            }
+            _ => {}
         }
-    };
+    }
+    let mut operand = |operand, value| visit(operand, value, paths);
     match filter {
         QueryFilter::Compare { left, right, .. } => {
             operand(left, true);
@@ -479,7 +505,13 @@ fn conjuncts<'a>(filter: &'a QueryFilter, terms: &mut Vec<&'a QueryFilter>) {
 }
 
 fn has_outer(filter: &QueryFilter) -> bool {
-    let outer = |value: &QueryOperand| matches!(value, QueryOperand::Outer { .. });
+    fn outer(value: &QueryOperand) -> bool {
+        match value {
+            QueryOperand::Outer { .. } | QueryOperand::Root { .. } => true,
+            QueryOperand::Concat { parts } => parts.iter().any(outer),
+            _ => false,
+        }
+    }
     match filter {
         QueryFilter::TextCandidate { .. } => false,
         QueryFilter::Compare { left, right, .. } => outer(left) || outer(right),
@@ -729,7 +761,7 @@ pub(super) fn execute<'a>(
     };
     for record in records {
         if let Some(filter) = &query.filter
-            && !evaluation.matches(filter, record, None, None)?
+            && !evaluation.matches(filter, record, record, None, None)?
         {
             continue;
         }

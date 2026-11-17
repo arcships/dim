@@ -25,7 +25,9 @@ import type {
   ModelRetryProgress,
   ModelUpdateResult,
   Notification,
+  OperatorBlock,
   ProviderCatalog,
+  ProviderModel,
   ProviderPresentation,
   ProviderSummary,
   RawBlock,
@@ -71,6 +73,10 @@ function num(source: Json, key: string, at: string): number {
   const value = source[key]
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) fail(`${at}.${key}`, "a nonnegative safe integer")
   return value
+}
+
+function optNum(source: Json, key: string, at: string): number | undefined {
+  return source[key] === undefined || source[key] === null ? undefined : num(source, key, at)
 }
 
 /** A nonnegative finite number; token counts are floats on the wire. */
@@ -166,6 +172,21 @@ export function readAck(value: unknown): void {
 }
 
 /** `session.methods` of one Session: the method names it serves. */
+/** `session.skills`: the Skills the palettes offer, with the operator-invocable flag. */
+export function readSessionSkills(value: unknown): Array<{ name: string; description: string; userInvocable: boolean }> {
+  const at = "session.skills"
+  const source = obj(value, at)
+  return arr(source.skills, `${at}.skills`).map((item, index) => {
+    const rowAt = `${at}.skills[${index}]`
+    const skill = obj(item, rowAt)
+    return {
+      name: str(skill, "name", rowAt),
+      description: str(skill, "description", rowAt),
+      userInvocable: skill.userInvocable === undefined ? true : bool(skill, "userInvocable", rowAt),
+    }
+  })
+}
+
 export function readSessionMethods(value: unknown): string[] {
   const at = "session.methods"
   return arr(obj(value, at).methods, `${at}.methods`).map((item, index) => str(obj(item, `${at}.methods[${index}]`), "name", `${at}.methods[${index}]`))
@@ -211,8 +232,10 @@ export function readSummaries(value: unknown): SessionSummary[] {
     const source = obj(item, at)
     const preview = optStr(source, "preview", at)
     const origin = optStr(source, "origin", at)
-    if (origin !== undefined && origin !== "client" && origin !== "acp" && origin !== "internal" && origin !== "unknown") fail(`${at}.origin`, "client, acp, internal or unknown")
+    if (origin !== undefined && origin !== "client" && origin !== "acp" && origin !== "internal" && origin !== "unknown" && origin !== "automation") fail(`${at}.origin`, "client, acp, internal, unknown or automation")
     const parentSessionId = optStr(source, "parentSessionId", at)
+    const closed = source.closed
+    if (closed !== undefined && typeof closed !== "boolean") fail(`${at}.closed`, "a boolean")
     return {
       ...readSessionTitle(source, at),
       sessionId: str(source, "sessionId", at),
@@ -224,6 +247,7 @@ export function readSummaries(value: unknown): SessionSummary[] {
       ...(preview === undefined ? {} : { preview }),
       ...(origin === undefined ? {} : { origin }),
       ...(parentSessionId === undefined ? {} : { parentSessionId }),
+      ...(closed === undefined ? {} : { closed: closed as boolean }),
       updatedAt: num(source, "updatedAt", at),
     }
   })
@@ -259,6 +283,19 @@ export function readHistory(value: unknown): HistoryPage {
     done: bool(source, "done", "session.history"),
     ...(source.nextBefore === undefined ? {} : { nextBefore: num(source, "nextBefore", "session.history") }),
     ...(source.turnStart === undefined ? {} : { turnStart: num(source, "turnStart", "session.history") }),
+  }
+}
+
+export function readDisplayHistory(value: unknown): HistoryPage {
+  const at = "session.history.display"
+  const source = obj(value, at)
+  return {
+    events: arr(source.items, `${at}.items`).map((item, index) => readEvent(item, `${at}.items[${index}]`)),
+    through: num(source, "through", at),
+    nextAfter: num(source, "nextAfter", at),
+    done: bool(source, "done", at),
+    ...(source.nextBefore === undefined ? {} : { nextBefore: num(source, "nextBefore", at) }),
+    ...(source.turnStart === undefined ? {} : { turnStart: num(source, "turnStart", at) }),
   }
 }
 
@@ -361,6 +398,21 @@ function readReasoningEfforts(model: Json, at: string): string[] | undefined {
   return efforts
 }
 
+export function readModelPage(value: unknown): { models: Array<{ providerId: string; providerName: string; model: ProviderModel; disabled: boolean }>; next?: ModelId } {
+  const page = obj(value, "provider.models.query")
+  const next = page.next === null ? undefined : modelId(page.next, "provider.models.query.next")
+  return {
+    models: arr(page.models, "provider.models.query.models").map((value, index) => {
+      const at = `provider.models.query.models[${index}]`
+      const row = obj(value, at)
+      const model = obj(row.model, `${at}.model`)
+      const efforts = readReasoningEfforts(model, `${at}.model`)
+      return { providerId: str(row, "providerId", at), providerName: str(row, "providerName", at), disabled: bool(row, "disabled", at), model: { id: str(model, "id", at), name: str(model, "name", at), ...(optStr(model, "unavailableReason", at) === undefined ? {} : { unavailableReason: optStr(model, "unavailableReason", at) }), ...(efforts === undefined ? {} : { reasoningEfforts: efforts }) } }
+    }),
+    ...(next === undefined ? {} : { next }),
+  }
+}
+
 export function readProviderCatalog(value: unknown): ProviderCatalog | undefined {
   const source = obj(value, "provider.catalog")
   if (source.catalog === null) return undefined
@@ -425,21 +477,60 @@ function loadedSkill(text: string): string | undefined {
 }
 
 /**
- * The operator's own text of a message and the Skills its blocks loaded: a
- * text block after the first that starts with the marker is a loaded Skill,
- * shown as one line and never as its instructions.
+ * The element names a submit check can append to a message, as
+ * `crates/dim-agent-types/src/markup.rs` writes them: that crate owns the
+ * vocabulary, and this is the one client that cannot link it. A name matches a
+ * whole element, so a longer name that starts with one does not match.
  */
-function userText(blocks: unknown, at: string): { text: string; skills: string[] } {
-  const text: string[] = []
+const RUNTIME_MARKERS = ["dim-hooks", "dim-skill"] as const
+
+/** The element `text` opens, when it opens one of those after the first block. */
+function runtimeElement(index: number, text: string): (typeof RUNTIME_MARKERS)[number] | undefined {
+  if (index === 0 || !text.startsWith("<")) return undefined
+  return RUNTIME_MARKERS.find((name) => {
+    if (!text.startsWith(`<${name}`)) return false
+    const rest = text.slice(name.length + 1)
+    return rest.startsWith(">") || /^\s/.test(rest)
+  })
+}
+
+/**
+ * The operator's own content of a message in the order the server holds it:
+ * each text run as it was written and each stored image where it stands, plus
+ * the one line the message shows, the Skills its blocks loaded and how many
+ * hook contexts it carries. A text block after the first that opens a runtime
+ * element is not their words: a Skill shows as one line and a hook's context as
+ * a count, so neither joins the content.
+ */
+function operatorContent(blocks: unknown, at: string): { content: OperatorBlock[]; text: string; skills: string[]; hooks: number } {
+  const content: OperatorBlock[] = []
+  const runs: string[] = []
   const skills: string[] = []
+  let hooks = 0
   arr(blocks, at).forEach((item, index) => {
     const block = obj(item, `${at}[${index}]`)
+    if (block.type === "image") {
+      const image = fileImage(block, `${at}[${index}]`)
+      if (image !== undefined) content.push(image)
+      return
+    }
     if (block.type !== "text" || typeof block.text !== "string") return
-    const skill = index === 0 ? undefined : loadedSkill(block.text)
-    if (skill === undefined) text.push(block.text)
-    else skills.push(skill)
+    const element = runtimeElement(index, block.text)
+    if (element === "dim-skill") {
+      const skill = loadedSkill(block.text)
+      if (skill !== undefined) {
+        skills.push(skill)
+        return
+      }
+    }
+    if (element === "dim-hooks") {
+      hooks += 1
+      return
+    }
+    content.push({ type: "text", text: block.text })
+    runs.push(block.text)
   })
-  return { text: text.join("\n"), skills }
+  return { content, text: runs.join("\n"), skills, hooks }
 }
 
 function textOf(blocks: unknown, at: string): string {
@@ -449,12 +540,29 @@ function textOf(blocks: unknown, at: string): string {
   }).join("\n")
 }
 
+/** One image block as the stored file reference a message can resend; another kind or source is not one. */
+function fileImage(block: Json, at: string): import("./protocol").ImageBlock | undefined {
+  if (block.type !== "image") return undefined
+  const source = obj(block.source, `${at}.source`)
+  if (source.type !== "file") return undefined
+  return { type: "image", source: readUploadedImage({ image: source }) }
+}
+
+function fileImages(value: unknown, at: string): import("./protocol").ImageBlock[] {
+  if (typeof value === "string") return []
+  return arr(value, at).flatMap((item, index) => {
+    const image = fileImage(obj(item, `${at}[${index}]`), `${at}[${index}]`)
+    return image === undefined ? [] : [image]
+  })
+}
+
 function toolResult(value: unknown, at: string): ToolResult {
   const source = obj(value, at)
   const text = typeof source.content === "string" ? source.content : textOf(source.content, `${at}.content`)
   const structured = source.structuredContent === undefined || source.structuredContent === null ? undefined : obj(source.structuredContent, `${at}.structuredContent`)
   const diff = typeof structured?.diff === "string" ? structured.diff : undefined
-  return { text, isError: source.isError === true, ...(diff === undefined ? {} : { diff }) }
+  const images = fileImages(source.content, `${at}.content`)
+  return { text, ...(images.length === 0 ? {} : { images }), isError: source.isError === true, ...(diff === undefined ? {} : { diff }) }
 }
 
 function rawBlocks(blocks: unknown, at: string): RawBlock[] {
@@ -496,14 +604,14 @@ function content(type: string, name: string, data: Json, at: string): EventConte
     case "input/message": {
       const blocks = rawBlocks(data.blocks, `${at}.blocks`)
       if (data.user === undefined || data.user === null) {
-        if (blocks.length === 0) return { kind: "input", blocks }
+        if (blocks.length === 0) return { kind: "input", content: [], blocks }
         const mode = optStr(data, "mode", at)
         const text = blocks.map((block) => block.text).find((value) => value.startsWith("<dim-branch-")) ?? blocks[0]!.text
         return { kind: "source-input", text, blocks, ...(mode === undefined ? {} : { mode }) }
       }
       const user = obj(data.user, `${at}.user`)
-      const { text, skills } = userText(user.content, `${at}.user.content`)
-      return { kind: "input", text, user: readUserInput(user, `${at}.user`), skills: skills.length === 0 ? undefined : skills, blocks }
+      const { content: operator, text, skills, hooks } = operatorContent(user.content, `${at}.user.content`)
+      return { kind: "input", text, user: readUserInput(user, `${at}.user`), content: operator, skills: skills.length === 0 ? undefined : skills, ...(hooks === 0 ? {} : { hooks }), blocks }
     }
     case "input/applied":
       return { kind: "input-applied", inputId: str(data, "input_id", at) }
@@ -560,6 +668,8 @@ function content(type: string, name: string, data: Json, at: string): EventConte
       return { kind: "thinking", requestId: str(data, "request_id", at), delta: str(data, "delta", at) }
     case "step/text":
       return { kind: "text", requestId: str(data, "request_id", at), delta: str(data, "delta", at) }
+    case "step/tool-use-start":
+      return { kind: "tool-use-start", requestId: str(data, "request_id", at), callId: str(data, "call_id", at), name: str(data, "name", at) }
     case "step/tool-call":
       return { kind: "tool-call", requestId: str(data, "request_id", at), asks: readAsks(arr(data.calls, `${at}.calls`), `${at}.calls`) }
     case "step/tool-use": {
@@ -665,10 +775,14 @@ function readEvent(value: unknown, at: string): SessionEvent {
   const source = obj(value, at)
   const type = str(source, "type", at)
   const name = str(source, "name", at)
+  const parent = source.parent_call_id === undefined || source.parent_call_id === null
+    ? undefined
+    : str(source, "parent_call_id", at)
   return {
     id: str(source, "id", at),
     sequence: num(source, "sequence", at),
     createAt: num(source, "create_at", at),
+    ...(parent === undefined ? {} : { parentCallId: parent }),
     content: content(type, name, obj(source.data, `${at}.data`), `${at}.data`),
   }
 }
@@ -717,6 +831,13 @@ export function readNotification(method: string, value: unknown): Notification |
         branchId: str(params, "branchId", method),
         event: readEvent(params.event, `${method}.event`),
       }
+    case "session.display":
+      return {
+        method,
+        sessionId: str(params, "sessionId", method),
+        branchId: str(params, "branchId", method),
+        event: readEvent(params.item, `${method}.item`),
+      }
     case "session.state":
       return {
         method,
@@ -728,6 +849,7 @@ export function readNotification(method: string, value: unknown): Notification |
     case "session.model.progress": {
       const requestId = optStr(params, "requestId", method)
       const retry = readRetryProgress(params.retry, `${method}.retry`)
+      const thinkingStartedAt = optNum(params, "thinkingStartedAt", method)
       return {
         method,
         progress: {
@@ -738,6 +860,7 @@ export function readNotification(method: string, value: unknown): Notification |
           textOffset: num(params, "textOffset", method),
           thinking: str(params, "thinking", method),
           thinkingOffset: num(params, "thinkingOffset", method),
+          ...(thinkingStartedAt === undefined ? {} : { thinkingStartedAt }),
           ...(retry === undefined ? {} : { retry }),
         },
       }
@@ -880,8 +1003,8 @@ export function readPendingInputs(value: unknown): InputPage {
     const row = obj(item, rowAt)
     if (row.user === null) return []
     const user = readUserInput(obj(row.user, `${rowAt}.user`), `${rowAt}.user`)
-    const display = userText(user.content, `${rowAt}.user.content`)
-    return [{ id: str(row, "inputId", rowAt), text: display.text, skills: display.skills, user }]
+    const { content, text, skills, hooks } = operatorContent(user.content, `${rowAt}.user.content`)
+    return [{ id: str(row, "inputId", rowAt), text, skills, ...(hooks === 0 ? {} : { hooks }), content, user }]
   })
   return { branchId: str(source, "branchId", at), through: num(source, "through", at), inputs, next: source.next }
 }
@@ -932,4 +1055,11 @@ export function readTool(value: unknown) {
   const data = obj(source.call, `${at}.call`)
   const call = obj(data.call, `${at}.call.call`)
   return { requestId: str(data, "request_id", `${at}.call`), callId: str(call, "id", `${at}.call.call`), name: str(call, "name", `${at}.call.call`), input: obj(call.input, `${at}.call.call.input`) }
+}
+
+export function readUploadedImage(value: unknown): { type: "file"; mediaType: string; fileId: string } {
+  const reply = obj(value, "upload")
+  const source = obj(reply.image, "upload.image")
+  if (str(source, "type", "upload.image") !== "file") throw new Error("Invalid uploaded image source")
+  return { type: "file", mediaType: str(source, "mediaType", "upload.image"), fileId: str(source, "fileId", "upload.image") }
 }

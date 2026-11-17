@@ -3,6 +3,7 @@ name = "dim-modality-aimux"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 description = "The built-in Modality adapter: media operations executed through aimux"
 
@@ -39,3 +40,5 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
+# The relay's socket is tungstenite 0.24, through aimux, not the workspace's 0.29.
+tungstenite = { version = "0.24", default-features = false }

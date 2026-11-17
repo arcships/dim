@@ -61,6 +61,7 @@ fn native_events() -> Vec<AgentEvent> {
             },
             ContentBlock::Image {
                 source: ImageSource {
+                    file_id: None,
                     source_type: ImageSourceType::Base64,
                     media_type: "image/png".into(),
                     data: Some("AA==".into()),
@@ -139,6 +140,7 @@ fn native_events() -> Vec<AgentEvent> {
                 total_tokens: 47.0,
                 cache_read_tokens: None,
                 cache_write_tokens: None,
+                reasoning_tokens: None,
                 cost: None,
                 currency: None,
             },
@@ -221,6 +223,7 @@ fn native_events() -> Vec<AgentEvent> {
             sequence: i as u64 + 1,
             create_at: 1_790_000_001_234,
             tags: None,
+            parent_call_id: None,
             kind,
         })
         .collect()
@@ -255,6 +258,7 @@ fn extension_events() -> Vec<AgentEvent> {
             sequence: i as u64 + 1,
             create_at: 1_790_000_001_234,
             tags: None,
+            parent_call_id: None,
             kind,
         })
         .collect()

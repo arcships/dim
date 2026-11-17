@@ -15,8 +15,10 @@
 //! inside tmux, GNU screen or herdr: tmux and screen keep the sequence, the
 //! outer terminal's variables leak into the pane, and passed through, the
 //! outer terminal would show one bar for all panes and keep a killed pane's.
-//! `DIM_TERMINAL_PROGRESS=off` turns the bar off and `on` draws it anywhere;
-//! `DIM_TERMINAL_STATUS` is about the status record only.
+//! A terminal that answered the startup probe's program status query keeps
+//! the record (`ui::status`) and draws its own bar from it, so none is drawn
+//! there either. `DIM_TERMINAL_PROGRESS=off` turns the bar off and `on` draws
+//! it anywhere; `DIM_TERMINAL_STATUS` is about the status record only.
 //!
 //! Ghostty drops a bar that is not repeated within about 15 seconds, so a
 //! bar that shows is drawn again every second. Once one is drawn, handing
@@ -24,6 +26,7 @@
 
 use std::time::{Duration, Instant};
 
+use crate::ui::notify::Terminal;
 use crate::ui::status::Status;
 use crate::ui::terminal::modes::Mode;
 use crate::ui::theme::detect::Env;
@@ -49,15 +52,18 @@ fn bar(status: &Status) -> Option<&'static [u8]> {
     }
 }
 
-/// Whether the terminal `env` describes draws the bar.
-fn draws(env: &Env) -> bool {
+/// Whether the terminal `env` describes draws the bar, `program_status` being
+/// whether it keeps the record of the run. A multiplexer or herdr between the
+/// pane and the user hides the bar, which is why `notify::Terminal` decides
+/// that part here too.
+fn draws(env: &Env, program_status: bool) -> bool {
     let var = |key: &str| env.get(key).map_or("", String::as_str);
     match var(ENV_KEY).trim().to_ascii_lowercase().as_str() {
         "off" => return false,
         "on" => return true,
         _ => {}
     }
-    if !var("TMUX").is_empty() || !var("STY").is_empty() || var("HERDR_ENV") == "1" {
+    if program_status || Terminal::of(|key| env.get(key).cloned()).intercepts_osc() {
         return false;
     }
     let program = var("TERM_PROGRAM");
@@ -89,10 +95,10 @@ pub struct ProgressBar {
 }
 
 impl ProgressBar {
-    /// Draws where the terminal is known to, or as `DIM_TERMINAL_PROGRESS`
-    /// says.
-    pub fn from_env(env: &Env) -> Self {
-        Self::new(draws(env))
+    /// Draws where the terminal is known to and keeps no record of the run
+    /// itself, or as `DIM_TERMINAL_PROGRESS` says.
+    pub fn from_env(env: &Env, program_status: bool) -> Self {
+        Self::new(draws(env, program_status))
     }
 
     fn new(enabled: bool) -> Self {
@@ -176,8 +182,13 @@ mod tests {
             ],
             &[("TERM_PROGRAM", "Apple_Terminal"), (ENV_KEY, " On ")],
             &[("TMUX", "/tmp/tmux-501/default,1,0"), (ENV_KEY, "on")],
+            &[
+                ("TERM_PROGRAM", "rex"),
+                ("TERM", "xterm-rex"),
+                (ENV_KEY, "on"),
+            ],
         ] {
-            assert!(draws(&env(pairs)), "{pairs:?}");
+            assert!(draws(&env(pairs), false), "{pairs:?}");
         }
         for pairs in [
             &[][..],
@@ -198,11 +209,31 @@ mod tests {
                 ("WT_SESSION", "0f8a"),
             ],
             &[("STY", "1.pts-0.host"), ("TERM", "xterm-ghostty")],
+            &[("TERM", "screen-256color")],
             &[("HERDR_ENV", "1"), ("TERM_PROGRAM", "ghostty")],
             &[ghostty[0], ghostty[1], (ENV_KEY, "OFF")],
         ] {
-            assert!(!draws(&env(pairs)), "{pairs:?}");
+            assert!(!draws(&env(pairs), false), "{pairs:?}");
         }
+        for pairs in [
+            &[][..],
+            &[("WT_SESSION", "0f8a")],
+            &ghostty,
+            &[
+                ("TERM_PROGRAM", "iTerm.app"),
+                ("TERM_PROGRAM_VERSION", "4.0"),
+            ],
+        ] {
+            assert!(!draws(&env(pairs), true), "{pairs:?}");
+        }
+        assert!(draws(
+            &env(&[("WT_SESSION", "0f8a"), (ENV_KEY, "on")]),
+            true
+        ));
+        assert!(!draws(
+            &env(&[("WT_SESSION", "0f8a"), (ENV_KEY, "off")]),
+            true
+        ));
     }
 
     #[test]

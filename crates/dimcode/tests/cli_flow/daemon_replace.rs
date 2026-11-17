@@ -2,13 +2,46 @@
 //! time decides, a daemon of another build is replaced only while it is idle,
 //! and a busy one is kept with a notice (#1213).
 use super::*;
+use std::os::unix::process::ExitStatusExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// How many trailing lines of `<home>/rust/daemon.log` a failed client's
+/// message carries.
+const DAEMON_LOG_TAIL_LINES: usize = 40;
+
+/// The facts a non-zero exit needs: `success()` is false for a signal as
+/// well as for an exit code, and a client that ends without a word on stderr
+/// leaves its evidence in stdout and the daemon log (#1577).
+fn describe_client(home: &Home, output: &Output) -> String {
+    let status = match output.status.signal() {
+        Some(signal) => format!("{:?} (signal: {signal})", output.status),
+        None => format!("{:?}", output.status),
+    };
+    let log = match fs::read_to_string(home.0.join("rust/daemon.log")) {
+        Ok(log) if log.trim().is_empty() => "daemon.log is empty".to_string(),
+        Ok(log) => {
+            let lines: Vec<&str> = log.lines().collect();
+            let start = lines.len().saturating_sub(DAEMON_LOG_TAIL_LINES);
+            format!(
+                "daemon.log, last {DAEMON_LOG_TAIL_LINES} lines:\n{}",
+                lines[start..].join("\n")
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => "no daemon.log".to_string(),
+        Err(error) => format!("daemon.log unreadable: {error}"),
+    };
+    format!(
+        "status: {status}\nstdout:\n{}\nstderr:\n{}\n{log}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    )
+}
 
 fn old_hello(server: &str, features: Value) -> Value {
     json!({
         "instanceId": "old",
         "serverVersion": server,
-        "protocolVersion": 3,
+        "protocolVersion": 4,
         "daemonProfile": {"kind": "product"},
         "features": features,
     })
@@ -26,8 +59,9 @@ fn new_style_features() -> Value {
 }
 
 /// Serves one connection that the CLI makes after a replacement: hello at
-/// this build, then the command's next call.
-fn serve_successor(successor: &UnixListener) {
+/// this build, then the command's next call. Returns the hello it read, for a
+/// flow that checks what the successor was greeted with.
+pub(super) fn serve_successor(successor: &UnixListener) -> Value {
     let deadline = Instant::now() + HANG_GUARD;
     loop {
         let stream = match successor.accept() {
@@ -49,11 +83,11 @@ fn serve_successor(successor: &UnixListener) {
         assert_eq!(hello["method"], "hello");
         wire.reply(
             &hello,
-            json!({"instanceId":"new","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history"]}),
+            json!({"instanceId":"new","serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":4,"daemonProfile":{"kind":"product"},"features":["session.create","session.history"]}),
         );
         let catalog = wire.read("provider.catalog");
         wire.reply(&catalog, json!({"catalog":null}));
-        return;
+        return hello;
     }
 }
 
@@ -101,7 +135,7 @@ fn an_idle_daemon_of_another_build_is_replaced() {
     assert!(
         output.status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        describe_client(&home, &output)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -157,8 +191,8 @@ fn a_daemon_of_another_build_in_use_is_kept() {
         daemon.join().unwrap();
         assert!(
             output.status.success(),
-            "{case}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "{case}:\n{}",
+            describe_client(&home, &output)
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -193,7 +227,7 @@ fn a_new_style_daemon_decides_whether_it_is_idle() {
         assert!(
             output.status.success(),
             "{}",
-            String::from_utf8_lossy(&output.stderr)
+            describe_client(&home, &output)
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -229,7 +263,7 @@ fn a_new_style_daemon_decides_whether_it_is_idle() {
         assert!(
             output.status.success(),
             "{}",
-            String::from_utf8_lossy(&output.stderr)
+            describe_client(&home, &output)
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -282,21 +316,26 @@ fn two_starting_clients_replace_an_idle_daemon_once() {
                 .unwrap()
         };
         let first = spawn(&home);
+        let first_pid = first.id();
         let second = spawn(&home);
+        let second_pid = second.id();
         let (first, second) = (wait(first), wait(second));
+        for (label, pid, output) in [
+            ("first", first_pid, &first),
+            ("second", second_pid, &second),
+        ] {
+            assert!(
+                output.status.success(),
+                "iteration {iteration}, {label}, pid={pid}:\n{}",
+                describe_client(&home, output)
+            );
+        }
         daemon.join().unwrap();
         assert_eq!(
             shutdowns.load(Ordering::SeqCst),
             1,
             "iteration {iteration}: one client must decide the replacement"
         );
-        for (label, output) in [("first", &first), ("second", &second)] {
-            assert!(
-                output.status.success(),
-                "iteration {iteration}, {label}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
         let log = fs::read_to_string(home.0.join("rust/daemon.log")).unwrap_or_default();
         assert!(
             !log.contains("another process owns the SQLite database"),
@@ -323,8 +362,8 @@ fn two_starting_clients_with_no_daemon_start_one() {
     for (label, output) in [("first", &first), ("second", &second)] {
         assert!(
             output.status.success(),
-            "{label}: {}",
-            String::from_utf8_lossy(&output.stderr)
+            "{label}:\n{}",
+            describe_client(&home, output)
         );
     }
     let log = fs::read_to_string(home.0.join("rust/daemon.log")).unwrap_or_default();
@@ -376,7 +415,7 @@ fn the_daemon_notice_never_reaches_json_stdout() {
     assert!(
         output.status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        describe_client(&home, &output)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

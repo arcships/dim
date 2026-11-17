@@ -342,22 +342,6 @@ pub async fn read() -> Result<Source> {
         System::{DataExchange::*, Memory::*, Ole::*},
         UI::Shell::DragQueryFileW,
     };
-    struct Open;
-    impl Drop for Open {
-        fn drop(&mut self) {
-            unsafe {
-                CloseClipboard();
-            }
-        }
-    }
-    struct Locked(windows_sys::Win32::Foundation::HGLOBAL);
-    impl Drop for Locked {
-        fn drop(&mut self) {
-            unsafe {
-                GlobalUnlock(self.0);
-            }
-        }
-    }
     fn data<T>(format: u32, consume: impl FnOnce(&[u8]) -> Result<T>) -> Result<T> {
         let handle = unsafe { GetClipboardData(format) };
         if handle.is_null() {
@@ -367,14 +351,18 @@ pub async fn read() -> Result<Source> {
         if pointer.is_null() {
             return Err(std::io::Error::last_os_error().into());
         }
-        let _locked = Locked(handle);
+        let _locked = std::mem::DropGuard::new(handle, |handle| unsafe {
+            GlobalUnlock(handle);
+        });
         let size = unsafe { GlobalSize(handle) };
         consume(unsafe { std::slice::from_raw_parts(pointer.cast::<u8>(), size) })
     }
     if unsafe { OpenClipboard(std::ptr::null_mut()) } == 0 {
         return Err(std::io::Error::last_os_error().into());
     }
-    let _open = Open;
+    let _open = std::mem::DropGuard::new((), |()| unsafe {
+        CloseClipboard();
+    });
     if unsafe { IsClipboardFormatAvailable(CF_HDROP as u32) } != 0 {
         let handle = unsafe { GetClipboardData(CF_HDROP as u32) };
         if handle.is_null() {

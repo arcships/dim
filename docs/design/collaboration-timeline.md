@@ -295,3 +295,12 @@ Clients seed unfinished cards from this read and apply later deliveries/results 
 request identity. Historical transcript pages cannot resurrect a request settled at the inventory
 cutoff. Failure disables inventory-dependent controls until retried. This adds no member ledger,
 worker or new event; membership/admission and cancellation stay with the existing owner.
+
+The same registration serves nonmutating `session.collaboration.finished` for the
+[task list's settled rows](background-task-list.md#2-discover-and-fold-tasks). Parameters:
+`sessionId`, `branchId`, optional published `through`. Reply: `branchId`, fixed `through` and
+`requests`: the 50 newest terminal facts at that cutoff, newest first, each `{start, endedAt,
+result}`. A terminal fact is a `collaboration/result` or a failed `collaboration/delivered`;
+`start` is the item above with that request's latest delivery, `endedAt` the terminal fact's
+`create_at`, and `result` the result data, null for a failed delivery. A terminal fact whose
+request is not on the branch is omitted. The reply is not paged.

@@ -1,6 +1,9 @@
 //! Japanese model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => {
+            "詳細を取得できません。閉じてから開き直してください"
+        }
         "The response above is incomplete." => "上記の応答は不完全です。",
         "Could not reach the provider, or the connection dropped" => {
             "プロバイダーに接続できないか、接続が切断されました"

@@ -36,6 +36,9 @@ impl Store {
             ..Default::default()
         }
     }
+    pub fn database(&self) -> std::path::PathBuf {
+        self.0.join("dimcode.sqlite")
+    }
     pub fn connection(&self) -> Connection {
         let connection = Connection::open(self.0.join("dimcode.sqlite")).unwrap();
         connection.busy_timeout(Duration::from_secs(10)).unwrap();
@@ -266,15 +269,16 @@ async fn delete_closes_a_running_session_and_removes_what_it_stored() {
         v2.rpc("session.delete", json!({"sessionId":kept})).await["error"]["data"]["appError"],
         "unknown_method"
     );
+    // A delete reads none of the Session's records, so any connection removes
+    // a Session of any recorded version.
     let v2_session = v2.rpc("session.create", create(json!([]))).await;
     let v2_session = v2_session["result"]["sessionId"].as_str().unwrap();
-    assert_eq!(
-        other
-            .rpc("session.delete", json!({"sessionId":v2_session}))
-            .await["error"]["data"]["appError"],
-        "session_protocol_version"
-    );
-    assert!(!store.rows(&kept).is_empty() && !store.rows(v2_session).is_empty());
+    let removed = other
+        .rpc("session.delete", json!({"sessionId":v2_session}))
+        .await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"], json!({"deleted": true}), "{removed}");
+    assert!(!store.rows(&kept).is_empty() && store.rows(v2_session).is_empty());
     drop((client, other, v2, session, agent));
     server.shutdown();
     server.join().await.unwrap();
@@ -587,9 +591,6 @@ async fn require_inactive_deletes_a_session_whose_line_failed() {
     server.join().await.unwrap();
 }
 
-/// Acceptance 2 and 9: Sessions that are not loaded, fail validation or
-/// have no readable owner are deleted by id, and a Session whose output
-/// is already gone loads and is deleted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unloaded_and_damaged_sessions_are_deleted_by_id() {
     let store = Store::new();
@@ -623,12 +624,28 @@ async fn unloaded_and_damaged_sessions_are_deleted_by_id() {
 
     let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
     let mut client = Client::new_version(&server, false, 3).await;
-    for id in [&damaged, &ownerless] {
-        assert!(
-            client.rpc("session.attach", json!({"sessionId":id})).await["error"].is_object(),
-            "{id} does not load"
-        );
-    }
+    assert_ok(
+        &client
+            .rpc("session.attach", json!({"sessionId":damaged}))
+            .await,
+    );
+    assert!(
+        client
+            .rpc(
+                "session.history",
+                json!({"sessionId":damaged,"branchId":"main","after":0,"limit":256})
+            )
+            .await["error"]
+            .is_object(),
+        "reading the selected damaged event fails"
+    );
+    assert!(
+        client
+            .rpc("session.attach", json!({"sessionId":ownerless}))
+            .await["error"]
+            .is_object(),
+        "a Session without a readable owner does not load"
+    );
     assert_ok(
         &client
             .rpc("session.attach", json!({"sessionId":outputless}))
@@ -896,6 +913,276 @@ async fn a_delete_waits_for_a_building_session() {
     }
     assert!(!store.rows(&source).is_empty());
     drop((client, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// One `agent/session-deleted` notice: who it names and whether the
+/// Session's rows were already gone when it arrived.
+struct DeleteNotice {
+    agent_id: String,
+    session_id: String,
+    rows_gone: bool,
+    /// The notice as a listener receives it on the bus.
+    json: serde_json::Value,
+}
+
+/// Records every `agent/session-deleted` notice and reads SessionStore from
+/// inside the listener, so the test knows the rows went first.
+struct DeleteProbe {
+    notices: Arc<std::sync::Mutex<Vec<DeleteNotice>>>,
+    database: PathBuf,
+}
+
+impl DynPlugin for DeleteProbe {
+    fn name(&self) -> &str {
+        "SessionDeletedProbe"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        Vec::new()
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let notices = self.notices.clone();
+            let database = self.database.clone();
+            ctx.on::<dim_app_server::SessionDeleted>(move |event, _| {
+                let rows_gone = Connection::open(&database)
+                    .and_then(|connection| {
+                        connection.query_row(
+                            "SELECT COUNT(*) FROM session_owners WHERE session_id=?1",
+                            [&event.session_id],
+                            |row| row.get::<_, i64>(0),
+                        )
+                    })
+                    .map(|count| count == 0)
+                    .unwrap_or(false);
+                notices.lock().unwrap().push(DeleteNotice {
+                    agent_id: event.agent_id.clone(),
+                    session_id: event.session_id.clone(),
+                    rows_gone,
+                    json: serde_json::to_value(event).unwrap(),
+                });
+                async { Ok(None) }
+            })?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// Unloads an idle Session through its instance, as the idle pass would.
+async fn release(agent: &dim_agent_runtime::Agent, session: &str) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(loaded) = agent.get_session(session)
+                && loaded.unload_if_idle().await.unwrap_or(false)
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{session} unloads"));
+}
+
+/// EventHub §9.1: every successful delete announces `agent/session-deleted`
+/// after SessionStore removed the Session's rows, loaded or unloaded. A
+/// close keeps the rows, so it announces nothing, and the delete that then
+/// removes them does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_successful_delete_announces_the_session_and_a_close_does_not() {
+    let store = Store::new();
+    // Sessions stored by an earlier run of the daemon: this process loads
+    // them never. One keeps the ownership row the earlier run stored; the
+    // other has no owner recorded at all, so its notice must still arrive,
+    // with an empty `agentId` (EventHub §9.1).
+    let (orphan, ownerless) = {
+        let seeding = launch(Arc::new(MockTools), store.config()).await;
+        let mut client = Client::new_version(&seeding, false, 3).await;
+        let orphan = session(&mut client).await;
+        let ownerless = session(&mut client).await;
+        store
+            .connection()
+            .execute(
+                "DELETE FROM session_owners WHERE session_id=?1",
+                [&ownerless],
+            )
+            .unwrap();
+        drop(client);
+        seeding.shutdown();
+        seeding.join().await.unwrap();
+        (orphan, ownerless)
+    };
+    let notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let probe = notices.clone();
+    let database = store.0.join("dimcode.sqlite");
+    let (server, agent) = launch_with(Arc::new(MockTools), store.config(), move |builder| {
+        let probe = probe.clone();
+        let database = database.clone();
+        builder.plugin(move |_names: &Names<'_>| {
+            Ok(Box::new(DeleteProbe {
+                notices: probe.clone(),
+                database: database.clone(),
+            }) as Box<dyn DynPlugin>)
+        });
+    })
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut other = Client::new_version(&server, false, 3).await;
+    let seen = || {
+        notices
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|notice| notice.session_id.clone())
+            .collect::<Vec<_>>()
+    };
+
+    // Loaded: the delete closes it, removes the rows, then announces.
+    let loaded = session(&mut client).await;
+    assert!(agent.get_session(&loaded).is_some(), "it is loaded");
+    assert_ok(
+        &other
+            .rpc("session.delete", json!({"sessionId":loaded}))
+            .await,
+    );
+    assert_eq!(seen(), vec![loaded.clone()]);
+
+    // Unloaded: no close of it announces the end, and the delete still does.
+    let unloaded = session(&mut client).await;
+    release(&agent, &unloaded).await;
+    assert!(agent.get_session(&unloaded).is_none(), "it is unloaded");
+    assert_ok(
+        &other
+            .rpc("session.delete", json!({"sessionId":unloaded}))
+            .await,
+    );
+    assert_eq!(seen(), vec![loaded.clone(), unloaded.clone()]);
+
+    // A close keeps the rows and announces nothing; the delete that removes
+    // them announces.
+    let closed = session(&mut client).await;
+    assert_ok(
+        &client
+            .rpc("session.close", json!({"sessionId":closed}))
+            .await,
+    );
+    assert_eq!(
+        seen(),
+        vec![loaded.clone(), unloaded.clone()],
+        "a close is not a delete"
+    );
+    assert_ok(
+        &other
+            .rpc("session.delete", json!({"sessionId":closed}))
+            .await,
+    );
+    assert_eq!(
+        seen(),
+        vec![loaded.clone(), unloaded.clone(), closed.clone()]
+    );
+
+    // Stored, but never loaded here: the notice still arrives, and names the
+    // owner the store recorded for it.
+    assert_ok(
+        &other
+            .rpc("session.delete", json!({"sessionId":orphan}))
+            .await,
+    );
+    assert_eq!(
+        seen(),
+        vec![
+            loaded.clone(),
+            unloaded.clone(),
+            closed.clone(),
+            orphan.clone()
+        ]
+    );
+
+    // Stored with no owner recorded anywhere: the notice still arrives, with
+    // an empty `agentId`.
+    assert_ok(
+        &other
+            .rpc("session.delete", json!({"sessionId":ownerless}))
+            .await,
+    );
+    assert_eq!(
+        seen(),
+        vec![
+            loaded.clone(),
+            unloaded.clone(),
+            closed.clone(),
+            orphan.clone(),
+            ownerless.clone()
+        ]
+    );
+
+    // A Session whose Agent was closed: `agent.close` forgets that Agent's
+    // Session versions while the rows and the ownership row stay, so the
+    // notice's `agentId` can only come from the store (EventHub §9.1).
+    let owner = client.rpc("agent.create", json!({})).await["result"]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut params = create(json!(["wait"]));
+    params["agentId"] = json!(owner);
+    let forgotten = client.rpc("session.create", params).await["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ok(&client.rpc("agent.close", json!({"agentId": owner})).await);
+    assert_ok(
+        &other
+            .rpc("session.delete", json!({"sessionId": forgotten}))
+            .await,
+    );
+    assert_eq!(
+        seen(),
+        vec![
+            loaded.clone(),
+            unloaded.clone(),
+            closed.clone(),
+            orphan.clone(),
+            ownerless.clone(),
+            forgotten.clone()
+        ]
+    );
+
+    let recorded: Vec<(String, bool, String, serde_json::Value)> = notices
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|notice| {
+            (
+                notice.session_id.clone(),
+                notice.rows_gone,
+                notice.agent_id.clone(),
+                notice.json.clone(),
+            )
+        })
+        .collect();
+    for (session_id, rows_gone, agent_id, json) in recorded {
+        assert!(rows_gone, "{session_id} is announced after its rows went");
+        assert_eq!(json["sessionId"], json!(session_id), "{json}");
+        assert_eq!(json["agentId"], json!(agent_id), "{json}");
+        assert!(
+            json.get("session_id").is_none() && json.get("agent_id").is_none(),
+            "the design's camelCase field names: {json}"
+        );
+        assert_eq!(
+            agent_id.is_empty(),
+            session_id == ownerless,
+            "{session_id} names its owner when one is recorded: {json}"
+        );
+        if session_id == forgotten {
+            assert_eq!(
+                agent_id, owner,
+                "the closed Agent's Session names the store's owner: {json}"
+            );
+        }
+    }
+
+    drop((client, other, agent));
     server.shutdown();
     server.join().await.unwrap();
 }

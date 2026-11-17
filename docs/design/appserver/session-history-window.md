@@ -103,6 +103,8 @@ turn consumed.
 
 ## 3. Decisions
 
+This contract retains atomic boundaries for raw history. Negotiated display tails have their own bounded sequence-window contract in [display reads](session-display-read.md); they do not locate the latest turn or expand a display page to complete an atomic batch.
+
 | # | Decision | Rejected alternative | Why |
 | --- | --- | --- | --- |
 | D1 | Extend `session.history` with two optional request fields (`latestTurn`, `before`) and two optional reply fields (`turnStart`, `nextBefore`) | A new method, `session.history.latest` | The watermark, the batch rules, the v3 event filter and the error set are the same read. A second method would duplicate them, need its own feature entry and split clients between two paging loops. Older clients ignore the new reply fields, and a request without the new fields is today's read (D9) |

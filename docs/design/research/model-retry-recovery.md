@@ -77,7 +77,7 @@
 | auth_rejected | 交给现有凭据恢复合同，恢复无效后停止 | 不以“继续”绕过鉴权失败 |
 | quota_exhausted、not_found、invalid_request、content_filtered | 停止并显示对应动作 | 不自动续接 |
 | context_too_long / 有效预算事实 | 仅使用已有上下文恢复合同 | 不从字符串猜 token 数，不新增错误到压缩的通道 |
-| output_limit | 保持既有终止与提示行为 | 自动续写需另行定义，本次不包含 |
+| output_limit | 保留提示与事实，不自动重试 | 带未执行调用的回复由 Loop 在同一 turn 内续接一次（见 §6.2）；自动续写文本需另行定义 |
 | unknown、配置/准备失败、存储故障、用户取消、重载 | 不进入通用请求重试 | 不自动续接 |
 
 分类只在拥有原始外部数据的边界完成。业务错误码优先级、stream event 的状态码含义、安全展示字段遵循模型失败所有者的合同；消费者不得再次从 `error` 文本推断类别。HTTP 200 的流错误不能据 HTTP 200 判定成功，裸 429 也不能被客户端擅自解释成余额不足。
@@ -166,6 +166,8 @@ Retry 3/8 in 4s · Network error
 
 仅处理有结构化 `network`、`rate_limited` 或 `server_error` 事实，且原请求因已产生输出无法重放的模型失败。首期不处理空响应、output_limit、任意 malformed_response、工具错误、Hook 错误或持久化失败。
 
+这组排除不限制 Loop 自己的处置：声明了工具调用而一个都没执行的失败输出，由 Loop 在同一 turn 内续接一次，不等同于本文的文本续接，也不需要处置方端口。其成立依据、顺序和工具边界见 [Loop 的该节](../../architecture/rust-agent/plugins/Loop.md#a-failed-step-whose-calls-were-announced-and-never-executed)。
+
 恢复必须满足旧请求已结算、可用输出已提交、当前 turn 已执行的工具调用均已结算且结果可用于构造上下文、turn 未中断或结束、模型策略允许恢复且仍有预算。未知错误、缺少结算事实或历史无法合法续接时，保留失败。
 
 首期自动续接只允许补全回答文本。Loop 与工具执行所有者须保证续接请求不向模型声明工具，也不执行模型意外输出的工具调用。遇到这种调用时保留已提交内容并结束该 turn。若无法建立这个边界，按原失败结算。
@@ -173,6 +175,7 @@ Retry 3/8 in 4s · Network error
 ### 6.2 预算与内容
 
 - 每个 turn 最多接受一次自动续接；正常文本、工具结果、错误类别变化、模型切换或新 requestId 都不重置这个计数。新用户输入实际启动的新 turn 才有新额度。
+- 这个计数由 Loop 的 turn 状态持有：处置方续接与「调用已声明但从未执行」的续接共用同一次额度，两者都不再另立计数器。上下文预算恢复属于另一条合同，不读也不消耗它。
 - 原请求与续接请求共用该故障链的 **8 次模型调用、300 秒累计睡眠** 上限，继承已用 attempts 和 waitedMs。总预算耗尽即停止，不追加另一轮完整预算。
 - 故障链以原失败 requestId 关联；普通工具步骤之后的正常请求不属于这条链，不能把整个长 turn 限成只有 8 次模型调用。
 - 续接使用新的 requestId 和同一 turnId。保留已提交 assistant 内容和真实工具结果；不修改历史输出、不执行不完整的工具调用、不重放已完成的 callId。未执行的调用不能被伪造为成功结果。
@@ -234,7 +237,7 @@ ModelRecovery 的计数、决定和结算属于本分支事实，内存只是其
 - **缺失与取消**：必须在交接前确定是否有可用的处置方；交接后失去处置方要有确定的终态。不能“广播后永远等回复”，也不能依赖订阅顺序让 Recovery 抢在 Loop 前面。
 - **序号、批次、中断、重载**：接收方按序检查 stop/steer 与工作身份；需要一起生效的事实由所有者原子提交；重载结算未完成交接，不重发请求。
 - **所有者与议题**：Loop 业务所有者。此项需要在 [#1210](https://github.com/arcships/dim/issues/1210) 中达成一致，再更新 Loop 自己的合同。不是要求 Timeline、Dispatcher、Session 门面或 rutis 增加基础设施特例。
-- **合同落点**：[Loop 的失败处置交接](../../architecture/rust-agent/plugins/Loop.md#a-failed-model-step-and-its-disposer)。
+- **提案落点**：[ModelRecovery 的待定交接要求](../plugins/ModelRecovery.md#7-requirements-raised-to-mechanism-owners)。这不是现有 Loop 接口；是否实施需另行决定。
 
 ### R2. 输出结算、安全续接与跨请求预算
 

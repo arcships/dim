@@ -3,6 +3,7 @@
 //! `docs/design/web-workspace.md` §2.
 
 mod resources;
+mod uploads;
 
 use crate::{
     connection::{ConnectionHub, Entry},
@@ -103,7 +104,7 @@ impl WebEntry {
         let mut state = self.state.lock().await;
         if state.enabled {
             state.enabled = false;
-            self.close_if_unused(&mut state, hub).await;
+            self.close_if_unused(&mut state).await;
             return Ok(toggled(&state));
         }
         state.enabled = true;
@@ -129,7 +130,7 @@ impl WebEntry {
     pub async fn disable(&self, hub: &Arc<ConnectionHub>) -> WebStatus {
         let mut state = self.state.lock().await;
         state.enabled = false;
-        self.close_if_unused(&mut state, hub).await;
+        self.close_if_unused(&mut state).await;
         status(hub, &state)
     }
 
@@ -140,7 +141,7 @@ impl WebEntry {
     /// Called as a local connection ends. When it was the last holder and
     /// the switch is off, the listener closes, every token is dropped and
     /// web connections detach.
-    pub async fn release(&self, hub: &Arc<ConnectionHub>, holder: &str) {
+    pub async fn release(&self, holder: &str) {
         let mut state = self.state.lock().await;
         let Some(open) = state.open.as_mut() else {
             return;
@@ -148,10 +149,10 @@ impl WebEntry {
         if !open.holders.remove(holder) {
             return;
         }
-        self.close_if_unused(&mut state, hub).await;
+        self.close_if_unused(&mut state).await;
     }
 
-    async fn close_if_unused(&self, state: &mut Lifecycle, hub: &Arc<ConnectionHub>) {
+    async fn close_if_unused(&self, state: &mut Lifecycle) {
         if state.enabled
             || state
                 .open
@@ -164,7 +165,6 @@ impl WebEntry {
             return;
         };
         open.stop.cancel();
-        hub.close_entry(Entry::Web);
         let _ = open.task.await;
     }
 
@@ -200,16 +200,40 @@ impl WebEntry {
         let address = listener.local_addr().map_err(io_error)?;
         let bootstrap = new_token();
         let stop = hub.closing().child_token();
+        let database = hub.with_rpc(|rpc| rpc.config.database_path.clone())?;
+        let staging = tokio::task::spawn_blocking(move || uploads::Staging::open(database))
+            .await
+            .map_err(|error| RpcError::invalid(error.to_string()))??;
         let site = Arc::new(Site {
+            staging,
             hub: hub.clone(),
+            stopping: stop.clone(),
             assets,
             port: address.port(),
             bootstrap: digest(&bootstrap),
             access: Mutex::new(HashSet::new()),
+            uploads: tokio::sync::Semaphore::new(4),
             throttle: Mutex::new(Throttle::default()),
         });
         let router = Router::new()
             .route("/api/health", get(health))
+            .route(
+                "/api/modality/tasks",
+                post(uploads::modality)
+                    .layer(axum::extract::DefaultBodyLimit::max(101 * 1024 * 1024)),
+            )
+            .route(
+                "/api/sessions/{session_id}/modality-results",
+                post(uploads::attach_result),
+            )
+            .route(
+                "/api/sessions/{session_id}/files",
+                post(uploads::upload).layer(axum::extract::DefaultBodyLimit::max(17 * 1024 * 1024)),
+            )
+            .route(
+                "/api/sessions/{session_id}/files/{file_id}",
+                get(uploads::download),
+            )
             .route("/api/auth/exchange", post(exchange))
             .route("/api/auth/session", get(session))
             .route("/api/auth/logout", post(logout))
@@ -391,6 +415,9 @@ impl Assets {
 }
 
 struct Site {
+    staging: uploads::Staging,
+    stopping: CancellationToken,
+    uploads: tokio::sync::Semaphore,
     hub: Arc<ConnectionHub>,
     assets: Assets,
     port: u16,
@@ -598,12 +625,13 @@ async fn upgrade(
     if hub.control.shutdown().is_cancelled() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    let closing = site.stopping.clone();
     ws.max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             let tracker = hub.tasks.clone();
             let task = tracker.spawn(async move {
-                run_ws(hub, socket, Entry::Web).await;
+                run_ws(hub, socket, Entry::Web, closing).await;
             });
             let _ = task.await;
         })

@@ -15,7 +15,7 @@ registerHooks({
   },
 })
 
-const { ProtocolError, readAccountProviders, readBranchCreate, readHistory, readMemberApproval, readNotification, readPermissionState, readProviderCatalog } = await import("./read.ts")
+const { ProtocolError, readAccountProviders, readBranchCreate, readHistory, readDisplayHistory, readMemberApproval, readNotification, readPermissionState, readProviderCatalog } = await import("./read.ts")
 
 test("permission replies ignore removed policy keys and still validate presets and tool lists", () => {
   const policy = { preset: "full-access", allowedTools: ["read"], disallowedTools: ["exec"] }
@@ -60,6 +60,13 @@ function event(type, name, data, sequence = 1) {
 }
 
 test("branch facts are decoded with their line and cut", () => {
+  const summary = event("display", "compaction", { strategy: "summary" }, 2)
+  const display = readDisplayHistory({ items: [summary], through: 2, nextAfter: 2, nextBefore: 2, done: true })
+  assert.deepEqual(display.events[0], { id: "e2", sequence: 2, createAt: 1002, content: { kind: "other" } })
+  assert.deepEqual(readNotification("session.display", { sessionId: "s", branchId: "main", item: summary }), {
+    method: "session.display", sessionId: "s", branchId: "main", event: display.events[0],
+  })
+  assert.throws(() => readDisplayHistory({ events: [summary], through: 2, nextAfter: 2, done: true }), ProtocolError)
   const created = page(event("branch", "create", {
     at: { kind: "sequence", sequence: 3 },
     source: { kind: "host", operation_id: "op-1" },
@@ -139,6 +146,26 @@ test("member approvals preserve the original action and retire by branch and rou
   assert.equal(readNotification("session.notice", { sessionId: "leader", source: "AnotherOwner", kind: "memberApprovalEnded", data: {} }), undefined)
 })
 
+test("model progress reads the open thinking block's producer start", () => {
+  assert.deepEqual(readNotification("session.model.progress", {
+    sessionId: "s", branchId: "main", requestId: "r1",
+    text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1_002,
+  }), {
+    method: "session.model.progress",
+    progress: { sessionId: "s", branchId: "main", requestId: "r1", text: "", textOffset: 0, thinking: "weigh", thinkingOffset: 0, thinkingStartedAt: 1_002 },
+  })
+  assert.equal(readNotification("session.model.progress", {
+    sessionId: "s", branchId: "main", text: "", textOffset: 0, thinking: "", thinkingOffset: 0,
+  }).progress.thinkingStartedAt, undefined)
+})
+
+test("tool-use-start opens a call as its own output event", () => {
+  const started = page(event("step", "tool-use-start", {
+    turn_id: "turn", request_id: "request", call_id: "call", name: "echo",
+  }))
+  assert.deepEqual(started.events[0].content, { kind: "tool-use-start", requestId: "request", callId: "call", name: "echo" })
+})
+
 test("a loaded Skill block is read as a note, not as the operator's message", () => {
   const block = '<dim-skill name="checkin">\nSkill: checkin\nDescription: D\nFile: /x/SKILL.md\n\nInstructions:\nBODY\n</dim-skill>'
   const loaded = page(event("input", "message", {
@@ -158,4 +185,36 @@ test("a loaded Skill block is read as a note, not as the operator's message", ()
   }, 2))
   assert.equal(typed.events[0].content.text, '<dim-skill name="mine">as typed')
   assert.equal(typed.events[0].content.skills, undefined)
+})
+
+test("a prompt hook's context is counted, not read as the operator's message", () => {
+  const hooks = [
+    '<dim-hooks kind="prompt-submit">\nSEARCH-MEMORY-FIRST\n</dim-hooks>',
+    '<dim-hooks kind="prompt-submit">\nread the briefing again\n</dim-hooks>',
+  ]
+  const hooked = page(event("input", "message", {
+    user: { content: [
+      { type: "text", text: "why does the parser stall?" },
+      ...hooks.map((text) => ({ type: "text", text })),
+    ] },
+    mode: "queue",
+  }))
+  assert.equal(hooked.events[0].content.text, "why does the parser stall?")
+  assert.equal(hooked.events[0].content.hooks, 2)
+  assert.equal(hooked.events[0].content.skills, undefined)
+  assert.equal(hooked.events[0].content.user.content.length, 3, "the raw content is kept")
+
+  // The first block is the operator's, whatever it opens, and a longer name is
+  // not the element it starts with.
+  for (const typed of [
+    '<dim-hooks kind="prompt-submit">typed by hand</dim-hooks>',
+    '<dim-hooksx kind="prompt-submit">no such element</dim-hooksx>',
+  ]) {
+    const read = page(event("input", "message", {
+      user: { content: [{ type: "text", text: typed }] },
+      mode: "queue",
+    }, 3))
+    assert.equal(read.events[0].content.text, typed, typed)
+    assert.equal(read.events[0].content.hooks, undefined, typed)
+  }
 })

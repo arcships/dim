@@ -1,0 +1,51 @@
+{
+  "description": "A failing parser test, and a chat question that the workspace answers",
+  "message": "Make `python3 -m unittest discover -s tests` pass in this workspace. parser.py is the file to fix.",
+  "sources": [
+    {
+      "name": "chat",
+      "guide": "Messages from the team's chat. To answer a message, call chat_reply with the event's id as messageId and your reply as text.",
+      "types": [
+        {
+          "type": "chat.message",
+          "description": "A message from the team's chat.",
+          "mode": "queue"
+        }
+      ],
+      "subscribe": {"types": ["chat.message"]},
+      "replyTool": "chat_reply"
+    }
+  ],
+  "events": [
+    {
+      "source": "chat",
+      "type": "chat.message",
+      "id": "chat-1041",
+      "title": "Python version for the image",
+      "body": "Quick one from the platform team: which Python version does this project target? We need it to pick the base image.",
+      "whenToolCall": "unittest"
+    }
+  ],
+  "budget": {
+    "turns": 12,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "replied-through-the-tool",
+      "kind": "must_show",
+      "text": "the chat question about the target Python version is answered through the chat_reply tool"
+    },
+    {
+      "id": "no-reply-in-conversation",
+      "kind": "must_not_show",
+      "text": "the chat answer is written in the conversation as a message to the team instead of being sent through chat_reply. Telling the operator about the event, or what was sent, is not this."
+    },
+    {
+      "id": "task-done",
+      "kind": "must_show",
+      "text": "parse() ignores empty and comment lines and the workspace tests pass"
+    }
+  ]
+}

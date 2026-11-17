@@ -7,63 +7,76 @@ import { createServer } from "vite"
 const server = await createServer({
   root: fileURLToPath(new URL("../../", import.meta.url)),
   configFile: false,
-  server: { middlewareMode: true },
+  server: { middlewareMode: true, ws: false },
   appType: "custom",
 })
 after(() => server.close())
-const { useModelsStore } = await server.ssrLoadModule("/src/stores/models.ts")
+const { useModels } = await server.ssrLoadModule("/src/stores/models.ts")
 const { useConnectionStore } = await server.ssrLoadModule("/src/stores/connection.ts")
 
 function discovery() {
   setActivePinia(createPinia())
   const connection = useConnectionStore()
-  connection.hello = { instanceId: "test", serverVersion: "test", protocolVersion: 3, features: ["provider.list", "provider.catalog", "account.providers"] }
-  const state = { failedMethod: undefined, collision: false }
+  connection.hello = { instanceId: "test", serverVersion: "test", protocolVersion: 4, features: ["provider.models.query"] }
+  const calls = []
   connection.client.call = async (method, params, read) => {
-    if (method === state.failedMethod) throw new Error(`${method} is reloading`)
-    if (method === "provider.list") return read({ providers: [
-      { providerId: "local", displayName: "Local", enabled: true, credentialConfigured: false },
-      { providerId: "disabled", displayName: "Disabled", enabled: false, credentialConfigured: true },
-      ...(state.collision ? [{ providerId: "managed", displayName: "Legacy static name", enabled: true, credentialConfigured: true }] : []),
-    ] })
-    if (method === "account.providers") return read([{ providerId: "managed", displayName: "Managed account" }])
-    if (method === "provider.catalog") return read({ catalog: {
-      models: [{ id: `${params.providerId}-model`, name: `${params.providerId} model` }],
-      disabledModelIds: [],
-    } })
-    throw new Error(`Unexpected method ${method}`)
+    calls.push({ method, params })
+    assert.equal(method, "provider.models.query")
+    const id = params.after ? "second" : "first"
+    return read({ models: [{ providerId: "local", providerName: "Local", disabled: false, model: { id, name: id } }], next: params.after ? null : { providerId: "local", modelId: id } })
   }
-  return { models: useModelsStore(), state }
+  return { models: useModels(), calls, connection }
 }
 
-test("model discovery merges provider identities with the managed descriptor taking precedence", async () => {
-  const { models, state } = discovery()
-  state.collision = true
-  await models.load()
-  assert.deepEqual(models.providers, [
-    { providerId: "local", name: "Local", models: [{ id: "local-model", name: "local model" }] },
-    { providerId: "managed", name: "Managed account", models: [{ id: "managed-model", name: "managed model" }] },
-  ])
-  assert.equal(models.error, "")
+test("model views query one page and fetch the next only on demand", async () => {
+  const { models, calls } = discovery()
+  assert.equal(calls.length, 0)
+  await models.load({ query: "reasoning" })
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].params, { query: "reasoning" })
+  assert.equal(models.providers[0].models.length, 1)
+  await models.loadMore()
+  assert.deepEqual(calls[1].params, { query: "reasoning", after: { providerId: "local", modelId: "first" } })
+  assert.equal(models.providers[0].models.length, 2)
+  assert.equal(models.next, undefined)
+  models.clear()
+  assert.equal(models.providers, undefined)
 })
 
-for (const [failedMethod, expected] of [
-  ["account.providers", [{ providerId: "local", name: "Local", models: [{ id: "local-model", name: "local model" }] }]],
-  ["provider.list", [{ providerId: "managed", name: "Managed account", models: [{ id: "managed-model", name: "managed model" }] }]],
-]) {
-  test(`model discovery retains healthy models when ${failedMethod} fails and recovers on retry`, async () => {
-    const { models, state } = discovery()
-    state.failedMethod = failedMethod
-    await models.load()
-    assert.deepEqual(models.providers, expected)
-    assert.equal(models.error, `${failedMethod} is reloading`)
+test("a second view owns no results from the first view", async () => {
+  const { models, calls } = discovery()
+  await models.load()
+  const second = useModels()
+  assert.equal(second.providers, undefined)
+  await second.load({ providerId: "local", modelId: "first" })
+  assert.equal(calls.length, 2)
+  second.clear()
+  assert.equal(models.providers[0].models.length, 1)
+})
 
-    state.failedMethod = undefined
-    await models.load()
-    assert.deepEqual(models.providers, [
-      { providerId: "local", name: "Local", models: [{ id: "local-model", name: "local model" }] },
-      { providerId: "managed", name: "Managed account", models: [{ id: "managed-model", name: "managed model" }] },
-    ])
-    assert.equal(models.error, "")
-  })
-}
+test("a closed view ignores an outstanding page", async () => {
+  const { models, connection } = discovery()
+  const pending = Promise.withResolvers()
+  connection.client.call = async () => pending.promise
+  const loaded = models.load()
+  models.clear()
+  pending.resolve({ models: [], next: undefined })
+  await loaded
+  assert.equal(models.providers, undefined)
+})
+
+test("refresh supersedes a page already in flight", async () => {
+  const { models, connection } = discovery()
+  const old = Promise.withResolvers()
+  let refreshed = false
+  connection.client.call = async (method, params, read) => {
+    if (method === "provider.refresh") { refreshed = true; return read({}) }
+    if (!refreshed) { await old.promise; return read({ models: [], next: null }) }
+    return read({ models: [{ providerId: "managed", providerName: "Account", disabled: false, model: { id: "new", name: "New" } }], next: null })
+  }
+  const initial = models.load()
+  await models.refresh("managed")
+  old.resolve()
+  await initial
+  assert.equal(models.providers[0].models[0].id, "new")
+})

@@ -137,7 +137,7 @@ fn recurrence(job: &ScheduledJob) -> Result<Value> {
         .with_timezone(&Local);
     let mut fields = BTreeMap::new();
     let upper = job.rrule.trim().to_uppercase();
-    let rule = upper.strip_prefix("RRULE:").unwrap_or(&upper);
+    let rule = upper.trim_prefix("RRULE:");
     for pair in rule.split(';') {
         let (key, value) = pair.split_once('=').ok_or_else(invalid)?;
         if ![

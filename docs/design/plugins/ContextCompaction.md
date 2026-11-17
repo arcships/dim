@@ -415,8 +415,9 @@ own flat record type in the v1 module (§12).
 its own retries and the shared failure policy's attempts (§5.2). `durationMs` is measured around the strategy call,
 so it is the summarizer's duration; the policy's own work is local. `modelUsage` is the `Usage`
 the strategy's replies reported, summed over them — `promptTokens`, `completionTokens`,
-`totalTokens` and the cache read and write tokens; `cost` and `currency` stay absent, and a
-strategy that sent no request reports none. `insufficientSpace` is present exactly on a
+`totalTokens`, the cache read and write tokens and the reasoning tokens; a count no reply
+reported stays absent in the sum, `cost` and `currency` do too, and a strategy that sent no
+request reports none. `insufficientSpace` is present exactly on a
 completed compaction whose total — the projected request's size, which the record reports as
 `estimatedOutputTokens` — exceeds `0.5 × B`; its excess is that total minus `0.5 × B`, and
 `parts` names the resident parts that cover it, largest first, each with its `count_tokens`
@@ -531,9 +532,47 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
 | Method | Value |
 | --- | --- |
 | `context_window` | `snapshot.capabilities.contextWindow`, the catalog value with its existing overrides |
-| `output_tokens` | The adopted output allowance: `request.config.maxTokens`, which Provider derives from the declared pair as `max(1, min(declared maxOutputTokens, 131,072, contextWindow / 2))`. A stored value that is absent or above that function is repaired on read at the request boundary; the declared `maxOutputTokens` fact is not rewritten |
+| `output_tokens` | The adopted output allowance: `request.config.maxTokens`, which Provider derives from the declared pair as `max(1, min(declared maxOutputTokens, 131,072, contextWindow / 2))`. A stored value that is absent or above that function is repaired on read at the request boundary; the declared `maxOutputTokens` fact is not rewritten. The allowance bounds the whole reply, not only its answer: a request that thinks keeps `answer_tokens` of it for the answer ([model configuration](model-configuration.md#model-parameters)), so compaction plans against the cap the request may spend in total |
 | `threshold_tokens` | `B − reserve`, where `B = context_window − output_tokens` (the input budget) and `reserve = min(max(0.10 × B, 16,000), 0.20 × B)`. The reserve absorbs the estimation error of the next request; it is a provisional heuristic that does not cover every request without a provider baseline ([research §3.3, §6.4](../research/compaction-trigger.md#33-recommendation)) |
 | `count_tokens` | UTF-8 bytes of the serialized system prompt, messages and tool declarations divided by 4; each image part counts a fixed 1,600 tokens. Provisional (#128). Used for deltas over the provider's `prompt_tokens`, the first request, `validate` and the reduction check |
+
+**Composable counting.** Window facts may expose an optional contribution counter;
+complete-request counting remains available regardless. The counter has these synchronous
+operations, with no Timeline reads or retained request content:
+
+| Operation | Input | Result |
+| --- | --- | --- |
+| algorithm | none | Stable identity of all counting and serialization rules. |
+| fixed | Optional SystemPrompt and optional ToolDefinition array | Contribution of the fixed request content, counted once. |
+| message | One Message | Contribution of that message, with no fixed-content charge. |
+| estimate | One accumulated contribution | Estimated input tokens. |
+
+A contribution is `{serialized_bytes: u64, images: u64}`. Only contributions from the same
+algorithm can be added component by component. Estimating `fixed + sum(message)` must equal
+`count_tokens` for the complete request. A model without this capability returns no counter;
+callers cannot assume its arbitrary token-count function is additive.
+
+The product algorithm is `dim/window-facts/v1`. Its exact serialization ranges preserve the
+existing estimator:
+
+| Content | Counted bytes and images |
+| --- | --- |
+| fixed | Serialize the optional system and tools separately, including JSON `null` for either absent value. Two absent values therefore contribute eight bytes. |
+| Message with Text content | Serialize the entire Message, including role and content. |
+| Ordinary MessagePart, including ToolResult with Text content | Serialize that part, including its defined metadata. Do not add the enclosing Message or parts-array wrapper. |
+| Image part | One image; no serialized bytes from its payload or wrapper. |
+| ToolResult with Blocks content | Count each non-image ContentBlock's serialized bytes and each image block as one image. Do not count the ToolResult wrapper or structuredContent in this branch. |
+
+The product estimate divides accumulated bytes by four and adds 1,600 per image. Complete
+requests and contributions use the same counting implementation. Counting streams JSON into
+a byte counter instead of allocating a second serialized copy of each object. UTF-8,
+escaping and each serialization range remain observable parts of the algorithm version.
+Changing any of them requires a new algorithm identity before reusing persisted statistics.
+
+The Rust binding is `ContextModel::contribution_counter() -> Option<&dyn ContextCounter>`;
+its default is `None`. `ContextContribution` is the only contribution type. This is an
+optional counting port on the existing model object, not a new runtime service. Persisted
+statistics and their lifecycle belong to [ContextUsage](ContextUsage.md).
 
 The `--models` profile resolves the same facts from its model file: `AimuxModels` reads the entry
 the request names, by provider and model id, derives the allowance from the file's declared pair
@@ -1163,6 +1202,7 @@ ran with their exit status, and nothing else.
 | `session_invalid_input` | both | Unknown branch | No |
 | `session_closed` | both | Session or branch closing | No |
 | `context_not_configured` | usage | No `context/configured` in the branch's history | After a model is adopted |
+| `context_usage_unavailable` | usage | Current statistics have not been established; the model is configured | After the next actual model request; do not reselect the model |
 | `context_model_failed` | usage | `resolve` failed (no capability snapshot) | After selecting the model again |
 | `compaction_failed` | compact | Fact `failed`: strategy error after the shared failure policy, a reply with no text, a `retain_from` that fails validation, a compaction that reaches its summarizer retry limit, no reduction, no `context/configured`, or no snapshot | User's choice |
 | `compaction_cancelled` | compact | Fact `cancelled`: `stop/interrupt` or reload | User's choice |
@@ -1938,6 +1978,13 @@ fit flow. The length sentence's template rule — exactly one `{target}` placeho
 otherwise — is pinned by `a_length_sentence_needs_one_target_placeholder` in
 `summary_strategy.rs`.
 
+**The product's user override.** The App Server may supply the operator's summary prompt from
+its `prompts` setting ([prompt overrides](../appserver/prompt-overrides.md)). The port is
+`SummaryPromptSettingsHost`, optional and read while the Session's strategy part applies: the
+factory `system_prompt` outranks it, a read failure keeps `SYSTEM`, and the value applies to
+Sessions loaded after the change. The length sentence and the target rule stay factory-only, so
+a user override changes the prompt and not the size rule.
+
 ### 13.6 Rule check (for the #170 changes)
 
 | Rule | Answer |
@@ -2081,3 +2128,21 @@ symbol, a command, an error — is kept verbatim ([model-facing prompts
 §7](../model-prompts.md#7-language)). The prompt asks for it; a change to that sentence is judged
 like the rest of the prompt. The prompt itself and every other text on this page stay English in
 one copy.
+
+### Request-local projection handoff
+
+Loop passes the projection it already read to ContextPreparation before publishing
+`context/prepare`. ContextPreparation retains at most one pending projection, bound
+to the request ID, fixed cutoff and the original request object. Delivery transfers
+it into the preparation task; cancellation, failure and closing discard it. It is
+not serialized, retained across requests or used to resume old execution. A request
+without a matching local handoff uses the existing fixed-cutoff projection path.
+The event remains the execution handoff; supplying projection data starts no work.
+
+Policy uses this same projection for budgeting and compaction. When Usage needs
+initialization and the host preserved the exact history prefix, Usage computes
+initial contributions and the request estimate once. Policy uses that estimate,
+and Usage saves the computed contributions only if the final request still uses
+the original projection cutoff and no later compaction was adopted. Unsupported
+counters and request-specific appended messages keep the actual-request counting
+path. The final request validation continues to reuse matching prepared estimates.

@@ -6,36 +6,13 @@
 //! each decision ([PromptSuggestion](../../docs/design/plugins/PromptSuggestion.md)).
 use crate::settings::{SettingsScope, SettingsService, SourceDeclaration};
 use dim_agent_capabilities::prompt_suggestion::{
-    PromptSuggestionSettings, PromptSuggestionSettingsError, PromptSuggestionSettingsHost,
-    PromptSuggestionSettingsSource, SOURCE,
+    PromptSuggestionSettingsError, PromptSuggestionSettingsHost, SOURCE,
 };
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::json;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-
-struct Storage {
-    settings: Arc<SettingsService>,
-}
-
-impl PromptSuggestionSettingsSource for Storage {
-    fn read(
-        &self,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'_, Result<PromptSuggestionSettings, PromptSuggestionSettingsError>> {
-        Box::pin(async move {
-            let snapshot = self
-                .settings
-                .read_declared(SOURCE, SettingsScope::User, &cancel)
-                .await
-                .map_err(|error| PromptSuggestionSettingsError::Failed(error.to_string()))?;
-            serde_json::from_value(snapshot.document)
-                .map_err(|error| PromptSuggestionSettingsError::Failed(error.to_string()))
-        })
-    }
-}
 
 pub struct PromptSuggestionSettingsPlugin {
     settings: Key<SettingsService>,
@@ -81,8 +58,23 @@ impl DynPlugin for PromptSuggestionSettingsPlugin {
                     user_only: Vec::new(),
                 },
             )?;
-            let host = PromptSuggestionSettingsHost(Arc::new(Storage { settings }));
-            ctx.provide_as::<PromptSuggestionSettingsHost>(Arc::new(host))?;
+            let host = PromptSuggestionSettingsHost::new(Arc::new(move |cancel| {
+                let settings = settings.clone();
+                Box::pin(async move {
+                    let snapshot = settings
+                        .read_declared(SOURCE, SettingsScope::User, &cancel)
+                        .await
+                        .map_err(|error| PromptSuggestionSettingsError::Failed {
+                            message: error.to_string(),
+                        })?;
+                    serde_json::from_value(snapshot.document).map_err(|error| {
+                        PromptSuggestionSettingsError::Failed {
+                            message: error.to_string(),
+                        }
+                    })
+                })
+            }));
+            dim_agent_capabilities::prompt_suggestion::provide_settings(ctx, &host)?;
             Ok(Effect::Done)
         })
     }

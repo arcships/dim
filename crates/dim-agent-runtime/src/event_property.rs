@@ -34,12 +34,18 @@ pub fn event_property(event: &AgentEvent, branch_id: &str, path: &str) -> Result
             value: event.sequence.into(),
         },
         "context.render" => QueryValue::Value {
-            value: event.kind.context_flags().0.into(),
+            value: event.context_flags().0.into(),
         },
         "context.state" => QueryValue::Value {
-            value: event.kind.context_flags().1.into(),
+            value: event.context_flags().1.into(),
         },
-        _ if path.starts_with("tags[]") => match &event.tags {
+        "parent_call_id" => match &event.parent_call_id {
+            Some(parent) => QueryValue::Value {
+                value: Value::String(parent.clone()),
+            },
+            None => QueryValue::Missing,
+        },
+        _ if path.starts_with("tags[") => match &event.tags {
             Some(tags) => project_property(tags, &path[4..])?,
             None => QueryValue::Missing,
         },
@@ -56,6 +62,14 @@ pub fn project_property(value: &impl Serialize, path: &str) -> Result<QueryValue
 
 /// Checks a validated event property path without serializing the property's value.
 pub fn event_property_present(event: &AgentEvent, path: &str) -> Result<bool> {
+    if path.starts_with("tags[") {
+        return select_mode(&event.tags, &path[4..], Leaf::Presence)
+            .map(|value| !matches!(value, QueryValue::Missing))
+            .map_err(|error| AgentError::fault("event property", error.to_string()));
+    }
+    if path == "parent_call_id" {
+        return Ok(event.parent_call_id.is_some());
+    }
     if path == "data" || path.starts_with("data.") {
         return select_mode(&event.kind, path, Leaf::Presence)
             .map(|value| !matches!(value, QueryValue::Missing))
@@ -184,7 +198,7 @@ impl<'a> PropertySerializer<'a> {
             .strip_prefix('[')
             .and_then(|path| path.split_once(']'));
         PropertyArray {
-            rest: subscript.map(|(_, rest)| rest.strip_prefix('.').unwrap_or(rest)),
+            rest: subscript.map(|(_, rest)| rest.trim_prefix('.')),
             index: subscript.and_then(|(index, _)| index.parse().ok()),
             offset: 0,
             values: Vec::new(),
@@ -476,3 +490,46 @@ array_serializer!(SerializeSeq, serialize_element);
 array_serializer!(SerializeTuple, serialize_element);
 array_serializer!(SerializeTupleStruct, serialize_field);
 array_serializer!(SerializeTupleVariant, serialize_field);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dim_agent_types::{AgentEvent, EventKind, ToolResultData};
+
+    fn event(parent: Option<&str>) -> AgentEvent {
+        AgentEvent {
+            id: "event".into(),
+            sequence: 1,
+            create_at: 0,
+            tags: None,
+            parent_call_id: parent.map(str::to_owned),
+            kind: EventKind::ToolResult(ToolResultData {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                call_event_id: None,
+                results: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_child_result_is_not_context_and_projects_its_parent() {
+        let child = event(Some("c1"));
+        assert_eq!(child.context_flags(), (false, false));
+        assert!(matches!(
+            event_property(&child, "main", "parent_call_id").unwrap(),
+            QueryValue::Value {
+                value: Value::String(parent)
+            } if parent == "c1"
+        ));
+        assert!(event_property_present(&child, "parent_call_id").unwrap());
+
+        let top = event(None);
+        assert_eq!(top.context_flags(), (true, true));
+        assert!(matches!(
+            event_property(&top, "main", "parent_call_id").unwrap(),
+            QueryValue::Missing
+        ));
+        assert!(!event_property_present(&top, "parent_call_id").unwrap());
+    }
+}

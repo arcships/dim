@@ -61,7 +61,9 @@ cron ─► nightly.sh ─► git fetch dim 与 dim-eval-data（SSH）─► cor
    ```
 
    模型配置决定端点、模型和推理强度，它的文本原样写进 job 记录，所以凭据只能用 `apiKeyEnv`
-   引用，不能写进 `headers`（`run_l2.py` 会拒绝）。换配置等于换实验条件，要重采 baseline。
+   引用，不能写进 `headers`（`run_l2.py` 会拒绝）。`baseUrl` 填 API 根地址，不含
+   `/chat/completions`；L1 与 L2 身份探测保留已有的数字版本路径（如 `/v1`、`/api/v3`），
+   无版本的根地址仍补 `/v1`。换配置等于换实验条件，要重采 baseline。
 7. **`~/dim-eval/config.env`**（不放凭据）：
 
    ```sh

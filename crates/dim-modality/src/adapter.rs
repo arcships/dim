@@ -261,9 +261,8 @@ pub enum RealtimeEnd {
     Error(String),
 }
 
-/// A process-scoped `modalityAdapter` (A.2, Appendix G). The first slice reads
-/// the single process service per call; until the per-task lookup (#861) lands
-/// the service is not keyed by adapter name.
+/// A process-scoped in-process adapter binding (A.2, Appendix G), resolved
+/// per call at the model's provider id, then at the family key.
 pub trait ModalityAdapter: Send + Sync + 'static {
     /// Whether the adapter can run now, without a reload (A.2 `available`).
     fn available(&self) -> bool;

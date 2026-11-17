@@ -24,6 +24,8 @@ pub struct Env {
     pub workspace: String,
     /// Start in the fullscreen interface instead of scrollback.
     pub fullscreen: bool,
+    /// A requested resume whose initial window has not loaded yet.
+    pub resume: bool,
     /// The first message to submit once the first frame is drawn.
     pub initial: Option<Initial>,
 }
@@ -68,6 +70,7 @@ pub mod prompts;
 pub mod providers_panel;
 pub mod queue_panel;
 pub mod render;
+mod report_panel;
 pub mod rows;
 pub mod runtime_panel;
 pub mod sessions_panel;

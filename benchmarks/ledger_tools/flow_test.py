@@ -214,6 +214,22 @@ class LedgerFlowTest(unittest.TestCase):
         self.ledger.append_run(run(covers=(SHA_A,), unjudged=(SHA_C,)))
         self.assertEqual(self.ledger.runs()[0].unjudged, (SHA_C,))
 
+    def test_later_pr_recognition_preserves_an_old_runs_unjudged_evidence(self) -> None:
+        """A one-parent PR used to look like a direct push; do not rewrite history."""
+        self.ledger.append_run(run(run_id="before", covers=(), unjudged=(SHA_A,)))
+        path = self.ledger.run_path("before")
+        original = path.read_bytes()
+
+        self.ledger.append_merge(merge(SHA_A))
+        self.ledger.append_run(run(run_id="after", covers=(SHA_A,)))
+        self.assertEqual(path.read_bytes(), original)
+        runs = {record.run_id: record for record in self.ledger.runs()}
+        self.assertEqual(runs["before"].unjudged, (SHA_A,))
+        self.assertEqual(runs["before"].covers, ())
+        self.assertEqual(runs["after"].unjudged, ())
+        self.assertEqual(runs["after"].covers, (SHA_A,))
+        self.assertEqual(audit(self.root), [])
+
     def test_a_commit_cannot_be_both_covered_and_unjudged(self) -> None:
         with self.assertRaises(SchemaError):
             run(covers=(SHA_A,), unjudged=(SHA_A,)).validate()

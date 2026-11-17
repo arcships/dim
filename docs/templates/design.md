@@ -1,41 +1,39 @@
 # Name
 
-Status: Draft | Ready. Delivery status is tracked in the issue, not here.
-
 Scope: process | Session | branch.
-Issue: #NNN.
-Rules: [design rules](../architecture/rust-agent/principles.md), [ADR 002](../adr/002-plugin-scope.md).
+Issue: #NNN. Delivery status belongs in the issue.
 
-## 1. Scope and non-goals
+Keep this document proportional to the change. Link existing answers instead of repeating them;
+no separate proof, model or argument is required. The [design guide](../design/capability-design-arguments.md)
+offers optional help.
 
-What this part owns and what it does not.
+## Use and scope
 
-## 2. Own contract
+The actual callers, input producers and intended behavior. What this part owns and what it does not.
+Identify the parts that are Capabilities.
 
-The inputs, outputs, services, events, state and errors this part owns. Name public contract
-terms where the decision depends on them. Do not describe another module's registration,
-routing, retry or cleanup behavior; link to its contract.
+## Own contract and dependencies
 
-## 3. Events and state
+Affected inputs, outputs, events, state, errors and public dependencies. Link the owners' contracts.
+For changed events, explain their meaning, correlation and compatibility. Describe affected recovery
+and lifecycle behavior under the existing contracts. Distinguish existing promises from proposed changes.
 
-The facts this part writes or consumes, their owner, and how state is rebuilt. Say when there
-are none.
+## Verification
 
-## 4. Dependencies
+Observable outcomes and relevant flow tests or review checks. State material uncertainties.
+Add a transition table, argument or model only when it helps resolve a specific design question.
+Run results belong in the issue or PR.
 
-The public services this part declares and what it requires from each. Link to the owning
-contract.
+## Rule check
 
-## 5. Cross-module requirements
+Answer [design rules §4](../architecture/rust-agent/principles.md), §1 and
+[ADR 002](../adr/002-plugin-scope.md) D1–D5 as required by AGENTS.md; explain inapplicable rules.
 
-Changes needed from another owner, in the format of [design rules §4 rule 8](../architecture/rust-agent/principles.md).
-The owner changes its own document; this design does not.
+## Requirements raised to mechanism owners
 
-## 6. Rule check
+Use the format of [design rules §4 rule 8](../architecture/rust-agent/principles.md), or state none.
+Link the owner's contract rather than redefine it here.
 
-Answer the applicable rules from [design rules §4](../architecture/rust-agent/principles.md),
-§1 and [ADR 002](../adr/002-plugin-scope.md) D1–D5. State why a rule does not apply.
+## Binding appendix, if needed
 
-## 7. Binding appendix
-
-Exact Rust or TypeScript spelling, if a binding is needed. Semantics stay above this section.
+Exact Rust or TypeScript spelling. Semantics stay in the sections above.

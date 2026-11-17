@@ -5,7 +5,6 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     input_queue::InputQueue,
-    model_provider::ModelProvider,
     tool_executor::ToolExecutor,
 };
 use dim_agent_runtime::testing::MinimalHost;
@@ -166,7 +165,7 @@ struct Extension {
     barrier: Arc<ExtensionBarrier>,
     dispatcher: Key<Dispatcher>,
     context_preparation: Key<ContextPreparation>,
-    model_provider: Key<ModelProvider>,
+    model_progress: Key<StateCell<ModelProgress>>,
     tool_executor: Key<ToolExecutor>,
 }
 impl Extension {
@@ -175,7 +174,7 @@ impl Extension {
             barrier,
             dispatcher: names.key()?,
             context_preparation: names.key()?,
-            model_provider: names.key()?,
+            model_progress: names.state_cell()?,
             tool_executor: names.key()?,
         })
     }
@@ -188,7 +187,7 @@ impl DynPlugin for Extension {
         vec![
             self.dispatcher.erase(),
             self.context_preparation.erase(),
-            self.model_provider.erase(),
+            self.model_progress.erase(),
             self.tool_executor.erase(),
         ]
     }
@@ -294,7 +293,12 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|event| matches!(&event.kind, EventKind::StopInterrupt(data) if data.scope == InterruptScope::Turn)));
         assert!(matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Cancelled { .. },
                 ..
@@ -309,13 +313,26 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
             usize::from(stage == Stage::Tools)
         );
         if stage == Stage::Model {
-            let closure = &events[events.len() - 2];
+            let closure = events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::ToolResult(_)))
+                .unwrap();
             assert!(matches!(&closure.kind,
                 EventKind::ToolResult(data) if data.call_event_id.is_none()
                     && data.results.len() == 1
                     && data.results[0].call_id == "pending-tool"
                     && data.results[0].result.content
                         == ToolContent::Text("Tool was not executed: stop requested".into())));
+            assert!(
+                closure.sequence
+                    < events
+                        .iter()
+                        .rev()
+                        .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                        .unwrap()
+                        .sequence
+            );
             assert!(
                 !events
                     .iter()
@@ -1008,7 +1025,12 @@ async fn a_stop_during_output_keeps_its_text_and_closes_every_started_call() {
             .any(|event| matches!(event.kind, EventKind::ToolCall(_)))
     );
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Cancelled { .. },
             ..
@@ -1214,7 +1236,12 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
     assert_eq!(model_calls.load(Ordering::SeqCst), 1);
     assert!(echoed(&events, "STEER-MARKER"));
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Completed { .. },
             ..
@@ -1645,7 +1672,12 @@ async fn stop_turn_stops_only_the_open_turn_it_names() {
                 if data.reason == "operator stop" && data.scope == InterruptScope::Turn)
     }));
     assert!(matches!(
-        events.last().unwrap().kind,
+        events
+            .iter()
+            .rev()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .kind,
         EventKind::TurnEnd(TurnEndData {
             outcome: TurnOutcome::Cancelled { .. },
             ..
@@ -1670,6 +1702,198 @@ async fn stop_turn_stops_only_the_open_turn_it_names() {
             .filter(|event| matches!(&event.kind, EventKind::StopInterrupt(_)))
             .count(),
         stops
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// One batch `[x0, x1, c2]`: X0 holds the turn, the two calls after it wait
+/// for their steps.
+struct HoldingTools {
+    entered: Arc<Notify>,
+    /// Names whose calls only read.
+    concurrent: Vec<&'static str>,
+    started: Arc<Mutex<Vec<String>>>,
+    /// Wakes the test when the held call's cancel token fires.
+    cancelled: Arc<Notify>,
+    /// Calls left running when the batch settled.
+    live: Arc<AtomicUsize>,
+}
+struct Live(Arc<AtomicUsize>);
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+impl ToolDriver for HoldingTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        ["x0", "x1", "c2"]
+            .map(|name| {
+                dim_agent_capabilities::tool_registry::definition(
+                    name,
+                    name,
+                    serde_json::json!({"type":"object"}),
+                )
+            })
+            .to_vec()
+    }
+    fn concurrency(
+        &self,
+        call: &ToolCall,
+    ) -> dim_agent_capabilities::tool_registry::ToolConcurrency {
+        if self.concurrent.contains(&call.name.as_str()) {
+            dim_agent_capabilities::tool_registry::ToolConcurrency::Concurrent
+        } else {
+            dim_agent_capabilities::tool_registry::ToolConcurrency::Exclusive
+        }
+    }
+    fn execute(
+        &self,
+        call: ToolCall,
+        _: ToolExecutionContext,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        self.started.lock().unwrap().push(call.name.clone());
+        if call.name == "x0" {
+            self.live.fetch_add(1, Ordering::SeqCst);
+            self.entered.notify_one();
+            let cancelled = self.cancelled.clone();
+            let live = self.live.clone();
+            return Box::pin(async move {
+                let _live = Live(live);
+                cancel.cancelled().await;
+                cancelled.notify_one();
+                Err(HostError::Cancelled("x0 cancelled".into()))
+            });
+        }
+        Box::pin(async move { Ok(ToolResult::text(format!("{} ran", call.name))) })
+    }
+}
+
+/// The model's first reply is the batch `[x0, x1, c2]`, then text.
+struct BatchModel;
+impl ModelDriver for BatchModel {
+    fn invoke(
+        &self,
+        request: Arc<ModelRequest>,
+        connection: dim_agent_capabilities::host::ModelConnection,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, ModelStream> {
+        let first = !request
+            .messages
+            .iter()
+            .any(|message| format!("{message:?}").contains("x0 done"));
+        Box::pin(async move {
+            if !first {
+                return EchoModel.invoke(request, connection, cancel).await;
+            }
+            let mut chunks = vec![Ok(ModelChunk::MessageStart {
+                message_id: "batch".into(),
+            })];
+            for name in ["x0", "x1", "c2"] {
+                chunks.push(Ok(ModelChunk::ToolStart {
+                    id: name.into(),
+                    name: name.into(),
+                }));
+                chunks.push(Ok(ModelChunk::ToolUse(ToolCall {
+                    id: name.into(),
+                    name: name.into(),
+                    input: JsonObject::new(),
+                })));
+            }
+            chunks.push(Ok(ModelChunk::MessageStop {
+                message_id: "batch".into(),
+                reason: ModelStopReason::ToolUse,
+            }));
+            Ok(Box::pin(futures_util::stream::iter(chunks)) as ModelStream)
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
+    let entered = Arc::new(Notify::new());
+    let cancelled = Arc::new(Notify::new());
+    let started = Arc::new(Mutex::new(Vec::new()));
+    let live = Arc::new(AtomicUsize::new(0));
+    let tools = Arc::new(HoldingTools {
+        entered: entered.clone(),
+        concurrent: vec!["c2"],
+        started: started.clone(),
+        cancelled: cancelled.clone(),
+        live: live.clone(),
+    });
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()))
+        .session_value(Arc::new(HistoryRenderer::default()))
+        .process_value(Arc::new(ModelHost(Arc::new(BatchModel))))
+        .session_value(Arc::new(ToolHost(tools)))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    dim_agent_capabilities::register_names(&mut builder);
+    defaults::install(&mut builder);
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = soon(agent.create_session(SessionConfig {
+        tools: Some(vec!["x0".into(), "x1".into(), "c2".into()]),
+        permission_policy: PermissionPolicy {
+            preset: PermissionPreset::FullAccess,
+            ..Default::default()
+        },
+        ..SessionConfig::default()
+    }))
+    .await
+    .unwrap();
+    session
+        .submit("go".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    soon(entered.notified()).await;
+    assert_eq!(
+        *started.lock().unwrap(),
+        ["x0"],
+        "only the held call started by the interrupt"
+    );
+    session.stop("main", "operator stop".into()).await.unwrap();
+    soon(cancelled.notified()).await;
+    soon(session.idle("main")).await.unwrap();
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "the held call released its resources"
+    );
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let results = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) => Some(data.results.clone()),
+            _ => None,
+        })
+        .expect("the batch settles once");
+    let cancelled_texts: Vec<&str> = results
+        .iter()
+        .filter_map(|item| match &item.result.content {
+            ToolContent::Text(text) if text == "Tool cancelled before execution" => {
+                Some(item.call_id.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cancelled_texts,
+        ["x1", "c2"],
+        "the waiting calls settle as cancelled: {results:?}"
+    );
+    assert_eq!(
+        started.lock().unwrap().len(),
+        1,
+        "neither waiting call ran: {:?}",
+        started.lock().unwrap()
     );
     soon(agent.close()).await.unwrap();
 }

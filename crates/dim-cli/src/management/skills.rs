@@ -28,6 +28,15 @@ pub struct Entry {
     pub file_path: String,
     pub enabled: bool,
     pub shadowed_by: Option<String>,
+    /// `user-invocable: false`: the Skill is the model's alone to load, so the
+    /// palette leaves it out. A daemon older than this fact reports none, and
+    /// the client then offers the Skill, as it did before the flag existed.
+    #[serde(default = "invocable")]
+    pub user_invocable: bool,
+}
+
+fn invocable() -> bool {
+    true
 }
 
 /// A Skill the catalog could not use.

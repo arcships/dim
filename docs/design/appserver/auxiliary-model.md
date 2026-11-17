@@ -55,7 +55,7 @@ more than the need:
  +----------------------------------------------^-----------------+
                                                 | complete(model, request)
  Session scope                                  |
-   SessionTitle (Deps: AuxiliaryModelHost) -----'
+   SessionTitle (Deps: auxiliaryModel) -----'
      model = its Settings source `session-title`.model, else the Session's model
 ```
 
@@ -77,7 +77,7 @@ profile).
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, cost?, currency?}}` |
+| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens?, cost?, currency?}}` |
 
 - `model` is required. The caller resolves it from its own configuration; Provider does not
   fall back to another model.
@@ -110,11 +110,11 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
     fn complete(&self, model: ModelId, request: AuxiliaryRequest, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-pub struct AuxiliaryModelHost(pub Arc<dyn CompleteAuxiliary>);
+pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
 ```
 
-`auxiliary_model::provide` binds an owner's operation as `AuxiliaryModelHost` and as the
-named binding. Each owner's `apply` calls it with its own `CompleteAuxiliary`
+`auxiliary_model::provide` publishes one `AuxiliaryModel` at the Rust type key and
+`host_key("auxiliaryModel")`. Each owner's `apply` calls it with its own `CompleteAuxiliary`
 implementation; its `Deps` gain `Arc<ModelHost>`.
 
 ### 4.3 Named binding
@@ -122,8 +122,9 @@ implementation; its `Deps` gain `Arc<ModelHost>`.
 The same owner-provided operation implements `HostDispatch` at
 `host_key("auxiliaryModel")` through that shared `provide`; the process catalog registers
 that shared name. An ordinary C4 row injects `auxiliaryModel` and calls
-`complete({model, request})`; the Rust SessionTitle part injects `AuxiliaryModelHost` instead,
-and both reach the same owner operation. The SDK declares it as `AuxiliaryModel` in
+`complete({model, request})`; Rust SessionTitle names the same `auxiliaryModel` service
+through its `AuxiliaryModel` binding and calls the owner directly without serialization.
+The SDK declares it as `AuxiliaryModel` in
 [`dimcode/plugin`](../../../npm/plugin.d.ts). This is the existing operation's binding,
 not another plugin or a second model runner.
 
@@ -200,7 +201,7 @@ written anywhere.
 | Part | Relationship |
 | --- | --- |
 | Default selection (`provider.select`) | Unchanged. `complete` does not consult it |
-| SessionTitle (P4) | The Rust part (`dim-session-title`) requires `AuxiliaryModelHost` and calls `complete`; `model` is the optional `model` of its Settings source `session-title`, else the model of the latest `context/configured` in the prefix. Without an owner that provides the operation, its required dependency keeps the part Pending; native Sessions do not depend on that row. The named `auxiliaryModel` HostDispatch binding stays for TypeScript Session parts. SessionTitle's own Ready decisions and implementation remain separate |
+| SessionTitle (P4) | The Rust part (`dim-session-title`) requires `AuxiliaryModel` and calls `complete`; `model` is the optional `model` of its Settings source `session-title`, else the model of the latest `context/configured` in the prefix. Without an owner that provides the operation, its required dependency keeps the part Pending; native Sessions do not depend on that row. The named `auxiliaryModel` HostDispatch binding stays for TypeScript Session parts. SessionTitle's own Ready decisions and implementation remain separate |
 | Compaction host (F1) | Does not use this service. Implements `ResolveContextModel`; how it picks the model and reads the context window is F1's design |
 | Collaboration | No change from S4. A member's model is its profile's model, else the default selection; a separate member default, if ever wanted, is Collaboration's own setting |
 | Modality | Keeps its default model per category in its own `modality` Settings source and passes the model explicitly. Non-conversational connection resolution is a separate Provider supplement, not S4 |

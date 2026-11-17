@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { lstatSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { pollMilliseconds, settleMilliseconds } from './registry-wait.mjs';
 
 const [directory, version, sourceCommit, mode, releasePath, ...extra] = process.argv.slice(2);
 assert(directory && version && sourceCommit && extra.length === 0,
@@ -93,20 +95,53 @@ for (const name of names) {
   archives.push(archive);
 }
 
-function registryField(spec, field) {
-  const result = spawnSync('npm', ['view', spec, field, '--json', '--registry', 'https://registry.npmjs.org'], { encoding: 'utf8' });
-  assert.ifError(result.error);
-  let data;
-  try { data = JSON.parse(result.stdout); }
-  catch { assert.fail('Cannot verify registry state: ' + spec); }
-  if (result.status === 0) return data;
-  assert.equal(data?.error?.code, 'E404', 'Cannot verify registry state: ' + spec);
+/** `npm view` failures that reported no registry status: libuv and undici transport errors. */
+const transportFailures = new Set(['ECONNREFUSED', 'ECONNRESET', 'ECONNABORTED', 'ETIMEDOUT', 'EPIPE',
+  'EAI_AGAIN', 'ENOTFOUND', 'EHOSTUNREACH', 'ENETUNREACH', 'ENETDOWN', 'FETCH_ERROR', 'ERR_SOCKET_TIMEOUT']);
+
+/** Whether a failed `npm view` said nothing about what the registry holds. */
+const unanswered = (code) => /^E(429|5\d\d)$/.test(code ?? '') || transportFailures.has(code);
+
+/**
+ * One field of a published package, asked until the registry answers. A 429, a
+ * 5xx, a transport failure and a timeout say nothing about what the registry
+ * holds, so they are asked again inside `deadline`, the window
+ * `check-alpha-registry.mjs` waits out; every other failure is final, and the
+ * 404 that means "not published" is an answer. Each attempt gets only the time
+ * left and is killed outright when it runs out, so a read that handles the
+ * signal cannot hold the operation past its deadline, and what a killed read
+ * printed is not an answer. A reply that arrived is decoded here, so a
+ * malformed one stays this run's error rather than a read that is worth
+ * repeating.
+ */
+async function registryField(spec, field, deadline) {
+  for (;;) {
+    const result = spawnSync('npm', ['view', spec, field, '--json', '--registry', 'https://registry.npmjs.org'],
+      { encoding: 'utf8', timeout: Math.max(1, deadline - Date.now()), killSignal: 'SIGKILL' });
+    const timedOut = result.error?.code === 'ETIMEDOUT';
+    if (!timedOut) assert.ifError(result.error);
+    let data;
+    try { data = JSON.parse(result.stdout); } catch { data = undefined; }
+    if (!timedOut && result.status === 0) {
+      assert(data !== undefined, 'Cannot verify registry state: ' + spec);
+      return data;
+    }
+    const code = timedOut ? 'ETIMEDOUT' : data?.error?.code;
+    if (code === 'E404') return undefined;
+    assert(unanswered(code), 'Cannot verify registry state: ' + spec);
+    console.error(`${spec}: npm view did not answer (${code})`);
+    assert(Date.now() < deadline,
+      `Cannot verify registry state: ${spec}, the registry did not answer within ${settleMilliseconds} ms`);
+    console.log(`${spec}: reading again in ${pollMilliseconds} ms`);
+    await delay(Math.min(pollMilliseconds, deadline - Date.now()));
+  }
 }
 
 console.log(`Validated ${archives.length} npm packages for ${version} (${sourceCommit}).`);
 if (mode) {
+  const deadline = Date.now() + settleMilliseconds;
   if (tag === 'alpha') {
-    const versions = registryField('dimcode', 'versions') ?? [];
+    const versions = await registryField('dimcode', 'versions', deadline) ?? [];
     const core = (value) => value.split('-')[0].split('.').map(Number);
     const below = (left, right) => {
       const index = left.findIndex((part, index) => part !== right[index]);
@@ -121,14 +156,14 @@ if (mode) {
     const name = names[index];
     if (fromRelease && tag === 'alpha') {
       for (const label of name === wrapper ? ['alpha', 'latest'] : ['alpha']) {
-        const current = registryField(name + '@' + label, 'version');
+        const current = await registryField(name + '@' + label, 'version', deadline);
         if (current !== undefined) {
           assert(/^\d+\.\d+\.\d+-alpha\.\d+$/.test(current), `Unexpected ${label} tag on ${name}: ${current}`);
           assert(current.localeCompare(version, 'en', { numeric: true }) <= 0, `${name}@${label} already points to newer ${current}`);
         }
       }
     }
-    const metadata = registryField(name + '@' + version, 'dist');
+    const metadata = await registryField(name + '@' + version, 'dist', deadline);
     if (metadata !== undefined) {
       const integrity = `sha512-${createHash('sha512').update(readFileSync(archive)).digest('base64')}`;
       assert.equal(metadata.integrity, integrity, `Existing version has different content: ${name}`);

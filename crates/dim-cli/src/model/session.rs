@@ -54,6 +54,53 @@ pub struct SuggestionSetting {
     pub document: dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings,
 }
 
+/// One field of the `prompts` source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptField {
+    Base,
+    Summary,
+    Skills,
+}
+
+impl PromptField {
+    pub const ALL: [Self; 3] = [Self::Base, Self::Summary, Self::Skills];
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "base" => Some(Self::Base),
+            "summary" => Some(Self::Summary),
+            "skills" => Some(Self::Skills),
+            _ => None,
+        }
+    }
+
+    /// The field's name in the document and on the command line.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Base => "base",
+            Self::Summary => "summary",
+            Self::Skills => "skills",
+        }
+    }
+}
+
+/// The `prompts` source as `settings.read` and `settings.update` answer it.
+/// The document stays a JSON object so a field this client does not know
+/// survives a write.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct PromptSetting {
+    pub revision: String,
+    pub document: serde_json::Value,
+}
+
+impl PromptSetting {
+    pub fn text(&self, field: PromptField) -> Option<&str> {
+        self.document
+            .get(field.key())
+            .and_then(serde_json::Value::as_str)
+    }
+}
+
 /// The host's answer to `host.execution.backend`; the Execution panel shows
 /// the reason when the platform has no sandbox backend.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,6 +145,13 @@ impl SubmitMode {
             Self::Steer => "steer",
         }
     }
+
+    pub fn opposite(self) -> Self {
+        match self {
+            Self::Queue => Self::Steer,
+            Self::Steer => Self::Queue,
+        }
+    }
 }
 
 /// What `/resume` lists: the local scope — exactly the launch workspace, or
@@ -112,6 +166,18 @@ pub enum SessionsScope {
 }
 
 pub enum Command {
+    ToolOrigin {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+        request_id: String,
+        call_id: String,
+    },
+    Report(crate::report::Request),
+    CompactionDetails {
+        projection_id: u64,
+        targets: std::collections::BTreeSet<crate::model::view::CompactionTarget>,
+    },
     Submit(String, SubmitMode),
     /// A draft with pastes to store or content blocks to send.
     SubmitDraft(Vec<DraftPart>, SubmitMode),
@@ -148,6 +214,9 @@ pub enum Command {
         input_id: String,
         action: &'static str,
     },
+    /// Interrupt the run and reply once it has settled, so the interface can
+    /// submit the draft it held back (Ctrl+Enter).
+    SubmitNow,
     /// Stop a background command on its originating branch (`/tasks`).
     StopTask {
         session_id: String,
@@ -212,6 +281,11 @@ pub enum Command {
     },
     /// Start a fresh session in the same directory.
     NewSession,
+    /// Delete the stored Session `session_id`, which the picker labels `name`.
+    DeleteSession {
+        session_id: String,
+        name: String,
+    },
     /// Switch to a stored session.
     Resume(String),
     /// Find the launch workspace's repository worktrees, once per picker open.
@@ -228,6 +302,10 @@ pub enum Command {
     CloseSessions,
     /// List the models that can be chosen.
     ListModels,
+    QueryModels {
+        query: String,
+        after: Option<dim_agent_types::ModelId>,
+    },
     ReadIsolation,
     SaveIsolation {
         expected_revision: String,
@@ -254,7 +332,25 @@ pub enum Command {
         enabled: bool,
         max_chars: u32,
     },
+    /// Read the `prompts` source.
+    ReadPromptSettings,
+    /// Replace one prompt field, merging the rest of the document. `revision`
+    /// is the one the client displayed; a newer one is a conflict.
+    SavePromptSetting {
+        field: PromptField,
+        text: String,
+        revision: String,
+        request: u64,
+    },
+    /// Remove one prompt field, merging the rest of the document.
+    ResetPromptSetting {
+        field: PromptField,
+        revision: String,
+        request: u64,
+    },
     ClearModelPreferences {
+        query: String,
+        after: Option<dim_agent_types::ModelId>,
         provider_id: String,
         model_id: String,
         expected_version: u32,
@@ -271,7 +367,9 @@ pub enum Command {
     Rename(Option<String>),
     /// `/goal`: show, set, edit, pause, resume or clear the shown line's goal.
     Goal(crate::goal::Request),
-    SetPermission(dim_agent_types::PermissionPreset),
+    /// `/loop`: show, start or stop a loop on the shown line.
+    Loop(crate::loop_view::Request),
+    SetPermission(crate::permission::PresetSelection),
     /// List the providers of the `/connect` panel.
     ListProviders,
     /// Change one provider.
@@ -282,6 +380,11 @@ pub enum Command {
     OauthCancel,
     /// A callback URL the user pasted.
     OauthPaste(String),
+    /// Refresh the signed-in account's model catalog from its panel.
+    RefreshAccountModels {
+        provider_id: String,
+        attempt: u64,
+    },
     /// The `/login` panel opened: report the provider's account.
     LoginStatus(String),
     /// The `/login` panel shows a signed-in account: report its usage.
@@ -323,11 +426,13 @@ pub enum Command {
     /// A configuration command line (`/effort high`, `/agent`, ...).
     Configure(String),
     /// Make `(provider, model)` the default and the active session's model.
-    /// `reasoning_effort` is set when the picker cycled that model's effort.
+    /// `reasoning_effort` is set when the picker cycled that model's effort;
+    /// `label` is the row's text the default's confirmation names back.
     SelectModel {
         provider_id: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        label: String,
     },
     /// Read the subagent model policy and its revision.
     ReadModelPolicy,
@@ -336,8 +441,6 @@ pub enum Command {
         expected_revision: String,
         policy: SubagentModelPolicy,
     },
-    /// Install the offered version (the update dialog's "Update now").
-    UpgradeInstall(crate::update::Install),
 }
 
 /// One management area: an owner's management methods, drawn by the native
@@ -797,8 +900,12 @@ pub enum OauthEvent {
     Exchanging,
     #[allow(dead_code)]
     SlowDown(u64),
+    ModelsRefreshed {
+        after_login: bool,
+        result: Result<(), String>,
+    },
     /// Signed in, or why not (`None` error text = cancelled).
-    Done(Result<String, Option<String>>),
+    Done(Result<(), Option<String>>),
 }
 
 /// One change to a provider.
@@ -810,6 +917,9 @@ pub enum ProviderAction {
         api_key: Option<String>,
         base_url: Option<String>,
         enabled: Option<bool>,
+        /// The prefix the Provider's listed ids carry, when the form changed
+        /// it: `Some(None)` clears the statement.
+        glued_prefix: Option<Option<String>>,
     },
     Disconnect {
         provider_id: String,
@@ -900,6 +1010,8 @@ pub struct ProviderEntry {
     pub custom: bool,
     pub base_url: Option<String>,
     pub api_key_preview: Option<String>,
+    /// The prefix this Provider states its listed ids carry.
+    pub glued_prefix: Option<String>,
     /// Present when the daemon describes an account this provider signs in
     /// through.
     pub account: Option<AccountDescriptor>,
@@ -921,10 +1033,29 @@ pub struct ModelItem {
     pub default_effort: Option<String>,
     /// Saved `reasoningEffort`, when it is one of `efforts`.
     pub saved_effort: Option<String>,
+    /// How the catalog identified this id, as the entry states it.
+    pub outcome: ModelOutcome,
+}
+
+/// What identification made of one model id, in the words the picker shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelOutcome {
+    /// One row named the model. `inferred` is the merge, whose numbers come
+    /// from several rows rather than from one declaration.
+    Identified {
+        provider_id: String,
+        model_id: String,
+        inferred: bool,
+    },
+    /// Several rows still disagree, so none supplied numbers.
+    Ambiguous { candidates: Vec<String> },
+    /// Nothing named the model.
+    Unidentified,
 }
 
 /// Why a usable provider contributes no selectable model.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EmptyReason {
     /// It lists no models: none discovered yet, or none at all. `listable`
     /// is whether `provider.refresh` can ask it for a listing.
@@ -940,7 +1071,8 @@ pub enum EmptyReason {
 }
 
 /// A usable provider with no selectable model.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EmptyProvider {
     pub provider_id: String,
     pub provider_name: String,
@@ -954,6 +1086,9 @@ pub struct NeedsLimitsProvider {
     pub provider_id: String,
     pub provider_name: String,
     pub count: usize,
+    /// The rows that named the undeclared ids and still disagree, so the row
+    /// that names the command also names what to choose between.
+    pub candidates: Vec<String>,
 }
 
 /// Which model new Collaboration members use (`collaboration.model_policy`).
@@ -983,13 +1118,17 @@ pub enum ModelPolicyUpdate {
 /// The models and which one is in effect.
 #[derive(Debug, Clone, Default)]
 pub struct ModelList {
+    pub query: String,
+    pub next: Option<dim_agent_types::ModelId>,
     pub models: Vec<ModelItem>,
     /// Whether the daemon manages Providers through `provider.management`:
     /// the picker offers a Provider's models for editing only when it does.
     pub manage: bool,
     pub current: Option<(String, String)>,
     /// The usable providers that offer no selectable model, with why, so the
-    /// picker can name them.
+    /// picker can name them. A provider in `limits` appears here only for its
+    /// other unavailable or disabled models; its undeclared models are not
+    /// counted again.
     pub empty: Vec<EmptyProvider>,
     /// The usable providers whose models include ones with undeclared
     /// limits, with how many.
@@ -1008,6 +1147,7 @@ pub struct SessionItem {
     /// The creation origin the daemon reports (`client`, `acp`, `internal`,
     /// `unknown`); absent from a daemon that does not report one.
     pub origin: Option<String>,
+    pub closed: bool,
 }
 
 /// The Session's stored title, unless it has none: empty, or the
@@ -1058,17 +1198,64 @@ pub enum RenameReply {
     Failed(String),
 }
 
+/// A `session.delete` reply as `/resume` reports it: what became of the row
+/// the picker pinned when the key was pressed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteReply {
+    pub session_id: String,
+    /// The row's name: its stored title, else its first words, else its id,
+    /// without the origin tag the picker draws beside it.
+    pub name: String,
+    pub outcome: DeleteOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    /// This call removed the rows: the row leaves the picker.
+    Deleted,
+    /// The store held no rows of the id, so nothing was removed: the row
+    /// stays and the list is read again.
+    NothingRemoved,
+    /// The daemon offers no `session.delete`.
+    Unsupported,
+    /// The removal failed and the reply does not say whether close ran.
+    /// The picker keeps the row and leaves an affected current Session.
+    ClosedNotRemoved(String),
+    /// The call failed before the removal: the row and the attachment stand.
+    Failed(String),
+}
+
+impl DeleteOutcome {
+    /// Whether a picker showing the affected Session leaves for Home.
+    pub fn ends_session(&self) -> bool {
+        matches!(self, Self::Deleted | Self::ClosedNotRemoved(_))
+    }
+}
+
 #[allow(dead_code)]
 pub enum Update {
+    Reportable {
+        error: crate::report::Captured,
+        show_error: bool,
+    },
+    ReportReply {
+        panel: u64,
+        reply: crate::report::Reply,
+    },
     /// A queued input the TUI withdrew (`Command::InputControl` with action
     /// `withdraw`) is deleted: its complete content goes back into the draft.
     Withdrawn(dim_agent_types::UserInput),
+    /// The stop a Ctrl+Enter asked for settled: the interface submits the
+    /// draft it held back, or keeps it when `error` says the stop failed.
+    Stopped {
+        error: Option<String>,
+    },
     Exported {
         format: crate::export::Format,
         path: std::path::PathBuf,
     },
-    /// The session's adopted configuration: `provider / model`, and the
-    /// reasoning effort it sends when it carries one, label the status line.
+    /// The startup preview or Session's adopted configuration: `provider / model`
+    /// and its effective reasoning effort label the status line.
     Ready(Configuration),
     /// What the session's model offers, once its catalog entry is known:
     /// image input, and the priority/default service tiers of `/fast`.
@@ -1107,6 +1294,11 @@ pub enum Update {
     Switched {
         session_id: String,
         kind: SwitchKind,
+        /// The workspace the Session works in, as the daemon reported it
+        /// when the Session was attached: a resumed Session may live outside
+        /// the directory this client was started in. `None` for Home, and for
+        /// a daemon older than the attach record.
+        cwd: Option<String>,
     },
     /// The Session's Skills as the palette lists them: enabled and not
     /// shadowed. An empty list when the daemon has no catalog.
@@ -1121,24 +1313,27 @@ pub enum Update {
     /// workspace and the same relative directory in every worktree of its git
     /// repository, found once per picker open. The set may hold one entry.
     RepositoryWorkspaces(Vec<String>),
+    /// The default a `/models` selection wrote: the folder whose workspace
+    /// scope it wrote, or `None` when it wrote the global one, and the row's
+    /// own label. The interface names the scope; it owns the display form.
+    ModelDefault {
+        folder: Option<String>,
+        model: String,
+    },
     /// A command failed without ending the session.
     Notice(String),
     /// A submission could not be sent because no Session could be started
     /// for it; the message says why. The interface restores the invocation's
     /// first message, or reports it when a newer draft holds the composer.
     SubmitNotSent(String),
+    DraftNotSent {
+        parts: Vec<DraftPart>,
+        message: String,
+    },
     /// A newer version the user has not skipped, once per start.
     Upgrade(crate::update::Offer),
-    /// What installing the offered version came to.
-    UpgradeInstalled {
-        version: String,
-        result: Result<(), String>,
-    },
     Models(Result<ModelList, String>),
     EffortChoices(Result<crate::configure::EffortChoices, String>),
-    /// A catalog `models()` asked `provider.refresh` to fill holds models
-    /// now: a picker that is still open reads the list again.
-    ModelsRefilled,
     /// Sent only by a daemon that advertises the policy methods.
     ModelPolicy(ModelPolicyUpdate),
     Isolation(Result<ExecutionSnapshot, String>),
@@ -1150,6 +1345,13 @@ pub enum Update {
     SuggestionMethods(bool),
     /// The `prompt-suggestion` switch, as last read or written.
     SuggestionSetting(Result<SuggestionSetting, String>),
+    /// The `prompts` source, as last read or written. `field` names the write
+    /// that produced it; a read carries none.
+    PromptSettings {
+        result: Result<PromptSetting, String>,
+        field: Option<PromptField>,
+        request: Option<u64>,
+    },
     /// A turn completed on `main`: the interface may ask for the next
     /// message when nothing else has its attention.
     TurnCompleted {
@@ -1206,6 +1408,8 @@ pub enum Update {
     Compacted(CompactReply),
     /// What a `/rename` came to, localized by the interface.
     Renamed(RenameReply),
+    /// What a `/resume` delete came to, localized by the interface.
+    Deleted(DeleteReply),
     /// Progress of the sign-in tagged `attempt`.
     Oauth {
         attempt: u64,
@@ -1239,8 +1443,12 @@ pub enum Update {
     Failed(String),
     /// Startup failed; show the error and exit nonzero, except that an
     /// invocation's first message stays in the draft and the interface
-    /// continues.
-    StartupFailed(String),
+    /// continues. `resumable` is false when running the command again cannot
+    /// open the Session, so the interface offers no retry.
+    StartupFailed {
+        message: String,
+        resumable: bool,
+    },
     /// The App Server asked this interface to leave (`ui.shutdown`); the
     /// Session goes on without it.
     Shutdown {

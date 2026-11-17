@@ -66,7 +66,7 @@ impl Emu {
     }
 
     pub fn rows_text(&self) -> Vec<String> {
-        (0..self.rows).map(|y| self.row(y)).collect()
+        Vec::from_fn(self.rows, |y| self.row(y))
     }
 
     /// Scrollback followed by the visible rows, trailing blanks trimmed.
@@ -140,7 +140,7 @@ impl Emu {
     }
 
     pub fn feed(&mut self, bytes: &[u8]) {
-        self.had_text = (0..self.rows).map(|y| !self.blank(y)).collect();
+        self.had_text = Vec::from_fn(self.rows, |y| !self.blank(y));
         self.blanked = vec![false; self.rows];
         self.feed_bytes(bytes);
         self.flickers += (0..self.rows)
@@ -258,8 +258,8 @@ impl Emu {
                     2 => (0, self.cols),
                     _ => (self.cx, self.cols),
                 };
-                for x in from..to {
-                    self.screen[self.cy][x] = ' ';
+                for cell in &mut self.screen[self.cy][from..to] {
+                    *cell = ' ';
                 }
                 self.note_blanked([self.cy]);
             }

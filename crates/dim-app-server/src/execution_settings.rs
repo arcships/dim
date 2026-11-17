@@ -7,8 +7,7 @@ use crate::methods::ManagementMethods;
 use crate::protocol::Empty;
 use crate::settings::{SettingsScope, SettingsService, SourceDeclaration};
 use dim_agent_capabilities::execution_settings::{
-    ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost, ExecutionSettingsSource,
-    SOURCE,
+    ExecutionSettingsError, ExecutionSettingsHost, SOURCE,
 };
 use dim_agent_capabilities::host_platform::{HostPlatform, SandboxBackend};
 use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, params, reply};
@@ -17,28 +16,6 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::json;
 use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
-
-struct Storage {
-    settings: Arc<SettingsService>,
-}
-
-impl ExecutionSettingsSource for Storage {
-    fn read(
-        &self,
-        cancel: CancellationToken,
-    ) -> BoxFuture<'_, Result<ExecutionSettings, ExecutionSettingsError>> {
-        Box::pin(async move {
-            let snapshot = self
-                .settings
-                .read_declared(SOURCE, SettingsScope::User, &cancel)
-                .await
-                .map_err(|error| ExecutionSettingsError::Failed(error.to_string()))?;
-            serde_json::from_value(snapshot.document)
-                .map_err(|error| ExecutionSettingsError::Failed(error.to_string()))
-        })
-    }
-}
 
 pub struct ExecutionSettingsPlugin {
     settings: Key<SettingsService>,
@@ -82,8 +59,23 @@ impl DynPlugin for ExecutionSettingsPlugin {
                     user_only: Vec::new(),
                 },
             )?;
-            let host = ExecutionSettingsHost(Arc::new(Storage { settings }));
-            ctx.provide_as::<ExecutionSettingsHost>(Arc::new(host))?;
+            let host = ExecutionSettingsHost::new(Arc::new(move |cancel| {
+                let settings = settings.clone();
+                Box::pin(async move {
+                    let snapshot = settings
+                        .read_declared(SOURCE, SettingsScope::User, &cancel)
+                        .await
+                        .map_err(|error| ExecutionSettingsError::Failed {
+                            message: error.to_string(),
+                        })?;
+                    serde_json::from_value(snapshot.document).map_err(|error| {
+                        ExecutionSettingsError::Failed {
+                            message: error.to_string(),
+                        }
+                    })
+                })
+            }));
+            dim_agent_capabilities::execution_settings::provide(ctx, &host)?;
             dim_agent_capabilities::execution_settings::prompt::register_parts(ctx, &parts)?;
             Ok(Effect::Done)
         })

@@ -24,11 +24,13 @@ pub mod permission_rules;
 mod pipe_client;
 pub mod plugin_files;
 pub mod plugin_manager;
+pub mod prompt_settings;
 pub mod prompt_suggestion_settings;
 pub mod protocol;
 pub mod provider;
 pub mod runtime_manager;
 pub mod session_grants;
+pub mod session_language;
 pub mod session_typescript;
 pub mod settings;
 pub mod settings_methods;
@@ -43,11 +45,13 @@ mod ui_leaf;
 pub mod web;
 mod web_entry;
 mod workspace_files;
+mod worktrees;
 
 use agents::{AgentIndex, AgentsPlugin};
-pub use agents::{SessionPermissions, SessionRef, SessionsError};
+pub use agents::{SessionDeleted, SessionPermissions, SessionRef, SessionsError};
 use collaboration::CollaborationPlugin;
 use connection::{ConnectionHub, ConnectionPlugin, RpcPlugin};
+pub use control::{ProcessActivity, ProcessHold};
 use control::{ServerControl, ServerControlPlugin};
 use dim_agent_runtime::{
     Agent, AgentBuilder, AgentError, Modules, SessionConfig, StartupProgress, register_part,
@@ -58,7 +62,7 @@ use rutis::host::{CtxHost, FiberView, Key};
 use rutis_loader::runtime::SessionRows;
 use serde_json::Value;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -66,7 +70,8 @@ use std::{
 };
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use transport::{ListenAddresses, TransportPlugin};
+use transport::TransportPlugin;
+pub use transport::{BoundAddresses, ListenAddresses, ListenAddressesError};
 
 #[derive(Clone, Debug)]
 pub struct ServerConfig {
@@ -111,6 +116,14 @@ pub struct ServerConfig {
     /// a plugin's data directory. The product sets it through a product
     /// home; a host without one names it here.
     pub plugin_files: Option<PathBuf>,
+    /// Whether the `plugin` management tool is offered to the Sessions this
+    /// process serves. `true` by default. `false` leaves the `PluginTools`
+    /// Session part unregistered, so no Session, a collaboration member
+    /// included, can name the tool; the process's plugins still load and the
+    /// `plugin.*` management methods stay registered. The scenario
+    /// evaluation serves with `false`, so the registered tools, not a
+    /// Session's mount list, are the ceiling a run's Sessions can declare.
+    pub plugin_tools: bool,
 }
 impl Default for ServerConfig {
     fn default() -> Self {
@@ -137,6 +150,7 @@ impl Default for ServerConfig {
             plugin_defaults: None,
             plugin_configs: BTreeMap::new(),
             plugin_files: None,
+            plugin_tools: true,
         }
     }
 }
@@ -425,17 +439,21 @@ impl Drop for Startup {
     }
 }
 
-/// The credential variable names the assembly root publishes for this
-/// process. The model catalog is immutable after startup.
-struct CredentialVariableNames(BTreeSet<String>);
-impl dim_agent_capabilities::host::CredentialVariables for CredentialVariableNames {
-    fn credential_variables(&self) -> BTreeSet<String> {
-        self.0.clone()
+/// Builds the process tree, opens admission once required host rows are Active
+/// and the runtimes have released their rows, and returns the listener addresses.
+/// The `localId` data face: the daemon's peer id, readable by a leaf.
+struct LocalIdDispatch(rutis_bridge::PeerId);
+
+impl rutis_bridge::session::HostDispatch for LocalIdDispatch {
+    fn invoke(&self, _: &str, _: rutis_bridge::session::Value) -> rutis_bridge::session::Reply {
+        Ok(serde_json::json!({ "id": self.0.to_string() }).into())
+    }
+
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({ "get": "sync" }))
     }
 }
 
-/// Builds the process tree, opens admission once required host rows are Active
-/// and the runtimes have released their rows, and returns the listener addresses.
 pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Result<RunningServer> {
     if config.managed_provider.is_some() && config.product_home.is_none() {
         return Err(ServerError::Configuration(
@@ -627,14 +645,13 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         tokio::runtime::Handle::current(),
         Arc::new(|error| tracing::error!(%error, "App Server runtime error")),
     );
-    root.provide(dim_agent_capabilities::host::CredentialVariablesHost(
-        Arc::new(CredentialVariableNames(
-            config
-                .model_catalog
-                .as_ref()
-                .map(|models| models.api_key_envs())
-                .unwrap_or_default(),
-        )),
+    let credential_variables = config
+        .model_catalog
+        .as_ref()
+        .map(|models| models.api_key_envs())
+        .unwrap_or_default();
+    root.provide(dim_agent_capabilities::host::CredentialVariablesHost::new(
+        Arc::new(move || credential_variables.clone()),
     ))
     .map_err(|error| ServerError::Runtime(error.into()))?;
     let control = ServerControlPlugin::new();
@@ -644,20 +661,32 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         control: handle.clone(),
         armed: true,
     };
-    root.provide(rutis_bridge::LocalId(
-        rutis_bridge::PeerId::new("dim-daemon").expect("a peer id"),
-    ))
+    let peer = rutis_bridge::PeerId::new("dim-daemon").expect("a peer id");
+    root.provide(rutis_bridge::LocalId(peer.clone()))
+        .map_err(|error| ServerError::Runtime(error.into()))?;
+    root.provide_at(
+        rutis_bridge::session::host_key("localId"),
+        std::sync::Arc::new(LocalIdDispatch(peer)),
+    )
     .map_err(|error| ServerError::Runtime(error.into()))?;
+    // One reservation check for the process: every Session table consults it
+    // (methods contract A.1). A process-wide value stays the one the served
+    // rows resolve, as a per-Agent value did, and keeps its name's one
+    // dispatcher.
+    root.provide(methods::reserved_for_sessions())
+        .map_err(|error| ServerError::Runtime(error.into()))?;
     let mut builtins = Modules::new();
     dim_agent_capabilities::register_names(&mut builder);
     register_names(builder.catalog_mut());
-    dim_agent_runtime::names::register::<dim_agent_capabilities::methods::ReservedMethods>(
-        builder.catalog_mut(),
-        None,
-    );
-    builder.process_value(Arc::new(dim_agent_capabilities::methods::ReservedMethods(
-        methods::reserved_for_sessions(),
-    )));
+    // Share the foreign-part names after every typed name exists: a later
+    // typed registration overwrites a shared key (managementMethods).
+    crate::session_typescript::share_names(builder.catalog_mut());
+    register_faces(&mut builder);
+    builder
+        .catalog_mut()
+        .register_shared(dim_agent_runtime::names::name_of::<
+            dim_agent_capabilities::methods::ReservedMethods,
+        >());
     let mut rows = vec![register_part(
         &mut builtins,
         builder.catalog(),
@@ -672,9 +701,18 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         move |_| Ok(Box::new(files.clone())),
     )?);
     if config.model_catalog.is_some() || product_root.is_some() {
-        rows.push(register_part(&mut builtins, builder.catalog(), |_| {
-            Ok(Box::new(dim_agent_aimux::AimuxPlugin))
-        })?);
+        let has_files = config.database_path.is_some();
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(if has_files {
+                    dim_agent_aimux::AimuxPlugin::with_files(names.key()?)
+                } else {
+                    dim_agent_aimux::AimuxPlugin::default()
+                }))
+            },
+        )?);
     }
     if let Some(models) = &config.model_catalog {
         dim_agent_aimux::register_names(&mut builder);
@@ -709,6 +747,24 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             },
         )?);
     }
+    // The managed root outlives a Session, so its owner exists only where the
+    // product home and the native store do.
+    if let Some(home) = config
+        .product_home
+        .clone()
+        .filter(|_| config.database_path.is_some())
+    {
+        rows.push(register_part(
+            &mut builtins,
+            builder.catalog(),
+            move |names| {
+                Ok(Box::new(worktrees::ManagedWorktreesPlugin::new(
+                    names,
+                    home.clone(),
+                )?))
+            },
+        )?);
+    }
     rows.push(register_part(&mut builtins, builder.catalog(), |names| {
         Ok(Box::new(methods::ManagementMethodsPlugin::new(names)?))
     })?);
@@ -722,9 +778,21 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     rows.push(register_part(&mut builtins, builder.catalog(), |names| {
         Ok(Box::new(connection::CallChannelPlugin::new(names)?))
     })?);
-    rows.push(register_part(&mut builtins, builder.catalog(), |_| {
-        Ok(Box::new(managed_provider::ManagedProvidersPlugin))
-    })?);
+    let host_account_methods = product_root.is_some();
+    rows.push(register_part(
+        &mut builtins,
+        builder.catalog(),
+        move |names| {
+            let account = if host_account_methods {
+                Some(names.key::<methods::ManagementMethods>()?)
+            } else {
+                None
+            };
+            Ok(Box::new(managed_provider::ManagedProvidersPlugin::new(
+                account,
+            )))
+        },
+    )?);
     if let Some(home_root) = plugin_root {
         rows.push(register_part(
             &mut builtins,
@@ -737,17 +805,10 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         )?);
     }
     if let Some(home_root) = product_root {
-        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
-            Ok(Box::new(
-                managed_provider::ManagedProviderMethodsPlugin::new(names)?,
-            ))
-        })?);
         if let Some(provider) = &config.managed_provider {
             rows.push((provider.0)(&mut builtins, home_root));
-            rows.push(register_part(&mut builtins, builder.catalog(), |names| {
-                Ok(Box::new(managed_provider::ManagedProviderBinding::new(
-                    names,
-                )?))
+            rows.push(register_part(&mut builtins, builder.catalog(), |_| {
+                Ok(Box::new(managed_provider::ManagedProviderBinding))
             })?);
         }
         rows.push(register_part(
@@ -829,13 +890,27 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 names,
             )?))
         })?);
-        dim_agent_runtime::names::register::<
-            dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsHost,
-        >(builder.catalog_mut(), None);
+        builder
+            .catalog_mut()
+            .register_shared(dim_agent_runtime::names::name_of::<
+                dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettingsHost,
+            >());
+        builder
+            .catalog_mut()
+            .register_shared("basePromptSettingsHost");
+        builder
+            .catalog_mut()
+            .register_shared("skillsInstructionsSettingsHost");
+        builder
+            .catalog_mut()
+            .register_shared("summaryPromptSettingsHost");
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(
                 prompt_suggestion_settings::PromptSuggestionSettingsPlugin::new(names)?,
             ))
+        })?);
+        rows.push(register_part(&mut builtins, builder.catalog(), |names| {
+            Ok(Box::new(prompt_settings::PromptSettingsPlugin::new(names)?))
         })?);
         rows.push(register_part(
             &mut builtins,
@@ -939,6 +1014,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         .transpose()?;
     if let Some(state) = &plugins {
         let state = state.clone();
+        let plugin_tools = config.plugin_tools;
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
@@ -946,6 +1022,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 Ok(Box::new(plugin_manager::PluginManagerPlugin::new(
                     names,
                     state.clone(),
+                    plugin_tools,
                 )?))
             },
         )?);
@@ -1226,6 +1303,27 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         None => Err(processes.timed_out(&root).await),
     };
     if let Err(error) = started {
+        tracing::error!(%error, "App Server startup failed before cleanup");
+        for plugin in root.diagnostics().plugins {
+            if plugin.state != rutis::host::FiberState::Active {
+                let unmet: Vec<_> = plugin
+                    .injects
+                    .iter()
+                    .filter(|dependency| {
+                        dependency.status != rutis::host::diagnostics::DependencyStatus::Ready
+                    })
+                    .map(|dependency| {
+                        format!("{} {:?}", dependency.key.describe(), dependency.status)
+                    })
+                    .collect();
+                tracing::error!(
+                    plugin = %plugin.name,
+                    state = ?plugin.state,
+                    ?unmet,
+                    "App Server inactive startup row"
+                );
+            }
+        }
         startup.armed = false;
         handle.shutdown().cancel();
         let cleanup = root.shutdown().await;
@@ -1260,40 +1358,42 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
 /// the names its process parts share across languages. Registering them again
 /// does nothing, so each installer applies them.
 pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
-    use dim_agent_capabilities::host::{
-        AuxiliaryModelHost, ModalityConnectionHost, ModelSelectionHost, SelectableModelsHost,
-    };
+    use dim_agent_capabilities::host::SelectableModelsHost;
     use dim_agent_runtime::{SESSION_GROUP, names::register};
     register::<ServerControl>(catalog, None);
+    register::<ProcessActivity>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
     register::<storage::SessionStore>(catalog, None);
+    register::<worktrees::ManagedWorktrees>(catalog, None);
     register::<agents::AgentDirectory>(catalog, None);
     register::<AgentIndex>(catalog, None);
     register::<rutis_loader::Loader>(catalog, None);
-    register::<collaboration::CollaborationDirectory>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<
+        collaboration::CollaborationDirectory,
+    >());
     register::<collaboration::Collaboration>(catalog, None);
     register::<plugin_files::PluginFileTransactions>(catalog, None);
     register::<ConnectionHub>(catalog, None);
-    register::<ListenAddresses>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<ListenAddresses>());
     register::<ui_host::UiHost>(catalog, None);
     register::<ui_extensions::UiExtensions>(catalog, None);
     register::<ui_extensions::UiResources>(catalog, Some(SESSION_GROUP));
     register::<settings::SettingsService>(catalog, None);
-    register::<managed_provider::ManagedProviders>(catalog, None);
+    register::<managed_provider::ManagedSearch>(catalog, None);
     register::<dyn managed_provider::ManagedProvider>(catalog, None);
     register::<codex_oauth::OpenAICodexOAuthService>(catalog, None);
     register::<grok_oauth::GrokOAuthService>(catalog, None);
     register::<provider::ProviderSecretHost>(catalog, None);
     register::<provider::ProviderService>(catalog, None);
-    register::<ModelSelectionHost>(catalog, None);
-    register::<AuxiliaryModelHost>(catalog, None);
-    register::<SelectableModelsHost>(catalog, None);
-    register::<ModalityConnectionHost>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<SelectableModelsHost>());
     register::<mcp::McpService>(catalog, None);
     register::<mcp::McpAuth>(catalog, None);
     register::<mcp::Publication>(catalog, None);
     register::<hooks_settings::HooksService>(catalog, None);
     register::<methods::ManagementMethods>(catalog, None);
+    catalog.register_shared(dim_agent_runtime::names::name_of::<
+        methods::ManagementMethods,
+    >());
     register::<dim_agent_capabilities::methods::Callers>(catalog, None);
     register::<runtime_manager::RuntimeService>(catalog, None);
     register::<collaboration::CollaborationSession>(catalog, Some(SESSION_GROUP));
@@ -1301,13 +1401,84 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     for name in [
         "callChannel",
         "pluginFiles",
+        "processActivity",
         "sessions",
         "sessionMetadata",
+        "sessionFiles",
+        "managedSearch",
         "auxiliaryModel",
         "settings",
         "ocrHelper",
     ] {
         catalog.register_shared(name);
+    }
+}
+
+/// The reasons for the product profile's internal names (#1300).
+pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
+    for (name, reason) in [
+        ("promptSourcesBranch", "hot-path"),
+        ("agentDirectory", "owner-api"),
+        ("agentIndex", "owner-api"),
+        ("agentLoop", "hot-path"),
+        ("branchLine", "hot-path"),
+        ("branchOpening", "hot-path"),
+        ("callers", "owner-api"),
+        ("collaboration", "host-resource"),
+        ("collaborationSession", "legacy-no-consumer"),
+        ("commandRulesHost", "hot-path"),
+        ("compactionStrategyHost", "hot-path"),
+        ("configurationPublisher", "hot-path"),
+        ("configureControl", "hot-path"),
+        ("connectionHub", "control"),
+        ("contextModelHost", "hot-path"),
+        ("contextPreparation", "hot-path"),
+        ("contextUsage", "hot-path"),
+        ("faultReporter", "hot-path"),
+        ("fileReads", "hot-path"),
+        ("fileStorage", "object"),
+        ("grokOAuthService", "secret"),
+        ("historyRenderer", "hot-path"),
+        ("hooksService", "host-resource"),
+        ("hostPlatform", "object"),
+        ("initialPromptConfiguration", "hot-path"),
+        ("loader", "owner-api"),
+        ("loopState", "hot-path"),
+        // Session creation calls it directly; no leaf needs the service.
+        ("managedWorktrees", "hot-path"),
+        ("mcpAuth", "secret"),
+        ("mcpService", "host-resource"),
+        ("mentionIndex", "host-resource"),
+        ("modelHost", "owner-api"),
+        ("openAICodexOAuthService", "secret"),
+        ("pluginFileTransactions", "host-resource"),
+        ("prepareContextHost", "hot-path"),
+        ("prepareModelHost", "hot-path"),
+        ("prompt", "hot-path"),
+        ("promptHost", "hot-path"),
+        ("promptRegistry", "hot-path"),
+        ("providerConnectionResolver", "host-resource"),
+        ("providerService", "secret"),
+        ("publication", "host-resource"),
+        ("serverControl", "control"),
+        ("sessionLoader", "control"),
+        ("sessionSkills", "host-resource"),
+        ("sessionStore", "owner-api"),
+        ("settingsService", "owner-api"),
+        ("skillsBranch", "host-resource"),
+        ("skillsCatalog", "host-resource"),
+        ("sqliteStorage", "object"),
+        ("submitChecks", "hot-path"),
+        ("timelineFactory", "control"),
+        ("timelineStore", "object"),
+        ("timelineTree", "owner-api"),
+        ("timelineTreeControl", "owner-api"),
+        ("toolBinding", "hot-path"),
+        ("toolExecutor", "hot-path"),
+        ("uiExtensions", "control"),
+        ("uiHost", "control"),
+    ] {
+        builder.internal_name(name, reason);
     }
 }
 
@@ -1350,7 +1521,7 @@ async fn coordinate(root: Ctx, control: Arc<ServerControl>) -> Result<ShutdownRe
         return Ok(ShutdownReason::Forced);
     }
     let mut errors = vec![];
-    if let Some(providers) = root.get::<managed_provider::ManagedProviders>() {
+    if let Some(providers) = root.get_at(&managed_provider::owner_key()) {
         providers.quiesce().await;
     }
     if let Some(index) = root.get::<AgentIndex>() {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import WorkStatusIcon from "./WorkStatusIcon.vue"
 import { computed, onBeforeUnmount, ref } from "vue"
-import { Check, ChevronRight, Copy } from "lucide-vue-next"
 import { useI18n } from "vue-i18n"
 import { copyText } from "../../clipboard"
 import { diffLines, resolveToolDisplay } from "./tool-display"
@@ -9,7 +9,7 @@ import type { WorkItem } from "./work"
 
 // Panels scroll at 240px; the cap only keeps a huge result from flooding the DOM.
 const MAX_PANEL_CHARS = 20_000
-const props = defineProps<{ item: WorkItem; expanded: boolean }>()
+const props = defineProps<{ sessionId?: string; item: WorkItem; expanded: boolean }>()
 const emit = defineEmits<{ toggle: [] }>()
 const { t } = useI18n()
 
@@ -80,7 +80,7 @@ const sections = computed<PanelSection[]>(() => {
   }
 })
 
-const hasDetails = computed(() => props.item.kind === "thinking" ? thinkingText.value !== "" : sections.value.length > 0)
+const hasDetails = computed(() => props.item.kind === "thinking" ? thinkingText.value !== "" : (sections.value.length > 0 || (tool.value?.result?.images?.length ?? 0) > 0))
 
 const copiedId = ref<string>()
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
@@ -103,15 +103,16 @@ async function copy(section: PanelSection): Promise<void> {
       :aria-expanded="hasDetails ? expanded : undefined"
       @click="hasDetails && emit('toggle')"
     >
-      <ChevronRight :size="14" aria-hidden="true" :class="{ 'is-expanded': expanded && hasDetails }" />
+      <WorkStatusIcon :state="isError ? 'error' : item.kind === 'thinking' ? (item.running ? 'thinking' : 'done') : item.category" :active="item.kind === 'thinking' ? item.running : item.status === 'running'" />
       <span v-if="tool" class="timeline-work-item-summary" :title="[label, tool.primary].filter(Boolean).join(' ')">
-        <span>{{ label }}</span><small v-if="tool.primary">{{ tool.primary }}</small>
+        <span class="timeline-status-label">{{ label }}<span class="timeline-status-shine" aria-hidden="true">{{ label }}</span></span><small v-if="tool.primary">{{ tool.primary }}</small>
       </span>
-      <span v-else class="timeline-work-item-summary"><span>{{ thinkingTitle }}</span></span>
+      <span v-else class="timeline-work-item-summary"><span class="timeline-status-label">{{ thinkingTitle }}<span class="timeline-status-shine" aria-hidden="true">{{ thinkingTitle }}</span></span></span>
       <template v-if="stats">
         <span class="timeline-work-stat" data-tone="success">+{{ stats.added }}</span>
         <span v-if="stats.removed" class="timeline-work-stat" data-tone="danger">−{{ stats.removed }}</span>
       </template>
+      <UIcon v-if="hasDetails" name="i-lucide-chevron-right" class="timeline-status-chevron" :class="{ 'is-expanded': expanded }" aria-hidden="true" />
     </button>
 
     <div v-if="expanded && hasDetails" class="timeline-work-item-details">
@@ -120,9 +121,9 @@ async function copy(section: PanelSection): Promise<void> {
         <template v-for="section in sections" :key="section.id">
           <div class="tool-panel-label">
             <span :title="section.label">{{ section.label }}</span>
-            <button type="button" class="ui-button" data-variant="ghost" data-size="xs" @click="copy(section)">
-              <Check v-if="copiedId === section.id" aria-hidden="true" /><Copy v-else aria-hidden="true" />{{ t(copiedId === section.id ? "timeline.copied" : "timeline.copy") }}
-            </button>
+            <UButton color="neutral" variant="ghost" size="xs" :icon="copiedId === section.id ? 'i-lucide-check' : 'i-lucide-copy'" @click="copy(section)">
+              {{ t(copiedId === section.id ? "timeline.copied" : "timeline.copy") }}
+            </UButton>
           </div>
           <div v-if="section.body === 'command'" class="tool-panel-code">
             <div class="is-strong"><span class="is-muted">$</span> {{ section.copy }}</div>
@@ -142,6 +143,7 @@ async function copy(section: PanelSection): Promise<void> {
           </div>
           <pre v-else class="tool-panel-pre" :class="{ 'is-error': isError && section.id === 'output' }">{{ section.copy }}</pre>
         </template>
+        <img v-for="image in tool?.result?.images" v-if="sessionId" :key="image.source.fileId" :src="`/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(image.source.fileId)}`" alt="Tool image" loading="lazy" style="max-width: 100%; max-height: 24rem; object-fit: contain" />
       </div>
     </div>
   </div>

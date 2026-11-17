@@ -754,12 +754,39 @@ fn frame(delta: Value, finish: Value) -> String {
     )
 }
 
-/// The fixture model's reply: a plain turn, then the `goal_update` call the
-/// continuation asks for, then the closing reply to that call's result. A
-/// later request is answered with plain text, so a stray continuation cannot
-/// keep the conversation going.
+/// The title prompt SessionTitle's model-facing request carries (its A2): a
+/// request with this system message is the product profile's automatic title
+/// call, not one of Goal's turns.
+const TITLE_PROMPT: &str = "Write a short title for this conversation: at most 8 words, in the language of the user's message, no quotes, no trailing punctuation. Reply with the title only.";
+
+/// Whether `request` is the product profile's automatic title call.
+fn title_request(request: &Value) -> bool {
+    messages(request)
+        .iter()
+        .any(|(role, text)| role == "system" && text == TITLE_PROMPT)
+}
+
+/// The requests recorded so far that are not title calls, in arrival order.
+fn goal_requests(requests: &Arc<Mutex<Vec<Value>>>) -> Vec<Value> {
+    requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|request| !title_request(request))
+        .cloned()
+        .collect()
+}
+
+/// The fixture model's reply: a title call is answered on its own; otherwise a
+/// plain turn, then the `goal_update` call the continuation asks for, then the
+/// closing reply to that call's result. A later request is answered with plain
+/// text, so a stray continuation cannot keep the conversation going. `index`
+/// counts Goal's requests only, so the title call does not shift these
+/// decisions.
 fn model_reply(request: &Value, index: usize) -> String {
-    let data = if index >= 3 {
+    let data = if title_request(request) {
+        frame(json!({"content":"Native goal title"}), json!("stop"))
+    } else if index >= 3 {
         frame(json!({"content":"No further work."}), json!("stop"))
     } else if said(request, "tool", "goal_update recorded") {
         frame(json!({"content":"Goal completed."}), json!("stop"))
@@ -821,7 +848,7 @@ fn model_endpoint() -> (String, Arc<Mutex<Vec<Value>>>, Arc<AtomicBool>) {
                 continue;
             }
             let request: Value = serde_json::from_slice(&body).unwrap();
-            let index = seen.lock().unwrap().len();
+            let index = goal_requests(&seen).len();
             let reply = model_reply(&request, index);
             seen.lock().unwrap().push(request);
             let head = format!(
@@ -869,7 +896,7 @@ fn the_product_profile_installs_native_goal_without_a_foreign_runtime() {
         &mut wire,
         &mut id,
         "hello",
-        json!({"protocolVersion":3,"clientKind":"cli"}),
+        json!({"protocolVersion":4,"clientKind":"cli"}),
     );
     assert_eq!(
         hello["result"]["daemonProfile"]["kind"], "product",
@@ -1006,7 +1033,7 @@ fn the_product_profile_installs_native_goal_without_a_foreign_runtime() {
 
     // The set's turn, the continuation's turn and that turn's tool result.
     let deadline = Instant::now() + PATIENCE;
-    while requests.lock().unwrap().len() < 3 {
+    while goal_requests(&requests).len() < 3 {
         if Instant::now() >= deadline {
             let seen = requests.lock().unwrap().clone();
             let dump: Vec<String> = seen
@@ -1029,7 +1056,9 @@ fn the_product_profile_installs_native_goal_without_a_foreign_runtime() {
             );
             panic!(
                 "the goal's turns reach the model ({} requests)\nrequests: {dump:#?}\nhistory: {history}",
-                seen.len()
+                seen.iter()
+                    .filter(|request| !title_request(request))
+                    .count()
             );
         }
         thread::sleep(Duration::from_millis(10));
@@ -1043,20 +1072,38 @@ fn the_product_profile_installs_native_goal_without_a_foreign_runtime() {
     assert!(idle.get("result").is_some(), "{idle}");
     thread::sleep(Duration::from_millis(500));
     let seen = requests.lock().unwrap().clone();
+    let titles: Vec<&Value> = seen
+        .iter()
+        .filter(|request| title_request(request))
+        .collect();
+    let goal: Vec<&Value> = seen
+        .iter()
+        .filter(|request| !title_request(request))
+        .collect();
     assert_eq!(
-        seen.len(),
+        titles.len(),
+        1,
+        "the profile titles the Session once: {seen:#?}"
+    );
+    assert!(
+        said(titles[0], "user", "ship the native goal"),
+        "the title request carries the objective: {:#?}",
+        titles[0]
+    );
+    assert_eq!(
+        goal.len(),
         3,
         "a completed goal asks for no further turn: {seen:#?}"
     );
     assert!(
-        said(&seen[1], "user", r#"kind="continuation" count="1""#),
+        said(goal[1], "user", r#"kind="continuation" count="1""#),
         "the continuation reaches the model: {:#?}",
-        seen[1]
+        goal[1]
     );
     assert!(
-        said(&seen[2], "tool", "goal_update recorded: completed."),
+        said(goal[2], "tool", "goal_update recorded: completed."),
         "the tool result reaches the model: {:#?}",
-        seen[2]
+        goal[2]
     );
 
     let history = rpc(

@@ -14,6 +14,8 @@ mod input;
 mod leaf;
 mod locale;
 mod login;
+mod loop_command;
+mod loop_view;
 mod maintenance;
 mod management;
 mod management_command;
@@ -28,9 +30,11 @@ mod permission_command;
 mod plugin_command;
 mod plugins;
 mod projection;
+mod prompt_command;
 mod question;
 mod realtime_command;
 mod recording;
+mod report;
 mod sanitize;
 mod session;
 mod session_command;
@@ -38,9 +42,9 @@ mod session_host;
 mod ui;
 mod update;
 mod usage;
-mod version;
 mod web_install;
 mod wire;
+mod worktree_command;
 
 use args::{Action, Options};
 use rutis::host::CtxHost;
@@ -49,6 +53,13 @@ use std::sync::Arc;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, Error>;
+
+/// Registers the calling process as a live user of its package installation,
+/// so `update` refuses while it runs. The host calls it before starting the
+/// App Server.
+pub fn hold_installation() -> std::result::Result<(), String> {
+    update::hold_installation()
+}
 
 /// Runs the CLI with the process arguments and returns its exit code. The
 /// host binary must answer `app-server` with the App Server command line,
@@ -123,7 +134,14 @@ async fn open_tui(
     initial: Option<ui::Initial>,
     locale: locale::Locale,
 ) -> Result<i32> {
-    let (link, _connection) = daemon_link(root, options, true, locale).await?;
+    let (link, _connection) = match daemon_link(root, options, true, locale).await {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        Err(error) => match error.downcast_ref::<client::NewerStore>() {
+            Some(store) => return update::recover_startup(&options.home, store).await,
+            None => return Err(error),
+        },
+        result => result?,
+    };
     let env = ui::Env {
         home: options.home.clone(),
         workspace: options.workspace().as_str().to_owned(),
@@ -131,6 +149,7 @@ async fn open_tui(
             .fullscreen
             .unwrap_or_else(|| ui::config::saved_fullscreen(&options.home)),
         initial,
+        resume: options.resume.is_some(),
     };
     let (leave, mut left) = tokio::sync::oneshot::channel();
     let (leaf_end, leaf_ended) = tokio::sync::oneshot::channel();
@@ -142,11 +161,11 @@ async fn open_tui(
         leaf_end: std::sync::Mutex::new(Some(leaf_end)),
     });
     (&tui).await.map_err(plugin_error)?;
-    let leave = tokio::select! {
-        leave = &mut left => leave,
+    let code = tokio::select! {
+        code = &mut left => code,
         ended = leaf_ended => {
             if ended.is_ok() {
-                Ok(ui::tui::Leave::Exit(0))
+                Ok(0)
             } else {
                 left.await
             }
@@ -155,70 +174,7 @@ async fn open_tui(
     .map_err(|_| "the terminal interface ended without a result")?;
     tui.dispose().await?;
     link.dispose().await?;
-    match leave {
-        ui::tui::Leave::Exit(code) => Ok(code),
-        ui::tui::Leave::Restart(restart) => relaunch(root, options, restart, locale).await,
-    }
-}
-
-/// Starts the updated CLI on the session the interface left. The daemon
-/// still runs the old executable, so it stops first and the new CLI starts
-/// its own. The original arguments carry over except the interface mode,
-/// which follows the one in use, the session, which is the one left, and
-/// the first message (`--prompt` with its `--image`), which was already
-/// sent; a resumed session keeps its model, so the model flags drop with it.
-async fn relaunch(
-    root: &rutis::Ctx,
-    options: &Options,
-    restart: ui::tui::Restart,
-    locale: locale::Locale,
-) -> Result<i32> {
-    let (link, connection) = daemon_link(root, options, false, locale).await?;
-    if let Some(client) = connection.take() {
-        client::shutdown(client).await?;
-    }
-    link.dispose().await?;
-    let mut args = Vec::new();
-    let mut original = std::env::args_os().skip(1);
-    while let Some(arg) = original.next() {
-        let resumed = restart.session_id.is_some();
-        match arg.to_str() {
-            Some("--fullscreen" | "--scrollback") => {}
-            Some("--resume" | "--prompt" | "-p" | "--image") => {
-                original.next();
-            }
-            Some("--provider" | "--model") if resumed => {
-                original.next();
-            }
-            _ => args.push(arg),
-        }
-    }
-    args.push(
-        (if restart.fullscreen {
-            "--fullscreen"
-        } else {
-            "--scrollback"
-        })
-        .into(),
-    );
-    if let Some(session_id) = restart.session_id {
-        args.extend(["--resume".into(), session_id.into()]);
-    }
-    let mut command = std::process::Command::new(&restart.relaunch);
-    command.args(args);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        let error = command.exec();
-        Err(format!("Cannot start {}: {error}", restart.relaunch.display()).into())
-    }
-    #[cfg(not(unix))]
-    {
-        let status = command
-            .status()
-            .map_err(|error| format!("Cannot start {}: {error}", restart.relaunch.display()))?;
-        Ok(status.code().unwrap_or(1))
-    }
+    Ok(code)
 }
 
 /// Links the daemon and loads `WebHold`; returns when the hold ends.
@@ -274,7 +230,12 @@ async fn disable_web(root: &rutis::Ctx, options: &Options, locale: locale::Local
 /// A failed load as the plugin reported it, without the framework's framing.
 fn plugin_error(error: Arc<rutis::host::ErrorKind>) -> Error {
     match &*error {
-        rutis::host::ErrorKind::PluginFailed(source) => source.to_string().into(),
+        rutis::host::ErrorKind::PluginFailed(source) => {
+            if let Some(store) = source.downcast_ref::<client::NewerStore>() {
+                return Box::new(store.clone());
+            }
+            source.to_string().into()
+        }
         other => other.to_string().into(),
     }
 }
@@ -285,17 +246,109 @@ fn plugin_error(error: Arc<rutis::host::ErrorKind>) -> Error {
 pub(crate) const DAEMON_BUSY: &str = "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 /// [`DAEMON_BUSY`] with the counts a `daemon_busy` refusal carried.
 pub(crate) const DAEMON_BUSY_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// The line a start prints when the daemon it reached cannot serve a Session:
+/// its protocol is older than this client's, and it could not be replaced
+/// because other clients use it.
+pub(crate) const DAEMON_TOO_OLD: &str = "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// [`DAEMON_TOO_OLD`] with the counts a `daemon_busy` refusal carried.
+pub(crate) const DAEMON_TOO_OLD_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 
 /// The line a client prints once when a daemon reports a store upgrade while
 /// it starts; both waits then follow the daemon's progress instead of a fixed
 /// startup budget.
 pub(crate) const DAEMON_UPGRADING: &str = "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store.";
+/// The line that replaces [`DAEMON_UPGRADING`] as the upgrade reports again:
+/// how long it has run and what it is doing now, so a long upgrade reads as
+/// moving rather than as stuck.
+pub(crate) const DAEMON_UPGRADING_PROGRESS: &str =
+    "Upgrading the local store · {seconds} s · {stage}";
+/// What an upgrade's `images` stage does.
+const UPGRADE_STAGE_IMAGES: &str = "moving retained images into Session files";
+/// What an upgrade's `index` stage does.
+const UPGRADE_STAGE_INDEX: &str = "updating the text index of the rows that changed";
+/// What an upgrade's `verify` stage does.
+const UPGRADE_STAGE_VERIFY: &str = "checking and committing the upgraded store";
+/// The sentences that name the stages an upgrade reports, in the order
+/// [`client::UpgradeStage`] lists them.
+#[cfg(test)]
+pub(crate) const UPGRADE_STAGE_LINES: [&str; 3] = [
+    UPGRADE_STAGE_IMAGES,
+    UPGRADE_STAGE_INDEX,
+    UPGRADE_STAGE_VERIFY,
+];
 
 /// [`DAEMON_UPGRADING`] with the formats the progress note named.
 pub(crate) fn store_upgrade_line(locale: locale::Locale, upgrade: &client::StoreUpgrade) -> String {
     let from = upgrade.from.to_string();
     let to = upgrade.to.to_string();
     crate::ui::i18n::tf_in(locale, DAEMON_UPGRADING, &[("from", &from), ("to", &to)])
+}
+
+/// [`DAEMON_UPGRADING_PROGRESS`] with the elapsed time and the stage the
+/// upgrade reported.
+pub(crate) fn store_upgrade_progress_line(
+    locale: locale::Locale,
+    stage: client::UpgradeStage,
+    elapsed: std::time::Duration,
+) -> String {
+    let seconds = elapsed.as_secs().to_string();
+    let stage = crate::ui::i18n::t_in(locale, upgrade_stage_line(stage));
+    crate::ui::i18n::tf_in(
+        locale,
+        DAEMON_UPGRADING_PROGRESS,
+        &[("seconds", &seconds), ("stage", stage)],
+    )
+}
+
+/// The sentence that names the stage an upgrade is in.
+fn upgrade_stage_line(stage: client::UpgradeStage) -> &'static str {
+    match stage {
+        client::UpgradeStage::Images => UPGRADE_STAGE_IMAGES,
+        client::UpgradeStage::Index => UPGRADE_STAGE_INDEX,
+        client::UpgradeStage::Verify => UPGRADE_STAGE_VERIFY,
+    }
+}
+
+/// A store upgrade's report on stderr. A terminal gets one line rewritten in
+/// place, so a long upgrade shows that it is moving; a pipe gets one line per
+/// report, because nothing on the other end can overwrite it.
+#[derive(Default)]
+pub(crate) struct UpgradeLine {
+    /// Something is on the last line and can be rewritten.
+    drawn: bool,
+}
+impl UpgradeLine {
+    pub(crate) fn write(&mut self, text: &str) {
+        let mut stderr = std::io::stderr();
+        if !std::io::IsTerminal::is_terminal(&stderr) {
+            use std::io::Write;
+            let _ = writeln!(stderr, "{text}");
+            return;
+        }
+        let width = crossterm::terminal::size().map_or(80, |(width, _)| width);
+        let text = ui::text::truncate_cells(text, width.saturating_sub(1).into());
+        // A failure to draw is not a failure of the wait: the next report
+        // rewrites the line, and the wait's own outcome is unchanged.
+        let _ = crossterm::execute!(
+            stderr,
+            crossterm::cursor::MoveToColumn(0),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+            crossterm::style::Print(text),
+        );
+        self.drawn = true;
+    }
+    /// Erases the redrawn line, so whatever follows does not share it.
+    pub(crate) fn finish(&mut self) {
+        if self.drawn {
+            let mut stderr = std::io::stderr();
+            let _ = crossterm::execute!(
+                stderr,
+                crossterm::cursor::MoveToColumn(0),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
+            );
+            self.drawn = false;
+        }
+    }
 }
 
 /// The notice for a kept daemon of another build, with the refusal's counts
@@ -326,6 +379,47 @@ pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
     }
 }
 
+/// The line a start fails with when the kept daemon of another build or of a
+/// lower protocol cannot serve a Session, in `locale`, naming the protocol it
+/// speaks and with the refusal's counts when it sent them.
+pub(crate) fn daemon_too_old(
+    locale: locale::Locale,
+    notice: &client::DaemonNotice,
+    protocol: u32,
+) -> String {
+    let server = sanitize::safe(&notice.server);
+    let client_version = env!("CARGO_PKG_VERSION");
+    let protocol = protocol.to_string();
+    match &notice.counts {
+        Some(counts) => {
+            let connections = counts.connections.to_string();
+            let attached = counts.attached_sessions.to_string();
+            let running = counts.running.to_string();
+            crate::ui::i18n::tf_in(
+                locale,
+                DAEMON_TOO_OLD_COUNTS,
+                &[
+                    ("server", &server),
+                    ("client", client_version),
+                    ("protocol", &protocol),
+                    ("connections", &connections),
+                    ("attached", &attached),
+                    ("running", &running),
+                ],
+            )
+        }
+        None => crate::ui::i18n::tf_in(
+            locale,
+            DAEMON_TOO_OLD,
+            &[
+                ("server", &server),
+                ("client", client_version),
+                ("protocol", &protocol),
+            ],
+        ),
+    }
+}
+
 /// Session creation parameters without a startup model selection.
 pub(crate) fn session_create_params(options: &Options) -> serde_json::Value {
     let mut params = serde_json::json!({"cwd": options.workspace().as_str()});
@@ -342,30 +436,44 @@ pub(crate) async fn session_create_from_options(
 ) -> Result<serde_json::Value> {
     let mut params = session_create_params(options);
     options.creation_startup(&mut params);
-    let saved = if let (Some(provider), Some(model)) = (&options.provider, &options.model) {
-        session_host::saved_model_preferences(client, provider, model).await?
-    } else {
-        None
-    };
-    if let Some(preferences) = options.creation_preferences(saved) {
+    add_creation_worktree(client, options, &mut params)?;
+    if let Some(preferences) = options.creation_preferences() {
         params["modelPreferences"] = preferences;
     }
     Ok(params)
 }
 
-/// The failure of adopting `target` into a Session. When the target's
-/// catalog entry reports missing limits, the declaration command is appended;
-/// the catalog is read only on this failure path, never from the message.
+/// The daemon a `--worktree` creation needs: one without
+/// `session.create.worktree` refuses the member as an unknown field.
+const WORKTREE_UNSUPPORTED: &str = "This daemon cannot create a Session in a managed worktree; upgrade it or start the Session without --worktree";
+
+/// Adds the `worktree` member `--worktree` asks for. It is sent only when the
+/// request asks for one, and only to a daemon whose `hello.features` names
+/// `session.create.worktree`, because an older daemon rejects it as an
+/// unknown field (#1451).
+pub(crate) fn add_creation_worktree(
+    client: &client::Client,
+    options: &Options,
+    params: &mut serde_json::Value,
+) -> Result<()> {
+    let Some(worktree) = options.creation_worktree() else {
+        return Ok(());
+    };
+    if !client.offers("session.create.worktree") {
+        return Err(WORKTREE_UNSUPPORTED.into());
+    }
+    params["worktree"] = worktree;
+    Ok(())
+}
+
+/// The failure of adopting `target` into a Session. When the target's catalog
+/// entry reports missing limits, the declaration command is appended; the
+/// catalog is read only on this failure path, never from the message.
 pub(crate) async fn model_adoption_error(
     client: &mut client::Client,
     target: Option<(&str, &str)>,
     error: Error,
-    preferences: Option<&serde_json::Value>,
 ) -> Error {
-    let error: Error = match preferences {
-        Some(preferences) => format!("Model adoption with saved preferences {preferences} failed: {error}. Clear them with Ctrl+X in /models or dimcode models PROVIDER --clear-preferences MODEL; saved preferences were kept.").into(),
-        None => error,
-    };
     let Some((provider_id, model_id)) = target else {
         return error;
     };
@@ -385,7 +493,7 @@ async fn declaration_hint(
     let snapshot: wire::ProviderCatalogSnapshot = client
         .typed(
             "provider.catalog",
-            serde_json::json!({"providerId": provider_id}),
+            serde_json::json!({"providerId": provider_id,"modelId":model_id}),
         )
         .await
         .ok()?;
@@ -425,7 +533,7 @@ fn prepare() -> Result<Option<Options>> {
         return Ok(None);
     }
     if matches!(options.action, Action::Version) {
-        println!("dimcode {}", version::current());
+        println!("dimcode {}", dim_agent_capabilities::build::current());
         return Ok(None);
     }
     if matches!(options.action, Action::McpLogin(_)) && !std::io::stdin().is_terminal() {
@@ -501,7 +609,7 @@ async fn run_acp(
             writer: Box::new(tokio::io::stdout()),
         },
         agent_id,
-        version::current(),
+        dim_agent_capabilities::build::current(),
     );
     let directory = options
         .directory
@@ -550,6 +658,10 @@ async fn run_acp(
 }
 
 async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
+    if let Action::Update { legacy_exited } = options.action {
+        return update::run(legacy_exited).await;
+    }
+    update::hold_installation()?;
     // `block_on` polls `act` on this thread, so the thread-local language
     // holds; the connection code may run on another thread, so it carries the
     // same language as a value.
@@ -597,14 +709,14 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         return open_tui(root, &options, initial, locale).await;
     }
     if matches!(options.action, Action::WebInstall) {
-        if !version::RELEASE {
+        if !dim_agent_capabilities::build::RELEASE {
             return Err("A build from source has no published Web workspace; set DIMCODE_WEB_ASSETS to a frontend built from this source, or build the App Server with the embedded-web feature".into());
         }
         let executable = std::env::current_exe().unwrap_or_default();
         let assets = client::web_assets(&executable, &options.home);
         return web_install::install(
             &options.home,
-            version::VERSION,
+            dim_agent_capabilities::build::VERSION,
             &update::registry(),
             assets,
             &mut std::io::stdout(),
@@ -876,6 +988,9 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         Action::Management(request) => {
             management_command::run(&mut client, &options, request).await
         }
+        Action::Prompt(command) => {
+            prompt_command::run(&mut client, &options, command.clone()).await
+        }
         Action::ManagementEdit { area, id } => {
             management_command::edit(&mut client, &options, area.clone(), id.clone()).await
         }
@@ -908,10 +1023,14 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             let blocks = images.images.iter().map(|image| image.block()).collect();
             session::chat(&mut client, &options, blocks, images.notes).await
         }
+        Action::Worktree(command) => {
+            worktree_command::run(&mut client, command, options.json).await
+        }
         Action::Acp { .. }
         | Action::Migration(_)
         | Action::Help
         | Action::Version
+        | Action::Update { .. }
         | Action::DaemonStop
         | Action::DaemonVacuum { .. }
         | Action::Timeline { .. }
@@ -946,4 +1065,55 @@ async fn runtime_list(client: &mut client::Client) -> Result<()> {
         println!("{}", runtime_line(status));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod upgrade_line_tests {
+    use super::{UpgradeLine, store_upgrade_progress_line};
+    use crate::{client::UpgradeStage, locale::Locale};
+
+    /// `UpgradeLine` redraws only where a line can be rewritten. A test's own
+    /// stderr is a pipe, which is the case a reporter of startup progress must
+    /// not fill with control characters: every report is a line of its own,
+    /// and nothing is left to erase afterwards.
+    #[test]
+    fn a_progress_line_is_one_line_when_nothing_can_be_rewritten() {
+        let mut line = UpgradeLine::default();
+        line.write("first");
+        line.write("second");
+        assert!(
+            !line.drawn,
+            "a stream that cannot be rewritten keeps no line to redraw"
+        );
+        line.finish();
+        assert!(!line.drawn);
+    }
+
+    /// A redrawn line names the elapsed time and the stage in the client's
+    /// language, and an unknown locale still says both.
+    #[test]
+    fn the_progress_line_names_the_time_and_the_stage() {
+        let english = store_upgrade_progress_line(
+            Locale::En,
+            UpgradeStage::Index,
+            std::time::Duration::from_secs(72),
+        );
+        assert!(english.contains("72"), "{english}");
+        assert!(english.contains("text index"), "{english}");
+        let chinese = store_upgrade_progress_line(
+            Locale::ZhCn,
+            UpgradeStage::Index,
+            std::time::Duration::from_secs(72),
+        );
+        assert!(chinese.contains("72"), "{chinese}");
+        assert!(chinese.contains("文本索引"), "{chinese}");
+        for stage in [
+            UpgradeStage::Images,
+            UpgradeStage::Index,
+            UpgradeStage::Verify,
+        ] {
+            let line = store_upgrade_progress_line(Locale::En, stage, Default::default());
+            assert!(!line.contains('{'), "{line}");
+        }
+    }
 }

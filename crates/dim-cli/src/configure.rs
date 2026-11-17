@@ -6,6 +6,7 @@ use crate::{
     client::Client,
     wire::{Configuration, ProviderCatalogSnapshot},
 };
+use dim_agent_types::ModelPreferences;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -31,12 +32,145 @@ pub struct Report {
     pub effort: Option<EffortChoices>,
 }
 
-/// Whether `text` reaches for the Session: every configuration command
-/// given a value writes the shown Session (`/agent ID`, `/effort VALUE`,
-/// `/reasoning VALUE`, `/fast on|off`). Bare commands read advertised choices and
-/// answer on their own.
+/// What a `/effort`, `/reasoning` or `/fast` line asks of the model it names.
+pub enum Preference {
+    /// The `modelPreferences` members to apply, and the value the line named.
+    Apply {
+        preferences: ModelPreferences,
+        value: String,
+    },
+    /// The line a bare command reports, and the choices the effort dialog draws.
+    List {
+        line: String,
+        effort: Option<EffortChoices>,
+    },
+}
+
+/// The notice for a preference command with no model to read: Home shown
+/// before the daemon resolved one.
+pub const NO_MODEL: &str =
+    "No model to configure: sign in with /login or choose a model with /models.";
+
+/// Whether `text` writes the shown Session: `/agent ID` switches the profile
+/// the Session runs, so it needs one. The preference commands act on the
+/// model the interface shows, which at Home is the one the first message's
+/// Session adopts. Bare commands read advertised choices and answer on their
+/// own.
 pub fn needs_session(text: &str) -> bool {
-    text.split_whitespace().nth(1).is_some()
+    let mut words = text.split_whitespace();
+    words.next() == Some("/agent") && words.next().is_some()
+}
+
+/// Resolves `text`'s preference command against `model`, the model a client
+/// shows: the members its value names, or the choices its bare form lists.
+/// The declaration comes from the configuration's own snapshot, else from
+/// `provider.catalog`. Writes nothing.
+pub async fn preference(
+    client: &mut Client,
+    model: &Configuration,
+    text: &str,
+) -> Result<Preference> {
+    let words: Vec<_> = text.split_whitespace().collect();
+    let command = words[0];
+    if words.len() > 2 {
+        return Err(format!("Usage: {command} [VALUE]").into());
+    }
+    let value = words.get(1).copied();
+    let (reasoning, service_tier, supports_reasoning) =
+        if let Some(snapshot) = &model.capability_snapshot {
+            (
+                snapshot.reasoning.clone(),
+                snapshot.service_tier.clone(),
+                snapshot.capabilities.reasoning,
+            )
+        } else {
+            let snapshot: ProviderCatalogSnapshot = client
+                .typed(
+                    "provider.catalog",
+                    json!({"providerId":model.provider_id,"modelId":model.model_id}),
+                )
+                .await?;
+            let catalog = snapshot
+                .catalog
+                .ok_or("Model preference catalog is unavailable")?;
+            let catalog_model = catalog
+                .models
+                .into_iter()
+                .find(|entry| entry.id == model.model_id)
+                .ok_or("This model is absent from the catalog")?;
+            let metadata = catalog_model
+                .metadata
+                .ok_or("This model does not advertise preference choices")?;
+            (
+                metadata.reasoning,
+                metadata.service_tier,
+                catalog_model.capabilities.reasoning,
+            )
+        };
+    if command == "/fast" {
+        service_tier
+            .as_ref()
+            .filter(|tier| {
+                tier.supported
+                    && ["priority", "default"]
+                        .iter()
+                        .all(|value| tier.options.iter().any(|option| option == value))
+            })
+            .ok_or("This model does not advertise priority/default service tiers")?;
+        return Ok(match value {
+            Some(tier @ ("on" | "off")) => Preference::Apply {
+                preferences: ModelPreferences {
+                    reasoning_effort: None,
+                    service_tier: Some(
+                        if tier == "on" { "priority" } else { "default" }.to_owned(),
+                    ),
+                },
+                value: tier.to_owned(),
+            },
+            Some(_) => return Err("Usage: /fast [on|off]".into()),
+            None => Preference::List {
+                line: "Service tier choices: on (priority), off (default)".into(),
+                effort: None,
+            },
+        });
+    }
+    let reasoning = reasoning
+        .as_ref()
+        .filter(|reasoning| reasoning.supported && supports_reasoning)
+        .ok_or("This model does not advertise reasoning preferences")?;
+    let choices = reasoning.offered_efforts();
+    Ok(match value {
+        Some(value) => {
+            if !choices.iter().any(|choice| choice == value) {
+                return Err("Reasoning effort is not advertised by this model".into());
+            }
+            Preference::Apply {
+                preferences: ModelPreferences {
+                    reasoning_effort: Some(value.to_owned()),
+                    service_tier: None,
+                },
+                value: value.to_owned(),
+            }
+        }
+        None => Preference::List {
+            line: format!(
+                "Reasoning effort choices: {}",
+                if choices.is_empty() {
+                    "unavailable".into()
+                } else {
+                    choices.join(", ")
+                }
+            ),
+            effort: Some(EffortChoices {
+                model: format!("{} / {}", model.provider_id, model.model_id),
+                current: model
+                    .model_preferences
+                    .as_ref()
+                    .and_then(|preferences| preferences.reasoning_effort.clone()),
+                choices,
+            }),
+        },
+    })
 }
 
 /// Runs `text`, a configuration command line; `model` is the model the
@@ -48,15 +182,13 @@ pub async fn run(
     text: &str,
 ) -> Result<Report> {
     let mut lines = Vec::new();
-    let mut effort = None;
     let words: Vec<_> = text.split_whitespace().collect();
     let command = words[0];
     if words.len() > 2 {
         return Err(format!("Usage: {command} [VALUE]").into());
     }
-    let value = words.get(1).copied();
     if command == "/agent" {
-        if let Some(agent_id) = value {
+        if let Some(agent_id) = words.get(1).copied() {
             let result: Configured = client
                 .typed(
                     "session.agent.update",
@@ -86,120 +218,42 @@ pub async fn run(
             return Ok(Report {
                 lines,
                 changed: false,
-                effort,
+                effort: None,
             });
         }
     } else {
         let model = model.ok_or("The adopted model is unavailable")?;
-        let (reasoning, service_tier, supports_reasoning) =
-            if let Some(snapshot) = &model.capability_snapshot {
-                (
-                    snapshot.reasoning.clone(),
-                    snapshot.service_tier.clone(),
-                    snapshot.capabilities.reasoning,
-                )
-            } else {
-                let snapshot: ProviderCatalogSnapshot = client
-                    .typed("provider.catalog", json!({"providerId":model.provider_id}))
+        match preference(client, model, text).await? {
+            Preference::Apply { preferences, value } => {
+                let result: Configured = client
+                    .typed(
+                        "session.model.update",
+                        json!({"sessionId":session_id,"branchId":"main","modelPreferences":preferences}),
+                    )
                     .await?;
-                let catalog = snapshot
-                    .catalog
-                    .ok_or("Model preference catalog is unavailable")?;
-                let catalog_model = catalog
-                    .models
-                    .into_iter()
-                    .find(|entry| entry.id == model.model_id)
-                    .ok_or("The adopted model is absent from the catalog")?;
-                let metadata = catalog_model
-                    .metadata
-                    .ok_or("This model does not advertise preference choices")?;
-                (
-                    metadata.reasoning,
-                    metadata.service_tier,
-                    catalog_model.capabilities.reasoning,
-                )
-            };
-        let preference = if command == "/fast" {
-            service_tier
-                .as_ref()
-                .filter(|tier| {
-                    tier.supported
-                        && ["priority", "default"]
-                            .iter()
-                            .all(|value| tier.options.iter().any(|option| option == value))
-                })
-                .ok_or("This model does not advertise priority/default service tiers")?;
-            match value {
-                Some("on") => Some(json!({"serviceTier":"priority"})),
-                Some("off") => Some(json!({"serviceTier":"default"})),
-                Some(_) => return Err("Usage: /fast [on|off]".into()),
-                None => {
-                    lines.push("Service tier choices: on (priority), off (default)".into());
-                    None
-                }
-            }
-        } else {
-            let reasoning = reasoning
-                .as_ref()
-                .filter(|reasoning| reasoning.supported && supports_reasoning)
-                .ok_or("This model does not advertise reasoning preferences")?;
-            let mut choices = reasoning.effort_options.clone().unwrap_or_default();
-            if reasoning.off.is_some() && !choices.iter().any(|choice| choice == "none") {
-                choices.push("none".into());
-            }
-            if let Some(value) = value {
-                if !choices.iter().any(|choice| choice == value) {
-                    return Err("Reasoning effort is not advertised by this model".into());
-                }
-                Some(json!({"reasoningEffort":value}))
-            } else {
                 lines.push(format!(
-                    "Reasoning effort choices: {}",
-                    if choices.is_empty() {
-                        "unavailable".into()
+                    "{} configuration {}: {value}",
+                    if command == "/fast" {
+                        "Service tier"
                     } else {
-                        choices.join(", ")
-                    }
+                        "Reasoning effort"
+                    },
+                    result.outcome,
                 ));
-                effort = Some(EffortChoices {
-                    model: format!("{} / {}", model.provider_id, model.model_id),
-                    current: model
-                        .model_preferences
-                        .as_ref()
-                        .and_then(|preferences| preferences.reasoning_effort.clone()),
-                    choices,
-                });
-                None
             }
-        };
-        if let Some(preference) = preference {
-            let result: Configured = client
-                .typed(
-                    "session.model.update",
-                    json!({"sessionId":session_id,"branchId":"main","modelPreferences":preference}),
-                )
-                .await?;
-            lines.push(format!(
-                "{} configuration {}: {}",
-                if command == "/fast" {
-                    "Service tier"
-                } else {
-                    "Reasoning effort"
-                },
-                result.outcome,
-                value.expect("preference value")
-            ));
-        } else {
-            return Ok(Report {
-                lines,
-                changed: false,
-                effort,
-            });
+            Preference::List { line, effort } => {
+                lines.push(line);
+                return Ok(Report {
+                    lines,
+                    changed: false,
+                    effort,
+                });
+            }
         }
     }
     Ok(Report {
         lines,
         changed: true,
-        effort,
+        effort: None,
     })
 }

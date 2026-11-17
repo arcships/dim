@@ -303,6 +303,7 @@ async fn legacy_session_catalog_classifies_new_imports_and_keeps_children_inert(
         profile: None,
         client_kind: "cli",
         client_name: "migration-test",
+        protocol_version: 4,
     })
     .await
     .unwrap();
@@ -555,7 +556,6 @@ async fn migration_validates_dim_account_tokens_before_writing_the_account_file(
 async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
     use dim_agent_capabilities::file_storage::FileStoragePlugin;
     use dim_app_server::managed_provider::ManagedProvider;
-    use dim_app_server::managed_provider::ManagedProviders;
     use sha2::{Digest, Sha256};
 
     let directory = tempfile::tempdir().unwrap();
@@ -782,13 +782,21 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
         )
         .await
         .unwrap();
-        let account = server
-            .service::<ManagedProviders>()
-            .unwrap()
-            .status(
-                "dimcode-api-oauth",
-                &tokio_util::sync::CancellationToken::new(),
-            )
+        let mut client = Client::connect(&ConnectionConfig {
+            endpoint: server.unix_path.clone().unwrap(),
+            server: Server {
+                program: std::env::current_exe().unwrap(),
+                embedded: false,
+            },
+            profile: None,
+            client_kind: "cli",
+            client_name: "migration-test",
+            protocol_version: 4,
+        })
+        .await
+        .unwrap();
+        let account: dim_app_server::managed_provider::AccountSnapshot = client
+            .typed("account.status", json!({"providerId":"dimcode-api-oauth"}))
             .await
             .unwrap_or_else(|error| {
                 panic!("{case}: native account reader rejected the target: {error}")
@@ -805,7 +813,6 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_keeps_large_images_as_files_without_rejecting_session_history() {
-    use base64::Engine;
     use dim_agent_types::{ContextCompactionResult, MessageContent, MessagePart};
 
     for (small_size, large_size) in [
@@ -862,10 +869,10 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
             .unwrap();
         assert_eq!(imported.outcome, Outcome::Imported, "{report:?}");
         assert!(
-            imported
+            !imported
                 .omitted
                 .iter()
-                .any(|field| field == "attachment.inlineImage.large")
+                .any(|field| field.starts_with("attachment.inlineImage."))
         );
         assert!(
             !imported
@@ -885,7 +892,7 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
             ServerConfig {
                 startup_timeout: std::time::Duration::from_secs(60),
                 database_path: Some(target.join("rust/dimcode.sqlite")),
-                product_home: Some(target),
+                product_home: Some(target.clone()),
                 unix_path: Some(directory.path().join("native.sock")),
                 ..Default::default()
             },
@@ -919,24 +926,16 @@ async fn migration_keeps_large_images_as_files_without_rejecting_session_history
                 _ => None,
             })
             .collect();
-        assert_eq!(images.len(), 1);
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(images[0].data.as_ref().unwrap())
-                .unwrap(),
-            small
-        );
-        let path = parts
-            .iter()
-            .find_map(|part| match part {
-                MessagePart::Text { text, .. } => {
-                    text.strip_prefix("Attached imported blob large: ")
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(std::fs::read(path).unwrap(), large);
-        assert!(history.iter().any(|event| matches!(&event.kind, EventKind::InputMessage(input) if input.user.as_ref().is_some_and(|user| user.content.iter().any(|part|matches!(part, dim_agent_types::ContentBlock::Text {text} if text.contains("Attached imported blob large: ")))))));
+        assert_eq!(images.len(), 2);
+        for (source, expected) in images.iter().zip([&small, &large]) {
+            assert_eq!(source.source_type, dim_agent_types::ImageSourceType::File);
+            assert!(source.data.is_none());
+            let path = target
+                .join("rust/dimcode.sqlite.session-files")
+                .join(source.file_id.as_ref().unwrap())
+                .join("data");
+            assert_eq!(&std::fs::read(path).unwrap(), expected);
+        }
         assert!(
             history.iter().all(|event| !matches!(
                 event.kind,
@@ -969,6 +968,14 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
         .unwrap()
         .execute_batch(
             "PRAGMA foreign_keys=OFF;
+             DROP TABLE provider_name_keys;
+             DROP TABLE provider_names;
+             DROP TABLE provider_model_state;
+             DROP TABLE provider_bases;
+             DROP TABLE provider_sources;
+             DROP TABLE provider_models;
+             DROP TABLE provider_catalog_revision;
+             DROP TABLE provider_bundle;
              CREATE TEMP TABLE agents_rows AS SELECT * FROM agents;
              DROP TABLE agents;
              CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)));
@@ -988,6 +995,12 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
              CREATE INDEX timeline_events_by_end ON timeline_events(session_id, branch_id, last_sequence, sequence);
              CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL;
              CREATE INDEX timeline_tool_use_starts ON timeline_events(session_id, json_extract(body, '$.record.event.data.request_id'), json_extract(body, '$.record.event.data.call_id')) WHERE branch_id = 'main' AND kind = 'step/tool-use-start';
+             DROP TABLE session_owners;
+             CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)));
+             CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);
+             DROP TABLE session_owners;
+             CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)));
+             CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);
              DROP TABLE session_output_owners;
              DROP TABLE session_grants;
              DROP TABLE session_worktrees;
@@ -996,6 +1009,12 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
              DROP TABLE timeline_text;
              DROP TABLE timeline_text_fts;
              DROP TABLE timeline_text_tails;
+             DROP TABLE timeline_array_elements;
+                 DROP TABLE timeline_output_ids;
+             DROP TABLE timeline_member_roots;
+             DROP TABLE timeline_member_origins;
+             DROP TABLE timeline_member_terminals;
+             DROP TABLE timeline_member_nodes;
              DROP TABLE agent_store_format;
              CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 23));
              INSERT INTO agent_store_format VALUES (23);",
@@ -1074,6 +1093,7 @@ async fn offline_import_reopens_with_unchanged_native_consumers_and_preserves_co
         profile: None,
         client_kind: "cli",
         client_name: "migration-test",
+        protocol_version: 4,
     };
     let mut client = Client::connect(&connection).await.unwrap();
     let listed: Value = client.typed("session.summaries", json!({})).await.unwrap();
@@ -1535,6 +1555,7 @@ async fn migration_writes_supported_provider_settings_accounts_and_schedule_as_n
         profile: None,
         client_kind: "cli",
         client_name: "migration-test",
+        protocol_version: 4,
     };
     let mut client = Client::connect(&config).await.unwrap();
     let listed: Value = client.typed("provider.list", json!({})).await.unwrap();
@@ -1932,16 +1953,7 @@ async fn migration_declares_only_the_limits_the_source_does() {
     plugin.dispose().await.unwrap();
     root.shutdown().await.unwrap();
     let native = Connection::open(target.join("rust/dimcode.sqlite")).unwrap();
-    let record: Value = serde_json::from_str(
-        &native
-            .query_row(
-                "SELECT record FROM providers WHERE provider_id='legacy-limits'",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-    )
-    .unwrap();
+    let record: Value = serde_json::from_str(&provider_record(&native, "legacy-limits")).unwrap();
     let models = record["userModels"].as_array().unwrap();
     let entry = |id: &str| models.iter().find(|model| model["modelId"] == id).unwrap();
     let assumed = entry("assumed");
@@ -1962,16 +1974,7 @@ async fn migration_declares_only_the_limits_the_source_does() {
         json!(["contextWindow", "maxOutputTokens"])
     );
     for id in ["legacy-remote", "legacy-bundled"] {
-        let record: Value = serde_json::from_str(
-            &native
-                .query_row(
-                    "SELECT record FROM providers WHERE provider_id=?1",
-                    [id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-        )
-        .unwrap();
+        let record: Value = serde_json::from_str(&provider_record(&native, id)).unwrap();
         let models = record["models"].as_array().unwrap();
         let entry = |model_id: &str| {
             models
@@ -2317,18 +2320,8 @@ async fn migration_converts_providers_and_selections_through_the_provider_mappin
         Some("Workspace directory is unavailable")
     );
     let native = Connection::open(&native_path).unwrap();
-    let record = |id: &str| -> Value {
-        serde_json::from_str(
-            &native
-                .query_row(
-                    "SELECT record FROM providers WHERE provider_id=?1",
-                    [id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-        )
-        .unwrap()
-    };
+    let record =
+        |id: &str| -> Value { serde_json::from_str(&provider_record(&native, id)).unwrap() };
     let clean = record("legacy-clean");
     assert_eq!(clean["kind"], "custom");
     assert_eq!(clean["version"], 1);
@@ -2407,18 +2400,8 @@ async fn migration_converts_providers_and_selections_through_the_provider_mappin
     server.shutdown();
     server.join().await.unwrap();
     let native = Connection::open(&native_path).unwrap();
-    let record = |id: &str| -> Value {
-        serde_json::from_str(
-            &native
-                .query_row(
-                    "SELECT record FROM providers WHERE provider_id=?1",
-                    [id],
-                    |row| row.get::<_, String>(0),
-                )
-                .unwrap(),
-        )
-        .unwrap()
-    };
+    let record =
+        |id: &str| -> Value { serde_json::from_str(&provider_record(&native, id)).unwrap() };
     assert_eq!(record("deepseek"), imported_builtin);
 }
 
@@ -2549,7 +2532,15 @@ async fn migration_cancellation_settles_before_unload_and_a_new_load_can_retry()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries() {
-    for case in ["tools", "revert", "revert_before_summary", "retry"] {
+    for case in [
+        "tools",
+        "tools_orphan",
+        "tools_ambiguous",
+        "tools_unfinished",
+        "revert",
+        "revert_before_summary",
+        "retry",
+    ] {
         let directory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(
             directory.path(),
@@ -2559,9 +2550,97 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
         let source = directory.path().join("source");
         let db = fixture(&source);
         match case {
-            "tools" => {
-                db.execute("UPDATE messages SET role='assistant',parts=?1 WHERE messageId='first'",[json!([{"type":"tool_use","id":"old-call","name":"echo","input":{"text":"never replay"}}]).to_string()]).unwrap();
-                db.execute("UPDATE messages SET role='tool_result',parts=?1 WHERE messageId='tail'",[json!([{"type":"tool_result","tool_use_id":"old-call","content":"historical output","structuredContent":{"exitCode":0}}]).to_string()]).unwrap();
+            case if case.starts_with("tools") => {
+                db.execute("DELETE FROM messages WHERE sessionId='old'", [])
+                    .unwrap();
+                for (id, role, parts, order) in [
+                    (
+                        "first",
+                        "assistant",
+                        json!([
+                            {"type":"tool_use","id":"old-call","name":"echo","input":{}},
+                            {"type":"tool_use","id":"split-call","name":"echo","input":{}}
+                        ]),
+                        "a",
+                    ),
+                    (
+                        "split",
+                        "tool_result",
+                        json!([
+                            {"type":"tool_result","tool_use_id":"split-call","content":"split output"}
+                        ]),
+                        "b",
+                    ),
+                    (
+                        "other",
+                        "assistant",
+                        json!([
+                            {"type":"tool_use","id":"other-call","name":"echo","input":{}}
+                        ]),
+                        "c",
+                    ),
+                    (
+                        "mixed",
+                        "tool_result",
+                        json!([
+                            {"type":"tool_result","tool_use_id":"old-call","content":"first output"},
+                            {"type":"tool_result","tool_use_id":"other-call","content":"other output","is_error":true}
+                        ]),
+                        "d",
+                    ),
+                    (
+                        "reuse",
+                        "assistant",
+                        json!([
+                            {"type":"tool_use","id":"old-call","name":"echo","input":{"text":"never replay"}}
+                        ]),
+                        "e",
+                    ),
+                    (
+                        "tail",
+                        "tool_result",
+                        json!([
+                            {"type":"tool_result","tool_use_id":"old-call","content":"historical output","structuredContent":{"exitCode":0}}
+                        ]),
+                        "f",
+                    ),
+                    (
+                        "final",
+                        "assistant",
+                        json!([{"type":"text","text":"final answer"}]),
+                        "g",
+                    ),
+                ] {
+                    db.execute(
+                        "INSERT INTO messages VALUES (?1,'old',?2,?3,'[]','{}',?4,'2026-01-01T00:00:00Z')",
+                        params![id, role, parts.to_string(), order],
+                    ).unwrap();
+                }
+                db.execute(
+                    "UPDATE compaction_states SET cursor='mixed',compactionSegments=?1 WHERE sessionId='old'",
+                    [json!([{"endMessageId":"mixed","summary":"retained summary","rawItems":[]}]).to_string()],
+                ).unwrap();
+                match case {
+                    "tools_orphan" => {
+                        db.execute("DELETE FROM messages WHERE messageId='other'", [])
+                            .unwrap();
+                    }
+                    "tools_ambiguous" => {
+                        db.execute(
+                            "UPDATE messages SET parts=?1 WHERE messageId='other'",
+                            [json!([
+                                {"type":"tool_use","id":"old-call","name":"echo","input":{}}
+                            ])
+                            .to_string()],
+                        )
+                        .unwrap();
+                    }
+                    "tools_unfinished" => {
+                        db.execute("DELETE FROM messages WHERE messageId='split'", [])
+                            .unwrap();
+                    }
+                    _ => {}
+                }
             }
             "revert" | "revert_before_summary" => {
                 db.execute(
@@ -2596,7 +2675,7 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
             .iter()
             .find(|r| r.kind == "session" && r.id == "old")
             .unwrap();
-        if case == "revert_before_summary" {
+        if case == "revert_before_summary" || case.starts_with("tools_") {
             assert_eq!(imported.outcome, Outcome::Deferred, "{report:?}");
             assert!(imported.target_id.is_none());
             assert_eq!(snapshot(&source), before);
@@ -2616,7 +2695,7 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
             ServerConfig {
                 startup_timeout: std::time::Duration::from_secs(60),
                 database_path: Some(target.join("rust/dimcode.sqlite")),
-                product_home: Some(target),
+                product_home: Some(target.clone()),
                 unix_path: Some(directory.path().join("native.sock")),
                 ..Default::default()
             },
@@ -2633,6 +2712,7 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
             profile: None,
             client_kind: "cli",
             client_name: "migration-test",
+            protocol_version: 4,
         };
         let mut client = Client::connect(&config).await.unwrap();
         client
@@ -2649,7 +2729,59 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
                 | EventKind::ToolStart(_)
         )));
         if case == "tools" {
-            assert!(history.iter().any(|event|matches!(&event.kind,EventKind::ToolResult(result) if result.results[0].result.structured_content.as_ref().and_then(|value|value.get("exitCode"))==Some(&json!(0)))));
+            let results = history
+                .iter()
+                .filter_map(|event| match &event.kind {
+                    EventKind::ToolResult(result) => Some(result),
+                    _ => None,
+                })
+                .flat_map(|event| {
+                    assert_eq!(event.turn_id, event.request_id);
+                    assert!(event.call_event_id.is_none());
+                    event.results.iter().map(|result| {
+                        (
+                            event.request_id.as_str(),
+                            result.call_id.as_str(),
+                            result.result.content.clone(),
+                            result.result.is_error,
+                            result.result.structured_content.clone().map(Value::Object),
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                results,
+                vec![
+                    (
+                        "import:first",
+                        "split-call",
+                        "split output".into(),
+                        None,
+                        None
+                    ),
+                    (
+                        "import:first",
+                        "old-call",
+                        "first output".into(),
+                        None,
+                        None
+                    ),
+                    (
+                        "import:other",
+                        "other-call",
+                        "other output".into(),
+                        Some(true),
+                        None
+                    ),
+                    (
+                        "import:reuse",
+                        "old-call",
+                        "historical output".into(),
+                        None,
+                        Some(json!({"exitCode":0}))
+                    ),
+                ]
+            );
         } else {
             assert!(history.iter().any(|event|matches!(&event.kind,EventKind::Text(text) if text.delta=="effective suffix")));
         }
@@ -2717,6 +2849,70 @@ async fn migration_continuation_preserves_tool_pairs_revert_and_retry_boundaries
         drop(client);
         server.shutdown();
         server.join().await.unwrap();
+        if case == "tools" {
+            let stored = Connection::open(target.join("rust/dimcode.sqlite")).unwrap();
+            for message in ["split", "mixed", "tail"] {
+                assert!(
+                    stored
+                        .execute(
+                            "UPDATE timeline_events SET body=json_set(body,
+                        '$.record.event.data.request_id',?2,'$.record.event.data.turn_id',?2)
+                     WHERE session_id=?1 AND kind='step/tool-result' AND EXISTS (
+                        SELECT 1 FROM json_each(body,'$.record.event.tags') WHERE value=?3)",
+                            params![
+                                id,
+                                format!("import:{message}"),
+                                format!("legacy-message:{message}")
+                            ],
+                        )
+                        .unwrap()
+                        > 0
+                );
+            }
+            let history_sql = "SELECT json_group_array(body) FROM (
+                SELECT body FROM timeline_events WHERE session_id=?1 ORDER BY branch_id,sequence)";
+            let existing: String = stored
+                .query_row(history_sql, [&id], |row| row.get(0))
+                .unwrap();
+            drop(stored);
+            let root = rutis::Ctx::root().unwrap();
+            let plugin = root.plugin(MigrationPlugin::new(
+                target.clone(),
+                "rust".into(),
+                vec!["system".into()],
+            ));
+            (&plugin).await.unwrap();
+            for retry_of in [None, Some(report.task.id.clone())] {
+                let retried = root
+                    .get::<Migration>()
+                    .unwrap()
+                    .run(source.clone(), true, retry_of)
+                    .await
+                    .unwrap();
+                let existing_session = retried
+                    .objects
+                    .iter()
+                    .find(|object| object.kind == "session" && object.id == "old")
+                    .unwrap();
+                assert_eq!(
+                    existing_session.outcome,
+                    Outcome::AlreadyImported,
+                    "{retried:?}"
+                );
+                assert_eq!(existing_session.target_id.as_deref(), Some(id.as_str()));
+                let stored = Connection::open(target.join("rust/dimcode.sqlite")).unwrap();
+                let after: String = stored
+                    .query_row(history_sql, [&id], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(
+                    after, existing,
+                    "Run and retry must not repair existing imported history or overwrite subsequent native conversation"
+                );
+                assert_eq!(snapshot(&source), before);
+            }
+            plugin.dispose().await.unwrap();
+            root.shutdown().await.unwrap();
+        }
     }
 }
 
@@ -2795,6 +2991,7 @@ async fn migration_configuration_is_consumed_by_unchanged_web_and_the_native_sch
         profile: None,
         client_kind: "cli",
         client_name: "migration-test",
+        protocol_version: 4,
     };
     let mut client = Client::connect(&config).await.unwrap();
     let jobs = tokio::time::timeout(std::time::Duration::from_secs(15), async {
@@ -2853,4 +3050,13 @@ async fn migration_configuration_is_consumed_by_unchanged_web_and_the_native_sch
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
+}
+
+fn provider_record(connection: &Connection, id: &str) -> String {
+    serde_json::to_string(
+        &dim_app_server::provider::read_stored_static(connection, id)
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap()
 }

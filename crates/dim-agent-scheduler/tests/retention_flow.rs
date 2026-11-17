@@ -72,6 +72,7 @@ async fn connect(server: &RunningServer) -> Client {
         profile: None,
         client_kind: "cli",
         client_name: "scheduler-retention-test",
+        protocol_version: 4,
     };
     Client::connect(&config).await.unwrap()
 }
@@ -120,7 +121,8 @@ async fn the_store_keeps_the_newest_hundred_terminal_runs_per_job() {
         .typed(
             "schedule.save",
             json!({"job": {"name": "nightly", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Summarize the day.", "cwd": home.path()}}),
+                "prompt": "Summarize the day.",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
@@ -133,11 +135,11 @@ async fn the_store_keeps_the_newest_hundred_terminal_runs_per_job() {
                 "run_id": run_id,
                 "job_id": job_id,
                 "window": "manual",
-                "state": "skipped",
+                "state": "missed",
                 "submission_id": format!("scheduler:{run_id}"),
                 "created_at": format!("2020-01-01T00:{:02}:{:02}.000Z", index / 60, index % 60),
                 "ended_at": format!("2020-01-01T00:{:02}:{:02}.000Z", index / 60, index % 60),
-                "detail": "overlap",
+                "detail": "missed",
             })
         })
         .collect();
@@ -159,7 +161,7 @@ async fn the_store_keeps_the_newest_hundred_terminal_runs_per_job() {
         let runs = stored_runs(home.path());
         let settled = runs
             .iter()
-            .any(|run| run["run_id"] == run_id.as_str() && run["state"] == "completed");
+            .any(|run| run["run_id"] == run_id.as_str() && run["state"] == "delivered");
         if settled && runs.len() == 100 {
             break;
         }

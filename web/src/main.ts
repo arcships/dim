@@ -2,12 +2,15 @@ import "@fontsource-variable/geist"
 import "@fontsource-variable/geist-mono"
 import "markstream-vue/index.css"
 import "./styles/global.css"
-import "./styles/controls.css"
 import "./styles/settings.css"
 import { createApp, watch } from "vue"
 import { createPinia } from "pinia"
+import { addAPIProvider } from "@iconify/vue"
+import ui from "@nuxt/ui/vue-plugin"
 import AppRoot from "./app/AppRoot.vue"
-import { vTooltip } from "./components/tooltip"
+
+// Icons are bundled via @nuxt/ui clientBundle; disable network fetches under strict CSP.
+addAPIProvider("", { resources: [] })
 import { loadMarkdownRenderer } from "./features/chat/markdown-renderer"
 import { i18n, setAppLocale } from "./i18n"
 import { router } from "./router"
@@ -22,6 +25,6 @@ useUiStore(pinia)
 
 void Promise.all([exchangeBootstrapToken(), setAppLocale(useAppearanceStore(pinia).language || navigator.language)]).then(() => {
   useConnectionStore(pinia).client.start()
-  createApp(AppRoot).use(pinia).use(i18n).use(router).directive("tooltip", vTooltip).mount("#app")
+  createApp(AppRoot).use(pinia).use(i18n).use(router).use(ui).mount("#app")
   setTimeout(() => void loadMarkdownRenderer(), 0)
 })

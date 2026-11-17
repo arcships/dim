@@ -514,7 +514,7 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
     let cancel = CancellationToken::new();
     files.directory("media").await.unwrap();
 
-    let bytes: Vec<u8> = (0..200_003u32).map(|i| (i % 251) as u8).collect();
+    let bytes: Vec<u8> = Vec::from_fn(200_003, |i| (i % 251) as u8);
     files
         .write_stream("media/blob.bin", std::io::Cursor::new(bytes.clone()))
         .await

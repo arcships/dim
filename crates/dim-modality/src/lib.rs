@@ -12,7 +12,7 @@
 //! Settings key when the model is one of its options; options of an operation
 //! no adapter serves are the models Provider declares for that operation id.
 //! `image.understand` is selection only: its consumer is the Session
-//! image-understanding path, which does not read the default yet (§9.4).
+//! `image_understand` tool, which resolves through `modalityTargets` per call.
 //!
 //! The task layer (`modality.task.submit/status/list/wait/cancel/result` and
 //! the `modalityTasks` process service) stores its records and files in
@@ -31,6 +31,7 @@
 mod adapter;
 mod engine;
 mod realtime;
+mod targets;
 pub mod task;
 pub use adapter::{
     AdapterError, AdapterErrorCode, AdapterFuture, AdapterOperation, AdapterOutput,
@@ -39,7 +40,10 @@ pub use adapter::{
     RemoteCancel, Submitted,
 };
 use dim_agent_capabilities::{
-    host::{HostError, HostErrorKind, ModelSelectionHost, SelectableModelsHost},
+    host::{
+        HostError, HostErrorKind, ModelPortError, ModelSelectionHost, ModelSelectionRequest,
+        SelectableModelsHost,
+    },
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
@@ -66,6 +70,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+pub use targets::{ModalityTargets, TargetError, TargetReply, TargetRequest};
 pub use task::{TaskRecord, TaskState};
 use tokio_util::sync::CancellationToken;
 
@@ -120,6 +125,12 @@ pub(crate) fn host_target_for(
 /// The adapter service Modality reads per call. A missing service is an
 /// unavailable operation, never a failed load.
 pub struct ModalityAdapterService(pub Arc<dyn ModalityAdapter>);
+
+/// The key of the adapter copy that serves one catalog provider (A.2). The
+/// family copy is at the type's own key.
+pub fn adapter_key(provider_id: &str) -> Key<ModalityAdapterService> {
+    Key::dynamic(provider_id.to_owned())
+}
 
 /// One catalog operation of Modality A.1: its id and the Settings key that
 /// holds its default, if it has one.
@@ -289,15 +300,15 @@ fn declares(operations: &[String], category: &str, operation: &str) -> bool {
 }
 
 /// A display reason, never parsed by a client (Modality A.3).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reason {
-    pub dimension: &'static str,
+    pub dimension: String,
     pub detail: String,
 }
 fn reason(dimension: &'static str, detail: impl Into<String>) -> Reason {
     Reason {
-        dimension,
+        dimension: dimension.into(),
         detail: detail.into(),
     }
 }
@@ -432,8 +443,9 @@ fn explicit_model<'de, D: Deserializer<'de>>(
     ))
 }
 
-/// One read of what Provider would serve, the collected adapter and the
-/// persisted defaults; snapshots before and after a write share it.
+/// One read of what Provider would serve, the process context the adapter
+/// copies are read from, and the persisted defaults; snapshots before and
+/// after a write share it.
 pub(crate) struct Evaluation {
     defaults: BTreeMap<String, ModelId>,
     selectable: Vec<ModelCapabilitySnapshot>,
@@ -441,7 +453,8 @@ pub(crate) struct Evaluation {
     /// the operations each declares (Modality §9.2).
     declared: Vec<ModalityModelSnapshot>,
     global: Option<ModelId>,
-    adapter: Option<Arc<ModalityAdapterService>>,
+    /// The process context adapter copies are read from per call (A.2).
+    ctx: Ctx,
     /// Whether this daemon holds a HostPlatform, which a host task runs on
     /// (A14).
     host_platform: bool,
@@ -606,36 +619,47 @@ impl Evaluation {
         options
     }
 
-    fn adapter_available(&self) -> bool {
-        self.adapter
-            .as_ref()
-            .is_some_and(|adapter| adapter.0.available())
-    }
-    /// Whether a process adapter is collected at all, whatever it serves: a
-    /// collected adapter that serves no candidate model is not "no adapter".
-    fn has_adapter(&self) -> bool {
-        self.adapter.is_some()
-    }
-    /// Whether the adapter serves this category for any model either read
-    /// names; its `operations` then decides the category's options.
-    fn adapter_serves(&self, category: &str) -> bool {
-        let Some(adapter) = &self.adapter else {
-            return false;
-        };
+    /// Every model either Provider read names, in each read's order.
+    fn candidates(&self) -> impl Iterator<Item = &ModelId> {
         self.selectable
             .iter()
             .map(|model| &model.target)
             .chain(self.declared.iter().map(|model| &model.target))
-            .any(|model| {
+    }
+    /// The adapter that serves one provider: its own copy, else the family
+    /// copy that serves providers nothing specific claims (A.2).
+    pub(crate) fn adapter(&self, provider_id: &str) -> Option<Arc<ModalityAdapterService>> {
+        self.ctx
+            .get_at(&adapter_key(provider_id))
+            .or_else(|| self.ctx.get_at(&Key::<ModalityAdapterService>::of()))
+    }
+    fn adapter_available(&self) -> bool {
+        self.candidates().any(|model| {
+            self.adapter(&model.provider_id)
+                .is_some_and(|adapter| adapter.0.available())
+        })
+    }
+    /// Whether an adapter serves any candidate provider at all, whatever it
+    /// claims: an adapter that serves no candidate model is not "no adapter".
+    fn has_adapter(&self) -> bool {
+        self.candidates()
+            .any(|model| self.adapter(&model.provider_id).is_some())
+    }
+    /// Whether the adapter of some candidate model serves this category; its
+    /// `operations` then decides the category's options.
+    fn adapter_serves(&self, category: &str) -> bool {
+        self.candidates().any(|model| {
+            self.adapter(&model.provider_id).is_some_and(|adapter| {
                 adapter
                     .0
                     .operations(model)
                     .iter()
                     .any(|served| served.category == category)
             })
+        })
     }
     fn serves(&self, model: &ModelId, category: &str, operation: &str) -> bool {
-        let Some(adapter) = &self.adapter else {
+        let Some(adapter) = self.adapter(&model.provider_id) else {
             return false;
         };
         adapter.0.available()
@@ -663,10 +687,6 @@ impl Evaluation {
                 .declared_for(&model.provider_id, &model.model_id)
                 .is_some()
     }
-    /// The collected adapter, when the process has one.
-    pub(crate) fn adapter(&self) -> Option<&Arc<ModalityAdapterService>> {
-        self.adapter.as_ref()
-    }
     /// The adapter's declaration of one operation for `model`: its parameter
     /// schema, read per submission (A.2, decision 3). `None` when no
     /// available adapter serves the operation for that model.
@@ -676,7 +696,7 @@ impl Evaluation {
         category: &str,
         operation: &str,
     ) -> Option<AdapterOperation> {
-        let adapter = self.adapter.as_ref()?;
+        let adapter = self.adapter(&model.provider_id)?;
         if !adapter.0.available() {
             return None;
         }
@@ -1003,6 +1023,16 @@ pub(crate) fn host_error(error: HostError) -> RpcError {
     }
 }
 
+/// A process model port's failure as this plugin reports it: the two codes a
+/// caller acts on, and the owner's message for the rest.
+pub(crate) fn port_error(error: ModelPortError) -> RpcError {
+    match error {
+        ModelPortError::Cancelled { .. } => RpcError::interrupted(),
+        ModelPortError::OwnerClosed { .. } => RpcError::reloading(),
+        error => RpcError::app(-32000, "modality_failed", error.to_string()),
+    }
+}
+
 /// Whether one call reads the plugin-supplied OCR target (A.2.1): only a call
 /// whose reply or resolution names the OCR category reads `ocrHelper`, so an
 /// image, video or speech request and a realtime session never wait on it.
@@ -1029,18 +1059,20 @@ pub(crate) async fn evaluate(
         .await
         .map_err(settings_error)?;
     let selectable_models = selectable
-        .0
-        .selectable(cancel.clone())
+        .selectable_models(cancel.clone())
         .await
-        .map_err(host_error)?;
+        .map_err(port_error)?
+        .models;
     let declared = selectable
-        .0
         .selectable_for_modality(cancel.clone())
         .await
-        .map_err(host_error)?;
+        .map_err(port_error)?
+        .models;
     let global = selection
-        .0
-        .resolve(None, None, cancel.clone())
+        .resolve(
+            ModelSelectionRequest::at(None, None).map_err(port_error)?,
+            cancel.clone(),
+        )
         .await
         .ok()
         .map(|selection| ModelId {
@@ -1054,7 +1086,7 @@ pub(crate) async fn evaluate(
             selectable: selectable_models,
             declared,
             global,
-            adapter: ctx.get::<ModalityAdapterService>(),
+            ctx: ctx.clone(),
             host_platform: ctx
                 .get::<dim_agent_capabilities::host_platform::HostPlatform>()
                 .is_some(),
@@ -1230,6 +1262,12 @@ impl DynPlugin for ModalityPlugin {
                 cleanup.shutdown().await;
                 Ok(())
             })?;
+            let targets = Arc::new(ModalityTargets::new(shared.clone()));
+            ctx.provide_at(Key::<ModalityTargets>::of(), targets.clone())?;
+            ctx.provide_at(
+                rutis_bridge::session::host_key("modalityTargets"),
+                targets as Arc<dyn rutis_bridge::session::HostDispatch>,
+            )?;
             shared.spawn_scheduler();
             // Startup on every apply (A.6): settle the records this
             // generation cannot continue before the methods are visible.
@@ -1255,6 +1293,7 @@ impl DynPlugin for ModalityPlugin {
                     wait,
                     MethodDecl::new("modality.task.cancel", true, Interruption::Report),
                     MethodDecl::new("modality.task.result", false, Interruption::Report),
+                    MethodDecl::new("modality.task.export", false, Interruption::Report),
                     open,
                     MethodDecl::new("modality.realtime.send", true, Interruption::Report),
                     MethodDecl::new("modality.realtime.close", true, Interruption::Report),
@@ -1386,6 +1425,9 @@ impl DynPlugin for ModalityPlugin {
                                 let request: TaskCancel = params(value)?;
                                 reply(tasks.cancel(request, &stopping).await?)
                             }
+                            "modality.task.export" => {
+                                reply(tasks.export(params::<engine::TaskExport>(value)?).await?)
+                            }
                             "modality.task.result" => {
                                 let request: TaskResultQuery = params(value)?;
                                 reply(tasks.result(request, &stopping).await?)
@@ -1479,6 +1521,7 @@ impl std::fmt::Debug for InstallOptions {
 /// host executable to observe the OCR path.
 pub fn install_with(builder: &mut AgentBuilder, options: InstallOptions) {
     dim_agent_runtime::names::register::<ModalityAdapterService>(builder.catalog_mut(), None);
+    builder.catalog_mut().register_shared("modalityTargets");
     builder.optional_plugin(move |names| {
         Ok(Box::new(ModalityPlugin::new(names, options.clone())?) as Box<dyn DynPlugin>)
     });

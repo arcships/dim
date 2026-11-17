@@ -1,0 +1,995 @@
+{
+  "java": "OpenJDK 17.0.18",
+  "tools_release": "1.7.4",
+  "tlc_version": "2.19 (2024-08-08, rev 5a47802)",
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "workers": 1,
+  "max_heap": "2g",
+  "date": "2026-11-16",
+  "code_base": "da7e3614b4fd59d69c1184ce98c24b29a6c4c5de",
+  "scope": "Remaining scenarios enumerated in coverage-audit.md, within coverage-completion.md bounds. Not an implementation refinement, exhaustive requirement or composed-system proof.",
+  "runs": [
+    {
+      "config": "docs/design/examples/capability-models/ApprovalRequests.cfg",
+      "module": "docs/design/examples/capability-models/ApprovalRequests.tla",
+      "module_sha256": "84f1649a70d3ccb6cf17f3e9e78a37b99219ba29e6c8d76f5cf825856e1a4aee",
+      "config_sha256": "9a29040324e704f67163065535c06cfc14a53e52f10e77684ab50a25a8b4a7a2",
+      "exit": 0,
+      "seconds": 28.5,
+      "expected_exit": 0,
+      "generated": 4147985,
+      "distinct": 289488,
+      "queue_remaining": 0,
+      "depth": 16,
+      "fingerprint": 46,
+      "seed": -3392834815381840976,
+      "finished": "Finished in 28s at (2026-11-16 00:16:05)",
+      "invariants": [
+        "AllowedHasPublishedDecision",
+        "FailedTerminalNeverAdmits",
+        "OneResponsePerConsumedCommand"
+      ],
+      "properties": [
+        "ConsumeOnlyOwnRequest",
+        "CancelOnlyOwnRequest",
+        "ReturnRechecksPolicy",
+        "QueryIsBranchScoped"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/ApprovalRequests-Branches.cfg",
+      "module": "docs/design/examples/capability-models/ApprovalRequests.tla",
+      "module_sha256": "84f1649a70d3ccb6cf17f3e9e78a37b99219ba29e6c8d76f5cf825856e1a4aee",
+      "config_sha256": "63b1f0afc51c3b780d2e92a49e5776c13214232ba747f68ee493aab23360257b",
+      "exit": 0,
+      "seconds": 26.03,
+      "expected_exit": 0,
+      "generated": 3967953,
+      "distinct": 277460,
+      "queue_remaining": 0,
+      "depth": 16,
+      "fingerprint": 37,
+      "seed": -2859646917096142859,
+      "finished": "Finished in 25s at (2026-11-16 00:16:31)",
+      "invariants": [
+        "AllowedHasPublishedDecision",
+        "FailedTerminalNeverAdmits",
+        "OneResponsePerConsumedCommand"
+      ],
+      "properties": [
+        "ConsumeOnlyOwnRequest",
+        "CancelOnlyOwnRequest",
+        "ReturnRechecksPolicy",
+        "QueryIsBranchScoped"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/BranchEligibility.cfg",
+      "module": "docs/design/examples/capability-models/BranchEligibility.tla",
+      "module_sha256": "2b1b2c67a4be11dd956b2cf0db8d8e85667bd1605c33e091fa8337d5b9a6d02e",
+      "config_sha256": "35e28b1e25c0c04729250ffd3eaad031bbf448fe93513ccb3a98eb29645ba369",
+      "exit": 0,
+      "seconds": 3.39,
+      "expected_exit": 0,
+      "generated": 343796,
+      "distinct": 14788,
+      "queue_remaining": 0,
+      "depth": 15,
+      "fingerprint": 100,
+      "seed": 3934137469210386899,
+      "finished": "Finished in 02s at (2026-11-16 00:21:41)",
+      "invariants": [
+        "ParentBlockHasNewActivity",
+        "NoMainParentBlock",
+        "EndNoticeAndRosterAtomic"
+      ],
+      "properties": [
+        "IdleEligibility",
+        "RestoreNoOldIdle",
+        "ExplicitReadCanReset"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/BroadcastRecords.cfg",
+      "module": "docs/design/examples/capability-models/BroadcastRecords.tla",
+      "module_sha256": "6aa3891b2005317cd8616cd765beda341eeaa0f8826c1c2042bfe5e8ce86641c",
+      "config_sha256": "5252637f22f73dcd5b55ddcfa98a8d84705b439f80c28a1b94cf2f6ab90434a8",
+      "exit": 0,
+      "seconds": 1.01,
+      "expected_exit": 0,
+      "generated": 10416,
+      "distinct": 3759,
+      "queue_remaining": 0,
+      "depth": 14,
+      "fingerprint": 84,
+      "seed": 2989293677649321689,
+      "finished": "Finished in 00s at (2026-11-16 00:22:32)",
+      "invariants": [
+        "IdentityPreserved",
+        "NoBranchEventAfterClosed",
+        "PerBranchOrder"
+      ],
+      "properties": []
+    },
+    {
+      "config": "docs/design/examples/capability-models/CollaborationIdentity.cfg",
+      "module": "docs/design/examples/capability-models/CollaborationIdentity.tla",
+      "module_sha256": "af990d8c15030e691683d0e5d71cafcabc7fee6a7aa4ceb166e449817c6d31bd",
+      "config_sha256": "3f576ca37efec0f5c13c4350e92420a3db967f8066ca62e36d35ef49ba3a877f",
+      "exit": 0,
+      "seconds": 37.97,
+      "expected_exit": 0,
+      "generated": 1752329,
+      "distinct": 148360,
+      "queue_remaining": 0,
+      "depth": 22,
+      "fingerprint": 33,
+      "seed": 6287257130676453166,
+      "finished": "Finished in 37s at (2026-11-16 00:29:56)",
+      "invariants": [
+        "CurrentBelongsToMember",
+        "ApprovalBelongsToRequest"
+      ],
+      "properties": [
+        "CancellationCannotRewriteCompleted",
+        "SettledResultStable",
+        "MessageDoesNotCancel",
+        "CancelNamesCurrentBranchRequest",
+        "DeliveryFailureDoesNotUndoAdoption",
+        "EachApprovalRetires"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/CollaborationIdentity-Members.cfg",
+      "module": "docs/design/examples/capability-models/CollaborationIdentity.tla",
+      "module_sha256": "af990d8c15030e691683d0e5d71cafcabc7fee6a7aa4ceb166e449817c6d31bd",
+      "config_sha256": "5c5ca1e5e8ad94b44d7d12b92bd3b685609012bb7b5f4e30f615f3bcb28e1162",
+      "exit": 0,
+      "seconds": 51.65,
+      "expected_exit": 0,
+      "generated": 2486745,
+      "distinct": 199784,
+      "queue_remaining": 0,
+      "depth": 22,
+      "fingerprint": 59,
+      "seed": 7319800524394018724,
+      "finished": "Finished in 51s at (2026-11-16 00:30:48)",
+      "invariants": [
+        "CurrentBelongsToMember",
+        "ApprovalBelongsToRequest"
+      ],
+      "properties": [
+        "CancellationCannotRewriteCompleted",
+        "SettledResultStable",
+        "MessageDoesNotCancel",
+        "CancelNamesCurrentBranchRequest",
+        "DeliveryFailureDoesNotUndoAdoption",
+        "EachApprovalRetires"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecStopHistory.cfg",
+      "module": "docs/design/examples/capability-models/ExecStopHistory.tla",
+      "module_sha256": "5d1bebaa885b94c91826a81791b27def566db4f2a8459e3b31a4c44b92a06dfc",
+      "config_sha256": "ead2dd4795c262d7df307af3e1936dd27c0da502aa72abbb11e996c0d823be85",
+      "exit": 0,
+      "seconds": 4.65,
+      "expected_exit": 0,
+      "generated": 753112,
+      "distinct": 56114,
+      "queue_remaining": 0,
+      "depth": 18,
+      "fingerprint": 17,
+      "seed": -8134818239596413528,
+      "finished": "Finished in 04s at (2026-11-16 00:32:11)",
+      "invariants": [
+        "WakeHasEligibleEnd",
+        "ReleaseBeforeEnd"
+      ],
+      "properties": [
+        "TerminalIsStable",
+        "HistoricalCallsDoNotRestart",
+        "ReopeningDoesNotRequalifyOldEnd",
+        "LateStopPreservesWinner"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/HookDecisions.cfg",
+      "module": "docs/design/examples/capability-models/HookDecisions.tla",
+      "module_sha256": "b46986f62329d293fb0d0bb9c9205d5ba0837f06a7aa8eb3afc92a5d484fde3e",
+      "config_sha256": "9da567bc8b9dbeb34b96ac3c93c30562d794f39782c59ddf189baefa4248a462",
+      "exit": 0,
+      "seconds": 2.35,
+      "expected_exit": 0,
+      "generated": 645696,
+      "distinct": 88992,
+      "queue_remaining": 0,
+      "depth": 12,
+      "fingerprint": 39,
+      "seed": 4963707060961922348,
+      "finished": "Finished in 01s at (2026-11-16 00:22:39)",
+      "invariants": [
+        "CatalogOrder",
+        "OnlySynchronousCanBlock"
+      ],
+      "properties": [
+        "SessionStartRecheckedAtWrite",
+        "BlockStopsLaterMerge",
+        "ApprovalCancellationScoped",
+        "CancelledApprovalCannotReply"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/HookReplyMeaning.cfg",
+      "module": "docs/design/examples/capability-models/HookReplyMeaning.tla",
+      "module_sha256": "37b1cb7f796c8d47dde8334dd5e1166c7d6765b214d94bb15767cd9a70e24d41",
+      "config_sha256": "ce52bc03918ff57c60eb6184f8b46394a65df619d1e892de204b1dc1456e6a05",
+      "exit": 0,
+      "seconds": 0.88,
+      "expected_exit": 0,
+      "generated": 1620,
+      "distinct": 1620,
+      "queue_remaining": 0,
+      "depth": 2,
+      "fingerprint": 15,
+      "seed": -3398356045974485009,
+      "finished": "Finished in 00s at (2026-11-16 00:25:20)",
+      "invariants": [
+        "PermissionExitTwoHasNoOpinion",
+        "PreToolSpecificWinsLegacy",
+        "ExplicitDeferCannotLegacyBlock",
+        "FailedPromptContinueReportsUnfinished"
+      ],
+      "properties": []
+    },
+    {
+      "config": "docs/design/examples/capability-models/InputOrdering.cfg",
+      "module": "docs/design/examples/capability-models/InputOrdering.tla",
+      "module_sha256": "14054013b1e2caf9ed9d8369afaa4168d70226aed33c5019f74a5685644a211f",
+      "config_sha256": "7c9f0b93bee65450a9651f9d4bfda4326bc287e79ea21a200bfedf80d859c593",
+      "exit": 0,
+      "seconds": 5.46,
+      "expected_exit": 0,
+      "generated": 542810,
+      "distinct": 168667,
+      "queue_remaining": 0,
+      "depth": 12,
+      "fingerprint": 129,
+      "seed": -6143828352806566783,
+      "finished": "Finished in 04s at (2026-11-16 00:15:42)",
+      "invariants": [
+        "NoStaleHandover",
+        "NoHandoverInPublicPending",
+        "NoDeletedConsumption"
+      ],
+      "properties": [
+        "QueueArrivalOrder",
+        "NoNewQueueOvertakesHeld"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/InputReceipts.cfg",
+      "module": "docs/design/examples/capability-models/InputReceipts.tla",
+      "module_sha256": "d4231461e185079adebee3ac83ae0bd9eef45bef12e2e2ed739777e13952d6bb",
+      "config_sha256": "c636d3211b6a9fe6b4d7b2cc6b1d5aaee38158e39c5271b01b4d67aa17116333",
+      "exit": 0,
+      "seconds": 0.94,
+      "expected_exit": 0,
+      "generated": 9650,
+      "distinct": 1914,
+      "queue_remaining": 0,
+      "depth": 14,
+      "fingerprint": 12,
+      "seed": -8886275996007020479,
+      "finished": "Finished in 00s at (2026-11-16 00:12:24)",
+      "invariants": [
+        "ResultsInCommandOrder",
+        "NotHeldNeverReplaces",
+        "AtomicReplacement",
+        "OneDeletionPerInput"
+      ],
+      "properties": [
+        "SnapshotWaitsForResults",
+        "CloseKeepsSnapshot",
+        "ConfirmedReplyHasPublication"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/LoopDecisions.cfg",
+      "module": "docs/design/examples/capability-models/LoopDecisions.tla",
+      "module_sha256": "edbd6bea182c15284e58d1220ccf20a0d375fe26c71b0341014c445cded505ee",
+      "config_sha256": "d42edefc0b857632adcc06b2e9ab8ad4d7d6d62dde02169c23d8ee97440f1ab0",
+      "exit": 0,
+      "seconds": 0.93,
+      "expected_exit": 0,
+      "generated": 12288,
+      "distinct": 12288,
+      "queue_remaining": 0,
+      "depth": 4,
+      "fingerprint": 64,
+      "seed": 1541078859557363927,
+      "finished": "Finished in 00s at (2026-11-16 00:22:37)",
+      "invariants": [
+        "ContinuationEligibility",
+        "ToolsBeforeNewInput",
+        "NoSecondBudgetRecovery",
+        "ReloadCannotContinueCancelled"
+      ],
+      "properties": []
+    },
+    {
+      "config": "docs/design/examples/capability-models/LoopInputs.cfg",
+      "module": "docs/design/examples/capability-models/LoopInputs.tla",
+      "module_sha256": "429f5d570ee06f9f1335441a871f291b7039ad8fe56c4bcfba999937d31959c4",
+      "config_sha256": "7b6df0d06bdf7e0303941b63fa0631b9125afec5d49a0548227f323e8d47f331",
+      "exit": 0,
+      "seconds": 1.0,
+      "expected_exit": 0,
+      "generated": 6956,
+      "distinct": 3142,
+      "queue_remaining": 0,
+      "depth": 12,
+      "fingerprint": 94,
+      "seed": -408376170148038857,
+      "finished": "Finished in 00s at (2026-11-16 00:29:17)",
+      "invariants": [
+        "InputClaimedAtMostOnce",
+        "BudgetSourceClaimsNoNewInputs"
+      ],
+      "properties": [
+        "OldQueueCannotWake",
+        "ClaimIncludesOrderedPending",
+        "CompactionDefersRequests"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/ModelStream.cfg",
+      "module": "docs/design/examples/capability-models/ModelStream.tla",
+      "module_sha256": "d8a4086183774c8948529c17da9e746474ca35eef80ca0fece462153de1353f1",
+      "config_sha256": "785ab5cbdccf737b63538c827161b37ab44041b6a7486be1b99d077ad4ae4a29",
+      "exit": 0,
+      "seconds": 1.55,
+      "expected_exit": 0,
+      "generated": 60370,
+      "distinct": 21567,
+      "queue_remaining": 0,
+      "depth": 14,
+      "fingerprint": 107,
+      "seed": -5814948826180692507,
+      "finished": "Finished in 01s at (2026-11-16 00:15:51)",
+      "invariants": [
+        "NoPartialExecution",
+        "FailureClosesAllStarted",
+        "ClosureKeepsIdentityAndMeaning",
+        "TerminalUnique"
+      ],
+      "properties": [
+        "UsageAfterEndForbidden"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/OpeningConfiguration.cfg",
+      "module": "docs/design/examples/capability-models/OpeningConfiguration.tla",
+      "module_sha256": "bb7e5c930000be1b73e96e6326a38d7d4274aaf730b84aabd7c2ec911d8c22b3",
+      "config_sha256": "d4178b911eba62ecf0eefe470487a9f3411e90b57439f1e6e25087aa8b6fc769",
+      "exit": 0,
+      "seconds": 0.87,
+      "expected_exit": 0,
+      "generated": 47,
+      "distinct": 25,
+      "queue_remaining": 0,
+      "depth": 9,
+      "fingerprint": 6,
+      "seed": 5100244710457940393,
+      "finished": "Finished in 00s at (2026-11-16 00:25:21)",
+      "invariants": [
+        "ReceiptKeepsOpeningSnapshot",
+        "FailedOpeningCannotRequest",
+        "FirstRequestWaitsForReceipt"
+      ],
+      "properties": [
+        "DynamicChangeDoesNotRewriteReceipt"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/OutputAvailability.cfg",
+      "module": "docs/design/examples/capability-models/OutputAvailability.tla",
+      "module_sha256": "332a4c54543c86912deb9f2ecefb68fc54375fe7219d7bf90a6b72c3367cad42",
+      "config_sha256": "ed1b8eea9c6b3521e5168084a2556728e49581cbaffc1d32982a9294fd1c2ba3",
+      "exit": 0,
+      "seconds": 0.87,
+      "expected_exit": 0,
+      "generated": 2342,
+      "distinct": 138,
+      "queue_remaining": 0,
+      "depth": 7,
+      "fingerprint": 87,
+      "seed": -911365809104820664,
+      "finished": "Finished in 00s at (2026-11-16 00:23:43)",
+      "invariants": [
+        "NoLiveWithoutStart"
+      ],
+      "properties": [
+        "ReadsPreserveTerminal",
+        "PreviewNeedsLiveCapture",
+        "PageDoesNotUsePreview",
+        "HistoricalFileStillReadable"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/PermissionComposition.cfg",
+      "module": "docs/design/examples/capability-models/PermissionComposition.tla",
+      "module_sha256": "5416968ff47828ad07f04ce11b77cd4b58b6f04174f4e54ab1b43dc88564fa39",
+      "config_sha256": "20dc4c5decedcb0529d6211449c8d228dca229b7ff3683327b896731716a7473",
+      "exit": 0,
+      "seconds": 1.28,
+      "expected_exit": 0,
+      "generated": 184320,
+      "distinct": 184320,
+      "queue_remaining": 0,
+      "depth": 3,
+      "fingerprint": 57,
+      "seed": -2416302098512720073,
+      "finished": "Finished in 00s at (2026-11-16 00:22:14)",
+      "invariants": [
+        "DisallowedAlwaysDenies",
+        "ReadOnlyWriteDenies",
+        "OwnDenyCannotBeOverridden",
+        "AdvisorPriority",
+        "CompoundAllowDoesNotBypassAsk",
+        "ProtectedWriteGate"
+      ],
+      "properties": []
+    },
+    {
+      "config": "docs/design/examples/capability-models/PromptProjection.cfg",
+      "module": "docs/design/examples/capability-models/PromptProjection.tla",
+      "module_sha256": "bcfc43f5ce4d1932b8c3a41ca5b772d8fee4f0ad07f13ae83f50402a8e67c816",
+      "config_sha256": "c38fc3d4630e95dc1445de038dfa3945477dd13f9562f3f0837bc0230c338340",
+      "exit": 0,
+      "seconds": 1.5,
+      "expected_exit": 0,
+      "generated": 137170,
+      "distinct": 23686,
+      "queue_remaining": 0,
+      "depth": 8,
+      "fingerprint": 25,
+      "seed": -2213201705468012189,
+      "finished": "Finished in 00s at (2026-11-16 00:29:18)",
+      "invariants": [
+        "InactiveScopeAbsent",
+        "FullIdentityLatest"
+      ],
+      "properties": [
+        "GuideUsesAdoptedSource",
+        "LegacyKeepsAdoptedSystem",
+        "LoadDoesNotAdopt"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/ShellCommands.cfg",
+      "module": "docs/design/examples/capability-models/ShellCommands.tla",
+      "module_sha256": "06d8f83f262763433d85bb82d2fc8e0ebc11e3c2d3a21a6222e4bdc37296b5cc",
+      "config_sha256": "ab6ae754f4513530518fe45c6421097b14160349fafe0c1fe62074c1eaf8c3cf",
+      "exit": 0,
+      "seconds": 0.98,
+      "expected_exit": 0,
+      "generated": 6249,
+      "distinct": 2327,
+      "queue_remaining": 0,
+      "depth": 15,
+      "fingerprint": 22,
+      "seed": -4930975595293175551,
+      "finished": "Finished in 00s at (2026-11-16 00:26:01)",
+      "invariants": [
+        "OneTaskIdentity",
+        "TerminalRequiresRelease",
+        "NoExecEndWithoutStart"
+      ],
+      "properties": [
+        "OldGenerationCannotChoose",
+        "TerminalNeverReplaced",
+        "SkippedQueueDoesNotStart"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/ToolDispatch.cfg",
+      "module": "docs/design/examples/capability-models/ToolDispatch.tla",
+      "module_sha256": "07beb91ec062270b3e72a57ec83db98a270645ddb6ab676ba1af1c992055457d",
+      "config_sha256": "4f56a8a7b1f5d30881007178085e553cace52e3b2e5db8f481934cec65120665",
+      "exit": 0,
+      "seconds": 6.21,
+      "expected_exit": 0,
+      "generated": 1117452,
+      "distinct": 94217,
+      "queue_remaining": 0,
+      "depth": 29,
+      "fingerprint": 108,
+      "seed": -1817433976425014295,
+      "finished": "Finished in 05s at (2026-11-16 00:26:00)",
+      "invariants": [
+        "SameApprovedCallExecutes",
+        "ProgressHasStartedIdentity",
+        "BatchAfterEachCompletion",
+        "ReleasedDropsClaims"
+      ],
+      "properties": [
+        "ClaimBeforeCommit",
+        "NoRunAfterObservedCancel"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/ToolRetirement.cfg",
+      "module": "docs/design/examples/capability-models/ToolRetirement.tla",
+      "module_sha256": "c0e4b02a5e7b3940f40e15c74e1056a8ecc9082388cad0d591344eafe9f1839c",
+      "config_sha256": "96d5409f687d1f99c641ecf6aeb6e78a5249718f1ad3460b802c6bfd61cb13e9",
+      "exit": 0,
+      "seconds": 0.95,
+      "expected_exit": 0,
+      "generated": 15742,
+      "distinct": 2145,
+      "queue_remaining": 0,
+      "depth": 11,
+      "fingerprint": 74,
+      "seed": 5959494576283845558,
+      "finished": "Finished in 00s at (2026-11-16 00:31:11)",
+      "invariants": [
+        "OldRequestNeverRunsReplacement",
+        "UnavailableDoesNotBind"
+      ],
+      "properties": [
+        "StillHeldVersionCanBind",
+        "RetirementDoesNotReleaseRequestPins",
+        "RetiredFaceCannotEnter"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/TreeOpening.cfg",
+      "module": "docs/design/examples/capability-models/TreeOpening.tla",
+      "module_sha256": "f8124e6c41352f9fa824e1277cb94f58920ace733d88be075e0816b1ba324555",
+      "config_sha256": "b0128d123ddd1f7ed0d24651e093af93b09d1e79e571c5b7213a89970db7981d",
+      "exit": 0,
+      "seconds": 143.55,
+      "expected_exit": 0,
+      "generated": 13226433,
+      "distinct": 866144,
+      "queue_remaining": 0,
+      "depth": 23,
+      "fingerprint": 75,
+      "seed": 2112523332552670830,
+      "finished": "Finished in 02min 23s at (2026-11-16 00:17:04)",
+      "invariants": [
+        "PublicationNeedsOpening",
+        "FailureSettlesResources",
+        "ToolEndWaitsTurn"
+      ],
+      "properties": [
+        "StableAcceptedIdentity",
+        "WaiterDoesNotCancelAcceptedWork",
+        "ParentCloseBlocksPublication",
+        "CancelledBuildSettles"
+      ]
+    },
+    {
+      "config": "docs/design/examples/capability-models/UndispatchedTools.cfg",
+      "module": "docs/design/examples/capability-models/UndispatchedTools.tla",
+      "module_sha256": "d35e1d0ff1bd4c27b679f6ced48eec8a29c2bc64f2b7e6ff12429080b55e46f3",
+      "config_sha256": "6514c4bb03a824aeb1aaf420f583547a0e52f7d9e6a8961b0d31d8ee42efa2ab",
+      "exit": 0,
+      "seconds": 0.87,
+      "expected_exit": 0,
+      "generated": 171,
+      "distinct": 75,
+      "queue_remaining": 0,
+      "depth": 8,
+      "fingerprint": 86,
+      "seed": 9154635814080096901,
+      "finished": "Finished in 00s at (2026-11-16 00:23:15)",
+      "invariants": [
+        "OnlyUndispatchedCompleteCalls",
+        "StartedOrderPreserved"
+      ],
+      "properties": []
+    },
+    {
+      "config": "docs/design/examples/capability-models/UsageSources.cfg",
+      "module": "docs/design/examples/capability-models/UsageSources.tla",
+      "module_sha256": "b794bea22d818d587015efc433034bbb1e4eeb84dfbdedd88d3c5983d7d92048",
+      "config_sha256": "322685fd034ee0ed1a1c63bf72ced6b256ececbb71b5b1530037f44d9e679a33",
+      "exit": 0,
+      "seconds": 3.93,
+      "expected_exit": 0,
+      "generated": 1219401,
+      "distinct": 123864,
+      "queue_remaining": 0,
+      "depth": 14,
+      "fingerprint": 72,
+      "seed": 5337365277235679105,
+      "finished": "Finished in 03s at (2026-11-16 00:22:43)",
+      "invariants": [
+        "ChildRenderDoesNotCount",
+        "OtherSourcesExcluded",
+        "CalibrationWaitsForDeliveryAndBasis"
+      ],
+      "properties": [
+        "MissingHistoricalPrefixUnavailable"
+      ]
+    }
+  ],
+  "reused": [
+    {
+      "config": "docs/design/examples/capability-models/AdmissionAdvice.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/BranchLine.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/CollaborationHandoff.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/ContextUsage.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/CurrentInput-Clients.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/CurrentInput.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecLifecycle-Shell.cfg",
+      "record": "results.json",
+      "exit": 13
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecLifecycle-ShellWake.cfg",
+      "record": "results.json",
+      "exit": 13
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecLifecycle.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/FileReads.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/GoalLifecycle.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/HookScheduling.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/HooksValidity.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/InputQueue.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/InputRecovery.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/LoopContinuation.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/LoopProtocol.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/ModelOutput.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/NestedSettlement.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/PermissionState.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/Preparation.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/PromptAdoption.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/PromptRetirement.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/RecoveryBoundary.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/RecoverySelection.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/RequestCuts.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/RetryBudget.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/SessionBroadcast.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/ToolBinding.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/TreeLifecycle.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/UsageIdentity.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/WaitRuntime.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/approval-model/ApprovalOrdering.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/tool-model/ToolSegments.cfg",
+      "record": "results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/WaitSelectionCoverage.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/WaitHandoff.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/RetryChain.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/HookFollowups.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/PromptOutcomes.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/ToolAdoption.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/FinalRequest.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/GoalProgress.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/SnapshotRefresh.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/SnapshotRefresh-Clients.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/PermissionFacts.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    },
+    {
+      "config": "docs/design/examples/capability-models/FileBindingQueries.cfg",
+      "record": "coverage-fill-results.json",
+      "exit": 0
+    }
+  ],
+  "reachable_states": [
+    {
+      "model": "BroadcastRecords",
+      "description": "Notice and Fence can follow Closed",
+      "state": "State 273:\ns = [ head |-> <<0, 0>>,\n  cursor |-> <<0, 0>>,\n  closed |-> {1, 2},\n  ended |-> TRUE,\n  records |->\n      << [kind |-> \"closed\", branch |-> 0, id |-> <<0, 0>>],\n         [kind |-> \"notice\", branch |-> 0, id |-> <<0, 1>>],\n         [kind |-> \"fence\", branch |-> 0, id |-> <<0, 2>>] >>,\n  notice |-> TRUE,\n  fence |-> TRUE ]",
+      "module_sha256": "6aa3891b2005317cd8616cd765beda341eeaa0f8826c1c2042bfe5e8ce86641c",
+      "config_sha256": "5252637f22f73dcd5b55ddcfa98a8d84705b439f80c28a1b94cf2f6ab90434a8",
+      "command": "java -XX:+UseParallelGC -Xmx2g -cp \"$TLA_JAR\" tlc2.TLC -workers 1 -metadir /tmp/BroadcastRecords-meta -dump /tmp/BroadcastRecords -config docs/design/examples/capability-models/BroadcastRecords.cfg docs/design/examples/capability-models/BroadcastRecords.tla"
+    },
+    {
+      "model": "LoopInputs",
+      "description": "An old unclaimed input can join a request driven by a newer input after interrupt",
+      "state": "State 333:\ns = [ inputs |-> <<1, 2>>,\n  modes |-> <<\"queue\", \"queue\", \"queue\">>,\n  claimed |-> {1, 2},\n  interruptedAt |-> 1,\n  phase |-> \"running\",\n  requests |-> <<[inputs |-> <<1, 2>>, budget |-> FALSE]>>,\n  recovery |-> FALSE,\n  stopped |-> FALSE ]",
+      "module_sha256": "429f5d570ee06f9f1335441a871f291b7039ad8fe56c4bcfba999937d31959c4",
+      "config_sha256": "7b6df0d06bdf7e0303941b63fa0631b9125afec5d49a0548227f323e8d47f331",
+      "command": "java -XX:+UseParallelGC -Xmx2g -cp \"$TLA_JAR\" tlc2.TLC -workers 1 -metadir /tmp/LoopInputs-meta -dump /tmp/LoopInputs -config docs/design/examples/capability-models/LoopInputs.cfg docs/design/examples/capability-models/LoopInputs.tla"
+    },
+    {
+      "model": "BranchEligibility",
+      "description": "Explicit read can move below an earlier notified/read head while notification history remains",
+      "state": "State 736:\ns = [ role |-> \"tool\",\n  notice |-> FALSE,\n  head |-> 3,\n  opening |-> 1,\n  cut |-> 0,\n  cursor |-> 2,\n  reported |-> 3,\n  held |-> TRUE,\n  ended |-> FALSE,\n  turn |-> FALSE,\n  steered |-> FALSE,\n  ownEnd |-> FALSE,\n  pending |-> FALSE,\n  recovery |-> FALSE,\n  idle |-> 0,\n  blocks |-> <<[head |-> 3, opening |-> 1, cursor |-> 0]>>,\n  roster |-> {1, 2},\n  endedNotice |-> {},\n  externalEnds |-> {} ]",
+      "module_sha256": "2b1b2c67a4be11dd956b2cf0db8d8e85667bd1605c33e091fa8337d5b9a6d02e",
+      "config_sha256": "35e28b1e25c0c04729250ffd3eaad031bbf448fe93513ccb3a98eb29645ba369",
+      "command": "java -XX:+UseParallelGC -Xmx2g -cp \"$TLA_JAR\" tlc2.TLC -workers 1 -metadir /tmp/BranchEligibility-meta -dump /tmp/BranchEligibility -config docs/design/examples/capability-models/BranchEligibility.cfg docs/design/examples/capability-models/BranchEligibility.tla"
+    },
+    {
+      "model": "ModelStream",
+      "description": "Failure distinguishes partial arguments from a complete but unexecuted call",
+      "state": "State 357:\ns = [ started |-> <<<<1, 1>>, <<1, 2>>>>,\n  complete |-> {<<1, 1>>},\n  ended |-> {1},\n  closures |->\n      << << [key |-> <<1, 1>>, reason |-> \"notExecuted\"],\n            [key |-> <<1, 2>>, reason |-> \"incompleteArguments\"] >>,\n         <<>> >>,\n  outcome |-> <<\"failed\", \"none\">>,\n  usage |-> <<>>,\n  terminal |-> <<[request |-> 1, closed |-> {<<1, 1>>, <<1, 2>>}]>>,\n  executed |-> {} ]",
+      "module_sha256": "d8a4086183774c8948529c17da9e746474ca35eef80ca0fece462153de1353f1",
+      "config_sha256": "785ab5cbdccf737b63538c827161b37ab44041b6a7486be1b99d077ad4ae4a29",
+      "command": "java -XX:+UseParallelGC -Xmx2g -cp \"$TLA_JAR\" tlc2.TLC -workers 1 -metadir /tmp/ModelStream-meta -dump /tmp/ModelStream -config docs/design/examples/capability-models/ModelStream.cfg docs/design/examples/capability-models/ModelStream.tla"
+    },
+    {
+      "model": "ToolRetirement",
+      "description": "An old pinned request may run its old handler after registry replacement",
+      "state": "State 68:\ns = [ live |-> {2},\n  prefixPin |-> 0,\n  pins |-> <<1, 0>>,\n  configured |-> 1,\n  declared |-> <<1, 0>>,\n  results |-> <<\"handlerError\", \"none\">>,\n  ended |-> {},\n  attempted |-> {1},\n  ran |-> <<1, 0>>,\n  faceActive |-> TRUE,\n  faceReply |-> \"none\" ]",
+      "module_sha256": "c0e4b02a5e7b3940f40e15c74e1056a8ecc9082388cad0d591344eafe9f1839c",
+      "config_sha256": "96d5409f687d1f99c641ecf6aeb6e78a5249718f1ad3460b802c6bfd61cb13e9",
+      "command": "java -XX:+UseParallelGC -Xmx2g -cp \"$TLA_JAR\" tlc2.TLC -workers 1 -metadir /tmp/ToolRetirement-meta -dump /tmp/ToolRetirement -config docs/design/examples/capability-models/ToolRetirement.cfg docs/design/examples/capability-models/ToolRetirement.tla"
+    }
+  ],
+  "source_files": [
+    {
+      "path": "crates/dim-agent-capabilities/src/approval.rs",
+      "sha256": "cd54e855ff32aac4a40a460fd5ba05a8393e4ccde1667927f93f1821892f3513"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/input_queue.rs",
+      "sha256": "0e5aeb3cfa9054f560510f1f8c82f598577b0639e9f539b0eab7bcf8d130959c"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/agent_loop.rs",
+      "sha256": "51e7b0fa452a851de6eef96237bf8b0cde919e352723f7212935460a612f3940"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/tool_executor.rs",
+      "sha256": "d16b9c14dddd01d8e1b6be61fabfa32816d2ae04989b2116f5cfd31b0a089644"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/model_provider.rs",
+      "sha256": "c06fa72721990ce46a49a167722b65bfc3f61d4c93dab53c062043fbc07a9f01"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/output.rs",
+      "sha256": "56363cea85c3f72b76bd9a82b4f93122a480f77d1612f512f18da612890b8844"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/prompt.rs",
+      "sha256": "7c9190c85dc395c347f67aebc19e533d1efa3f818295b46a6b9332c262b48ffa"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/prompt/recovery.rs",
+      "sha256": "a03abe3f9bfb2ac681c700b5450e622b954835e69f15fed67c7282c952691a4b"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/context_preparation.rs",
+      "sha256": "f1adaa6e43af9f7d3e0a39c808700dd8a11195e3d5b3437a699a6a2ece8b2d8e"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/context_usage.rs",
+      "sha256": "be95d9ddc11bb1c689ece925a276772008fe7e6d0534f498fe307c17ad39ac4a"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/context_usage/sources.rs",
+      "sha256": "9b4fc15903b3619223a6ca3ebb3613b4288a267198ae54a167020d398bfcb3cd"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/context_usage/numeric.rs",
+      "sha256": "a49c77f659f1e464c23bd8cfc2da18003ef91e55375892a7cef2ce1fdcecd24d"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/permission.rs",
+      "sha256": "951156b04dc4b137fa67817fc09aad96fd9b8edd15930948ece79d6337b38204"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/tool_binding.rs",
+      "sha256": "9cb500e532e8bd2b8b0ad94b7c1b581405e0463696100c1d90a53c44a7ccd549"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/tool_registry.rs",
+      "sha256": "d369cdf459c7083f74e6d294a8fb28e04f45ed390d11c775ec3a9dec57d9c6de"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/workspace_tools/background.rs",
+      "sha256": "341eb8e0be94aae8a7d178d7f8c204a22fc54500d46b6b259828683fcc29c9ea"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/workspace_tools/exec.rs",
+      "sha256": "76a34e8f636caccd0f0185579b462fe913830a72d5a23d202967e6e85db97de2"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/shell_session.rs",
+      "sha256": "40d0d0ed77494a9e99842968c0e22474e38005bed10f700076163008c5df92d5"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/timeline_tree.rs",
+      "sha256": "ab61176379ccfcee7bfbd0b3f6317a0c971da6180f63acf2889a1aacfc2cd54e"
+    },
+    {
+      "path": "crates/dim-app-server/src/collaboration.rs",
+      "sha256": "a5850bda42b1c6cdd53fb03e88ade3f082a84e0bc8e36ad3fc9ad8a3f595af33"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/hooks/runner.rs",
+      "sha256": "3ffc0b8584524a4abfd41fb73666389b3f2eb29b1ebf2bf049cb0a665e8e45c4"
+    },
+    {
+      "path": "crates/dim-agent-capabilities/src/session_broadcast.rs",
+      "sha256": "91543ebae73ac14e23a99aa21cbe0475e42a39e173341ef41154b591cdadff6b"
+    },
+    {
+      "path": "crates/dim-agent-types/src/events.rs",
+      "sha256": "9f977e70ef41c801ab8ed7ae64d3784c1c36ee1ad810a77002f59608b133e234"
+    },
+    {
+      "path": "tests/integration/tests/local_execution.rs",
+      "sha256": "2f48ab984a61098cf199eed0bd59b0c411370396a6d24f904cb3126891510549"
+    },
+    {
+      "path": "crates/dim-app-server/src/collaboration/approvals.rs",
+      "sha256": "6998f8e32cae871c13caa142f37782df2726a2c6e9f11d2758e4740e6a984e95"
+    }
+  ]
+}

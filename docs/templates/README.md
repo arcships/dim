@@ -9,6 +9,10 @@ are in [AGENTS.md](../../AGENTS.md).
 | Feature or plugin design | [design.md](design.md) | [Web](../design/plugins/Web.md) |
 | Contract | [contract.md](contract.md) | [Session access](../design/contracts/session-access.md) |
 
+The [design guide](../design/capability-design-arguments.md) offers help with use, public promises and verification.
+The [detailed reference](../design/capability-design-reference.md) and [Wait example](../design/examples/wait-argument.md)
+are optional reasoning aids for specific questions; neither is a required template or migration target.
+
 Document type comes from the existing path; there is no manifest. Older examples still carry
 status lines from before ADR 008; do not copy those lines.
 

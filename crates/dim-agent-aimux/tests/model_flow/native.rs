@@ -78,7 +78,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
             .mount(&server)
             .await;
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         let connection = || {
             ModelConnection::Bedrock(BedrockModelConnection {
@@ -102,6 +102,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
                     },
                     MessagePart::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Base64,
                             media_type: "image/png".into(),
                             data: Some(IMAGE.into()),
@@ -318,6 +319,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
                     },
                     MessagePart::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Url,
                             media_type: "image/png".into(),
                             data: None,
@@ -416,7 +418,7 @@ async fn bedrock_unreadable_tool_delta_fails_the_turn_without_a_call() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut request = ModelRequest::new(
         "bedrock",
@@ -530,7 +532,7 @@ async fn bedrock_finishes_at_metadata_while_the_body_stays_open() {
             std::future::pending::<()>().await;
         });
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         let request = ModelRequest::new(
             "bedrock",
@@ -639,7 +641,7 @@ async fn xai_native_continuation_roundtrips_and_owner_releases_streams() {
             "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"visible\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
         .mount(&server).await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let connection = |protocol| {
         ModelConnection::Http(HttpModelConnection {
@@ -866,7 +868,7 @@ async fn xai_responses_content_parts_keep_their_blocks() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let request = ModelRequest::new("xai", "alias", vec![Message::text(Role::User, "start")]);
     let mut output = host
@@ -976,12 +978,11 @@ async fn explicit_preferences_reach_chat_and_responses_for_model_aliases() {
     ] {
         let server = NativeServer::start(kind).await;
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         for (tier, effort) in [
             (Some("priority"), Some("high")),
             (Some("flex"), Some("none")),
-            (Some("future-tier"), Some("low")),
             (None, None),
         ] {
             let mut request = ModelRequest::new(
@@ -1048,7 +1049,7 @@ async fn explicit_preferences_reach_chat_and_responses_for_model_aliases() {
 async fn codex_request_profile_is_isolated_to_responses() {
     let server = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let request = || {
         let mut request = ModelRequest::new(
@@ -1173,7 +1174,7 @@ async fn codex_request_profile_is_isolated_to_responses() {
 async fn openai_chat_protocols_send_reasoning_models_the_rules_they_accept() {
     let server = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiCompatible] {
         for model_id in ["gpt-4o", "gpt-5", "o3"] {
@@ -1447,7 +1448,7 @@ async fn malformed_native_block_lifecycle_is_a_classified_failure() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let server = MockServer::start().await;
     let text_start =
@@ -1553,7 +1554,7 @@ async fn chat_reasoning_can_reopen_a_completed_segment_identity() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut stream = host
         .0
@@ -1676,7 +1677,7 @@ async fn native_failures_carry_their_kind_and_a_safe_reason() {
     let responses = NativeServer::start("openai-responses").await;
     let anthropic = NativeServer::start("anthropic").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     let error = invoke_failure(
@@ -1821,7 +1822,7 @@ async fn native_failures_carry_their_kind_and_a_safe_reason() {
 async fn native_http_statuses_and_codes_classify() {
     let chat = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     for (prompt, status, kind) in [
@@ -1909,7 +1910,7 @@ async fn native_http_statuses_and_codes_classify() {
 async fn a_malformed_stream_body_is_a_malformed_response() {
     let chat = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     let error = invoke_failure(
@@ -1971,7 +1972,7 @@ async fn a_reset_after_headers_is_a_network_failure() {
     });
 
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let error = invoke_failure(
         &host,
@@ -2001,7 +2002,7 @@ async fn a_reset_after_headers_is_a_network_failure() {
 async fn a_stream_event_failure_with_an_unknown_code_is_not_retried() {
     let responses = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let error = invoke_failure(
         &host,
@@ -2157,11 +2158,9 @@ async fn respond_native(
             .unwrap();
     }
     let continuation = match endpoint.kind {
-        "openai-responses" => request["input"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["type"] == "function_call_output" || item["id"] == "refusal-1"),
+        "openai-responses" => request["input"].as_array().unwrap().iter().any(|item| {
+            item["type"] == "function_call_output" || item["content"] == "Cannot comply."
+        }),
         "gemini" => request["contents"]
             .as_array()
             .unwrap()
@@ -2376,6 +2375,7 @@ async fn respond_native(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
+    let reference = String::from("img:12c5f2d047c10416");
     tokio::time::timeout(Duration::from_secs(30), async {
         for kind in ["openai-chat","openai-responses","anthropic","gemini"] {
             let server = NativeServer::start(kind).await;
@@ -2384,15 +2384,17 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
             session.input(InputMessageData {
                 user: Some(UserInput { content: vec![
                     ContentBlock::Text { text: "tool".into() },
-                    ContentBlock::Image { source: ImageSource { source_type: ImageSourceType::Base64, media_type: "image/png".into(), data: Some(IMAGE.into()), url: None } },
+                    ContentBlock::Image { source: ImageSource {
+            file_id: None, source_type: ImageSourceType::Base64, media_type: "image/png".into(), data: Some(IMAGE.into()), url: None } },
                 ] }),
                 mode: Some(InputMode::Queue),
                 ..Default::default()
             }, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{kind}: {:?}", events.iter().filter_map(|e| if let EventKind::ModelOutputEnd(data)=&e.kind{Some(&data.outcome)}else{None}).collect::<Vec<_>>());
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{kind}: {:?}", events.iter().filter_map(|e| if let EventKind::ModelOutputEnd(data)=&e.kind{Some(&data.outcome)}else{None}).collect::<Vec<_>>());
             assert!(events.iter().any(|e| matches!(&e.kind, EventKind::Text(data) if data.delta=="finished")));
+            assert!(serde_json::to_string(&events).unwrap().contains(IMAGE), "{kind}: history keeps the image source");
             let requests = server.endpoint.requests.lock().unwrap().clone();
             assert_eq!(requests.len(),2,"{kind}");
             for (uri,headers,request) in &requests {
@@ -2402,16 +2404,18 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
                 assert_eq!(headers.get_all(header).iter().count(),1);
                 assert_eq!(headers.get_all("content-type").iter().count(),1,"{kind}");
                 assert!(!request.to_string().contains("native-secret"));
+                assert!(request.to_string().contains(&reference), "{kind}: {request}");
+                assert!(!request.to_string().contains(IMAGE), "{kind}: {request}");
                 if kind != "anthropic" {
                     assert!(!request.to_string().contains("cache_control"), "{kind}: {request}");
                 }
             }
             let first = &requests[0].2;
             match kind {
-                "anthropic" => assert_eq!(first["messages"].as_array().unwrap().iter().find(|message| message["role"]=="user").unwrap()["content"][1],json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":IMAGE},"cache_control":{"type":"ephemeral"}})),
-                "gemini" => assert_eq!(*first["contents"].as_array().unwrap().iter().flat_map(|message| message["parts"].as_array().unwrap()).find(|part|part.get("inlineData").is_some()).unwrap(),json!({"inlineData":{"mimeType":"image/png","data":IMAGE}})),
-                "openai-responses" => assert_eq!(first["input"].as_array().unwrap().iter().find(|message| message["role"]=="user").unwrap()["content"][1],json!({"type":"input_image","image_url":format!("data:image/png;base64,{IMAGE}")})),
-                _ => assert_eq!(first["messages"].as_array().unwrap().iter().find(|message| message["role"]=="user").unwrap()["content"][1],json!({"type":"image_url","image_url":{"url":format!("data:image/png;base64,{IMAGE}")}})),
+                "anthropic" => assert_eq!(first["messages"].as_array().unwrap().iter().find(|message| message["role"]=="user").unwrap()["content"][1],json!({"type":"text","text":reference,"cache_control":{"type":"ephemeral"}})),
+                "gemini" => assert!(first["contents"].as_array().unwrap().iter().flat_map(|message| message["parts"].as_array().unwrap()).any(|part|part["text"]==reference)),
+                "openai-responses" => assert!(first["input"].as_array().unwrap().iter().find(|message| message["role"]=="user").unwrap()["content"].to_string().contains(&reference)),
+                _ => assert!(first["messages"].as_array().unwrap().iter().find(|message| message["role"]=="user").unwrap()["content"].to_string().contains(&reference)),
             }
             let next = &requests[1].2;
             match kind {
@@ -2439,11 +2443,19 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
                     assert_eq!(reasoning["encrypted_content"],"encrypted-final");
                     assert_eq!(reasoning["summary"],json!([{"type":"summary_text","text":"first thought"},{"type":"summary_text","text":"second thought"}]));
                     assert_eq!(input.iter().filter(|item|item["id"]=="rs-1").count(),1);
-                    let message=input.iter().find(|item|item["id"]=="msg-1").unwrap();
-                    assert_eq!(message["phase"],"commentary");
-                    assert_eq!(message["content"],json!([{"type":"output_text","text":"before"},{"type":"output_text","text":"after"}]));
-                    assert_eq!(input.iter().find(|item|item["type"]=="function_call").unwrap()["id"],"fc-1");
-                    assert_eq!(input.iter().filter(|item|item["type"]=="function_call").map(|item|item["id"].as_str().unwrap()).collect::<Vec<_>>(),vec!["fc-1","fc-2"]);
+                    // Without `store`, each text part replays as its own message item,
+                    // with its text as a string and no item id.
+                    let messages:Vec<_>=input.iter().filter(|item|item["role"]=="assistant").collect();
+                    assert_eq!(messages.len(),2);
+                    assert_eq!(messages[0]["content"],"before");
+                    assert_eq!(messages[0]["phase"],"commentary");
+                    assert_eq!(messages[1]["content"],"after");
+                    assert!(messages.iter().all(|item|item.get("id").is_none()),"{messages:?}");
+                    let calls:Vec<_>=input.iter().filter(|item|item["type"]=="function_call").collect();
+                    assert_eq!(calls.len(),2);
+                    assert!(calls.iter().all(|item|item.get("id").is_none()),"{calls:?}");
+                    assert_eq!(calls[0]["call_id"],"call-1");
+                    assert_eq!(calls[1]["call_id"],"call-2");
                     assert_eq!(next["store"],false);
                     assert!(next["include"].as_array().unwrap().contains(&json!("reasoning.encrypted_content")));
                 }
@@ -2653,7 +2665,11 @@ async fn explicit_system_breakpoints_stay_within_the_four_breakpoint_limit() {
                 .unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
-            let last = &events.last().unwrap().kind;
+            let last = &events
+                .iter()
+                .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind;
             if breaks < 5 {
                 assert!(
                     matches!(
@@ -2775,7 +2791,11 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(
                 matches!(
-                    events.last().unwrap().kind,
+                    events
+                        .iter()
+                        .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                        .unwrap()
+                        .kind,
                     EventKind::TurnEnd(TurnEndData {
                         outcome: TurnOutcome::Completed { .. },
                         ..
@@ -2948,7 +2968,7 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
                 .mount(&server)
                 .await;
             let root = rutis::Ctx::root().unwrap();
-            root.plugin(AimuxPlugin).await.unwrap();
+            root.plugin(AimuxPlugin::default()).await.unwrap();
             let host = root.get::<ModelHost>().unwrap();
             let request = Arc::new(ModelRequest::new(
                 "local",
@@ -3034,7 +3054,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
             // The reply completes and commits its complete content.
-            assert!(matches!(events.last().unwrap().kind,EventKind::TurnEnd(TurnEndData{outcome:TurnOutcome::Completed{..},..})),"{kind}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,EventKind::TurnEnd(TurnEndData{outcome:TurnOutcome::Completed{..},..})),"{kind}");
             assert!(events.iter().any(|event|matches!(&event.kind,EventKind::ModelContent(_))),"{kind}");
             if kind == "anthropic" {
                 let host = agent.root().get::<ModelHost>().unwrap();
@@ -3078,8 +3098,17 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             assert!(!events.iter().any(|event| matches!(event.kind, EventKind::ToolUse(_))), "{kind}: {prompt}");
             assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ModelOutputEnd(data) if matches!(data.outcome, ModelOutputOutcome::Failed { .. }))), "{kind}: {prompt}");
             assert!(!events.iter().any(|event| matches!(&event.kind, EventKind::ModelContent(_) | EventKind::ToolCall(_) | EventKind::ModelUsage(_)) || matches!(&event.kind, EventKind::ToolResult(data) if data.call_event_id.is_some())), "{kind}: {prompt}");
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { .. }, .. })), "{kind}: {prompt}");
-            assert_eq!(server.endpoint.requests.lock().unwrap().len(), 1);
+            // The failed reply announced a call and ran none of it, so the
+            // turn takes its one continuation. The fixture cuts every request
+            // that carries the prompt, so that request fails the same way and
+            // the turn ends on its outcome; what the case pins is the extra
+            // request and that neither one dispatched the announced call.
+            assert_eq!(server.endpoint.requests.lock().unwrap().len(), 2, "{kind}: {prompt}: the cut request and its continuation");
+            let terminals: Vec<_> = events.iter().filter_map(|event| match &event.kind { EventKind::ModelOutputEnd(data) => Some(&data.outcome), _ => None }).collect();
+            assert_eq!(terminals.len(), 2, "{kind}: {prompt}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { ref error }, .. }) if matches!(&terminals[1], ModelOutputOutcome::Failed { error: last, .. } if last == error)),
+                "{kind}: {prompt}");
             agent.close().await.unwrap();
             server.close().await;
         }
@@ -3092,14 +3121,15 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             let events = chain_events(&session, "main", ..).await.unwrap();
             let visible: String = events.iter().filter_map(|event| match &event.kind { EventKind::Text(data) => Some(data.delta.as_str()), _ => None }).collect();
             assert_eq!(visible, "Cannot comply.");
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
             session.submit("follow-up".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let requests = server.endpoint.requests.lock().unwrap().clone();
             assert_eq!(requests.len(), 2);
-            let replay = requests[1].2["input"].as_array().unwrap().iter().find(|item| item["id"] == "refusal-1").unwrap();
-            assert_eq!(replay["content"], json!([{"type":"output_text","text":"Cannot comply."}]));
+            let replay = requests[1].2["input"].as_array().unwrap().iter().find(|item| item["content"] == "Cannot comply.").unwrap();
+            assert_eq!(replay["role"], "assistant");
             assert_eq!(replay["phase"], "final_answer");
+            assert!(replay.get("id").is_none(), "{replay}");
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(events.iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta == "finished")));
             agent.close().await.unwrap();
@@ -3112,7 +3142,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             session.submit(prompt.into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
-            assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{prompt}");
+            assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })), "{prompt}");
             let requests = server.endpoint.requests.lock().unwrap().clone();
             assert_eq!(requests.len(), 2);
             let model = requests[1].2["contents"].as_array().unwrap().iter().find(|item| item["role"] == "model").unwrap();
@@ -3204,30 +3234,32 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(
             matches!(
-                events.last().unwrap().kind,
+                events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
                 })
             ),
             "{:?}",
-            events.last().unwrap().kind
+            events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind
         );
         assert_eq!(claude.endpoint.requests.lock().unwrap().len(), 2);
         let selection = |provider_id: &str| {
             let provider_id = provider_id.to_owned();
             let host = agent.root().get::<ModelSelectionHost>().unwrap();
             async move {
-                host.0
-                    .resolve(
+                host.resolve(
+                    ModelSelectionRequest::at(
                         Some(ModelId {
                             provider_id,
                             model_id: "test-model".into(),
                         }),
                         None,
-                        CancellationToken::new(),
                     )
-                    .await
+                    .unwrap(),
+                    CancellationToken::new(),
+                )
+                .await
                     .unwrap()
             }
         };
@@ -3252,14 +3284,14 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(
             matches!(
-                events.last().unwrap().kind,
+                events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
                 })
             ),
             "{:?}",
-            events.last().unwrap().kind
+            events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind
         );
         let requests = chat.endpoint.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 1);
@@ -3288,14 +3320,14 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(
             matches!(
-                events.last().unwrap().kind,
+                events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
                 EventKind::TurnEnd(TurnEndData {
                     outcome: TurnOutcome::Completed { .. },
                     ..
                 })
             ),
             "{:?}",
-            events.last().unwrap().kind
+            events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind
         );
         let requests = claude.endpoint.requests.lock().unwrap().clone();
         assert_eq!(requests.len(), 3);
@@ -3350,7 +3382,7 @@ async fn native_bedrock_leaves_stored_chat_thinking_out_of_the_turn() {
             .mount(&server)
             .await;
         let root = rutis::Ctx::root().unwrap();
-        root.plugin(AimuxPlugin).await.unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
         let host = root.get::<ModelHost>().unwrap();
         // The history a Chat model leaves behind: thinking without data.
         let request = ModelRequest::new(
@@ -3439,9 +3471,28 @@ impl ToolDriver for ImageEcho {
                     },
                     ContentBlock::Image {
                         source: ImageSource {
+                            file_id: None,
                             source_type: ImageSourceType::Base64,
                             media_type: "image/png".into(),
                             data: Some(IMAGE.into()),
+                            url: None,
+                        },
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource {
+                            file_id: None,
+                            source_type: ImageSourceType::Url,
+                            media_type: "image/png".into(),
+                            data: None,
+                            url: Some("https://example.invalid/image.png".into()),
+                        },
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource {
+                            file_id: None,
+                            source_type: ImageSourceType::Base64,
+                            media_type: "image/png".into(),
+                            data: Some("invalid-base64".into()),
                             url: None,
                         },
                     },
@@ -3458,7 +3509,6 @@ impl ToolDriver for ImageEcho {
 }
 
 const TOOL_IMAGE_MARKER: &str = "[Image: sent in the following user message as tool output.]";
-const TOOL_IMAGE_LABEL: &str = "Tool output from tool call";
 
 fn tool_result_events(events: &[Arc<AgentEvent>]) -> Vec<&ToolContent> {
     events
@@ -3471,7 +3521,8 @@ fn tool_result_events(events: &[Arc<AgentEvent>]) -> Vec<&ToolContent> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_result_images_take_the_form_its_protocol_defines() {
+async fn tool_result_images_become_references_in_every_native_protocol() {
+    let reference = String::from("img:12c5f2d047c10416");
     tokio::time::timeout(Duration::from_secs(30), async {
         for kind in ["openai-chat", "openai-responses", "anthropic", "gemini"] {
             let server = NativeServer::start(kind).await;
@@ -3482,7 +3533,7 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(
-                matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+                matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
                 "{kind}: {:?}",
                 events.iter().filter_map(|event| match &event.kind { EventKind::ModelOutputEnd(data) => Some(&data.outcome), _ => None }).collect::<Vec<_>>()
             );
@@ -3495,6 +3546,9 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
             let requests = server.endpoint.requests.lock().unwrap().clone();
             assert_eq!(requests.len(), 2, "{kind}");
             let next = &requests[1].2;
+            assert!(!next.to_string().contains(IMAGE), "{kind}: {next}");
+            assert!(!next.to_string().contains(TOOL_IMAGE_MARKER), "{kind}: references need no image follow-up");
+            let omitted = "[Image omitted: the image cannot be sent to this model.]";
             match kind {
                 "anthropic" => {
                     let result = next["messages"]
@@ -3506,13 +3560,9 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
                         .unwrap();
                     assert_eq!(
                         result["content"],
-                        json!([
-                            {"type":"text","text":"result text"},
-                            {"type":"image","source":{"type":"base64","media_type":"image/png","data":IMAGE}},
-                        ]),
+                        format!("result text{reference}{omitted}{omitted}"),
                         "{kind}"
                     );
-                    assert!(!next.to_string().contains(TOOL_IMAGE_MARKER), "{kind}: no marker when the protocol carries the image inside");
                 }
                 "gemini" => {
                     let contents = next["contents"].as_array().unwrap();
@@ -3521,40 +3571,29 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
                         .flat_map(|content| content["parts"].as_array().into_iter().flatten())
                         .find(|part| part.get("functionResponse").is_some())
                         .unwrap();
-                    assert!(
-                        response["functionResponse"]["response"]["content"].as_str().unwrap().contains(TOOL_IMAGE_MARKER),
-                        "{kind}: {response}"
-                    );
-                    let user = contents.last().unwrap();
-                    assert_eq!(user["role"], "user", "{kind}");
-                    let parts = user["parts"].as_array().unwrap();
-                    assert!(parts[0]["text"].as_str().unwrap().starts_with(TOOL_IMAGE_LABEL), "{kind}: {}", parts[0]);
-                    assert_eq!(parts[1], json!({"inlineData":{"mimeType":"image/png","data":IMAGE}}), "{kind}");
+                    let content = response["functionResponse"]["response"]["content"].as_str().unwrap();
+                    assert!(content.contains("result text") && content.contains(&reference), "{kind}: {response}");
+                    assert_eq!(content.matches(omitted).count(), 2, "{kind}: {response}");
                 }
                 "openai-responses" => {
                     let input = next["input"].as_array().unwrap();
                     let output = input.iter().find(|item| item["type"] == "function_call_output").unwrap();
-                    assert!(output["output"].as_str().unwrap().contains(TOOL_IMAGE_MARKER), "{kind}: {output}");
-                    let user = input.iter().rev().find(|item| item["role"] == "user").unwrap();
-                    let parts = user["content"].as_array().unwrap();
-                    assert!(parts[0]["text"].as_str().unwrap().starts_with(TOOL_IMAGE_LABEL), "{kind}: {}", parts[0]);
-                    assert_eq!(parts[1], json!({"type":"input_image","image_url":format!("data:image/png;base64,{IMAGE}")}), "{kind}");
+                    let content = output["output"].as_str().unwrap();
+                    assert!(content.contains("result text") && content.contains(&reference), "{kind}: {output}");
+                    assert_eq!(content.matches(omitted).count(), 2, "{kind}: {output}");
                 }
                 _ => {
                     let messages = next["messages"].as_array().unwrap();
                     let tool = messages.iter().find(|message| message["role"] == "tool").unwrap();
-                    assert!(tool["content"].as_str().unwrap().contains(TOOL_IMAGE_MARKER), "{kind}: {tool}");
-                    let user = messages.last().unwrap();
-                    assert_eq!(user["role"], "user", "{kind}");
-                    let parts = user["content"].as_array().unwrap();
-                    assert_eq!(parts[0]["text"], format!("{TOOL_IMAGE_LABEL} call-1: the image after this text is that call's result."), "{kind}");
-                    assert_eq!(parts[1], json!({"type":"image_url","image_url":{"url":format!("data:image/png;base64,{IMAGE}")}}), "{kind}");
+                    let content = tool["content"].as_str().unwrap();
+                    assert!(content.contains("result text") && content.contains(&reference), "{kind}: {tool}");
+                    assert_eq!(content.matches(omitted).count(), 2, "{kind}: {tool}");
                 }
             }
             session.submit("another".into(), InputMode::Queue, "main").await.unwrap();
             session.idle("main").await.unwrap();
             assert!(
-                matches!(chain_events(&session, "main", ..).await.unwrap().last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+                matches!(chain_events(&session, "main", ..).await.unwrap().iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
                 "{kind}: a later turn also completes"
             );
             agent.close().await.unwrap();
@@ -3564,7 +3603,8 @@ async fn tool_result_images_take_the_form_its_protocol_defines() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_model_without_image_input_gets_the_placeholder_in_a_tool_result() {
+async fn a_model_without_image_input_gets_references_and_unreferenceable_image_placeholders() {
+    let reference = String::from("img:12c5f2d047c10416");
     tokio::time::timeout(Duration::from_secs(30), async {
         let server = NativeServer::start("openai-chat").await;
         let models = server.models();
@@ -3583,7 +3623,7 @@ async fn a_model_without_image_input_gets_the_placeholder_in_a_tool_result() {
         session.submit("call the tool".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
-        assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+        assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
         for content in tool_result_events(&events) {
             assert!(
                 matches!(content, ToolContent::Blocks(blocks) if blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. }))),
@@ -3594,10 +3634,10 @@ async fn a_model_without_image_input_gets_the_placeholder_in_a_tool_result() {
         assert_eq!(requests.len(), 2);
         let next = &requests[1].2;
         let tool = next["messages"].as_array().unwrap().iter().find(|message| message["role"] == "tool").unwrap();
-        assert!(
-            tool["content"].as_str().unwrap().contains("[Image omitted: the current model does not accept images.]"),
-            "{tool}"
-        );
+        let content = tool["content"].as_str().unwrap();
+        assert!(content.contains("result text") && content.contains(&reference), "{tool}");
+        assert_eq!(content.matches("[Image omitted: the current model does not accept images.]").count(), 2, "{tool}");
+        assert!(!next.to_string().contains(IMAGE), "{next}");
         assert!(!next.to_string().contains("image_url") && !next.to_string().contains("data:image"), "no image in the wire body: {next}");
         agent.close().await.unwrap();
         server.close().await;
@@ -3634,6 +3674,7 @@ fn error_tool_result_request() -> ModelRequest {
                         },
                         ContentBlock::Image {
                             source: ImageSource {
+                                file_id: None,
                                 source_type: ImageSourceType::Base64,
                                 media_type: "image/png".into(),
                                 data: Some(IMAGE.into()),
@@ -3659,7 +3700,7 @@ async fn an_error_tool_result_image_keeps_the_flag_and_the_image() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
 
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     let server = MockServer::start().await;
@@ -3803,7 +3844,7 @@ async fn a_native_stream_without_its_terminal_is_classified_and_not_retried() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let failure =
         invoke_failure(&host, ModelProtocol::Anthropic, server.uri(), "no-terminal").await;
@@ -3889,7 +3930,7 @@ async fn a_stored_summary_index_loads_and_continues() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let request = ModelRequest::new(
         "local",
@@ -3961,7 +4002,7 @@ async fn an_xai_chat_request_uses_the_compatible_chat_path() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut request = ModelRequest::new(
         "xai",
@@ -4024,7 +4065,7 @@ async fn an_alias_with_explicit_reasoning_and_temperature_is_unsupported() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut request = ModelRequest::new("local", "alias", vec![Message::text(Role::User, "hello")]);
     request.config = Some(
@@ -4068,8 +4109,7 @@ async fn an_alias_with_explicit_reasoning_and_temperature_is_unsupported() {
     root.shutdown().await.unwrap();
 }
 
-/// A Chat refusal delta becomes visible text (vendored patch for
-/// arcships/aimux#461).
+/// A Chat refusal delta becomes visible text (arcships/aimux#461).
 #[tokio::test]
 async fn chat_refusal_delta_is_visible_text() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
@@ -4087,7 +4127,7 @@ async fn chat_refusal_delta_is_visible_text() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut stream = host
         .0
@@ -4124,8 +4164,7 @@ async fn chat_refusal_delta_is_visible_text() {
     root.shutdown().await.unwrap();
 }
 
-/// A Responses refusal reaches the reply as visible text (vendored patch for
-/// arcships/aimux#466).
+/// A Responses refusal reaches the reply as visible text (arcships/aimux#466).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn responses_refusal_deltas_are_visible_text() {
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
@@ -4150,7 +4189,7 @@ async fn responses_refusal_deltas_are_visible_text() {
         .mount(&server)
         .await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
     let mut stream = host
         .0
@@ -4184,7 +4223,7 @@ async fn responses_refusal_deltas_are_visible_text() {
 }
 
 /// Signed Gemini text parts keep their own blocks, and text closes before a
-/// function call (vendored patch for arcships/aimux#467).
+/// function call (arcships/aimux#467).
 #[tokio::test]
 async fn gemini_signed_text_parts_keep_their_blocks() {
     use aimux_core::language_model::LanguageModel;
@@ -4254,7 +4293,7 @@ async fn gemini_signed_text_parts_keep_their_blocks() {
 /// text in unsigned chunks and the `thoughtSignature` in a last, empty chunk,
 /// so that signature belongs to the text before it and is replayed with it.
 /// The streams are `fixtures/google-text.chunks.txt` and
-/// `fixtures/google-reasoning.chunks.txt` under `vendor/aimux`; the tag's
+/// `fixtures/google-reasoning.chunks.txt` in the `aimux-providers` package; the
 /// tests at `aimux-providers/src/google/tests/language_model.rs:4429` and
 /// `:4546` stream them and snapshot the result.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4327,7 +4366,11 @@ async fn gemini_signature_after_unsigned_text_signs_that_text_and_replays() {
     let events = chain_events(&session, "main", ..).await.unwrap();
     assert!(
         matches!(
-            events.last().unwrap().kind,
+            events
+                .iter()
+                .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData {
                 outcome: TurnOutcome::Completed { .. },
                 ..
@@ -4383,7 +4426,7 @@ async fn gemini_signature_after_unsigned_text_signs_that_text_and_replays() {
 }
 
 /// Responses text blocks split by content part, and a function call keeps its
-/// item id (vendored patch for arcships/aimux#468).
+/// item id (arcships/aimux#468).
 #[tokio::test]
 async fn responses_output_text_parts_and_function_call_ids_are_kept() {
     use aimux_core::language_model::LanguageModel;
@@ -4454,7 +4497,7 @@ async fn responses_output_text_parts_and_function_call_ids_are_kept() {
 }
 
 /// A Gemini terminal chunk finishes the stream while the HTTP body stays open
-/// (vendored patch for arcships/aimux#469).
+/// (arcships/aimux#469).
 #[tokio::test]
 async fn gemini_terminal_chunk_finishes_while_the_body_stays_open() {
     use aimux_core::language_model::LanguageModel;
@@ -4602,7 +4645,7 @@ async fn a_connection_reuses_one_tcp_connection_for_its_query_and_timeout() {
         .unwrap();
     let proxy = CountingProxy::start(target).await;
     let root = rutis::Ctx::root().unwrap();
-    root.plugin(AimuxPlugin).await.unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
     let host = root.get::<ModelHost>().unwrap();
 
     for _ in 0..2 {

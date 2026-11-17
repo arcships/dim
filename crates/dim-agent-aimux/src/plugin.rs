@@ -7,26 +7,43 @@ use rutis::{Ctx, Plugin};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// Process-owned request execution; no catalog or Session dependencies.
-pub struct AimuxPlugin;
-impl Plugin for AimuxPlugin {
-    type Deps = ();
+/// Process-owned request execution; configured file references gate on their owner.
+#[derive(Default)]
+pub struct AimuxPlugin {
+    files: Option<Key<SessionFiles>>,
+}
+impl AimuxPlugin {
+    pub fn with_files(files: Key<SessionFiles>) -> Self {
+        Self { files: Some(files) }
+    }
+}
+impl DynPlugin for AimuxPlugin {
     fn name(&self) -> &str {
         "Aimux"
     }
-    async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        let driver = AimuxDriver::new(ctx.cancellation_token())
-            .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
-        let owned = driver.clone();
-        if let Err(error) = ctx.effect(move || async move {
-            owned.close().await;
-            Ok(())
-        }) {
-            driver.close().await;
-            return Err(error);
-        }
-        ctx.provide(ModelHost(driver))?;
-        Ok(())
+    fn injects(&self) -> Vec<TypeKey> {
+        self.files.iter().map(Key::erase).collect()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let files = self
+                .files
+                .as_ref()
+                .map(|key| ctx.require_at(key))
+                .transpose()?;
+            let driver = AimuxDriver::with_files(ctx.cancellation_token(), files)
+                .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
+            let owned = driver.clone();
+            if let Err(error) = ctx.effect(move || async move {
+                owned.close().await;
+                Ok(())
+            }) {
+                driver.close().await;
+                return Err(error);
+            }
+            ctx.provide(ModelHost(driver))?;
+            Ok(Effect::Done)
+        })
     }
 }
 
@@ -47,11 +64,27 @@ impl Plugin for ConfiguredModelsPlugin {
             generation: ctx.cancellation_token(),
         });
         ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
-        ctx.provide(ModelSelectionHost(resolver.clone()))?;
+        let selection = resolver.clone();
+        dim_agent_capabilities::host::provide_model_selection(
+            ctx,
+            &ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
+                selection.resolve(explicit, cwd, cancel)
+            })),
+        )?;
         ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-        ctx.provide(SelectableModelsHost(Arc::new(ConfiguredSelectable {
+        let selectable = ConfiguredSelectable {
             models: self.0.clone(),
-        })))?;
+        };
+        let modalities = ConfiguredSelectable {
+            models: self.0.clone(),
+        };
+        dim_agent_capabilities::host::provide_selectable_models(
+            ctx,
+            &SelectableModelsHost::new(
+                Arc::new(move |cancel| selectable.selectable(cancel)),
+                Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
+            ),
+        )?;
         let auxiliary = Arc::new(crate::auxiliary::ConfiguredAuxiliary {
             models: self.0.clone(),
             connection: resolver,
@@ -66,22 +99,23 @@ impl Plugin for ConfiguredModelsPlugin {
 struct ConfiguredSelectable {
     models: Arc<AimuxModels>,
 }
-impl SelectableModels for ConfiguredSelectable {
+impl ConfiguredSelectable {
     fn selectable(
         &self,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<dim_agent_types::ModelCapabilitySnapshot>> {
+    ) -> HostFuture<'static, Vec<dim_agent_types::ModelCapabilitySnapshot>> {
+        let models = self.models.selectable();
         Box::pin(async move {
             if cancel.is_cancelled() {
                 return Err(HostError::Cancelled("selectable models cancelled".into()));
             }
-            Ok(self.models.selectable())
+            Ok(models)
         })
     }
     fn selectable_for_modality(
         &self,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<dim_agent_types::ModalityModelSnapshot>> {
+    ) -> HostFuture<'static, Vec<dim_agent_types::ModalityModelSnapshot>> {
         Box::pin(async move {
             if cancel.is_cancelled() {
                 return Err(HostError::Cancelled(
@@ -99,15 +133,17 @@ struct ConfiguredConnection {
     models: Arc<AimuxModels>,
     generation: CancellationToken,
 }
-impl ResolveModelSelection for ConfiguredConnection {
+impl ConfiguredConnection {
     fn resolve(
         &self,
         explicit: Option<dim_agent_types::ModelId>,
         _: Option<std::path::PathBuf>,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, dim_agent_types::ModelSelection> {
+    ) -> HostFuture<'static, dim_agent_types::ModelSelection> {
+        let models = self.models.clone();
+        let generation = self.generation.clone();
         Box::pin(async move {
-            if self.generation.is_cancelled() {
+            if generation.is_cancelled() {
                 return Err(HostError::classified(
                     HostErrorKind::OwnerClosed,
                     "Model catalog owner is closed",
@@ -116,8 +152,8 @@ impl ResolveModelSelection for ConfiguredConnection {
             if cancel.is_cancelled() {
                 return Err(HostError::Cancelled("Model selection cancelled".into()));
             }
-            let id = explicit.unwrap_or_else(|| self.models.default_model().clone());
-            let model = self.models.get(&id.provider_id, &id.model_id)?;
+            let id = explicit.unwrap_or_else(|| models.default_model().clone());
+            let model = models.get(&id.provider_id, &id.model_id)?;
             // Record the protocol beside the adopted configuration, in the
             // same metadata member Provider records it, so the existing reads
             // derive the preferences the configuration sends.
@@ -175,7 +211,7 @@ impl ResolveModelConnection for ConfiguredConnection {
                             "Invalid credential header",
                         )
                     })?;
-                    Ok(key)
+                    Ok::<String, HostError>(key)
                 })
                 .transpose()?;
             Ok(ResolvedModelConnection {

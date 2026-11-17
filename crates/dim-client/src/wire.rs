@@ -1,4 +1,4 @@
-//! Public RPC v3 product-event and progress boundary types.
+//! Public RPC product-event and progress boundary types.
 //!
 //! These are decoded once at the boundary and handed to the projection and
 //! the scrollback printer as plain values. Nothing else parses these shapes.
@@ -14,7 +14,35 @@ pub struct Event {
     pub sequence: u64,
     /// Unix milliseconds the runtime wrote the event at.
     pub create_at: u64,
+    /// v4 only: the outer call of a child tool batch.
+    pub parent_call_id: Option<String>,
     pub content: EventContent,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventNotice {
+    pub session_id: String,
+    pub branch_id: String,
+    pub event: Event,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayNotice {
+    pub session_id: String,
+    pub branch_id: String,
+    pub item: Event,
+}
+
+impl From<DisplayNotice> for EventNotice {
+    fn from(notice: DisplayNotice) -> Self {
+        Self {
+            session_id: notice.session_id,
+            branch_id: notice.branch_id,
+            event: notice.item,
+        }
+    }
 }
 #[derive(Clone, Deserialize)]
 pub struct Configuration {
@@ -71,6 +99,7 @@ pub enum EventContent {
     ToolStart(ToolStartData),
     CompactionStart(ContextCompactionStartData),
     Compaction(ContextCompactionData),
+    CompactionSummary(CompactionSummary),
     Other,
 }
 
@@ -84,6 +113,8 @@ impl<'de> Deserialize<'de> for Event {
             id: String,
             sequence: u64,
             create_at: u64,
+            #[serde(default)]
+            parent_call_id: Option<String>,
             r#type: String,
             name: String,
             data: serde_json::Value,
@@ -95,6 +126,9 @@ impl<'de> Deserialize<'de> for Event {
             ));
         }
         let content = match (wire.r#type.as_str(), wire.name.as_str()) {
+            ("display", "compaction") => EventContent::CompactionSummary(
+                serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
+            ),
             ("branch", "create") => EventContent::BranchCreate(
                 serde_json::from_value(wire.data).map_err(serde::de::Error::custom)?,
             ),
@@ -200,6 +234,7 @@ impl<'de> Deserialize<'de> for Event {
             id: wire.id,
             sequence: wire.sequence,
             create_at: wire.create_at,
+            parent_call_id: wire.parent_call_id,
             content,
         })
     }
@@ -217,6 +252,9 @@ pub struct Progress {
     /// `thinking_offset` characters of the request's `step/thinking` deltas.
     pub thinking: String,
     pub thinking_offset: u64,
+    /// Unix milliseconds at which the open thinking block started; present
+    /// while a thinking block is open.
+    pub thinking_started_at: Option<u64>,
     /// The retry this request is waiting to make, while it sleeps.
     pub retry: Option<RetryProgress>,
 }
@@ -280,6 +318,39 @@ pub struct HistoryWindow {
     pub through: u64,
     pub next_before: Option<u64>,
     next_after: u64,
+}
+
+/// A display page contains complete product events or explicit display summaries.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisplayPage {
+    pub items: Vec<Value>,
+    pub through: u64,
+    pub next_before: Option<u64>,
+    next_after: u64,
+    done: bool,
+}
+
+impl From<DisplayPage> for HistoryWindow {
+    fn from(page: DisplayPage) -> Self {
+        Self {
+            events: page.items,
+            through: page.through,
+            next_before: page.next_before,
+            next_after: page.next_after,
+        }
+    }
+}
+
+impl From<DisplayPage> for History {
+    fn from(page: DisplayPage) -> Self {
+        Self {
+            events: page.items,
+            through: page.through,
+            next_after: page.next_after,
+            done: page.done,
+        }
+    }
 }
 
 impl HistoryWindow {
@@ -376,11 +447,27 @@ pub struct PendingDelegations {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FinishedTasks {
+    pub branch_id: String,
+    pub through: u64,
+    pub tasks: Vec<dim_agent_types::FinishedExec>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinishedDelegations {
+    pub branch_id: String,
+    pub through: u64,
+    pub requests: Vec<dim_agent_types::FinishedDelegation>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TurnRead {
     pub branch_id: String,
     pub through: u64,
     pub turn: Option<TurnBoundary>,
     pub output: Option<dim_agent_types::ActiveOutput>,
+    #[serde(default)]
+    pub input_deleted: bool,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -388,6 +475,8 @@ pub struct TurnBoundary {
     pub turn_id: String,
     pub sequence: u64,
     pub ended: bool,
+    #[serde(default)]
+    pub outcome: Option<dim_agent_types::TurnOutcome>,
 }
 
 #[derive(Deserialize)]

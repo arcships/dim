@@ -6,6 +6,891 @@ use dim_agent_runtime::{
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
 
+#[tokio::test]
+async fn position_projection_returns_inline_and_packed_coordinates_without_a_second_body_query() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let records = vec![
+        record(
+            1,
+            EventKind::Extension(
+                ExtensionEvent::new(
+                    "summary",
+                    "saved",
+                    json!({"payload": "x".repeat(64 * 1024)}),
+                )
+                .unwrap(),
+            ),
+        ),
+        text(2, "first"),
+        text(3, "second"),
+    ];
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let query = fields(&["position", "position.sequence", "position.branch_id"]);
+    parity(&store, &memory, &scope(3), &query).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(3), &query, Some(&page(3)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+        panic!("position rows")
+    };
+    assert_eq!(rows.len(), 3);
+    assert!(
+        store
+            .take_query_statistics()
+            .iter()
+            .all(|statement| statement.stage != "selected_properties")
+    );
+    let mut selected = fields(&[]);
+    selected.select = QuerySelect::Events;
+    selected.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "position.sequence".into(),
+        },
+        values: vec![json!(3), json!(1), json!(3)],
+    });
+    parity(&store, &memory, &scope(3), &selected).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(3), &selected, Some(&page(3)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Events { events } = result.result else {
+        panic!("point events")
+    };
+    assert_eq!(
+        events
+            .iter()
+            .map(|row| row.position.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    let statistics = store.take_query_statistics();
+    assert_eq!(
+        statistics
+            .iter()
+            .filter(|statement| statement.stage == "selected_events")
+            .count(),
+        1
+    );
+    assert!(
+        statistics
+            .iter()
+            .all(|statement| statement.stage != "selection")
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn indexed_input_controls_do_not_compare_every_selected_identity_against_every_row() {
+    let mut costs = Vec::new();
+    for size in [16u64, 128] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records = Vec::new();
+        let mut ids = Vec::new();
+        for i in 0..size {
+            let id = format!("input-{i}");
+            records.push(query_record(
+                2 * i + 1,
+                2 * i + 1,
+                &id,
+                EventKind::InputMessage(InputMessageData::text("input", Some(InputMode::Append))),
+            ));
+            records.push(query_record(
+                2 * i + 2,
+                2 * i + 2,
+                &format!("applied-{i}"),
+                EventKind::InputApplied(InputAppliedData {
+                    input_id: id.clone(),
+                    mode: Some(InputMode::Append),
+                }),
+            ));
+            ids.push(json!(id));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                eq("kind", json!("input/applied")),
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "data.input_id".into(),
+                    },
+                    values: ids,
+                },
+            ],
+        });
+        query.group_by = vec!["kind".into(), "data.input_id".into()];
+        query.pick = Some(QueryPick::Last);
+        parity(&store, &memory, &scope(size * 2), &query).await;
+        store.record_query_statistics();
+        let result = store
+            .query(&scope(size * 2), &query, Some(&page(128)))
+            .await
+            .unwrap();
+        let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+            panic!("input controls")
+        };
+        assert_eq!(rows.len(), size as usize);
+        let statistics = store.take_query_statistics();
+        assert!(statistics.iter().any(|statement| {
+            statement
+                .plan
+                .iter()
+                .any(|step| step.contains("timeline_events_inputs"))
+        }));
+        costs.push(
+            statistics
+                .iter()
+                .map(|statement| statement.vm_steps as u64)
+                .sum::<u64>(),
+        );
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1] < costs[0] * 14,
+        "identity-list growth must not cause pairwise comparison: {costs:?}"
+    );
+}
+
+#[tokio::test]
+async fn scalar_projection_of_non_output_events_keeps_missing_and_null_without_output_expansion() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    let records = vec![record(
+        1,
+        EventKind::Extension(
+            ExtensionEvent::new(
+                "summary",
+                "saved",
+                json!({"status":"completed","optional":null,"payload":"x".repeat(64 * 1024)}),
+            )
+            .unwrap(),
+        ),
+    )];
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let mut query = fields(&["id", "data.status", "data.optional", "data.absent"]);
+    query.filter = Some(eq("kind", json!("summary/saved")));
+    parity(&store, &memory, &scope(1), &query).await;
+    store.record_query_statistics();
+    let result = store
+        .query(&scope(1), &query, Some(&page(1)))
+        .await
+        .unwrap();
+    let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+        panic!("selected fields")
+    };
+    assert_eq!(
+        rows[0].values[2],
+        dim_agent_runtime::QueryValue::Value { value: Value::Null }
+    );
+    assert_eq!(rows[0].values[3], dim_agent_runtime::QueryValue::Missing);
+    let statistics = store.take_query_statistics();
+    let projection = statistics
+        .iter()
+        .find(|statement| statement.stage == "selected_properties")
+        .unwrap();
+    assert!(
+        !projection.plan.iter().any(|step| step.contains("UNION")),
+        "a proven non-output kind must not open packed output rows: {statistics:?}"
+    );
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn alternative_text_candidates_seek_positions_without_scanning_unrelated_inputs() {
+    let mut costs = Vec::new();
+    for inputs in [100u64, 1_000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let records: Vec<_> = (1..=inputs)
+            .map(|sequence| {
+                record(
+                    sequence,
+                    EventKind::InputMessage(InputMessageData::text(
+                        if sequence == 1 {
+                            "foundwordx foundwordy".into()
+                        } else {
+                            format!("Ordinary message {sequence}: {}", "content ".repeat(128))
+                        },
+                        None,
+                    )),
+                )
+            })
+            .collect();
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut measured = Vec::new();
+        for (terms, expected) in [
+            (["absentwordx", "absentwordy"], false),
+            (["foundwordx", "foundwordy"], true),
+        ] {
+            let alternatives = QueryFilter::Or {
+                conditions: terms
+                    .into_iter()
+                    .map(|term| QueryFilter::TextCandidate {
+                        field: "data".into(),
+                        partition_by: vec![],
+                        terms: vec![term.into()],
+                    })
+                    .collect(),
+            };
+            let mut query = fields(&["id"]);
+            query.select = QuerySelect::Exists;
+            query.filter = Some(QueryFilter::And {
+                conditions: vec![eq("kind", json!("input/message")), alternatives],
+            });
+            store.record_query_statistics();
+            let result = store.query(&scope(inputs), &query, None).await.unwrap();
+            assert!(
+                matches!(result.result, dim_agent_runtime::QueryOutput::Exists { exists } if exists == expected)
+            );
+            let statistics = store.take_query_statistics();
+            measured.push(statistics.iter().map(|stat| stat.vm_steps).sum::<i32>());
+            parity(&store, &memory, &scope(inputs), &query).await;
+            query.select = QuerySelect::Fields {
+                fields: vec!["id".into()],
+            };
+            parity(&store, &memory, &scope(inputs), &query).await;
+            let Some(QueryFilter::And { conditions }) = &mut query.filter else {
+                unreachable!()
+            };
+            let QueryFilter::Or { conditions } = &mut conditions[1] else {
+                unreachable!()
+            };
+            conditions.push(eq("id", json!(format!("event-{inputs}"))));
+            parity(&store, &memory, &scope(inputs), &query).await;
+        }
+        println!("Alternative text candidates inputs={inputs} VM={measured:?}");
+        costs.push(measured);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1]
+            .iter()
+            .zip(&costs[0])
+            .all(|(large, small)| large < &(small * 2)),
+        "10x more unrelated inputs must not cause a history scan: {costs:?}"
+    );
+}
+
+#[tokio::test]
+async fn recovery_relations_bound_all_physical_roles_before_projection() {
+    let mut costs = Vec::new();
+    for unrelated in [100, 5_000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records: Vec<_> = (1..=unrelated)
+            .map(|sequence| {
+                record(
+                    sequence,
+                    EventKind::Extension(
+                        ExtensionEvent::new("other", "saved", json!({"payload":"x".repeat(1024)}))
+                            .unwrap(),
+                    ),
+                )
+            })
+            .collect();
+        for (offset, (kind, turn, request)) in [
+            ("start", "turn-a", "request-a"),
+            ("start", "turn-a", "request-b"),
+            ("start", "turn-b", "request-a"),
+            ("end", "turn-a", "request-a"),
+            ("failed", "turn-a", "request-b"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            records.push(record(
+                unrelated + offset as u64 + 1,
+                EventKind::Extension(
+                    ExtensionEvent::new("work", kind, json!({"turn_id":turn,"request_id":request}))
+                        .unwrap(),
+                ),
+            ));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["data.turn_id", "data.request_id"]);
+        let terminal = QueryFilter::And {
+            conditions: vec![
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: vec![json!("work/end"), json!("work/failed")],
+                },
+                QueryFilter::Compare {
+                    left: QueryOperand::Field {
+                        path: "data.turn_id".into(),
+                    },
+                    comparison: QueryComparison::Eq,
+                    right: QueryOperand::Outer {
+                        path: "data.turn_id".into(),
+                    },
+                },
+                QueryFilter::Compare {
+                    left: QueryOperand::Field {
+                        path: "data.request_id".into(),
+                    },
+                    comparison: QueryComparison::Eq,
+                    right: QueryOperand::Outer {
+                        path: "data.request_id".into(),
+                    },
+                },
+            ],
+        };
+        query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                eq("kind", json!("work/start")),
+                QueryFilter::Not {
+                    condition: Box::new(QueryFilter::Exists {
+                        condition: Box::new(terminal),
+                    }),
+                },
+            ],
+        });
+        let range = scope(unrelated + 5);
+        let mut measured = Vec::new();
+        for direction in [
+            TimelineQueryDirection::Ascending,
+            TimelineQueryDirection::Descending,
+        ] {
+            query.order_by = vec![QueryOrder {
+                key: QueryOrderKey::Position,
+                direction,
+            }];
+            store.record_query_statistics();
+            parity(&store, &memory, &range, &query).await;
+            let stats = store.take_query_statistics();
+            assert!(
+                stats
+                    .iter()
+                    .flat_map(|stat| &stat.plan)
+                    .any(|line| line.contains("timeline_events_by_kind")),
+                "all recovery roles should use bounded kinds: {stats:?}"
+            );
+            measured.push(
+                stats
+                    .iter()
+                    .map(|stat| i64::from(stat.vm_steps))
+                    .sum::<i64>(),
+            );
+        }
+        costs.push(measured);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    assert!(
+        costs[1]
+            .iter()
+            .zip(&costs[0])
+            .all(|(large, small)| large < &(small * 2)),
+        "50x unrelated history must not enter the recovery role set: {costs:?}"
+    );
+    println!("recovery physical role VM steps: {costs:?}");
+}
+
+#[tokio::test]
+async fn mixed_kind_identity_queries_seek_the_association_index() {
+    let mut costs = Vec::new();
+    for size in [100u64, 5_000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        store
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+        let records = (0..size)
+            .flat_map(|n| {
+                ["a", "b"]
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(offset, kind)| {
+                        record(
+                            n * 2 + offset as u64 + 1,
+                            EventKind::Extension(
+                                ExtensionEvent::new(
+                                    "owner",
+                                    kind,
+                                    json!({"request_id":format!("request-{n}"),
+                                    "input_id":format!("input-{n}")}),
+                                )
+                                .unwrap(),
+                            ),
+                        )
+                    })
+            })
+            .collect();
+        append(&store, key("properties", "main"), records)
+            .await
+            .unwrap();
+        let mut measured = Vec::new();
+        for single_kind in [true, false] {
+            for (field, index, prefix) in [
+                ("data.request_id", "timeline_events_requests", "request"),
+                ("data.input_id", "timeline_events_inputs", "input"),
+            ] {
+                for present in [true, false] {
+                    let mut query = fields(&["position.sequence"]);
+                    query.filter = Some(QueryFilter::And {
+                        conditions: vec![
+                            QueryFilter::In {
+                                value: QueryOperand::Field {
+                                    path: "kind".into(),
+                                },
+                                values: if single_kind {
+                                    vec![json!("owner/a")]
+                                } else {
+                                    vec![json!("owner/a"), json!("owner/b")]
+                                },
+                            },
+                            QueryFilter::In {
+                                value: QueryOperand::Field { path: field.into() },
+                                values: vec![json!(format!(
+                                    "{prefix}-{}",
+                                    if present { 0 } else { size }
+                                ))],
+                            },
+                        ],
+                    });
+                    for pick in [None, Some(QueryPick::First), Some(QueryPick::Last)] {
+                        query.pick = pick;
+                        store.record_query_statistics();
+                        let reply = store
+                            .query(&scope(size * 2), &query, Some(&page(3)))
+                            .await
+                            .unwrap();
+                        let dim_agent_runtime::QueryOutput::Rows { rows } = reply.result else {
+                            panic!("selected identity positions")
+                        };
+                        assert_eq!(
+                            rows.len(),
+                            if present {
+                                if pick.is_some() || single_kind { 1 } else { 2 }
+                            } else {
+                                0
+                            }
+                        );
+                        let stats = store.take_query_statistics();
+                        assert!(
+                            stats
+                                .iter()
+                                .flat_map(|stat| &stat.plan)
+                                .any(|line| line.contains(index) && line.contains("<expr>=?")),
+                            "identity constraints must select the association, not just kind: {stats:?}"
+                        );
+                        measured.push(
+                            stats
+                                .iter()
+                                .map(|stat| i64::from(stat.vm_steps))
+                                .sum::<i64>(),
+                        );
+                    }
+                }
+            }
+        }
+        costs.push(measured);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    for (small, large) in costs[0].iter().zip(&costs[1]) {
+        assert!(
+            *large < *small * 2,
+            "50x unrelated identity history must not be scanned: {costs:?}"
+        );
+    }
+    println!("mixed-kind association VM steps: {costs:?}");
+}
+
+#[tokio::test]
+async fn mixed_kind_pages_seek_each_type_before_merging() {
+    let mut costs = Vec::new();
+    for unrelated in [100, 5_000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db.clone());
+        store
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+        let mut records = (1..=16)
+            .map(|sequence| {
+                record(
+                    sequence,
+                    EventKind::Extension(
+                        ExtensionEvent::new(
+                            "owner",
+                            if sequence % 2 == 0 { "a" } else { "b" },
+                            json!({}),
+                        )
+                        .unwrap(),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        records.extend((17..=unrelated + 16).map(|sequence| {
+            record(
+                sequence,
+                EventKind::InputMessage(InputMessageData::text("unrelated history", None)),
+            )
+        }));
+        append(&store, key("properties", "main"), records)
+            .await
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec![json!("owner/a"), json!("owner/b"), json!("owner/a")],
+        });
+        let mut measured = Vec::new();
+        for direction in [
+            TimelineQueryDirection::Ascending,
+            TimelineQueryDirection::Descending,
+        ] {
+            query.order_by = vec![QueryOrder {
+                key: QueryOrderKey::Position,
+                direction,
+            }];
+            for pick in [None, Some(QueryPick::First), Some(QueryPick::Last)] {
+                query.pick = pick;
+                let mut p = page(3);
+                let mut found = Vec::new();
+                let mut steps = 0i64;
+                loop {
+                    store.record_query_statistics();
+                    let reply = store
+                        .query(&scope(unrelated + 16), &query, Some(&p))
+                        .await
+                        .unwrap();
+                    steps += store
+                        .take_query_statistics()
+                        .iter()
+                        .map(|stat| i64::from(stat.vm_steps))
+                        .sum::<i64>();
+                    let dim_agent_runtime::QueryOutput::Rows { rows } = reply.result else {
+                        panic!("selected positions");
+                    };
+                    for row in rows {
+                        let dim_agent_runtime::QueryValue::Value { value } = &row.values[0] else {
+                            panic!("position value");
+                        };
+                        found.push(value.as_u64().unwrap());
+                    }
+                    let Some(next) = reply.next else { break };
+                    p.after = Some(next);
+                }
+                let mut expected: Vec<_> = match pick {
+                    Some(QueryPick::First) => vec![1],
+                    Some(QueryPick::Last) => vec![16],
+                    None => (1..=16).collect(),
+                };
+                if pick.is_none() && direction == TimelineQueryDirection::Descending {
+                    expected.reverse();
+                }
+                assert_eq!(found, expected);
+                measured.push(steps);
+            }
+        }
+        costs.push(measured);
+        store.close().await.unwrap();
+        db.close().await.unwrap();
+    }
+    for (small, large) in costs[0].iter().zip(&costs[1]) {
+        assert!(
+            *large < *small * 2,
+            "unrelated history must not be scanned: {costs:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn v37_text_upgrade_removes_opaque_documents_without_losing_query_candidates() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("properties", &SessionConfig::default())
+        .await
+        .unwrap();
+    append(
+        &store,
+        key("properties", "main"),
+        vec![
+            record(
+                1,
+                EventKind::InputMessage(InputMessageData::text("coreword", None)),
+            ),
+            record(
+                2,
+                EventKind::Extension(
+                    ExtensionEvent::new("private", "state", json!({"text":"opaqueword"})).unwrap(),
+                ),
+            ),
+            text(3, "streamword"),
+            text(4, "suffix"),
+        ],
+    )
+    .await
+    .unwrap();
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    drop(store);
+    drop(db);
+    let connection = Connection::open(&database.0).unwrap();
+    drop_v40(&connection);
+    without_automation_origin(&connection);
+    connection.execute_batch("DROP TABLE timeline_array_elements; DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 37)); INSERT INTO agent_store_format VALUES(37);").unwrap();
+    for sql in V36_ADDITIONS
+        .iter()
+        .filter(|sql| sql.starts_with("CREATE INDEX "))
+    {
+        let name = sql.split_whitespace().nth(2).unwrap();
+        connection
+            .execute_batch(&format!("DROP INDEX {name}; {sql}"))
+            .unwrap();
+    }
+    let opaque: i64 = connection.query_row("INSERT INTO timeline_text(session_id,branch_id,sequence,physical_sequence,property,partition_key) VALUES('properties','main',2,2,'data','event:2') RETURNING id", [], |row| row.get(0)).unwrap();
+    connection
+        .execute(
+            "INSERT INTO timeline_text_fts(rowid,text) VALUES(?1,'opaqueword')",
+            [opaque],
+        )
+        .unwrap();
+    assert_eq!(schema(&connection), schema_of(37));
+    let facts = rows(&connection, "timeline_events");
+    let tails = rows(&connection, "timeline_text_tails");
+    let documents = rows(&connection, "timeline_text");
+    let docsize_schema: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='timeline_text_fts_docsize'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let docsizes = connection
+        .prepare("SELECT id,sz FROM timeline_text_fts_docsize")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    connection
+        .execute_batch("DROP TABLE timeline_text_fts_docsize")
+        .unwrap();
+    drop(connection);
+
+    let error = match SqliteStorage::open(database.0.clone()) {
+        Ok(_) => panic!("the text cleanup must fail when its required FTS table is missing"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("timeline_text_fts_docsize"),
+        "{error}"
+    );
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), [37]);
+    assert_eq!(rows(&connection, "timeline_events"), facts);
+    assert_eq!(rows(&connection, "timeline_text"), documents);
+    connection.execute_batch(&docsize_schema).unwrap();
+    for (id, bytes) in docsizes {
+        connection
+            .execute(
+                "INSERT INTO timeline_text_fts_docsize(id,sz) VALUES(?1,?2)",
+                params![id, bytes],
+            )
+            .unwrap();
+    }
+    drop(connection);
+
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), Some(37));
+    let store = SqliteTimelineStore::new(db.clone());
+    let connection = Connection::open(&database.0).unwrap();
+    assert_eq!(marker(&connection), [i64::from(STORE_FORMAT)]);
+    assert_eq!(rows(&connection, "timeline_events"), facts);
+    assert_eq!(rows(&connection, "timeline_text_tails"), tails);
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_text WHERE sequence=2",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_text_fts WHERE rowid=?1",
+                [opaque],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM timeline_text WHERE property='data.delta'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        2
+    );
+    drop(connection);
+    for (kinds, term, expected) in [
+        (vec!["input/message"], "coreword", vec!["event-1"]),
+        (vec!["input/message"], "absentword", vec![]),
+        (vec!["private/state"], "opaqueword", vec!["event-2"]),
+        (vec!["private/state"], "absentword", vec!["event-2"]),
+        (
+            vec!["input/message", "private/state"],
+            "absentword",
+            vec!["event-2"],
+        ),
+    ] {
+        let mut query = fields(&["id"]);
+        query.filter = Some(QueryFilter::And {
+            conditions: vec![
+                QueryFilter::In {
+                    value: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    values: kinds.into_iter().map(Value::from).collect(),
+                },
+                QueryFilter::TextCandidate {
+                    field: "data".into(),
+                    partition_by: vec![],
+                    terms: vec![term.into()],
+                },
+            ],
+        });
+        let dim_agent_runtime::QueryOutput::Rows { rows } = store
+            .query(&scope(4), &query, Some(&page(8)))
+            .await
+            .unwrap()
+            .result
+        else {
+            panic!("candidate rows")
+        };
+        assert_eq!(
+            rows.into_iter()
+                .map(|row| row.values[0].clone())
+                .collect::<Vec<_>>(),
+            expected
+                .into_iter()
+                .map(|id| dim_agent_runtime::QueryValue::Value { value: json!(id) })
+                .collect::<Vec<_>>(),
+            "term={term}"
+        );
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+    drop(store);
+    drop(db);
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    assert_eq!(db.upgraded_from(), None);
+    db.close().await.unwrap();
+}
+
 fn fields(names: &[&str]) -> QuerySpec {
     QuerySpec {
         filter: None,
@@ -365,7 +1250,11 @@ async fn property_queries_clip_merged_records_and_keep_the_same_tail_after_commi
         .create_session("properties", &SessionConfig::default())
         .await
         .unwrap();
-    let records = vec![text(1, "a"), text(2, "b"), text(3, "c")];
+    let mut records = vec![text(1, "a"), text(2, "b"), text(3, "c")];
+    for record in &mut records {
+        Arc::make_mut(&mut record.event).tags =
+            Some(vec!["one".into(), "two".into(), "three".into()]);
+    }
     append(&store, key("properties", "main"), records.clone())
         .await
         .unwrap();
@@ -785,12 +1674,25 @@ async fn a_v34_submission_index_upgrade_preserves_duplicate_identities_and_reope
     store.close().await.unwrap();
     db.close().await.unwrap();
     let connection = Connection::open(&database.0).unwrap();
+    drop_v40(&connection);
     connection
         .execute_batch(
-            "BEGIN; DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP INDEX timeline_input_submissions;
+            "PRAGMA foreign_keys=OFF;
+        BEGIN; DROP TABLE timeline_array_elements; DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes; DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP INDEX timeline_input_submissions;
+        DROP TABLE session_owners;
+        CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)));
+        CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);
+        CREATE TEMP TABLE sessions_rows AS SELECT session_id, config, created_at_ms, leader_session_id, origin FROM agent_sessions;
+        DROP INDEX agent_sessions_by_leader;
+        DROP TABLE agent_sessions;
+        CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')));
+        CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+        INSERT INTO agent_sessions(session_id, config, created_at_ms, leader_session_id, origin) SELECT session_id, config, created_at_ms, leader_session_id, origin FROM sessions_rows;
+        DROP TABLE sessions_rows;
         DROP TABLE agent_store_format;
         CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 34));
-        INSERT INTO agent_store_format VALUES (34); COMMIT;",
+        INSERT INTO agent_store_format VALUES (34); COMMIT;
+        PRAGMA foreign_keys=ON;",
         )
         .unwrap();
     assert_eq!(schema(&connection), schema_of(34));
@@ -1038,8 +1940,13 @@ async fn text_candidates_survive_output_merging_reopen_fork_and_session_deletion
         rows.is_empty(),
         "a missing indexed word does not enumerate all requests"
     );
+    let config = store
+        .session_config_text("properties")
+        .await
+        .unwrap()
+        .unwrap();
     store
-        .fork_session("properties", "copy", 1003)
+        .fork_session("properties", "copy", 1003, &config)
         .await
         .unwrap();
     let mut copied = scope(1004);
@@ -1073,7 +1980,9 @@ async fn text_candidates_survive_output_merging_reopen_fork_and_session_deletion
             .unwrap(),
         0
     );
-    connection.execute_batch("DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 35)); INSERT INTO agent_store_format VALUES(35);").unwrap();
+    drop_v40(&connection);
+    without_automation_origin(&connection);
+    connection.execute_batch("DROP TABLE timeline_array_elements; DROP TABLE timeline_member_roots; DROP TABLE timeline_member_origins; DROP TABLE timeline_member_terminals; DROP TABLE timeline_member_nodes; DROP INDEX timeline_events_requests; DROP INDEX timeline_events_inputs; DROP INDEX timeline_events_users; DROP TRIGGER timeline_text_delete; DROP TABLE timeline_text; DROP TABLE timeline_text_fts; DROP TABLE timeline_text_tails; DROP TABLE session_owners; CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3))); CREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id); DROP TABLE agent_store_format; CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 35)); INSERT INTO agent_store_format VALUES(35);").unwrap();
     drop(connection);
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     assert_eq!(
@@ -1135,7 +2044,7 @@ async fn indexed_text_hits_and_misses_do_not_scan_the_growing_history() {
                     sequence,
                     EventKind::InputMessage(InputMessageData::text(
                         if sequence == size {
-                            "uniqueneedle"
+                            "uniqueneedle op=\"set\""
                         } else {
                             "ordinary content"
                         },
@@ -1149,64 +2058,108 @@ async fn indexed_text_hits_and_misses_do_not_scan_the_growing_history() {
             .await
             .unwrap();
         let append_ms = begin.elapsed().as_secs_f64() * 1000.;
+        append(
+            &store,
+            key("properties", "main"),
+            vec![record(
+                size + 1,
+                EventKind::InputDeleted(InputDeletedData {
+                    input_id: format!("event-{size}"),
+                }),
+            )],
+        )
+        .await
+        .unwrap();
         let mut measured = Vec::new();
-        for (term, expected) in [("uniqueneedle", 1), ("absentwordxyz", 0)] {
-            let mut query = fields(&["id"]);
-            query.filter = Some(QueryFilter::And {
-                conditions: vec![
-                    eq("kind", json!("input/message")),
-                    QueryFilter::TextCandidate {
-                        field: "data".into(),
-                        partition_by: vec![],
-                        terms: vec![term.into()],
-                    },
-                ],
-            });
-            store.record_query_statistics();
-            let result = store
-                .query(&scope(size), &query, Some(&page(2)))
-                .await
-                .unwrap();
-            let stats = store.take_query_statistics();
-            let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
-                panic!("candidate rows")
-            };
-            assert_eq!(rows.len(), expected);
-            println!("candidate size={size} term={term} stats={stats:?}");
-            assert!(
-                stats
-                    .iter()
-                    .any(|statement| statement.stage == "text_candidates"
-                        && statement
-                            .plan
-                            .iter()
-                            .any(|line| line.contains("VIRTUAL TABLE INDEX"))),
-                "{stats:?}"
-            );
-            assert!(
-                stats
-                    .iter()
-                    .map(|statement| statement.full_scan_steps)
-                    .sum::<i32>()
-                    < 100,
-                "a selective word must not scan event or metadata history: {stats:?}"
-            );
-            measured.push(
-                stats
-                    .iter()
-                    .map(|statement| statement.vm_steps)
-                    .sum::<i32>(),
-            );
-            query.select = QuerySelect::Count;
-            let dim_agent_runtime::QueryOutput::Count { count } = store
-                .query(&scope(size), &query, None)
-                .await
-                .unwrap()
-                .result
-            else {
-                panic!("candidate count")
-            };
-            assert_eq!(count, expected as u64);
+        for (term, expected) in [
+            ("uniqueneedle", 1),
+            ("absentwordxyz", 0),
+            ("op=", 1),
+            ("absent=", 0),
+        ] {
+            for (related, through, expected) in [
+                (false, size, expected),
+                (true, size, expected),
+                (true, size + 1, 0),
+            ] {
+                let mut query = fields(&["id"]);
+                query.filter = Some(QueryFilter::And {
+                    conditions: vec![
+                        eq("kind", json!("input/message")),
+                        QueryFilter::TextCandidate {
+                            field: "data".into(),
+                            partition_by: vec![],
+                            terms: vec![term.into()],
+                        },
+                    ],
+                });
+                if related {
+                    let QueryFilter::And { conditions } = query.filter.as_mut().unwrap() else {
+                        unreachable!()
+                    };
+                    conditions.push(QueryFilter::Not {
+                        condition: Box::new(QueryFilter::Exists {
+                            condition: Box::new(QueryFilter::And {
+                                conditions: vec![
+                                    eq("kind", json!("input/deleted")),
+                                    QueryFilter::Compare {
+                                        left: QueryOperand::Field {
+                                            path: "data.input_id".into(),
+                                        },
+                                        comparison: QueryComparison::Eq,
+                                        right: QueryOperand::Outer { path: "id".into() },
+                                    },
+                                ],
+                            }),
+                        }),
+                    });
+                }
+                store.record_query_statistics();
+                let result = store
+                    .query(&scope(through), &query, Some(&page(2)))
+                    .await
+                    .unwrap();
+                let stats = store.take_query_statistics();
+                let dim_agent_runtime::QueryOutput::Rows { rows } = result.result else {
+                    panic!("candidate rows")
+                };
+                assert_eq!(rows.len(), expected);
+                println!("candidate size={size} term={term} stats={stats:?}");
+                assert!(
+                    stats
+                        .iter()
+                        .any(|statement| statement.stage == "text_candidates"
+                            && statement
+                                .plan
+                                .iter()
+                                .any(|line| line.contains("VIRTUAL TABLE INDEX"))),
+                    "{stats:?}"
+                );
+                assert!(
+                    stats
+                        .iter()
+                        .map(|statement| statement.full_scan_steps)
+                        .sum::<i32>()
+                        < 100,
+                    "a selective word must not scan event or metadata history: {stats:?}"
+                );
+                measured.push(
+                    stats
+                        .iter()
+                        .map(|statement| statement.vm_steps)
+                        .sum::<i32>(),
+                );
+                query.select = QuerySelect::Count;
+                let dim_agent_runtime::QueryOutput::Count { count } = store
+                    .query(&scope(through), &query, None)
+                    .await
+                    .unwrap()
+                    .result
+                else {
+                    panic!("candidate count")
+                };
+                assert_eq!(count, expected as u64);
+            }
         }
         store.close().await.unwrap();
         db.close().await.unwrap();
@@ -2011,5 +2964,748 @@ async fn related_text_candidates_keep_unindexed_kinds_when_the_same_filter_is_in
         }
     );
     store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn optional_physical_properties_keep_typed_boolean_semantics() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("properties", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let paths = [
+        "data.status",
+        "data.epoch",
+        "data.request_id",
+        "data.input_id",
+        "data.turn_id",
+        "data.scope.kind",
+        "data.scope.id",
+        "data.scope.timeline",
+        "data.current.at.branch",
+        "data.current.at.sequence",
+    ];
+    let values = [
+        None,
+        Some(Value::Null),
+        Some(json!(false)),
+        Some(json!(true)),
+        Some(json!(1)),
+        Some(json!(1.5)),
+        Some(json!("completed")),
+        Some(json!("other")),
+        Some(json!([])),
+        Some(json!({})),
+    ];
+    let records: Vec<_> = values
+        .into_iter()
+        .enumerate()
+        .map(|(i, value)| {
+            let mut data = json!({});
+            if let Some(value) = value {
+                for path in paths {
+                    let mut object = &mut data;
+                    let mut parts = path.strip_prefix("data.").unwrap().split('.').peekable();
+                    while let Some(part) = parts.next() {
+                        if parts.peek().is_none() {
+                            object[part] = value.clone();
+                        } else {
+                            object = object
+                                .as_object_mut()
+                                .unwrap()
+                                .entry(part)
+                                .or_insert_with(|| json!({}));
+                        }
+                    }
+                }
+            }
+            record(
+                i as u64 + 1,
+                EventKind::Extension(ExtensionEvent::new("properties", "saved", data).unwrap()),
+            )
+        })
+        .collect();
+    append(&store, key("properties", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("properties", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    for path in paths {
+        let value = if path.starts_with("data.current.") {
+            json!(1)
+        } else {
+            json!("completed")
+        };
+        let field = QueryOperand::Field { path: path.into() };
+        let constant = QueryOperand::Value {
+            value: value.clone(),
+        };
+        let mut filters = vec![QueryFilter::In {
+            value: field.clone(),
+            values: vec![value],
+        }];
+        for comparison in [
+            QueryComparison::Eq,
+            QueryComparison::Ne,
+            QueryComparison::Lt,
+            QueryComparison::Le,
+            QueryComparison::Gt,
+            QueryComparison::Ge,
+        ] {
+            filters.push(QueryFilter::Compare {
+                left: field.clone(),
+                comparison,
+                right: constant.clone(),
+            });
+            filters.push(QueryFilter::Compare {
+                left: constant.clone(),
+                comparison,
+                right: field.clone(),
+            });
+        }
+        for filter in filters {
+            for negated in [false, true] {
+                for select in [
+                    QuerySelect::Fields {
+                        fields: vec!["id".into()],
+                    },
+                    QuerySelect::Events,
+                    QuerySelect::Count,
+                    QuerySelect::Exists,
+                ] {
+                    let mut query = fields(&["id"]);
+                    query.filter = Some(if negated {
+                        QueryFilter::Not {
+                            condition: Box::new(filter.clone()),
+                        }
+                    } else {
+                        filter.clone()
+                    });
+                    query.select = select;
+                    parity(&store, &memory, &scope(10), &query).await;
+                }
+            }
+        }
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn kind_pages_bound_index_work_and_preserve_packed_output_cursors() {
+    let mut costs = Vec::new();
+    for size in [100, 1000] {
+        let database = Database::new();
+        let db = SqliteStorage::open(database.0.clone()).unwrap();
+        let store = SqliteTimelineStore::new(db);
+        let memory = MemoryTimelineStore::default();
+        for storage in [&*store as &dyn TimelineStore, &memory] {
+            storage
+                .create_session("properties", &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        let mut records = Vec::new();
+        for sequence in 1..=size {
+            records.push(record(
+                sequence,
+                EventKind::Extension(
+                    ExtensionEvent::new("hidden", "saved", json!({"payload":"x".repeat(2048)}))
+                        .unwrap(),
+                ),
+            ));
+        }
+        for sequence in size + 1..=size * 2 {
+            records.push(text(sequence, &"y".repeat(512)));
+        }
+        append(&store, key("properties", "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(
+                key("properties", "main"),
+                records,
+                Box::new(|result| result.unwrap()),
+            )
+            .unwrap();
+        let mut query = fields(&["position.sequence"]);
+        query.filter = Some(QueryFilter::In {
+            value: QueryOperand::Field {
+                path: "kind".into(),
+            },
+            values: vec![
+                "input/message".into(),
+                "step/text".into(),
+                "step/thinking".into(),
+            ],
+        });
+        query.order_by = vec![QueryOrder {
+            key: QueryOrderKey::Position,
+            direction: TimelineQueryDirection::Descending,
+        }];
+        let scope = scope(size * 2);
+        let mut page = page(16);
+        let mut steps = 0;
+        for _ in 0..2 {
+            store.record_query_statistics();
+            let native = store.query(&scope, &query, Some(&page)).await.unwrap();
+            let stats = store.take_query_statistics();
+            steps += stats.iter().map(|s| i64::from(s.vm_steps)).sum::<i64>();
+            let expected = memory.query(&scope, &query, Some(&page)).await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&native).unwrap(),
+                serde_json::to_value(&expected).unwrap()
+            );
+            assert!(
+                stats.iter().any(|s| s
+                    .plan
+                    .iter()
+                    .any(|line| line.contains("timeline_events_by_kind"))),
+                "{stats:?}"
+            );
+            assert!(
+                stats
+                    .iter()
+                    .all(|s| s.full_scan_steps == 0 && s.sorts == 0 && s.automatic_index_rows == 0),
+                "{stats:?}"
+            );
+            page.after = native.next;
+        }
+        eprintln!("kind page history={size} steps={steps}");
+        costs.push(steps);
+        let mut clipped = scope.clone();
+        clipped.segments[0].from = size + 7;
+        clipped.segments[0].through = size + 39;
+        query.select = QuerySelect::Fields {
+            fields: vec![
+                "position".into(),
+                "position.sequence".into(),
+                "position.branch_id".into(),
+            ],
+        };
+        for direction in [
+            TimelineQueryDirection::Ascending,
+            TimelineQueryDirection::Descending,
+        ] {
+            query.order_by[0].direction = direction;
+            parity(&store, &memory, &clipped, &query).await;
+        }
+        query.order_by.clear();
+        parity(&store, &memory, &clipped, &query).await;
+        store.close().await.unwrap();
+    }
+    assert!(
+        costs[1] < costs[0] * 3,
+        "fixed pages must not scan growing packed output: {costs:?}"
+    );
+}
+
+/// A membership list on a physical column binds its members once per statement
+/// role, and a role compiled only to learn whether a physical form exists must
+/// not leave its parameters behind. A statement numbers every parameter it
+/// binds, so a surplus over the roles that reach the SQL is a leak.
+#[tokio::test]
+async fn a_discarded_physical_check_leaves_no_parameter_behind() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    store
+        .create_session("properties", &SessionConfig::default())
+        .await
+        .unwrap();
+    let members = 996;
+    let values: Vec<Value> = (0..members)
+        .map(|index| json!(format!("probe/absent-{index}")))
+        .collect();
+    let mut records = Vec::new();
+    for sequence in 1..=3 {
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": "alpha"})).unwrap(),
+            ),
+        ));
+    }
+    append(&store, key("properties", "main"), records)
+        .await
+        .unwrap();
+    let mut query = fields(&["position.sequence"]);
+    query.filter = Some(QueryFilter::In {
+        value: QueryOperand::Field {
+            path: "kind".into(),
+        },
+        values,
+    });
+    let mut count = query.clone();
+    count.select = QuerySelect::Count;
+    for (label, query, page, expected) in [
+        ("selection", query.clone(), Some(page(2)), members + 7),
+        ("count", count, None, members + 5),
+    ] {
+        store.record_query_statistics();
+        store.query(&scope(3), &query, page.as_ref()).await.unwrap();
+        let statements = store.take_query_statistics();
+        let statement = statements
+            .iter()
+            .find(|statement| {
+                statement.stage == label || (label == "count" && statement.stage == "scalar")
+            })
+            .unwrap_or_else(|| panic!("{label} prepares a statement"));
+        assert_eq!(
+            statement.parameters, expected,
+            "{label} binds {expected} parameters for {members} members"
+        );
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+/// Every value type and every size a membership list can carry must answer the
+/// same from storage and from the memory store, which has no list limit. The
+/// cases are grouped: which values match, the edges where an equality key and a
+/// comparison can disagree, the filter shapes around a membership, and the sizes
+/// where SQLite's expression depth and parameter count used to refuse the query.
+#[tokio::test]
+async fn membership_lists_match_the_memory_store_for_every_value_type_and_size() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let store = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for storage in [&*store as &dyn TimelineStore, &memory] {
+        storage
+            .create_session("membership", &SessionConfig::default())
+            .await
+            .unwrap();
+    }
+    let mixed: Vec<Value> = vec![
+        json!("alpha"),
+        json!(1),
+        json!(1.0),
+        json!(true),
+        json!(null),
+        json!("beta"),
+        json!(2),
+        json!(-1),
+        json!(1.5),
+        json!(false),
+        json!(""),
+        json!("ünïcode"),
+        json!([1, 2]),
+        json!({"a": 1}),
+        json!(9007199254740993i64),
+        json!(9007199254740992.0),
+        json!(0),
+        json!(-0.0),
+    ];
+    let mut records = Vec::new();
+    for value in &mixed {
+        let sequence = records.len() as u64 + 1;
+        records.push(record(
+            sequence,
+            EventKind::Extension(
+                ExtensionEvent::new("probe", "saved", json!({"tag": value})).unwrap(),
+            ),
+        ));
+    }
+    // A null tag, an array tag, and an event with no tag at all.
+    for data in [
+        json!({"tag": null}),
+        json!({"tag": ["alpha", "beta"]}),
+        json!({}),
+    ] {
+        records.push(record(
+            records.len() as u64 + 1,
+            EventKind::Extension(ExtensionEvent::new("probe", "saved", data).unwrap()),
+        ));
+    }
+    for (offset, kind) in ["probe/saved", "probe/other", "input/message"]
+        .into_iter()
+        .enumerate()
+    {
+        records.push(record(
+            records.len() as u64 + 1,
+            if kind == "input/message" {
+                EventKind::InputMessage(InputMessageData::text(format!("m{offset}"), None))
+            } else {
+                let name = kind.split('/').nth(1).unwrap();
+                EventKind::Extension(ExtensionEvent::new("probe", name, json!({})).unwrap())
+            },
+        ));
+    }
+    records.push(record(
+        records.len() as u64 + 1,
+        EventKind::Extension(
+            ExtensionEvent::new(
+                "probe",
+                "saved",
+                json!({"items": [{"id": "yes", "ok": true}, {"id": 1}], "tag": "alpha"}),
+            )
+            .unwrap(),
+        ),
+    ));
+    let through = records.len() as u64;
+    append(&store, key("membership", "main"), records.clone())
+        .await
+        .unwrap();
+    memory
+        .append(
+            key("membership", "main"),
+            records,
+            Box::new(|result| result.unwrap()),
+        )
+        .unwrap();
+    let range = TimelineReadScope {
+        key: key("membership", "main"),
+        through,
+        segments: vec![TimelineReadSegment {
+            branch_id: "main".into(),
+            from: 1,
+            through,
+            stored_through: through,
+            tail: vec![],
+        }],
+    };
+    let in_list = |path: &str, values: Vec<Value>| QueryFilter::In {
+        value: QueryOperand::Field { path: path.into() },
+        values,
+    };
+    let eq = |path: &str, value: Value| QueryFilter::Compare {
+        left: QueryOperand::Field { path: path.into() },
+        comparison: QueryComparison::Eq,
+        right: QueryOperand::Value { value },
+    };
+
+    let mut cases: Vec<QueryFilter> = vec![
+        // The key and a comparison must agree on these pairs; the encoding of a
+        // member decides whether they do.
+        in_list("data.tag", vec![json!(1), json!(1.0)]),
+        in_list("data.tag", vec![json!(9007199254740993i64)]),
+        in_list("data.tag", vec![json!(9007199254740992.0)]),
+        in_list("data.tag", vec![json!(0)]),
+        in_list("data.tag", vec![json!(-0.0)]),
+        in_list("data.tag", vec![json!(true)]),
+        in_list("data.tag", vec![json!("1")]),
+        in_list("data.tag", vec![json!(null)]),
+        in_list("data.tag", mixed.clone()),
+        in_list("data.tag", vec![json!("alpha"), json!("alpha")]),
+        in_list("data.tag", Vec::new()),
+        in_list("data.tag", vec![json!(null), json!("alpha")]),
+        in_list("kind", vec![json!("probe/saved"), json!("probe/absent")]),
+        in_list("kind", vec![json!("probe/saved"), json!("probe/other")]),
+        QueryFilter::Or {
+            conditions: vec![
+                in_list("data.tag", vec![json!("alpha"), json!(1)]),
+                in_list("data.tag", vec![json!(true), json!("beta")]),
+            ],
+        },
+        QueryFilter::Or {
+            conditions: mixed.iter().map(|v| eq("data.tag", v.clone())).collect(),
+        },
+        // A structured member can never match, and neither can an empty set.
+        in_list("data.tag", vec![json!([1, 2])]),
+        in_list("data.tag", vec![json!({"a": 1})]),
+        in_list("data.tag", vec![json!([1, 2]), json!({"a": 1})]),
+        // `Not` must keep a missing field, a null field and an array field.
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!("alpha"), json!(1)])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!(null)])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("data.tag", vec![json!([1, 2])])),
+        },
+        QueryFilter::Not {
+            condition: Box::new(in_list("kind", vec![json!("probe/saved")])),
+        },
+        QueryFilter::And {
+            conditions: vec![
+                in_list("data.tag", vec![json!("alpha"), json!(1), json!("beta")]),
+                QueryFilter::Not {
+                    condition: Box::new(in_list("data.tag", vec![json!(1)])),
+                },
+            ],
+        },
+        // Every operand form `In` accepts.
+        in_list("data.tag", vec![json!("alpha"), json!(1)]),
+        QueryFilter::Any {
+            field: "data.items".into(),
+            condition: Box::new(QueryFilter::In {
+                value: QueryOperand::Element { path: "id".into() },
+                values: vec![json!("yes"), json!(1), json!(null), json!(true)],
+            }),
+        },
+        QueryFilter::Exists {
+            condition: Box::new(QueryFilter::In {
+                value: QueryOperand::Outer {
+                    path: "data.tag".into(),
+                },
+                values: vec![json!("alpha"), json!(1)],
+            }),
+        },
+        QueryFilter::In {
+            value: QueryOperand::Value { value: json!(1) },
+            values: vec![json!(1), json!(1.0), json!("1")],
+        },
+    ];
+    // A long `Or` of comparisons stays a tree; a membership is what becomes a set.
+    for path in ["data.tag", "kind"] {
+        cases.push(QueryFilter::Or {
+            conditions: (0..997)
+                .map(|index| eq(path, json!(format!("absent-{index}"))))
+                .collect(),
+        });
+    }
+    // 12,000 members is past the old depth limit on every path. 20,000 on a
+    // physical column and on `id` is past the widest physical list the store
+    // binds: uncapped that list binds the members a second time and the
+    // statement exceeds SQLite's parameter count, so the cap is what keeps
+    // these cases answerable.
+    let wide = 12_000;
+    let capped = 20_000;
+    for (path, list) in [
+        (
+            "data.tag",
+            Vec::from_fn(wide, |i| json!(format!("absent-{i}"))),
+        ),
+        (
+            "position.sequence",
+            Vec::from_fn(wide, |i| json!(9_000_000u64 + i as u64)),
+        ),
+        ("id", Vec::from_fn(wide, |i| json!(format!("absent-{i}")))),
+        (
+            "kind",
+            Vec::from_fn(capped, |i| json!(format!("probe/absent-{i}"))),
+        ),
+        ("id", Vec::from_fn(capped, |i| json!(format!("absent-{i}")))),
+    ] {
+        cases.push(in_list(path, list));
+    }
+    for size in [997, 5_000] {
+        for path in ["data.tag", "kind", "position.sequence"] {
+            let member = |index: usize| match path {
+                "kind" => json!(format!("probe/absent-{index}")),
+                "position.sequence" => json!(9_000_000u64 + index as u64),
+                _ => json!(format!("absent-{index}")),
+            };
+            cases.push(in_list(path, Vec::from_fn(size, member)));
+        }
+        // A known `kind` is what makes `position.sequence` a physical column.
+        cases.push(QueryFilter::And {
+            conditions: vec![
+                in_list("kind", vec![json!("probe/saved")]),
+                in_list(
+                    "position.sequence",
+                    Vec::from_fn(size, |index| json!(9_000_000u64 + index as u64)),
+                ),
+            ],
+        });
+    }
+    for filter in cases {
+        for select in [
+            QuerySelect::Fields {
+                fields: vec!["position.sequence".into(), "data.tag".into()],
+            },
+            QuerySelect::Events,
+            QuerySelect::Count,
+            QuerySelect::Exists,
+        ] {
+            let query = QuerySpec {
+                filter: Some(filter.clone()),
+                select,
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            };
+            let scalar = query.group_by.is_empty()
+                && matches!(query.select, QuerySelect::Count | QuerySelect::Exists);
+            let mut paging = (!scalar).then(|| page(50));
+            loop {
+                let actual = store.query(&range, &query, paging.as_ref()).await.unwrap();
+                let expected = memory.query(&range, &query, paging.as_ref()).await.unwrap();
+                assert_eq!(
+                    serde_json::to_value(&actual).unwrap(),
+                    serde_json::to_value(&expected).unwrap(),
+                    "filter {query:?}"
+                );
+                let Some(after) = actual.next else { break };
+                paging.as_mut().unwrap().after = Some(after);
+            }
+        }
+    }
+    store.close().await.unwrap();
+    db.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn query_cursors_reject_changed_logical_scope_and_queries_in_both_stores() {
+    let database = Database::new();
+    let db = SqliteStorage::open(database.0.clone()).unwrap();
+    let sqlite = SqliteTimelineStore::new(db.clone());
+    let memory = MemoryTimelineStore::default();
+    for session in ["properties", "other"] {
+        let records = vec![
+            text(1, "a"),
+            text(2, "b"),
+            text(3, "c"),
+            record(
+                4,
+                EventKind::BranchCreate(BranchCreateData {
+                    at: BranchCreateAt::Sequence { sequence: 3 },
+                    source: BranchSource::Host {
+                        operation_id: "cursor-scope".into(),
+                    },
+                    branch: "child".into(),
+                    prompt: String::new(),
+                }),
+            ),
+        ];
+        for store in [&*sqlite as &dyn TimelineStore, &memory] {
+            store
+                .create_session(session, &SessionConfig::default())
+                .await
+                .unwrap();
+        }
+        append(&sqlite, key(session, "main"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(key(session, "main"), records, Box::new(|r| r.unwrap()))
+            .unwrap();
+        let records = (1..=3)
+            .map(|n| text_with_id(n, &format!("child-{n}"), &format!("child-{n}")))
+            .collect::<Vec<_>>();
+        append(&sqlite, key(session, "child"), records.clone())
+            .await
+            .unwrap();
+        memory
+            .append(key(session, "child"), records, Box::new(|r| r.unwrap()))
+            .unwrap();
+    }
+    let mut original_scope = scope(3);
+    original_scope.key.branch_id = "child".into();
+    original_scope.segments.push(TimelineReadSegment {
+        branch_id: "child".into(),
+        from: 1,
+        through: 3,
+        stored_through: 3,
+        tail: vec![],
+    });
+    let mut original_query = fields(&["position"]);
+    original_query.group_by = vec!["data.delta".into()];
+    original_query.pick = Some(QueryPick::First);
+    let mut cases = Vec::new();
+    let mut changed = original_scope.clone();
+    changed.key.session_id = "other".into();
+    cases.push(("session", changed, original_query.clone()));
+    let mut changed = scope(3);
+    changed.key.branch_id = "main".into();
+    cases.push((
+        "branch and branch-only range",
+        changed,
+        original_query.clone(),
+    ));
+    let mut changed = original_scope.clone();
+    changed.through = 2;
+    changed.segments[1].through = 2;
+    cases.push(("current cut", changed, original_query.clone()));
+    let mut changed = original_scope.clone();
+    changed.segments[0].through = 2;
+    cases.push(("ancestor interval", changed, original_query.clone()));
+    let mut changed = original_scope.clone();
+    changed.segments[0].from = 2;
+    cases.push(("inclusive from", changed, original_query.clone()));
+    let mut changed = original_query.clone();
+    changed.filter = Some(eq("data.request_id", json!("request")));
+    cases.push(("filter", original_scope.clone(), changed));
+    let mut changed = original_query.clone();
+    changed.select = QuerySelect::Events;
+    cases.push(("selection", original_scope.clone(), changed));
+    let mut changed = original_query.clone();
+    changed.group_by = vec!["id".into()];
+    cases.push(("grouping", original_scope.clone(), changed));
+    let mut changed = original_query.clone();
+    changed.pick = Some(QueryPick::Last);
+    cases.push(("pick", original_scope.clone(), changed));
+    let mut changed = original_query.clone();
+    changed.order_by = vec![QueryOrder {
+        key: QueryOrderKey::Position,
+        direction: TimelineQueryDirection::Descending,
+    }];
+    cases.push(("order", original_scope.clone(), changed));
+    for (backend, store) in [
+        ("sqlite", &*sqlite as &dyn TimelineStore),
+        ("memory", &memory as &dyn TimelineStore),
+    ] {
+        let first = store
+            .query(&original_scope, &original_query, Some(&page(1)))
+            .await
+            .unwrap();
+        let complete = store
+            .query(&original_scope, &original_query, Some(&page(10)))
+            .await
+            .unwrap();
+        assert!(
+            complete.next.is_none(),
+            "the reference page contains every group"
+        );
+        let dim_agent_runtime::QueryOutput::Rows { rows: expected } = complete.result else {
+            panic!("grouped field rows");
+        };
+        let dim_agent_runtime::QueryOutput::Rows { rows: first_rows } = &first.result else {
+            panic!("grouped field rows");
+        };
+        assert_eq!(first_rows.as_slice(), &expected[..1]);
+        let cursor = first.next.expect("multiple groups require a continuation");
+        let continuation = QueryPage {
+            after: Some(cursor),
+            ..page(2)
+        };
+        let resumed = store
+            .query(&original_scope, &original_query, Some(&continuation))
+            .await
+            .unwrap();
+        let dim_agent_runtime::QueryOutput::Rows { rows } = resumed.result else {
+            panic!("grouped field rows");
+        };
+        assert_eq!(
+            rows.len(),
+            2,
+            "{backend}: changing page size preserves the binding and advances the page"
+        );
+        assert_eq!(
+            rows.as_slice(),
+            &expected[1..3],
+            "{backend}: continuation preserves group and row identity after the first page"
+        );
+        for (name, scope, query) in &cases {
+            store
+                .query(scope, query, Some(&page(1)))
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("{backend} {name}: standalone query must be valid: {error}")
+                });
+            let error = store
+                .query(scope, query, Some(&continuation))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, AgentError::InvalidInput(message) if message.contains("cursor belongs to another query or scope")),
+                "{backend} {name}: expected cursor binding rejection, got {error}"
+            );
+        }
+    }
+    sqlite.close().await.unwrap();
     db.close().await.unwrap();
 }

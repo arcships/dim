@@ -65,7 +65,7 @@
 | `crates/dim-agent-capabilities/src/context_*.rs`、`history.rs`、`recall.rs`、`summary_strategy.rs`、`timeline_tree.rs` | 轴一 + 轴二 |
 | `crates/dim-agent-capabilities/src/agent_loop.rs`、`steer.rs`、`wait.rs`、`input_queue.rs`、`branch_input.rs` | 轴二 |
 | `crates/dim-agent-capabilities/src/tool_*.rs`、`workspace_tools/**`、`shell_*.rs`、`output.rs` | 轴一 + 轴三 |
-| `crates/dim-agent-capabilities/src/model_provider*`、`crates/dim-agent-aimux/**`、`vendor/aimux/**` | 轴二 |
+| `crates/dim-agent-capabilities/src/model_provider*`、`crates/dim-agent-aimux/**` | 轴二 |
 | `crates/dim-agent-capabilities/src/skills/**`、`skill_settings.rs` | 轴一 |
 | `crates/dim-agent-capabilities/src/permission.rs`、`approval.rs`、`host_platform/**` | 轴三 |
 | `crates/dim-agent-runtime/**` | 轴二 |

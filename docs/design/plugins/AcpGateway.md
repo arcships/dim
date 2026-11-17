@@ -45,7 +45,7 @@ The wire target is ACP v1, plus individually advertised Lody Core 0.2.0 features
 
 Every stable v1 agent/client/protocol method, the selected unstable surface and the Lody methods are classified in [plan §4](../acp-gateway-implementation.md#4-稳定-acp-v1-方法逐项映射) and [§8](../acp-gateway-implementation.md#8-lody-方法和能力逐项决策). Capabilities follow implemented handlers and actual native availability, never a copied historical capability object.
 
-The first delivery covers standard Session creation/list/load/resume, prompts and cancellation, tool output, approvals, images and text resources. Account authentication, mode/model selection, form questions, close/delete and fork use their existing native interfaces when available. The selected Lody subset is history, compaction, terminal-turn fork anchors, startup model and permission mode selection for new Sessions, detached-exec task lifecycles and mutually negotiated snapshot-only subagent events. Steering, Goal control, token accounting, quotas, subagent query/output/cancel, scheduled tasks, session activity, title ownership, worktree projects and file rollback remain outside the first delivery; the plan distinguishes native contract gaps from delivery choices.
+The standard surface covers Session creation/list/load/resume, prompts and cancellation, tool output, approvals, images and text resources. Account authentication, mode/model/effort selection, form questions, close/delete and fork use their existing native interfaces when available. Native `/compact`, `/usage`, `/goal` and `/loop` commands are advertised and handled by [plan §4.7](../acp-gateway-implementation.md#47-原生命令交互), using readable responses without a client-specific panel. The selected Lody subset is history, compaction, terminal-turn fork anchors, startup model and permission mode selection for new Sessions, detached-exec task lifecycles and mutually negotiated snapshot-only subagent events. Lody steering, Goal control, token accounting, rate-limit panels, subagent query/output/cancel, scheduled tasks, session activity, title ownership, worktree projects and file rollback remain outside the extension surface; slash commands do not imply those extension contracts.
 
 Lody methods and metadata follow the pinned Core DTOs and their semantic comments. There is no connection-wide Lody switch or inferred support for the entire extension set. A subagent snapshot can truthfully advertise no output stream, progress, read or cancel; an old SDK task API is not a prerequisite for that minimal projection. The exact negotiation, native fact correlation, startup configuration and per-feature limits are [plan §8](../acp-gateway-implementation.md#8-lody-方法和能力逐项决策). Canonical Lody tool IDs must not be populated with arbitrary native tool names.
 
@@ -74,15 +74,17 @@ No plugin loader, lifecycle registry or per-Session daemon relay is added. The h
 
 The gateway creates ordinary interactive Sessions (`session.create` omits `interactive`), then attaches through RPC. An existing Session keeps its stored configuration. Each Session has a single preparation/runtime slot, even across concurrent load/resume calls.
 
-Loading fixes a native history head, reads pages using the native `nextAfter`/`done`, merges buffered live events by branch sequence and sends replay before the ACP response. Resume rebuilds the same projection without replaying old messages. Raw-only and deleted inputs do not become ordinary user messages. Title revisions and progress snapshots are handled by their own public contracts, since they have no durable event sequence. [Plan §5.2](../acp-gateway-implementation.md#52-固定头与-live-合流) owns the algorithm.
+Loading fixes a native history head, reads pages using the native `nextAfter`/`done`, merges buffered live events by branch sequence and sends replay before the ACP response. Resume rebuilds the same projection without replaying old messages. Raw-only and deleted inputs do not become ordinary user messages, and neither does context a capability appended after the operator's words: a `dim-hooks` block is stored, exported and read by the model, but the gateway replays no `user_message_chunk` for it, so the editor's message stays what the operator sent. A `Stop` hook's follow-up replays nothing either: it is a Queue input that drives a turn, not a message the operator wrote, and the gateway's `sessionUpdate`s carry no status lane to show it in. A loaded Skill keeps its one line. Title revisions and progress snapshots are handled by their own public contracts, since they have no durable event sequence. [Plan §5.2](../acp-gateway-implementation.md#52-固定头与-live-合流) owns the algorithm.
 
 ### 4.2 Prompt and cancellation
 
-An ACP prompt becomes one Queue `session.submit` with a unique submission id. The response is determined by deletion of that input, or the terminal fact of the turn that consumed it. Other clients' turns do not decide it. Progress and committed text share per-request offsets so output is not duplicated.
+An ordinary ACP prompt becomes one Queue `session.submit` with a unique submission id. Recognized native commands instead use [plan §4.7](../acp-gateway-implementation.md#47-原生命令交互) and never submit their slash text to the model. An ordinary prompt's response is determined by deletion of that input, or the terminal fact of the turn that consumed it. Other clients' turns do not decide it. Progress and committed text share per-request offsets so output is not duplicated.
 
 Cancellation respects the handover from InputQueue to Loop: try the existing withdrawal entry while held, then use `session.stop`. The gateway cannot guarantee a stop targets one expected turn, or that an adopted but unconsumed input was deleted; these are limitations of the existing native contracts. [Plan §5](../acp-gateway-implementation.md#5-prompt回放和响应关联) and [§6.4](../acp-gateway-implementation.md#64-取消的交接边界) define response ordering and the races.
 
 The gateway's own cancel must end the prompt with ACP `cancelled` even if cancellation exposes an underlying error. A Hooks `input_blocked` rejection from `session.submit` is shown as the message and ends with `refusal`; Hooks is not implemented by this gateway.
+
+A prompt that arrives while the Session already has an unanswered prompt is refused with `session_busy`; the gateway neither queues it nor steers it into the running turn. Holding a message the operator types during a run is therefore the client's own choice. The [TUI's run keys](../cli-commands.md#run-keys-and-queue) reach the two actions in their own way, and over ACP the same pair is `session/cancel`, waiting for the running prompt's `cancelled` response, then a new `session/prompt`. The gateway does not steer a second prompt because ACP v1 does not define a prompt that arrives mid-turn, and because each prompt's response is the end of its own turn: two prompts steered into one turn would share a single end and could not each carry an honest stop reason. This is revisited once the protocol defines mid-turn delivery.
 
 ### 4.3 Approvals and questions
 
@@ -96,7 +98,7 @@ A submission id is a lookup key, not a native exactly-once guarantee. The [nativ
 
 ## 5. Security and context
 
-The gateway retains the socket ownership/permissions, authenticated Windows pipe, protocol/profile checks and frame limits of the existing CLI client. It uses an explicit native-method allowlist; ACP methods never become arbitrary RPC proxies. Outside Session operations it permits only safe provider catalog reads and the narrowly owned account-login flow in plan §4.4. Native provider-management reuse and its first-delivery write boundary are specified in §4.5. Logout, quota queries and arbitrary account management are not exposed. Provider-private realms, client IDs and token flows remain outside this repository.
+The gateway retains the socket ownership/permissions, authenticated Windows pipe, protocol/profile checks and frame limits of the existing CLI client. It uses an explicit native-method allowlist; ACP methods never become arbitrary RPC proxies. Outside Session operations it permits safe provider catalog reads, the narrowly owned account-login flow in plan §4.4 and the selected provider's read-only subscription usage in §4.7. Native provider-management reuse and its write boundary are specified in §4.5. Logout and arbitrary account management are not exposed. Provider-private realms, client IDs and token flows remain outside this repository.
 
 ACP content enters through existing `session.submit.user`, with parsing and content conversion at the external boundary. The gateway writes no arbitrary Timeline events, raw context blocks, plugin settings or host tool registrations. The model sees only the ordinary adopted input and tool results; ACP identities and transport diagnostics are not injected into its context.
 
@@ -159,5 +161,24 @@ When a prefix is omitted, their response includes
 `_meta["dim/history"] = { through, before, complete: false }`.
 `through` fixes the window head and `before` is its exclusive backward cursor.
 The client displays “earlier content not loaded”; an omitted prefix is not an empty history.
-The explicit `_lody/session/history/read` operation remains a full-history request.
+`_lody/session/history/read` implements `sessionHistory` version 2: a request
+`{sessionId, version: 2, before?, through?, limit?}` emits one bounded display
+page and replies `{through, before, complete}`. The first page uses the latest
+published head and a limit of 64 by default; later pages retain that head and
+use its exclusive backward cursor. The limit is 1–256. A version 1 or unversioned
+full-history request fails explicitly; it never silently reports a partial replay
+as complete. Reconnect installs a fresh bounded window and current inventories,
+without accumulating the missed historical suffix. A configuration update carries
+`_meta["dim/history"] = {through, before, complete, replace: true}` for clients
+that support replacing their loaded window; standard ACP provides no history-reset
+operation. Lost submit acknowledgements are checked by submission id, then the
+accepted input's consuming turn and outcome are read by `inputId` through the
+existing `session.turn.get`, including deletion and output-limit outcomes.
+
+Load and resume validate `expectedCwd` through the existing checked attach
+capability before the daemon restores the Session. They read no full Session
+catalog to validate one identity. Title and adopted model fields come from attach.
+Ended branch directory entries are not queried for actionable questions. Missing
+tool origins remain placeholder calls; initial preparation reads no original
+arguments outside its display page.
 Configuration refresh reads the attach record and configuration owners without rereading the transcript.

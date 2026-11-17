@@ -1,16 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { Plus, X } from "lucide-vue-next"
 import { settingsMessages } from "../../i18n/settings"
-import { readManagementProvider, readProbe, type ManagementProvider, type ManagementView, type ModelEntry } from "../../rpc/management"
+import { readManagementProvider, readManagementUpdateSummary, readProbe, type ManagementInfo, type ManagementView, type ModelEntry } from "../../rpc/management"
 import { RpcError } from "../../rpc/client"
 import { useConnectionStore } from "../../stores/connection"
-import { useModelsStore } from "../../stores/models"
 import { messageFrom } from "./context"
 
-const props = defineProps<{ provider?: ManagementProvider; drivers: ManagementView["drivers"] }>()
-const emit = defineEmits<{ saved: [provider: ManagementProvider]; reload: [] }>()
+const props = defineProps<{ provider?: ManagementInfo; drivers: ManagementView["drivers"] }>()
+const emit = defineEmits<{ saved: [provider: ManagementInfo]; reload: []; cancel: [] }>()
 const dirty = defineModel<boolean>("dirty", { default: false })
 const { t } = useI18n({ messages: settingsMessages })
 const connection = useConnectionStore()
@@ -27,8 +25,8 @@ const accessKey = ref("")
 const sessionToken = ref("")
 const proxy = ref("")
 const timeout = ref("")
+const modelIdPrefix = ref("")
 const enabled = ref(true)
-const models = ref("")
 const headers = ref<{ name: string; value: string; remove: boolean; existing: boolean }[]>([])
 const saving = ref(false)
 const error = ref("")
@@ -38,7 +36,13 @@ const baseline = ref("")
 const version = ref<number | null>(null)
 const accountOwned = computed(() => !!props.provider && props.provider.credentialAuthority !== "static")
 const authTypes = computed(() => props.drivers.find((d) => d.driverKind === driver.value)?.authTypes ?? [])
-function snapshot(): string { return JSON.stringify([id.value, name.value, driver.value, auth.value, authHeader.value, prefix.value, baseUrl.value, key.value, clearKey.value, accessKey.value, sessionToken.value, proxy.value, timeout.value, enabled.value, models.value, headers.value]) }
+const driverItems = computed(() => props.drivers.map((d) => ({ label: d.driverKind, value: d.driverKind })))
+const authItems = computed(() => authTypes.value.map((kind) => ({ label: t(`providerAuth.${kind}`), value: kind })))
+const usesStoredKeyAtNewUrl = computed(() => {
+  const saved = props.provider?.connection
+  return saved?.credentialConfigured && baseUrl.value !== saved.baseUrl && !credential()
+})
+function snapshot(): string { return JSON.stringify([id.value, name.value, driver.value, auth.value, authHeader.value, prefix.value, baseUrl.value, key.value, clearKey.value, accessKey.value, sessionToken.value, proxy.value, timeout.value, enabled.value, headers.value, modelIdPrefix.value]) }
 function adopt(): void {
   const p = props.provider, c = p?.connection
   id.value = p?.providerId ?? crypto.randomUUID()
@@ -54,8 +58,9 @@ function adopt(): void {
   sessionToken.value = ""
   proxy.value = c?.proxyUrl ?? ""
   timeout.value = c?.timeoutMs?.toString() ?? ""
+  modelIdPrefix.value = c?.gluedPrefix ?? ""
   enabled.value = p?.enabled ?? true
-  models.value = ""
+  probed.value = undefined
   headers.value = (c?.headerNames ?? []).map((name) => ({ name, value: "", remove: false, existing: true }))
   version.value = p?.version ?? null
   baseline.value = snapshot()
@@ -63,7 +68,10 @@ function adopt(): void {
   conflict.value = false
 }
 watch(() => props.provider, () => { if (!dirty.value) adopt() }, { immediate: true })
-watch(snapshot, (current) => { dirty.value = current !== baseline.value })
+watch(snapshot, (current) => {
+  dirty.value = current !== baseline.value
+  probed.value = undefined
+})
 watch(driver, () => { if (!props.provider && !authTypes.value.includes(auth.value)) auth.value = authTypes.value[0] ?? "anonymous" })
 function credential(): Record<string, unknown> | undefined {
   if (clearKey.value) return { action: "clear" }
@@ -81,6 +89,9 @@ function patch(): Record<string, unknown> {
     const updates = headers.value.flatMap((h) => h.remove && h.existing ? [{ action: "remove", name: h.name }] : !h.remove && h.value ? [{ action: "set", name: h.name, value: h.value }] : [])
     if (updates.length) changes.headers = updates
   }
+  // An emptied prefix is the patch's "clear it"; an untouched field is not in
+  // the patch at all, so an omitted statement keeps the stored one.
+  if (modelIdPrefix.value !== (c?.gluedPrefix ?? "")) changes.gluedPrefix = modelIdPrefix.value ? modelIdPrefix.value : null
   if (enabled.value !== p.enabled) changes.enabled = enabled.value
   const network: Record<string, unknown> = {}
   if (proxy.value !== (c?.proxyUrl ?? "")) network.proxy = proxy.value ? { action: "set", value: proxy.value } : { action: "clear" }
@@ -97,15 +108,25 @@ function newConnection(): Record<string, unknown> {
     ...(proxy.value || timeout.value ? { network: { ...(proxy.value ? { proxy: proxy.value } : {}), ...(timeout.value ? { timeoutMs: Number(timeout.value) } : {}) } } : {}),
   }
 }
+// The create request states the prefix beside the connection, on the patch's
+// own rule: an empty field states none, so the request omits it.
+function createRequest(): Record<string, unknown> {
+  const prefix = modelIdPrefix.value.trim()
+  return {
+    providerId: id.value, displayName: name.value, enabled: enabled.value,
+    connection: newConnection(), models: probed.value ?? [],
+    ...(prefix ? { gluedPrefix: prefix } : {}),
+  }
+}
 async function save(): Promise<void> {
   if (saving.value || connection.phase !== "connected" || conflict.value) return
   saving.value = true
   error.value = ""
   try {
     const p = props.provider
-    const requestedModels = [...new Set(models.value.split(/[\n,]/).map((v) => v.trim()).filter(Boolean))]
-    const entries: ModelEntry[] = requestedModels.map((modelId) => probed.value?.find((m) => m.modelId === modelId) ?? { modelId, displayName: modelId, status: "active", capabilities: { modalities: ["text"], toolCalling: true, streaming: true, structuredOutput: true, vision: false, audio: false, reasoning: false } })
-    const result = await connection.client.call(p ? "provider.update" : "provider.create", p ? { providerId: p.providerId, expectedVersion: version.value, patch: patch() } : { providerId: id.value, displayName: name.value, enabled: enabled.value, connection: newConnection(), models: entries }, readManagementProvider)
+    const result = p
+      ? await connection.client.call("provider.update", { providerId: p.providerId, expectedVersion: version.value, patch: patch(), reply: "summary" }, readManagementUpdateSummary)
+      : await connection.client.call("provider.create", createRequest(), readManagementProvider)
     key.value = ""
     accessKey.value = ""
     sessionToken.value = ""
@@ -113,7 +134,6 @@ async function save(): Promise<void> {
     dirty.value = false
     baseline.value = snapshot()
     emit("saved", result)
-    await useModelsStore().load()
   } catch (cause) {
     conflict.value = cause instanceof RpcError && cause.appError === "provider_conflict"
     error.value = conflict.value ? t("conflict") : messageFrom(cause)
@@ -122,9 +142,9 @@ async function save(): Promise<void> {
 async function probe(): Promise<void> {
   saving.value = true
   error.value = ""
+  probed.value = undefined
   try {
     probed.value = await connection.client.call("provider.probe", { providerId: props.provider?.providerId ?? id.value, connection: props.provider ? patch() : newConnection() }, readProbe)
-    if (!props.provider && models.value === "") models.value = probed.value.map((m) => m.modelId).join("\n")
   } catch (cause) { error.value = messageFrom(cause) }
   finally { saving.value = false }
 }
@@ -134,36 +154,88 @@ onBeforeUnmount(() => { key.value = ""; accessKey.value = ""; sessionToken.value
 <template>
   <form class="settings-form" @submit.prevent="save">
     <fieldset class="settings-form" :disabled="saving || connection.phase !== 'connected'" style="border: 0; padding: 0; margin: 0; min-width: 0">
-      <label><span>{{ t("name") }}</span><input v-model="name" class="ui-field" required :readonly="provider && provider.source !== 'custom'" /></label>
+      <UFormField v-if="!provider || provider.source === 'custom'" :label="t('providerName')">
+        <UInput v-model="name" required class="w-full" />
+      </UFormField>
+      <UFormField v-if="!accountOwned" :label="t('baseUrl')">
+        <UInput v-model="baseUrl" type="url" placeholder="https://api.example.com/v1" required autocomplete="off" class="w-full" />
+      </UFormField>
       <template v-if="!provider">
-        <label><span>{{ t("driver") }}</span><select v-model="driver" class="ui-field"><option v-for="d in drivers" :key="d.driverKind" :value="d.driverKind">{{ d.driverKind }}</option></select></label>
-        <label><span>{{ t("authType") }}</span><select v-model="auth" class="ui-field"><option v-for="kind in authTypes" :key="kind" :value="kind">{{ kind }}</option></select></label>
-        <div v-if="['api_key', 'custom_header'].includes(auth)" class="settings-grid"><label><span>{{ t("headerName") }}</span><input v-model="authHeader" class="ui-field" required /></label><label v-if="auth === 'api_key'"><span>{{ t("headerPrefix") }}</span><input v-model="prefix" class="ui-field" /></label></div>
+        <div class="settings-grid">
+          <UFormField :label="t('apiProtocol')">
+            <USelect v-model="driver" :items="driverItems" class="w-full" />
+          </UFormField>
+          <UFormField :label="t('authType')">
+            <USelect v-model="auth" :items="authItems" class="w-full" />
+          </UFormField>
+        </div>
+        <div v-if="['api_key', 'custom_header'].includes(auth)" class="settings-grid">
+          <UFormField :label="t('headerName')">
+            <UInput v-model="authHeader" required class="w-full" />
+          </UFormField>
+          <UFormField v-if="auth === 'api_key'" :label="t('headerPrefix')">
+            <UInput v-model="prefix" class="w-full" />
+          </UFormField>
+        </div>
       </template>
       <template v-if="!accountOwned">
-        <label><span>{{ t("baseUrl") }}</span><input v-model="baseUrl" class="ui-field" type="url" required autocomplete="off" /></label>
-        <label v-if="auth === 'aws_bedrock'"><span>AWS Access Key ID</span><input v-model="accessKey" class="ui-field" type="password" autocomplete="new-password" /></label>
-        <label v-if="auth !== 'anonymous'"><span>{{ auth === 'aws_bedrock' ? 'AWS Secret Access Key' : t("apiKey") }}</span><input v-model="key" class="ui-field" type="password" autocomplete="new-password" :placeholder="provider?.connection?.credentialConfigured ? t('keepSecret') : ''" :disabled="clearKey" /></label>
-        <label v-if="auth === 'aws_bedrock'"><span>AWS Session Token</span><input v-model="sessionToken" class="ui-field" type="password" autocomplete="new-password" /></label>
-        <label v-if="provider?.connection?.credentialConfigured" class="settings-check"><input v-model="clearKey" type="checkbox" />{{ t("clearSecret") }}</label>
-        <details><summary>{{ t("headers") }}</summary><div class="settings-form" style="margin-top: 12px">
-          <div v-for="(header, index) in headers" :key="index" class="settings-header-field">
-            <input v-model="header.name" class="ui-field" :readonly="header.existing" :aria-label="t('headerName')" :placeholder="t('headerName')" :disabled="header.remove" />
-            <input v-model="header.value" class="ui-field" type="password" autocomplete="new-password" :aria-label="t('headerValue')" :placeholder="header.existing ? t('keepSecret') : t('headerValue')" :disabled="header.remove" />
-            <button class="ui-icon-button" data-variant="ghost" type="button" :aria-label="t('remove')" :aria-pressed="header.remove" @click="header.existing ? header.remove = !header.remove : headers.splice(index, 1)"><X aria-hidden="true" /></button>
-          </div>
-          <button class="ui-button" data-variant="secondary" type="button" @click="headers.push({ name: '', value: '', existing: false, remove: false })"><Plus aria-hidden="true" />{{ t("addHeader") }}</button>
-        </div></details>
+        <UFormField v-if="auth === 'aws_bedrock'" label="AWS Access Key ID">
+          <UInput v-model="accessKey" type="password" autocomplete="new-password" class="w-full" />
+        </UFormField>
+        <UFormField v-if="auth !== 'anonymous'" :label="auth === 'aws_bedrock' ? 'AWS Secret Access Key' : t('apiKey')">
+          <UInput v-model="key" type="password" autocomplete="new-password" :placeholder="provider?.connection?.credentialConfigured ? t('keepSecret') : ''" :disabled="clearKey" class="w-full" />
+        </UFormField>
+        <UFormField v-if="auth === 'aws_bedrock'" label="AWS Session Token">
+          <UInput v-model="sessionToken" type="password" autocomplete="new-password" class="w-full" />
+        </UFormField>
+        <UCheckbox v-if="provider?.connection?.credentialConfigured" v-model="clearKey" :label="t('clearSecret')" />
+        <UCollapsible>
+          <template #default="{ open }">
+            <UButton color="neutral" variant="ghost" size="sm" :trailing-icon="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" :label="t('headers')" />
+          </template>
+          <template #content>
+            <div class="settings-form" style="margin-top: 12px">
+              <div v-for="(header, index) in headers" :key="index" class="settings-header-field">
+                <UInput v-model="header.name" :readonly="header.existing" :aria-label="t('headerName')" :placeholder="t('headerName')" :disabled="header.remove" />
+                <UInput v-model="header.value" type="password" autocomplete="new-password" :aria-label="t('headerValue')" :placeholder="header.existing ? t('keepSecret') : t('headerValue')" :disabled="header.remove" />
+                <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-x" :aria-label="t('remove')" :aria-pressed="header.remove" @click="header.existing ? header.remove = !header.remove : headers.splice(index, 1)" />
+              </div>
+              <UButton color="neutral" variant="outline" icon="i-lucide-plus" class="justify-self-start" @click="headers.push({ name: '', value: '', existing: false, remove: false })">{{ t("addHeader") }}</UButton>
+            </div>
+          </template>
+        </UCollapsible>
       </template>
-      <details><summary>{{ t("advanced") }}</summary><div class="settings-grid" style="margin-top: 12px"><label><span>{{ t("proxy") }}</span><input v-model="proxy" class="ui-field" autocomplete="off" type="url" /></label><label><span>{{ t("timeout") }}</span><input v-model="timeout" class="ui-field" type="number" min="1" step="1" :placeholder="t('default')" /></label></div></details>
-      <label v-if="!provider"><span>{{ t("modelIds") }}</span><textarea v-model="models" class="ui-field" rows="4" /></label>
-      <label class="settings-check"><input v-model="enabled" type="checkbox" />{{ t("enabled") }}</label>
+      <UCollapsible>
+        <template #default="{ open }">
+          <UButton color="neutral" variant="ghost" size="sm" :trailing-icon="open ? 'i-lucide-chevron-down' : 'i-lucide-chevron-right'" :label="t('advanced')" />
+        </template>
+        <template #content>
+          <div class="settings-grid" style="margin-top: 12px">
+            <UFormField :label="t('proxy')">
+              <UInput v-model="proxy" autocomplete="off" type="url" class="w-full" />
+            </UFormField>
+            <UFormField :label="t('timeout')">
+              <UInput v-model="timeout" type="number" min="1" step="1" :placeholder="t('default')" class="w-full" />
+            </UFormField>
+            <UFormField :label="t('modelIdPrefix')" :help="t('modelIdPrefixHint')">
+              <UInput v-model="modelIdPrefix" autocomplete="off" class="w-full" />
+            </UFormField>
+          </div>
+        </template>
+      </UCollapsible>
+      <UCheckbox v-model="enabled" :label="t('enableProvider')" />
     </fieldset>
-    <p v-if="error" class="ui-banner" data-tone="danger" role="alert">{{ error }} <button v-if="conflict" class="ui-button" data-variant="ghost" type="button" @click="$emit('reload')">{{ t("reload") }}</button></p>
-    <p v-if="probed" class="settings-help">{{ t("probeResult") }} {{ probed.map((m) => m.modelId).join(', ') }}</p>
+    <UAlert v-if="error" color="error" variant="subtle" icon="i-lucide-alert-circle" :description="error" role="alert">
+      <template v-if="conflict" #actions>
+        <UButton size="xs" color="neutral" variant="ghost" @click="$emit('reload')">{{ t("reload") }}</UButton>
+      </template>
+    </UAlert>
+    <p v-if="usesStoredKeyAtNewUrl" class="settings-help">{{ t("storedKeyAtNewUrl") }}</p>
+    <p v-if="probed" class="settings-help" role="status">{{ t("providerProbeResult", { count: probed.length }) }}</p>
     <div class="settings-actions">
-      <button v-if="!accountOwned" class="ui-button" data-variant="secondary" type="button" :disabled="saving || !baseUrl || connection.phase !== 'connected'" @click="probe">{{ t("probe") }}</button>
-      <button class="ui-button" data-variant="primary" type="submit" :disabled="saving || conflict || connection.phase !== 'connected' || (provider && !dirty)">{{ saving ? t("saving") : provider ? t("save") : t("create") }}</button>
+      <UButton color="neutral" variant="ghost" :disabled="saving" @click="$emit('cancel')">{{ t("cancel") }}</UButton>
+      <UButton v-if="!accountOwned" color="neutral" variant="outline" :disabled="saving || !baseUrl || connection.phase !== 'connected'" @click="probe">{{ t("probe") }}</UButton>
+      <UButton color="primary" type="submit" :disabled="saving || conflict || connection.phase !== 'connected' || (provider && !dirty)">{{ saving ? t("saving") : t(provider ? "save" : "saveProvider") }}</UButton>
     </div>
   </form>
 </template>

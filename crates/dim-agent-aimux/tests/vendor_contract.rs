@@ -1,5 +1,5 @@
-//! The stream and conversion contracts the vendored aimux keeps, pinned from
-//! the adapter crate after the three vendored test targets were removed.
+//! The stream and conversion contracts the aimux crates keep, pinned from the
+//! adapter crate.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

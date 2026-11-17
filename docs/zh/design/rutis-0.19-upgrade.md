@@ -376,7 +376,7 @@ daemon 根（LocalId dim-daemon）                   dimcode leaf 根
     - `auxiliaryModel`、`managementMethods`、`partRegistry`、`pluginFiles`、`sessionMetadata`、`sessionPermissions`、
       `settings`、`workflowFiles`；
     - `sessions`，它的 `launch`、`input`、`lookup`、`history`、`withdraw`、`stop`、`idle`、`delete` 方法会改动 Session；
-    - 默认插件提供的 `scheduleJobs` 和 `workflowRuns`。
+    - 已启用 Scheduler 的 `scheduleJobs`、`wakeups`，及可选 Workflow 的 `workflowRuns`。
   - **因此 leaf 能做的事。** 它可以操作任何 Session、登记管理方法，还可以登记 Session 部件，而这些部件的副本会
     运行在 leaf 里。
   - **为什么接受。** leaf 只能经由本地 `ui.open` 调用方给出的私有地址连通。这个调用方本来就持有 `daemon.sock` 上的
@@ -478,13 +478,14 @@ M6 先行合入，作为一个单独的 pull request，基于 0.17.1。它不改
    `DIM_TEST_NPM_WRAPPER`
 6. 公开的 Node 绑定：
    - `runtime/plugin-sdk.test.mjs`；
-   - goal、session-title 两个插件的测试，scheduler、workflow 的 `tsc` 检查，现在带上 `RUTIS_HOST`（M10）；
-   - 由 `runtime/python-requirements.txt` 建立的 Python 环境。
-7. 由 Node 和 Python 驱动的 Rust 流程，带 `DIM_TEST_NODE`、`DIM_TEST_JS_RUNTIME`、`DIM_TEST_RUTIS_SDK` 和
-   `DIM_TEST_PYTHON`：
+   - goal、session-title 两个插件的测试，scheduler、workflow 的 `tsc` 检查，现在带上 `RUTIS_HOST`（M10）。
+7. 由 Node 驱动的 Rust 流程使用 `DIM_TEST_NODE`、`DIM_TEST_JS_RUNTIME` 和 `DIM_TEST_RUTIS_SDK`。
    - `cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow node_ -- --ignored`；
    - `cargo test --locked -p dim-migration --test migration_flow node_ -- --ignored`；
    - `cargo test --locked -p xtask node_ -- --ignored`。
+8. 独立的 Python 插件流程还使用 `DIM_TEST_PYTHON`，环境由 `runtime/python-requirements.txt` 建立。运行
+   `cargo test --locked -p dim-app-server --test transport_flow python_plugin_ -- --ignored`。
+   CI 开启条件见 [GitHub 工作流](../../release/README.md#github-workflows)。
 
 测试套件必须覆盖的流程检查；只在契约变化处扩展现有测试：
 

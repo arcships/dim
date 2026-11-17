@@ -7,7 +7,9 @@ fn main() {
         mallopt(-3, 64 * 1024);
         mallopt(-8, 1);
     }
-    if let Err(error) = dim_app_server::cli::process_entry(std::env::args().skip(1), None, |_| {}) {
+    if let Err(error) =
+        dim_app_server::cli::process_entry(std::env::args().skip(1), None, |_| {}, || Ok(()))
+    {
         eprintln!("Error: {error}");
         std::process::exit(1);
     }

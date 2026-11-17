@@ -30,6 +30,24 @@ async fn gone(pid: i32) -> bool {
     false
 }
 
+/// The grandchild's pid, once the script has written it. A pid file the
+/// redirect has created but `echo` has not filled in yet does not count:
+/// `echo` writes the digits and then one newline, so only the newline says
+/// the write completed.
+async fn recorded_pid(pid_file: &std::path::Path) -> i32 {
+    let until = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < until {
+        if let Ok(text) = std::fs::read_to_string(pid_file)
+            && let Some(line) = text.strip_suffix('\n')
+            && let Ok(pid) = line.parse()
+        {
+            return pid;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the script never recorded its grandchild");
+}
+
 #[tokio::test]
 async fn shell_resolution_follows_the_preference_and_never_fails_the_service() {
     let path = env(&[("PATH", "/usr/bin:/bin"), ("SHELL", "/bin/sh")]);
@@ -650,8 +668,7 @@ async fn a_confined_helper_cancel_kills_the_tree() {
     let script = format!("sleep 100 &\necho $! > {}\nwait\n", quote(&pid_file));
     let platform = confined_platform(switch_off());
     let cancel = CancellationToken::new();
-    let started = std::time::Instant::now();
-    let (result, ()) = tokio::join!(
+    let (result, (pid, cancelled_at)) = tokio::join!(
         platform.spawn_confined(
             ConfinedSpec {
                 executable: "/bin/sh".into(),
@@ -669,8 +686,10 @@ async fn a_confined_helper_cancel_kills_the_tree() {
             cancel.clone(),
         ),
         async {
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            let pid = recorded_pid(&pid_file).await;
+            let cancelled_at = std::time::Instant::now();
             cancel.cancel();
+            (pid, cancelled_at)
         },
     );
     assert!(
@@ -679,14 +698,9 @@ async fn a_confined_helper_cancel_kills_the_tree() {
         result.err()
     );
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        cancelled_at.elapsed() < Duration::from_secs(10),
         "cancel waited for the helper"
     );
-    let pid: i32 = std::fs::read_to_string(&pid_file)
-        .expect("the script records its grandchild")
-        .trim()
-        .parse()
-        .unwrap();
     assert!(gone(pid).await, "cancel left the grandchild {pid}");
     std::fs::remove_dir_all(&base).unwrap();
 }

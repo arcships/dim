@@ -64,6 +64,9 @@ impl ManagedProvider for SearchProvider {
             if !signed_in {
                 return Err(ManagedError::TokenMissing);
             }
+            if req.query == "fail" {
+                return Err(ManagedError::Transient);
+            }
             Ok(WebSearchResponse {
                 results: vec![
                     WebSearchHit {
@@ -82,7 +85,7 @@ impl ManagedProvider for SearchProvider {
             })
         })
     }
-    fn catalog(&self, _: &str) -> ManagedFuture<ManagedCatalog> {
+    fn catalog(&self, _: &str, _: CancellationToken) -> ManagedFuture<ManagedCatalog> {
         unused()
     }
     fn credential(&self, _: &str, _: &str) -> ManagedFuture<CredentialLease> {
@@ -108,6 +111,12 @@ impl Plugin for SearchProviderPlugin {
         ctx.provide_as::<dyn ManagedProvider>(Arc::new(SearchProvider(self.0.clone())))?;
         Ok(())
     }
+}
+
+/// The fixtures never inherit the host's own proxy settings.
+fn disable_system_proxy() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| unsafe { std::env::set_var("DIM_WEB_SYSTEM_PROXY", "off") });
 }
 
 async fn configure(client: &mut Client, document: Value) {
@@ -365,6 +374,7 @@ async fn web_settings_permission_cancellation_and_restore() {
                 "filters that overflow the relay query limit apply locally only"
             );
             let before = requests.load(Ordering::SeqCst);
+            configure(&mut client, json!({"blockPrivateAddresses": true})).await;
             submit(
                 &mut client,
                 &id,
@@ -647,6 +657,7 @@ async fn boot_web() -> (
     };
     // The fixture model reports each request on this channel. Dropping the
     // receiver makes the next turn fail before the tool runs.
+    disable_system_proxy();
     let (server, model_requests, _) = super::session_typescript::start(config).await;
     let mut client = Client::new_version(&server, false, 3).await;
     assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000011","displayName":"Fixture","connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1","auth":{"type":"anonymous"}},"models":[{"modelId":"fixture","displayName":"fixture","status":"active",
@@ -762,9 +773,24 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
                             }
                         };
                         let head = String::from_utf8_lossy(&header[..end]);
-                        let target = head.lines().next().unwrap_or("").split_whitespace().nth(1).unwrap_or("").to_owned();
+                        let request_line = head.lines().next().unwrap_or("");
+                        let mut parts = request_line.split_whitespace();
+                        let method = parts.next().unwrap_or("");
+                        let raw = parts.next().unwrap_or("");
+                        // CONNECT names the authority; an absolute-form request
+                        // names a URL. Record the authority for both.
+                        let (target, path) = if method == "CONNECT" {
+                            (raw.to_owned(), None)
+                        } else {
+                            match raw.split_once("://").and_then(|(_, rest)| {
+                                rest.find('/').map(|i| (&rest[..i], &rest[i..]))
+                            }) {
+                                Some((authority, path)) => (authority.to_owned(), Some(path.to_owned())),
+                                None => (raw.to_owned(), Some("/".to_owned())),
+                            }
+                        };
                         tunnel_log.lock().unwrap().push(target.clone());
-                        if target == "pending.invalid:80" {
+                        if target == "pending.invalid:80" || target == "pending.invalid" {
                             entered.notify_one();
                             assert_eq!(client.read(&mut chunk).await.unwrap(), 0);
                             closed.notify_one();
@@ -777,7 +803,17 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
                             return;
                         }
                         let mut upstream = tokio::net::TcpStream::connect(origin_addr).await.unwrap();
-                        client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await.unwrap();
+                        match path {
+                            Some(path) => {
+                                let version = parts.next().unwrap_or("HTTP/1.1");
+                                let tail = head.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
+                                let rewritten = format!("{method} {path} {version}\r\n{tail}");
+                                upstream.write_all(rewritten.as_bytes()).await.unwrap();
+                            }
+                            None => {
+                                client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await.unwrap();
+                            }
+                        }
                         if end < header.len() {
                             upstream.write_all(&header[end..]).await.unwrap();
                         }
@@ -790,6 +826,7 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
 
     let (server, mut client, id, home, _model_requests) = boot_web().await;
     let session = server.agent().unwrap().get_session(&id).unwrap();
+    configure(&mut client, json!({"blockPrivateAddresses": true})).await;
     for url in [
         "http://127.0.0.1/",
         "http://0.0.0.0/",
@@ -827,7 +864,11 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     );
     assert!(tunnels.lock().unwrap().is_empty());
 
-    configure(&mut client, json!({"proxy": proxy_base})).await;
+    configure(
+        &mut client,
+        json!({"blockPrivateAddresses": true, "proxy": proxy_base}),
+    )
+    .await;
     submit(
         &mut client,
         &id,
@@ -845,7 +886,7 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
 
     configure(
         &mut client,
-        json!({"allowPrivateHosts":["127.0.0.1"], "proxy": proxy_base}),
+        json!({"allowPrivateHosts":["127.0.0.1"], "blockPrivateAddresses": true, "proxy": proxy_base}),
     )
     .await;
     submit(
@@ -886,34 +927,62 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     assert!(text(&result(&session).await).contains("blocked_address"));
     assert_eq!(tunnels.lock().unwrap().len(), 1);
 
-    let before = hits.load(Ordering::SeqCst);
-    for proxy in [None, Some("http://invalid.example/path")] {
-        let mut document = json!({
+    // A bare `proxyDns` no longer demands a configured proxy: without one,
+    // Web keeps the host's own resolution and connects directly.
+    configure(
+        &mut client,
+        json!({
             "allowPrivateHosts": ["127.0.0.1"],
+            "blockPrivateAddresses": true,
             "proxyDns": true,
             "searchService": {"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-key"}
-        });
-        if let Some(proxy) = proxy {
-            document["proxy"] = json!(proxy);
-        }
-        configure(&mut client, document).await;
-        for (name, args, code) in [
-            (
-                "web_fetch",
-                json!({"url": format!("{base}/landed")}),
-                "connect_failed",
-            ),
-            (
-                "web_search",
-                json!({"query": "fixture"}),
-                "search_unavailable",
-            ),
-        ] {
-            submit(&mut client, &id, name, args).await;
-            idle(&mut client, &id).await;
-            let failed = result(&session).await;
-            assert!(text(&failed).contains(code), "{name}: {failed:?}");
-        }
+        }),
+    )
+    .await;
+    submit(
+        &mut client,
+        &id,
+        "web_fetch",
+        json!({"url": format!("{base}/landed?direct")}),
+    )
+    .await;
+    idle(&mut client, &id).await;
+    let landed = result(&session).await;
+    assert_ne!(landed.is_error, Some(true), "{landed:?}");
+    assert!(text(&landed).contains("landed-page"), "{landed:?}");
+    submit(&mut client, &id, "web_search", json!({"query": "fixture"})).await;
+    idle(&mut client, &id).await;
+    let searched = result(&session).await;
+    assert_ne!(searched.is_error, Some(true), "{searched:?}");
+
+    let before = hits.load(Ordering::SeqCst);
+    configure(
+        &mut client,
+        json!({
+            "allowPrivateHosts": ["127.0.0.1"],
+            "blockPrivateAddresses": true,
+            "proxy": "http://invalid.example/path",
+            "proxyDns": true,
+            "searchService": {"kind":"brave","endpoint":format!("{base}/search"),"apiKey":"fixture-key"}
+        }),
+    )
+    .await;
+    for (name, args, code) in [
+        (
+            "web_fetch",
+            json!({"url": format!("{base}/landed?invalid")}),
+            "connect_failed",
+        ),
+        (
+            "web_search",
+            json!({"query": "fixture"}),
+            "search_unavailable",
+        ),
+    ] {
+        submit(&mut client, &id, name, args).await;
+        idle(&mut client, &id).await;
+        let failed = result(&session).await;
+        assert!(text(&failed).contains(code), "{name}: {failed:?}");
     }
     assert_eq!(hits.load(Ordering::SeqCst), before);
     assert_eq!(tunnels.lock().unwrap().len(), 1);
@@ -921,7 +990,7 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     let authority = format!("proxy-dns.invalid:{}", origin_addr.port());
     configure(
         &mut client,
-        json!({"proxy": proxy_base, "proxyDns": true,
+        json!({"blockPrivateAddresses": true, "proxy": proxy_base, "proxyDns": true,
             "searchService":{"kind":"brave","endpoint":format!("http://{authority}/search"),"apiKey":"fixture-key"}}),
     )
     .await;
@@ -975,8 +1044,8 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     idle(&mut client, &id).await;
     let refused = result(&session).await;
     assert!(
-        text(&refused).contains("connect_failed: The proxy refused the tunnel."),
-        "{refused:?}"
+        text(&refused).contains("http_status: HTTP 502"),
+        "a proxy refusal surfaces as its status: {refused:?}"
     );
     submit(
         &mut client,
@@ -1000,11 +1069,15 @@ async fn web_fetch_blocks_untrusted_targets_and_follows_same_host_redirects() {
     assert_eq!(result(&session).await.is_error, Some(true));
     assert_eq!(
         &tunnels.lock().unwrap()[3..],
-        ["refused.invalid:80", "pending.invalid:80"]
+        ["refused.invalid", "pending.invalid"]
     );
     assert_eq!(hits.load(Ordering::SeqCst), before);
 
-    configure(&mut client, json!({"allowPrivateHosts":["127.0.0.1"]})).await;
+    configure(
+        &mut client,
+        json!({"allowPrivateHosts":["127.0.0.1"], "blockPrivateAddresses": true}),
+    )
+    .await;
     submit(
         &mut client,
         &id,
@@ -1192,6 +1265,77 @@ async fn web_fetch_times_out_when_the_response_never_finishes() {
     stop.cancel();
     held.await.unwrap();
     drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_managed_search_matches_native_results_and_errors() {
+    use dim_app_server::managed_provider::ManagedSearch;
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dms-{}", uuid::Uuid::new_v4()));
+    let signed_in = Arc::new(AtomicBool::new(true));
+    let signed_in_row = signed_in.clone();
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"managed-search",
+        "name":parts.anchor.parent().unwrap().join("fixtures/managed-search.ts"),
+        "provides":{}, "config":{}
+    })];
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("rust")),
+        session_typescript: Some(parts),
+        managed_provider: Some(ManagedProviderRow(Arc::new(move |builtins, _| {
+            let flag = signed_in_row.clone();
+            builtins
+                .builtins
+                .register::<Value, _, _>("SearchProviderFixture", move |_| {
+                    Ok(SearchProviderPlugin(flag.clone()))
+                });
+            "SearchProviderFixture".to_owned()
+        }))),
+        ..Default::default()
+    };
+    let (server, _, _) = super::session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let search = server.service::<ManagedSearch>().unwrap();
+    for (query, logged_in) in [("dim", true), ("fail", true), ("dim", false)] {
+        signed_in.store(logged_in, Ordering::SeqCst);
+        let request = WebSearchRequest {
+            query: query.into(),
+            count: 2,
+        };
+        let wire = super::process_typescript::files_available(
+            &mut client,
+            "searchprobe.search",
+            json!(request),
+        )
+        .await;
+        match search.search(request, &CancellationToken::new()).await {
+            Ok(reply) => assert_eq!(wire, json!({"reply":reply})),
+            Err(error) => {
+                let code = match error {
+                    dim_app_server::managed_provider::ManagedSearchError::Unavailable => {
+                        "unavailable"
+                    }
+                    dim_app_server::managed_provider::ManagedSearchError::SearchFailed => {
+                        "search_failed"
+                    }
+                };
+                assert_eq!(wire["error"]["code"], code);
+                assert!(
+                    wire["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&error.to_string())
+                );
+            }
+        }
+    }
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

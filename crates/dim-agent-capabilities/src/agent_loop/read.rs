@@ -16,6 +16,7 @@ struct Params {
     branch_id: String,
     through: Option<u64>,
     turn_id: Option<String>,
+    input_id: Option<String>,
 }
 
 pub struct LoopMethodsPlugin {
@@ -44,15 +45,61 @@ impl DynPlugin for LoopMethodsPlugin {
                 let tree = tree.clone();
                 Box::pin(async move {
                     let p: Params = params(call.params)?;
+                    if p.turn_id.is_some() && p.input_id.is_some() {
+                        return Err(RpcError::invalid("turnId and inputId are mutually exclusive"));
+                    }
+                    if p.turn_id.as_ref().is_some_and(String::is_empty) || p.input_id.as_ref().is_some_and(String::is_empty) {
+                        return Err(RpcError::invalid("A turn or input identity must be nonempty"));
+                    }
+                    let mut through = p.through;
+                    let mut turn_id = p.turn_id.clone();
+                    if let Some(input_id) = &p.input_id {
+                        let mut consumed = TimelineQuery {
+                            scope: TimelineQueryScope::Branch, from: None, through, include_publishing: false,
+                            query: QuerySpec {
+                                filter: Some(QueryFilter::And { conditions: vec![
+                                    QueryFilter::In { value: QueryOperand::Field { path:"kind".into() }, values:vec![json!("input/consumed"),json!("input/deleted")] },
+                                    QueryFilter::In { value: QueryOperand::Field { path:"data.input_id".into() }, values:vec![json!(input_id)] },
+                                ] }),
+                                select: QuerySelect::Fields { fields:vec!["kind".into(),"position.sequence".into()] },
+                                group_by:vec![], pick:Some(QueryPick::First), order_by:vec![],
+                            }, page:Some(QueryPage {limit:NonZeroU64::MIN,after:None}),
+                        };
+                        let found = tokio::select! {
+                            _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                            result = tree.query(p.branch_id.clone(), consumed.clone()) => result?,
+                        };
+                        through = Some(found.through);
+                        let QueryOutput::Rows { rows } = found.result else { unreachable!("consumed input position") };
+                        let Some(row) = rows.first() else {
+                            return Ok(json!({"branchId":p.branch_id,"through":found.through,"turn":null,"output":null}));
+                        };
+                        let [QueryValue::Value {value: kind},QueryValue::Value {value: position}] = row.values.as_slice() else { unreachable!("input terminal position") };
+                        if kind == "input/deleted" {
+                            return Ok(json!({"branchId":p.branch_id,"through":found.through,"turn":null,"output":null,"inputDeleted":true}));
+                        }
+                        consumed.through = Some(position.as_u64().expect("consumed input sequence"));
+                        consumed.query.filter = Some(QueryFilter::In {value:QueryOperand::Field {path:"kind".into()},values:vec![json!("turn/start")]});
+                        consumed.query.select = QuerySelect::Fields {fields:vec!["data.turn_id".into()]};
+                        consumed.query.pick = Some(QueryPick::Last);
+                        let opened = tokio::select! {
+                            _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                            result = tree.query(p.branch_id.clone(), consumed) => result?,
+                        };
+                        let QueryOutput::Rows {rows} = opened.result else { unreachable!("input turn identity") };
+                        let Some(row) = rows.first() else { return Err(AgentError::fault("LoopMethods", "consumed input has no turn start").into()); };
+                        let [QueryValue::Value {value: id}] = row.values.as_slice() else { unreachable!("input turn identity") };
+                        turn_id = Some(id.as_str().expect("turn identity").into());
+                    }
                     let mut conditions = vec![QueryFilter::In { value: QueryOperand::Field { path: "kind".into() }, values: vec![json!("turn/start"), json!("turn/end")] }];
-                    if let Some(id) = &p.turn_id {
+                    if let Some(id) = &turn_id {
                         conditions.push(QueryFilter::In { value: QueryOperand::Field { path: "data.turn_id".into() }, values: vec![json!(id)] });
                     }
                     let query = TimelineQuery {
-                        scope: TimelineQueryScope::Branch, from: None, through: p.through, include_publishing: false,
+                        scope: TimelineQueryScope::Branch, from: None, through, include_publishing: false,
                         query: QuerySpec {
                             filter: Some(QueryFilter::And { conditions }),
-                            select: QuerySelect::Fields { fields: ["kind", "position.sequence", "data.turn_id"].map(String::from).to_vec() },
+                            select: QuerySelect::Fields { fields: ["kind", "position.sequence", "data"].map(String::from).to_vec() },
                             group_by: vec![], pick: None,
                             order_by: vec![QueryOrder { key: QueryOrderKey::Position, direction: TimelineQueryDirection::Descending }],
                         },
@@ -64,11 +111,17 @@ impl DynPlugin for LoopMethodsPlugin {
                     };
                     let QueryOutput::Rows { rows } = result.result else { unreachable!("turn fields") };
                     let turn = rows.into_iter().next().map(|row| {
-                        let [QueryValue::Value { value: kind }, QueryValue::Value { value: sequence }, QueryValue::Value { value: id }] = row.values.as_slice() else { unreachable!("turn boundary") };
-                        json!({"turnId":id,"sequence":sequence,"ended":kind == "turn/end"})
+                        let [QueryValue::Value { value: kind }, QueryValue::Value { value: sequence }, QueryValue::Value { value: data }] = <[_;3]>::try_from(row.values).expect("turn boundary fields") else { unreachable!("turn boundary") };
+                        if kind == "turn/end" {
+                            let ended:dim_agent_types::TurnEndData = serde_json::from_value(data).expect("turn end contract");
+                            json!({"turnId":ended.turn_id,"sequence":sequence,"ended":true,"outcome":ended.outcome})
+                        } else {
+                            let started:dim_agent_types::TurnStartData = serde_json::from_value(data).expect("turn start contract");
+                            json!({"turnId":started.turn_id,"sequence":sequence,"ended":false})
+                        }
                     });
                     let mut output = None;
-                    if let Some(turn) = &turn && turn["ended"] == false && p.turn_id.is_none() {
+                    if let Some(turn) = &turn && turn["ended"] == false && p.turn_id.is_none() && p.input_id.is_none() {
                         let mut request = TimelineQuery {
                             scope: TimelineQueryScope::Branch, from: None, through: Some(result.through), include_publishing: false,
                             query: QuerySpec {

@@ -49,6 +49,9 @@ Provider 与 Provider 选择由 Provider 的转换生成：Migration 从快照�
 
 ## Session 的历史与续聊状态
 
+导入的 Session 以当前 App Server 协议 v4 记录 owner 版本。v1–v3 连接不能附着或列出这些导入 Session；这是当前 CLI/Web 的投影，不是旧客户端的兼容目标。
+
+
 旧消息没有当前 Timeline，Migration 记录一次明确的导入操作，并将保存的消息内容转换为现有原生历史记录。来源标记、原消息 ID 和来源时间可追溯。导入不产生历史模型请求、工具派发、审批决定或用量测量，也不执行旧工具。
 
 会话目录分类遵循 [Session 分类](../appserver/session-classification.md)。旧设置的 `agentProfile: "reviewer"`、布尔值为真的 `__approvalReviewer`、`__subagentOrigin`、`__workflowAgentOrigin`、非空 `parentSessionId`，以及指向会话的 `subagent` 关系，标为 `internal`。父 ID 优先取设置，其次取唯一的 `subagent` 来源。没有内部来源时，显式的 `__sessionSource: "acp"` 标为 `acp`。缺少显式来源的旧记录须同时具有 ACP 的两个数组 `additionalDirectories` 和 `mcpServers`，且无指向该会话的关系，才沿用旧版 ACP 判定。其余来源保持 `unknown`。

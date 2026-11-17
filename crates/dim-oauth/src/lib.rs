@@ -36,7 +36,10 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     future::Future,
-    sync::{Arc, Mutex, OnceLock, Weak},
+    sync::{
+        Arc, Mutex, OnceLock, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use store::{Grant, Revision, Store};
@@ -193,6 +196,22 @@ struct HeldLease {
     expires_at: u64,
 }
 
+struct CatalogFlight {
+    account: AccountSnapshot,
+    cancel: CancellationToken,
+    waiters: AtomicUsize,
+    result: tokio::sync::watch::Sender<Option<Result<ManagedCatalog>>>,
+}
+
+struct CatalogWaiter(Arc<CatalogFlight>);
+impl Drop for CatalogWaiter {
+    fn drop(&mut self) {
+        if self.0.waiters.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.cancel.cancel();
+        }
+    }
+}
+
 struct Inner {
     store: Store,
     client: Client,
@@ -204,8 +223,7 @@ struct Inner {
     tasks: TaskTracker,
     attempts: Mutex<HashMap<String, Attempt>>,
     leases: Mutex<HashMap<String, HeldLease>>,
-    catalog: Mutex<Option<ManagedCatalog>>,
-    catalog_gate: tokio::sync::Mutex<()>,
+    catalog_flight: Mutex<Option<Arc<CatalogFlight>>>,
     /// Wakes the background refresher after this process signs an account in.
     signed_in: tokio::sync::Notify,
     /// Ends the background refresher on quiesce.
@@ -241,7 +259,7 @@ impl DimOAuth {
         self.0.tasks.wait().await;
         self.0.leases.lock().unwrap().clear();
         self.0.attempts.lock().unwrap().clear();
-        *self.0.catalog.lock().unwrap() = None;
+        self.0.forget_catalog();
     }
 }
 
@@ -251,7 +269,9 @@ impl Inner {
             .get_or_init(|| BundledCatalog::load().expect("bundled model catalog is valid"))
     }
     fn forget_catalog(&self) {
-        *self.catalog.lock().unwrap() = None;
+        if let Some(flight) = self.catalog_flight.lock().unwrap().take() {
+            flight.cancel.cancel();
+        }
     }
     /// Renews the grant as it enters the freshness window, so an idle process
     /// keeps its refresh token alive. Request-time resolution stays the
@@ -764,9 +784,81 @@ impl Inner {
         }
     }
 
-    async fn catalog(self: Arc<Self>, provider: String) -> Result<ManagedCatalog> {
+    async fn catalog(
+        self: Arc<Self>,
+        provider: String,
+        cancel: CancellationToken,
+    ) -> Result<ManagedCatalog> {
         input(&provider)?;
-        let _gate = self.catalog_gate.lock().await;
+        if cancel.is_cancelled() {
+            return Err(ManagedError::Cancelled);
+        }
+        let account = self.store.status().await?;
+        let (waiter, mut receiver) = {
+            let closed = self.closed.lock().unwrap();
+            if *closed {
+                return Err(ManagedError::ServiceReloading);
+            }
+            let mut active = self.catalog_flight.lock().unwrap();
+            let flight = match active.as_ref().filter(|flight| {
+                !flight.cancel.is_cancelled() && same_account(&flight.account, &account)
+            }) {
+                Some(flight) => flight.clone(),
+                None => {
+                    if let Some(previous) = active.take() {
+                        previous.cancel.cancel();
+                    }
+                    let (result, _) = tokio::sync::watch::channel(None);
+                    let flight = Arc::new(CatalogFlight {
+                        account,
+                        cancel: CancellationToken::new(),
+                        waiters: AtomicUsize::new(0),
+                        result,
+                    });
+                    *active = Some(flight.clone());
+                    let owner = self.clone();
+                    let pending = flight.clone();
+                    self.tasks.spawn(async move {
+                        let result = owner.fetch_catalog(&pending.account, &pending.cancel).await;
+                        let result = if owner.stop.is_cancelled() {
+                            Err(ManagedError::ServiceReloading)
+                        } else if pending.cancel.is_cancelled() {
+                            Err(ManagedError::Cancelled)
+                        } else {
+                            result
+                        };
+                        let mut active = owner.catalog_flight.lock().unwrap();
+                        if active
+                            .as_ref()
+                            .is_some_and(|current| Arc::ptr_eq(current, &pending))
+                        {
+                            *active = None;
+                        }
+                        pending.result.send_replace(Some(result));
+                    });
+                    flight
+                }
+            };
+            flight.waiters.fetch_add(1, Ordering::AcqRel);
+            let receiver = flight.result.subscribe();
+            (CatalogWaiter(flight), receiver)
+        };
+        let _waiter = waiter;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(ManagedError::Cancelled),
+            _ = self.stop.cancelled() => Err(ManagedError::ServiceReloading),
+            result = receiver.wait_for(|result| result.is_some()) => {
+                result.map_err(|_| ManagedError::ServiceReloading)?.as_ref().unwrap().clone()
+            }
+        }
+    }
+
+    async fn fetch_catalog(
+        &self,
+        expected: &AccountSnapshot,
+        cancel: &CancellationToken,
+    ) -> Result<ManagedCatalog> {
         let (grant, status, body) = self
             .authorized(
                 |c, t| {
@@ -775,9 +867,12 @@ impl Inner {
                         trimmed(t.str("relayBaseUrl"))
                     ))
                 },
-                None,
+                Some(cancel),
             )
             .await?;
+        if !same_account(expected, &grant.account) {
+            return Err(ManagedError::AccountChanged);
+        }
         if !status.is_success() {
             return Err(rejected(status, &body));
         }
@@ -786,9 +881,7 @@ impl Inner {
         if !same_account(&grant.account, &account) {
             return Err(ManagedError::AccountChanged);
         }
-        let catalog = ManagedCatalog { account, models };
-        *self.catalog.lock().unwrap() = Some(catalog.clone());
-        Ok(catalog)
+        Ok(ManagedCatalog { account, models })
     }
 
     async fn usage(self: Arc<Self>, provider: String) -> Result<Usage> {
@@ -932,17 +1025,10 @@ impl Inner {
             Some(&Value::String(model.clone())),
             ManagedError::InvalidInput,
         )?;
-        let current = self.store.resolve(None).await?;
-        let cached = self
-            .catalog
-            .lock()
-            .unwrap()
+        let catalog = self
             .clone()
-            .filter(|c| same_account(&c.account, &current.account));
-        let catalog = match cached {
-            Some(catalog) => catalog,
-            None => self.clone().catalog(provider).await?,
-        };
+            .catalog(provider, self.stop.child_token())
+            .await?;
         let current = self.store.resolve(None).await?;
         let model = catalog
             .models
@@ -1070,9 +1156,10 @@ impl ManagedProvider for DimOAuth {
     ) -> ManagedFuture<WebSearchResponse> {
         self.owned(|inner| inner.web_search(request, cancel))
     }
-    fn catalog(&self, provider: &str) -> ManagedFuture<ManagedCatalog> {
+    fn catalog(&self, provider: &str, cancel: CancellationToken) -> ManagedFuture<ManagedCatalog> {
         let provider = provider.to_owned();
-        self.owned(|inner| inner.catalog(provider))
+        let inner = self.0.clone();
+        Box::pin(async move { inner.catalog(provider, cancel).await })
     }
     fn credential(&self, provider: &str, model: &str) -> ManagedFuture<CredentialLease> {
         let (provider, model) = (provider.to_owned(), model.to_owned());
@@ -1108,6 +1195,7 @@ impl ManagedProvider for DimOAuth {
             attempt.cancel.cancel();
             attempt.timer.cancel();
         }
+        self.0.forget_catalog();
         self.0.store.quiesce();
         self.0.stop.cancel();
         Box::pin(std::future::ready(()))
@@ -1165,8 +1253,7 @@ impl DynPlugin for DimOAuthPlugin {
                 tasks: TaskTracker::new(),
                 attempts: Mutex::new(HashMap::new()),
                 leases: Mutex::new(HashMap::new()),
-                catalog: Mutex::new(None),
-                catalog_gate: tokio::sync::Mutex::new(()),
+                catalog_flight: Mutex::new(None),
                 signed_in: tokio::sync::Notify::new(),
                 stop: CancellationToken::new(),
             })));

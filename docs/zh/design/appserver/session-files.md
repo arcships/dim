@@ -292,9 +292,20 @@ CREATE INDEX session_file_owners_by_file ON session_file_owners(file_id)
 | 方法 | 方式 | 请求 | 回复 |
 | --- | --- | --- | --- |
 | `put` | async | `{sessionId: string, name: string, content: string}`，`content` 是字节的 base64 | `{fileId: string, path: string, bytes: u64}` |
+| `import` | async | `{sessionId: string, name: string, source: string}`；已授权的本地绝对源路径 | `{fileId: string, path: string, bytes: u64}` |
+| `read` | async | `{sessionId: string, fileId: string, offset: u64}` | `{data: string, eof: bool}`；最多 64 KiB 字节的 base64，空块时 `eof` 为 true |
 | `register` | async | `{sessionId: string, path: string}`（ADR 013） | `{}`；Session 不存在时为 `not_found` |
 | `owns` | async | `{sessionId: string, path: string}` | `{owned: bool}` |
 | `owned_paths` | async | `{sessionId: string}` | `{paths: string[]}`，一个 Session 文件目录及每条输出路径 |
+
+`sessionFiles` 是数据面：catalog 共享此名称，SessionStore 在 Rust 类型键和
+`host_key("sessionFiles")` 提供同一个 `SessionFiles` 绑定。原生调用直接进入 owner，
+wire 调用在边界解码后调用同一组操作。
+
+`import` 沿用 `put` 的 Session、名称、16 MiB 上限、pending/owned 事务、权限与取消规则。
+FileStorage 固定源文件并以 64 KiB 缓冲复制；源文件增长或截短时在发布前失败。
+调用方负责授权源路径访问。`read` 只读取指定 Session 拥有的不可变文件，其他 Session
+的 fileId 返回 `not_found`。位于 EOF 或之后的偏移返回空块；放弃 wire 调用会取消它。
 
 - `path` 是 Session 资源节点上的绝对路径，与 `read` 为该 Session 解析的结果一致；`bytes` 是保存的长度。
 - `register`、`owns` 和 `owned_paths` 是 ADR 013 的所有权接口。`register` 解析路径并在调用方把路径交给模型之前记录；`owns` 同时读取两张所有权表，ADR 014 把它读作写入的 Session 自有事实。
@@ -501,6 +512,10 @@ pub struct StoredSessionFile { pub file_id: String, pub path: PathBuf, pub bytes
 pub enum SessionFileErrorCode { NotFound, Invalid, TooLarge, NodeUnavailable, Cancelled, Storage }
 pub struct SessionFileError { pub code: SessionFileErrorCode, pub message: String }
 pub trait SessionFilesService: Send + Sync + 'static {
+    fn import(&self, session_id: String, name: String, source: String, cancel: CancellationToken)
+        -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
+    fn read(&self, session_id: String, file_id: String, offset: u64, cancel: CancellationToken)
+        -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SessionFileError>> + Send + '_>>;
     fn put(&self, session_id: String, name: String, content: Vec<u8>, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>;
     fn register(&self, session_id: String, path: PathBuf)
@@ -510,12 +525,12 @@ pub trait SessionFilesService: Send + Sync + 'static {
     fn owned_paths(&self, session_id: String)
         -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
 }
-pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
+pub struct SessionFiles(pub Arc<dyn SessionFilesService>);
 ```
 
 `register` 保存解析后的输出路径；生产者已按自己的根检查过它。`owns` 接收解析后的绝对路径并读取两张所有权表：`session_output_owners` 的精确行，或路径位于 `<db>.session-files/<fileId>/` 内且 `session_file_owners` 拥有该 fileId。查询失败是错误，会导致拒绝访问。`owned_paths` 列出拥有的 fileId 目录和输出路径。
 
-`SessionStorePlugin` 接收数据库目录的根索引，提供 `SessionFilesHost`，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
+`SessionStorePlugin` 接收数据库目录的根索引，提供 `SessionFiles`，并在每次调用时用 `ctx.get_as` 读取 `FileStorage`。分叉、释放和清扫步骤是 SessionStore 基于原生存储连接的方法，供 S5c 使用。
 
 FileStorage：
 

@@ -35,7 +35,7 @@ Session 能力向本 Session 的 `ToolRegistry` 注册模型可调用的工具�
 
 | 工具来源 | 提供方式 |
 | --- | --- |
-| 宿主工具 | `ToolHost`（产品根由 `WorkspaceToolsPlugin` 提供；审批在执行时由分支 ToolExecutor 经 Approval 准入，不包装 ToolHost） |
+| 宿主工具 | `ToolHost`（产品根由 `WorkspaceToolsPlugin` 提供，数据面 `toolHost.execute` 见 §2.1；审批在执行时由分支 ToolExecutor 经 Approval 准入，不包装 ToolHost） |
 | Session 能力工具 | 本文的 `ToolContribution`，由部件注册；`branch`、`wait`、`skill`、`ask_user`、`agent` 分别由 `BranchTool`、`Wait`、`Skills`、`Questions`、`CollaborationSession` 以同一方式注册 |
 
 ## 2. 结构
@@ -86,6 +86,30 @@ impl ToolRegistry {
 | 执行 | 与挂载分开：已声明工具的调用是否执行由 Permission 决定（预设与 `allowedTools`/`disallowedTools`，可经 `session.permission.update` 实时修改）。Permission 从不改变声明，工具声明属于提示词前缀，因此上下文保持稳定。要阻止某个工具又保持上下文稳定，就保留挂载并在 Permission 中拒绝它；要改变模型看到的工具，就在创建 Session 时改挂载列表 |
 
 固定表含宿主的全部工具，在 `apply` 时构建。每个挂载的注册工具是注册表自有的带版本集合，键为 `#contributed:<tool>`；来源名满足 `[A-Za-z0-9_-]{1,64}`，不含 `#`，所以二者的键不会相同。没有挂载列表时，声明先按宿主的顺序列出宿主工具，再按名称列出注册工具；有挂载列表时，按列表顺序列出其中的宿主工具与注册工具；两种情况下其后都是其他来源的工具。
+
+工具处理器在 `execute` 之外还有两个可选问题，都有默认实现：`resolve_write` 在不产生效果的前提下解析写入目标，`risk` 给出 Approval 准入这次调用所用的风险类别。`claim(call, caller)` 返回处理器在调用被发布前要登记的东西：守卫释放即撤回，`ToolClaim::dispatch` 消费它来跑这次调用。发布与释放顺序见
+[Questions §2.1](../../design/plugins/Questions.md#21-the-claim-before-the-fact)。
+
+### 2.1 宿主工具的 `toolHost` 数据面
+
+宿主工具的实现是 Session 的 `ToolHost`，`ToolDriver` 是实现而不是第二个契约；同一操作按名暴露给其他语言
+（[服务面 §3.4](../../design/service-faces.md#34-对象句柄拆成操作加-id)）：
+
+```text
+toolHost.execute(call: ToolCall, caller: ToolExecutionContext, cancelled: () => void | Promise<void>)
+  call   = {id, name, input}
+  caller = {turnId, requestId, branchId}
+  -> ToolResult
+  -> error {code, message}
+```
+
+`definitions` 不进数据面：宿主工具的声明由 ToolRegistry 在 Session 内读取，随工具采用进入模型配置。
+`cancelled` 完成时取消这次调用的 token。桥调用方须在放弃调用前触发取消；仅丢弃桥返回值不会取消工作。直接丢弃 Rust 调用 future 会取消它。
+数据面是直接调用驱动的执行入口，只委托 `ToolDriver::execute`；它不调用 `resolve_write`、Permission 或 Approval。
+调用方负责准入。模型决定的工具调用必须经分支 [ToolExecutor](plugins/ToolExecution.md#toolexecutor) 的既有流程解析写入目标、判定风险并经 Approval 准入后才执行。
+`caller` 只标识执行上下文，不是授权凭据；持有此面的受信任插件不能把直接调用当作已经过模型工具审批。
+配置启用与模型决策的授权边界见 [ADR 003](../../adr/003-approval-scope.md)，服务部署的可达性见[服务面 §2.1](../../design/service-faces.md#21-目标)。
+各宿主绑定（`WorkspaceTools`、`ShellSession`、嵌入方自己的 `ToolHost`）给出同一个原始执行面。
 
 ## 3. 依赖方向
 
@@ -141,6 +165,7 @@ New bindings automatically adopt the replacement through the existing flow below
 - **MCP 启用**：已配置的服务器启用即运行，没有宿主本地批准（[ADR 003](../../adr/003-approval-scope.md)）；项目 `.mcp.json` 的条目默认禁用，只由用户的本地记录启用。已禁用或删除的服务器不发现、不连接，McpSession 不提供其集合（状态 `Disabled`）；配置或启用变化时立即撤销旧集合（仅刷新时保留旧集合至替换就绪）。配置替换时，已绑定请求所持的旧版本 handler 保留其代次直到释放；停用、删除或显式断开会在所有 Session 中关闭它，包括已绑定的请求；停用在来源文件不可读时也生效，被撤回的条目报告为 `Disabled` 而非连接失败。协调者的应用状态变化时各 McpSession 重读选择，外部编辑经目录读取或连接操作被发现后到达每个 Session；Session 开始关闭后不再发现或创建连接。文件根授权、工具权限预设与 Session 回放都不启用条目。McpSession 在首次发现及任何目录或设置读取之前先订阅 settings/applied，避免在初次读取与订阅之间提交的变更永远不被观察。
 - **维护变化**：动态来源按整组校验、原子替换；分支采用新的工具集合，作为 `context/configured` 的工具部分写入 Timeline（工具声明属于模型上下文）。
 - **请求一致**：在 Loop 构造请求时固定本请求的声明与实现（同一版本），供 ToolExecutor 按名取实现；本请求结算后释放。Loop 在 `turn/end` 统一 `retain_only(None)`，不在每种结束路径各自释放。
+- **MCP 工具的排序类别**：`tools/list` 的每项带 `annotations.readOnlyHint` 时，`McpTool.read_only` 记录 `readOnlyHint == true`，`McpToolHandler` 据此回答执行顺序类别（`Concurrent` 或 `Exclusive`），与宿主工具、注册工具同一机制（[ToolRegistry](plugins/ToolRegistry.md#handler-contract)、[ToolExecution](plugins/ToolExecution.md#toolexecutor)）。缺省、`false` 与非布尔值都是独占。**它只决定执行顺序**：定义里仍是 `risk: None`，Permission 与 Approval 只看 `risk`，所以 hint 不改变任何审批、允许集或权限；服务器误标只让它自己的调用失去顺序，回到同批并发。
 
 不负责：审批与权限、Skill、沙箱与路径、提示词来源、工具执行流程（归 ToolExecutor）。
 
@@ -211,6 +236,19 @@ ToolBinding 先取得注册表的来源状态 watch 再初读注册表，状态�
 `ToolSourcesView::subscribe` 仍提供只读状态，不用作部件间的空变更信号。
 
 ### 7.5 服务接口
+
+Session 数据面 `toolSourcesView` 是同一 ToolRegistry owner 的只读观察面；
+`toolRegistry` 负责贡献注册，观察面不暴露 handler 或注册操作。
+`get({})` 返回当前来源状态：按 source key 映射到
+`{adopted: string|null, rejected: {version, reason}|null}`。
+`observe({}, onState)` 返回持续观察的异步操作，先发送当前快照，再发送变化后的最新快照。
+它沿用 watch 语义，连续变化可以合并；不是持久事件日志，不保证每次变更都单独回调。
+回调在所有状态借用及提交锁之外运行。调用方取消、放弃等待或 owner 卸载结束观察，
+即使回调仍未返回也释放其等待；来源关闭正常结束，回调错误结束该观察并传播给调用方。
+这些操作不刷新来源或改变采用/拒绝规则，也不影响其他观察者。
+Rust 绑定的 `ToolSourcesView::get/subscribe` 直接读取同一个状态和 watch receiver，
+没有额外回调任务、通道或快照复制循环。
+
 
 **`ToolRegistry`（Session）**
 

@@ -26,6 +26,7 @@ async fn an_empty_session_id_is_invalid_params_and_an_unknown_one_stays_closed()
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: native.join("outputs"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),

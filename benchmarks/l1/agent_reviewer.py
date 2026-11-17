@@ -27,6 +27,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 
 #: DeepSeek-V4.1-Flash. It replaced glm-5.3 on 2026-09-30: glm spent its whole
 #: output budget reasoning on large merges and returned no verdict at all, while
@@ -39,6 +40,8 @@ DEFAULT_KEY_ENV = "DEEPSEEK_API_KEY"
 #: What a usable key-variable name looks like; see main() for why anything
 #: outside this shape is refused rather than looked up.
 _KEY_VAR_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+_VERSIONED_ROOT = re.compile(r"/v[0-9]+$")
 
 #: Judging traces data flow through a diff it has in full; `low` did that as well
 #: as glm did, and `high` spent up to twice the reasoning on the same merges.
@@ -79,7 +82,7 @@ class JudgeError(RuntimeError):
 
 def _endpoint(base_url: str) -> str:
     base = base_url.rstrip("/")
-    if not base.endswith("/v1"):
+    if not _VERSIONED_ROOT.search(urlsplit(base).path):
         base = f"{base}/v1"
     return f"{base}/chat/completions"
 

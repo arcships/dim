@@ -19,7 +19,7 @@ owner's design; the storage binding does not implement either business package.
 
 | Consumer | Required behavior | Existing mechanism | Missing repository work |
 | --- | --- | --- | --- |
-| Scheduler authorizing saves and reuse | Read the dispatched branch policy and the host default bound | `Session::get<PermissionState>`, native `session.permission.get`, Agents' Session defaults | A generated export of Agents' read-only `SessionPermissions` type |
+| Scheduler launching under a preset | Cap the saved preset against the live host bound at launch | S2's `sessions.launch` admission takes `policy?`, caps it and replies with the effective policy ([S2 D4/D6](appserver/sessions-service.md#3-decisions)) | None: Scheduler stores the preset and reads no permission state ([Scheduler §3.3](plugins/Scheduler.md#33-permission-of-a-run)) |
 | Workflow definitions | Read user, project and installed-package definitions; save project definitions within file authority | Settings owner reads/CAS and project authorization; `FileStorage` read/list/replace/create-directory | A native, row-scoped file binding restricted to definition directories |
 | Workflow report recovery | Retry a report whose reply was lost without writing it twice | S2 input with the branch accepting each `submissionId` once | Retain admitted native input work through settlement; verify resubmission across row and runtime replacement in actual Node flows |
 
@@ -77,16 +77,7 @@ existing errors. `permissionDefaults` needs no Session. Both look up the current
 index per call; an unavailable index throws code `reloading`. Neither mutates policy
 or grants authority.
 
-Scheduler declares `sessionPermissions` in its process module's `inject` and uses
-`permission` for the saving caller and, when reusing an existing Session, the
-recorded tool starter and reused Session's `main` branch. A launch supplies its
-recorded starter to S2, which already reads that current bound. Management
-`schedule.save` and reuse without a starter read `permissionDefaults`. Keep the accepted origin/cap replacement, policy
-comparison, Settings CAS and pre-effect rechecks in
-[Scheduler §3.3 and A.5](plugins/Scheduler.md#33-permission-of-a-run): a failed required
-read leaves the job unchanged; a read is not atomic with CAS or input; a stale
-CAS is returned without retry. Launch still applies its own current bound.
-There is no dummy Session, omitted starter or creation-config fallback.
+Scheduler declares no `sessionPermissions` and reads no permission state: a `session` target carries no policy, and a save only stores a `launch` target's optional preset. A launch passes that preset to `sessions.launch`, and Agents caps it against the live host bound as it does for every launch. The save, launch and recorded-policy rules are in [Scheduler §3.3](plugins/Scheduler.md#33-permission-of-a-run): a failed save leaves the job unchanged and a stale CAS is returned without retry. No policy is captured, compared or read before the write.
 
 Workflow A17 continues to use the first actual launch reply's policy. These
 methods do not move its capture point or add a new pre-launch policy check.
@@ -330,12 +321,7 @@ must land before repeated-Session shipping.
 Required flow evidence, with disposable homes and the real Node binding (the
 business assertions are completed with the subsequent plugin implementation):
 
-1. Use generated `sessionPermissions` from a real Node row. Narrow a branch after
-   creation; `permission` reads dispatched state, not config. Missing index or
-   Permission rejects with `RustError`/`SessionsError` code `reloading`, not an
-   `ok:false` envelope. Check the other owner codes and serde error data. Cover
-   index/Permission reload, host defaults, save failure/CAS
-   preservation and reuse of a Session above the job's effective policy.
+1. Use generated `sessionPermissions` from a real Node row. Narrow a branch after creation; `permission` reads dispatched state, not config. Missing index or Permission rejects with `RustError`/`SessionsError` code `reloading`, not an `ok:false` envelope. Check the other owner codes and serde error data. Cover index/Permission reload and host defaults.
 2. Exercise all three source locations through a declared Settings/source
    fixture. Protected client enablement works, owner enablement fails. Direct
    generated `workflowFiles` calls return Uint8Array/list/void and throw the
@@ -367,12 +353,7 @@ methods and all four file methods. Verify the export list and methods are presen
 a generator warning that omits a required method does not satisfy acceptance.
 Reuse the existing public SDK and Node flows for this evidence.
 
-The generated permission export is covered by
-`node_session_permissions_reads_live_policy_and_survives_index_reload` and the
-packed SDK fixture: live branch updates, host defaults, owner errors and serde
-error data, missing Permission during index reload, and unchanged consumer
-generation. Existing S2 flows protect the legacy error envelope. Scheduler's
-save/CAS/reuse business acceptance remains with its package implementation.
+The generated permission export is covered by `node_session_permissions_reads_live_policy_and_survives_index_reload` and the packed SDK fixture: live branch updates, host defaults, owner errors and serde error data, missing Permission during index reload, and unchanged consumer generation. Existing S2 flows protect the legacy error envelope. Scheduler reads no permission state, so no Scheduler acceptance depends on the export ([Scheduler §3.3](plugins/Scheduler.md#33-permission-of-a-run)).
 
 The file binding has a real Node source/authority flow,
 `node_workflow_files_enforces_project_and_original_row_package_authority`, and
@@ -440,7 +421,7 @@ attempt marker stays in the agreed format until a format decision removes it.
 | Item | Problem, existing alternatives and requested change | Ordering / owner |
 | --- | --- | --- |
 | Public run-store binding | Process-typescript §5.2 supplies the existing provider at the authorized product root, preserving the API and FileStorage authority. Public Node storage acceptance is implemented; report-specific evidence and package acceptance follow Workflow §3.4/Appendix D. | App Server binding delivered; business acceptance remains under #70/#71 |
-| Permission reads | Config/history do not provide dispatched Permission; launch-only capture does not meet Scheduler save/reuse. Agents supplies `SessionPermissions` through generated exports (§2). | Binding delivered by #259; Scheduler save/reuse acceptance remains under #70 |
+| Permission reads | Config/history do not provide dispatched Permission. Agents supplies `SessionPermissions` through generated exports (§2). Scheduler reads none: a launch passes its preset to `sessions.launch`, which caps it (§2, [Scheduler §3.3](plugins/Scheduler.md#33-permission-of-a-run)). | Binding delivered by #259; no Scheduler acceptance depends on it |
 | Workflow file export | Private `pluginFiles` cannot read raw project/package YAML; exposing native roots allows writes to other owners' state. Settings supplies generated `WorkflowFiles` scoped to project definitions and the calling row's read-only packages (§3). | Before P7 source acceptance; Settings/FileStorage and TS binding owners, #71 |
 | Native input settlement | An early index-unload reply or dropped bridge result is not a writer-termination proof. Retain admitted native input; the destination branch accepts each `submissionId` once, so a retry resubmits; verify §5. | Before P7 report acceptance; Agents and TS binding owners, #71 |
 

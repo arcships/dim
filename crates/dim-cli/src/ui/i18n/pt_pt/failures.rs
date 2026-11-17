@@ -1,6 +1,9 @@
 //! European Portuguese model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => {
+            "Detalhes indisponíveis; recolha e expanda para tentar novamente"
+        }
         "The response above is incomplete." => "A resposta acima está incompleta.",
         "Could not reach the provider, or the connection dropped" => {
             "Não foi possível alcançar o fornecedor, ou a ligação foi interrompida"

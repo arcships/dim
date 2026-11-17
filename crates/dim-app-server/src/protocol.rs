@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub(crate) async fn canonical_cwd(cwd: &str) -> Result<std::path::PathBuf, RpcError> {
@@ -97,7 +97,8 @@ pub enum Call {
     },
     Ping,
     Shutdown(Shutdown),
-    Create(Create),
+    Create(Box<Create>),
+    ModelPreview(ModelPreview),
     Summaries(Summaries),
     Catalog(Catalog),
     CatalogCancel(CatalogCancel),
@@ -106,6 +107,8 @@ pub enum Call {
     Submit(Submit),
     InputLookup(InputLookup),
     History(History),
+    HistoryDisplay(History, bool, bool),
+    HistoryDetail(HistoryDetail),
     Keys(Keys),
     Stop(Stop),
     Idle(Idle),
@@ -193,8 +196,14 @@ pub const UI_HOST_METHODS: [&str; 6] = [
 /// Management methods available to authenticated loopback Web clients.
 /// Replies contain account metadata and credential presence, never credentials.
 pub const WEB_MANAGEMENT_METHODS: &[&str] = &[
+    "report.prepare",
+    "report.plan",
+    "report.generate",
+    "report.cancel",
     "ui.extensions.list",
     "provider.management",
+    "provider.models.query",
+    "provider.management.list",
     "provider.create",
     "provider.update",
     "provider.probe",
@@ -252,6 +261,11 @@ pub const WEB_MANAGEMENT_METHODS: &[&str] = &[
     "collaboration.set_model_policy",
     "modality.capabilities",
     "modality.configure",
+    "modality.task.status",
+    "modality.task.list",
+    "modality.task.wait",
+    "modality.task.cancel",
+    "modality.task.result",
     "host.exec_shell.get",
     "host.exec_shell.update",
     "host.execution.backend",
@@ -514,8 +528,9 @@ pub struct Shutdown {
     #[serde(default)]
     pub force: bool,
     /// Refuse (`daemon_busy`) instead of stopping while another client
-    /// connection is open or a Session has an attached client or a running
-    /// turn. Advertised as `daemon.shutdown.ifIdle`.
+    /// connection is open or a Session has an attached client, accepted
+    /// branch work or a runtime activity hold. Advertised as
+    /// `daemon.shutdown.ifIdle`.
     #[serde(default)]
     pub if_idle: bool,
 }
@@ -526,6 +541,32 @@ pub struct ModelSelection {
     pub provider: Option<String>,
     #[serde(default, deserialize_with = "optional_non_null")]
     pub model_id: Option<String>,
+}
+/// `session.create`'s optional managed-worktree request: `cwd` is the source
+/// workspace the repository is resolved from, and the reply names the worktree
+/// and the Session's starting directory (#1451). Sent only when `hello.features`
+/// carries `session.create.worktree`.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateWorktree {
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub base: Option<String>,
+    /// Create-only: an existing branch is refused, never attached.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub branch: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelPreview {
+    pub cwd: String,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model: Option<ModelSelection>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub model_preferences: Option<crate::provider::ModelPreferences>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub startup: Option<crate::provider::StartupInput>,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub agent_id: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -558,6 +599,15 @@ pub struct Create {
     /// `acp` from an editor (#557). Any other value is refused at the boundary.
     #[serde(default, deserialize_with = "optional_non_null")]
     pub origin: Option<SessionOrigin>,
+    /// The operator's reply language for this Session. Absent means none was
+    /// selected and the base rule stands; clients send it only when the
+    /// daemon's `hello.features` names `session.language`, because older
+    /// daemons reject unknown fields.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub language: Option<dim_agent_runtime::ReplyLanguage>,
+    /// The managed worktree to create with the Session; absent keeps `cwd`.
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub worktree: Option<CreateWorktree>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -599,6 +649,14 @@ pub struct Catalog {
     /// Whether Sessions whose origin is `acp` are listed (#557).
     #[serde(default)]
     pub with_acp_sessions: bool,
+    /// Whether listed ACP Sessions bypass the preview and closed filters.
+    #[serde(default)]
+    pub with_acp_history: bool,
+    /// Whether Sessions whose origin is `automation` are listed: work a saved
+    /// configuration launched with no person present (#1421). Independent of
+    /// both other class filters.
+    #[serde(default)]
+    pub with_automation_sessions: bool,
     /// Whether the catalog also lists Sessions this daemon closed, which
     /// keep their stored rows. The flag is part of the cursor's filter set.
     #[serde(default)]
@@ -681,6 +739,10 @@ pub struct Fork {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Attach {
     pub session_id: String,
+    #[serde(default)]
+    pub display: bool,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub expected_cwd: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -725,6 +787,17 @@ pub struct History {
     /// Exclusive upper cursor of a backward page.
     #[serde(default, deserialize_with = "optional_cursor")]
     pub before: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoryDetail {
+    pub session_id: String,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub branch_id: Option<String>,
+    pub event_id: String,
+    #[serde(deserialize_with = "cursor")]
+    pub sequence: u64,
 }
 /// `session.keys`: the live keyed blocks of one branch segment at a fixed
 /// position (keyed-blocks §2.1).
@@ -791,7 +864,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 37] = [
+const BUILTIN_METHODS: [&str; 40] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -806,6 +879,7 @@ const BUILTIN_METHODS: [&str; 37] = [
     "ui.shutdown",
     "ui.replace",
     "session.create",
+    "session.model.preview",
     "session.summaries",
     "session.catalog",
     "session.catalog.cancel",
@@ -814,6 +888,8 @@ const BUILTIN_METHODS: [&str; 37] = [
     "session.submit",
     "session.input_lookup",
     "session.history",
+    "session.history.display",
+    "session.history.detail",
     "session.keys",
     "session.stop",
     "session.idle",
@@ -881,7 +957,8 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
                 Call::Ping
             }
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
-            "session.create" => Call::Create(params(raw_params)?),
+            "session.create" => Call::Create(Box::new(params(raw_params)?)),
+            "session.model.preview" => Call::ModelPreview(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
@@ -890,6 +967,23 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "session.submit" => Call::Submit(params(raw_params)?),
             "session.input_lookup" => Call::InputLookup(params(raw_params)?),
             "session.history" => Call::History(params(raw_params)?),
+            "session.history.display" => {
+                let mut value = raw_params;
+                let tail = value
+                    .as_object_mut()
+                    .and_then(|object| object.remove("tail"))
+                    .map(params::<bool>)
+                    .transpose()?
+                    .unwrap_or(false);
+                let transcript = value
+                    .as_object_mut()
+                    .and_then(|object| object.remove("transcript"))
+                    .map(params::<bool>)
+                    .transpose()?
+                    .unwrap_or(false);
+                Call::HistoryDisplay(params(value)?, tail, transcript)
+            }
+            "session.history.detail" => Call::HistoryDetail(params(raw_params)?),
             "session.keys" => Call::Keys(params(raw_params)?),
             "session.stop" => Call::Stop(params(raw_params)?),
             "session.idle" => Call::Idle(params(raw_params)?),
@@ -1123,6 +1217,13 @@ pub struct PingResult {
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ModelPreviewResult {
+    pub model: ModelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<dim_agent_types::ModelPreferences>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateResult {
     pub session_id: String,
     pub model: ModelId,
@@ -1132,6 +1233,9 @@ pub struct CreateResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_preferences: Option<dim_agent_types::ModelPreferences>,
     pub sequence: u64,
+    /// The managed worktree this creation made, when the request asked for one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<crate::worktrees::CreatedWorktreeReply>,
 }
 /// The fork's id and its `main` head once it is published.
 #[derive(Debug, Serialize)]
@@ -1148,6 +1252,7 @@ pub struct ForkResult {
 pub struct DeleteResult {
     pub deleted: bool,
 }
+/// Who created a Session and why it exists (`session-classification.md` §3.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionOrigin {
@@ -1155,6 +1260,9 @@ pub enum SessionOrigin {
     Acp,
     Internal,
     Unknown,
+    /// A Session `sessions.launch` created because its caller declared that a
+    /// saved configuration runs the work, with no person present (#1421).
+    Automation,
 }
 impl SessionOrigin {
     /// The value the stored Session record holds for this origin.
@@ -1164,6 +1272,7 @@ impl SessionOrigin {
             Self::Acp => "acp",
             Self::Internal => "internal",
             Self::Unknown => "unknown",
+            Self::Automation => "automation",
         }
     }
     /// The origin a stored value names; `None` for a value this build does not
@@ -1174,6 +1283,7 @@ impl SessionOrigin {
             "acp" => Some(Self::Acp),
             "internal" => Some(Self::Internal),
             "unknown" => Some(Self::Unknown),
+            "automation" => Some(Self::Automation),
             _ => None,
         }
     }
@@ -1203,7 +1313,7 @@ pub struct SessionInfo {
 }
 /// The `session.attach` reply: the attached Session's directory record, as
 /// `session.summaries` gives it, plus the preferences its adopted
-/// configuration sends. Only this reply and `session.create` name them.
+/// configuration sends. Summaries do not include these preferences.
 #[derive(Debug, Serialize)]
 pub struct AttachResult {
     #[serde(flatten)]
@@ -1242,6 +1352,11 @@ pub struct AgentInfo {
 #[derive(Debug, Serialize)]
 pub struct SubmitResult {
     pub event: Arc<AgentEvent>,
+    /// Work the submit checks did not do, for the caller to show: each warning
+    /// names the check that raised it (Hooks A.6.2). Absent when empty, and
+    /// never filled for protocol v1 or v2.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<dim_agent_types::SubmitWarning>,
 }
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
@@ -1256,6 +1371,7 @@ pub enum Reply {
     Contributed(Value),
     Ping(PingResult),
     Create(CreateResult),
+    ModelPreview(ModelPreviewResult),
     Fork(ForkResult),
     /// The `session.delete` reply: whether this call removed the Session.
     Deleted(DeleteResult),
@@ -1269,6 +1385,8 @@ pub enum Reply {
     Submit(SubmitResult),
     InputLookup(InputLookupResult),
     History(crate::tree_protocol::HistoryResult),
+    HistoryDisplay(crate::tree_protocol::DisplayResult),
+    HistoryDetail(Box<serde_json::value::RawValue>),
     Branches(crate::tree_protocol::BranchesResult),
     BranchGet(crate::tree_protocol::BranchDirectoryView),
     Keys(crate::tree_protocol::KeysResult),
@@ -1381,6 +1499,7 @@ notifications! {
     ApprovalCancelled(ApprovalCancelled) = "approval.cancelled",
     Closed(ClosedNotice) = "session.closed",
     TreeEvent(crate::tree_protocol::EventNotice) = "session.event",
+    Display(crate::tree_protocol::DisplayNotice) = "session.display",
     BranchState(crate::tree_protocol::StateNotice) = "session.state",
     TreeApprovalRequest(crate::tree_protocol::ApprovalRequest) = "approval.request",
     TreeApprovalCancelled(crate::tree_protocol::ApprovalCancelled) = "approval.cancelled",

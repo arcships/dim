@@ -43,6 +43,54 @@ export function nextAlphaVersion(requested, reserved = []) {
   return version;
 }
 
+/**
+ * The product fields of `root` and the version each carries, named as a refusal
+ * reports them. These are the fields a release PR synchronizes: one version is
+ * shared by the executable, the eight npm packages and both runtime files.
+ */
+function productVersionFields(root) {
+  const cargo = readFileSync(path.join(root, 'Cargo.toml'), 'utf8')
+    .match(/\[workspace\.package\]\s+version = "([^"]+)"/)[1];
+  const wrapper = JSON.parse(readFileSync(path.join(root, 'npm/package.json')));
+  const runtime = JSON.parse(readFileSync(path.join(root, 'runtime/package.json')));
+  const runtimeLock = JSON.parse(readFileSync(path.join(root, 'runtime/package-lock.json')));
+  return [
+    ['Cargo.toml [workspace.package] version', cargo],
+    ['npm/package.json version', wrapper.version],
+    ...Object.entries(wrapper.optionalDependencies)
+      .map(([name, value]) => [`npm/package.json optionalDependencies ${name}`, value]),
+    ['runtime/package.json version', runtime.version],
+    ['runtime/package-lock.json version', runtimeLock.version],
+    ['runtime/package-lock.json packages[""] version', runtimeLock.packages[''].version],
+  ];
+}
+
+/**
+ * The product fields of `root` that do not carry `version`, each as
+ * `<field> says <committed>`; empty when the checkout carries it everywhere.
+ */
+export function versionMismatches(root, version) {
+  return productVersionFields(root)
+    .filter(([, committed]) => committed !== version)
+    .map(([field, committed]) => `${field} says ${committed}`);
+}
+
+/**
+ * Refuses `version` unless `root` carries it in every product field, and names
+ * the two remedies. A version that is already tagged or published never equals
+ * the allocated one: the allocator adds one to the highest alpha that is tagged
+ * or on npm, so equality already excludes that case and the refusal names it
+ * anyway.
+ */
+export function assertReleaseVersion(root, version) {
+  const mismatches = versionMismatches(root, version);
+  if (mismatches.length === 0) return version;
+  throw new Error(`This main commit does not record ${version}: ${mismatches.join('; ')}. `
+    + `Merge the release PR that commits ${version} into main, then dispatch again. `
+    + `For recovery, dispatch an existing tag instead: -f tag=v${version}. `
+    + `A version that is already tagged or published is rebuilt from its tag, never allocated again.`);
+}
+
 export function setAlphaVersion(version) {
   assert(alphaVersion.test(version), 'Expected an alpha version');
   if (version === currentVersion) return;
@@ -60,8 +108,16 @@ export function setAlphaVersion(version) {
 }
 
 if (import.meta.main) {
-  const [version] = process.argv.slice(2);
-  if (version) setAlphaVersion(version);
+  const [first, second] = process.argv.slice(2);
+  if (first === '--verify') {
+    assert(second, 'Usage: node scripts/alpha-version.mjs --verify VERSION');
+    try {
+      console.log(assertReleaseVersion(repo, second));
+    } catch (error) {
+      console.error(error.message);
+      process.exit(1);
+    }
+  } else if (first) setAlphaVersion(first);
   else {
     const tags = execFileSync('git', ['tag', '--list', 'v*-alpha.*'], { cwd: repo, encoding: 'utf8' });
     console.log(nextAlphaVersion(undefined, tags.trim().split('\n').map(tag => tag.slice(1)).filter(Boolean)));

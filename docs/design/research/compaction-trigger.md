@@ -41,7 +41,7 @@ Every statement carries its kind of evidence:
   messages (`provider_baseline`), or a full local count when there is no usable baseline (the first
   request, after a completed compaction, after a model or configuration change).
   Aimux reports `prompt_tokens` for Anthropic as `input + cache_creation + cache_read`
-  (`vendor/aimux/aimux-providers/src/anthropic/usage.rs`), so the baseline is the full prompt.
+  (`aimux-providers`' `anthropic/usage.rs`), so the baseline is the full prompt.
 - Retention: `retain_limit` is the `turn/start` of the oldest of the last `RETAINED_TURNS = 2`
   turns; with fewer turns there is no limit. `CompactionInput::cut` takes the latest legal cut at or
   before the limit, and only under `fallback` (budget recovery) the latest legal cut overall.

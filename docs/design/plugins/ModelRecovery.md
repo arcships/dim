@@ -1,8 +1,16 @@
-# ModelRecovery
+# ModelRecovery — proposal
+
+This is a proposed plugin, not an available runtime capability. The disposer
+registration and `step/disposition` below require a Loop owner contract and
+implementation; callers cannot use them today. Whether this additional
+partial-output continuation is needed remains a design decision. Existing
+request retries and Loop's continuation for announced but unexecuted calls do
+not depend on this proposal. Delivery and decisions are tracked in
+[#1669](https://github.com/arcships/dim/issues/1669).
 
 Design: [model-retry-recovery §6](../research/model-retry-recovery.md#6-跨请求续接modelrecovery-的目标合同).
 Scope: branch. Owner contracts:
-[Loop](../../architecture/rust-agent/plugins/Loop.md#a-failed-model-step-and-its-disposer),
+[Loop](../../architecture/rust-agent/plugins/Loop.md#failure-handling-boundaries),
 [ModelProvider](../../architecture/rust-agent/plugins/ModelProvider.md#failure-chain) and
 [InputQueue](../../architecture/rust-agent/plugins/InputQueue.md#handover-inputs).
 
@@ -12,7 +20,7 @@ ModelRecovery is one branch part. It registers the disposer of a failed model
 step with the Loop's port as an effect of its own `apply`; the registration
 lasts until the part unloads. It has no settings and writes no event of its
 own: its only writes are handover inputs, through the branch's normal input
-entrance. It is in the default product profile: it has no setting, so
+entrance. The proposed placement is the default product profile: it has no setting, so
 default-on is what makes the continuation reach users, and a profile without
 its row runs the failure path unchanged. It never runs a model or a tool, never
 writes `turn/end`, `step/model-start` or `model/call`, and never reads another
@@ -61,7 +69,11 @@ named by `failure_sequence`, the request's output facts, the turn's
 - **Retryable failure.** `failure.kind` is `network`, `rate_limited` or
   `server_error`. Every other kind, including `unknown`, `malformed_response`,
   `output_limit`, `context_too_long` and the credential kinds, is outside the
-  first coverage.
+  first coverage. A failure whose reply announced calls it never executed
+  reaches this decision only when the turn's one continuation is already spent:
+  the Loop continues it first, without a disposer, and the handover
+  continuation spends that same slot when its consumption lands
+  ([Loop](../../architecture/rust-agent/plugins/Loop.md#a-failed-step-whose-calls-were-announced-and-never-executed)).
 - **Committed output.** The failed request committed a `step/text`,
   `step/thinking`, `step/tool-use-start`, `step/tool-use` or
   `step/model-content` fact. Output that was produced but dropped at
@@ -79,6 +91,9 @@ named by `failure_sequence`, the request's output facts, the turn's
 - **No accepted continuation yet.** After this turn's `turn/start`, the turn
   has no `context/prepare` carrying `failure_chain`. The continuation's own
   `context/prepare` carries it, so a second failure in the same turn declines.
+  The Loop also spends the turn's one continuation when it continues a reply
+  whose calls were announced and never executed, so that continuation and this
+  one share the same slot and a turn accepts one of them.
 
 The tool-boundary case declines for both reasons: a tool call from a no-tools
 continuation request settles failed with `failure.kind = unknown`, which is
@@ -126,10 +141,7 @@ ModelProvider's, inside the continuation request.
 
 ## 5. Observers
 
-Goal, Scheduler and Workflow observe the turn; a continuation writes no
-intermediate `turn/end`, so each sees one `turn/end` for the turn and does
-not treat the failed request as the end of the work. If the continuation also
-fails, the terminal `turn/end` carries that failure and is the one they read.
+Goal and Workflow observe the turn; a continuation writes no intermediate `turn/end`, so each sees one `turn/end` for the turn and does not treat the failed request as the end of the work. If the continuation also fails, the terminal `turn/end` carries that failure and is the one they read.
 
 ## 6. Rule check
 
@@ -153,8 +165,20 @@ fails, the terminal `turn/end` carries that failure and is the one they read.
 
 ## 7. Requirements raised to mechanism owners
 
-None. The contracts this design uses are stated by their owners: the Loop's
-disposer port and `step/disposition`, ModelProvider's `failure_chain`,
-InputQueue's handover input. No infrastructure changes: no Timeline,
-Dispatcher, facade or rutis change. The part adds its own plugin row and
-feature registration, and the generated graph and catalog follow.
+The Loop handover is a proposed requirement, not an existing dependency:
+
+- **Problem:** after partial output, request replay may be unsafe, while Loop
+  otherwise settles the turn without consulting a recovery plugin.
+- **Existing mechanisms:** request-local retries and the announced-call
+  continuation do not provide a plugin decision handover.
+- **Required capability:** if this proposal is selected, Loop must define and
+  implement registration, failure identity, answer acceptance and settlement.
+- **Ordering:** answers must be ordered against stop and steer; withdrawal,
+  reload and close must settle the handover without reviving stale inputs.
+- **Owner:** Loop; [#1669](https://github.com/arcships/dim/issues/1669) records the
+  boundary decision. A future implementation needs separate acceptance before
+  adding a port, event or default-profile row.
+
+The existing failure-chain and handover-input contracts alone do not establish
+this end-to-end path. This proposal does not change Timeline, Dispatcher,
+facades or rutis.

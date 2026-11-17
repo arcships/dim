@@ -272,10 +272,48 @@ fn pipe_bind(name: &str, first: bool) -> io::Result<LocalStream> {
     }
 }
 /// Addresses actually bound by the transport plugin.
-pub(crate) struct ListenAddresses {
+pub struct ListenAddresses {
     pub unix_path: Option<PathBuf>,
     pub pipe_name: Option<String>,
     pub websocket_address: Option<SocketAddr>,
+}
+
+/// The `read` reply: the addresses as UTF-8 text, as every path that crosses
+/// is ([service faces §1](../../../docs/design/service-faces.md#1-规则)).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BoundAddresses {
+    pub unix_path: Option<String>,
+    pub pipe_name: Option<String>,
+    pub websocket_address: Option<String>,
+}
+
+/// What `listenAddresses.read` fails with: `{code, message}`.
+#[derive(Debug, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ListenAddressesError {
+    #[error("{message}")]
+    InvalidPath { message: String },
+}
+
+#[rutis::service]
+impl ListenAddresses {
+    /// The addresses this process bound, if any.
+    pub fn read(&self) -> std::result::Result<BoundAddresses, ListenAddressesError> {
+        let unix_path = match &self.unix_path {
+            Some(path) => Some(path.to_str().map(str::to_owned).ok_or_else(|| {
+                ListenAddressesError::InvalidPath {
+                    message: format!("unix socket path is not UTF-8: {}", path.display()),
+                }
+            })?),
+            None => None,
+        };
+        Ok(BoundAddresses {
+            unix_path,
+            pipe_name: self.pipe_name.clone(),
+            websocket_address: self.websocket_address.map(|address| address.to_string()),
+        })
+    }
 }
 
 /// Owns the listeners and accept tasks. Accepting starts once the server is
@@ -500,7 +538,8 @@ async fn upgrade(
         .on_upgrade(move |socket| async move {
             let tracker = hub.tasks.clone();
             let task = tracker.spawn(async move {
-                run_ws(hub, socket, Entry::Bare).await;
+                let closing = hub.closing();
+                run_ws(hub, socket, Entry::Bare, closing).await;
             });
             let _ = task.await;
         })
@@ -583,26 +622,34 @@ impl Writer {
 #[cfg(any(unix, windows))]
 async fn run_local(hub: Arc<ConnectionHub>, stream: LocalStream) {
     let (read, write) = tokio::io::split(stream);
+    let closing = hub.closing();
     run_connection(
         hub,
         Reader::Local(BufReader::new(read), Vec::new()),
         Writer::Local(write),
         Entry::Local,
+        closing,
     )
     .await;
 }
-pub(crate) async fn run_ws(hub: Arc<ConnectionHub>, socket: WebSocket, entry: Entry) {
+pub(crate) async fn run_ws(
+    hub: Arc<ConnectionHub>,
+    socket: WebSocket,
+    entry: Entry,
+    closing: CancellationToken,
+) {
     let (write, read) = socket.split();
-    run_connection(hub, Reader::Ws(read), Writer::Ws(write), entry).await;
+    run_connection(hub, Reader::Ws(read), Writer::Ws(write), entry, closing).await;
 }
 async fn run_connection(
     hub: Arc<ConnectionHub>,
     mut reader: Reader,
     mut writer: Writer,
     entry: Entry,
+    closing: CancellationToken,
 ) {
     let local = entry == Entry::Local;
-    let (connection, mut outbound) = Connection::new(hub.clone(), entry);
+    let (connection, mut outbound) = Connection::new(hub.clone(), entry, closing);
     let closed = connection.closed.clone();
     let timeout = hub.config().write_timeout;
     let writer_task = tokio::spawn(async move {
@@ -734,6 +781,8 @@ async fn run_connection(
                                                 methods.push("session.catalog.origins");
                                                 methods.push("session.catalog.workspaces");
                                                 methods.push("session.catalog.includeClosed");
+                                                methods.push("session.catalog.acpHistory");
+                                                methods.push("session.catalog.automation");
                                             }
                                             methods
                                         } else {
@@ -747,6 +796,8 @@ async fn run_connection(
                                             "session.branches",
                                             "session.branch.get",
                                             "session.turn.get",
+                                            "session.turn.get.inputId",
+                                            "session.input.pending.blockPresence",
                                             "session.submit",
                                             "session.stop",
                                             "session.keys",
@@ -758,13 +809,33 @@ async fn run_connection(
                                             "session.branch_create",
                                             "session.branch_end",
                                             "session.create.origin",
+                                            "session.language",
+                                            "session.attach.expectedCwd",
                                         ]);
+                                        if hub.config().database_path.is_some()
+                                            && hub.config().product_home.is_some()
+                                        {
+                                            features.push("session.create.worktree");
+                                        }
+                                        if params.protocol_version >= 3 {
+                                            features.extend([
+                                                "session.history.display",
+                                                "session.history.detail",
+                                            ]);
+                                        }
+                                        if local {
+                                            features.push("session.model.preview");
+                                        }
                                         if local && hub.config().product_home.is_some() {
                                             features.push("session.create.modelFromSession");
                                         }
                                         if hub.config().database_path.is_some() {
                                             features.push("session.fork");
                                             features.push("session.history.latestTurn");
+                                            if params.protocol_version >= 3 {
+                                                features.push("session.history.display.tail");
+                                                features.push("session.history.display.transcript");
+                                            }
                                         }
                                     }
                                     if trusted && hub.config().local_execution() {

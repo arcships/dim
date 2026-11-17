@@ -2,6 +2,7 @@
 //! files, S2 and C1.
 use super::*;
 use dim_agent_runtime::testing::branch_events;
+use dim_app_server::protocol::PROTOCOL_VERSION;
 use std::path::{Path, PathBuf};
 
 /// The `dim-workflow` entry (Workflow §5.2), byte for byte.
@@ -1500,7 +1501,7 @@ async fn node_workflow_stop_and_reload_settle_held_consumed_and_completed_work()
         },
     )
     .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, PROTOCOL_VERSION).await;
     process_typescript::select_model(&mut client).await;
     let created = client
         .rpc(
@@ -2029,7 +2030,7 @@ async fn native_retention(fault: &str) {
         builder.require_feature(session_typescript::ControlledGate::feature(send));
     })
     .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, PROTOCOL_VERSION).await;
     process_typescript::select_model(&mut client).await;
     let external = client
         .rpc("session.create", json!({"cwd":home,"tools":[]}))

@@ -5,6 +5,7 @@ import { chmodSync, copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, read
   rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { buildPlatform, checkArchitecture } from './native-binary.mjs';
+import { readStoreFormats } from './store-formats.mjs';
 
 const [binaryDirectory, destination, version, sourceCommit, ...rest] = process.argv.slice(2);
 const usage = 'Usage: node scripts/stage-release.mjs BIN_DIR DESTINATION VERSION SOURCE_COMMIT --plugins DIR --rust-notices FILE [--account]';
@@ -29,6 +30,8 @@ const repo = path.resolve(import.meta.dirname, '..');
 const productVersion = readFileSync(path.join(repo, 'Cargo.toml'), 'utf8').match(/\[workspace.package\]\s+version = "([^"]+)"/)[1];
 assert.equal(version, productVersion, 'Version must match Cargo workspace');
 assert.equal(version, JSON.parse(readFileSync(path.join(repo, 'npm/package.json'))).version, 'Version must match npm wrapper');
+const storage = readFileSync(path.join(repo, 'crates/dim-app-server/src/storage/sqlite.rs'), 'utf8');
+const storeFormats = readStoreFormats(storage);
 const output = path.resolve(destination);
 assert(!existsSync(output), 'Destination already exists');
 const digest = (data) => createHash('sha256').update(data).digest('hex');
@@ -55,9 +58,9 @@ try {
     mkdirSync(path.dirname(destination), { recursive: true });
     copyFileSync(path.join(repo, 'vendor/grok-build', file), destination);
   }
-  mkdirSync(path.join(output, 'licenses/aimux'), { recursive: true });
-  copyFileSync(path.join(repo, 'vendor/aimux/LICENSE'), path.join(output, 'licenses/aimux/LICENSE'));
   copyFileSync(path.join(repo, 'NOTICE'), path.join(output, 'NOTICE'));
+  mkdirSync(path.join(output, 'licenses/aimux'), { recursive: true });
+  copyFileSync(path.join(repo, 'licenses/aimux/LICENSE'), path.join(output, 'licenses/aimux/LICENSE'));
   copyFileSync(rustNotices, path.join(output, 'licenses/RUST-THIRD-PARTY-NOTICES.txt'));
   const toolchain = { rust: readFileSync(path.join(repo, 'rust-toolchain.toml'), 'utf8').match(/channel = "([^"]+)"/)[1] };
   const files = {};
@@ -65,7 +68,7 @@ try {
     if (entry.isFile()) files[path.relative(output, path.join(entry.parentPath, entry.name)).split(path.sep).join('/')] = digest(readFileSync(path.join(entry.parentPath, entry.name)));
     else assert(entry.isDirectory(), 'Unexpected release file type');
   }
-  writeFileSync(path.join(output, 'release-manifest.json'), `${JSON.stringify({ schemaVersion: 1, version, sourceCommit, platform, toolchain, account, files }, null, 2)}\n`);
+  writeFileSync(path.join(output, 'release-manifest.json'), `${JSON.stringify({ schemaVersion: 1, version, sourceCommit, platform, toolchain, account, storeFormats, files }, null, 2)}\n`);
   console.log(`Staged ${platform} ${version} (${account ? 'with Dim account' : 'API key only'}).`);
 } catch (error) {
   rmSync(output, { recursive: true, force: true });

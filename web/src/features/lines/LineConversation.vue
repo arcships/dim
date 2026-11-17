@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { GitBranch, LoaderCircle, RotateCcw } from "lucide-vue-next"
-import { MAIN_BRANCH, type DraftAttachments } from "../../rpc/protocol"
+import { MAIN_BRANCH, type DraftAttachments, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
+import { useToastStore } from "../../stores/toast"
 import { useUiStore } from "../../stores/ui"
 import ApprovalPrompt from "../chat/ApprovalPrompt.vue"
 import ComposerPanel from "../chat/ComposerPanel.vue"
@@ -17,6 +17,7 @@ const { t } = useI18n()
 const chat = useChatStore()
 const connection = useConnectionStore()
 const ui = useUiStore()
+const toast = useToastStore()
 const composer = ref<InstanceType<typeof ComposerPanel>>()
 
 const view = computed(() => chat.views[props.sessionId])
@@ -30,6 +31,7 @@ const searchFiles = computed(() => view.value?.methods.includes("session.files.s
 const open = computed(() => line.value === undefined
   ? branch.value?.status !== "failed"
   : line.value.state.kind === "working" || line.value.state.kind === "waiting")
+const prompting = computed(() => approval.value !== undefined || questions.value.length > 0)
 const title = computed(() => lineName(t, line.value, props.branchId))
 const state = computed(() => line.value?.state ?? (branch.value?.running ? { kind: "working" as const } : { kind: "waiting" as const }))
 const parentName = computed(() => {
@@ -48,8 +50,15 @@ const stopping = computed(() => branch.value?.stopping ?? false)
 
 watch(() => [props.sessionId, props.branchId], () => chat.ensureLine(props.sessionId, props.branchId), { immediate: true })
 
-function send(text: string, attachments: DraftAttachments): Promise<void> {
-  return chat.submit(props.sessionId, props.branchId, text, attachments)
+function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
+  return chat.submit(props.sessionId, props.branchId, text, attachments, mode)
+}
+
+/** Withdraws one held message of this line, so the composer can recall it into the draft; a message the run already adopted stays out. */
+async function withdrawHeld(input: QueuedInput): Promise<WithdrawResult["status"]> {
+  const result = await chat.withdrawInput(props.sessionId, props.branchId, input.id, undefined)
+  if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
+  return result.status
 }
 
 function quote(text: string): void {
@@ -98,7 +107,7 @@ function noModel(): void {
   <section class="line-conversation" :aria-label="t('lines.lineAria', { name: title })">
     <header class="line-crumb">
       <div class="line-crumb-main">
-        <GitBranch :size="14" aria-hidden="true" />
+        <UIcon name="i-lucide-git-branch" class="size-3.5 shrink-0" aria-hidden="true" />
         <strong>{{ title }}</strong>
         <code>{{ shortId(branchId) }}</code>
         <span class="line-state" :data-tone="lineStateTone(state)">{{ lineStateLabel(t, state) }}</span>
@@ -106,23 +115,23 @@ function noModel(): void {
       <div class="line-crumb-meta">
         <span v-if="parentName">{{ t("lines.from", { name: parentName }) }}<template v-if="cut"> · {{ cut }}</template></span>
         <span v-else>{{ t("lines.main") }}</span>
-        <button v-if="open && branch?.lastTurnEnd !== undefined" type="button" class="ui-button" data-variant="ghost" data-size="xs" @click="newChild">{{ t("lines.newChild") }}</button>
-        <button v-if="open && line?.id !== 'main'" type="button" class="ui-button" data-variant="ghost" data-size="xs" @click="end">{{ t("lines.end") }}</button>
+        <UButton v-if="open && branch?.lastTurnEnd !== undefined" color="neutral" variant="ghost" size="xs" @click="newChild">{{ t("lines.newChild") }}</UButton>
+        <UButton v-if="open && line?.id !== 'main'" color="neutral" variant="ghost" size="xs" @click="end">{{ t("lines.end") }}</UButton>
       </div>
     </header>
 
     <div v-if="!view || !branch || branch.status === 'loading'" class="line-loading" role="status">
-      <LoaderCircle :size="16" class="is-spinning" aria-hidden="true" />
+      <UIcon name="i-lucide-loader-circle" class="size-4 animate-spin shrink-0" aria-hidden="true" />
       <span>{{ t("common.loading") }}</span>
     </div>
     <div v-else-if="branch.status === 'failed'" class="line-loading line-error" role="alert">
       <p>{{ branch.error || t("lines.loadFailed") }}</p>
-      <button type="button" class="ui-button" data-variant="secondary" data-size="sm" @click="retry">
-        <RotateCcw aria-hidden="true" />{{ t("lines.retry") }}
-      </button>
+      <UButton color="neutral" variant="soft" size="sm" icon="i-lucide-rotate-ccw" @click="retry">
+        {{ t("lines.retry") }}
+      </UButton>
     </div>
     <template v-else>
-      <TimelineView
+      <TimelineView :session-id="sessionId"
         :rows="rows"
         :earlier="branch.earlier"
         :loading-earlier="branch.loadingEarlier"
@@ -143,28 +152,33 @@ function noModel(): void {
       <div v-else-if="questions.length" class="line-approval question-prompts">
         <QuestionPrompt v-for="question in questions" :key="JSON.stringify([question.branchId, question.requestId, question.callId])" :session-id="sessionId" :question="question" />
       </div>
-      <ComposerPanel
-        v-else-if="open"
-        ref="composer"
-        :running="running"
-        :stopping="stopping"
-        :model="view.model"
-        :send="send"
-        :stores-pastes="view?.methods.includes('attachment.put') === true"
-        :search-files="searchFiles"
-        :stop="stop"
-        :model-selectable="false"
-        :select-model="noModel"
-        :placeholder="t('lines.placeholder')"
-        :create-branch="connection.supports('session.branch_create') ? createBranch : undefined"
-        :open-lines="() => ui.openLines(sessionId)"
-        variant="panel"
-      >
-        <template #status>
-          <span class="line-status">⑂ {{ lineStateLabel(t, state) }}</span>
-        </template>
-      </ComposerPanel>
-      <div v-else class="line-readonly">
+      <KeepAlive>
+        <ComposerPanel
+          v-if="open && !prompting"
+          ref="composer"
+          :session-id="sessionId"
+          :running="running"
+          :stopping="stopping"
+          :model="view.model"
+          :send="send"
+          :stores-pastes="view?.methods.includes('attachment.put') === true"
+          :search-files="searchFiles"
+          :stop="stop"
+          :held="branch?.queued ?? []"
+          :withdraw-held="view?.methods.includes('session.input.withdraw') === true ? withdrawHeld : undefined"
+          :model-selectable="false"
+          :select-model="noModel"
+          :placeholder="t('lines.placeholder')"
+          :create-branch="connection.supports('session.branch_create') ? createBranch : undefined"
+          :open-lines="() => ui.openLines(sessionId)"
+          variant="panel"
+        >
+          <template #status>
+            <span class="line-status">⑂ {{ lineStateLabel(t, state) }}</span>
+          </template>
+        </ComposerPanel>
+      </KeepAlive>
+      <div v-if="!open && !prompting" class="line-readonly">
         <span>⑂ {{ lineStateLabel(t, state) }}</span>
         <span>{{ t("lines.readOnly") }}</span>
       </div>

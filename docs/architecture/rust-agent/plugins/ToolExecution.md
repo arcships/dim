@@ -48,11 +48,10 @@ a replacement during preparation. A retired handler follows its own stopping
 contract; it is not replaced by a current handler of the same name. Failed
 preparation drops its source references without registering a request.
 
-For a continuation request ([Loop](Loop.md#a-failed-model-step-and-its-disposer)),
-request preparation declares no tools and ToolBinding fixes an empty snapshot
-for that request. The choice belongs to the Loop's request preparation and has
-no separate flag: the committed `context/prepare` already records the declared
-tools.
+The [Loop continuation for announced but unexecuted calls](Loop.md#a-failed-step-whose-calls-were-announced-and-never-executed)
+uses ordinary request tool binding. A request's committed `context/prepare`
+records its declared tools; carrying a failure chain does not itself make the
+request text-only.
 
 ### Rule check
 
@@ -105,6 +104,17 @@ Owner: [tool_executor.rs](../../../../crates/dim-agent-capabilities/src/tool_exe
 Executes a committed tool batch against pinned handlers after approval, isolates
 individual call failures and publishes correlated results.
 
+The claim of a call exists before its batch is published: Loop asks each
+handler for one immediately before appending `step/tool-call`
+([Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact)),
+and ToolBinding holds the claims with the request's tool snapshot. AgentLoop
+drops them with that snapshot, so a batch that never dispatches releases every
+claim without a separate step; a claim that reaches execution is taken from the
+binding and consumed by `ToolClaim::dispatch`, which runs the call as resolved
+and approved and keeps whatever the handler registered until it settles. An `execute` without a claim, which is the
+rebuilt batch after a reload, claims for itself through the same handler
+callback.
+
 Before admitting a `write_filesystem` call, the pinned handler's `resolve_write`
 may resolve its target using metadata only. Approval and execution receive that
 same resolved call; the committed model call is unchanged. A resolver cannot
@@ -121,6 +131,31 @@ contract](Permission.md#write-targets-without-the-facts) decides whether the tar
 | `B:Dispatcher` | Replay batches, receive batches/interrupts and report faults. |
 | `B:Timeline` | Commit progress/results. |
 
+### Scheduling
+
+A batch keeps the order the model wrote for the calls that can change state.
+Each call's handler answers `concurrency`: `Concurrent` calls share a step with
+the `Concurrent` calls next to them, and an `Exclusive` call is a step of its
+own. A step starts only after every call of an earlier step settled, and the
+calls inside one step run together. `[read, edit, read, read, exec, read]` is
+four steps: `[read]`, `[edit]`, `[read, read]`, `[exec]`, `[read]` — the second
+`read` pair shares a step because both answered `Concurrent`, and each `edit`
+and `exec` waits for everything before it. A handler that answers nothing is
+`Exclusive`, so a tool whose effects nobody declared keeps the call order.
+
+Steps are fixed before any call is polled. Admission is not: every call's
+Permission check, `PreToolUse` advice and approval request starts when the
+batch does and settles on its own, whatever step is running, so the questions
+of one batch appear together. A call runs once its own admission finished and
+the step before it settled; it never waits for a sibling's admission. A
+refused, cancelled or panicking call settles as its own error result and
+releases its step, so a later step still starts. Interrupt and reload reach a
+call still waiting for its step as `Tool cancelled before execution`.
+
+The class decides order only. It is not a field of `ToolDefinition`: it never
+reaches a model request's declaration or a persisted configuration, and it
+grants no permission. Approval still admits each call under its risk.
+
 ### Events and lifetime
 
 Consumes `step/tool-call`, `stop/interrupt`, `turn/start`, `turn/end`; produces
@@ -130,15 +165,28 @@ declarations on it travel on that fact
 ([session boundary A.6](../../../design/contracts/session-boundary.md#a6-tool-effects));
 a call it settles without a tool result carries none. Calls in a batch settle
 before the correlated batch result.
-Only one batch runs at once. Interrupts cancel current work and suppress late
-host invocation. Cleanup closes admission, cancels, joins tracked work and
-aggregates failures. Reload settles unmatched committed batches as errors rather
-than rerunning effects; reload-settled results make Loop fail the turn.
-Recovery selects batch identities without a matching `call_event_id` result,
-and reads their turn, request and call identities. It does not read tool
-arguments. Interrupt state comes from the latest interrupt or turn boundary
-at the same fixed read boundary.
-Cancellation is not rollback of a tool's completed side effect.
+One top-level batch runs at once. A child batch carries `parent_call_id`; the
+top-level consumer ignores child batches, and the nested gate writes their
+`step/tool-call`/`step/tool-result` and joins them before the outer result. Child
+batches may run in parallel and may themselves carry grandchildren. Interrupts
+cancel current work, including child calls, and suppress late host invocation.
+Cleanup closes admission, cancels, joins tracked work and aggregates failures.
+The child gate bounds its join at five seconds; a handler that ignores its
+cancellation token past the grace is outside the contract and its child fact may
+settle after the outer result. Child events are execution facts:
+`context.render` and `context.state` are false for an event with
+`parent_call_id`, so child results never enter model context. Reload settles open
+child batches first as errors, then settles an open outer batch with the
+confirmed effects of terminal child results; child results keep their effects. Reload-settled results make Loop fail the turn. Recovery selects
+batch identities without a matching `call_event_id` result, reads their turn,
+request, call and parent identities, and does not read tool arguments.
+For an unfinished outer batch, one query selects child result effects for its
+known parent call IDs. Each parent receives only its own children's effects;
+arguments and result text are not read. During cancellation this query omits
+parents whose returned result already contains effects, and is skipped when
+none need it. State is not cached beyond settlement. Interrupt
+state comes from the latest interrupt or turn boundary at the same fixed read
+boundary. Cancellation is not rollback of a tool's completed side effect.
 
 A request prepared with no tools never runs a call: the executor's snapshot
 refusal ([tool_binding.rs](../../../../crates/dim-agent-capabilities/src/tool_binding.rs))
@@ -155,7 +203,9 @@ delivered, are protocol
 `progress admission failed` and `capability reloading`, and `Tool cancelled
 before execution` say the work did not run; `Tool execution cancelled:
 capability reloading` says the call may have run, possibly to the end, and that
-its result was replaced because the capability reloaded. The model checks the
+its result was replaced because the capability reloaded. An open outer batch
+with child results says `Tool did not finish before Capability reload; an effect
+may have happened` and carries the confirmed child effects. The model checks the
 effect before it retries, and reports the work neither as done nor as never run.
 
 ### Tests

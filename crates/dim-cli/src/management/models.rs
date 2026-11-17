@@ -28,6 +28,7 @@ const EDITABLE: &[&str] = &[
     "reasoning",
     "modalityCapabilities",
     "endpoint",
+    "alias",
 ];
 
 /// `provider.management`'s reply: the Providers it could read, and the ones
@@ -99,6 +100,9 @@ pub struct Model {
     pub actions: Vec<String>,
     #[serde(default)]
     pub endpoint_override: Option<String>,
+    /// The model this entry's id stands for, when the Provider says so.
+    #[serde(default)]
+    pub alias: Option<String>,
 }
 
 /// A `ModelEntry`, as the owner reports it.
@@ -135,6 +139,8 @@ pub struct Metadata {
     pub match_strategy: Option<String>,
     #[serde(default)]
     pub capability_override_fields: Vec<String>,
+    #[serde(default)]
+    pub identification: Option<crate::wire::Identification>,
     #[serde(default)]
     pub raw: Map<String, Value>,
 }
@@ -711,6 +717,38 @@ fn endpoint_line(model: &Model) -> Option<String> {
     })
 }
 
+/// How identification read this entry's id, in a word.
+fn identification_line(identification: &crate::wire::Identification) -> String {
+    if identification.rule == "ambiguous" {
+        let candidates: Vec<String> = identification
+            .candidates
+            .iter()
+            .map(|candidate| format!("{}/{}", candidate.provider_id, candidate.model_id))
+            .collect();
+        return tf(
+            "Identified {rule}",
+            &[(
+                "rule",
+                &format!(
+                    "{}, the rows that name it disagree: {}",
+                    t("ambiguous"),
+                    candidates.join(", ")
+                ),
+            )],
+        );
+    }
+    let rule = match identification.rule.as_str() {
+        "provider-exact" => t("from the Provider's own list"),
+        "qualified" => t("from the whole qualified id"),
+        "token" => t("by its tokens"),
+        "canonical" => t("by its canonical id or display name"),
+        "custom-provider" => t("from the custom-provider list"),
+        "merge" => t("by merging the rows that name it"),
+        other => other,
+    };
+    tf("Identified {rule}", &[("rule", rule)])
+}
+
 /// A model the owner reports unusable says why, in the owner's vocabulary.
 fn reason_line(reason: &str) -> String {
     match reason {
@@ -817,6 +855,20 @@ fn descriptor(model: &Model) -> ManagementDetail {
                 &[("fields", &metadata.capability_override_fields.join(", "))],
             ));
         }
+        if let Some(identification) = &metadata.identification {
+            lines.push(identification_line(identification));
+            for limit in &identification.filled {
+                lines.push(tf(
+                    "{field} {value} supplied by {provider}/{model}",
+                    &[
+                        ("field", &limit.field),
+                        ("value", &count(limit.value)),
+                        ("provider", &limit.provider_id),
+                        ("model", &limit.model_id),
+                    ],
+                ));
+            }
+        }
     }
     if let Some(reason) = &model.unavailable_reason {
         lines.push(reason_line(reason));
@@ -882,6 +934,9 @@ pub fn edit_template(provider: &Provider, model: &Model) -> Value {
             "endpoint".into(),
             json!({"action": "set", "value": endpoint}),
         );
+    }
+    if let Some(alias) = &model.alias {
+        document.insert("alias".into(), json!({"action": "set", "value": alias}));
     }
     Value::Object(document)
 }

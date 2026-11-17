@@ -1,6 +1,6 @@
 ## Summary
 
-<!-- What changes and why. Link the design document. -->
+<!-- What changes and why. Link existing design material for the affected public promises; explain any changes to them. -->
 
 ## Design rule checklist
 
@@ -15,6 +15,7 @@ Answer each item; write "n/a" with a reason where it does not apply. Rules: [des
 - [ ] Batch: facts that take effect together are written in one batch, with the deciding event last.
 - [ ] Context: only handed-over, consumed facts reach the model context.
 - [ ] No reading another plugin's internal state or deciding for it.
+- [ ] Cross-language faces: new public services use data faces, existing dependencies state their current face, and a leaf injects and provides only data faces ([service faces](../docs/design/service-faces.md)).
 - [ ] Business configuration stays out of loader rows; contracts are language-neutral.
 - [ ] Missing mechanism capabilities are raised as requirements (problem, why existing mechanisms fail, generic capability, ordering impact, owner/issue).
 - [ ] Timeline holds only facts later decisions use; UI-only changes go through Session broadcast notices; process-level state is changed through its owner's typed write operation, not the Timeline.

@@ -2,6 +2,10 @@ use crate::history::HistoryEntry;
 use dim_agent_runtime::PromptSourceTarget;
 use dim_agent_types::*;
 use futures_util::Stream;
+use rutis::Ctx;
+use rutis::host::{CtxHost, Key};
+use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue};
+use serde_json::json;
 use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -669,43 +673,328 @@ pub fn undeclared_modality_operation(operation: &str) -> HostError {
     )
 }
 
-/// Resolves a configuration once. Executing an adopted request must not call
-/// this port again to replace its capabilities with the latest catalog.
-pub trait ResolveModelSelection: Send + Sync + 'static {
-    fn resolve(
-        &self,
+/// What a process model port fails with: `{code, message}`. The owner's
+/// [`HostError`] becomes one of these codes where the face is served, so a
+/// caller of any language reads the same vocabulary.
+#[derive(Debug, Clone, serde::Serialize, thiserror::Error)]
+#[serde(tag = "code", rename_all = "snake_case")]
+pub enum ModelPortError {
+    /// The caller's request is not one the owner admits.
+    #[error("{message}")]
+    InvalidRequest { message: String },
+    /// The model named is not one the owner serves for this use.
+    #[error("{message}")]
+    ModelUnavailable { message: String },
+    /// The caller ended the call.
+    #[error("{message}")]
+    Cancelled { message: String },
+    /// The owner is unloading; the call can succeed once it reloads.
+    #[error("{message}")]
+    OwnerClosed { message: String },
+    /// The owner's read failed.
+    #[error("{message}")]
+    Failed { message: String },
+}
+impl From<HostError> for ModelPortError {
+    /// The failure as the face reports it: the kind a caller acts on becomes
+    /// its own code, and every other failure is `failed`.
+    fn from(error: HostError) -> Self {
+        let message = error.to_string();
+        match error {
+            HostError::Cancelled(_) => Self::Cancelled { message },
+            HostError::Failed {
+                kind: HostErrorKind::OwnerClosed,
+                ..
+            } => Self::OwnerClosed { message },
+            HostError::Failed {
+                kind: HostErrorKind::InvalidRequest,
+                ..
+            } => Self::InvalidRequest { message },
+            HostError::Failed {
+                kind: HostErrorKind::Unsupported,
+                ..
+            } => Self::ModelUnavailable { message },
+            HostError::Failed { .. } => Self::Failed { message },
+        }
+    }
+}
+
+/// The `resolve` request of `modelSelectionHost`: the model the caller names,
+/// if any, and the directory a project's configuration is read from.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModelSelectionRequest {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub explicit: Option<ModelId>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "optional_non_null"
+    )]
+    pub cwd: Option<String>,
+}
+
+impl ModelSelectionRequest {
+    /// The request of a Rust caller: `cwd` crosses as its UTF-8 path, as every
+    /// path that crosses does.
+    pub fn at(
         explicit: Option<ModelId>,
-        cwd: Option<std::path::PathBuf>,
+        cwd: Option<&std::path::Path>,
+    ) -> std::result::Result<Self, ModelPortError> {
+        let cwd = cwd
+            .map(|path| {
+                path.to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| ModelPortError::InvalidRequest {
+                        message: format!("the working directory is not UTF-8: {}", path.display()),
+                    })
+            })
+            .transpose()?;
+        Ok(Self { explicit, cwd })
+    }
+}
+
+/// An owner's resolution of one configuration, as the face's one operation.
+/// Resolved once: executing an adopted request must not call the owner again
+/// to replace its capabilities with the latest catalog.
+pub type ResolveModelSelection = Arc<
+    dyn Fn(
+            Option<ModelId>,
+            Option<std::path::PathBuf>,
+            CancellationToken,
+        ) -> HostFuture<'static, ModelSelection>
+        + Send
+        + Sync,
+>;
+
+/// The `modelSelectionHost` face: `resolve` is the one operation, served under
+/// the name for any language and called directly by a Rust reader through the
+/// binding that holds it.
+#[derive(Clone)]
+pub struct ModelSelectionHost(ResolveModelSelection);
+
+impl ModelSelectionHost {
+    /// Binds an owner's resolution as the face's operation.
+    pub fn new(resolve: ResolveModelSelection) -> Self {
+        Self(resolve)
+    }
+
+    /// The model one request resolves to.
+    pub async fn resolve(
+        &self,
+        request: ModelSelectionRequest,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, ModelSelection>;
+    ) -> std::result::Result<ModelSelection, ModelPortError> {
+        crate::port_faces::read(
+            cancel,
+            || ModelPortError::Cancelled {
+                message: format!("{MODEL_SELECTION}: cancelled"),
+            },
+            |cancel| async move {
+                (self.0)(
+                    request.explicit,
+                    request.cwd.map(std::path::PathBuf::from),
+                    cancel,
+                )
+                .await
+                .map_err(ModelPortError::from)
+            },
+        )
+        .await
+    }
 }
-pub struct ModelSelectionHost(pub Arc<dyn ResolveModelSelection>);
 
-/// The environment variable names the owner reads credentials from. The
-/// owner answers from its current state on every call, so a later owner can
-/// add a name without a consumer change.
-pub trait CredentialVariables: Send + Sync + 'static {
-    fn credential_variables(&self) -> std::collections::BTreeSet<String>;
+/// Provides one owner's [`ModelSelectionHost`]: the binding its Rust readers
+/// hold and the face any other language calls by name.
+pub fn provide_model_selection(ctx: &Ctx, host: &ModelSelectionHost) -> rutis::Result<()> {
+    let host = Arc::new(host.clone());
+    ctx.provide_at(Key::<ModelSelectionHost>::of(), host.clone())?;
+    ctx.provide_at(crate::port_faces::face_key::<ModelSelectionHost>(), host)?;
+    Ok(())
 }
-pub struct CredentialVariablesHost(pub Arc<dyn CredentialVariables>);
 
-/// Enumerates the models the owner would serve: the same selectability rules as
-/// execution, one read, no live request. The caller passes its cancellation
-/// token; cancelling it cancels the read.
-pub trait SelectableModels: Send + Sync + 'static {
-    fn selectable(&self, cancel: CancellationToken)
-    -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
+const MODEL_SELECTION: &str = "modelSelectionHost";
+
+impl HostDispatch for ModelSelectionHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"resolve": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "resolve" {
+            return Err(crate::port_faces::unknown_method(MODEL_SELECTION, method));
+        }
+        let request: ModelSelectionRequest = crate::port_faces::request(MODEL_SELECTION, args)?;
+        let host = self.clone();
+        crate::port_faces::serving(MODEL_SELECTION, async move {
+            host.resolve(request, CancellationToken::new()).await
+        })
+    }
+}
+
+/// The environment variable names the owner reads credentials from, bound as
+/// the face's one operation. It answers from the owner's current state on
+/// every call, so a later owner can add a name without a consumer change.
+pub type CredentialVariableNames =
+    Arc<dyn Fn() -> std::collections::BTreeSet<String> + Send + Sync>;
+
+/// The `variables` reply: the names only, never a credential value.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CredentialVariablesReply {
+    pub variables: std::collections::BTreeSet<String>,
+}
+
+/// The `credentialVariablesHost` face: the names of the environment variables
+/// the owner reads credentials from. The owner binds its read; a Rust reader
+/// calls [`Self::variables`] directly and a part of another language calls the
+/// same operation by name.
+pub struct CredentialVariablesHost(CredentialVariableNames);
+
+impl CredentialVariablesHost {
+    /// Binds an owner's read as the face's operation.
+    pub fn new(variables: CredentialVariableNames) -> Self {
+        Self(variables)
+    }
+}
+
+#[rutis::service]
+impl CredentialVariablesHost {
+    /// The names, in the owner's set order.
+    pub fn variables(&self) -> CredentialVariablesReply {
+        CredentialVariablesReply {
+            variables: (self.0)(),
+        }
+    }
+}
+
+/// The `selectableModels` reply: the models the owner would serve, with the
+/// rules execution applies.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SelectableModelsReply {
+    pub models: Vec<ModelCapabilitySnapshot>,
+}
+
+/// The `selectableForModality` reply: the models the owner would serve for a
+/// non-conversational use.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModalityModelsReply {
+    pub models: Vec<ModalityModelSnapshot>,
+}
+
+/// An owner's enumeration of the models it would serve: the same
+/// selectability rules as execution, one read, no live request.
+pub type SelectableModelsRead = Arc<
+    dyn Fn(CancellationToken) -> HostFuture<'static, Vec<ModelCapabilitySnapshot>> + Send + Sync,
+>;
+
+/// An owner's enumeration of the models it would serve for a
+/// non-conversational use, with the modality operation ids each declares.
+pub type ModalityModelsRead =
+    Arc<dyn Fn(CancellationToken) -> HostFuture<'static, Vec<ModalityModelSnapshot>> + Send + Sync>;
+
+/// The `selectableModelsHost` face: its two reads are its operations, served
+/// under the name for any language and called directly by a Rust reader
+/// through the binding that holds them.
+#[derive(Clone)]
+pub struct SelectableModelsHost {
+    selectable: SelectableModelsRead,
+    modality: ModalityModelsRead,
+}
+
+impl SelectableModelsHost {
+    /// Binds an owner's two enumerations as the face's operations.
+    pub fn new(selectable: SelectableModelsRead, modality: ModalityModelsRead) -> Self {
+        Self {
+            selectable,
+            modality,
+        }
+    }
+
+    /// The models the owner would serve, as execution would select them.
+    pub async fn selectable_models(
+        &self,
+        cancel: CancellationToken,
+    ) -> std::result::Result<SelectableModelsReply, ModelPortError> {
+        crate::port_faces::read(
+            cancel,
+            || ModelPortError::Cancelled {
+                message: format!("{SELECTABLE_MODELS}: cancelled"),
+            },
+            |cancel| async move {
+                let models = (self.selectable)(cancel)
+                    .await
+                    .map_err(ModelPortError::from)?;
+                Ok(SelectableModelsReply { models })
+            },
+        )
+        .await
+    }
+
     /// The models the owner would select for a non-conversational use, with
     /// the modality operation ids each declares: the same provider, account,
-    /// model, route, credential and status rules as [`Self::selectable`],
+    /// model, route, credential and status rules as [`Self::selectable_models`],
     /// without its text-modality, chat-kind and declared-text-limit
     /// requirements. A model that declares no modality operation is omitted.
-    fn selectable_for_modality(
+    pub async fn selectable_for_modality(
         &self,
         cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
+    ) -> std::result::Result<ModalityModelsReply, ModelPortError> {
+        crate::port_faces::read(
+            cancel,
+            || ModelPortError::Cancelled {
+                message: format!("{SELECTABLE_MODELS}: cancelled"),
+            },
+            |cancel| async move {
+                let models = (self.modality)(cancel)
+                    .await
+                    .map_err(ModelPortError::from)?;
+                Ok(ModalityModelsReply { models })
+            },
+        )
+        .await
+    }
 }
-pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
+
+/// Provides one owner's [`SelectableModelsHost`]: the binding its Rust readers
+/// hold and the face any other language calls by name.
+pub fn provide_selectable_models(ctx: &Ctx, host: &SelectableModelsHost) -> rutis::Result<()> {
+    let host = Arc::new(host.clone());
+    ctx.provide_at(Key::<SelectableModelsHost>::of(), host.clone())?;
+    ctx.provide_at(crate::port_faces::face_key::<SelectableModelsHost>(), host)?;
+    Ok(())
+}
+
+const SELECTABLE_MODELS: &str = "selectableModelsHost";
+
+impl HostDispatch for SelectableModelsHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"selectableModels": "async", "selectableForModality": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if !matches!(method, "selectableModels" | "selectableForModality") {
+            return Err(crate::port_faces::unknown_method(SELECTABLE_MODELS, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(SELECTABLE_MODELS, args)?;
+        let host = self.clone();
+        if method == "selectableModels" {
+            crate::port_faces::serving(SELECTABLE_MODELS, async move {
+                host.selectable_models(CancellationToken::new()).await
+            })
+        } else {
+            crate::port_faces::serving(SELECTABLE_MODELS, async move {
+                host.selectable_for_modality(CancellationToken::new()).await
+            })
+        }
+    }
+}
 
 /// One non-streaming request outside any Session: no tools, no Timeline.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -771,7 +1060,7 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-pub struct AuxiliaryModelHost(pub Arc<dyn CompleteAuxiliary>);
+pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
 
 pub trait ModelDriver: Send + Sync + 'static {
     fn invoke(
@@ -783,7 +1072,39 @@ pub trait ModelDriver: Send + Sync + 'static {
 }
 pub struct ModelHost(pub Arc<dyn ModelDriver>);
 
-#[derive(Debug, Clone)]
+/// The caller's cancellation as a function it passes, the form a data method
+/// takes it in ([service faces §1](../../../docs/design/service-faces.md#1-规则)):
+/// it completes when the caller cancels the call, and the result the call
+/// produces after observing it stands.
+pub type CancelledFn = Arc<
+    dyn Fn() -> rutis::host::BoxFuture<'static, std::result::Result<(), rutis::Error>>
+        + Send
+        + Sync,
+>;
+
+/// Runs `call`, which observes `cancel`, until it returns or the caller's
+/// `cancelled` function completes: then `cancel` ends the call and the call's
+/// own result is the answer.
+pub async fn call_until_cancelled<'a, T, E, F>(
+    cancelled: CancelledFn,
+    cancel: CancellationToken,
+    call: F,
+) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>> + Send + 'a,
+{
+    tokio::pin!(call);
+    tokio::select! {
+        result = &mut call => result,
+        _ = cancelled() => {
+            cancel.cancel();
+            call.await
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ToolExecutionContext {
     pub turn_id: String,
     pub request_id: String,
@@ -798,6 +1119,12 @@ pub trait ToolDriver: Send + Sync + 'static {
     fn resolve_write(&self, call: ToolCall, _: CancellationToken) -> HostFuture<'_, ToolCall> {
         Box::pin(async move { Ok(call) })
     }
+    /// Whether this call may run beside other calls of its batch. One driver
+    /// serves every host tool of a Session, so the answer is per call; the
+    /// default is [`crate::tool_registry::ToolConcurrency::Exclusive`].
+    fn concurrency(&self, _: &ToolCall) -> crate::tool_registry::ToolConcurrency {
+        crate::tool_registry::ToolConcurrency::Exclusive
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -806,6 +1133,33 @@ pub trait ToolDriver: Send + Sync + 'static {
     ) -> HostFuture<'_, ToolResult>;
 }
 pub struct ToolHost(pub Arc<dyn ToolDriver>);
+
+#[rutis::service]
+impl ToolHost {
+    /// Runs one call through the host's tools as `caller` names the branch's
+    /// execution. The driver is the implementation; this is the `toolHost`
+    /// face ([tool contributions §2.1](../../../docs/architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)).
+    ///
+    /// This is raw driver execution: it does not resolve write targets or run
+    /// Permission or Approval. The caller owns admission; model-driven calls
+    /// must use the branch ToolExecutor flow before reaching the driver.
+    /// `caller` identifies execution context and does not grant authority.
+    pub async fn execute(
+        &self,
+        call: ToolCall,
+        caller: ToolExecutionContext,
+        cancelled: CancelledFn,
+    ) -> Result<ToolResult, HostError> {
+        let cancel = CancellationToken::new();
+        let _dropped = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.0.execute(call, caller, cancel),
+        )
+        .await
+    }
+}
 
 /// What ContextPolicy hands a strategy: the entries from the previous cut
 /// on, the previous result, the request whose context is compacted and the
@@ -882,6 +1236,35 @@ pub trait ContextModel: Send + Sync + 'static {
     fn output_tokens(&self) -> f64;
     fn threshold_tokens(&self) -> f64;
     fn count_tokens(&self, request: &ModelRequest) -> f64;
+    /// Additive counting for persisted context statistics, or `None` when this
+    /// model's complete-request count cannot be composed from contributions.
+    fn contribution_counter(&self) -> Option<&dyn ContextCounter> {
+        None
+    }
+}
+
+/// A contribution counted with one [`ContextCounter::algorithm`]. Contributions
+/// may be summed component by component only within that algorithm.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextContribution {
+    pub serialized_bytes: u64,
+    pub images: u64,
+}
+
+/// Additive counts whose fixed contribution is included exactly once per
+/// request. For every request, estimating its fixed contribution plus its
+/// message contributions must equal [`ContextModel::count_tokens`].
+pub trait ContextCounter: Send + Sync {
+    /// Stable identity of the counting rules, including serialization ranges.
+    fn algorithm(&self) -> &str;
+    fn fixed(
+        &self,
+        system: Option<&SystemPrompt>,
+        tools: Option<&[ToolDefinition]>,
+    ) -> ContextContribution;
+    fn message(&self, message: &Message) -> ContextContribution;
+    fn estimate(&self, contribution: ContextContribution) -> f64;
 }
 /// A strategy's diagnostics: its model calls, their summed usage and its own
 /// record.
@@ -922,6 +1305,7 @@ pub(crate) fn add_usage(total: &mut Option<Usage>, usage: Usage) {
             };
             sum.cache_read_tokens = cache(sum.cache_read_tokens, usage.cache_read_tokens);
             sum.cache_write_tokens = cache(sum.cache_write_tokens, usage.cache_write_tokens);
+            sum.reasoning_tokens = cache(sum.reasoning_tokens, usage.reasoning_tokens);
         }
     }
 }
@@ -963,6 +1347,10 @@ pub trait CompactionStrategy: Send + Sync + 'static {
 /// when both are `Some`.
 pub struct CompactionStrategyHost(pub Option<Arc<dyn CompactionStrategy>>);
 pub trait ResolveContextModel: Send + Sync + 'static {
+    /// A model exposing a contribution counter must resolve its algorithm and
+    /// limits from provider/model, capabilities, config and metadata alone.
+    /// Statistics recovery passes empty messages and absent system/tools;
+    /// their saved contributions are not read again to resolve the counter.
     fn resolve(
         &self,
         request: Arc<ModelRequest>,
@@ -974,7 +1362,8 @@ pub struct ContextModelHost(pub Option<Arc<dyn ResolveContextModel>>);
 
 /// A Session file SessionStore stored. `path` is absolute on the Session's
 /// resource node and names the same bytes for the file's whole life.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoredSessionFile {
     pub file_id: String,
     pub path: std::path::PathBuf,
@@ -1000,6 +1389,40 @@ pub struct SessionFileError {
 /// The process service `sessionFiles`, provided by SessionStore: it stores a
 /// Session file and answers which artifacts a Session owns (ADR 013 D1).
 pub trait SessionFilesService: Send + Sync + 'static {
+    /// Imports an authorized local source into an immutable Session file.
+    fn import(
+        &self,
+        session_id: String,
+        name: String,
+        source: String,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>
+    {
+        let _ = (session_id, name, source, cancel);
+        Box::pin(async {
+            Err(SessionFileError {
+                code: SessionFileErrorCode::Invalid,
+                message: "File import is unavailable".into(),
+            })
+        })
+    }
+    /// Reads at most 64 KiB from an immutable file owned by the Session.
+    fn read(
+        &self,
+        session_id: String,
+        file_id: String,
+        offset: u64,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SessionFileError>> + Send + '_>> {
+        let _ = (session_id, file_id, offset, cancel);
+        Box::pin(async {
+            Err(SessionFileError {
+                code: SessionFileErrorCode::Invalid,
+                message: "File reading is unavailable".into(),
+            })
+        })
+    }
+
     /// Stores `content` once, read-only, as the file `name` owned by
     /// `session_id`. Cancellation takes effect until the file is committed;
     /// afterwards the reply stands.
@@ -1035,7 +1458,7 @@ pub trait SessionFilesService: Send + Sync + 'static {
 }
 /// The process service `sessionFiles`, provided by SessionStore, so that its
 /// consumers name no App Server type.
-pub struct SessionFilesHost(pub Arc<dyn SessionFilesService>);
+pub struct SessionFiles(pub Arc<dyn SessionFilesService>);
 
 pub struct IdentityContext;
 impl PrepareContext for IdentityContext {

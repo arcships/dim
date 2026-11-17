@@ -227,20 +227,18 @@ CLI 在提交前检查：
 
 限制（A2）：每次提交最多 20 张图片，整个编码请求不超过 16 MiB 传输帧；仍然超出帧的提交被拒绝并保留草稿。块保持其顺序。
 
-ModelProvider 补充（已在 S11 实现，`model_provider/images.rs`；[总体设计附录 B.1](../overview.md#b1-session-与分支-capability)），在构建模型请求时作用于每个图片块：
+ModelProvider 在构建对话模型请求时处理每个图片块，覆盖所有写入方的用户内容和工具结果。文件来源先解析为字节，再应用下表；引用契约见 [ImageUnderstanding §3](../../../design/plugins/ImageUnderstanding.md#3-references)。
 
 | 图片块 | 请求内容 |
 | --- | --- |
-| 请求所用模型接受图片输入，且适配器接受该块的格式和大小 | 原样发送 |
-| 模型不接受图片输入（Provider 目录） | 文本 `[Image omitted: the current model does not accept images.]` |
-| 能力未知 | 原样发送；由提供方决定（A4） |
-| URL 来源、缺失或无法解码的 base64 数据，或 PNG、JPEG、WebP、GIF 以外的格式 | 文本 `[Image omitted: the image cannot be sent to this model.]`（A10） |
+| 可解码的 base64 图片，格式为 PNG、JPEG、WebP 或 GIF；模型接受图片、不接受图片或能力未知均相同 | 文本 `img:` 加 base64 解码后的图片文件字节的 SHA-256 前 16 个小写十六进制字符；不散列像素或 base64 文本，相同字节得到相同引用 |
+| URL 来源、缺失或无法解码的 base64 数据，或本构建无法解码的格式 | 保留原有占位：纯文本模型为 `[Image omitted: the current model does not accept images.]`，否则为 `[Image omitted: the image cannot be sent to this model.]`（A10） |
 
-这里不检查大小：没有适配器公布按模型的图片大小上限，所以超大的图片照常发送，由提供方决定，与能力未知时相同（A4）。CLI 的缩放规则和限制（A2）在提交前仍然适用。
+CLI 的缩放规则和限制（A2）在提交前仍然适用；引用散列图片块实际携带的文件字节，不再次缩放或重编码。
 
-历史从不改变；每个请求按自己的模型重新决定。
+仅请求改变；历史、Timeline 和已采用输入保留原始图片块。不持久化引用，不增加跨请求缓存，切换回视觉模型也不发送像素。
 
-为什么放在 ModelProvider：图片检查不能放在 RPC 入口或 App Server（原则 §4 第 3 条和 §1），CLI 的检查覆盖不到原始客户端和其他写入方。不采用的做法：在 `session.submit` 上由 Rpc 校验（入口检查）；`input/message` 上的 before 回调（写入时还不知道消费它的请求用哪个模型）；Attachments 上传方法（覆盖不到其他写入方）。这项处理不写事件，历史不变；每个请求按已采用的 `context/configured` 和 Provider 目录决定，中断和重载只影响正在构建的请求。[#27](https://github.com/arcships/dim/issues/27) 已确认，构建请求时的占位是对已采用输入的格式转换，不是新的上下文路径。
+为什么放在 ModelProvider：图片处理不能放在 RPC 入口或 App Server（原则 §4 第 3 条和 §1），CLI 的检查覆盖不到原始客户端和其他写入方。这项处理不写事件，历史不变；中断和重载只影响正在构建的请求。[#27](https://github.com/arcships/dim/issues/27) 已确认，构建请求时的格式转换不是新的上下文路径。
 
 ### A.2 `attachment.put`
 
@@ -303,7 +301,7 @@ CLI 读取图片（剪贴板、`@`、粘贴的路径），检查后（A.1）在 
 
 工具结果中的图片不在这项需求内。S11 如何读取能力、在 ModelProvider 的哪里转换，属于 S11 的设计。
 
-**SessionStore：`sessionFiles`（S5a，[#59](https://github.com/arcships/dim/issues/59)，已在 [#95](https://github.com/arcships/dim/pull/95) 合入）。** 不超出 S5a 的设计：带上述错误码的 `put`、名称规则和 16 MiB 上限、在 txn 2 之前检查令牌，以及 dim-agent-capabilities `host` 中的 `SessionFilesHost`（Session 文件附录 A）。本次复核让 Session 文件 §9.2 与 A.2 一致：回复中没有 `lines`，`cancelled` 映射为 `service_reloading`，`storage` 映射为 `storage_failed`。
+**SessionStore：`sessionFiles`（S5a，[#59](https://github.com/arcships/dim/issues/59)，已在 [#95](https://github.com/arcships/dim/pull/95) 合入）。** 不超出 S5a 的设计：带上述错误码的 `put`、名称规则和 16 MiB 上限、在 txn 2 之前检查令牌，以及 dim-agent-capabilities `host` 中的 `SessionFiles`（Session 文件附录 A）。本次复核让 Session 文件 §9.2 与 A.2 一致：回复中没有 `lines`，`cancelled` 映射为 `service_reloading`，`storage` 映射为 `storage_failed`。
 
 **FileStorage（S6，[#51](https://github.com/arcships/dim/issues/51)）。** 无：Attachments 只经 SessionStore 访问文件。
 
@@ -407,10 +405,10 @@ Attachments 用 Rust 实现，放在自己的 crate `dim-agent-attachments` 中�
 
 | 中立契约 | Rust 绑定 |
 | --- | --- |
-| 插件 | `TypedPlugin`；`Deps = (Keyed<SessionIdentity>, Keyed<SessionFilesHost>, Keyed<SessionMethods>)` |
+| 插件 | `TypedPlugin`；`Deps = (Keyed<SessionIdentity>, Keyed<SessionFiles>, Keyed<SessionMethods>)` |
 | 安装 | `dim_agent_attachments::install(builder)`：`builder.require_feature(Feature::new("Attachments").session("Attachments", |names| names.part(AttachmentsPlugin)))`，一个登记自己 Session 部件的插件，由装配配置要求。`serve` 在设置了 `native_home` 时调用它；xtask 生成本地执行图时也调用它 |
 | 命名空间 `attachment` | 在 `Keyed<SessionMethods>` 依赖上调用 `methods.register(ctx, "attachment", vec![MethodDecl::new("attachment.put", true, Interruption::Drain)], handler)`（`dim_agent_capabilities::methods`），在 `apply` 中、插件自己的 effect 之后调用。`Handler` 接受 `(method, params, CancellationToken, Progress)`；不使用 `Progress`（`progress: false`） |
 | 参数与回复 | `methods::params::<T>(params)`（形状错误时为 `invalid_params`，包括未知字段）和 `methods::reply(value)` |
-| `sessionFiles.put` | `SessionFilesHost(Arc<dyn SessionFilesService>)`：`put(session_id, name, content: Vec<u8>, cancel)` 返回 `StoredSessionFile {file_id, path, bytes}` 或 `SessionFileError {code: SessionFileErrorCode, message}`（[Session 文件附录 A](../appserver/session-files.md#附录-a-rust-绑定)）；`session_id` 来自 `SessionIdentity`，`cancel` 是处理函数的令牌 |
+| `sessionFiles.put` | `SessionFiles(Arc<dyn SessionFilesService>)`：`put(session_id, name, content: Vec<u8>, cancel)` 返回 `StoredSessionFile {file_id, path, bytes}` 或 `SessionFileError {code: SessionFileErrorCode, message}`（[Session 文件附录 A](../appserver/session-files.md#附录-a-rust-绑定)）；`session_id` 来自 `SessionIdentity`，`cancel` 是处理函数的令牌 |
 | 错误 | `NotFound` → `RpcError::closed()`；`Cancelled` → `RpcError::reloading()`；`Invalid`、`TooLarge`、`NodeUnavailable`、`Storage` 以及 Attachments 自己的检查 → `RpcError::app(-32000, code, message)`，码见 A.2 |
 | 图片内容块 | `ContentBlock::Image { source: ImageSource { source_type: Base64 \| Url, media_type, data, url } }`（[content.rs](../../../../crates/dim-agent-types/src/content.rs)） |

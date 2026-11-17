@@ -210,6 +210,7 @@ impl Files {
         workspace_tools::install(
             &mut builder,
             WorkspaceToolsConfig {
+                boundary: None,
                 output_root: dir.join("output"),
             },
         );

@@ -1,7 +1,7 @@
 mod local_support;
 
 use dim_agent_capabilities::environment_clients::{
-    ClientChannel, ClientPresence, ClientsChanged, SessionClientsSource, clients_changes,
+    ClientChannel, ClientPresence, ClientsChanged, SessionPresences, clients_changes,
 };
 use dim_agent_runtime::Session;
 use local_support::*;
@@ -15,10 +15,12 @@ impl Presence {
     fn set(&self, presences: Vec<ClientPresence>) {
         *self.0.lock().unwrap() = presences;
     }
-}
-impl SessionClientsSource for Presence {
-    fn presences(&self, _: &str) -> Vec<ClientPresence> {
+    fn presences(&self) -> Vec<ClientPresence> {
         self.0.lock().unwrap().clone()
+    }
+    fn host(self: &Arc<Self>) -> SessionPresences {
+        let presence = self.clone();
+        Arc::new(move |_| presence.presences())
     }
 }
 
@@ -68,7 +70,7 @@ async fn presence_is_appended_and_unchanged_counts_do_not_duplicate() {
     let env = env(
         &dirs,
         Options {
-            clients: Some(presence.clone()),
+            clients: Some(presence.host()),
             ..Options::default()
         },
     )

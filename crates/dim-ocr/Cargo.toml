@@ -3,6 +3,7 @@ name = "dim-ocr"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "The OCR helper contract and the on-device Apple Vision engine"

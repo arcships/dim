@@ -1,6 +1,7 @@
 //! Client-owned ACP transport and protocol projection over the public App Server.
 
 pub mod auth;
+mod commands;
 mod config;
 mod content;
 mod gateway;

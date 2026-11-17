@@ -51,14 +51,15 @@ fn skill_discovery_reports_failures_and_a_failed_reload_keeps_the_palette() {
     let mut command = home.command();
     command.env_remove("TMUX");
     let mut terminal = Terminal::resume_tui(command);
+    terminal.resize(160, 32);
     terminal.until("Skills unavailable: Skill source is unavailable");
     terminal.write(b"/reload-skills\r");
     terminal.write(b"/comm");
-    terminal.until("$commit");
+    terminal.until("/skill:commit");
     terminal.write(b"\x03/reload-skills\r");
     terminal.until("Skill source is still unavailable");
     terminal.write(b"/comm");
-    terminal.until("$commit");
+    terminal.until("/skill:commit");
     terminal.write(b"\x03/resume\r");
     terminal.until("Other workspace");
     terminal.write(b"\r");
@@ -69,7 +70,7 @@ fn skill_discovery_reports_failures_and_a_failed_reload_keeps_the_palette() {
     terminal.until("/permissions");
     terminal.until("\u{1b}[?2026l");
     assert!(
-        !terminal.transcript[switched..].contains("$commit"),
+        !terminal.transcript[switched..].contains("/skill:commit"),
         "a failed read in another Session must not retain the old Session's Skills"
     );
     home.kill(&terminal);

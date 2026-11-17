@@ -8,9 +8,9 @@
 //! the implementation of the version its request declared.
 use crate::{
     context_preparation::ToolSetAdoption,
-    host::ModelSettings,
+    host::{ModelSettings, ToolExecutionContext},
     prompt::{Prompt, ToolAdoptOutcome},
-    tool_registry::{ToolContribution, ToolRegistry, ToolSourceSet},
+    tool_registry::{ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet},
 };
 use dim_agent_runtime::{
     AgentError, BranchLifecycle, BranchOpening, Dispatcher, Names, QueryFilter, QueryOperand,
@@ -32,6 +32,9 @@ struct Snapshot {
     tools: HashMap<String, Arc<ToolContribution>>,
     /// Keeps the versions this request declared alive until it is released.
     _sets: Vec<Arc<ToolSourceSet>>,
+    /// What the request's handlers claimed before their batch was published,
+    /// by call id, released with this snapshot.
+    claims: HashMap<String, Box<dyn ToolClaim>>,
 }
 
 #[derive(Default)]
@@ -187,6 +190,23 @@ impl ToolBinding {
             .ok_or_else(|| format!("Unknown tool: {name}"))
     }
 
+    /// Every declaration the request pinned, sorted by name, from the
+    /// request's snapshot only.
+    pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
+        let state = self.state.lock().unwrap();
+        let snapshot = state
+            .snapshots
+            .get(request_id)
+            .ok_or_else(|| format!("request {request_id} has no active tool binding"))?;
+        let mut definitions = snapshot
+            .tools
+            .values()
+            .map(|tool| tool.definition.clone())
+            .collect::<Vec<_>>();
+        definitions.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(definitions)
+    }
+
     /// Moves a request's snapshot to its budget recovery request.
     pub fn transfer(&self, from: &str, to: &str) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
@@ -209,6 +229,40 @@ impl ToolBinding {
             .unwrap()
             .snapshots
             .retain(|id, _| Some(id.as_str()) == request_id);
+    }
+
+    /// Has each call's handler take what a client needs before the batch is
+    /// published, and holds the claims with the request's snapshot: every
+    /// release of that snapshot drops them.
+    ///
+    /// A call whose handler takes nothing, or whose handler is not in the
+    /// request's snapshot, takes nothing here; `execute` then claims for
+    /// itself, as it does for a batch rebuilt after a reload.
+    pub fn claim(&self, request_id: &str, calls: &[ToolCall], context: &ToolExecutionContext) {
+        let mut state = self.state.lock().unwrap();
+        let Some(snapshot) = state.snapshots.get_mut(request_id) else {
+            return;
+        };
+        let claims: Vec<_> = calls
+            .iter()
+            .filter_map(|call| {
+                let tool = snapshot.tools.get(&call.name)?;
+                Some((call.id.clone(), tool.handler.claim(call, context)?))
+            })
+            .collect();
+        snapshot.claims.extend(claims);
+    }
+
+    /// The claim a handler made for `call`, if the request holds one. It is
+    /// removed: the claim keeps the registration until it settles.
+    pub fn take_claim(&self, request_id: &str, call_id: &str) -> Option<Box<dyn ToolClaim>> {
+        self.state
+            .lock()
+            .unwrap()
+            .snapshots
+            .get_mut(request_id)?
+            .claims
+            .remove(call_id)
     }
 
     /// Matches the adopted configuration's tool part with the registry once a
@@ -333,9 +387,14 @@ fn register(
     if state.snapshots.contains_key(request_id) {
         return Err(format!("request {request_id} is already bound"));
     }
-    state
-        .snapshots
-        .insert(request_id.to_owned(), Snapshot { tools, _sets: sets });
+    state.snapshots.insert(
+        request_id.to_owned(),
+        Snapshot {
+            tools,
+            _sets: sets,
+            claims: HashMap::new(),
+        },
+    );
     Ok(())
 }
 

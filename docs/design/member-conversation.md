@@ -77,11 +77,47 @@ cards to leader facts and any leader-side activity the provider publishes.
 +----------------------------------------------------------------+
 ```
 
-The detail is a modal read-only view using the existing conversation row
+In the scrollback TUI the detail is a modal read-only view using the existing conversation row
 renderers, wrapping, scrolling, theme and localization. It opens at the tail;
 Up/Down, PageUp/PageDown and Home/End navigate the conversation. The existing
 minimum-size screen applies. Sanitize externally supplied text before styling;
 keep the identity, state and key hints within the overlay's width.
+
+The fullscreen TUI shows the member the way it shows a line: the member's
+conversation takes the whole transcript area, drawn by the fullscreen transcript
+renderer at the Tool details and Thinking details settings, with its disclosures
+and scrolling, and the leader's transcript is hidden while it is shown. A
+boundary row names the task title, the agent and `read-only`. The composer is
+replaced by a read-only bar: its title names the agent, the observed model and
+the state from §4; its body says the view is read-only and lists the keys the
+view accepts, `Esc` first. `x stop agent` is listed only while the member can be
+stopped and is gone once the delegation is terminal or the Session closed; `x`
+then does nothing. The bar truncates at the terminal width and keeps `Esc back`.
+
+```text
+ ─────────── Task alpha · alpha · read-only ───────────
+ ┃ MEMBER_TASK alpha
+ ▸ ✓ Explored 2 files
+ alpha done.
+
+╭─ alpha · local / mock-model ───────────────────── Running ─╮
+│ Read-only: you can watch this agent or stop it.            │
+│ Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End   │
+╰────────────────────────────────────────────────────────────╯
+```
+
+`Esc` returns to the surface the view was opened from: the task list, or the
+leader transcript at the position it had. The member Session ID is not drawn in
+the body; the delegation's own outcome is the bar's state, and its result text
+is not appended again under the member's own final reply.
+
+A completed delegation's result in the leader transcript is one row headed
+`agent result · <task title> · <agent>`, its text drawn by the assistant
+Markdown renderer. The preview ends after six non-blank rendered rows, then
+`… N more lines` counts every remaining rendered row, including blank rows.
+Scrollback has no expand for it; fullscreen marks a longer result with a
+disclosure that shows the whole result. Failed and cancelled results remain one
+status line with their reason.
 
 Enter and typed text in the detail never submit input. Esc is consumed by the
 detail and returns to the task list; it must not fall through to the leader's
@@ -263,14 +299,27 @@ already used gets its own transcript row identity.
 | Session-member `session.model.progress`, `session.state`, `session.closed` | Live observed activity or explicit observation unavailability |
 | Provider `externalAgent.activity` on the leader, when #254 supplies it | Received member activity only; no provider history replay or Session read |
 
-Temporary profile names already exist on the leader's request. For an existing
-native Agent, read the public Agent list after identities are known and share that
+Temporary profile names already exist on the leader's request. Bind that name to
+the delivered native Agent ID so later requests reusing the Agent or member keep
+its name. The public directory excludes Team-owned temporary Agents; a directory
+read must not erase names learned from requests. Reading an earlier creation
+request also names already-visible follow-up cards.
+
+For an existing native Agent, read the public Agent list after identities are known and share that
 result across cards; it is read again only when a card names a native Agent the
 last read did not cover. A missing entry/read error shows the Agent ID rather than
-an invented name; the delivered Session ID remains available in detail. Do not
-read Agent records or private Collaboration state. A provider card uses its
+an invented name; the delivered Session ID remains available in detail. A completed
+card still receives the result of its pending name lookup. Completion stops its
+name refresh only once that lookup succeeds, misses the Agent or fails; it does
+not start another lookup. Do not read Agent records or private Collaboration
+state. A provider card uses its
 leader-side target/delivered Agent identity; `agent.list` is not assumed to
 expose that provider's configuration or model.
+
+```text
+Completed card: Agent ID -- existing name read settles --+--> Agent name
+                                                       +--> ID (missing/error)
+```
 
 Apply §1's member-kind boundary before building any observation or control
 target, including `/tasks` and its stop-all capture. A provider member's opaque
@@ -324,6 +373,18 @@ or a new unload exemption. Switching/detaching the leader releases the owned
 observations; stopping a member or closing only detail does not by itself
 release an unfinished card's reference. Provider cards take no member lease.
 
+Leader replacement immediately drops each old observation's transcript, model,
+buffered notices and history window. Only the admitted request and attachment
+cleanup remain until their replies settle; late replies cannot rebuild display
+state or queue another history page. The same member cannot be attached again
+until its old cleanup finishes, so an old detach reply cannot remove its new view.
+
+```text
+replace leader -> release old member display data immediately
+               -> settle admitted attach/read -> detach once
+               -> settle detach -> allow a fresh view of the same member
+```
+
 Reuse the existing attach/main-history/live-notice/detach flow, decoder,
 conversation projection and progress offsets. Serialize member history pages
 through one worker-owned member-page slot and fair pending queue, including
@@ -367,22 +428,28 @@ terminal delegation result.
 
 ### Layout and entry points
 
+Card headings show the delegation's task title followed by its Agent name,
+using the same title and identity as the
+[background-task presentation](background-task-list.md#task-titles-and-composer-rows).
+The prompt remains the expanded task detail, not the heading. Historical
+requests without a title retain their first prompt line as the label.
+
 ```text
-+-- Agent: inspect imports --------------------------------------+
++-- Check dependencies · Agent: inspect imports -----------------+
 | Task: Check crate dependencies                                 |
 | Member model: provider / model     Running          00:42       |
 | Activity: reading Cargo.toml                                   |
 | [Open member conversation]                                     |
 +---------------------------------------------------------------+
 
-+-- Agent: inspect tests ----------------------------------------+
++-- Review coverage · Agent: inspect tests ----------------------+
 | Task: Review the integration coverage                          |
 | Member model: No model observed                 Completed 01:12 |
 | Result: Found two missing restart cases ...                    |
 | [Open member conversation]                                     |
 +---------------------------------------------------------------+
 
-+-- Agent: default -----------------------------------------------+
++-- Check imports · Agent: default ------------------------------+
 | Task: Check the imports                                        |
 | Not started · 2s                                               |
 | Reason: agent_not_found: no visible Agent has this agentId;    |
@@ -390,7 +457,7 @@ terminal delegation result.
 |         a profile to create a temporary Agent                  |
 +---------------------------------------------------------------+
 
-+-- Provider member: external-agent:<node>:<agent> ---------------+
++-- Inspect repository · Provider member: external-agent:… -------+
 | Task: Inspect the repository                                   |
 | State: Running                                       00:42     |
 | Activity: not observed on this attachment                      |
@@ -416,7 +483,7 @@ stop/idle heuristic creates an end timestamp. Stored result detail remains
 available without observing a live member.
 
 Use the existing canonical transcript renderer below the App layer. Collapsed
-cards show the task's first display line, model/state and elapsed time. Expanded
+cards show the task title and Agent name, model/state and elapsed time. Expanded
 cards show up to three wrapped task lines, the latest member activity line and
 up to six wrapped result lines; indicate omitted text and keep the full real
 result in detail. Do not copy the App renderer into the panel or introduce a

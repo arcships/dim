@@ -97,7 +97,7 @@ fn storage_failure(failure: FileStorageError) -> SessionFileError {
 /// `[A-Za-z0-9._-]{1,64}` without a leading dot, never FileStorage's account
 /// file or marker in any letter case: `auth.json` would switch replacement to
 /// the account-marker protocol.
-fn valid_name(name: &str) -> bool {
+pub(super) fn valid_name(name: &str) -> bool {
     (1..=64).contains(&name.len())
         && !name.starts_with('.')
         && name
@@ -559,6 +559,112 @@ impl SessionFiles {
 }
 
 impl SessionFilesService for SessionFiles {
+    fn import(
+        &self,
+        session_id: String,
+        name: String,
+        source: String,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<StoredSessionFile, SessionFileError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            if !valid_name(&name) || !Path::new(&source).is_absolute() {
+                return Err(file_error(
+                    SessionFileErrorCode::Invalid,
+                    "Invalid import name or source path",
+                ));
+            }
+            let metadata = tokio::fs::metadata(&source)
+                .await
+                .map_err(|e| file_error(SessionFileErrorCode::Invalid, e))?;
+            if !metadata.is_file() {
+                return Err(file_error(
+                    SessionFileErrorCode::Invalid,
+                    "Source must be a regular file",
+                ));
+            }
+            if metadata.len() > MAX_BYTES as u64 {
+                return Err(file_error(
+                    SessionFileErrorCode::TooLarge,
+                    "Session file exceeds 16 MiB",
+                ));
+            }
+            let call = cancel.child_token();
+            let task = {
+                let _admission = self.0.admission.lock().unwrap();
+                if self.0.stopping.is_cancelled() {
+                    return Err(cancelled());
+                }
+                let files = self.0.clone();
+                let call = call.clone();
+                self.0.tasks.spawn(async move {
+                    files
+                        .put(session_id, name, ImportContent::Path(source.into()), call)
+                        .await
+                })
+            };
+            let _dropped = call.drop_guard();
+            task.await
+                .unwrap_or_else(|join| Err(file_error(SessionFileErrorCode::Storage, join)))
+        })
+    }
+    fn read(
+        &self,
+        session_id: String,
+        file_id: String,
+        offset: u64,
+        cancel: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, SessionFileError>> + Send + '_>> {
+        Box::pin(async move {
+            if self.0.stopping.is_cancelled() || cancel.is_cancelled() {
+                return Err(cancelled());
+            }
+            if uuid::Uuid::parse_str(&file_id).is_err() {
+                return Err(file_error(SessionFileErrorCode::Invalid, "Invalid file id"));
+            }
+            let id = file_id.clone();
+            let owned = self.0.db.run_read(move |connection| {
+                connection.query_row("SELECT EXISTS(SELECT 1 FROM session_file_owners WHERE session_id = ?1 AND file_id = ?2)", params![session_id, id], |row| row.get::<_, bool>(0)).map_err(error)
+            }).await.map_err(|e| file_error(SessionFileErrorCode::Storage, e))?;
+            if !owned {
+                return Err(file_error(
+                    SessionFileErrorCode::NotFound,
+                    "Session file not found",
+                ));
+            }
+            let storage = self
+                .0
+                .ctx
+                .get::<FileStorage>()
+                .ok_or_else(node_unavailable)?;
+            let relative = Path::new(&self.0.directory).join(file_id);
+            let directory = storage
+                .path(self.0.root, &relative)
+                .map_err(storage_failure)?;
+            let entries = storage
+                .list(&directory, &cancel)
+                .await
+                .map_err(storage_failure)?;
+            let entry = entries
+                .into_iter()
+                .find(|entry| entry.kind == dim_agent_capabilities::file_storage::EntryKind::File)
+                .ok_or_else(|| {
+                    file_error(SessionFileErrorCode::Storage, "Session file is missing")
+                })?;
+            let path = storage
+                .path(self.0.root, relative.join(entry.name))
+                .map_err(storage_failure)?;
+            let reader = storage
+                .open_read(&path, &cancel)
+                .await
+                .map_err(storage_failure)?;
+            reader
+                .read_at(offset, 64 * 1024, &cancel)
+                .await
+                .map_err(storage_failure)
+        })
+    }
+
     fn put(
         &self,
         session_id: String,
@@ -588,9 +694,11 @@ impl SessionFilesService for SessionFiles {
                 }
                 let files = self.0.clone();
                 let call = call.clone();
-                self.0
-                    .tasks
-                    .spawn(async move { files.put(session_id, name, content, call).await })
+                self.0.tasks.spawn(async move {
+                    files
+                        .put(session_id, name, ImportContent::Bytes(content), call)
+                        .await
+                })
             };
             let _dropped = call.drop_guard();
             task.await
@@ -622,12 +730,17 @@ impl SessionFilesService for SessionFiles {
     }
 }
 
+enum ImportContent {
+    Bytes(Vec<u8>),
+    Path(PathBuf),
+}
+
 impl Files {
     async fn put(
         self: Arc<Self>,
         session_id: String,
         name: String,
-        content: Vec<u8>,
+        content: ImportContent,
         cancel: CancellationToken,
     ) -> Result<StoredSessionFile, SessionFileError> {
         let stopped = || cancel.is_cancelled() || self.stopping.is_cancelled();
@@ -681,19 +794,32 @@ impl Files {
             return Err(not_found());
         }
 
-        let bytes = content.len() as u64;
         let written = async {
             storage.create_directory(&directory, &cancel).await?;
             storage.create_directory(&file_path, &cancel).await?;
-            storage
-                .replace(&file, content, Some(permissions), &cancel)
-                .await
+            match content {
+                ImportContent::Bytes(content) => {
+                    let bytes = content.len() as u64;
+                    storage
+                        .replace(&file, content, Some(permissions), &cancel)
+                        .await?;
+                    Ok(bytes)
+                }
+                ImportContent::Path(source) => {
+                    storage
+                        .import(&file, source, MAX_BYTES as u64, Some(permissions), &cancel)
+                        .await
+                }
+            }
         }
         .await;
-        if let Err(failure) = written {
-            self.abandon(&file_id).await;
-            return Err(storage_failure(failure));
-        }
+        let bytes = match written {
+            Ok(bytes) => bytes,
+            Err(failure) => {
+                self.abandon(&file_id).await;
+                return Err(storage_failure(failure));
+            }
+        };
         #[cfg(test)]
         tests::before_commit(&session_id);
         if stopped() {

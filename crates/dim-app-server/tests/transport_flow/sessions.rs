@@ -83,7 +83,7 @@ impl Sessions {
             reply => panic!("sessions replies asynchronously: {:?}", reply.json()),
         }
     }
-    async fn ok(&self, method: &str, request: Value) -> Value {
+    pub(super) async fn ok(&self, method: &str, request: Value) -> Value {
         let reply = self.call(method, request).await;
         assert_eq!(reply["ok"], true, "{reply}");
         reply["value"].clone()
@@ -108,13 +108,13 @@ impl Sessions {
 fn host_policy() -> Value {
     json!({"preset":"workspace-write","allowedTools":["confirm"],"disallowedTools":["blocked"]})
 }
-struct Served {
-    server: RunningServer,
-    agent: Agent,
-    sessions: Sessions,
-    client: Client,
+pub(super) struct Served {
+    pub(super) server: RunningServer,
+    pub(super) agent: Agent,
+    pub(super) sessions: Sessions,
+    pub(super) client: Client,
     /// Executions of the `confirm` tool, which asks for approval.
-    calls: Arc<AtomicUsize>,
+    pub(super) calls: Arc<AtomicUsize>,
 }
 /// Permission's command rules from a Session part that reloads with the
 /// Agents index, as it injects Collaboration, which injects the index. While
@@ -184,8 +184,55 @@ struct Setup {
     loads: Option<idle_unload::Loads>,
     /// The model instead of the echo model.
     model: Option<Arc<dyn dim_agent_capabilities::host::ModelDriver>>,
+    dispatch_gate: Option<Arc<PendingDispatchGate>>,
 }
-async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
+
+#[derive(Default)]
+struct PendingDispatchGate {
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+struct PendingDispatchPart {
+    gate: Arc<PendingDispatchGate>,
+    dispatcher: Key<dim_agent_runtime::Dispatcher>,
+}
+
+impl rutis::host::DynPlugin for PendingDispatchPart {
+    fn name(&self) -> &str {
+        "pending-dispatch-gate"
+    }
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.dispatcher.erase()]
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            let gate = self.gate.clone();
+            ctx.require_at(&self.dispatcher)?.subscribe(
+                ctx,
+                "pending-dispatch-gate",
+                &["input/message"],
+                move |event| {
+                    let gate = gate.clone();
+                    Box::pin(async move {
+                        if matches!(&event.kind, EventKind::InputMessage(data)
+                            if data.submission_id.as_deref() == Some("pending:dispatch-gate"))
+                        {
+                            gate.entered.notify_one();
+                            gate.release.notified().await;
+                        }
+                        Ok(())
+                    })
+                },
+            )?;
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+pub(super) async fn serve_sessions(database: Option<std::path::PathBuf>) -> Served {
     serve_with(Setup {
         database,
         ..Default::default()
@@ -273,12 +320,23 @@ async fn serve_with(setup: Setup) -> Served {
         }),
     );
     sessions.install(&mut builder);
+    if let Some(gate) = setup.dispatch_gate {
+        builder.require_feature(Feature::new("pending-dispatch-gate").branch(
+            "pending-dispatch-gate",
+            move |names| {
+                Ok(Box::new(PendingDispatchPart {
+                    gate: gate.clone(),
+                    dispatcher: names.key()?,
+                }))
+            },
+        ));
+    }
     if let Some(loads) = setup.loads {
         loads.install(&mut builder);
     }
     let server = serve(builder, config).await.unwrap();
     let agent = server.agent().unwrap();
-    let client = Client::new_version(&server, false, 3).await;
+    let client = Client::new_version(&server, false, 4).await;
     Served {
         server,
         agent,
@@ -498,6 +556,10 @@ async fn launch_caps_the_policy_by_the_starters_current_policy_or_the_host_defau
             "rejected",
         ),
         (json!({"cwd":cwd,"source":"dim-scheduler"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"client"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"internal"}), "rejected"),
+        (json!({"cwd":cwd,"origin":"acp"}), "rejected"),
+        (json!({"cwd":cwd,"title":7}), "rejected"),
         (
             json!({"cwd":cwd,"starter":{"sessionId":"missing","branchId":"main"}}),
             "session_closed",
@@ -1084,35 +1146,45 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
     let first = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
-    let batch = client
-        .rpc(
-            "session.input.withdraw",
-            json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown",
-                "steer":{"content":[{"type":"text","text":"steer"}]}}),
+    let batch = session
+        .inputs(
+            ["first", "second"]
+                .into_iter()
+                .map(|id| InputMessageData {
+                    submission_id: Some(format!("test:batch:{id}")),
+                    ..InputMessageData::text(id, Some(dim_agent_types::InputMode::Append))
+                })
+                .collect(),
+            "main",
         )
-        .await;
-    assert_eq!(batch["result"]["status"], "notHeld", "{batch}");
-    let inside = batch["result"]["steer"]["sequence"].as_u64().unwrap() - 1;
+        .await
+        .unwrap();
+    let inside = batch[0].sequence;
     let head = sessions.ok("idle", at(json!({}))).await["sequence"]
         .as_u64()
         .unwrap();
+    let page = sessions
+        .ok("history", at(json!({"after":inside - 1,"limit":1})))
+        .await;
+    assert_eq!(
+        page["events"],
+        serde_json::to_value(&batch).unwrap(),
+        "a one-event page limit must not split the two-input batch"
+    );
 
     let mut after = 0;
     let mut events = vec![];
-    let mut through = None;
-    while through != Some(after) {
-        let mut request = at(json!({"after":after,"limit":1}));
-        if let Some(through) = through {
-            request["through"] = json!(through);
-        }
+    let mut through = head;
+    while through != after {
+        let request = at(json!({"after":after,"through":through,"limit":1}));
         let page = sessions.ok("history", request).await;
-        through = Some(page["through"].as_u64().unwrap());
+        through = page["through"].as_u64().unwrap();
         let page = page["events"].as_array().unwrap().clone();
         assert!(!page.is_empty());
         after = page.last().unwrap()["sequence"].as_u64().unwrap();
         events.extend(page);
     }
-    assert_eq!(through, Some(head));
+    assert_eq!(through, head);
     assert_eq!(
         Value::Array(events),
         serde_json::to_value(branch_events(&session, "main", ..=head).await.unwrap()).unwrap()
@@ -1124,14 +1196,16 @@ async fn history_pages_the_branch_through_a_fixed_sequence_on_batch_boundaries()
         first
     );
 
+    let future = 1_000_000;
     for (request, code) in [
         (at(json!({"after":inside})), "rejected"),
+        (at(json!({"through":inside})), "rejected"),
         (at(json!({"after":first,"through":first - 1})), "rejected"),
         (at(json!({"limit":0})), "rejected"),
         (at(json!({"limit":257})), "rejected"),
         (at(json!({"atLeast":first,"through":first})), "rejected"),
-        (at(json!({"atLeast":head + 1})), "future_sequence"),
-        (at(json!({"through":head + 1})), "future_sequence"),
+        (at(json!({"atLeast":future})), "future_sequence"),
+        (at(json!({"through":future})), "future_sequence"),
         (
             json!({"sessionId":session.id(),"branchId":"missing"}),
             "branch_missing",
@@ -1478,10 +1552,11 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
         rusqlite::Connection::open(store.database())
             .unwrap()
             .execute_batch(&format!(
-                "CREATE TRIGGER \"fail-{kind}\" BEFORE INSERT ON timeline_events \
+                "CREATE TRIGGER \"fail-{kind}-{session_id}\" BEFORE INSERT ON timeline_events \
                  WHEN NEW.session_id = '{}' AND NEW.kind = '{kind}' \
                  BEGIN SELECT RAISE(ABORT, 'injected write failure'); END",
-                session.id()
+                session.id(),
+                session_id = session.id()
             ))
             .unwrap();
     };
@@ -1516,6 +1591,72 @@ async fn input_and_withdraw_reply_publication_unknown_when_the_store_fails_the_w
             .await,
         "publication_unknown"
     );
+    let session = client_session(&mut client, &agent, json!({"preset":"workspace-write"})).await;
+    session
+        .submit(
+            "tool:confirm {}".into(),
+            dim_agent_types::InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:wire-held",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    assert_eq!(
+        client
+            .rpc(
+                "session.input.withdraw",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]}),
+            )
+            .await["error"]["data"]["appError"],
+        "publication_unknown"
+    );
+    let session = client_session(&mut client, &agent, json!({"preset":"workspace-write"})).await;
+    session
+        .submit(
+            "tool:confirm {}".into(),
+            dim_agent_types::InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    event_written(&session, "approval/request").await;
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:steer-held",
+                json!([{"type":"text","text":"replace me"}]),
+            ),
+        )
+        .await;
+    fail(&session, "input/deleted");
+    let reply = client
+        .rpc(
+            "session.input.withdraw",
+            json!({
+                "sessionId":session.id(),"branchId":"main","inputId":held["inputId"],
+                "steer":{"content":[{"type":"text","text":"replacement"}]}
+            }),
+        )
+        .await;
+    assert_eq!(reply["error"]["code"], -32000, "{reply}");
+    assert_eq!(
+        reply["error"]["data"]["appError"], "publication_unknown",
+        "{reply}"
+    );
+    assert!(reply.get("result").is_none(), "{reply}");
     server.shutdown();
     let _ = server.join().await;
 }
@@ -2119,6 +2260,319 @@ async fn node_crash_resubmission_gets_the_original_receipt() {
     let recovered = sessions.ok("lookup", json!({"sessionId":target.id(),"branchId":"main","submissionId":"settlement:crash:append"})).await;
     assert_eq!(recovered["inputId"], receipt["value"]["inputId"]);
     assert_eq!(branch_events(&target, "main", ..).await.unwrap().iter().filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if data.submission_id.as_deref() == Some("settlement:crash:append"))).count(), 1);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_waits_for_published_input_dispatch_and_abandonment_is_local() {
+    let gate = Arc::new(PendingDispatchGate::default());
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        dispatch_gate: Some(gate.clone()),
+        ..Default::default()
+    })
+    .await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "pending:dispatch-gate",
+                json!([{"type":"text","text":"hold dispatch"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(5), gate.entered.notified())
+        .await
+        .unwrap();
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "pending:behind-dispatch",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    let sequence = held["sequence"].as_u64().unwrap();
+    assert!(session.sequence("main").unwrap() >= sequence);
+    assert!(session.dispatch_watch("main").unwrap().borrow().sequence < sequence);
+    let request = json!({"sessionId":session.id(),"branchId":"main","inputId":held["inputId"]});
+    {
+        let waiting = sessions.ok("pending", request.clone());
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+                .await
+                .is_err(),
+            "pending must wait for the acknowledged input to reach InputQueue"
+        );
+    }
+    assert!(
+        !session.is_closing(),
+        "abandoning a read must not close its Session"
+    );
+    assert!(session.dispatch_watch("main").unwrap().borrow().sequence < sequence);
+    {
+        let waiting = sessions.call("pending", request.clone());
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+                .await
+                .is_err()
+        );
+        server.restart("Agents").await.unwrap();
+        let reply = tokio::time::timeout(Duration::from_secs(5), &mut waiting)
+            .await
+            .unwrap();
+        assert_eq!(reply["error"]["code"], "reloading", "{reply}");
+    }
+    let waiting = sessions.ok("pending", request.clone());
+    tokio::pin!(waiting);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut waiting)
+            .await
+            .is_err()
+    );
+    gate.release.notify_one();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), &mut waiting)
+            .await
+            .unwrap(),
+        json!({"pending":true})
+    );
+    assert!(
+        session.state("main").unwrap().running,
+        "pending does not wait for the approval-held turn to end"
+    );
+    session.close().await.unwrap();
+    assert_eq!(sessions.error("pending", request).await, "session_closed");
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// `sessions.pending` answers session-access §2's rule at the published head:
+/// an input admitted behind a busy branch is pending, the same input once a
+/// turn consumed it is not, a withdrawn input is not, and an id the branch
+/// never held is not. `input/consumed` is what ends it
+/// (`crates/dim-agent-capabilities/src/input_queue.rs:86-96`); `input/applied`
+/// alone does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn pending_follows_the_queue_until_an_input_is_consumed_or_deleted() {
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_sessions(None).await;
+    client_session(&mut client, &agent, host_policy()).await;
+    let session = awaiting_approval(&sessions, &agent).await;
+    let at = json!({"sessionId":session.id(),"branchId":"main"});
+    let ask = |input: &Value| {
+        let mut request = at.clone();
+        request["inputId"] = input["inputId"].clone();
+        request
+    };
+
+    // The turn stays open on its approval, so a Queue input waits behind it
+    // and is pending.
+    let held = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:pending",
+                json!([{"type":"text","text":"later"}]),
+            ),
+        )
+        .await;
+    assert_eq!(
+        sessions.ok("pending", ask(&held)).await,
+        json!({"pending":true})
+    );
+
+    // A turn consumes the held input, and from then on it is not pending. The
+    // turn parks on an approval, so it is still open when the withdrawal below
+    // runs: a Queue input written into an idle branch is applied at once and can
+    // then only be consumed, while one written behind a running turn is held
+    // unapplied (session access A.4). Only the held one can be withdrawn.
+    sessions.ok("stop", at.clone()).await;
+    sessions.ok("idle", at.clone()).await;
+    let drain = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:drain",
+                json!([{"type":"text","text":"tool:confirm {}"}]),
+            ),
+        )
+        .await;
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if sessions.ok("pending", ask(&held)).await == json!({"pending":false}) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the held input is consumed by a turn");
+    let drain = drain["sequence"].as_u64().unwrap();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if chain_events(&session, "main", drain + 1..)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind.key() == "approval/request")
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the consuming turn parks on its approval");
+
+    // A withdrawn input is not pending, and neither is an id the branch never
+    // held.
+    let deleted = sessions
+        .ok(
+            "input",
+            input(
+                &session,
+                "test:deleted",
+                json!([{"type":"text","text":"drop me"}]),
+            ),
+        )
+        .await;
+    let withdrawal = sessions.ok("withdraw", ask(&deleted)).await;
+    assert_eq!(withdrawal["status"], "deleted", "{withdrawal}");
+    assert_eq!(
+        sessions.ok("pending", ask(&deleted)).await,
+        json!({"pending":false})
+    );
+    assert_eq!(
+        sessions
+            .ok(
+                "pending",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":"unknown"})
+            )
+            .await,
+        json!({"pending":false})
+    );
+
+    let mut no_branch = ask(&held);
+    no_branch["branchId"] = json!("missing");
+    assert_eq!(sessions.error("pending", no_branch).await, "branch_missing");
+    assert_eq!(
+        sessions
+            .error(
+                "pending",
+                json!({"sessionId":session.id(),"branchId":"main","inputId":""})
+            )
+            .await,
+        "rejected"
+    );
+
+    sessions.ok("stop", at).await;
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// #1449: a consumer model does not inherit. The same default model carries a
+/// saved effort for the person's own Sessions, and `sessions.launch` still
+/// starts at the model's declared defaults.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_does_not_inherit_a_saved_preference() {
+    let store = Store::new();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_with(Setup {
+        database: Some(store.database()),
+        home: Some(store.0.clone()),
+        ..Default::default()
+    })
+    .await;
+    let provider = "018ec73f-0000-7000-8000-0000000000b1";
+    let reasoning = json!({"supported":true,"effortOptions":["low","high"],"effort":"high",
+        "off":{"kind":"thinking_type","value":"disabled"}});
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({"providerId":provider,"displayName":"Saved effort fixture",
+                    "connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1",
+                        "auth":{"type":"anonymous"}},
+                    "models":[{"modelId":"fixture","displayName":"fixture","status":"active",
+                        "capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384),
+                        "metadata":{"reasoning":reasoning}}],
+                    "enabled":true}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "provider.preferences.update",
+                json!({"providerId":provider,"expectedVersion":1,"modelId":"fixture",
+                    "patch":{"reasoningEffort":{"action":"set","value":"low"}}}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":provider,"modelId":"fixture"}),
+            )
+            .await,
+    );
+    // A client Session applies the saved effort, so the fixture proves the
+    // saved value reaches a person's Session.
+    let mine = client_session(&mut client, &agent, host_policy()).await;
+    let attached = client
+        .rpc("session.attach", json!({"sessionId":mine.id()}))
+        .await;
+    assert_eq!(
+        attached["result"]["modelPreferences"],
+        json!({"reasoningEffort":"low"}),
+        "the client Session applies the saved effort: {attached}"
+    );
+    // A launch of the same model keeps the declared default.
+    let launched = sessions
+        .ok("launch", json!({"cwd":std::env::temp_dir()}))
+        .await;
+    let attached = client
+        .rpc(
+            "session.attach",
+            json!({"sessionId":launched["sessionId"].as_str().unwrap()}),
+        )
+        .await;
+    assert_eq!(
+        attached["result"]["model"]["modelId"], "fixture",
+        "{attached}"
+    );
+    assert_eq!(
+        attached["result"]["modelPreferences"],
+        json!({"reasoningEffort":"high"}),
+        "a launched Session keeps the model's declared default, not the saved low: {attached}"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }

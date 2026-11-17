@@ -6,7 +6,9 @@
 
 **Dim is a paradigm for general-purpose agents that grow into the environments they inhabit.**
 
-[![Rust toolchain 1.98.1](https://img.shields.io/badge/Rust-1.98.1-93450a.svg?logo=rust)](rust-toolchain.toml) [![npm alpha version](https://img.shields.io/npm/v/dimcode-alpha/alpha.svg?label=npm%20alpha)](https://www.npmjs.com/package/dimcode-alpha?activeTab=versions) [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Join us on Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/ds35K3TadP)
+[![Rust toolchain 1.100.0](https://img.shields.io/badge/Rust-1.100.0-93450a.svg?logo=rust)](rust-toolchain.toml) [![npm alpha version](https://img.shields.io/npm/v/dimcode-alpha/alpha.svg?label=npm%20alpha)](https://www.npmjs.com/package/dimcode-alpha?activeTab=versions) [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Join us on Discord](https://img.shields.io/badge/Discord-Join%20us-5865F2?logo=discord&logoColor=white)](https://discord.gg/ds35K3TadP)
+
+<a href="https://trendshift.io/repositories/336256?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-336256" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/336256/daily?language=Rust" alt="arcships/dim on Trendshift" width="250" height="55"></a>
 
 </div>
 
@@ -25,7 +27,7 @@ npm install -g dimcode-alpha@alpha
 dima
 ```
 
-Sign in with `/login` or select a configured model with `/models`. Type `ls` in the chat and press Enter. In this session Dim asks to run `ls -la` in `runtime/plugins`. Choosing **Allow once** lets it list the three plugin directories.
+Add a provider with `/connect` (or `/provider`), sign in to DimAgent with `/login`, or select a configured model with `/models`. Type `ls` in the chat and press Enter. In this session Dim asks to run `ls -la` in `runtime/plugins`. Choosing **Allow once** lets it list the three plugin directories.
 
 <img src="docs/design/assets/cli-ls.gif" alt="A user sends ls in Dim chat, approves one directory listing, and gets goal, plugin-authoring and workflow." width="760">
 
@@ -139,6 +141,6 @@ Dim’s original source is licensed under [MIT](LICENSE). The distribution retai
 | Component | Use and attribution |
 | --- | --- |
 | rutis | Plugin loading, named services and cross-language bindings. [Dim’s rutis integration](docs/design/rutis-usage.md) |
-| Aimux | Vendored model protocol implementations, distributed under MIT. [Pinned source](vendor/aimux/SOURCE.md) · [Local patches](vendor/aimux/PATCHES.md) · [License](vendor/aimux/LICENSE) |
+| Aimux | Model protocol implementations, taken from crates.io as `aimux-core`, `aimux-provider-utils`, `aimux-providers` and `aimux-stream`, distributed under MIT. [Upstream](https://github.com/arcships/aimux) |
 | grok-build and Ratatui | The native terminal uses components from xAI’s grok-build, including its Ratatui-derived inline terminal. The distribution carries the Apache-2.0 license and upstream attributions under `licenses/grok-build/`. [Source and revision](vendor/grok-build/SOURCE.md) · [Notices](vendor/grok-build/NOTICE) |
-| Rust, Web and plugin dependencies | Native archives include `licenses/RUST-THIRD-PARTY-NOTICES.txt` and `licenses/aimux/`. The Web workspace ships `THIRD-PARTY-NOTICES.txt`, including the SIL Open Font License for Geist and Geist Mono. Bundled TypeScript plugins retain their npm license files. [Full inventory](NOTICE) |
+| Rust, Web and plugin dependencies | Native archives include `licenses/RUST-THIRD-PARTY-NOTICES.txt`, which covers the Rust dependency licenses, aimux among them. The Web workspace ships `THIRD-PARTY-NOTICES.txt`, including the SIL Open Font License for Geist and Geist Mono. Bundled TypeScript plugins retain their npm license files. [Full inventory](NOTICE) |

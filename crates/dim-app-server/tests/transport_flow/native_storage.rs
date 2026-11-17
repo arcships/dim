@@ -386,11 +386,17 @@ async fn summaries_read_atomic_configuration_tails_and_survive_restart() {
         .await
         .unwrap();
     let through = session.sequence("main").unwrap();
-    assert!(
-        session.batch_end("main", through - 1).await.is_err(),
-        "regression fixture must end with a multi-event atomic batch"
-    );
     let history = branch_events(&session, "main", ..=through).await.unwrap();
+    let configured = history
+        .iter()
+        .rev()
+        .find(|event| matches!(event.kind, EventKind::ContextConfigured(_)))
+        .unwrap()
+        .sequence;
+    assert!(
+        session.batch_end("main", configured - 1).await.is_err(),
+        "the adopted configuration belongs to a multi-event atomic batch"
+    );
     let reply = client.rpc("session.summaries", json!({})).await;
     assert_ok(&reply);
     assert_eq!(reply["result"][0]["sequence"], through);
@@ -716,10 +722,21 @@ async fn damaged_native_records_do_not_hide_healthy_agents_or_sessions() {
             .rpc("session.create", session_for(&healthy_agent))
             .await,
     );
+    for id in [&damaged_event, &damaged_reference] {
+        assert_ok(&client.rpc("session.attach", json!({"sessionId":id})).await);
+    }
+    let damaged_history = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":damaged_event,"branchId":"main","after":0,"limit":256}),
+        )
+        .await;
+    assert_eq!(
+        damaged_history["error"]["code"], -32603,
+        "{damaged_history}"
+    );
     for id in [
         default_session.as_str(),
-        damaged_event.as_str(),
-        damaged_reference.as_str(),
         damaged_agent_session.as_str(),
         "orphan-owner",
         "orphan-branch",
@@ -750,6 +767,13 @@ async fn damaged_native_records_do_not_hide_healthy_agents_or_sessions() {
             let result = old.rpc("session.submit", request).await;
             assert_eq!(
                 result["error"]["data"]["appError"], "session_protocol_version",
+                "{result}"
+            );
+            assert_eq!(
+                result["error"]["message"],
+                format!(
+                    "Session was created by protocol version 3; this connection speaks {version}"
+                ),
                 "{result}"
             );
         }
@@ -1007,6 +1031,7 @@ async fn interactive_is_stored_with_the_session_and_absence_means_interactive() 
         [
             "collaborationRole",
             "cwd",
+            "excludedTools",
             "model",
             "permissionPolicy",
             "systemPrompt",
@@ -1221,7 +1246,7 @@ async fn stored_directories_outlive_idle_instances() {
         let settled: i64 = connection
             .query_row(
                 "SELECT count(*) FROM timeline_events WHERE session_id=?1 AND branch_id='main' \
-             AND sequence>?2 AND (kind NOT IN ('input/message','input/applied') \
+             AND sequence>?2 AND (kind NOT IN ('input/message','input/applied','input-queue/node','input-queue/recovered','prompt-state/recovered') \
              OR (kind='input/message' AND json_extract(body,'$.record.event.data.user') IS NOT NULL))",
                 rusqlite::params![ids[0], before as i64],
                 |row| row.get(0),
@@ -1375,7 +1400,7 @@ async fn failed_creation_rolls_back_storage_but_failed_restore_preserves_it() {
     assert!(before[3] > 0);
     connection
         .execute(
-            "UPDATE timeline_events SET body='{}' WHERE session_id=?1 AND sequence=1",
+            "UPDATE agent_sessions SET config='[]' WHERE session_id=?1",
             [&id],
         )
         .unwrap();
@@ -1383,21 +1408,19 @@ async fn failed_creation_rolls_back_storage_but_failed_restore_preserves_it() {
     let mut client = Client::new_version(&server, true, 3).await;
     let restored = client.rpc("session.attach", json!({"sessionId":id})).await;
     assert!(restored.get("error").is_some(), "{restored}");
-    let listed = client.rpc("session.summaries", json!({})).await;
-    assert_eq!(listed["result"].as_array().unwrap().len(), 1);
     assert_eq!(
         counts(&connection),
         before,
         "restore failure must not roll back existing history"
     );
-    let body: String = connection
+    let config: String = connection
         .query_row(
-            "SELECT body FROM timeline_events WHERE session_id=?1 AND sequence=1",
+            "SELECT config FROM agent_sessions WHERE session_id=?1",
             [&id],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(body, "{}");
+    assert_eq!(config, "[]");
     drop(connection);
     drop(client);
     server.shutdown();

@@ -35,6 +35,7 @@ async fn a_session_grant_admits_the_next_write_until_it_is_removed() {
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: native.join("outputs"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),

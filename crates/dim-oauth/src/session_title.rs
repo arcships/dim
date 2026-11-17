@@ -129,6 +129,7 @@ impl Inner {
 
 fn title_failure(error: ManagedError) -> GenerateTitleReply {
     let reason = match error {
+        ManagedError::Cancelled => return GenerateTitleReply::Cancelled,
         ManagedError::ServiceReloading => TitleUnavailableReason::ServiceReloading,
         ManagedError::TokenMissing
         | ManagedError::RefreshRejected

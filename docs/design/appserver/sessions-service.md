@@ -25,7 +25,7 @@ for the old writer.
 ## 1. Summary
 
 Agents exposes the process service `sessions`, so a process plugin in any language can start and drive Sessions as
-Collaboration does. Its methods are `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete`.
+Collaboration does. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `stop`, `idle` and `delete`.
 Each one maps onto Agents' existing Session creation and admission (`AgentIndex`) and the public Session facade.
 `withdraw` forwards to the InputQueue withdrawal service that S1 added, and `delete` to S5c's `AgentIndex::delete`.
 
@@ -40,6 +40,9 @@ Each one maps onto Agents' existing Session creation and admission (`AgentIndex`
 - **Input.** `input` writes `input/message` through `Session::input` and replies once the event is published. The
   branch accepts each `submissionId` once: a resubmission writes nothing and replies the first input's receipt.
   `lookup` by `submissionId` queries the same input identities without writing.
+- **Exists.** `exists` answers whether a Session id still exists: `false` means it was deleted, and a closed,
+  restorable Session is `true`. It never acquires or restores a Session, so it has no effect on idle unload and
+  writes nothing.
 - **Idle.** `idle` is the facade's `Session::idle`: Loop has no open turn, nothing waits for publication, and
   dispatch has reached the tail. A pending approval or question keeps a turn open, so a caller bounds its wait with
   `stop`.
@@ -67,7 +70,7 @@ The throwaway tests and measurements were deleted; nothing from them is committe
 | 4 | What does a pending approval do to `idle`? | Test: a non-interactive workspace-write Session whose model calls `exec` | `approval/request` is written and `idle` has not returned after 500 ms. `stop` ends the turn and `idle` returns; `exec` never ran. Nothing reads `interactive` for approvals | Approvals keep `idle` open; callers bound a run with `stop` (§6.4) |
 | 5 | How does a TypeScript consumer reach a Rust service? | The `pluginFiles` precedent and the rutis 0.10 sources | A `dyn HostDispatch` at `host_key(name)` plus `ServiceCatalog::register_shared(name)` is visible to JavaScript rows. `HostDispatch::invoke(method, args)` carries no caller identity. The JavaScript plugin API has only `inject`, a hard dependency with no per-use lookup. rutis 0.10 does not carry a JavaScript `AbortSignal` into a Rust call ([App Server README](../../../crates/dim-app-server/README.md#trusted-plugin-storage)) | `sessions` comes from the directory part (§5). "Source fixed by Agents" leaves A.1. Cancellation from JavaScript is raised to C4 (§14) |
 | 6 | What does a loaded Session cost? | `xtask measure`, release build, mock model, Apple M4 | About 300 KB of Rust allocations and 43 Tokio tasks per loaded idle Session. Mean creation time is 1.5 ms with 10 Sessions loaded, 4.0 ms with 100 and 57 ms with 1000. The App Server never unloads idle Sessions ([#57](https://github.com/arcships/dim/issues/57)) | Launched Sessions accumulate until restart; idle unload is raised as a follow-up (§8.6) |
-| 7 | When can readers see an input? | Code: `Session::input` returns at commit, before publication; protocol v3 `session.submit` waits for publication | A caller that reads right after `Session::input` can miss its own input | `input` replies after publication, and `lookup` waits for pending publication first (§6.2, §6.3) |
+| 7 | When can readers see an input? | Code: `Session::input` returns at commit, before publication; protocol v3+ `session.submit` waits for publication | A caller that reads right after `Session::input` can miss its own input | `input` replies after publication, and `lookup` waits for pending publication first (§6.2, §6.3) |
 | 8 | Where does lookup by `submissionId` live? | Code | Only in Rpc: `session.input_lookup` scans the published pages, O(n) | Agents owns one lookup and Rpc calls it (§6.3) |
 
 The spike changed three things: where the service is provided (finding 5), the lifecycle follow-up (finding 6), and
@@ -159,7 +162,9 @@ are the contract's ([A.1](../contracts/session-access.md#a1-the-sessions-service
   "cwd": "string",                                     // absolute
   "model?": { "providerId": "string", "modelId": "string" },
   "policy?": { /* PermissionPolicy */ },
-  "starter?": { "sessionId": "string", "branchId": "string" } }
+  "starter?": { "sessionId": "string", "branchId": "string" },
+  "origin?": "automation",                             // absent: the caller's own work, `internal`
+  "title?": "string" }                                  // absent: none; SessionTitle writes it
 // reply
 { "sessionId": "string", "policy": { /* the effective PermissionPolicy */ } }
 ```
@@ -204,17 +209,19 @@ side's preset.
 | `permissionPolicy` | The effective policy |
 | `interactive` | `false` |
 | `collaborationRole` | The default (leader) |
-| `origin` | `internal`: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
+| `origin` | `internal`, or `automation` when the request declares it: the launch created the Session for its caller's work, so a picker leaves it out of the conversation list, and an automation Session is one a saved configuration launched with no person present, so a picker lists it only when the client asks for that class ([session classification](session-classification.md#32-which-creation-entry-writes-which-value)) |
+| `initialTitle` | The request's `title`, kept in the Session's fixed configuration. SessionTitle is the title's one writer: on `apply`, for a Session whose title revision is still 0, it applies `session.rename`'s text rule and the operator's `maxLength`, then writes it as the first manual title. A `Conflict`, or a text the rule refuses, writes nothing |
 | Protocol version | `PROTOCOL_VERSION` (3): written to the record, and registered with `insert_version` after creation, as `session.create` and Collaboration do. Rpc serves a loaded Session only once its version is registered, and current clients list it. Creation and registration run in one task, so they finish together even if the caller stops waiting |
 | Record | Prepared creation (`AgentIndex::create_session`): project authorization, then the owned record, as for `session.create` |
 
-Errors: `rejected` (shape, `cwd`, empty tool names in `policy`), `agent_unknown`, `session_closed` or
-`branch_missing` (the starter), `reloading` (also while the starter's Permission reloads), `failed` (model
-resolution, project authorization, storage, an unavailable stored Agent, a starter that cannot be restored, Session
-build).
+Errors: `rejected` (shape, `cwd`, empty tool names in `policy`, an `origin` other than `automation`, a `title` that
+is not a string), `agent_unknown`, `session_closed` or `branch_missing` (the starter), `reloading` (also while the
+starter's Permission reloads), `failed` (model resolution, project authorization, storage, an unavailable stored
+Agent, a starter that cannot be restored, Session build).
 
 A launch is not idempotent. If the reply is lost, the result can be an empty Session that no caller knows about. It
-is non-interactive and listed like any other Session. No launch lookup is added for this harmless case.
+is non-interactive and listed like any other Session — by `session.summaries`, and by `session.catalog` under the
+filter of the class it was created in. No launch lookup is added for this harmless case.
 
 ### 6.2 input
 
@@ -299,7 +306,7 @@ recovery from it:
 | The branch Timeline ([core/timeline.rs](../../../crates/dim-agent-runtime/src/core/timeline.rs)), through `Session::input` and `Session::lookup` (`sessions.input`, `sessions.lookup`, Rpc's `session.submit` and `session.input_lookup`) | — | Accepts each id once per branch; `accepted`, `unknown` or `ambiguous` for lookup |
 | Goal parts ([crates/dim-goal](../../../crates/dim-goal)) | `goal:<uuid>`, through `TreeCommands::input` | Nothing |
 | Workflow ([engine.ts](../../../runtime/plugins/workflow/engine.ts)) | `workflow:<uuid>` for each stage input and report, stored in its run file before the write | A retry, by the same or a replacement generation, resubmits the same id and settles from the reply |
-| Scheduler ([A.5](../plugins/Scheduler.md#a5-timeline-and-capability-mechanics); runtime in draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>` and `scheduler-report:<run_id>` | `submitted` or `lost`, never a second write; a report is never written twice |
+| Scheduler ([A.5](../plugins/Scheduler.md#a5-timeline-and-capability-mechanics), [A.6](../plugins/Scheduler.md#a6-run-outcome-delivery); runtime in draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`, one per delivery | An uncertain reply is settled by lookup (A.6); a window is never written twice |
 | `dimcode` and the Rust TUI ([#312](https://github.com/arcships/dim/pull/312)) | A new UUID for each submit | Nothing yet: an uncertain submit is reported to the user, not looked up |
 | S5c fork ([§6.6](session-deletion-and-fork.md#66-identity-provenance-and-paths)) | Copies it with the event | — (lookup on the fork finds copied inputs) |
 | InputQueue, Loop, the history projection, Goal's fold, the model | — | Never read it |
@@ -410,7 +417,7 @@ the same turn. Errors: `session_closed`, `branch_missing`, `reloading`, and `fai
 `{sessionId, branchId, inputId, reason?}` → `{status: "deleted", sequence}` or `{status: "notHeld"}`.
 
 Agents gets S1's InputQueue with `Session::service::<InputQueue>` on that branch, calls
-`withdraw(InputWithdrawData { input_id, reason }, None)` and returns its decision. S1 replies once it has written
+`withdraw(InputWithdrawData { input_id, reason, steer: None })` and returns its decision. S1 replies once it has written
 `input/deleted`, which is then committed but not necessarily published, so for `deleted` Agents waits for that
 publication before replying, as `input` does (D8); a branch that closes or fails first replies `publication_unknown`.
 S2 adds no semantics: no ownership check, since a caller withdraws by the `input_id` it received (contract §9.3), no
@@ -457,6 +464,25 @@ done) and `failed` (the command output or the rows could not be removed,
 [S5c §3.5](session-deletion-and-fork.md#35-idempotence-and-errors)). After `failed`, a Session the delete closed stays
 closed in this process with its rows kept (S5c D5): calls on it fail `session_closed` until a delete succeeds. A
 delete is idempotent, so the caller deletes again after any error or a lost reply (§8.7).
+
+### 6.9 exists
+
+`{sessionId}` → `{exists}`; errors `rejected`, `reloading`.
+
+The read answers whether the id has an owner or SessionStore records, which is what `acquire` reads before it restores
+anything (`crates/dim-app-server/src/agents.rs:832-843`): `false` means the Session was deleted, and a closed,
+restorable Session is `true`. It acquires nothing, takes no lease, restores no Session and writes no event, so it has
+no effect on idle unload. It exists for consumers that must reconcile their own records against Session deletion
+without polling a close that must not look like a deletion (EventHub §3.4). An Agents reload answers `reloading`;
+a caller keeps its records and asks again later.
+
+### 6.10 pending
+
+`{sessionId, branchId, inputId}` → `{pending}`; errors `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `failed`.
+
+The read answers whether the input is still pending on that branch under the rule of [session access §2](../contracts/session-access.md#2-data-and-state): pending from its `input/message` until `input/applied` followed by `input/consumed`, or `input/deleted`, references it. The read synchronizes with dispatch at the captured published head as defined in session access §2, then reads the same InputQueue through `Session::service::<InputQueue>(branch)` — the path `withdraw` uses (§6.6). It reads no history and does not wait for turn completion. Dispatch failures return `failed`; branch closure and index reload end the wait with the existing lifecycle errors. It acquires the Session like every method except `launch`, `delete` and `exists`, so an unloaded branch is restored for the answer.
+
+An `inputId` the branch does not hold answers `false`; that covers both an id that was consumed or deleted and one a restart lost. A fixed loop reads this before it delivers its next window, so a round still held behind a running turn defers that window instead of queueing a second one.
 
 ## 7. Sequence
 
@@ -541,8 +567,7 @@ roughly 86 MB of allocations and 12,000 tasks, and each later creation is slower
 - **Scope.** It applies to every Session, not only launched ones.
 - **Open questions it owns.** Those #57 left open: whether detached work blocks the unload, and when to check (when
   the last lease drops, and when a Session without leases becomes idle).
-- **Dependency order.** S2, then idle unload (Agents lane, [#126](https://github.com/arcships/dim/issues/126); it
-  reopens S3/#57 with this measurement), then Scheduler's `create`-mode jobs at volume (P6).
+- **Dependency order.** S2, then idle unload (Agents lane, [#126](https://github.com/arcships/dim/issues/126); it reopens S3/#57 with this measurement), then Scheduler's launch-target jobs at volume (P6).
 
 S2 needs no change for it. Every call holds a lease, `sessions` keeps no state in a loaded Session, and an `idle` wait
 ends at the first idle point, so a stale wait never pins a Session past it.
@@ -556,13 +581,8 @@ D2).
 Idle unload bounds memory, but every launched Session also stays in storage and in every client's Session list. One
 job every five minutes adds about 288 a day. So the consumers delete them (D14):
 
-- **Who and when.** The consumer that launched a Session deletes it when it drops the last record that names it.
-  Scheduler does so when a run falls out of its run history (A8, the last 100 runs per job) or when the job is
-  deleted; a `reuse` Session is named by its job, so it goes with the job. Workflow does so when a run record falls
-  out of its retention (A9, the last 100 runs); the record names every stage Session of the run.
-- **Finished runs only.** A delete closes the Session and so stops its turn. A consumer deletes a run's Session only
-  once the run is terminal; a run that outlives its job's deletion (Scheduler A14) has its Session deleted when it
-  ends.
+- **Who and when.** The consumer that launched a Session deletes it when it drops the last record that names it. Scheduler does so when a launched Session's delivery falls out of its delivery history (A8, the last 100 deliveries per job) and the Session's stop time has passed, or when the job is deleted. A job's target Session that Scheduler did not launch is never deleted; a Session Scheduler launched for a legacy `reuse` job goes with the job, and a Session the job only reused is never deleted. Workflow does so when a run record falls out of its retention (A9, the last 100 runs); the record names every stage Session of the run.
+- **Finished runs only.** A delete closes the Session and so stops its turn. A consumer deletes a run's Session only once the run is terminal; Scheduler's launch target stops its Session at the job's saved maximum and deletes it only after that stop time. A run that outlives its job's deletion (Scheduler A14) has its Session deleted when it ends.
 - **Order.** The consumer deletes the Session first and drops the record after. A failed delete keeps the record, so
   the next pass retries; a delete of a Session that is already gone succeeds, so a crash between the two steps is
   harmless.
@@ -722,7 +742,7 @@ it was raised; §17 lists what S2 adapted.
 | Existing mechanisms considered | Closing runs: ends the Session for every user of it (D12). `Session::unload_if_idle`: exists, but has no caller |
 | Generic capability | §8.6: the host unloads a loaded Session when it is idle and no lease holds it; `acquire` restores it |
 | Effect on sequence, batch, interrupt, reload | None on the Timeline: idle release records no events, and the next use restores the Session |
-| Owner and issue | Agents lane (yyhhyyyyyy), [#126](https://github.com/arcships/dim/issues/126), reopening S3 ([#57](https://github.com/arcships/dim/issues/57)); due before Scheduler's create-mode jobs ship |
+| Owner and issue | Agents lane (yyhhyyyyyy), [#126](https://github.com/arcships/dim/issues/126), reopening S3 ([#57](https://github.com/arcships/dim/issues/57)); due before Scheduler's launch-target jobs ship |
 
 Nothing is raised to rutis.
 
@@ -733,22 +753,15 @@ For the Scheduler and Workflow design reviews (zerob13); S2 does not edit those 
 - **Rust binding.** Their Appendix G's `AgentIndex::launch -> SessionUse` and `service::<InputQueue>` become the named
   service (§5); `SessionUse` is internal to Agents.
 - **Model.** `model` is `{providerId, modelId}`.
-- **Starter.** The cap holds only for a consumer that passes `starter` whenever a Session started the run (§11): the
-  Session that created a Scheduler job (A15), or a Workflow run's starter branch.
-- **Policy reads.** `sessions` has no policy read. A launch caps the policy and replies with the effective one (D6). A
-  cap captured at save (Scheduler A15) or Workflow's start-time check needs the starter's policy from the calling
-  Session's own part, or a read method proposed in their review. The same holds for Scheduler's reuse check.
+- **Starter.** The cap holds only for a consumer that passes `starter` whenever a Session started the run (§11), such as a Workflow run's starter branch. Scheduler passes no starter: its launch supplies only an optional preset, which the host bound caps (Scheduler §3.3).
+- **Policy reads.** `sessions` has no policy read. A launch caps the policy and replies with the effective one (D6). A cap captured at save or Workflow's start-time check needs the starter's policy from the calling Session's own part, or a read method proposed in their review. Scheduler reads no policy: its save stores a preset and its launch caps it.
 - **History.** `sessions.history` pages with `after` and `limit`.
 - **Reloads.** `inject: ['sessions']` does not reload with the Agents index (D1), so a run no longer has to end
   `interrupted` on an Agents reload; an in-flight call fails `reloading`, except an admitted `launch` and a `delete`,
   which reply their own outcome (§8.3).
 - **Loaded Sessions.** Agents unloads a run Session that no lease has held for the grace period, and the next call
   restores it (§8.6, [#126](https://github.com/arcships/dim/issues/126)). `launch` is not idempotent (§6.1).
-- **Deleting run Sessions.** A requirement on both designs (§8.7): Scheduler and Workflow delete each Session they
-  launched when they drop the last record that names it (Scheduler: a run leaving the last 100 of its job, or the job
-  deleted; Workflow: a run leaving the last 100), once the run is terminal, Session first and record after, through
-  `sessions.delete`. Users keep a run by forking it, and remove the Sessions of lost `launch` replies with the CLI's
-  cleanup.
+- **Deleting run Sessions.** A requirement on both designs (§8.7): Scheduler and Workflow delete each Session they launched when they drop the last record that names it (Scheduler: a delivery leaving the last 100 of its job, or the job deleted, and never before the launch target's stop time; Workflow: a run leaving the last 100), Session first and record after, through `sessions.delete`. Users keep a run by forking it, and remove the Sessions of lost `launch` replies with the CLI's cleanup.
 - **Waiting again.** "Not consumed yet, wait again" must not loop on `idle`: on an idle branch it returns at once.
   An input with neither result at the cutoff is held (§6.4, item 2).
 
@@ -823,7 +836,7 @@ Each change stays within S2 (roadmap §5.3); the contract's `sessions` part is u
 | # | Change | Why |
 | --- | --- | --- |
 | 1 | `withdraw` waits for the publication of `input/deleted` before replying `deleted`, and can reply `publication_unknown` | S1 replies once the deletion is committed, not once it is dispatched as §14.1 asked. Without the wait, `history {atLeast: sequence}` right after the reply could fail |
-| 2 | The binding uses S1's merged names: `Withdrawal` and `InputQueue::withdraw(InputWithdrawData, None)`, not `WithdrawOutcome` and `withdraw(input_id, reason)` | The shape S1 merged (§14.1) |
+| 2 | The binding uses S1's merged names: `Withdrawal` and `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`, not `WithdrawOutcome` and `withdraw(input_id, reason)` | The shape S1 merged (§14.1) |
 | 3 | Each typed method takes the request type of its wire shape (`LookupRequest`, `WithdrawRequest`, `StopRequest`) instead of positional arguments | One type per shape; the named service only decodes and encodes |
 | 4 | `history` rejects `atLeast` together with `through`, and returns every event unfiltered | The two set `through` in conflicting ways. A filtered page could end inside a batch, and the next `after` would be rejected |
 | 5 | A failed `stop` or `idle` wait that is not a closed Session, a missing branch or a reload replies `failed` | Those failures are the branch's dispatch failures. Mapping a handler's `InvalidInput` to `rejected` would blame the caller |
@@ -929,6 +942,8 @@ pub struct WithdrawRequest {
     pub session_id: String, pub branch_id: String,
     pub input_id: String, pub reason: Option<String>,
 }
+pub struct PendingRequest { pub session_id: String, pub branch_id: String, pub input_id: String }
+pub struct PendingReply { pub pending: bool }
 pub struct StopRequest { pub session_id: String, pub branch_id: String, pub reason: Option<String> }
 pub struct SessionsError { pub code: SessionsErrorCode, pub message: String }  // retryable() follows the code
 
@@ -938,6 +953,8 @@ impl AgentIndex {
     pub async fn lookup(&self, request: LookupRequest) -> Result<LookupReply, SessionsError>;
     pub async fn history(&self, request: HistoryRequest) -> Result<HistoryPage, SessionsError>;
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError>; // Withdrawal from S1
+    /// Whether the input is still pending on the branch (§6.10).
+    pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError>;
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError>;
     pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError>;
     /// S5c's delete, served as `sessions.delete {sessionId}` (§6.8).

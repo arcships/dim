@@ -43,9 +43,9 @@ pub(super) fn remote_model_list(driver: &str) -> bool {
         )
 }
 
-pub(super) fn routes(
+pub(super) fn routes<'a>(
     driver: &str,
-    models: &[ModelEntry],
+    models: impl IntoIterator<Item = &'a ModelEntry>,
     configured: &BTreeMap<String, NewApiEndpoint>,
     overrides: &BTreeMap<String, NewApiEndpoint>,
 ) -> Result<HashMap<String, ModelProtocol>, HostError> {
@@ -53,7 +53,7 @@ pub(super) fn routes(
         return new_api::routes(models, configured, overrides);
     }
     Ok(models
-        .iter()
+        .into_iter()
         .filter_map(|model| {
             protocol(driver, &model.model_id).map(|protocol| (model.model_id.clone(), protocol))
         })

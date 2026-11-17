@@ -1,9 +1,9 @@
 use crate::{
-    ServerConfig,
+    ProcessActivity, ProcessHold, ServerConfig,
     agent_records::AgentRecords,
     protocol::{AgentInfo, SessionOrigin},
     settings::SettingsService,
-    storage::{SessionStore, SqliteStorage},
+    storage::{PreparedWorktree, SessionStore, SqliteStorage},
 };
 use dim_agent_capabilities::host::ModelSelectionHost;
 use dim_agent_runtime::{
@@ -13,7 +13,7 @@ use dim_agent_runtime::{
     TimelineReadScope, TimelineReadSegment,
 };
 pub use dim_agent_types::AgentProfile;
-use dim_agent_types::{EventKind, TimelinePosition};
+use dim_agent_types::TimelinePosition;
 use rutis::host::{
     BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, FiberState, FiberView, Key, TypeKey,
 };
@@ -35,10 +35,15 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 mod configuration;
+mod fork;
 pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 
 mod sessions;
 pub use sessions::{SessionPermissions, SessionRef, SessionsError};
+
+/// The member a `sessions.launch` caller's title is stored under in a stored
+/// `SessionConfig`, whose serde form is camelCase.
+const INITIAL_TITLE: &str = "initialTitle";
 
 /// The process default profile carries the process Session defaults.
 fn process_default(defaults: &SessionConfig) -> AgentProfile {
@@ -108,6 +113,22 @@ impl Event for UnloadedSessionDeleted {
     const NAME: &'static str = "agent/unloaded-session-deleted";
     type Value = ();
 }
+/// The end of a Session whose stored rows a successful delete removed,
+/// whether it was loaded or not. Emitted on the process root after
+/// SessionStore removed the rows, so a listener can tell a delete from a
+/// close that keeps the rows
+/// ([EventHub §9.1](../../../docs/design/plugins/EventHub.md),
+/// [sessions service](../../../docs/design/appserver/sessions-service.md)).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionDeleted {
+    pub agent_id: String,
+    pub session_id: String,
+}
+impl Event for SessionDeleted {
+    const NAME: &'static str = "agent/session-deleted";
+    type Value = ();
+}
 
 /// Agent-scoped operations fail before any Session is involved.
 #[derive(Debug, thiserror::Error)]
@@ -132,7 +153,7 @@ pub enum AgentOpError {
 /// `retain_versions` drop slots as Sessions end.
 #[derive(Default)]
 struct SessionSlot {
-    gate: tokio::sync::Mutex<()>,
+    gate: Arc<tokio::sync::Mutex<()>>,
     uses: AtomicUsize,
     /// Incremented by every `acquire`: while it stays unchanged and `uses`
     /// stays 0, no lease has held the Session (idle unload §6.1).
@@ -149,6 +170,7 @@ pub(crate) struct SessionUse {
     pub host: Arc<AgentHost>,
     pub session: Session,
     slot: Arc<SessionSlot>,
+    activity: Arc<ProcessHold>,
 }
 impl Clone for SessionUse {
     fn clone(&self) -> Self {
@@ -157,6 +179,7 @@ impl Clone for SessionUse {
             host: self.host.clone(),
             session: self.session.clone(),
             slot: self.slot.clone(),
+            activity: self.activity.clone(),
         }
     }
 }
@@ -175,6 +198,23 @@ pub(crate) enum DeleteOutcome {
     Removed(bool),
     /// Nothing was removed; this says what uses the Session.
     InUse(String),
+}
+
+/// What a delete leaves for its caller to announce once the admission gate
+/// is released
+/// ([EventHub §9.1](../../../docs/design/plugins/EventHub.md#91-agents-announces-every-delete-that-removed-the-stored-rows)): a
+/// listener may take the EventHub Session lock, which a `subscribe` holds
+/// across `sessions.input`, and `sessions.input` waits for that gate in
+/// [`AgentIndex::acquire`].
+struct Removed {
+    deleted: bool,
+    notices: Vec<DeletedNotice>,
+}
+
+/// One notice a delete emits after its gate is released.
+enum DeletedNotice {
+    Unloaded(UnloadedSessionDeleted),
+    Session(SessionDeleted),
 }
 
 struct Entry {
@@ -326,6 +366,7 @@ impl Plugin for AgentDirectoryPlugin {
 /// loader. A reload of it is a reload of the directory logic only.
 pub struct AgentIndex {
     directory: Arc<AgentDirectory>,
+    activity: Arc<ProcessActivity>,
     builder: AgentBuilder,
     session_defaults: SessionConfig,
     /// Protected profiles resolve Session models through a `ModelSelectionHost`.
@@ -428,35 +469,6 @@ fn history_page_query(branch: &str, from: u64, through: u64, limit: usize) -> Ti
             after: None,
         }),
     }
-}
-
-/// How many facts one page of a prefix read holds.
-const PREFIX_PAGE: u64 = 4096;
-
-/// Folds the facts of the session's `main` chain through `at`, in chain order,
-/// into `rest` one page at a time: the fork's rest-point check reads them as
-/// one history without the prefix being held.
-async fn chain_through(
-    session: &Session,
-    at: u64,
-    rest: &mut RestPoint,
-) -> dim_agent_runtime::Result<()> {
-    let mut query = history_page_query("main", 1, at, PREFIX_PAGE as usize);
-    query.scope = TimelineQueryScope::Chain;
-    query.from = None;
-    loop {
-        let reply = session.query("main", query.clone()).await?;
-        let QueryOutput::Events { events } = reply.result else {
-            unreachable!("event selection returns events")
-        };
-        let events: Vec<_> = events.into_iter().map(|row| row.event).collect();
-        rest.page(&events);
-        query.page.as_mut().unwrap().after = reply.next;
-        if query.page.as_ref().unwrap().after.is_none() {
-            break;
-        }
-    }
-    Ok(())
 }
 
 impl AgentIndex {
@@ -639,15 +651,24 @@ impl AgentIndex {
             .map(|host| host.agent.sessions().len())
             .sum()
     }
-    /// Loaded Sessions with a running turn on `main`: work an idle shutdown
-    /// must not disturb.
+    /// Loaded Sessions with accepted work on any branch or a runtime activity
+    /// hold, including detached work an idle shutdown must not disturb.
     pub(crate) fn running_sessions(&self) -> usize {
         self.hosts()
             .iter()
             .flat_map(|host| host.agent.sessions())
-            .filter(|session| session.state("main").is_ok_and(|state| state.running))
+            .filter(|session| session.in_use().is_some())
             .count()
     }
+
+    pub(crate) fn pause_sessions(&self) -> Option<Vec<dim_agent_runtime::SessionPause>> {
+        self.hosts()
+            .iter()
+            .flat_map(|host| host.agent.sessions())
+            .map(|session| session.pause_if_idle())
+            .collect()
+    }
+
     /// The public directory: the default Agent and the Agents
     /// `agent.create` made. An owned Agent belongs to one Team and is reached
     /// through Collaboration's tool.
@@ -822,6 +843,18 @@ impl AgentIndex {
         Some((host, slot))
     }
     pub(crate) async fn acquire(&self, id: &str) -> dim_agent_runtime::Result<SessionUse> {
+        self.acquire_checked(id, None).await
+    }
+
+    pub(crate) async fn acquire_checked(
+        &self,
+        id: &str,
+        expected_cwd: Option<&std::path::Path>,
+    ) -> dim_agent_runtime::Result<SessionUse> {
+        let activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         if let Some(reason) = self.unavailable_session(id) {
             return Err(AgentError::Storage(reason));
         }
@@ -835,14 +868,26 @@ impl AgentIndex {
             }
             return Err(AgentError::Closed(id.into()));
         };
-        let _gate = slot.gate.lock().await;
+        let gate = slot.gate.clone().lock_owned().await;
         if slot.closed.load(Ordering::Acquire) || self.stopping.is_cancelled() {
             return Err(AgentError::Closed(id.into()));
         }
-        let session = match host.agent.get_session(id) {
-            Some(session) => session,
+        let (session, _gate, activity) = match host.agent.get_session(id) {
+            Some(session) => {
+                if let Some(expected) = expected_cwd
+                    && std::path::Path::new(&session.config().cwd) != expected
+                    && !tokio::fs::canonicalize(&session.config().cwd)
+                        .await
+                        .is_ok_and(|actual| actual == expected)
+                {
+                    return Err(AgentError::InvalidInput(
+                        "Session cwd does not match expectedCwd".into(),
+                    ));
+                }
+                (session, gate, activity)
+            }
             None if self.session_store.is_some() => {
-                if let Some(settings) = &self.settings {
+                if self.settings.is_some() || expected_cwd.is_some() {
                     let config = self
                         .session_store
                         .as_ref()
@@ -851,21 +896,51 @@ impl AgentIndex {
                         .session_config(id)
                         .await?
                         .ok_or_else(|| AgentError::Storage(format!("unknown session {id}")))?;
-                    settings
-                        .authorize_project(config.cwd.into(), &self.stopping)
-                        .await
-                        .map_err(|error| {
-                            AgentError::fault("project authorization", error.to_string())
-                        })?;
+                    if let Some(expected) = expected_cwd
+                        && std::path::Path::new(&config.cwd) != expected
+                        && !tokio::fs::canonicalize(&config.cwd)
+                            .await
+                            .is_ok_and(|actual| actual == expected)
+                    {
+                        return Err(AgentError::InvalidInput(
+                            "Session cwd does not match expectedCwd".into(),
+                        ));
+                    }
+                    if let Some(settings) = &self.settings {
+                        settings
+                            .authorize_project(config.cwd.into(), &self.stopping)
+                            .await
+                            .map_err(|error| {
+                                AgentError::fault("project authorization", error.to_string())
+                            })?;
+                    }
                 }
-                let session = host.agent.restore_session(id.into()).await?;
-                let ctx = self.ctx.get().expect("AgentsPlugin apply sets its context");
-                ctx.parallel(SessionRestored {
-                    agent_id: host.agent_id.clone(),
-                    session_id: id.to_owned(),
+                let version = self
+                    .version_of(id)
+                    .unwrap_or(crate::protocol::PROTOCOL_VERSION);
+                let host = host.clone();
+                let slot = slot.clone();
+                let id = id.to_owned();
+                let ctx = self
+                    .ctx
+                    .get()
+                    .expect("AgentsPlugin apply sets its context")
+                    .clone();
+                tokio::spawn(async move {
+                    let _slot = slot;
+                    let session = host
+                        .agent
+                        .restore_session_for_version(id.clone(), version)
+                        .await?;
+                    ctx.parallel(SessionRestored {
+                        agent_id: host.agent_id.clone(),
+                        session_id: id,
+                    })
+                    .await?;
+                    Ok::<_, AgentError>((session, gate, activity))
                 })
-                .await?;
-                session
+                .await
+                .map_err(|error| AgentError::fault("Session restoration", error.to_string()))??
             }
             None => return Err(AgentError::Closed(id.into())),
         };
@@ -875,6 +950,7 @@ impl AgentIndex {
             host,
             session,
             slot: slot.clone(),
+            activity: Arc::new(activity),
         })
     }
     /// One pass of idle unload ([§6.1](../../../docs/design/appserver/idle-unload.md#61-the-pass)).
@@ -884,6 +960,9 @@ impl AgentIndex {
     /// gate, which the pass never waits for. The pass then drops the slots
     /// that nothing holds any more.
     async fn unload_idle(&self, marks: &mut HashMap<String, (Arc<SessionSlot>, u64)>) {
+        let Some(_activity) = self.activity.take_hold() else {
+            return;
+        };
         let mut next = HashMap::new();
         for host in self.hosts() {
             for session in host.agent.sessions() {
@@ -1252,6 +1331,7 @@ impl AgentIndex {
         version: u32,
         leader: Option<&str>,
         origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
     ) -> Option<(String, BoxFuture<'static, dim_agent_runtime::Result<()>>)> {
         let store = self.session_store.clone()?;
         let stored = config.clone();
@@ -1267,6 +1347,7 @@ impl AgentIndex {
                         version,
                         leader.as_deref(),
                         origin,
+                        worktree,
                     )
                     .await
             })
@@ -1308,9 +1389,16 @@ impl AgentIndex {
         version: u32,
         leader: Option<&str>,
         origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
     ) -> dim_agent_runtime::Result<Session> {
+        let _activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
+        let mut config = config;
+        config.exclude_codemode_below(version);
         match self
-            .prepare_session(host, &config, version, leader, origin)
+            .prepare_session(host, &config, version, leader, origin, worktree)
             .await
         {
             Some((id, prepare)) => {
@@ -1339,6 +1427,10 @@ impl AgentIndex {
         version: u32,
         creation: impl Future<Output = dim_agent_runtime::Result<Session>>,
     ) -> dim_agent_runtime::Result<Session> {
+        let _activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
         let created = creation.await;
@@ -1368,13 +1460,19 @@ impl AgentIndex {
     /// Session in use is closed and removed as before;
     /// [`Self::delete_if_inactive`] is the delete that refuses it.
     pub(crate) async fn delete(&self, id: &str) -> dim_agent_runtime::Result<bool> {
+        let _activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| AgentError::Reloading("process admission".into()))?;
         Self::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
-        let deleted = self.remove_locked(id, &slot).await?;
+        let removed = self.remove_locked(id, &slot).await?;
+        let deleted = removed.deleted;
         drop(gate);
         drop(slot);
         self.directory.inner.lock().expect("agent index").sweep();
+        self.announce(removed).await;
         Ok(deleted)
     }
 
@@ -1391,13 +1489,21 @@ impl AgentIndex {
         Self::check_session_id(id)?;
         let slot = self.slot(id);
         let gate = slot.gate.lock().await;
-        let outcome = match self.in_use_reason(id).await? {
-            Some(reason) => DeleteOutcome::InUse(reason),
-            None => DeleteOutcome::Removed(self.remove_locked(id, &slot).await?),
+        // One match yields both the outcome and what there is to announce, so
+        // neither an `unreachable!()` arm nor a second decision is needed.
+        let (outcome, removed) = match self.in_use_reason(id).await? {
+            Some(reason) => (DeleteOutcome::InUse(reason), None),
+            None => {
+                let removed = self.remove_locked(id, &slot).await?;
+                (DeleteOutcome::Removed(removed.deleted), Some(removed))
+            }
         };
         drop(gate);
         drop(slot);
         self.directory.inner.lock().expect("agent index").sweep();
+        if let Some(removed) = removed {
+            self.announce(removed).await;
+        }
         Ok(outcome)
     }
 
@@ -1414,12 +1520,13 @@ impl AgentIndex {
 
     /// Removes `id` with its admission gate held: its led members, its owned
     /// Agents, its close, what the store holds of it, and its slot. The
-    /// caller drops the gate and the slot and sweeps after this returns.
+    /// caller drops the gate and the slot and sweeps after this returns,
+    /// then emits [`Removed::notices`] with [`Self::announce`].
     async fn remove_locked(
         &self,
         id: &str,
         slot: &Arc<SessionSlot>,
-    ) -> dim_agent_runtime::Result<bool> {
+    ) -> dim_agent_runtime::Result<Removed> {
         if let Some(records) = &self.records {
             for member in records.led_members(id).await? {
                 Box::pin(self.delete(&member)).await?;
@@ -1439,6 +1546,13 @@ impl AgentIndex {
             }
         }
         let unloaded = loaded.is_none() && !slot.closed.load(Ordering::Acquire);
+        // The delete notice names the Session's owner even when this process
+        // never loaded it: `session_owners` still holds the row, and the
+        // delete removes it, so it is read here (EventHub §9.1).
+        let recorded_owner = match &self.session_store {
+            Some(store) => store.owner(id).await?,
+            None => None,
+        };
         let stored = match &self.session_store {
             Some(store) => store.delete_session(id).await?,
             None => false,
@@ -1458,20 +1572,65 @@ impl AgentIndex {
             let agent_id = agent_id.clone();
             self.release_owned(&agent_id).await;
         }
-        if let Some((agent_id, _)) = owner.filter(|_| unloaded && stored) {
-            let (_, root) = self
-                .loader
-                .get()
-                .expect("AgentsPlugin apply sets the loader");
-            let announcement = Arc::new(UnloadedSessionDeleted {
+        let mut notices = Vec::new();
+        if let Some((agent_id, _)) = owner.clone().filter(|_| unloaded && stored) {
+            notices.push(DeletedNotice::Unloaded(UnloadedSessionDeleted {
                 agent_id,
                 session_id: id.to_owned(),
-            });
-            if let Err(error) = root.parallel(announcement).await {
-                tracing::warn!(%error, session_id = id, "Deletion of an unloaded Session was not announced");
+            }));
+        }
+        // Every delete that removed the Session's stored rows announces
+        // itself, loaded or not: a listener that holds state for the Session
+        // removes it, and a close, which keeps the rows, does not
+        // ([EventHub §9.1]). The notice carries the
+        // owner the index held, else the store's, and an empty `agentId` when
+        // neither recorded one.
+        if deleted {
+            let agent_id = owner
+                .map(|(agent_id, _)| agent_id)
+                .or(recorded_owner)
+                .unwrap_or_default();
+            notices.push(DeletedNotice::Session(SessionDeleted {
+                agent_id,
+                session_id: id.to_owned(),
+            }));
+        }
+        Ok(Removed { deleted, notices })
+    }
+
+    /// Emits a delete's notices. The caller has released the Session's
+    /// admission gate: a listener takes the EventHub Session lock
+    /// (`crates/dim-event-hub/src/hub.rs`), and a `subscribe` holds that
+    /// lock across `sessions.input`, which waits for this gate in
+    /// [`AgentIndex::acquire`]. Emitting under the gate would deadlock the
+    /// two.
+    ///
+    /// A led member's delete goes through [`Self::delete`] and announces
+    /// after the member's own gate is released; the parent's gate is still
+    /// held then. A listener can wait on the parent's gate only through a
+    /// `subscribe` to the parent, which takes the parent's Session lock
+    /// there; the member's notice reaches a listener that takes the
+    /// member's lock alone, so that path does not deadlock.
+    async fn announce(&self, removed: Removed) {
+        let (_, root) = self
+            .loader
+            .get()
+            .expect("AgentsPlugin apply sets the loader");
+        for notice in removed.notices {
+            let (name, error) = match notice {
+                DeletedNotice::Unloaded(notice) => (
+                    "an unloaded Session",
+                    root.parallel(Arc::new(notice)).await.err(),
+                ),
+                DeletedNotice::Session(notice) => (
+                    "a Session delete",
+                    root.parallel(Arc::new(notice)).await.err(),
+                ),
+            };
+            if let Some(error) = error {
+                tracing::warn!(%error, "Deletion was not announced: {name}");
             }
         }
-        Ok(deleted)
     }
     /// Why `id` is in use, for a delete that requires an inactive Session:
     /// its uses, its hold or a line of it, or a Session it leads, recursively.
@@ -1614,28 +1773,56 @@ impl AgentIndex {
             ));
         }
         let checked = async {
-            let boundary =
-                dim_agent_capabilities::history::validate_context_boundary_in(session, "main", at)
-                    .await?;
-            let mut rest = RestPoint::default();
-            chain_through(session, at, &mut rest).await?;
-            Ok::<_, AgentError>((boundary, rest))
+            dim_agent_capabilities::history::validate_context_boundary_in(session, "main", at)
+                .await?
+                .map_err(AgentError::InvalidInput)?;
+            fork::validate_rest_point(session, at).await
         }
         .await;
         if session.is_closing() {
             return Err(AgentError::Closed(source.into()));
         }
-        let (boundary, rest) = checked?;
-        boundary
-            .and_then(|()| rest.check())
-            .map_err(AgentError::InvalidInput)?;
+        checked?;
         let version = self
             .version_of(source)
             .ok_or_else(|| AgentError::Closed(source.into()))?;
-        let config = session.config().clone();
+        // The record is the Session's current configuration: an in-place
+        // update (`session.language.update`) rewrites it, while the live
+        // Session keeps the value its apply ran with at creation. One read
+        // feeds the live fork and the record the copy writes, so a concurrent
+        // update cannot make them disagree.
+        let stored = store
+            .session_config_text(source)
+            .await?
+            .ok_or_else(|| AgentError::Closed(source.to_owned()))?;
+        let mut config = serde_json::from_str::<SessionConfig>(&stored)
+            .map_err(|error| AgentError::Storage(format!("the source configuration: {error}")))?;
+        // A fork of an older protocol keeps the live Session's codemode
+        // exclusion; the stored record is written without it, as on create.
+        config.exclude_codemode_below(version);
+        // A fork starts untitled (session-deletion-and-fork §6.3, SessionTitle
+        // A7): the seed is the creation caller's, and copying it would have
+        // SessionTitle write the source's stale label at revision 0. The
+        // record loses that one member and nothing else: it is built from the
+        // source text, so the codemode exclusion `config` may have just gained
+        // stays out of it, as the comment above requires.
+        let mut record = stored;
+        if config.initial_title.take().is_some() {
+            let mut value: serde_json::Value = serde_json::from_str(&record).map_err(|error| {
+                AgentError::Storage(format!("the source configuration: {error}"))
+            })?;
+            let Some(members) = value.as_object_mut() else {
+                return Err(AgentError::Storage(
+                    "the source configuration is not an object".into(),
+                ));
+            };
+            members.remove(INITIAL_TITLE);
+            record = serde_json::to_string(&value)
+                .map_err(|error| AgentError::Storage(format!("the fork configuration: {error}")))?;
+        }
         let source = source.to_owned();
         let (id, prepare) = self.prepared(config.cwd.clone(), move |fork| {
-            Box::pin(async move { store.fork_session(&source, &fork, at).await })
+            Box::pin(async move { store.fork_session(&source, &fork, at, &record).await })
         });
         let creation = usage
             .host
@@ -1748,6 +1935,11 @@ impl AgentIndex {
         profile: AgentProfile,
         owner: Option<String>,
     ) -> Result<Arc<AgentHost>, AgentOpError> {
+        let activity = Arc::new(
+            self.activity
+                .take_hold()
+                .ok_or_else(|| AgentError::Reloading("process admission".into()))?,
+        );
         let (loader, root) = self
             .loader
             .get()
@@ -1760,7 +1952,9 @@ impl AgentIndex {
             profile,
             owner,
         };
+        let creating = activity.clone();
         let mut creation = tokio::spawn(async move {
+            let _activity = creating;
             #[cfg(test)]
             tests::creation_held(&spec.agent_id, &root).await;
             loader.create_instance(&root, AGENT_GROUP).with(spec).await
@@ -1781,6 +1975,7 @@ impl AgentIndex {
             Err(_) => {
                 self.forget(&agent_id);
                 tokio::spawn(async move {
+                    let _activity = activity;
                     if let Ok(Ok(instance)) = creation.await {
                         let _ = instance.view.shutdown().await;
                     }
@@ -1872,103 +2067,6 @@ impl AgentIndex {
     }
 }
 
-/// Whether a fork whose `main` holds the prefix folded here starts no work
-/// when it loads
-/// ([S5c §6.2](../../../docs/design/appserver/session-deletion-and-fork.md#62-the-cut)).
-/// The reload rules that start work read these facts: Loop and InputQueue
-/// start a turn for an open turn's work or for a Queue or Steer input not
-/// yet consumed, unless it was applied before the last interrupt or
-/// InputQueue deleted it on a withdrawal;
-/// BackgroundExec fails a task it finds open, and a task that ended while
-/// its generation was not closing posts a wake input that belongs before
-/// the cut. This reads only their public facts;
-/// a capability whose reload rule comes to start work from other facts
-/// adds them here, so a fork keeps starting nothing.
-#[derive(Default)]
-struct RestPoint {
-    turn: bool,
-    interrupted_at: u64,
-    closing: bool,
-    /// Inputs not yet consumed, and the sequence each was applied at.
-    inputs: BTreeMap<String, Option<u64>>,
-    tasks: BTreeSet<String>,
-    wakes: BTreeSet<String>,
-}
-
-impl RestPoint {
-    /// Folds one page of the prefix.
-    fn page(&mut self, events: &[Arc<dim_agent_types::AgentEvent>]) {
-        for event in events {
-            self.event(event);
-        }
-    }
-    fn event(&mut self, event: &dim_agent_types::AgentEvent) {
-        use dim_agent_capabilities::workspace_tools::background::WAKE_RESULT_TAG;
-        use dim_agent_types::{ExecStatus, InputMode, InterruptScope};
-        match &event.kind {
-            EventKind::TurnStart(_) => self.turn = true,
-            EventKind::TurnEnd(_) => self.turn = false,
-            EventKind::BranchStart(_) | EventKind::BranchResume(_) => self.closing = false,
-            EventKind::StopInterrupt(data) => {
-                self.interrupted_at = event.sequence;
-                self.closing |= data.scope == InterruptScope::Branch;
-            }
-            EventKind::InputMessage(data) => {
-                if data.effective_mode() != InputMode::Append {
-                    self.inputs.insert(event.id.clone(), None);
-                }
-                if let Some(ended) = event
-                    .tags
-                    .iter()
-                    .flatten()
-                    .find_map(|tag| tag.strip_prefix(WAKE_RESULT_TAG))
-                {
-                    self.wakes.remove(ended);
-                }
-            }
-            EventKind::InputApplied(data) => {
-                if let Some(applied) = self.inputs.get_mut(data.input_id.as_str()) {
-                    *applied = Some(event.sequence);
-                }
-            }
-            EventKind::InputConsumed(data) => {
-                self.inputs.remove(data.input_id.as_str());
-            }
-            EventKind::InputDeleted(data) => {
-                self.inputs.remove(data.input_id.as_str());
-            }
-            EventKind::ExecStarted(data) => {
-                self.tasks.insert(data.task_id.clone());
-            }
-            EventKind::ExecEnded(data) => {
-                self.tasks.remove(data.task_id.as_str());
-                if data.status != ExecStatus::Cancelled && !self.closing {
-                    self.wakes.insert(event.id.clone());
-                }
-            }
-            _ => {}
-        }
-    }
-    fn check(&self) -> Result<(), String> {
-        let cause = if self.turn {
-            "a turn is open"
-        } else if self
-            .inputs
-            .values()
-            .any(|applied| applied.is_none_or(|sequence| sequence > self.interrupted_at))
-        {
-            "an input is waiting to be consumed"
-        } else if !self.tasks.is_empty() {
-            "a background task is running"
-        } else if !self.wakes.is_empty() {
-            "a background task has not woken the branch"
-        } else {
-            return Ok(());
-        };
-        Err(format!("the fork position is not a rest point: {cause}"))
-    }
-}
-
 /// Owns every Agent subtree: the process assembly entry.
 pub(crate) struct AgentsPlugin {
     builder: AgentBuilder,
@@ -1981,6 +2079,7 @@ pub(crate) struct AgentsPlugin {
     settings: Option<Key<SettingsService>>,
     loader: Key<Loader>,
     directory: Key<AgentDirectory>,
+    activity: Key<ProcessActivity>,
     parts: Key<dim_agent_runtime::PartRegistry>,
 }
 impl AgentsPlugin {
@@ -2002,6 +2101,7 @@ impl AgentsPlugin {
                 .transpose()?,
             loader: names.key()?,
             directory: names.key()?,
+            activity: names.key()?,
             parts: names.key()?,
             builder,
             config,
@@ -2024,6 +2124,7 @@ impl DynPlugin for AgentsPlugin {
         }
         injects.push(self.loader.erase());
         injects.push(self.directory.erase());
+        injects.push(self.activity.erase());
         injects.push(self.parts.erase());
         injects
     }
@@ -2051,6 +2152,20 @@ impl DynPlugin for AgentsPlugin {
                     ))
                 },
             )?;
+            let with_store = self.stored.is_some();
+            parts.register(
+                ctx,
+                dim_agent_runtime::PartScope::Session,
+                "SessionLanguage",
+                move |mount| {
+                    Ok(Some(
+                        Box::new(crate::session_language::SessionLanguagePlugin::new(
+                            mount.names,
+                            with_store,
+                        )?) as Box<dyn DynPlugin>,
+                    ))
+                },
+            )?;
             let mut builder = self.builder.clone();
             let (records, session_store) = match stored {
                 Some((store, storage)) => {
@@ -2072,6 +2187,7 @@ impl DynPlugin for AgentsPlugin {
             let _ = directory.default_agent_id.set(default_id);
             let index = AgentIndex {
                 directory,
+                activity: ctx.require_at(&self.activity)?,
                 builder,
                 session_defaults: self.config.session_defaults.clone(),
                 ctx: OnceLock::from(ctx.clone()),

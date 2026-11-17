@@ -243,6 +243,7 @@ async fn a_preference_update_and_a_model_selection_keep_the_profile() {
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: native.join("outputs"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),

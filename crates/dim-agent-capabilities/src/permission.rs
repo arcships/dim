@@ -10,13 +10,12 @@
 //! The admission decision also asks the advisors registered with it (Hooks
 //! A.6.1): a branch part registers one with [`Permission::register_advice`]
 //! while it runs, and the advice is folded with Permission's own decision.
-//! [`Permission::decide`] stays the plain decision, for the admission's
-//! recheck after an answer.
+//! [`Permission::decide`] evaluates current policy without asking advisors.
 use crate::{
     file_access::FileAccessFacts,
-    host::{HostError, HostFuture},
+    host::{CancelledFn, HostError, HostFuture, call_until_cancelled},
     host_platform::HostPlatform,
-    workspace_tools::files::{canonical_prefix, resolve_path},
+    workspace_tools::files::{Access, canonical_prefix, resolve_path},
 };
 use dim_agent_runtime::{
     AgentError, Dispatcher, Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput,
@@ -39,11 +38,19 @@ use std::{
 use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "decision", rename_all = "lowercase")]
 pub enum Decision {
     Allow,
     Ask { reason: String },
     Deny { reason: String },
+}
+
+/// An admission decision and whether an advisor requires an explicit response.
+pub struct ToolAdmission {
+    pub decision: Decision,
+    /// A policy change cannot answer an advisor's approval question.
+    pub advisor_approval: bool,
 }
 
 const CANCELLED: &str = "Tool execution cancelled.";
@@ -143,10 +150,31 @@ pub struct Permission {
     inner: Mutex<Inner>,
     advisors: Arc<Registrations<Arc<dyn AdviseTool>>>,
 }
+#[rutis::service]
 impl Permission {
+    /// Decides `call` now, as the `permission` face's `check` does: the
+    /// dispatched policy, the file facts and the command rules of the moment,
+    /// with no advisor (Hooks A.6.1 asks advisors for admission only).
+    pub async fn check(
+        &self,
+        call: ApprovalCallData,
+        risk: Option<String>,
+        cancelled: CancelledFn,
+    ) -> Result<Decision, HostError> {
+        let cancel = CancellationToken::new();
+        let _dropped = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.decide(&call, risk.as_deref(), &cancel),
+        )
+        .await
+    }
+
     /// Registers `advise` under `name` on behalf of the part that owns `ctx`,
     /// until that part unloads (Hooks A.6.1). A second advisor of the same
     /// name fails.
+    #[service(skip)]
     pub fn register_advice(
         &self,
         ctx: &Ctx,
@@ -162,16 +190,22 @@ impl Permission {
     /// a provider error counts as none, and an advisor withdrawn while its
     /// advice is pending has that advice dropped as none. A cancelled batch
     /// drops the advice and fails the admission as cancelled.
+    #[service(skip)]
     pub async fn admit_decision(
         &self,
         call: &ApprovalCallData,
         source: &BranchSource,
         risk: Option<&str>,
         cancel: &CancellationToken,
-    ) -> Result<Decision, HostError> {
+    ) -> Result<ToolAdmission, HostError> {
         let decision = self.decide(call, risk, cancel).await?;
         let own = match decision {
-            Decision::Deny { .. } => return Ok(decision),
+            Decision::Deny { .. } => {
+                return Ok(ToolAdmission {
+                    decision,
+                    advisor_approval: false,
+                });
+            }
             Decision::Allow => AdmissionDecision::Allow,
             Decision::Ask { .. } => AdmissionDecision::Ask,
         };
@@ -208,17 +242,21 @@ impl Permission {
                 Some(Ok(ToolAdviceReply::Allow)) => allow = true,
             }
         }
-        Ok(match (deny, ask) {
-            (Some(reason), _) => Decision::Deny { reason },
-            (None, Some(reason)) => Decision::Ask { reason },
-            (None, None) if allow => Decision::Allow,
-            (None, None) => decision,
+        Ok(ToolAdmission {
+            advisor_approval: ask.is_some(),
+            decision: match (deny, ask) {
+                (Some(reason), _) => Decision::Deny { reason },
+                (None, Some(reason)) => Decision::Ask { reason },
+                (None, None) if allow => Decision::Allow,
+                (None, None) => decision,
+            },
         })
     }
 
     /// Decides with the policy dispatched when the decision is made and, for a
     /// command call, the rules read now. A file call resolves its target before
     /// sampling that policy. Cancelled reads stop admission.
+    #[service(skip)]
     pub async fn decide(
         &self,
         call: &ApprovalCallData,
@@ -471,8 +509,10 @@ impl Permission {
             let workspace = std::fs::canonicalize(&cwd).map_err(|error| {
                 format!("Failed to resolve workspace {}: {error}", cwd.display())
             })?;
-            let target = match home {
-                Some(home) => resolve_path(&cwd, &home, &path),
+            let target: Result<PathBuf, String> = match home {
+                Some(home) => {
+                    resolve_path(&cwd, &home, None, Access::Write, &path).map_err(String::from)
+                }
                 None => canonical_prefix(PathBuf::from(path)),
             };
             target.map(|target| (workspace, target))
@@ -486,6 +526,7 @@ impl Permission {
 
     /// Writes `permission/changed` when `expected` is the last written
     /// version; returns the new version once it is dispatched.
+    #[service(skip)]
     pub async fn update(
         &self,
         expected: u64,

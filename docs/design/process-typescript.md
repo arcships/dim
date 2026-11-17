@@ -354,15 +354,7 @@ native Session use follows the existing optional-row rules. Business Settings
 edits still do not reload either row. A structural owner reload may retire its
 real dependents, as ADR 002 D3 permits.
 
-The process dependencies specified by [Scheduler §1](plugins/Scheduler.md#1-structure)
-and [Workflow §1](plugins/Workflow.md#1-structure) share `sessions`, `settings` and
-`pluginFiles`; Scheduler also injects `sessionPermissions`, and Workflow injects
-`workflowFiles`. The stable `AgentDirectory` provides both `sessions` and
-`sessionPermissions`, rather than the reloading Agents index. `workflowFiles`
-belongs to the Settings generation the Workflow row already injects, so it adds
-no independent reload source. `settings` and `pluginFiles` do not depend on
-Provider or the Agents index. Provider and Agents-index reloads therefore do not reach these owners
-through the old dependency chain in #35. Structural reloads of their declared
+The process dependencies specified by [Scheduler §1](plugins/Scheduler.md#1-structure) and [Workflow §1](plugins/Workflow.md#1-structure) share `sessions`, `settings`, `pluginFiles` and `managementMethods`; Workflow also injects `workflowFiles`. The stable `AgentDirectory` provides `sessions` rather than the reloading Agents index. `workflowFiles` belongs to the Settings generation the Workflow row already injects, so it adds no independent reload source. `settings` and `pluginFiles` do not depend on Provider or the Agents index. Provider and Agents-index reloads therefore do not reach these owners through the old dependency chain in #35. Structural reloads of their declared
 dependencies still propagate. The owner rows must keep this stable dependency
 boundary: adding a frequently reloading dependency needs a new availability
 decision. If an owner also injects a reloading service such

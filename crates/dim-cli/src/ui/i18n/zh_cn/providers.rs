@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "刷新模型列表",
+        "Model list refreshed" => "模型列表已刷新",
+        "Model list refresh failed: {reason}" => "刷新模型列表失败：{reason}",
+        "Refreshing model list… · esc close" => "正在刷新模型列表… · Esc 关闭",
         "Providers" => "模型服务",
         "Enter open · Esc clear/close" => "Enter 打开 · Esc 清除/关闭",
         "↑↓/Tab move · Enter activate · Esc back" => "↑↓/Tab 移动 · Enter 执行 · Esc 返回",
@@ -71,6 +75,23 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ 移动 · Enter 执行 · Esc 返回",
         "↑↓ move · enter activate · esc close" => "↑↓ 移动 · Enter 执行 · Esc 关闭",
+        "Model id prefix" => "模型 ID 前缀",
+        "(none)" => "（无）",
+        "identified: {model} at {provider}" => "已识别：{provider} 的 {model}",
+        "inferred from several rows: {model} at {provider}" => "由多行推断：{provider} 的 {model}",
+        "ambiguous: {candidates}" => "存在歧义：{candidates}",
+        "unidentified" => "未识别",
+        "Identified {rule}" => "识别方式：{rule}",
+        "from the Provider's own list" => "来自该 Provider 自身的清单",
+        "from the whole qualified id" => "来自完整限定 id",
+        "by its tokens" => "按 token 匹配",
+        "by its canonical id or display name" => "按规范 id 或显示名匹配",
+        "from the custom-provider list" => "来自 custom-provider 清单",
+        "by merging the rows that name it" => "合并命名它的各行",
+        "ambiguous" => "歧义",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} 由 {provider}/{model} 提供"
+        }
         "(paste here)" => "（粘贴到这里）",
         _ => return None,
     })

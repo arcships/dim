@@ -283,6 +283,10 @@ pub struct SkillEntry {
     pub description: String,
     pub file_path: String,
     pub allowed_tools: Vec<String>,
+    /// `disable-model-invocation: true`: the model may not invoke the Skill.
+    pub model_invocable: bool,
+    /// `user-invocable: false`: the operator may not invoke the Skill.
+    pub user_invocable: bool,
     pub enabled: bool,
     pub shadowed_by: Option<String>,
 }
@@ -707,6 +711,8 @@ impl DynPlugin for SkillsCatalogPlugin {
                                                 .to_string_lossy()
                                                 .into_owned(),
                                             allowed_tools: entry.definition.allowed_tools.clone(),
+                                            model_invocable: entry.definition.model_invocable,
+                                            user_invocable: entry.definition.user_invocable,
                                             enabled: entry.enabled,
                                             shadowed_by: match entry.status {
                                                 SkillStatus::Active => None,

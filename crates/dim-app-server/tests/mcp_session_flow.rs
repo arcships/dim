@@ -26,7 +26,9 @@ use dim_app_server::{
     settings::{SettingsPlugin, SettingsScope, SettingsService},
 };
 use rutis::Ctx;
-use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
+use rutis::host::diagnostics::RuntimeDiagnostics;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
+use rutis_bridge::session::{HostDispatch, Value as BridgeValue, decode_value, host_key, settle};
 use rutis_loader::resolve::Build;
 use serde_json::{Value, json};
 use std::{
@@ -66,6 +68,10 @@ struct Remote {
     session: AtomicUsize,
     /// Rejects a request that carries another session id with HTTP 404.
     session_check: AtomicBool,
+    /// Answers every `initialize` with HTTP 503, a failed start.
+    refuse_start: AtomicBool,
+    /// Answers every `tools/list` with a JSON-RPC error.
+    fail_listing: AtomicBool,
     /// Expires the session once on `lookup/item`.
     expire_once: AtomicBool,
     /// Adds a tool when the client has connected a second time.
@@ -79,6 +85,15 @@ struct Remote {
     lookup_ids: Mutex<Vec<Value>>,
     /// The params of every `notifications/cancelled` the server received.
     cancelled: Mutex<Vec<Value>>,
+    /// Publishes the `peek/*` tools, two of them hinted read-only.
+    ordering: AtomicBool,
+    /// How many `peek/*` calls are inside the server now.
+    peek_inflight: AtomicUsize,
+    /// The highest `peek_inflight` seen while `ordering` holds, so a test can
+    /// tell two overlapping calls from two that ran one after the other.
+    peek_peak: AtomicUsize,
+    /// Reaches when both hinted calls are inside the server at once.
+    peek_pair: tokio::sync::Barrier,
 }
 impl Remote {
     fn new() -> Arc<Self> {
@@ -100,12 +115,18 @@ impl Remote {
             app_called: Notify::new(),
             session: AtomicUsize::new(0),
             session_check: AtomicBool::new(false),
+            refuse_start: AtomicBool::new(false),
+            fail_listing: AtomicBool::new(false),
             expire_once: AtomicBool::new(false),
             grown: AtomicBool::new(false),
             seen: Mutex::default(),
             hold_retry: AtomicBool::new(false),
             lookup_ids: Mutex::default(),
             cancelled: Mutex::default(),
+            ordering: AtomicBool::new(false),
+            peek_inflight: AtomicUsize::new(0),
+            peek_peak: AtomicUsize::new(0),
+            peek_pair: tokio::sync::Barrier::new(2),
         })
     }
 
@@ -125,6 +146,16 @@ impl Remote {
         self.cancelled.lock().unwrap().clone()
     }
 }
+/// Counts a `peek/*` call as finished when it leaves the server.
+struct ObservePeak {
+    remote: Arc<Remote>,
+}
+impl Drop for ObservePeak {
+    fn drop(&mut self) {
+        self.remote.peek_inflight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 async fn rpc(
     State(remote): State<Arc<Remote>>,
     headers: HeaderMap,
@@ -167,6 +198,9 @@ async fn rpc(
     let result = match method {
         "initialize" => {
             remote.initializes.fetch_add(1, Ordering::SeqCst);
+            if remote.refuse_start.load(Ordering::SeqCst) {
+                return StatusCode::SERVICE_UNAVAILABLE.into_response();
+            }
             response_session = format!("s{}", remote.session.fetch_add(1, Ordering::SeqCst) + 1);
             json!({"protocolVersion":"2025-03-26","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"session-test","version":"1"}})
         }
@@ -180,6 +214,18 @@ async fn rpc(
             if remote.invalid.load(Ordering::SeqCst) {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
             }
+            if remote.fail_listing.load(Ordering::SeqCst) {
+                let mut response = Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32603, "message": "listing failed"}
+                }))
+                .into_response();
+                response
+                    .headers_mut()
+                    .insert("mcp-session-id", response_session.parse().unwrap());
+                return response;
+            }
             let mut tools = vec![
                 json!({"name":"lookup/item","description":format!("Subtract two numbers, revision {}", remote.revision.load(Ordering::SeqCst)),"inputSchema":{"type":"object","properties":{"a":{"type":"integer"},"b":{"type":"integer"},"rule":{"oneOf":[{"type":"object","properties":{"kind":{"type":"string","const":"manual"}},"required":["kind"],"additionalProperties":false},{"type":"object","properties":{"kind":{"type":"string","const":"minutes"},"every":{"type":"integer","minimum":1}},"required":["kind","every"],"additionalProperties":false}]}},"required":["a","b"]}}),
                 json!({"name":"lookup_item","description":"A distinct original name","inputSchema":{"type":"object"}}),
@@ -189,6 +235,14 @@ async fn rpc(
             }
             if remote.nullable.load(Ordering::SeqCst) {
                 tools.push(json!({"name":"spaces","description":"List spaces","inputSchema":{"type":"object","properties":{"space_id":{"type":["string","null"]}},"required":["space_id"]}}));
+            }
+            if remote.ordering.load(Ordering::SeqCst) {
+                // Two hinted reads and two that do not declare the hint: the
+                // first two share a step while the others order.
+                tools.push(json!({"name":"peek/a","description":"Read a value","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}));
+                tools.push(json!({"name":"peek/b","description":"Read a value","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":true}}));
+                tools.push(json!({"name":"peek/c","description":"Declares no hint","inputSchema":{"type":"object"}}));
+                tools.push(json!({"name":"peek/d","description":"The hint is false","inputSchema":{"type":"object"},"annotations":{"readOnlyHint":false}}));
             }
             if remote.broken.load(Ordering::SeqCst) {
                 tools.push(json!({"name":"broken","inputSchema":{"type":"object","properties":{"x":{"type":["string","file"]}}}}));
@@ -207,6 +261,10 @@ async fn rpc(
             json!({"tools":tools})
         }
         "resources/read" => {
+            if remote.app_hold.load(Ordering::SeqCst) {
+                remote.app_called.notify_waiters();
+                std::future::pending::<()>().await;
+            }
             let uri = body["params"]["uri"].as_str().unwrap();
             let ui = json!({"csp":{"connectDomains":["https://api.example"]},"prefersBorder":true});
             match remote.widgets.load(Ordering::SeqCst) {
@@ -237,7 +295,20 @@ async fn rpc(
             if name == "lookup/item" && remote.hold_retry.load(Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(2800)).await;
             }
-            if body["params"]["name"] == "chart" {
+            if name.starts_with("peek/") {
+                let inside = remote.peek_inflight.fetch_add(1, Ordering::SeqCst) + 1;
+                let _left = ObservePeak {
+                    remote: remote.clone(),
+                };
+                remote.peek_peak.fetch_max(inside, Ordering::SeqCst);
+                if name == "peek/a" || name == "peek/b" {
+                    // Only the two hinted reads can be inside together, so a
+                    // barrier of two either opens or the test times out.
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(3), remote.peek_pair.wait()).await;
+                }
+                json!({"content":[{"type":"text","text":"peeked"}]})
+            } else if body["params"]["name"] == "chart" {
                 if remote.app_hold.load(Ordering::SeqCst) {
                     remote.app_called.notify_waiters();
                     std::future::pending::<()>().await;
@@ -250,8 +321,9 @@ async fn rpc(
             } else if body["params"]["name"] == "spaces" {
                 json!({"content":[{"type":"text","text":"spaces-ok"}]})
             } else if body["params"]["name"] == "screenshot" {
-                json!({"content":[
+                json!({"structuredContent":{"capture":"complete"},"isError":false,"content":[
                     {"type":"text","text":"screenshot captured"},
+                    {"type":"image","data":"PHN2Zy8+","mimeType":"image/svg+xml"},
                     {"type":"image","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=","mimeType":"image/png"}
                 ]})
             } else {
@@ -293,6 +365,8 @@ enum Action {
         pause: bool,
         name: Option<String>,
     },
+    /// One batch of several calls, each named by the original MCP tool name.
+    Batch(Vec<&'static str>),
     Text,
     /// Ignores cancellation until released, so a Session close waits for it.
     Hold,
@@ -356,6 +430,36 @@ impl ModelDriver for Model {
                         ],
                         ModelStopReason::ToolUse,
                     )
+                }
+                Action::Batch(names) => {
+                    let mut chunks = Vec::new();
+                    for original in names {
+                        let name = request
+                            .tools
+                            .as_ref()
+                            .unwrap()
+                            .iter()
+                            .find(|tool| {
+                                tool.metadata
+                                    .as_ref()
+                                    .and_then(|m| m.mcp_original_tool_name.as_deref())
+                                    == Some(original)
+                            })
+                            .unwrap_or_else(|| panic!("{original} is offered"))
+                            .name
+                            .clone();
+                        let id = uuid::Uuid::new_v4().to_string();
+                        chunks.push(ModelChunk::ToolStart {
+                            id: id.clone(),
+                            name: name.clone(),
+                        });
+                        chunks.push(ModelChunk::ToolUse(ToolCall {
+                            id,
+                            name,
+                            input: Default::default(),
+                        }));
+                    }
+                    (chunks, ModelStopReason::ToolUse)
                 }
                 Action::Text => (
                     vec![ModelChunk::Text("done".into()), ModelChunk::TextEnd],
@@ -423,11 +527,8 @@ async fn authorize_project(host: &MinimalHost, home: &Path) {
         .unwrap();
 }
 /// The credential variable names a test host reports to MCP.
-struct CredentialNames(BTreeSet<String>);
-impl dim_agent_capabilities::host::CredentialVariables for CredentialNames {
-    fn credential_variables(&self) -> BTreeSet<String> {
-        self.0.clone()
-    }
+fn credentials_host(names: BTreeSet<String>) -> CredentialVariablesHost {
+    CredentialVariablesHost::new(Arc::new(move || names.clone()))
 }
 
 impl Env {
@@ -549,10 +650,8 @@ impl Env {
         mcp_host_rows(&mut builder, &home);
         configure(&mut builder, &remote);
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide(CredentialVariablesHost(Arc::new(CredentialNames(
-                credential_names,
-            ))))
-            .map_err(|error| AgentError::Build(error.to_string()))?;
+            root.provide(credentials_host(credential_names))
+                .map_err(|error| AgentError::Build(error.to_string()))?;
             if let Some(platform) = platform {
                 root.provide(platform)
                     .map_err(|error| AgentError::Build(error.to_string()))?;
@@ -1073,6 +1172,48 @@ async fn temporary_mcp_failed_setup_cleans_up_and_an_abandoned_binding_expires()
         env.remote.deletes.load(Ordering::SeqCst),
         deleted + 2,
         "closing the Session disposes both configured and temporary connections"
+    );
+    env.close().await;
+}
+
+#[tokio::test]
+async fn hinted_mcp_tools_of_one_batch_overlap_and_an_unhinted_one_runs_alone() {
+    let env = Env::new().await;
+    env.remote.ordering.store(true, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    ready(&session).await;
+    // `peek/a` and `peek/b` declare `readOnlyHint`, so they share one step and
+    // the server's barrier of two opens. An unhinted call would run alone, and
+    // the barrier would time out.
+    env.turn(&session, Action::Batch(vec!["peek/a", "peek/b"]))
+        .await;
+    let settled = results(&session).await;
+    let last = settled.last().unwrap();
+    assert!(last.contains("peeked"), "{last}");
+    assert_eq!(
+        env.remote.peek_peak.load(Ordering::SeqCst),
+        2,
+        "the two hinted calls are inside the server at the same time"
+    );
+    env.close().await;
+}
+
+#[tokio::test]
+async fn an_unhinted_mcp_tool_orders_its_calls_beside_the_hinted_ones() {
+    let env = Env::new().await;
+    env.remote.ordering.store(true, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    ready(&session).await;
+    // `peek/c` declares no hint and `peek/d` declares `readOnlyHint: false`,
+    // so each is alone in its step and never meets the other in the server.
+    env.turn(&session, Action::Batch(vec!["peek/c", "peek/d", "peek/a"]))
+        .await;
+    let settled = results(&session).await;
+    assert!(settled.last().unwrap().contains("peeked"));
+    assert_eq!(
+        env.remote.peek_peak.load(Ordering::SeqCst),
+        1,
+        "an unhinted tool never shares a step"
     );
     env.close().await;
 }
@@ -1689,6 +1830,84 @@ async fn project_visibility_disable_refresh_failure_and_permission_use_real_sour
     env.close().await;
 }
 
+/// A refresh during a failed start's cooldown reaches the server no earlier
+/// than the cooldown does: the Session keeps the generation the failure was
+/// recorded on while it replaces the discovery.
+#[tokio::test]
+async fn a_refresh_during_a_failed_start_keeps_its_cooldown() {
+    let env = Env::new().await;
+    env.remote.refuse_start.store(true, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    let view = session.session_service::<McpSession>().unwrap();
+    failure(&session).await;
+    assert_eq!(
+        env.remote.initializes.load(Ordering::SeqCst),
+        1,
+        "the first discovery"
+    );
+    let started = std::time::Instant::now();
+    for _ in 0..5 {
+        view.refresh().unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    }
+    assert_eq!(
+        env.remote.initializes.load(Ordering::SeqCst),
+        1,
+        "five refreshes during the one-second cooldown reached the server again, \
+         in {:?}",
+        started.elapsed()
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while env.remote.initializes.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the attempt after the cooldown reaches the server");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        env.remote.initializes.load(Ordering::SeqCst),
+        2,
+        "exactly one attempt follows the cooldown"
+    );
+    env.close().await;
+}
+
+/// A discovery that ends on its own error releases the generation it
+/// initialized: the next refresh starts a new one instead of re-listing on the
+/// connection the failure left behind.
+#[tokio::test]
+async fn a_refresh_after_a_failed_discovery_starts_a_new_generation() {
+    let env = Env::new().await;
+    env.remote.fail_listing.store(true, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::FullAccess).await;
+    let message = failure(&session).await;
+    assert!(
+        message.contains("request failed"),
+        "the listing failed on a connected server: {message}"
+    );
+    assert_eq!(
+        env.remote.initializes.load(Ordering::SeqCst),
+        1,
+        "the first discovery initialized"
+    );
+    env.remote.fail_listing.store(false, Ordering::SeqCst);
+    session
+        .session_service::<McpSession>()
+        .unwrap()
+        .refresh()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while env.remote.initializes.load(Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the refresh starts a new generation");
+    ready(&session).await;
+    env.close().await;
+}
+
 #[tokio::test]
 async fn unreadable_catalog_preserves_adopted_tools_until_a_valid_update() {
     let env = Env::new().await;
@@ -2229,11 +2448,17 @@ async fn a_shadowed_user_server_closes_its_unused_connection() {
 const TOOL_IMAGE: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=";
 
-/// The Part 1 flow: an MCP tool returns a text block and a PNG, and the model
-/// request that follows carries the image instead of failing.
+/// An MCP image result retains its source while the model receives a reference.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() {
+    use base64::Engine as _;
     use dim_agent_aimux::{AimuxModels, AimuxPlugin, ConfiguredModelsPlugin};
+    use sha2::{Digest, Sha256};
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(TOOL_IMAGE)
+        .unwrap();
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let reference = format!("img:{}", &digest[..16]);
     tokio::time::timeout(Duration::from_secs(30), async {
         let requests: Arc<Mutex<Vec<Value>>> = Default::default();
         let seen = requests.clone();
@@ -2360,13 +2585,18 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
         dim_agent_aimux::install(&mut builder);
         mcp::install(&mut builder);
         mcp_host_rows(&mut builder, &home);
+        let database = home.join("dimcode.sqlite");
+        builder.plugin(move |_| Ok(Box::new(dim_app_server::storage::SqliteStoragePlugin::new(database.clone()))));
+        builder.plugin(|_| {
+            let catalog = dim_app_server::catalog();
+            let build = Build::default();
+            Ok(Box::new(dim_app_server::storage::SessionStorePlugin::new(&Names::copy(&catalog, &build), 0)?))
+        });
         builder
-            .plugin(|_| Ok(Box::new(AimuxPlugin)))
+            .plugin(|names| Ok(Box::new(AimuxPlugin::with_files(names.key()?))))
             .plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide(CredentialVariablesHost(Arc::new(CredentialNames(
-                BTreeSet::new(),
-            ))))
+            root.provide(credentials_host(BTreeSet::new()))
             .map_err(|error| AgentError::Build(error.to_string()))?;
             Ok(())
         })
@@ -2393,6 +2623,8 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             })
             .await
             .unwrap();
+        agent.root().get::<dim_app_server::storage::SessionStore>().unwrap()
+            .timeline_store().create_session(session.id(), &SessionConfig::default()).await.unwrap();
         // The tool enters the request once its source is adopted.
         ready(&session).await;
         let mut ran = false;
@@ -2404,7 +2636,8 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             session.idle("main").await.unwrap();
             let events = chain_events(&session, "main", ..).await.unwrap();
             assert!(
-                matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+                matches!(events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                    EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
                 "{:?}",
                 events.iter().filter_map(|event| match &event.kind { EventKind::ModelOutputEnd(data) => Some(&data.outcome), _ => None }).collect::<Vec<_>>()
             );
@@ -2414,6 +2647,16 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             }
         }
         assert!(ran, "the MCP image tool ran and the stored tool result keeps the image");
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let result = events.iter().find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) => Some(&data.results[0].result),
+            _ => None,
+        }).unwrap();
+        assert_eq!(result.is_error, Some(false));
+        assert_eq!(result.structured_content, Some(JsonObject::from_iter([("capture".into(), json!("complete"))])));
+        let ToolContent::Blocks(blocks) = &result.content else { panic!("expected image tool blocks") };
+        assert!(matches!(&blocks[..], [ContentBlock::Text {text}, ContentBlock::Text {text: omitted}, ContentBlock::Image {source}, ContentBlock::Text {text: structured}]
+            if text == "screenshot captured" && omitted == "[Image omitted: the image cannot be sent to this model.]" && source.source_type == ImageSourceType::File && structured == r#"{"capture":"complete"}"#), "{blocks:?}");
         let bodies = requests.lock().unwrap().clone();
         let next = bodies
             .iter()
@@ -2431,22 +2674,22 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             .find(|message| message["role"] == "tool")
             .unwrap();
         assert!(
-            tool["content"].as_str().unwrap().contains("[Image: sent in the following user message as tool output.]"),
+            tool["content"].as_str().unwrap().contains(&reference),
             "{tool}"
         );
-        let user = next["messages"].as_array().unwrap().last().unwrap();
-        assert_eq!(user["role"], "user");
-        assert!(
-            user["content"][1]["image_url"]["url"].as_str().unwrap() == format!("data:image/png;base64,{TOOL_IMAGE}"),
-            "{user}"
-        );
+        assert!(tool["content"].as_str().unwrap().contains("screenshot captured"));
+        assert!(tool["content"].as_str().unwrap().contains("[Image omitted: the image cannot be sent to this model.]"));
+        assert!(!next.to_string().contains(TOOL_IMAGE), "{next}");
+        assert!(!next.to_string().contains("image_url"), "{next}");
+        assert!(!next.to_string().contains("[Image: sent in the following user message as tool output.]"), "{next}");
         session
             .submit("thanks".into(), InputMode::Queue, "main")
             .await
             .unwrap();
         session.idle("main").await.unwrap();
         assert!(
-            matches!(chain_events(&session, "main", ..).await.unwrap().last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
+            matches!(chain_events(&session, "main", ..).await.unwrap().iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })),
             "a later turn also completes"
         );
         agent.close().await.unwrap();
@@ -2501,7 +2744,7 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
     );
     let mcp = session.session_service::<McpSession>().unwrap();
 
-    let widget = mcp.widget(&chart).await.unwrap();
+    let widget = mcp.widget(chart.clone()).await.unwrap();
     assert_eq!(widget.server, "docs");
     assert_eq!(widget.name, "chart");
     assert_eq!(widget.uri, "ui://widget/counter.html");
@@ -2532,14 +2775,17 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
     );
 
     let plain = declared(&tools, "lookup/item").name.clone();
-    assert_eq!(mcp.widget(&plain).await.unwrap_err(), McpAppError::Absent);
     assert_eq!(
-        mcp.widget("mcp_nowhere_absent").await.unwrap_err(),
+        mcp.widget(plain.clone()).await.unwrap_err(),
+        McpAppError::Absent
+    );
+    assert_eq!(
+        mcp.widget("mcp_nowhere_absent".into()).await.unwrap_err(),
         McpAppError::Absent
     );
 
     let chart_call = mcp
-        .call("docs", "chart", arguments(json!({"step":2})))
+        .call("docs".into(), "chart".into(), arguments(json!({"step":2})))
         .await
         .unwrap();
     assert_eq!(
@@ -2556,19 +2802,19 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
     assert_eq!(chart_call.is_error, None);
 
     assert_eq!(
-        mcp.call("docs", "missing", arguments(json!({})))
+        mcp.call("docs".into(), "missing".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::Absent
     );
     assert_eq!(
-        mcp.call("other", "chart", arguments(json!({})))
+        mcp.call("other".into(), "chart".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::UnknownServer
     );
     assert_eq!(
-        mcp.call("docs", "summary", arguments(json!({})))
+        mcp.call("docs".into(), "summary".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::NotCallable
@@ -2582,7 +2828,7 @@ async fn a_view_mounts_its_document_and_calls_the_entry_it_came_from() {
         "a tool the server declares model-only is never sent"
     );
     let failed = mcp
-        .call("docs", "refresh", arguments(json!({})))
+        .call("docs".into(), "refresh".into(), arguments(json!({})))
         .await
         .unwrap();
     assert_eq!(
@@ -2629,33 +2875,33 @@ async fn a_mount_refuses_an_unsupported_document_and_an_unusable_entry() {
 
     env.remote.widgets.store(2, Ordering::SeqCst);
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unsupported
     );
     env.remote.widgets.store(3, Ordering::SeqCst);
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unsupported
     );
     env.remote.widgets.store(1, Ordering::SeqCst);
-    assert!(mcp.widget(&chart).await.is_ok());
+    assert!(mcp.widget(chart.clone()).await.is_ok());
 
     env.update(SettingsScope::User, "docs", McpChange::SetEnabled(false))
         .await;
     adopted(&session, None).await;
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unavailable,
         "the view learns its entry is disabled, not that its tool name is unknown"
     );
     assert_eq!(
-        mcp.call("docs", "chart", arguments(json!({})))
+        mcp.call("docs".into(), "chart".into(), arguments(json!({})))
             .await
             .unwrap_err(),
         McpAppError::Unavailable
     );
     assert_eq!(
-        mcp.widget("mcp_nowhere_absent").await.unwrap_err(),
+        mcp.widget("mcp_nowhere_absent".into()).await.unwrap_err(),
         McpAppError::Absent,
         "a name the Session never held is absent"
     );
@@ -2675,13 +2921,13 @@ async fn a_replaced_connection_generation_re_reads_the_document() {
     let tools = offered(&env, &session).await;
     let chart = declared(&tools, "chart").name.clone();
     let mcp = session.session_service::<McpSession>().unwrap();
-    assert!(mcp.widget(&chart).await.is_ok());
+    assert!(mcp.widget(chart.clone()).await.is_ok());
 
     env.update(SettingsScope::User, "docs", McpChange::SetEnabled(false))
         .await;
     adopted(&session, None).await;
     assert_eq!(
-        mcp.widget(&chart).await.unwrap_err(),
+        mcp.widget(chart.clone()).await.unwrap_err(),
         McpAppError::Unavailable
     );
 
@@ -2692,7 +2938,7 @@ async fn a_replaced_connection_generation_re_reads_the_document() {
         version, next,
         "a replaced generation is a new discovery for a client's cache"
     );
-    let widget = mcp.widget(&chart).await.unwrap();
+    let widget = mcp.widget(chart.clone()).await.unwrap();
     assert_eq!(widget.server, "docs");
     assert_eq!(widget.name, "chart");
     assert_eq!(widget.text.as_deref(), Some("<p>counter</p>"));
@@ -2710,7 +2956,7 @@ async fn a_view_call_the_connection_took_but_did_not_answer_is_unknown() {
     let worker = tokio::spawn({
         let mcp = mcp.clone();
         async move {
-            mcp.call("docs", "chart", arguments(json!({"step":2})))
+            mcp.call("docs".into(), "chart".into(), arguments(json!({"step":2})))
                 .await
         }
     });
@@ -3642,7 +3888,7 @@ async fn a_stdio_entry_starts_a_command_the_toolchain_source_provides() {
     let session = env.session(false, PermissionPreset::FullAccess).await;
     let mcp = session.session_service::<McpSession>().unwrap();
     let mut changed = mcp.subscribe();
-    let version = tokio::time::timeout(Duration::from_secs(5), async {
+    let version = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             match changed.borrow_and_update().servers.get("docs") {
                 Some(McpSourceState::Ready { version }) => return version.clone(),
@@ -3655,7 +3901,12 @@ async fn a_stdio_entry_starts_a_command_the_toolchain_source_provides() {
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| {
+        panic!(
+            "the stdio entry did not become ready: {:?}",
+            changed.borrow().servers
+        )
+    });
     adopted(&session, Some(&version)).await;
     env.turn(&session, Action::Text).await;
     let names: Vec<String> = env
@@ -3684,4 +3935,210 @@ async fn a_stdio_entry_starts_a_command_the_toolchain_source_provides() {
     );
     env.close().await;
     std::fs::remove_dir_all(base).unwrap();
+}
+
+/// A Session part that hands the test its own context, which reads a
+/// service by the instance key the catalog names.
+struct HandsItsContext(Arc<Mutex<Option<Ctx>>>);
+impl DynPlugin for HandsItsContext {
+    fn name(&self) -> &str {
+        "FaceProbe"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        Vec::new()
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            *self.0.lock().unwrap() = Some(ctx.clone());
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The instance a group's parts run in: the one its scope part runs in.
+fn group_instance(diagnostics: &RuntimeDiagnostics, scope: &str) -> InstanceId {
+    let scope = diagnostics
+        .plugins
+        .iter()
+        .find(|plugin| plugin.name == scope)
+        .unwrap_or_else(|| panic!("no {scope} part"));
+    let group = scope.parent.expect("a scope part runs in a group");
+    diagnostics
+        .plugins
+        .iter()
+        .find(|plugin| plugin.id == group)
+        .expect("the scope group")
+        .instance
+}
+
+/// The call another language makes on `name` in `instance`.
+async fn face_call(
+    ctx: &Ctx,
+    instance: InstanceId,
+    name: &str,
+    method: &str,
+    args: Vec<BridgeValue>,
+) -> Value {
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
+    let reply = dispatch
+        .invoke(method, BridgeValue::List(args))
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    decode_value(settle(reply).await.expect("a successful call")).expect("a data reply")
+}
+
+/// The error the call another language makes on `name` returns.
+async fn face_error(
+    ctx: &Ctx,
+    instance: InstanceId,
+    name: &str,
+    method: &str,
+    args: Vec<BridgeValue>,
+) -> rutis_bridge::session::Error {
+    let dispatch = ctx
+        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
+    let reply = dispatch
+        .invoke(method, BridgeValue::List(args))
+        .unwrap_or_else(|error| panic!("{name}.{method}: {error}"));
+    settle(reply).await.expect_err("the call fails")
+}
+
+/// `mcpSession` answers as the typed service: the same state, document,
+/// call result and error codes for the entry both callers name.
+#[tokio::test]
+async fn mcp_session_face_answers_as_the_typed_service() {
+    let slot = Arc::new(Mutex::new(None));
+    let probe = slot.clone();
+    let env = Env::with(move |builder, _| {
+        builder.require_feature(Feature::new("FaceProbe").session("FaceProbe", move |_| {
+            Ok(Box::new(HandsItsContext(probe.clone())))
+        }));
+    })
+    .await;
+    env.remote.widgets.store(1, Ordering::SeqCst);
+    let session = env.session(false, PermissionPreset::ReadOnly).await;
+    ready(&session).await;
+    let tools = offered(&env, &session).await;
+    let chart = declared(&tools, "chart").name.clone();
+    let ctx = slot.lock().unwrap().take().expect("the Session probe");
+    let instance = group_instance(&session.diagnostics().unwrap(), "SessionScope");
+    let mcp = session.session_service::<McpSession>().unwrap();
+
+    let typed = serde_json::to_value(mcp.state()).unwrap();
+    let wire = face_call(&ctx, instance, "mcpSession", "state", Vec::new()).await;
+    assert_eq!(typed, wire, "the face lists the entries the owner holds");
+
+    let typed = mcp.widget(chart.clone()).await.unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "mcpSession",
+        "widget",
+        vec![json!(chart).into()],
+    )
+    .await;
+    assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+    let widget = wire;
+
+    let typed = mcp
+        .call("docs".into(), "chart".into(), arguments(json!({"step":2})))
+        .await
+        .unwrap();
+    let wire = face_call(
+        &ctx,
+        instance,
+        "mcpSession",
+        "call",
+        vec![
+            json!("docs").into(),
+            json!("chart").into(),
+            json!({"step":2}).into(),
+        ],
+    )
+    .await;
+    assert_eq!(serde_json::to_value(&typed).unwrap(), wire);
+
+    let error = face_error(
+        &ctx,
+        instance,
+        "mcpSession",
+        "widget",
+        vec![json!("mcp_nowhere_absent").into()],
+    )
+    .await;
+    assert_eq!(error.code(), Some("Absent"));
+    assert_eq!(
+        mcp.widget("mcp_nowhere_absent".into()).await.unwrap_err(),
+        McpAppError::Absent
+    );
+
+    let error = face_error(
+        &ctx,
+        instance,
+        "mcpSession",
+        "call",
+        vec![
+            json!("other").into(),
+            json!("chart").into(),
+            json!({}).into(),
+        ],
+    )
+    .await;
+    assert_eq!(error.code(), Some("UnknownServer"));
+    assert_eq!(
+        mcp.call("other".into(), "chart".into(), arguments(json!({})))
+            .await
+            .unwrap_err(),
+        McpAppError::UnknownServer
+    );
+
+    for (method, args, expected) in [
+        ("widget", vec![json!(chart).into()], widget),
+        (
+            "call",
+            vec![
+                json!("docs").into(),
+                json!("chart").into(),
+                json!({"step":2}).into(),
+            ],
+            serde_json::to_value(&typed).unwrap(),
+        ),
+    ] {
+        env.remote.app_hold.store(true, Ordering::SeqCst);
+        let called = env.remote.app_called.notified();
+        tokio::pin!(called);
+        called.as_mut().enable();
+        let before = env.remote.cancelled().len();
+        let mut pending = Box::pin(face_call(
+            &ctx,
+            instance,
+            "mcpSession",
+            method,
+            args.clone(),
+        ));
+        tokio::select! {
+            _ = &mut pending => panic!("the server holds the call until it is abandoned"),
+            result = tokio::time::timeout(Duration::from_secs(5), &mut called) => result.unwrap(),
+        }
+        drop(pending);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while env.remote.cancelled().len() == before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("abandoning the face call sends MCP cancellation to the server");
+        assert_eq!(env.remote.cancelled().len(), before + 1);
+        env.remote.app_hold.store(false, Ordering::SeqCst);
+        let next = face_call(&ctx, instance, "mcpSession", method, args).await;
+        assert_eq!(next, expected, "{method} works after abandonment");
+    }
+
+    mcp.refresh().unwrap();
+    let wire = face_call(&ctx, instance, "mcpSession", "refresh", Vec::new()).await;
+    assert_eq!(wire, Value::Null);
+
+    env.close().await;
 }

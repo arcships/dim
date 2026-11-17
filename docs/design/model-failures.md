@@ -14,7 +14,7 @@ normalized codes and the `AiMuxError` variant. It never matches message text.
 | `network` | `ApiCall`, origin Transport, no HTTP status | yes | could not reach the provider, or the connection dropped | check the network or proxy |
 | `rate_limited` | 429, rate-limit codes | yes; `Retry-After` is used while it fits the wait budget | the provider is rate limiting requests | wait and try again |
 | `server_error` | 408, 5xx except 501 and 505, server and overload codes, transient stream-event codes | yes | the provider reported a server error | try again later or choose another model |
-| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
+| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream, tool arguments that never complete | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
 | `auth_rejected` | 401, 403, invalid-key/auth codes | no (the existing one credential recovery stays) | the provider rejected the credentials | sign in again or check the API key |
 | `quota_exhausted` | 402, quota/billing codes | no | the account has no quota left | check the plan or billing |
 | `not_found` | 404 | no | the provider did not find the model or endpoint | check the model and the provider's base URL |
@@ -91,11 +91,17 @@ ModelFailure {
   are text only, with control characters stripped.
 - `error`, which old clients read, is the default English line
   `<meaning>: <reason>. <action>`, with `: <reason>` left out when there is
-  none. There is no `ApiCall:` prefix. The turn that the failure ends carries
-  the same string in `TurnOutcome::Failed.error`, so a client can tell the two
-  apart and drop the repeat.
+  none. There is no `ApiCall:` prefix. When the failure ends its turn Failed,
+  that turn carries the same string in `TurnOutcome::Failed.error`, so a client
+  can tell the two apart and drop the repeat. A failure that does not fail the
+  turn, such as an output-limit stop, carries nothing in the turn's outcome.
 - The `max_tokens` stop keeps its presentation and also writes
-  `failure.kind = output_limit`.
+  `failure.kind = output_limit`. It does not fail the turn: the Loop ends the
+  turn Completed with reason `output_limit` (Loop.md, the announced-call
+  section).
+- Tool arguments that never complete write
+  `failure.kind = malformed_response`, the kind `InvalidToolInput` carries for
+  the same defect.
 - A failure from a host with no provider boundary gets kind `unknown` and the
   message it already carried.
 
@@ -198,8 +204,8 @@ curve and the one `malformed_response` retry are request-local and restart in
 the continuation. A request without the field gets a fresh budget; a normal
 request after a tool step is never part of a chain.
 
-The 8 attempts and the 300 s are ModelProvider's public limits: a disposer
-reads them and declines a spent chain without reading ModelProvider's state.
+ModelProvider enforces the shared attempt and wait limits when invoking a
+chain-carrying request; no separate disposer is required.
 ModelProvider sets `failure.retryForbidden` when its failure policy forbids
 retrying the failure that ended the request; the field is written only when
 true, and a continuation declines it.
@@ -212,12 +218,10 @@ same forward-compatibility limit `presentation` has, so a downgrade across this
 change is unsupported, as it already was for `presentation`.
 
 The same decision covers the continuation fields, the retry prohibition and
-the new kind. The optional `failure_chain` on `ContextPrepareData` and
+handover inputs. The optional `failure_chain` on `ContextPrepareData` and
 `ModelCallData`, the optional `handover` on `InputMessageData`, and the optional
 `retryForbidden` on `ModelFailure` are additive, and a binary without them
 cannot read a record that carries them, so a downgrade across this change is
-unsupported. The new `step/disposition` kind is additive for the native store
-and absent from v1: the outbound boundary filters it like `input/consumed`, so
-the frozen v1 notification set is unchanged. Each addition registers the
+unsupported. Each addition registers the
 decision in the contract tests with its compatibility cases; the frozen
 fixtures stay unchanged.

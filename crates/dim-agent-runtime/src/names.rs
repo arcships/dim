@@ -29,7 +29,7 @@ pub fn name_of<T: ?Sized>() -> String {
 
 /// [`name_of`] for a type known by its name ([`rutis::TypeKey::type_name`]).
 pub fn name_of_type(full: &str) -> String {
-    let full = full.strip_prefix("dyn ").unwrap_or(full);
+    let full = full.trim_prefix("dyn ");
     let path = full.split(['<', ' ']).next().unwrap_or(full);
     let ident = path.rsplit("::").next().unwrap_or(path);
     let chars: Vec<char> = ident.chars().collect();
@@ -95,7 +95,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<crate::PartRegistry>(&mut catalog, None);
     let session = Some(SESSION_GROUP);
     register::<SessionConfig>(&mut catalog, session);
-    register::<AgentConfig>(&mut catalog, session);
+    catalog.register_shared_instance(name_of::<AgentConfig>(), SESSION_GROUP);
     register::<SessionIdentity>(&mut catalog, session);
     register::<SessionLifecycle>(&mut catalog, session);
     register::<FaultReporter>(&mut catalog, session);
@@ -119,6 +119,7 @@ pub fn catalog() -> ServiceCatalog {
 pub struct Names<'a> {
     catalog: &'a ServiceCatalog,
     place: Place<'a>,
+    faces: Option<&'a crate::Faces>,
 }
 enum Place<'a> {
     /// A copy running in these instances.
@@ -136,6 +137,20 @@ impl<'a> Names<'a> {
         Self {
             catalog,
             place: Place::Copy(build),
+            faces: None,
+        }
+    }
+    /// The names of a copy running in `build`'s instances, rejecting the
+    /// internal faces a leaf cannot borrow (#1289).
+    pub fn copy_with_faces(
+        catalog: &'a ServiceCatalog,
+        build: &'a Build,
+        faces: &'a crate::Faces,
+    ) -> Self {
+        Self {
+            catalog,
+            place: Place::Copy(build),
+            faces: Some(faces),
         }
     }
     /// The composition check of a part placed inside `groups`, innermost
@@ -148,6 +163,7 @@ impl<'a> Names<'a> {
         Self {
             catalog,
             place: Place::Check { groups, instance },
+            faces: None,
         }
     }
     /// The instance of the enclosing `group` the copy runs in.
@@ -161,8 +177,17 @@ impl<'a> Names<'a> {
         }
     }
     /// The key of `T`'s name for this copy.
+    fn reject_internal(&self, name: &str) -> Result<(), Error> {
+        if let Some(reason) = self.faces.and_then(|faces| faces.reason(name)) {
+            return Err(rutis::Error::from(ErrorKind::PluginFailed(
+                format!("internal_service: {name} is internal: {reason}").into(),
+            )));
+        }
+        Ok(())
+    }
     pub fn key<T: ?Sized + 'static>(&self) -> Result<Key<T>, Error> {
         let name = name_of::<T>();
+        self.reject_internal(&name)?;
         let failed = |message: String| rutis::Error::from(ErrorKind::PluginFailed(message.into()));
         let group = match self.catalog.key_in(&name, &Build::default()) {
             Ok(key) => {
@@ -194,18 +219,18 @@ impl<'a> Names<'a> {
         Ok(Key::of().instance(instance))
     }
     /// Whether the assembly names `T`: a part whose dependency on it is
-    /// optional includes it only then ([`Self::when`]).
+    /// optional includes it only then ([`Self::when`]). A name shared across
+    /// languages is named too: its face is what a part of another language
+    /// provides there.
     pub fn registered<T: ?Sized + 'static>(&self) -> bool {
-        !matches!(
-            registered_key(self.catalog, &name_of::<T>()),
-            Err(LoaderError::UnknownService(_))
-        )
+        named(self.catalog, &name_of::<T>())
     }
     /// The key of the service `name` as the catalog keys it for this copy.
     /// A name that crosses languages is at its dispatcher's key, so `T` is
     /// then `dyn HostDispatch`: there a provider of any language is found.
     /// [`Self::key`] is the form for a name registered with a Rust type.
     pub fn named<T: ?Sized + 'static>(&self, name: &str) -> Result<Key<T>, Error> {
+        self.reject_internal(name)?;
         let failed = |message: String| rutis::Error::from(ErrorKind::PluginFailed(message.into()));
         let key = match self.catalog.key_in(name, &Build::default()) {
             Ok(key) => key,
@@ -284,6 +309,17 @@ impl<'a> Names<'a> {
         )))
     }
 }
+/// Whether the catalog holds an entry for `name`. [`registered_key`] cannot
+/// answer it: every name the catalog does not register is still shared by
+/// name, at the key a registered shared name has. A name outside this copy's
+/// instances is named too.
+fn named(catalog: &ServiceCatalog, name: &str) -> bool {
+    !matches!(
+        rutis_loader::resolve::ExprScope::new(None, catalog).has(name),
+        Err(LoaderError::UnknownService(_))
+    )
+}
+
 /// The catalog's key for `name` outside any instance, or `UnknownService`
 /// when the host did not register the name: rutis shares every name it does
 /// not register, at `host_key(name)`, so that key alone says nothing was

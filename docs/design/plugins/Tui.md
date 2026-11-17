@@ -2,7 +2,7 @@
 
 Status: Implemented. Overall design: [overview §4 Plugin catalog](../overview.md#4-plugin-catalog); scope: [ADR 002](../../adr/002-plugin-scope.md) (CLI process, like [AcpGateway](AcpGateway.md)). Phase: P1. Language: Rust (the existing `dim-cli` code).
 
-The terminal interface, the foreground `dimcode web` holder and the daemon connection they share become rutis plugins in a **client tree**: a rutis root that the `dimcode` client process owns, separate from the daemon's tree. The daemon (App Server), its loader rows and its managed plugins are untouched; the client tree depends on the daemon only through the local RPC protocol v3, exactly as the CLI does today. The plugin boundary buys two things: the client-start/daemon-start order becomes a declared dependency instead of code order, and terminal restoration and session shutdown become `Effect`s that rutis runs exactly once in reverse order on every exit path. `/web` no longer unloads the TUI: it toggles the daemon-owned web switch. Everything the user sees (`ui/`, `model/`, `projection`, `wire`) is unchanged.
+The terminal interface, the foreground `dimcode web` holder and the daemon connection they share become rutis plugins in a **client tree**: a rutis root that the `dimcode` client process owns, separate from the daemon's tree. The daemon (App Server), its loader rows and its managed plugins are untouched; the client tree depends on the daemon only through the local RPC protocol v4, exactly as the CLI does today. The plugin boundary buys two things: the client-start/daemon-start order becomes a declared dependency instead of code order, and terminal restoration and session shutdown become `Effect`s that rutis runs exactly once in reverse order on every exit path. `/web` no longer unloads the TUI: it toggles the daemon-owned web switch. Everything the user sees (`ui/`, `model/`, `projection`, `wire`) is unchanged.
 
 This document gives the process model (§1), the startup sequences of every entry point (§3), the timing decisions (§4) and the distribution (§7). It does not move the TUI into the daemon: the daemon is a headless process shared by all clients and has no terminal, and [ADR 001](../../adr/001-harness-foundation.md) keeps the library usable without a TUI.
 
@@ -29,7 +29,7 @@ dimcode (one executable, two roles)
 
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
-| `DaemonLink` | client process | none (gated only by configuration: product home, `--server`, `--model-config`) | `Connection`: the slot holding the open protocol v3 `Client` after `hello` (§6); the daemon's feature list and profile travel with it |
+| `DaemonLink` | client process | none (gated only by configuration: product home, `--server`, `--model-config`) | `Connection`: the slot holding the open protocol v4 `Client` after `hello` (§6); the daemon's feature list and profile travel with it |
 | `Tui` | client process | `Connection` | nothing to other plugins; its result (`Leave::Exit(code)` or `Leave::Restart`) goes to the composition root |
 | `WebHold` | client process | `Connection` | nothing; holds the local web entry open while `dimcode web` is loaded |
 | Composition root (`run_cli`) | client process | — | parses arguments, builds the tree, loads the plugins an action needs, disposes the tree, returns the exit code |
@@ -67,10 +67,13 @@ root.plugin(DaemonLink{options})
     try connect daemon.sock
       ├─ ok ──────────────────────────────────────► hello {profile}
       │                                            ◄ Hello {features, daemonProfile}
-      │  same build: reuse
-      │  another build, idle (daemon.shutdown.ifIdle, else
-      │  empty session.summaries): stop it, spawn the successor
-      │  another build, in use: keep it and print one notice
+      │                                            (refused `protocol_version`: retry
+      │                                             one version lower, floor v3)
+      │  same build at this protocol: reuse
+      │  another build, or a lower protocol, idle (daemon.shutdown.ifIdle,
+      │  else empty session.summaries): stop it, spawn the successor
+      │  another build, in use, at this protocol: keep it and print one notice
+      │  in use, at a lower protocol: exit with one notice, no Session
       └─ missing / refused:
            spawn `<home>/rust/dimcode-server app-server
                   --unix <sock> --no-ws --home <native home>
@@ -90,9 +93,9 @@ root.plugin(DaemonLink{options})
   ── DaemonLink Active
   Tui: raw mode, Home (no Session and no UI registration)
     --resume ID: attach the requested Session immediately
-    otherwise: wait for the first user message
+    otherwise: read the startup model preview, then wait for the first user message or shell command
       Home settings, model selection, /web, exit: no Session creation
-      first message: session.create {cwd, permissionPolicy, model?, startup?}
+      first message or shell command: session.create {cwd, permissionPolicy, model?, startup?}
   session.attach
   LeafNode (sibling of Tui at the client root): private socket, LocalId ui-<id>, accepting
   ui.open {sessionId, kind: "tui", peer: ui-<id>, address}
@@ -119,8 +122,8 @@ keeps the terminal it was started on, stays in the shell's foreground job,
 and returns the TUI's exit code. `ui.open` is an internal daemon RPC used by
 this attachment, not a separate user command. A daemon without `ui.leaf.2`
 keeps the direct TUI. Both paths defer ordinary Session creation until the
-first message; startup overrides are retained in this invocation until then.
-Closing Home without sending a message leaves no Session in the catalog.
+first message or shell command; startup overrides are retained in this invocation
+until then. Closing Home without either leaves no Session in the catalog.
 
 `dimcode tui -p TEXT` carries the first message: the client reads it once
 from the parsed options, together with the images already read and scaled at
@@ -160,8 +163,8 @@ dimcode exec / export / login / models / mcp …        dimcode daemon stop
 ──────────────────────────────────────────────        ───────────────────
 root.plugin(DaemonLink)  → Connection                  DaemonLink{start: false}:
 take the Client, call the action's RPCs on it                         no socket → "Daemon is not running." exit 0
-print; root.dispose(); exit                              socket → hello; daemon.shutdown;
-                                                         wait for EOF (≤ 30 s); exit 0
+print; root.dispose(); exit                              socket → hello (stepping down to v3 if refused);
+                                                         daemon.shutdown; wait for EOF (≤ 30 s); exit 0
 ```
 
 `exec` without a terminal, `--prompt`, `--no-tui` and piped stdin take this path; the `Tui` plugin is never loaded.
@@ -185,6 +188,27 @@ The [command-output contract](https://github.com/arcships/dim/blob/main/docs/des
 uses WorkspaceTools' optional C1 method `session.exec.output`. This UI consumes
 that read when provided; a profile without it displays an unavailable state. It never opens a
 daemon path or falls back to a tool call.
+
+Both interfaces draw one row per visible task above the composer, so work
+running apart from the turn is named without opening `/tasks`. Titles, Agent
+identity, truncation, completion fading and fullscreen clicks follow the
+[task presentation contract](../background-task-list.md#task-titles-and-composer-rows).
+There is no leading task count, horizontal concatenation or hidden-task summary:
+
+```text
+ ◐ Build the workspace                            1m12s
+ ◐ Inspect member code · Reviewer                   34s
+ ╭─ · working…  3s ──────────────── provider / model ─╮
+ │ › Ask anything... · Ctrl+J newline                  │
+ ╰─────────────────────────────────────────────────────╯
+```
+
+The rows read the same `ViewSnapshot.tasks` as the panel, with no additional
+Session state, read or event. With no visible task there is no task strip.
+`Enter` on an empty composer opens `/tasks` while the strip shows, after the
+shell-run guard and the steer of a held message (`cli-commands.md` owns the key
+map). Fullscreen task-row clicks open the existing detail; stops remain in the
+panel.
 
 ```text
 +-- Background tasks -------------------------------------------+
@@ -238,14 +262,14 @@ or replace them. An attached terminal interface is a **UI leaf**: the interactiv
 and runs its own ordinary `Tui` plugin. The daemon's `UiLeaf` is a plugin
 whose life is that session. Lifecycle and liveness are rutis facts (the
 session and its end); there is no UI-specific control protocol. Business
-traffic stays on protocol v3: the leaf's `Tui` is the same client as
+traffic stays on protocol v4: the leaf's `Tui` is the same client as
 before. One executor, many viewers: a Session runs in the daemon only;
 every interface, terminal or browser, submits input and observes events;
 none executes. `UiHost` writes no Timeline fact.
 
 ```text
 daemon root (LocalId dim-daemon)                 dimcode client root
-  UiHostPlugin (process Capability)                DaemonLink ── protocol v3 ──► Rpc
+  UiHostPlugin (process Capability)                DaemonLink ── protocol v4 ──► Rpc
     ├─ registry: uiId -> {sessionId, kind,           Tui (Home before its first Session)
     │    generation, connection, state}            LeafNode (first attachment)
     └─ UiLeaf (ctx.plugin, one per ui.open)            ├─ LocalId ui-<id>
@@ -317,7 +341,7 @@ same effect) and the process exits. A forced daemon exit ends the session
 as well. No process outlives anything: the leaf process is the user's, and
 it ends with its session.
 
-| Method (local connections, protocol v3) | Meaning |
+| Method (local connections, protocol v4) | Meaning |
 | --- | --- |
 | `ui.open {sessionId, kind, peer, address, replace?, expectedGeneration?}` → `{uiId, generation, token}` | Opens a session with the leaf at `address`. The caller must be attached to the Session. `kind` is `tui`; `peer` is the leaf's id (`ui-` and lowercase letters, digits and `-`; a registered id is `invalid_params`) and becomes `uiId`. Returns once the session is mounted, with the one-time `token` the leaf's `Tui` attaches with; it fails only on the link or the handshake, as `ui_leaf_failed`, and leaves no registration. A leaf that does not attach within the startup bound (`START`, 20 s, counted from the reply) is closed as for `ui.close`. `replace` names an interface of the same Session to close once the new leaf attaches; `expectedGeneration` (only with `replace`) is the generation the caller observed. The old registration is claimed before the dial, so a second replacement of the same generation fails `ui_generation`; a failed start, or a new leaf that ends or reaches the bound before it attaches, releases the claim and leaves the old interface running. |
 | `ui.attach {sessionId, kind, uiId?, token?}` → `{uiId, generation}` | Registers the calling connection as one interface of `sessionId` (`session_not_attached` otherwise). A leaf's `Tui` passes its `uiId` and token (a wrong token is `ui_token`; another kind than the leaf's is `invalid_params`); an ordinary interface passes neither and gets a connection registration. A leaf whose TUI switches Session (`/new`, resume) calls it again and the registration follows. Not exclusive: a Session has as many viewers as connections attach. |
@@ -368,22 +392,28 @@ counted viewers.
 
 **Home before a Session.** Ordinary startup does not call `session.create`,
 whether a usable model is configured or not. `/connect`, `/login`, `/models`,
-settings and `/web` remain available without a Session. Only submitting the
-first message creates one, using the launch options unless the user selected
-a model at Home. A failed creation is reported at that submission and leaves
+settings and `/web` remain available without a Session. Home reads the
+[startup model preview](../model-configuration.md#model-preview-before-creation)
+for its model label. A five-second deadline covers parameter preparation,
+including saved model preferences, and the preview request. Failure or timeout
+shows `Cannot preview startup model: …` and leaves Home available.
+Only submitting the first message or shell command creates one, using the launch
+options unless the user selected a model at Home. Shell commands follow the
+[CLI shell contract](../cli-commands.md).
+A failed creation is reported at that submission and leaves
 Home available for configuration and retry. No UI leaf exists until a Session
 has been attached; the same `Tui` then opens its leaf with the existing
 `ui.open` contract. `--resume` still attaches immediately and adopts startup
 overrides before accepting input. An explicit `--permission` must be applied
 before attachment; unsupported preset methods or a failed permission change
 abort startup without attaching or accepting input. Headless execution is
-unchanged. No fake model, implicit model substitution, new protocol or
+unchanged. No fake model, implicit model substitution, new protocol version or
 background setup process is introduced.
 
 ```text
-start -> Tui Home -> first message -> create / attach -> ui.open / ui.attach -> submit
-                  ` configure or exit: no Session
-resume -----------> attach ------> ui.open / ui.attach
+start -> Tui Home + model preview -> first message -> create / attach -> ui.open / ui.attach -> submit
+         ` configure or exit: no Session
+resume -> attach -> ui.open / ui.attach
 ```
 
 #### Later: UI events toward the agent (not implemented)
@@ -400,14 +430,44 @@ listener of their names. The contract reserved here is unchanged:
   adopted inputs (rule 10). No `ui/*` event enters model context by itself,
   and none writes the Timeline directly.
 
+### 3.7 Context usage reads
+
+Context usage uses the Session worker's existing request/response routing. Sending
+`session.context.usage` does not wait for its reply in the command or notification
+handler. History replies, projection publication and user commands continue while
+the usage request is pending. No additional worker or statistics cache is created.
+
+Only one context request is outstanding for the current attachment. A change
+during that request keeps the reading stale; its reply allows one subsequent
+refresh. `/usage` can join the pending read and report its result. An automatic
+failure clears the reading without adding transcript text; an explicit `/usage`
+also reports the error. The existing estimate and last-request cache-share
+semantics remain unchanged.
+
+Changing the Session clears the request identity. A reply to that old request
+neither updates the new Session's reading nor prints an old `/usage` report.
+Statistics and estimation belong to [ContextUsage](ContextUsage.md); this client
+flow does not reduce the server's calculation or I/O cost.
+
+```text
+resume -> send history and usage
+       -> history reply -> show conversation; accept input
+       -> usage reply   -> update composer reading
+
+usage pending -> /new -> new Session
+old reply             -> discard
+```
+
 ## 4. Timing and conflicts
 
 | Case | Decision |
 | --- | --- |
-| Two clients start at once, with no daemon or with a daemon of another build | One holds `<native home>/daemon.start.lock` and decides; the other waits and then runs the same decision, finding the survivor at its own version. The waiter's bound is inactivity: one verified shutdown plus one startup plus a margin, moved forward while the holder's daemon reports startup progress in its startup note. Exactly one spawn or replacement happens, and a waiter that outlasts the bound fails naming `daemon.log`; it never spawns without the lock. |
-| A daemon of another build is idle | `daemon.shutdown {ifIdle:true}` stops it with verified shutdown and the client spawns its own successor. A daemon older than that parameter is judged by `session.summaries`: no Session with an attached client and none running. That reading leaves a window in which an attach between the read and the shutdown is closed with the daemon. |
-| A daemon of another build is in use | It is kept and used; one notice carries the counts a `daemon_busy` refusal reported (connections, attached Sessions, running turns) and names `dimcode daemon stop` as the way to upgrade later. The next start by a client of another build that finds it idle replaces it. |
-| Daemon still assembling when the client polls | The socket does not exist yet; the client polls to its bound. A store format upgrade is the long phase that reports progress and moves the bound: the bound is inactivity, 10 s from the spawn and one verified shutdown plus one startup plus a margin for the start-lock wait, moved forward whenever the daemon's startup note reports a new store-upgrade progress counter for its pid (a waiter takes any pid). Every other startup phase is bounded by that fixed value. The first such note also prints one line on stderr, and a fresh store or one at the current format reports nothing. A daemon that reports nothing for the bound surfaces as "App Server startup timed out; see daemon.log"; one that exits first reports its startup note's cause at once. |
+| Two clients start at once, with no daemon or with a daemon of another build or protocol | One holds `<native home>/daemon.start.lock` and decides; the other waits and then runs the same decision, finding the survivor at its own version. The waiter's bound is inactivity: one verified shutdown plus one startup plus a margin, moved forward while the holder's daemon reports startup progress in its startup note; the holder waits the same way before it spawns when that note names another live process. Exactly one spawn or replacement happens, and a waiter that outlasts the bound fails naming `daemon.log`; it never spawns without the lock. |
+| A daemon of another build, or of a lower protocol, is idle | `daemon.shutdown {ifIdle:true}` stops it with verified shutdown and the client spawns its own successor. A daemon older than that parameter is judged by `session.summaries`: no Session with an attached client and none running. That reading leaves a window in which an attach between the read and the shutdown is closed with the daemon. A daemon of a lower protocol reaches the same decision: the client asked for its own version, the daemon refused it with a typed `protocol_version` error, and the client retried one version lower, down to v3. A daemon of this client's version can still be one of those: the version string says which build it came from, not which protocol it speaks. |
+| A daemon of another build or of a lower protocol, in use at this client's protocol | It is kept and used; one notice carries the counts a `daemon_busy` refusal reported (connections, attached Sessions, running turns) and names `dimcode daemon stop` as the way to upgrade later. The next start by a client of another build that finds it idle replaces it. |
+| A daemon in use at a lower protocol | The client starts no Session on it: it exits 1 with one notice naming the daemon's protocol and carrying the counts a `daemon_busy` refusal reported, and makes no further call. A Session created there would be stored at the daemon's protocol and hidden from this build. |
+| Which actions step down to a lower protocol | The action alone decides: `daemon stop` always steps down, and any other action does only when it starts the daemon and that daemon is this executable's (`start && server.embedded`). So it reaches `daemon stop` whatever `--server` names, the interactive start, `web`, and the one-shot commands that run through `DaemonLink` on a start (`exec`, `export`, `login`, `models`, `mcp …`, the management and runtime commands); those then use the daemon at the negotiated protocol as any start does, replacing it when idle or refusing it with the notice when in use. It does not reach a start with `--server`, `relaunch` or `web --off`: they greet the daemon once and report its refusal as it is. Actions that build no daemon connection (`help`, `version`, `timeline`, `daemon vacuum`, `web --install`, `--fullscreen default`) never reach this rule, and the ACP gateway asks for the floor itself, so it has nothing to step down to. |
+| Daemon still assembling when the client polls | The socket may not exist yet, or may already accept while the daemon has not opened it: it binds early in its assembly and answers nothing until the whole assembly is ready. Either way the client waits under one bound. A store format upgrade is the long phase that reports progress and moves the bound: the bound is inactivity, 10 s for the wait before spawning and for the spawn wait and one verified shutdown plus one startup plus a margin for the start-lock wait, moved forward whenever the daemon's startup note reports a new store-upgrade progress counter (the spawn wait takes its child's pid, the wait before spawning and the start-lock wait any pid). Before it spawns, a client waits while the note names a live pid other than its own, and connects once that daemon serves; a note whose pid is gone, or that names the client, is stale and it starts its own. Every other startup phase is bounded by that fixed value, and the `hello` handshake is one of them: it carries no bound of its own, so a socket that accepts and stays silent is waited for exactly as long as the assembly behind it. The first such note a client reads also prints one line on stderr, and each later note that names a stage shows what the upgrade is doing and how long it has run, rewritten in place on a terminal and one line per report elsewhere ([CLI commands §daemon startup failure](../cli-commands.md#daemon-startup-failure)); a fresh store or one at the current format reports nothing. A daemon that reports nothing for the bound surfaces as "App Server did not answer hello during startup; see daemon.log" when the endpoint accepted the connection, and as "App Server startup timed out; see daemon.log" when it never opened; one that exits first reports its startup note's cause at once. |
 | Connection drops while the TUI runs | **Not a provider replacement.** The TUI keeps its draft and reports the failure. There is no automatic reconnect in the session thread. |
 | `apply` of `Tui` fails after raw mode was entered | The terminal effect was registered before raw mode, so rutis runs it on the failed load; the error is printed on a restored terminal. |
 | Resuming fails during startup, with or without leaf support | Show the error, restore the terminal and exit nonzero. No new Session is created. |
@@ -420,7 +480,7 @@ listener of their names. The contract reserved here is unchanged:
 | Leaf process killed | Its session ends; the daemon disposes the `UiLeaf` and removes the registration. |
 | Leaf `Tui` never attaches | Closed after `START` (20 s from `ui.open`'s reply), as for `ui.close`; a replacement it was making leaves the old interface running. |
 | Daemon shutdown with leaves | Graceful: disposing `UiHostPlugin` waits for every `UiLeaf` disposal, each closing its session. Forced: the sessions end with the process; each leaf disposes its tree when its session ends. |
-| Replacing the executable while a daemon runs | The old executable stays the daemon. A client of the new build keeps it while other clients use it and replaces it on a later start that finds it idle; `daemon stop` with the matching CLI remains the immediate upgrade ([release packaging](../../release/README.md#upgrade-compatibility)). |
+| Replacing the executable while a daemon runs | The old executable stays the daemon. A client of the new build keeps it while other clients use it and replaces it on a later start that finds it idle; a `daemon stop` from any newer build reaches it, at v3 or above, and remains the immediate upgrade ([release packaging](../../release/README.md#upgrade-compatibility)). |
 
 ### Connection loss and terminal content
 
@@ -437,12 +497,74 @@ a shell command's outcome remains unknown. There is no automatic reconnect.
 +--------------------------------------------------------------+
 ```
 
+A Session the daemon refuses for its protocol version is refused again by every run of the
+client, so that refusal offers no command to run: the block states the failure and keeps the
+draft, and the Enter key's notice says `Cannot open this Session; draft kept.` rather than
+naming an exit and a resume. A Session recorded at an older version than the client's opens,
+so its failure block is the ordinary `${command}` one.
+
+```text
++-- Cannot open this Session; draft kept ----------------------+
+| > retained draft                                             |
++--------------------------------------------------------------+
+```
+
 Only one interactive `!` / `!!` command runs at once. A second command is refused with a
 notice and retains its draft; the first run keeps its progress, result and stop identity.
 Tool and shell text loses terminal escape/control sequences before layout; only the
 renderer adds terminal styling. The write path keeps that promise for every row, model
 text included: of the sequences a row carries, only SGR and an OSC 8 link to an `http`,
 `https` or `mailto` target reach the terminal. Clicked links use only those schemes.
+
+### Terminal channels
+
+Three channels can say a run is working: the program status record (`OSC 7501`), the
+progress bar (`OSC 9;4`) and the window title's turning quarter-circle. The startup probe
+that already asks for the keyboard and clipboard protocols also asks whether the terminal
+keeps the record (`OSC 7501;?`, ahead of the DA1 sentinel), and that one answer decides
+which of the three speak:
+
+```text
+terminal answered OSC 7501;?          record only
+  window title     DIM | topic        no mark, no frame
+  progress bar     (none)             the terminal draws from the record
+  notifications    OSC 9 / 99 / 777   a one-off event, not a record
+
+terminal answered DA1 alone           today's behaviour
+  window title     ◐ DIM | topic      120 ms per frame
+  progress bar     OSC 9;4 where drawn
+  notifications    OSC 9 / 99 / 777
+```
+
+DA1 decides, not a timeout: tmux and GNU screen drop the query and still answer the
+sentinel, so they keep today's behaviour with no wait. `DIM_TERMINAL_STATUS=off` omits the
+query along with the reports. `DIM_TERMINAL_TITLE=always` and `DIM_TERMINAL_PROGRESS=on`
+are escape hatches for a terminal that answers but draws nothing.
+
+Notifications are exempt from the multiplexer rule the record and the bar follow, because
+a delivered notification asserts nothing afterwards, but a multiplexer may keep a part
+of one, so the shape it carries is followed by the bell that still rings when the rest is
+dropped:
+
+```text
+no multiplexer, herdr   one form, or BEL where none is known
+tmux                    ESC P tmux; <form, ESC doubled> ESC \   + BEL
+screen, BEL-terminated  <form, as it is>                        + BEL
+screen, ST-terminated   BEL
+```
+
+tmux 3.3 and later default `allow-passthrough` to off, so a wrapped sequence may be
+dropped whole; the bare `BEL` after it is what still rings there, while a tmux that
+forwards the wrapper draws the notification. GNU screen gets the same rule for the same
+reason: it doubles nothing, since `ESC P` opens a passthrough it ends differently from
+tmux, and some builds forward an `OSC` closed by `BEL` while others drop every `OSC` a
+pane writes, so a `BEL`-terminated form goes through unwrapped and a bare `BEL` follows
+it — the form is drawn where it is forwarded and the extra `BEL` still rings where it is
+dropped. kitty's `ST`-terminated `OSC 99` has no shape screen carries whole, so it
+becomes the bell alone, which makes a `BEL` that no `OSC` introduced. herdr keeps the
+bell whatever its `TERM_PROGRAM` names: it reads a pane's `OSC`s for itself and notifies
+from its own list of terminals, so a form the pane's variables carry is not known to
+reach the user, while a `BEL` is not an `OSC` it takes.
 
 ## 5. Context mapping
 
@@ -452,7 +574,7 @@ None. No client plugin writes to any Timeline or produces model context; user in
 
 | Interface | Form |
 | --- | --- |
-| `Connection` service (client tree) | Rust: `Arc<Connection>` keyed by `TypeKey::of`, provided by `DaemonLink`: a take-once slot holding the protocol v3 `Client` (`rpc`, `typed`, notifications) after `hello`. `Client` is driven through `&mut self` by one owner, so the service hands it over (`take`) rather than sharing it: the session thread of `Tui`, the holding task of `WebHold`, or the one-shot action. `take` yields `None` once taken, or when `start: false` found no daemon (`daemon stop`). The language-neutral contract is the wire protocol itself ([protocol.rs](../../../crates/dim-app-server/src/protocol.rs)); no other language runs in the client tree, so no named binding is defined ([D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral) as in AcpGateway). |
+| `Connection` service (client tree) | Rust: `Arc<Connection>` keyed by `TypeKey::of`, provided by `DaemonLink`: a take-once slot holding the protocol v4 `Client` (`rpc`, `typed`, notifications) after `hello`. `Client` is driven through `&mut self` by one owner, so the service hands it over (`take`) rather than sharing it: the session thread of `Tui`, the holding task of `WebHold`, or the one-shot action. `take` yields `None` once taken, or when `start: false` found no daemon (`daemon stop`). The language-neutral contract is the wire protocol itself ([protocol.rs](../../../crates/dim-app-server/src/protocol.rs)); no other language runs in the client tree, so no named binding is defined ([D5](../../adr/002-plugin-scope.md#d5-contracts-are-language-neutral) as in AcpGateway). |
 | `Tui` result | `Leave::Exit(i32)` or `Leave::Restart` delivered to the composition root through a one-shot channel the plugin is constructed with. |
 | `WebHold` input | `port: Option<u16>`, `open_browser: bool`; its result (`Ok(0)` on a signal, the error on the daemon's end) goes to the composition root through a one-shot channel, like `Tui`'s. It holds the entry open; `/web` never loads it. |
 | Daemon RPC used | Existing `hello`, `session.create/attach/submit/history`, `session.branch_end`, `approval.respond`, `web.open`/`web.toggle`/`web.disable`/`web.status`, `daemon.shutdown` and the existing command/member stop paths; optional `session.exec.output` reads the command's bounded capture; `ui.open`/`ui.close`/`ui.status`/`ui.replace` for management, `ui.attach` after each `session.attach` when offered, and the `ui.shutdown` notification (§3.6). |
@@ -476,9 +598,9 @@ No loader row is added, so there is nothing to enable, disable or persist ([D4](
 
 The client tree runs trusted in-process code only; a plugin boundary is not a sandbox ([rule 11](../../../AGENTS.md)). `DaemonLink` keeps every existing check: private native home (0700, owner), private log file, `O_NOFOLLOW`, socket permission race, server link identity. A leaf's address is private to the user: a socket in the native home (0700, owned by the user, as for `daemon.sock`), accepted once and removed (on Windows a loopback address that requires a one-time token first). The daemon dials only addresses a local `ui.open` caller names; each side drops a far end whose handshake id is not the one it expects, and on loopback TCP the one-time token, sent before the handshake, is what authenticates the leaf. The daemon greets from a context where its session catalog is isolated, so the leaf can run no daemon plugin, and the leaf offers no catalog. The attach token for `ui.attach` travels only in `ui.open`'s reply, on the local connection; the daemon stores its SHA-256 digest, and nothing UI-specific is in any environment. Tokens are never logged or written to the Timeline.
 
-**What the leaf's session carries.** A rutis session exports every process-group name that crosses languages to its far end, and announces listener names in both directions ([rutis 0.19 upgrade M8](../rutis-0.19-upgrade.md#m8-the-ui-leaf-is-a-plugin-whose-life-is-a-session)). The [generated catalog](../../architecture/rust-agent/generated/catalog.md) lists those names, and the installed foreign process rows add the names they provide. Today they are `auxiliaryModel`, `managementMethods`, `partRegistry`, `pluginFiles`, `sessionMetadata`, `sessionPermissions`, `settings` and `workflowFiles`; `sessions`, whose methods `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete` act on Sessions; and the enabled native Scheduler's `scheduleJobs` and, when Workflow is installed and enabled, its `workflowRuns`. Code in the leaf could therefore act on any Session, register management methods, and register Session parts whose copies run in the leaf; it could emit any event name a daemon listener has, and that listener would receive it. The leaf's code does none of this: its `Tui` uses protocol v3 only and emits no event. This is accepted because the leaf is reached only through a private address that a local `ui.open` caller names, and that caller already holds a local protocol v3 connection on `daemon.sock` reaching the same Sessions and management methods; the trust boundary stays the local user ([ADR 003](../../adr/003-approval-scope.md), [rule 11](../../../AGENTS.md)). These services are not isolated from the leaf: they are Dim's shared cross-language services, which the repository's own TypeScript plugins inject, and a session exports to every far end alike, the Node runtime's included.
+**What the leaf's session carries.** A rutis session exports every process-group name that crosses languages to its far end, and announces listener names in both directions ([rutis 0.19 upgrade M8](../rutis-0.19-upgrade.md#m8-the-ui-leaf-is-a-plugin-whose-life-is-a-session)). The [generated catalog](../../architecture/rust-agent/generated/catalog.md) lists those names, and the installed foreign process rows add the names they provide. Today they are `auxiliaryModel`, `managementMethods`, `partRegistry`, `pluginFiles`, `sessionMetadata`, `sessionPermissions`, `settings` and `workflowFiles`; `sessions`, whose methods `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete` act on Sessions; and the enabled native Scheduler's `scheduleJobs` and `wakeups` and, when Workflow is installed and enabled, its `workflowRuns`. Code in the leaf could therefore act on any Session, register management methods, and register Session parts whose copies run in the leaf; it could emit any event name a daemon listener has, and that listener would receive it. The leaf's code does none of this: its `Tui` uses protocol v4 only and emits no event. This is accepted because the leaf is reached only through a private address that a local `ui.open` caller names, and that caller already holds a local protocol v4 connection on `daemon.sock` reaching the same Sessions and management methods; the trust boundary stays the local user ([ADR 003](../../adr/003-approval-scope.md), [rule 11](../../../AGENTS.md)). These services are not isolated from the leaf: they are Dim's shared cross-language services, which the repository's own TypeScript plugins inject, and a session exports to every far end alike, the Node runtime's included.
 
-Business traffic stays on protocol v3; the leaf's session is not the business channel. The sign-in link printed by `WebHold` or reported by the TUI is shown only when no browser took it, as today. Nothing here changes approval, permission or the product-home boundary.
+Business traffic stays on protocol v4; the leaf's session is not the business channel. The sign-in link printed by `WebHold` or reported by the TUI is shown only when no browser took it, as today. Nothing here changes approval, permission or the product-home boundary.
 
 ## 9. Rule check
 
@@ -493,7 +615,7 @@ Business traffic stays on protocol v3; the leaf's session is not the business ch
 | §4 rule 7 (reuse mechanisms) | A rutis session (`Session::handshake`, the mounted `Greeted`, its fiber's end) instead of a UI control protocol; `Tui`, `DaemonLink`, `SessionHost` unchanged in substance. |
 | §4 rule 8 (settle before removing services) | The leaf disposes its `Tui` (terminal restored) before its session closes; the daemon closing a leaf closes the session, whose end disposes the leaf's tree in the same order. |
 | §4 rule 9 (publish after commit) | Not applicable: no Timeline writes. |
-| §1 (Capability and App Server boundary) | The leaf is the CLI process and its rutis root; it touches App Server business state only over protocol v3. Transport, Connection and Rpc gain only the `ui.*` built-ins and one notification; no Timeline fact. |
+| §1 (Capability and App Server boundary) | The leaf is the CLI process and its rutis root; it touches App Server business state only over protocol v4. Transport, Connection and Rpc gain only the `ui.*` built-ins and one notification; no Timeline fact. |
 | ADR 002 D1 (scope follows the owner) | `UiHostPlugin` and every `UiLeaf` live in the daemon's process scope; the leaf's `Tui` lives in the leaf, the process the shell started on that terminal. |
 | D2 (no wiring modules) | No adapter plugin: `UiLeaf` and `LeafNode` are each side's plugin whose life is the session. One-shot actions stay functions. |
 | D3 (dependencies point to the core) | The leaf depends on the daemon's public protocol and on the rutis session contract; no daemon plugin knows `Tui`. |

@@ -79,7 +79,7 @@ are Rust methods over the native store, not services: only Agents calls them.
 | Kind | Rpc built-in, next to `session.create` and `session.close`. It is not a `sessionMethods` entry, because a Session cannot unload itself through one of its own parts. It is not a management method either: it acts on one Session, and Rpc's Session checks apply |
 | Protocol | v3. v1 and v2 get `unknown_method` ("Method requires protocol v3"). `hello.features` lists it under the conditions that list `session.create`. The protocol version stays 3: clients discover new built-ins through `hello.features`, as they discover `session.summaries` |
 | Callers | Every connection that may call `session.close`, under the same profile rules: in a protected profile, local transports only. Paired devices (P3) are decided in RemoteGateway's compatibility table together with the other Session built-ins |
-| Session version | A Session's recorded protocol version must equal the connection's (`session_protocol_version`), as for every Session built-in. A Session with no readable owner row has no recorded version, so the check passes |
+| Session version | A Session is openable by a connection whose protocol version is at least its recorded one (`session_protocol_version` otherwise), as for every Session built-in. `session.delete` is the exception: it reads none of the Session's records, so it removes a Session of any recorded version. A Session with no readable owner row has no recorded version, so the check passes. `session_owners.protocol_version` records the version that created the Session: it is a historical fact read for the Code Mode exclusion and copied by forks, not a capability any caller rewrites |
 | Damaged Sessions | Deleted by id. A delete reads none of the Session's records, so a Session that fails validation or has no available owner can be deleted; Rpc's unavailable-Session check does not apply to `session.delete` |
 | Reply | `{deleted: true}` once this call removed the Session: its stored rows, or, in a daemon without a native store, a loaded Session. An unknown or already deleted id also succeeds, with `{deleted: false}`: nothing of the id was removed, and the client's retry finds no rows. The field is added to the reply, so a client of an older App Server reads `{}` as the same success it was |
 
@@ -207,7 +207,7 @@ Every step tolerates an absent target, so a delete can be retried after any fail
 | `{deleted: true}` or `{deleted: false}` | The rows were removed, or there were none | Session gone; its unowned files go in the sweep |
 | `unknown_method` (-32601) | Protocol v1 or v2 | Unchanged |
 | `invalid_params` (-32602) | `sessionId` missing or not a string | Unchanged |
-| `session_protocol_version` | S belongs to another protocol version | Unchanged |
+| `session_protocol_version` | Only for a Session recorded by a *newer* protocol version than the connection speaks; a delete never answers it | Removed from this method |
 | `session_active` (-32000) | `requireInactive` and S, or a Session the delete would remove with it, is in use (§3.2 step 1) | Unchanged: nothing is removed and nothing is closed. The message says why: a turn is running, a background task holds it, or how many requests and subscriptions use it. A line that failed or is closing is not a reason: it keeps no Session |
 | `product_integration_pending` | The profile does not serve Session execution | Unchanged |
 | `-32603` "Session operation failed" | Step 3 failed (`Locked`, `DirectoryNotEmpty`, `Unsynced`, I/O, node unavailable) or step 4 failed (SQLite) | If step 2 closed S, S is closed but not deleted, as after `session.close`: its rows remain, it is neither listed nor loaded again in this process, and the relations its close ended stay ended. After a restart it loads, possibly with part of its command output gone. A Session that was not loaded is unchanged. Retry |
@@ -297,7 +297,7 @@ partial failure would still need per-id results.
 | Item | Rule |
 | --- | --- |
 | Kind | Rpc built-in. It creates a Session, as `session.create` does, from another Session's cut (Agents) |
-| Protocol and callers | As for `session.delete` (§3.1). The source must belong to the connection's protocol version, and the fork gets that version |
+| Protocol and callers | As for `session.delete` (§3.1). The source's recorded version must not exceed the connection's, and the fork records the source's version |
 | `at` | The last `main` sequence the fork inherits. 0 inherits no event |
 | Reply | The fork's id and its `main` head once it is published. The client then attaches |
 | No other params | No `branchId` or configuration fields. The fork's configuration is the source's (§6.3). A client changes it afterwards with `session.permission.update` or `session.model.update`, as [#26](https://github.com/arcships/dim/issues/26) decided for the preset |
@@ -326,6 +326,21 @@ not run again; requiring none keeps F from opening with a failed turn the source
 starts nothing. Append inputs may remain: they start no turn and join the next request a client's input starts in F. Agents checks it on `main`'s prefix through `at`,
 right after `validate_context_boundary`, by reading those capabilities' facts (§14, §16 D1). The usual fork points, after a turn ends or before a user message, are rest
 points unless a background task was running.
+
+The rest-point check uses the existing [Timeline property query](../timeline-property-query.md)
+at the same fixed `through = at` for every read: the latest turn transition and interrupt,
+then at most one blocking input, unfinished task or unposted wake. Input membership includes
+ordinary and handover inputs; the mode and application-after-interrupt predicates apply only
+to inputs still unconsumed and undeleted at the cut. The task and wake predicates follow
+BackgroundExec's reload contract, including the generation in which a task ended.
+
+These reads use the native store's [versioned member indexes](timeline-member-index.md) and
+[state-read indexes](timeline-state-read-indexes.md). They do not replay completed input, turn
+or task history, and each query returns at most one event. Input qualification can inspect the
+members still pending at the cut; this cost depends on that pending set, not the completed
+prefix. Later consumption, deletion, task endings or wakes cannot change an earlier cut.
+Context compaction cannot hide older pending work. The context-boundary check and storage-side
+copy keep their own contracts and costs.
 
 **Why `main` only.** A child branch's history is its ancestors' prefixes followed by its own events, and each branch
 numbers its events from 1. Laying that out as one `main` would renumber events, and compaction `through`,
@@ -372,9 +387,9 @@ fork's conversation would then not be its `main`, which clients, `session.summar
 **Why child branches come without their events.** A child's events are not ordered against `main`'s cut, so no prefix
 of a child corresponds to `at`. Copied whole, a child holds what happened after the cut, and its pending work (an
 unstarted first input, a Queue or Steer input, a background task's wake) would start turns in F for work the source
-already ran or is running, in the same `cwd` (§6.5). The store still requires a directory for every `branch/create`
-and checks it when it loads a Session ([timeline.rs](../../../crates/dim-app-server/src/storage/timeline.rs)
-`validate_session`); a directory with head 0 passes. TimelineTree treats a child without its `branch/start` and first
+already ran or is running, in the same `cwd` (§6.5). Fork copies each child directory with head 0.
+Directory restore does not scan creation events; see [restore read boundary](restore-validation.md).
+TimelineTree treats a child without its `branch/start` and first
 Queue input as a creation that never started ([timeline_tree.rs](../../../crates/dim-agent-capabilities/src/timeline_tree.rs)
 `restore`): at F's first load it writes `branch/create-failed` (`error: "branch creation failed"`) on F's `main` and
 builds nothing, and later loads skip the child because of that fact. A crash between a creation's commit and the
@@ -515,7 +530,7 @@ so no fork relation is needed.
 | `unknown_method` | Protocol v1 or v2 | Nothing created |
 | `invalid_params`, `session_invalid_input` | Param shape, a cut `session.branch_create` rejects at the same position, or a cut that is not a rest point (§6.2) | Nothing created |
 | `session_closed` | The source is unknown or deleted, also when its delete commits before the fork transaction | Nothing created |
-| `session_protocol_version` | The source belongs to another protocol version | Nothing created |
+| `session_protocol_version` | The source is recorded by a newer protocol version than the connection speaks (records the source's version, §6.1) | Nothing created |
 | `session_build_failed` | F's build fails | F rolled back |
 | `-32603` "Session operation failed" | Storage failure, including F's copied rows failing validation | Nothing committed, or F rolled back |
 
@@ -653,7 +668,7 @@ None to rutis. To the event format: the event kind `session/forked` (§13, rule 
 | To | Requirement | Status |
 | --- | --- | --- |
 | FileStorage | `remove` syncs the parent of the removed entry before it reports success, also when the entry was already absent, and returns `Unsynced` when that sync fails. Windows has no directory sync and relies on NTFS metadata journaling, as for `replace`. Needed so a delete's removal is durable before its commit (§4) | Implemented in S5c ([FileStorage](../../architecture/rust-agent/plugins/FileStorage.md#listing-and-removal)) |
-| Loop, InputQueue, BackgroundExec | A read-only rest-point check over a fixed prefix: no open turn, no Queue or Steer input waiting to drive a turn, every background task ended with its wake posted (§6.2). A capability whose reload rule comes to start work from other facts adds them to the check, so a fork keeps starting nothing | Implemented in Agents as a fold over these capabilities' public facts, with no change to them (§16 D1). Their owners keep those facts and extend `RestPoint` in [agents.rs](../../../crates/dim-app-server/src/agents.rs) when a reload rule comes to start work from other facts. Found on the way, for BackgroundExec's owner: its `rebuild` keeps `closing` from an earlier generation's branch close (a `session.close` or a graceful shutdown), so after a restore it does not repost a wake lost in a crash. `RestPoint` scopes that flag to the generation, as the live wake does, so a cut between such an `exec/ended` and its wake is refused |
+| Loop, InputQueue, BackgroundExec | A read-only rest-point check at a fixed cut: no open turn, no Queue or Steer input waiting to drive a turn, every background task ended with its wake posted (§6.2). A capability whose reload rule comes to start work from other facts adds them to the check, so a fork keeps starting nothing | Agents queries these capabilities' public facts through the Timeline face (§16 D1). Their owners extend the check in [agents/fork.rs](../../../crates/dim-app-server/src/agents/fork.rs) when a reload rule comes to start work from other facts. BackgroundExec owns the shared wake predicate, including generation boundaries |
 | Collaboration | When a branch rebuilds, a delivered request without a result is settled as failed without stopping its member unless the member's relation names this Session as its leader. In general, reload settlement acts only on resources its own Session holds. The rebuild stopped any loaded Session named in the fact ([collaboration.rs](../../../crates/dim-app-server/src/collaboration.rs) `rebuild`), so a fork of a leader would have stopped the source's member | Implemented ([#127](https://github.com/arcships/dim/issues/127)). Before #127 that reload stopped such a member if it was loaded. Now the member keeps whatever its own reload rules start, the leader has already settled the request as failed, and the member's `agent` messages to a fork of the leader are refused (`TeamMemberNotFound`) because no relation names the fork ([#97 review](https://github.com/arcships/dim/pull/97)). A restart keeps the Team: relations are rebuilt from the stored leaders ([Collaboration §6](../plugins/Collaboration.md#6-delegation-ownership-and-lifetime)). Acceptance 7 |
 | Goal (P5, [#69](https://github.com/arcships/dim/issues/69)) | A copied goal must not drive a turn in F or be F's goal. The fork writes `session/forked` after the copied facts in its transaction (§6.5); Goal folds `main` from after that fact and clears a copied live goal once ([Goal](../plugins/Goal.md) A11) | Implemented with Goal's acceptance ([#209](https://github.com/arcships/dim/pull/209)) |
 | S5b ([#60](https://github.com/arcships/dim/issues/60)) | Title metadata rows are removed in the delete transaction and not copied by a fork | Implemented in S5b ([#96](https://github.com/arcships/dim/pull/96), [title metadata §9](session-title-metadata.md#9-lifecycle)) |
@@ -697,6 +712,11 @@ stop would deadlock that reload, and delaying release would let a later member i
 11. A delete of a Session still building, a `session.create` and a `session.fork` held in a capability's apply after
     their rows commit and are listed, waits for the build, then replies `{deleted: true}`; no row and no loaded Session of the id
     remain (D6). An id that is not one path component is refused and removes nothing (D3).
+12. With a fixed compacted context tail, growing unrelated facts or completed input, turn and task
+    history does not cause a rest-point prefix scan. Pending work older than that compaction still
+    refuses a historical cut, even after its deletion, task ending or wake is committed. The subsequent
+    rest point preserves the copied history and starts no work. Covered by
+    `fork_checks_rest_points_without_scanning_completed_history` in [fork.rs](../../../crates/dim-app-server/tests/transport_flow/fork.rs).
 
 Tests: 1 and 2 are `delete_closes_a_running_session_and_removes_what_it_stored` and
 `unloaded_and_damaged_sessions_are_deleted_by_id` in
@@ -731,7 +751,7 @@ S5c's own owners.
 
 | # | Change | Why |
 | --- | --- | --- |
-| D1 | The rest-point check is `RestPoint` in Agents, a read-only fold over the public facts of Loop, InputQueue and BackgroundExec on `main`'s prefix through `at`, instead of a check next to `validate_context_boundary` in the capabilities crate. Its input rule follows Loop's: a Queue or Steer input applied before the last `stop/interrupt` and not consumed is allowed, because a reload does not run it (it joins the next request, as an Append input does); an input InputQueue deleted on a withdrawal (`input/deleted`, S1) is never applied and does not count; any other input not yet applied is refused. A task's wake is required when the task ended outside a branch close of its own generation, as the live wake is posted | Every fact it needs is a public event, so it needs no API from those capabilities and no change to them. Requiring every such input to be consumed would refuse the cut right after a stopped turn, where nothing would run |
+| D1 | The rest-point check belongs to Agents and queries the public facts of Loop, InputQueue and BackgroundExec at the fixed cut on `main` (§6.2). Its input rule follows Loop's: a Queue or Steer input applied before the last `stop/interrupt` and not consumed is allowed, because a reload does not run it (it joins the next request, as an Append input does); an input InputQueue deleted on a withdrawal (`input/deleted`, S1) is never applied and does not count; any other input not yet applied is refused. A task's wake is required when the task ended outside a branch close of its own generation, as the live wake is posted | It consumes the existing Timeline query face; BackgroundExec supplies its wake predicate so live recovery and fork validation share that rule. Requiring every such input to be consumed would refuse the cut right after a stopped turn, where nothing would run |
 | D2 | `session.fork` needs the native store. A daemon without one (the mock profile without `--database`) does not list it in `hello.features` and answers `unknown_method` ("Method requires native storage"). `session.delete` is listed with `session.create` there too; without a store it closes the Session and forgets it | A fork copies stored rows; in-memory Timelines have no SessionStore to copy from |
 | D3 | `session.delete` refuses a `sessionId` that is not a single path component with `session_invalid_input`. An empty `sessionId` is refused before it, at the boundary every Session method shares, with `invalid_params` ("sessionId must not be empty"); the path-component rule covers the other ids. Agents checks it before it takes any admission state, and a delete that found nothing loaded or stored under the id keeps no slot for it; `session.close` of an id Agents does not know keeps none either | The id names `command-output/<id>`. Session ids are UUIDs; an id such as `<S>/.` would otherwise remove S's command output while deleting no row. Without the last two rules, deleting or closing arbitrary absent ids would add a slot each, without bound |
 | D4 | The fork transaction does not check the cut again: it copies `main`'s rows through `at`, and the runtime validates the fork's rows when it builds it. A copy that fails validation rolls back like any failed creation | Agents has checked the cut on the source (published head, batch end, context boundary, rest point), and rows through the cut never change, so a second check inside the transaction would repeat the validation every build already runs |
@@ -754,6 +774,12 @@ It checks that the Session still exists and commits the directory and associatio
 Missing Sessions fail as Closed; encoding, invalid path and storage failures leave both records unchanged.
 The operation shares the existing delete/fork ownership gate, so it waits for an in-progress deletion and
 cannot recreate a deleted Session's association. Creation rollback removes associations in its row transaction too.
+
+A directory record also carries the time its last association was written or removed (native format v45).
+Deletion updates it in the same pass, before the association rows go, so a cleanup can age an unassociated
+candidate from the moment it became one. The same ownership gate covers the Session creation that writes a
+managed worktree's directory and association in one transaction, and the removal that re-checks the directory
+and the stored Session workspaces before the caller's Git removal and the record deletion.
 
 Typed queries list recorded directories and the Session/subtree associations of a named directory, including
 directories with no associations. Results describe usage only; callers must reverify external state before
@@ -780,12 +806,6 @@ impl AgentIndex {
     ) -> dim_agent_runtime::Result<Session>;
     /// `session.fork`: acquire the source, check the cut, prepared creation (§6.5).
     pub(crate) async fn fork(&self, source: &str, at: u64) -> dim_agent_runtime::Result<Session>;
-}
-/// The rest point of §6.2 over `main`'s prefix (D1), folded a page at a time.
-struct RestPoint;
-impl RestPoint {
-    fn page(&mut self, events: &[Arc<AgentEvent>]);
-    fn check(&self) -> Result<(), String>;
 }
 impl SessionStore {
     /// `ctx` gives each file step the node's FileStorage; `files_root` is the
@@ -819,6 +839,7 @@ path (`TimelineStore::rollback_session`) calls the same row removal as `delete_s
 ### Worktree association port
 
 SessionStore provides the process service `worktreeAssociations` to the Session file-facts owner.
-Its typed `associate(session, directory, subtree)` operation has the same atomicity and errors as
-§17. `directory` has one shared definition in the file-access contract, containing repository common
-directory and worktree root. The port writes usage only and performs no Git discovery or authorization.
+The operation is the data face `associate {sessionId, repository, root, subtree}`, all paths as
+UTF-8 strings, with the same atomicity and errors as §17; a Rust caller calls the same method. The
+file-access contract owns the directory definition, containing repository common directory and
+worktree root. The port writes usage only and performs no Git discovery or authorization.

@@ -1,11 +1,68 @@
-//! Run lifecycle details through a real App Server: a tool-saved run that is
-//! skipped sends no report, a run reads past one history page, a consumed
-//! input is `running`, a past `at` job records `missed`, and an unload leaves
-//! an active run for the next generation without settling it.
+//! Run lifecycle details through a real App Server: a launch window is
+//! `delivered` once its input is written and is not tracked afterwards, a
+//! past `at` job records `missed`, DST gaps skip and repeated times fire
+//! once, and a launch Session runs until its stop time.
 mod support;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use support::*;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_accepted_launch_survives_idle_shutdown_before_its_session_exists() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {
+                "name": "admission", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Complete the accepted work.",
+                "target": {"kind": "launch", "cwd": home.path()}
+            }}),
+        )
+        .await
+        .unwrap();
+    let job = saved["job"]["id"].as_str().unwrap();
+    let release = holds(home.path()).hold_next_launch();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job}))
+        .await
+        .unwrap();
+    assert_eq!(accepted["state"], "delivering");
+    assert_eq!(
+        client.rpc("daemon.ping", json!({})).await.unwrap()["sessions"],
+        0
+    );
+    let error = client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        dim_client::app_error(&error),
+        Some("daemon_busy"),
+        "{error}"
+    );
+    release.notify_one();
+    let run = settled(&mut client, job, accepted["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": run["session_id"], "branchId": "main"}),
+        )
+        .await
+        .unwrap();
+    client
+        .rpc("daemon.shutdown", json!({"ifIdle": true}))
+        .await
+        .unwrap();
+    assert_eq!(
+        server.join().await.unwrap(),
+        dim_app_server::ShutdownReason::Graceful
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_document() {
@@ -22,9 +79,9 @@ async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_docum
     let saved: Value = client
         .typed(
             "schedule.save",
-            json!({"job": {"name": "legacy", "mode": "reuse",
+            json!({"job": {"name": "legacy",
             "schedule": {"at": "2030-01-01T00:00:00Z"}, "prompt": "Check the inbox.",
-            "cwd": home.path()}}),
+            "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
@@ -180,12 +237,10 @@ async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_docum
         .await
         .unwrap();
     let run = settled(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
-    assert_eq!(run["state"], "completed", "{run}");
+    assert_eq!(run["state"], "delivered", "{run}");
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
-    assert_eq!(
-        listed["jobs"][0]["session_id"], run["session_id"],
-        "{listed}"
-    );
+    assert_eq!(listed["jobs"][0]["target"]["kind"], "launch", "{listed}");
+    assert!(listed["jobs"][0]["session_id"].is_null(), "{listed}");
     let document: Value = serde_json::from_str(&stored().1).unwrap();
     assert_eq!(document["max_concurrent_runs"], 17, "{document}");
     client
@@ -201,7 +256,7 @@ async fn concurrency_is_not_editable_and_job_mutations_preserve_the_legacy_docum
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn active_runs_skip_overlap_and_capacity_and_release_their_slots_on_completion() {
+async fn launch_windows_are_not_capped_by_the_legacy_concurrency_field() {
     for legacy_limit in [2, 32] {
         let home = home();
         std::fs::write(
@@ -210,252 +265,52 @@ async fn active_runs_skip_overlap_and_capacity_and_release_their_slots_on_comple
         )
         .unwrap();
         let model = Arc::new(Script::default());
-        model.hold("Hold the capacity slot.");
+        model.hold("Hold the turn.");
         let server = start(home.path(), model.clone()).await;
         let mut client = connect(&server).await;
         let mut jobs = Vec::new();
-        let mut active = Vec::new();
 
         for index in 0..9 {
             let saved: Value = client
                 .typed(
                     "schedule.save",
-                    json!({"job": {"name": format!("capacity-{index}"),
+                    json!({"job": {"name": format!("launch-{index}"),
                     "schedule": {"at": "2030-01-01T00:00:00Z"},
-                    "prompt": "Hold the capacity slot.", "cwd": home.path()}}),
+                    "prompt": "Hold the turn.",
+                    "target": {"kind": "launch", "cwd": home.path()}}}),
                 )
                 .await
                 .unwrap();
             jobs.push(saved["job"]["id"].as_str().unwrap().to_owned());
         }
 
-        for job in jobs.iter().take(8) {
-            let accepted: Value = client
-                .typed("schedule.run_now", json!({"job_id": job}))
-                .await
-                .unwrap();
-            assert_eq!(
-                accepted["state"], "launching",
-                "eight slots regardless of legacy limit {legacy_limit}: {accepted}"
-            );
-            let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-            run_where(&mut client, job, &run_id, |run| run["state"] == "running").await;
-            active.push(run_id);
-        }
-
-        for (job, reason) in [(&jobs[0], "overlap"), (&jobs[8], "capacity")] {
+        for job in &jobs {
             let accepted: Value = client
                 .typed("schedule.run_now", json!({"job_id": job}))
                 .await
                 .unwrap();
             let run = settled(&mut client, job, accepted["run_id"].as_str().unwrap()).await;
-            assert_eq!(run["state"], "skipped", "{run}");
-            assert_eq!(run["detail"], reason, "{run}");
-            assert!(
-                run["session_id"].is_null(),
-                "no extra Session is launched: {run}"
+            assert_eq!(
+                run["state"], "delivered",
+                "every window launches, whatever max_concurrent_runs is: {run}"
             );
-            assert!(
-                run["input_event_id"].is_null(),
-                "no extra input is submitted: {run}"
-            );
+            assert!(run["session_id"].is_string(), "{run}");
+            assert!(run["input_event_id"].is_string(), "{run}");
         }
 
         model.release();
-        for (job, run_id) in jobs.iter().zip(&active) {
-            let run = settled(&mut client, job, run_id).await;
-            assert_eq!(run["state"], "completed", "{run}");
-        }
-
-        for job in [&jobs[0], &jobs[8]] {
-            let accepted: Value = client
-                .typed("schedule.run_now", json!({"job_id": job}))
-                .await
-                .unwrap();
-            let run = settled(&mut client, job, accepted["run_id"].as_str().unwrap()).await;
-            assert_eq!(
-                run["state"], "completed",
-                "the released slot accepts work: {run}"
-            );
-        }
-
         drop(client);
         server.shutdown();
         server.join().await.unwrap();
     }
 }
 
+/// A launch delivery is `delivered` once its input is written, even while the
+/// launched Session still holds the turn: the record states what the window
+/// did, not how the Session went on (§2.2, §3.2). A restart leaves it as
+/// written.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_skipped_tool_run_keeps_history_and_sends_no_report() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    let server = start(home.path(), model.clone()).await;
-    let mut client = connect(&server).await;
-
-    let saver = create_session(&mut client, home.path(), true).await;
-    model.push(vec![call(
-        "c1",
-        json!({"action": "create", "job": {"name": "inbox", "mode": "reuse",
-            "schedule": {"at": "2030-01-01T00:00:00Z"}, "prompt": "Check the inbox.",
-            "policy": "read-only"}}),
-    )]);
-    client
-        .rpc(
-            "session.submit",
-            json!({"sessionId": saver, "branchId": "main", "text": "schedule it"}),
-        )
-        .await
-        .unwrap();
-    client
-        .rpc(
-            "session.idle",
-            json!({"sessionId": saver, "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
-    let job_id = listed["jobs"][0]["id"].as_str().unwrap().to_owned();
-
-    let first: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let first = settled(&mut client, &job_id, first["run_id"].as_str().unwrap()).await;
-    assert_eq!(first["state"], "completed", "{first}");
-    let bound = first["session_id"].as_str().unwrap().to_owned();
-    wait_for("the completed run's report", || {
-        model
-            .texts()
-            .contains("Inspect schedule.history for this job.")
-    })
-    .await;
-
-    let current = client
-        .rpc(
-            "session.permission.get",
-            json!({"sessionId": bound, "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    client
-        .rpc(
-            "session.permission.update",
-            json!({"sessionId": bound, "branchId": "main", "expectedVersion": current["version"],
-                "policy": {"preset": "full-access", "allowedTools": [], "disallowedTools": []}}),
-        )
-        .await
-        .unwrap();
-
-    let second: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let second = settled(&mut client, &job_id, second["run_id"].as_str().unwrap()).await;
-    assert_eq!(second["state"], "skipped", "{second}");
-    assert_eq!(second["detail"], "policy", "{second}");
-    assert_eq!(second["report_to"]["session_id"], json!(saver), "{second}");
-
-    let third: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    settled(&mut client, &job_id, third["run_id"].as_str().unwrap()).await;
-    client
-        .rpc(
-            "session.idle",
-            json!({"sessionId": saver, "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    let history = client
-        .rpc(
-            "session.history",
-            json!({"sessionId": saver, "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    let reports = history.to_string().matches("scheduler-report:").count();
-    assert_eq!(
-        reports, 1,
-        "only the completed run reports to the saving branch: {history}"
-    );
-
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_reused_session_with_a_long_history_still_settles() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    let server = start(home.path(), model.clone()).await;
-    let mut client = connect(&server).await;
-
-    let saved: Value = client
-        .typed(
-            "schedule.save",
-            json!({"job": {"name": "inbox", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Check the inbox.", "cwd": home.path(), "mode": "reuse"}}),
-        )
-        .await
-        .unwrap();
-    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
-    let first: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let first = settled(&mut client, &job_id, first["run_id"].as_str().unwrap()).await;
-    let bound = first["session_id"].as_str().unwrap().to_owned();
-
-    for turn in 0..60 {
-        client
-            .rpc(
-                "session.submit",
-                json!({"sessionId": bound, "branchId": "main", "text": format!("turn {turn}")}),
-            )
-            .await
-            .unwrap();
-        client
-            .rpc(
-                "session.idle",
-                json!({"sessionId": bound, "branchId": "main"}),
-            )
-            .await
-            .unwrap();
-    }
-    let head = client
-        .rpc(
-            "session.history",
-            json!({"sessionId": bound, "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    let last = head["events"]
-        .as_array()
-        .and_then(|events| events.last())
-        .and_then(|event| event["sequence"].as_u64())
-        .unwrap_or_else(|| panic!("history has events: {head}"));
-    assert!(
-        last >= 256,
-        "the reused Session has more than one history page: first page ends at {last}"
-    );
-
-    let second: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let second = settled(&mut client, &job_id, second["run_id"].as_str().unwrap()).await;
-    assert_eq!(second["state"], "completed", "{second}");
-    assert_eq!(second["session_id"], json!(bound), "{second}");
-
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
+async fn a_delivered_launch_is_not_tracked_and_an_unload_leaves_it_as_written() {
     let home = home();
     let model = Arc::new(Script::default());
     model.hold("Hold this run.");
@@ -466,7 +321,8 @@ async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
         .typed(
             "schedule.save",
             json!({"job": {"name": "slow", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Hold this run.", "cwd": home.path()}}),
+                "prompt": "Hold this run.",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
@@ -476,11 +332,9 @@ async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
         .await
         .unwrap();
     let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    let running = run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "running"
-    })
-    .await;
-    assert!(running["input_event_id"].is_string(), "{running}");
+    let delivered = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(delivered["state"], "delivered", "{delivered}");
+    assert!(delivered["input_event_id"].is_string(), "{delivered}");
 
     drop(client);
     server.shutdown();
@@ -491,19 +345,76 @@ async fn a_consumed_input_is_running_and_an_unload_leaves_it_for_recovery() {
         .find(|run| run["run_id"] == run_id.as_str())
         .unwrap();
     assert_eq!(
-        run["state"], "running",
-        "unload stops the tracker without settling the run: {run}"
+        run, &delivered,
+        "nothing settles a delivered launch after the fact"
     );
 
     model.release();
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
     let resumed = settled(&mut client, &job_id, &run_id).await;
-    assert_ne!(resumed["state"], "lost", "{resumed}");
-    assert_eq!(
-        resumed["input_event_id"], running["input_event_id"],
-        "{resumed}"
-    );
+    assert_eq!(resumed, delivered, "{resumed}");
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A launch whose input reply is lost still settles from the identity the
+/// launch persisted: the lookup reaches the launched Session, its `accepted`
+/// answer settles the record `delivered`, the input is not sent again, and
+/// nothing launches a second time (A.5, A.6).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_with_a_lost_input_reply_settles_from_its_persisted_session() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "lost-reply", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Summarize the day.",
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    // The write reaches the target and is accepted; only its reply is lost.
+    holds(home.path()).lose_next_input_reply();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let run = settled(&mut client, &job_id, &run_id).await;
+
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["attempts"], 1, "one lookup settled it: {run}");
+    let session_id = run["session_id"].as_str().unwrap().to_owned();
+    let submission = run["submission_id"].clone();
+    let mut inputs = Vec::new();
+    let mut after = 0;
+    let mut through = None;
+    loop {
+        let mut params = json!({"sessionId": session_id, "branchId": "main", "after": after});
+        if let Some(through) = through {
+            params["through"] = json!(through);
+        }
+        let page: dim_client::wire::History =
+            client.typed("session.history", params).await.unwrap();
+        through = Some(page.through);
+        let next = page.next(after, through).unwrap();
+        inputs.extend(
+            page.events
+                .into_iter()
+                .filter(|event| event["data"]["submission_id"] == submission),
+        );
+        match next {
+            Some(next) => after = next,
+            None => break,
+        }
+    }
+    assert_eq!(inputs.len(), 1, "the input is not sent again: {inputs:?}");
 
     drop(client);
     server.shutdown();
@@ -520,23 +431,19 @@ async fn an_at_job_saved_after_its_instant_records_missed_and_disables() {
         .typed(
             "schedule.save",
             json!({"job": {"name": "late", "schedule": {"at": "2020-01-01T00:00:00Z"},
-                "prompt": "Too late.", "cwd": home.path()}}),
+                "prompt": "Too late.",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
     let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
 
-    let disabled = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        loop {
-            let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
-            if listed["jobs"][0]["enabled"] == false {
-                return listed;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .expect("the past at job disables itself");
+    // The first timer pass records the past window `missed`; the one after it
+    // finds the delivery terminal and disables the job. Two crossed ticks are
+    // those two passes, rather than a poll for a real second.
+    step(home.path(), 2).await;
+    let disabled: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    assert_eq!(disabled["jobs"][0]["enabled"], false, "{disabled}");
     let history: Value = client
         .typed("schedule.history", json!({"job_id": job_id}))
         .await
@@ -596,7 +503,8 @@ async fn deleting_a_job_retires_its_history_and_launched_sessions() {
         .typed(
             "schedule.save",
             json!({"job": {"name": "nightly", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Summarize the day.", "cwd": home.path()}}),
+                "prompt": "Summarize the day.",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
@@ -607,267 +515,271 @@ async fn deleting_a_job_retires_its_history_and_launched_sessions() {
         .unwrap();
     let run = settled(&mut client, &job_id, accepted["run_id"].as_str().unwrap()).await;
     let launched = run["session_id"].as_str().unwrap().to_owned();
+    // A launch record's stop time bounds when its Session may be deleted
+    // (A.7): move it into the past, as time would.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    edit_runs(home.path(), |runs| {
+        let run = runs
+            .iter_mut()
+            .find(|run| run["session_id"] == json!(launched))
+            .unwrap();
+        run["deadline_at"] = json!("2020-01-01T00:00:00.000Z");
+    });
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
     let listed = client.rpc("session.summaries", json!({})).await.unwrap();
     assert!(listed.to_string().contains(&launched), "{listed}");
 
+    // The delete spawns the retention pass that deletes the launched Session
+    // and then its record; the count names that pass, and both facts are read
+    // once after it.
+    let before = signals(home.path()).retention();
     client
         .typed::<Value>("schedule.delete", json!({"job_id": job_id}))
         .await
         .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+    retention(home.path(), before).await;
+    let listed = client.rpc("session.summaries", json!({})).await.unwrap();
+    assert!(!listed.to_string().contains(&launched), "{listed}");
+    assert!(
+        !stored_runs(home.path())
+            .iter()
+            .any(|run| run["job_id"] == job_id.as_str()),
+        "the launched Session is deleted before its last record is removed"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The instant a delivery record carries.
+fn instant(stamped: &Value) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(stamped.as_str().expect("a stamped instant"))
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+
+/// Whether the stop timer's own interrupt is on the branch: the reason
+/// `stop_at` sends, distinct from the one a closing branch writes.
+fn stopped_at_its_stop_time(history: &[Value]) -> bool {
+    history.iter().any(|event| {
+        event["type"] == "stop"
+            && event["name"] == "interrupt"
+            && event["data"]["reason"] == "scheduled run reached its stop time"
+    })
+}
+
+/// Every event of a Session's `main` branch, in order.
+async fn branch_events(client: &mut dim_client::Client, session_id: &str) -> Vec<Value> {
+    let mut events = Vec::new();
+    let mut after = 0;
+    let mut through = None;
+    loop {
+        let mut params = json!({"sessionId": session_id, "branchId": "main", "after": after});
+        if let Some(through) = through {
+            params["through"] = json!(through);
+        }
+        let page: dim_client::wire::History =
+            client.typed("session.history", params).await.unwrap();
+        through = Some(page.through);
+        let next = page.next(after, through).unwrap();
+        events.extend(page.events);
+        match next {
+            Some(next) => after = next,
+            None => return events,
+        }
+    }
+}
+
+/// Holds `scheduler/runs.json` at its transaction: the returned sender
+/// releases it, and the task is the holder.
+///
+/// The closure signals that it has entered, which is after `transact` took the
+/// file lease and read the file, and then blocks until the test releases it. A
+/// call that writes the same file therefore waits on the lease, which is what
+/// makes that wait observable.
+async fn hold_runs_file(
+    server: &dim_app_server::RunningServer,
+) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
+    let files = server
+        .service::<dim_app_server::plugin_files::PluginFileTransactions>()
+        .expect("the App Server provides the file transactions");
+    let (release, held) = std::sync::mpsc::channel();
+    let (entered, entered_rx) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        files
+            .transact("scheduler/runs.json", move |_| {
+                entered.send(()).unwrap();
+                held.recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap();
+                (None, ())
+            })
+            .await
+            .unwrap();
+    });
+    entered_rx.await.unwrap();
+    (release, task)
+}
+
+/// A launch's stop time is counted from the instant its record is written, not
+/// from before the wait for the runs file's lease: a hold on `runs.json` that
+/// outlasts `max_run_minutes` leaves the run its whole budget and does not stop
+/// the launched Session as already expired (§3.2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_counts_its_stop_time_from_when_its_record_is_written() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "held", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Complete the accepted work.",
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+
+    let (release, held) = hold_runs_file(&server).await;
+    let id = client
+        .send("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    // The launch is waiting on the lease: the hold above is the only thing that
+    // has the file. This check can only miss the bug, by advancing before the
+    // launch has read the time, and can never fail a correct build.
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(1), client.response(id))
+            .await
+            .is_err(),
+        "the launch waits for the runs file"
+    );
+
+    // The hold outlasts the whole run budget. A record stamped before the wait
+    // carries a stop time the advance below has already passed.
+    clock(home.path()).advance(chrono::Duration::minutes(6));
+    // A record is stamped to the millisecond, so the instant the advance
+    // reached is read as a stamp and parsed the way a record's is.
+    let reached = clock(home.path())
+        .now()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let advanced = instant(&json!(reached));
+    release.send(()).unwrap();
+    held.await.unwrap();
+    let accepted: Value = client.response(id).await.unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let run = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    let session_id = run["session_id"].as_str().unwrap().to_owned();
+
+    let created_at = instant(&run["created_at"]);
+    let deadline_at = instant(&run["deadline_at"]);
+    assert!(
+        created_at >= advanced,
+        "the record is stamped when it is written, not before the wait: {run}"
+    );
+    assert_eq!(
+        deadline_at,
+        created_at + chrono::Duration::minutes(5),
+        "the stop time is the record's own instant plus the budget: {run}"
+    );
+
+    // The stop time is in the future, so the stop timer waits for it. Were the
+    // record stamped before the wait its stop time would already have passed,
+    // and the launched Session would be stopped at once.
+    assert!(
+        !stopped_at_its_stop_time(&branch_events(&mut client, &session_id).await),
+        "a launch whose record was written after the wait is not stopped at once"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// The stop timer ends the launched Session at its stop time and leaves the
+/// delivery `delivered` (§3.2): a stop bounds the launched work, it is not a
+/// run outcome. A restart resumes the timer from the record's `deadline_at`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_launch_session_is_stopped_at_its_stop_time() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    model.hold("Hold this run.");
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "slow", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Hold this run.",
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let delivered = settled(&mut client, &job_id, &run_id).await;
+    assert_eq!(delivered["state"], "delivered", "{delivered}");
+    let session_id = delivered["session_id"].as_str().unwrap().to_owned();
+    assert!(
+        !delivered["deadline_at"].is_null(),
+        "a launch records its stop time: {delivered}"
+    );
+
+    // Move the stop time an hour out, as a restart that resumes the timer long
+    // before it would meet it; the advance below is what reaches it.
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let soon = (clock(home.path()).now() + chrono::Duration::seconds(3600))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    edit_runs(home.path(), |runs| {
+        let run = runs
+            .iter_mut()
+            .find(|run| run["run_id"] == run_id.as_str())
+            .unwrap();
+        run["deadline_at"] = json!(soon);
+    });
+    let parks = stop_parks(home.path());
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    stop_time(home.path(), parks).await;
+
+    // The held turn ends at the stop time; the held model reply is what the
+    // launched Session was waiting on.
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(60), async {
         loop {
-            let listed = client.rpc("session.summaries", json!({})).await.unwrap();
-            if !listed.to_string().contains(&launched)
-                && !stored_runs(home.path())
-                    .iter()
-                    .any(|run| run["job_id"] == job_id.as_str())
-            {
-                return;
+            let idle = client
+                .rpc(
+                    "session.idle",
+                    json!({"sessionId": session_id, "branchId": "main"}),
+                )
+                .await;
+            match idle {
+                Ok(_) => return Ok(()),
+                Err(error) if format!("{error}").contains("reloading") => {}
+                Err(error) => return Err(error),
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     })
     .await
-    .expect("the launched Session is deleted before its last record is removed");
-
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-/// Restarts the server with the run's deadline moved into the past, as the
-/// clock would have moved it: recovery tracks the run against that deadline.
-async fn restart_expired(
-    home: &std::path::Path,
-    server: dim_app_server::RunningServer,
-    client: dim_client::Client,
-    model: Arc<Script>,
-    run_id: &str,
-) -> (dim_app_server::RunningServer, dim_client::Client) {
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-    edit_runs(home, |runs| {
-        let run = runs.iter_mut().find(|run| run["run_id"] == run_id).unwrap();
-        run["deadline_at"] = json!("2020-01-01T00:00:00.000Z");
-    });
-    let server = start(home, model).await;
-    let client = connect(&server).await;
-    (server, client)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_run_whose_turn_ended_before_its_deadline_keeps_that_outcome() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    model.hold("Hold this run.");
-    let server = start(home.path(), model.clone()).await;
-    let mut client = connect(&server).await;
-    let saved: Value = client
-        .typed(
-            "schedule.save",
-            json!({"job": {"name": "slow", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Hold this run.", "cwd": home.path()}}),
-        )
-        .await
-        .unwrap();
-    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
-    let accepted: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "running"
-    })
-    .await;
-
-    let (server, mut client) =
-        restart_expired(home.path(), server, client, model.clone(), &run_id).await;
-    let ended = settled(&mut client, &job_id, &run_id).await;
+    .expect("the stop timer runs");
+    assert!(stopped.is_ok(), "{stopped:?}");
+    let after = settled(&mut client, &job_id, &run_id).await;
     assert_eq!(
-        ended["state"], "cancelled",
-        "the turn the shutdown ended is in the published prefix, so the past deadline does not replace it: {ended}"
-    );
-    model.release();
-
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_input_interrupted_before_consumption_times_out_without_a_stop() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    model.hold("Hold this run.");
-    let server = start(home.path(), model.clone()).await;
-    let mut client = connect(&server).await;
-    let saved: Value = client
-        .typed(
-            "schedule.save",
-            json!({"job": {"name": "inbox", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Check the inbox.", "cwd": home.path(), "mode": "reuse"}}),
-        )
-        .await
-        .unwrap();
-    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
-    let first: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let first = settled(&mut client, &job_id, first["run_id"].as_str().unwrap()).await;
-    let bound = first["session_id"].as_str().unwrap().to_owned();
-
-    client
-        .rpc(
-            "session.submit",
-            json!({"sessionId": bound, "branchId": "main", "text": "Hold this run."}),
-        )
-        .await
-        .unwrap();
-    let second: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let run_id = second["run_id"].as_str().unwrap().to_owned();
-    run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "submitted"
-    })
-    .await;
-
-    let (server, mut client) =
-        restart_expired(home.path(), server, client, model.clone(), &run_id).await;
-    let timed_out = settled(&mut client, &job_id, &run_id).await;
-    assert_eq!(timed_out["state"], "timed_out", "{timed_out}");
-    assert_eq!(timed_out["detail"], "timed_out", "{timed_out}");
-    model.release();
-
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_user_stop_of_the_run_turn_settles_cancelled() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    model.hold("Hold this run.");
-    let server = start(home.path(), model.clone()).await;
-    let mut client = connect(&server).await;
-
-    let saved: Value = client
-        .typed(
-            "schedule.save",
-            json!({"job": {"name": "slow", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Hold this run.", "cwd": home.path()}}),
-        )
-        .await
-        .unwrap();
-    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
-    let accepted: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
-    let running = run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "running"
-    })
-    .await;
-    client
-        .rpc(
-            "session.stop",
-            json!({"sessionId": running["session_id"], "branchId": "main"}),
-        )
-        .await
-        .unwrap();
-    let stopped = settled(&mut client, &job_id, &run_id).await;
-    assert_eq!(stopped["state"], "cancelled", "{stopped}");
-    model.release();
-
-    drop(client);
-    server.shutdown();
-    server.join().await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_user_withdrawal_of_a_held_scheduled_input_settles_cancelled_and_releases_the_slot() {
-    let home = home();
-    let model = Arc::new(Script::default());
-    model.hold("Hold this run.");
-    let server = start(home.path(), model.clone()).await;
-    let mut client = connect(&server).await;
-
-    let saved: Value = client
-        .typed(
-            "schedule.save",
-            json!({"job": {"name": "inbox", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Check the inbox.", "cwd": home.path(), "mode": "reuse"}}),
-        )
-        .await
-        .unwrap();
-    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
-    let first: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let first = settled(&mut client, &job_id, first["run_id"].as_str().unwrap()).await;
-    let bound = first["session_id"].as_str().unwrap().to_owned();
-
-    // A held turn keeps the reuse Session busy, so the scheduled input is held.
-    client
-        .rpc(
-            "session.submit",
-            json!({"sessionId": bound, "branchId": "main", "text": "Hold this run."}),
-        )
-        .await
-        .unwrap();
-    let second: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let run_id = second["run_id"].as_str().unwrap().to_owned();
-    let held = run_where(&mut client, &job_id, &run_id, |run| {
-        run["state"] == "submitted"
-    })
-    .await;
-    let input_id = held["input_event_id"].as_str().unwrap().to_owned();
-    let session_id = held["session_id"].as_str().unwrap().to_owned();
-    assert_eq!(
-        session_id, bound,
-        "the reuse job holds its input in the bound Session"
+        after["state"], "delivered",
+        "the stop is not a run outcome: {after}"
     );
 
-    // Withdraw by input id through the public `session.input.withdraw` RPC.
-    let withdrawn: Value = client
-        .rpc(
-            "session.input.withdraw",
-            json!({"sessionId": session_id, "branchId": "main", "inputId": input_id,
-                "reason": "superseded"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(withdrawn["status"], "deleted", "{withdrawn}");
-
-    let cancelled = settled(&mut client, &job_id, &run_id).await;
-    assert_eq!(cancelled["state"], "cancelled", "{cancelled}");
-    assert_eq!(cancelled["detail"], "withdrawn", "{cancelled}");
-
-    // The withdrawn run released the job's overlap slot: a new run is accepted.
-    let third: Value = client
-        .typed("schedule.run_now", json!({"job_id": job_id}))
-        .await
-        .unwrap();
-    let third = run_where(
-        &mut client,
-        &job_id,
-        third["run_id"].as_str().unwrap(),
-        |run| run["state"] == "submitted",
-    )
-    .await;
-    assert_eq!(third["state"], "submitted", "the slot is released: {third}");
-
-    model.release();
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
@@ -882,7 +794,8 @@ async fn a_document_written_by_the_typescript_scheduler_loads() {
         .typed::<Value>(
             "schedule.save",
             json!({"job": {"name": "seed", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "seed", "cwd": home.path()}}),
+                "prompt": "seed",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
@@ -909,10 +822,13 @@ async fn a_document_written_by_the_typescript_scheduler_loads() {
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let job = &listed["jobs"][0];
     assert_eq!(job["id"], "legacy", "{listed}");
-    assert_eq!(job["max_run_minutes"], 60, "{listed}");
+    assert_eq!(job["target"]["kind"], "launch", "{listed}");
+    assert_eq!(job["target"]["cwd"], json!(home.path()), "{listed}");
+    assert_eq!(job["target"]["max_run_minutes"], 60, "{listed}");
+    assert!(job["policy_cap"].is_null(), "{listed}");
     assert!(
-        job["policy_cap"].get("fileAccess").is_none(),
-        "removed policy keys load ignored (ADR 018): {listed}"
+        job["cwd"].is_null(),
+        "legacy fields are not reported: {listed}"
     );
 
     drop(client);
@@ -921,39 +837,53 @@ async fn a_document_written_by_the_typescript_scheduler_loads() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn management_saves_take_an_agent_and_a_reuse_binding() {
+async fn management_saves_take_a_launch_target_with_an_agent_and_a_policy() {
     let home = home();
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = connect(&server).await;
+
+    let with_agent: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "agent run", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Check the inbox.",
+                "target": {"kind": "launch", "cwd": home.path(), "agent_id": "default",
+                    "policy": "read-only", "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        with_agent["job"]["target"]["agent_id"], "default",
+        "{with_agent}"
+    );
+    assert_eq!(
+        with_agent["job"]["target"]["policy"], "read-only",
+        "{with_agent}"
+    );
+    assert_eq!(
+        with_agent["job"]["target"]["max_run_minutes"], 5,
+        "{with_agent}"
+    );
+    assert!(with_agent.get("transition").is_none(), "{with_agent}");
 
     let saved: Value = client
         .typed(
             "schedule.save",
             json!({"job": {"name": "inbox", "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Check the inbox.", "cwd": home.path(), "mode": "reuse",
-                "agent_id": "default", "session_id": "pre-bound",
-                "model": {"providerId": "p", "modelId": "m"}}}),
+                "prompt": "Check the inbox.",
+                "target": {"kind": "launch", "cwd": home.path(), "policy": "read-only"}}}),
         )
         .await
         .unwrap();
-    assert_eq!(saved["job"]["agent_id"], "default", "{saved}");
-    assert_eq!(saved["job"]["session_id"], "pre-bound", "{saved}");
-    assert_eq!(saved["transition"]["from"], Value::Null, "{saved}");
-    assert_eq!(
-        saved["transition"]["to"]["effective_policy"]["preset"], "read-only",
-        "{saved}"
-    );
     let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
     let run: Value = client
         .typed("schedule.run_now", json!({"job_id": job_id}))
         .await
         .unwrap();
     let run = settled(&mut client, &job_id, run["run_id"].as_str().unwrap()).await;
-    assert_eq!(run["state"], "failed", "{run}");
-    assert_eq!(
-        run["detail"], "session_closed",
-        "a missing reuse target fails: {run}"
-    );
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(run["policy"]["preset"], "read-only", "{run}");
+    assert!(run["deadline_at"].is_string(), "{run}");
 
     drop(client);
     server.shutdown();
@@ -970,7 +900,8 @@ async fn next_cron_window(cron: &str, after: &str) -> Value {
         .typed(
             "schedule.save",
             json!({"job": {"name": "dst", "schedule": {"cron": cron, "tz": "America/New_York"},
-                "prompt": "p", "cwd": home.path()}}),
+                "prompt": "p",
+                "target": {"kind": "launch", "cwd": home.path()}}}),
         )
         .await
         .unwrap();
@@ -1005,17 +936,4 @@ async fn cron_windows_skip_a_dst_gap_and_fire_a_repeated_time_once() {
         next_cron_window("30 1 * * *", "2030-11-03T05:30:00.000Z").await,
         "2030-11-04T06:30:00.000Z"
     );
-}
-
-#[test]
-fn a_multi_line_report_guidance_is_refused() {
-    let mut builder = dim_agent_runtime::AgentBuilder::new(Default::default());
-    let refused = dim_agent_scheduler::install_with(
-        &mut builder,
-        dim_agent_scheduler::SchedulerTexts {
-            report_guidance: "first\nsecond".into(),
-            ..Default::default()
-        },
-    );
-    assert!(refused.is_err(), "{refused:?}");
 }

@@ -1,0 +1,708 @@
+{
+  "code_base": "8a5fe0980",
+  "date": "2026-11-15",
+  "java": "OpenJDK 17.0.18",
+  "tools_release": "1.7.4",
+  "tlc_version": "2.19 (2024-08-08, rev 5a47802)",
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "workers": 1,
+  "max_heap": "2g",
+  "runs": [
+    {
+      "config": "docs/design/examples/capability-models/AdmissionAdvice.cfg",
+      "module": "docs/design/examples/capability-models/AdmissionAdvice.tla",
+      "module_sha256": "8174450b8eab9bbbcf4bb17a6f848fda1b5a6ea9c42c5a3d510b17fb165bf306",
+      "config_sha256": "3b541adea26a37fe62f1c883d8037aa47eb452dc54c443928108f872c99765e5",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.0,
+      "generated": 9044,
+      "distinct": 2442,
+      "queue_remaining": 0,
+      "depth": 7,
+      "properties": [
+        "NoAdviceAfterCancel"
+      ],
+      "invariants": [
+        "OwnDenyWins AcceptedDenyWins AskPreserved NoAdviceOnDeny"
+      ],
+      "fingerprint": 90,
+      "seed": -1159776366987396396
+    },
+    {
+      "config": "docs/design/examples/capability-models/BranchLine.cfg",
+      "module": "docs/design/examples/capability-models/BranchLine.tla",
+      "module_sha256": "c0a75b928e56eb646a615a0f552caa3b6d98e7dfa0c25c9eb7c288ed6d429c68",
+      "config_sha256": "1b8f243ddf46f3a04745ae0802aa21c3981a36f57cefe47fbf42778fbf920853",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 6.93,
+      "generated": 2515375,
+      "distinct": 308340,
+      "queue_remaining": 0,
+      "depth": 19,
+      "properties": [
+        "RestoreNoIdleNotice CursorIsolation"
+      ],
+      "invariants": [
+        "ForwardBlocks CursorBound HeldAhead"
+      ],
+      "fingerprint": 5,
+      "seed": -6323894050829512476
+    },
+    {
+      "config": "docs/design/examples/capability-models/CollaborationHandoff.cfg",
+      "module": "docs/design/examples/capability-models/CollaborationHandoff.tla",
+      "module_sha256": "f5d65c2788b94efe1055289e31e64f984de1a33ca4e90e574951a9a2f4c2e87f",
+      "config_sha256": "3ec52a2d14d7ce504a8f2f847d807ed9a35c3ff27eea6146984ffc4ed4bb4519",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 2.29,
+      "generated": 109847,
+      "distinct": 12300,
+      "queue_remaining": 0,
+      "depth": 18,
+      "properties": [
+        "NoRecoveryResend TurnIsNotRequestEnd MissingOwnerSettles ApprovalEventuallyWithdrawn"
+      ],
+      "invariants": [
+        "ResultsHaveRequests InputsHaveRequest WithdrawalHasSettlement"
+      ],
+      "fingerprint": 115,
+      "seed": 1247652174564806817
+    },
+    {
+      "config": "docs/design/examples/capability-models/ContextUsage.cfg",
+      "module": "docs/design/examples/capability-models/ContextUsage.tla",
+      "module_sha256": "12988a7197cb2f718dd095859c6cf4620e82b383fb12cbe062d108ac648de586",
+      "config_sha256": "b8b507e9277ceb85d8788c61ec27329ee400e159a13e83787462db55b3cbc61e",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.92,
+      "generated": 2296,
+      "distinct": 1106,
+      "queue_remaining": 0,
+      "depth": 11,
+      "properties": [],
+      "invariants": [
+        "SavedPrefix CorrectLivePrefix CoveredNoMissingContribution"
+      ],
+      "fingerprint": 94,
+      "seed": 9084018876717447651
+    },
+    {
+      "config": "docs/design/examples/capability-models/CurrentInput-Clients.cfg",
+      "module": "docs/design/examples/capability-models/CurrentInput.tla",
+      "module_sha256": "f14e705971a2c8db51ed94892c5eba49effdc8f83a6136279d93bc92b16aedd2",
+      "config_sha256": "a297916d7aa34c4f3a5aabb32658fa400e293c07cb629417790e82492d4c46f0",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.92,
+      "generated": 594,
+      "distinct": 312,
+      "queue_remaining": 0,
+      "depth": 12,
+      "properties": [
+        "NoWriteAfterClosing"
+      ],
+      "invariants": [
+        "NoConsecutiveDuplicates NoWriteBeforeActivation LastMeansCommitted"
+      ],
+      "fingerprint": 71,
+      "seed": -8655797524413746397
+    },
+    {
+      "config": "docs/design/examples/capability-models/CurrentInput.cfg",
+      "module": "docs/design/examples/capability-models/CurrentInput.tla",
+      "module_sha256": "f14e705971a2c8db51ed94892c5eba49effdc8f83a6136279d93bc92b16aedd2",
+      "config_sha256": "cadfb1c20b5a94922eeb12b586f84d259ab9213f2dac8d57cc56a3f9e1a11245",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.96,
+      "generated": 861,
+      "distinct": 422,
+      "queue_remaining": 0,
+      "depth": 14,
+      "properties": [
+        "NoWriteAfterClosing EventuallyCurrent"
+      ],
+      "invariants": [
+        "NoConsecutiveDuplicates NoWriteBeforeActivation LastMeansCommitted"
+      ],
+      "fingerprint": 36,
+      "seed": 5508357266542498735
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecLifecycle-Shell.cfg",
+      "module": "docs/design/examples/capability-models/ExecLifecycle.tla",
+      "module_sha256": "a76e2ce02a50895ee0d043f0aff6bd65e4ea308a5b2ec884a36dd8e7e1eb1120",
+      "config_sha256": "ceeaffde77bb55c75bd32fb82475cd2a67e3146b3b3009839b50e6a0c027c4c7",
+      "exit": 13,
+      "expected_exit": 13,
+      "seconds": 1.0,
+      "generated": 1429,
+      "distinct": 486,
+      "queue_remaining": 0,
+      "depth": null,
+      "properties": [
+        "StopKeepsWork RecoveredSettled RecoveredWoken"
+      ],
+      "invariants": [
+        "WakeHasTerminal TerminalHasStart LiveHasHold ReleaseBeforeTerminal NoWakeFromInheritedRecovery"
+      ],
+      "fingerprint": 15,
+      "seed": 7990639284246701504
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecLifecycle-ShellWake.cfg",
+      "module": "docs/design/examples/capability-models/ExecLifecycle.tla",
+      "module_sha256": "a76e2ce02a50895ee0d043f0aff6bd65e4ea308a5b2ec884a36dd8e7e1eb1120",
+      "config_sha256": "bd79557021b46b7616fa7e25844099a0c73713123e2f6fcf2d76c2c955871a05",
+      "exit": 13,
+      "expected_exit": 13,
+      "seconds": 1.0,
+      "generated": 1429,
+      "distinct": 486,
+      "queue_remaining": 0,
+      "depth": null,
+      "properties": [
+        "StopKeepsWork RecoveredWoken"
+      ],
+      "invariants": [
+        "WakeHasTerminal TerminalHasStart LiveHasHold ReleaseBeforeTerminal NoWakeFromInheritedRecovery"
+      ],
+      "fingerprint": 54,
+      "seed": 2596106618110766690
+    },
+    {
+      "config": "docs/design/examples/capability-models/ExecLifecycle.cfg",
+      "module": "docs/design/examples/capability-models/ExecLifecycle.tla",
+      "module_sha256": "a76e2ce02a50895ee0d043f0aff6bd65e4ea308a5b2ec884a36dd8e7e1eb1120",
+      "config_sha256": "7fb022b84409a9346669988d24128a135c4c08cb195f5c7524fa01a9f18d109c",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.02,
+      "generated": 2005,
+      "distinct": 624,
+      "queue_remaining": 0,
+      "depth": 14,
+      "properties": [
+        "StopKeepsWork RecoveredSettled RecoveredWoken"
+      ],
+      "invariants": [
+        "WakeHasTerminal TerminalHasStart LiveHasHold ReleaseBeforeTerminal NoWakeFromInheritedRecovery"
+      ],
+      "fingerprint": 52,
+      "seed": -4021687017631341830
+    },
+    {
+      "config": "docs/design/examples/capability-models/FileReads.cfg",
+      "module": "docs/design/examples/capability-models/FileReads.tla",
+      "module_sha256": "886b224e243a05f51a23762aebd8f60b3c00eed0cb20a7602b264a1efccd3725",
+      "config_sha256": "d9eb43ebb9080da3125939a90a066bac1807d718c81dfbd6f197bc6beca29d0d",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.94,
+      "generated": 691,
+      "distinct": 292,
+      "queue_remaining": 0,
+      "depth": 6,
+      "properties": [],
+      "invariants": [
+        "NoRestoredBinding NoCompactedWrite CompactionNeedsSuccessfulCut"
+      ],
+      "fingerprint": 128,
+      "seed": 226931415396065536
+    },
+    {
+      "config": "docs/design/examples/capability-models/GoalLifecycle.cfg",
+      "module": "docs/design/examples/capability-models/GoalLifecycle.tla",
+      "module_sha256": "62a243b8cf89f6f34916216e3bbb847fcb668f2c4a5e82170fbdff7959af8f30",
+      "config_sha256": "e775d21cddc6e26de95d8d35692dc699db5ec0045bb1f1121e374ca0cccc0653",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.89,
+      "generated": 763,
+      "distinct": 140,
+      "queue_remaining": 0,
+      "depth": 8,
+      "properties": [
+        "NoSyntheticPauseWrite"
+      ],
+      "invariants": [
+        "ExplicitStartOnly ReloadCannotRun NoRuntimeRecovery RunningMeansActive"
+      ],
+      "fingerprint": 25,
+      "seed": 2139001973461263924
+    },
+    {
+      "config": "docs/design/examples/capability-models/HookScheduling.cfg",
+      "module": "docs/design/examples/capability-models/HookScheduling.tla",
+      "module_sha256": "ae2d79cda439b0184e0090db0c9b0d8e7ce5f4d507088e45f604f7307bac86f6",
+      "config_sha256": "e1b33fb14ed771e9ee5791c7a0319b4010c8ba71820fbf8a0f614b7eed666192",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.94,
+      "generated": 1106,
+      "distinct": 438,
+      "queue_remaining": 0,
+      "depth": 14,
+      "properties": [
+        "ApprovalIndependent NoCancelledApprovalOutput NoReplayAfterReload"
+      ],
+      "invariants": [
+        "NoUnfinishedMerge DoneWasAccepted NoDuplicateOrdinary"
+      ],
+      "fingerprint": 122,
+      "seed": 2331225739031755071
+    },
+    {
+      "config": "docs/design/examples/capability-models/HooksValidity.cfg",
+      "module": "docs/design/examples/capability-models/HooksValidity.tla",
+      "module_sha256": "0472d8f6399e0d9015277b5e63bbf82c450f073b4d335139c565fcaf5b170494",
+      "config_sha256": "6af9a29e7cae13e7f230e45476fae68bd0d8fe25308281865c8e579af169e9f3",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 2.17,
+      "generated": 542224,
+      "distinct": 199444,
+      "queue_remaining": 0,
+      "depth": 16,
+      "properties": [
+        "NoReplayOnReload"
+      ],
+      "invariants": [
+        "ValidOutput StartupAtMostOnce BoundedFollowup"
+      ],
+      "fingerprint": 123,
+      "seed": 7261500401309734525
+    },
+    {
+      "config": "docs/design/examples/capability-models/InputQueue.cfg",
+      "module": "docs/design/examples/capability-models/InputQueue.tla",
+      "module_sha256": "6859a4c39ba9274dafdef38fb0b007d30ee52ce694815c65e0ea15c3132b9291",
+      "config_sha256": "897555f24bb3e0c5ad1c7adb1955a8d42f3ca5b0a184d97b09b414a0da398721",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.06,
+      "generated": 16513,
+      "distinct": 4312,
+      "queue_remaining": 0,
+      "depth": 10,
+      "properties": [],
+      "invariants": [
+        "NoWithdrawAfterHandoff NoDeletedConsumption ReplacementOnlyDeleted HandoverNotApplied NoAppendDriver NoDoubleMembership"
+      ],
+      "fingerprint": 17,
+      "seed": -2684663842718961243
+    },
+    {
+      "config": "docs/design/examples/capability-models/InputRecovery.cfg",
+      "module": "docs/design/examples/capability-models/InputRecovery.tla",
+      "module_sha256": "f8947296d357b2b702d65a9a99b8ecdae40f9f228ebd409c828c11cc0d9da5e0",
+      "config_sha256": "4e44000cdf73eed5879b076085ef2f996495b20d4995165964bda90ac3fb3f57",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.9,
+      "generated": 297,
+      "distinct": 170,
+      "queue_remaining": 0,
+      "depth": 10,
+      "properties": [
+        "RestoreOnlyMembers"
+      ],
+      "invariants": [
+        "NoWithdrawAfterApply AtomicReplacement DecisionLast NoRepeatReplacement"
+      ],
+      "fingerprint": 129,
+      "seed": 7437182026728496209
+    },
+    {
+      "config": "docs/design/examples/capability-models/LoopContinuation.cfg",
+      "module": "docs/design/examples/capability-models/LoopContinuation.tla",
+      "module_sha256": "325cdf2f110182c20dc78e5b3425ba5559297220656e1bd2825767b01e2816c3",
+      "config_sha256": "851ab9efe93d602f03614a2a48b87d85818888489892aa16ba26f03eb8270cd3",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.93,
+      "generated": 2785,
+      "distinct": 232,
+      "queue_remaining": 0,
+      "depth": 9,
+      "properties": [
+        "NoAutomaticOnDrivenTurn NoAutomaticAfterInterrupt"
+      ],
+      "invariants": [
+        "OneAutomaticContinuation DeferredKeepsChain ContinuationHasNoTools"
+      ],
+      "fingerprint": 84,
+      "seed": 8011470153756818823
+    },
+    {
+      "config": "docs/design/examples/capability-models/LoopProtocol.cfg",
+      "module": "docs/design/examples/capability-models/LoopProtocol.tla",
+      "module_sha256": "59c44ec31304a126200b4c19bc1e9a2f5064e7a4855d71d58dda71339b3a48be",
+      "config_sha256": "031ffe3cf4d1629c8d2cc118a6779d595e65b85f8c1169f9b9f083f7f72d844e",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.95,
+      "generated": 5282,
+      "distinct": 1078,
+      "queue_remaining": 0,
+      "depth": 21,
+      "properties": [],
+      "invariants": [
+        "OneOpenTurn NoRestart NoRepeatModel CompactionExcludesTurn ReloadFailsTurn StartedBeforeTools"
+      ],
+      "fingerprint": 104,
+      "seed": -9091726405808746938
+    },
+    {
+      "config": "docs/design/examples/capability-models/ModelOutput.cfg",
+      "module": "docs/design/examples/capability-models/ModelOutput.tla",
+      "module_sha256": "5ad522c67dc8c1c270de03f974b27d612ff6e6e157d1aea318fda512c3033d57",
+      "config_sha256": "cab624945222cfa4642e22c5dcbef89e99ae80ca8bd76659c80d3f5a77267f50",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.99,
+      "generated": 4217,
+      "distinct": 3225,
+      "queue_remaining": 0,
+      "depth": 14,
+      "properties": [],
+      "invariants": [
+        "OneTerminal ReleaseBeforeEnd NoReplayOutput ToolsSettled OutputLimitStops BoundedRetry"
+      ],
+      "fingerprint": 25,
+      "seed": 6886588311267835517
+    },
+    {
+      "config": "docs/design/examples/capability-models/NestedSettlement.cfg",
+      "module": "docs/design/examples/capability-models/NestedSettlement.tla",
+      "module_sha256": "24c3e732605392108d20d548b144aa825433566808129d6f86fa9868f38598c6",
+      "config_sha256": "fd764ea93bb7444143c25fe968e0cedbe278a2dd3fee42466118ea4860a9d7af",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.88,
+      "generated": 385,
+      "distinct": 118,
+      "queue_remaining": 0,
+      "depth": 10,
+      "properties": [
+        "CancellationIsNotRollback"
+      ],
+      "invariants": [
+        "ConfirmedEffectsRetained NoUnconfirmedEffects ChildBeforeParentUnlessDeadline"
+      ],
+      "fingerprint": 125,
+      "seed": 4466363092814914212
+    },
+    {
+      "config": "docs/design/examples/capability-models/PermissionState.cfg",
+      "module": "docs/design/examples/capability-models/PermissionState.tla",
+      "module_sha256": "b768fc4f5dd2ee8dab06b4aae888b6e3472eea0330a4519e40756153e44d6d14",
+      "config_sha256": "ad77370276c7bf961100b56d731d06b9b432bbe3cac02444094f8f7bd45853af",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.36,
+      "generated": 68993,
+      "distinct": 42766,
+      "queue_remaining": 0,
+      "depth": 17,
+      "properties": [],
+      "invariants": [
+        "Versions NoLostUpdate DispatchedPolicy ReplyAfterDispatch InheritedVersion"
+      ],
+      "fingerprint": 77,
+      "seed": 7822417063442968837
+    },
+    {
+      "config": "docs/design/examples/capability-models/Preparation.cfg",
+      "module": "docs/design/examples/capability-models/Preparation.tla",
+      "module_sha256": "ec45c0230fea140491e135b73cdb444c92e8278fb0935038ef5e32097d8846df",
+      "config_sha256": "216ef6a14ac632277fad74743e37b41ada4a9d9ac7861c886486d7ae59d15f08",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.94,
+      "generated": 426,
+      "distinct": 140,
+      "queue_remaining": 0,
+      "depth": 9,
+      "properties": [
+        "NoCallAfterObservedFailure"
+      ],
+      "invariants": [
+        "HandoffExclusive OneWork CompactionBeforeRelease"
+      ],
+      "fingerprint": 116,
+      "seed": 3609830443669700400
+    },
+    {
+      "config": "docs/design/examples/capability-models/PromptAdoption.cfg",
+      "module": "docs/design/examples/capability-models/PromptAdoption.tla",
+      "module_sha256": "c39b5573990c07a6aec7e51717fdd6da21810dbc6af6b6651aa67ea29424b12c",
+      "config_sha256": "172c1ffbe46ba02f9802a51f5c8d339713be03471911e900ba4903fda16afdaa",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.3,
+      "generated": 152521,
+      "distinct": 22176,
+      "queue_remaining": 0,
+      "depth": 33,
+      "properties": [
+        "MonotonicAdoption LoadIsNotAdoption"
+      ],
+      "invariants": [
+        "BatchComplete DecisionLast"
+      ],
+      "fingerprint": 55,
+      "seed": -7145068262092157820
+    },
+    {
+      "config": "docs/design/examples/capability-models/PromptRetirement.cfg",
+      "module": "docs/design/examples/capability-models/PromptRetirement.tla",
+      "module_sha256": "9b5db8c8bad46888d8d8cf126ab9f093e726566131795ca6efb7695351612c29",
+      "config_sha256": "f9fe4da03e837ee17637ba32319e34cf228930211b98964fd5d5416b80585aba",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.13,
+      "generated": 45323,
+      "distinct": 8820,
+      "queue_remaining": 0,
+      "depth": 13,
+      "properties": [
+        "SourceNeverRewinds"
+      ],
+      "invariants": [
+        "NoUndeliveredEntry RetiredNotRestored CheckpointPair ResultLast"
+      ],
+      "fingerprint": 76,
+      "seed": 804814910502147440
+    },
+    {
+      "config": "docs/design/examples/capability-models/RecoveryBoundary.cfg",
+      "module": "docs/design/examples/capability-models/RecoveryBoundary.tla",
+      "module_sha256": "21ef7ebae361b84fdd91f67fee7429f09a69b397054da79183795c165780dc2c",
+      "config_sha256": "622649a2637fbd0e2588ffb244375429255d17203cc5f0a0b0cd0b33998aa282",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.21,
+      "generated": 13668,
+      "distinct": 9021,
+      "queue_remaining": 0,
+      "depth": 13,
+      "properties": [
+        "RestoreFinishes"
+      ],
+      "invariants": [
+        "LatestEqualsFold LivePrefixMatches NoSkippedSuffix"
+      ],
+      "fingerprint": 57,
+      "seed": 1702335203958531970
+    },
+    {
+      "config": "docs/design/examples/capability-models/RecoverySelection.cfg",
+      "module": "docs/design/examples/capability-models/RecoverySelection.tla",
+      "module_sha256": "559399222ba5a81019cf6c645985ab552caa065b93531d6fe8a109b1b0634f83",
+      "config_sha256": "cbc7d31cd640963068dc1893f8c3d53cc711a658757536d4b0b744965da6a4e1",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.1,
+      "generated": 2189,
+      "distinct": 1229,
+      "queue_remaining": 0,
+      "depth": 13,
+      "properties": [
+        "QueryFinishes"
+      ],
+      "invariants": [
+        "PagesKeepRelatedDomain QueryEqualsReference RestoredAtCut CursorAfterCut"
+      ],
+      "fingerprint": 128,
+      "seed": 7395499964425210914
+    },
+    {
+      "config": "docs/design/examples/capability-models/RequestCuts.cfg",
+      "module": "docs/design/examples/capability-models/RequestCuts.tla",
+      "module_sha256": "6013dbcc94909a9c1ff3bb1ace6b1bd703bdae4ba618b74a50b58b3381db3f1e",
+      "config_sha256": "a39a3e630e55e272d68b8274f5b40394d218b429faa861a79333a138a01086b4",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.9,
+      "generated": 554,
+      "distinct": 201,
+      "queue_remaining": 0,
+      "depth": 14,
+      "properties": [],
+      "invariants": [
+        "NoFutureContent ControlCanAdvance PublishedBoundary CompleteContentCut"
+      ],
+      "fingerprint": 7,
+      "seed": -5163218331199291597
+    },
+    {
+      "config": "docs/design/examples/capability-models/RetryBudget.cfg",
+      "module": "docs/design/examples/capability-models/RetryBudget.tla",
+      "module_sha256": "29a05c1b80e2dbb656cd8c9eba639368bc00737d00cc337f945025f9eb94c721",
+      "config_sha256": "112d927e9f2232ed299d7b56a6eedddcc9891406d84ceff8ed67e428c560a692",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.05,
+      "generated": 15037,
+      "distinct": 2148,
+      "queue_remaining": 0,
+      "depth": 10,
+      "properties": [
+        "NoRetryAfterCancel"
+      ],
+      "invariants": [
+        "AttemptBound WaitBound MalformedBound ReplaySafe CountMatchesRetries"
+      ],
+      "fingerprint": 121,
+      "seed": -6861343396871415745
+    },
+    {
+      "config": "docs/design/examples/capability-models/SessionBroadcast.cfg",
+      "module": "docs/design/examples/capability-models/SessionBroadcast.tla",
+      "module_sha256": "ce5fa528925fcf320a036a5a85326d798b131c94fd842e1c6b3b0a28821ed9a2",
+      "config_sha256": "e8d79c06dc68e4c5b74513a09908a885bf8622be92c9709c6a797ec31becf5c6",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.98,
+      "generated": 413,
+      "distinct": 153,
+      "queue_remaining": 0,
+      "depth": 12,
+      "properties": [
+        "NoPostCloseNotice"
+      ],
+      "invariants": [
+        "PublishedSourcesOnly PerBranchOrder CloseAfterBranchDrain"
+      ],
+      "fingerprint": 96,
+      "seed": -923077701677189460
+    },
+    {
+      "config": "docs/design/examples/capability-models/ToolBinding.cfg",
+      "module": "docs/design/examples/capability-models/ToolBinding.tla",
+      "module_sha256": "1b3d0a0cb1301e7e97922d8300dc87d2109903c8f74471a873d084e5f9fd692a",
+      "config_sha256": "b49939b5b226de3336ec1f0e76ab7720c0dc24a64e9ad07b961e07288d4b6645",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.92,
+      "generated": 166,
+      "distinct": 96,
+      "queue_remaining": 0,
+      "depth": 7,
+      "properties": [],
+      "invariants": [
+        "PinnedIdentity NoReplacementExecution EmptyMeansNoTool NoUndeclaredBinding"
+      ],
+      "fingerprint": 93,
+      "seed": -9194191567709595218
+    },
+    {
+      "config": "docs/design/examples/capability-models/TreeLifecycle.cfg",
+      "module": "docs/design/examples/capability-models/TreeLifecycle.tla",
+      "module_sha256": "73fa55a9521bb8417adeff256b5c393fb1183d3a98a2c6308eeef848b226742d",
+      "config_sha256": "97f4cc1bdca809f815a23f9330a86daae9ebb0882e9539227fb04675a2a4c563",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.87,
+      "generated": 205,
+      "distinct": 64,
+      "queue_remaining": 0,
+      "depth": 9,
+      "properties": [
+        "NoPublicationAfterClose"
+      ],
+      "invariants": [
+        "ResultRequiresReservation PublicationRequiresResult NoOrphanOpenChild ChildrenEndFirst SingleResult"
+      ],
+      "fingerprint": 115,
+      "seed": 4361476201324834569
+    },
+    {
+      "config": "docs/design/examples/capability-models/UsageIdentity.cfg",
+      "module": "docs/design/examples/capability-models/UsageIdentity.tla",
+      "module_sha256": "24dc23e44e169b3de4ca56ba181f31ad1f9bab136dd6a37d8d59bec5090455ec",
+      "config_sha256": "dc4245db08c29a3884ed68942c01b0f63c3017a28fec076024152c01e1521216",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 0.94,
+      "generated": 426,
+      "distinct": 96,
+      "queue_remaining": 0,
+      "depth": 7,
+      "properties": [
+        "NoCalibrationRestored"
+      ],
+      "invariants": [
+        "CompatibleResult CalibrationHasLiveIdentity"
+      ],
+      "fingerprint": 86,
+      "seed": 320252712606966371
+    },
+    {
+      "config": "docs/design/examples/capability-models/WaitRuntime.cfg",
+      "module": "docs/design/examples/capability-models/WaitRuntime.tla",
+      "module_sha256": "eb0b1922df1d4e7b34fead5bc0976dfab5b7b922afbe491cebe3c8799790b581",
+      "config_sha256": "1f0d29d62ddbe74d9a8aeadbcf16b6c20fc8d7a8d0cc3a16cd2e848a318f1583",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 3.21,
+      "generated": 186297,
+      "distinct": 66336,
+      "queue_remaining": 0,
+      "depth": 18,
+      "properties": [
+        "NoAdmissionAfterClose DrainBeforeRestore OldHandleRejected CloseDrains"
+      ],
+      "invariants": [
+        "SlotTracked TakenAbsent ClosedTurnEmpty RestoredNoNotifications SelectionMatches"
+      ],
+      "fingerprint": 41,
+      "seed": -2459936910605880541
+    },
+    {
+      "config": "docs/design/examples/approval-model/ApprovalOrdering.cfg",
+      "module": "docs/design/examples/approval-model/ApprovalOrdering.tla",
+      "module_sha256": "f5276ad6efa49d2d6f5cbfbb5c63edd6db6206cc2da3ec3941cbf4c7e8b5628a",
+      "config_sha256": "d162b2775796b2319590616d9b7d29804219a932f1248aadbe79a7ab678d3f60",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 4.52,
+      "generated": 1235542,
+      "distinct": 539616,
+      "queue_remaining": 0,
+      "depth": 21,
+      "properties": [],
+      "invariants": [
+        "TypeOK SingleWinner NoAutoOvertake PublishedAdmission PolicyAdmission NoPendingAfterSettlement"
+      ],
+      "fingerprint": 34,
+      "seed": 1337198345401547790
+    },
+    {
+      "config": "docs/design/examples/tool-model/ToolSegments.cfg",
+      "module": "docs/design/examples/tool-model/ToolSegments.tla",
+      "module_sha256": "c84a4d32a0de09e151937d9ed84cb97726bb686495f0f3d55c0ac76299f6cb76",
+      "config_sha256": "76d3b599bd7e6fd6281163a65ab2def8adac58b8636d9f7f382f4ce21ee96ea8",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.08,
+      "generated": 21684,
+      "distinct": 5464,
+      "queue_remaining": 0,
+      "depth": 10,
+      "properties": [
+        "NoStartAfterCancel"
+      ],
+      "invariants": [
+        "TypeOK CountsMatch PrefixOnly OrderedExecution ExclusiveRunsAlone"
+      ],
+      "fingerprint": 45,
+      "seed": 4922191458568257509
+    }
+  ]
+}

@@ -164,6 +164,16 @@ App Server 有原生存储时，Agents 每隔宽限期 `idle_unload_after`（默
 | 存储提交失败 | 未发布事件丢弃，该 Session 拒绝后续写入并清理；不再写清理终态，恢复时结算孤儿操作；其他 Session 保持可用 |
 | 强制退出 | 单独报告强制结果；不归入正常释放保证 |
 
+### 5.1 可回滚的空闲准入暂停
+
+`Session::pause_if_idle()` 复用空闲卸载的分支提交锁检查与冻结操作，返回
+`SessionPause`，不关闭 Session、不写事实，也不暂停正在执行的工作：有工作时直接拒绝。
+宿主在整个持有期间排除新的 Session 使用者和创建路径。释放 guard 时恢复分支写入与
+活动持有准入；已经开始关闭则不恢复，仍由关闭流程完成解冻与结算。取消空闲卸载的
+等待者不会重新开放已关闭的准入。`unload_if_idle()` 在这个 guard 下启动原有卸载流程，
+其显式存储前置条件不变。App Server 的进程协调见
+[`processActivity`](../../../crates/dim-app-server/README.md#process-activity)；运行时不解释插件业务状态。
+
 ## 6. 错误归属
 
 | 错误 | 产生方 | 首版处理 |

@@ -41,12 +41,12 @@ fn a_described_browser_provider_signs_in_from_the_cli() {
         hello(
             wire,
             &[
-                "provider.management",
+                "provider.management.list",
                 "account.codex.login.browser.begin",
                 "account.codex.login.browser.complete",
             ],
         );
-        let listed = wire.read("provider.management");
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([
@@ -90,13 +90,13 @@ fn a_described_device_provider_signs_in_and_cancels_from_the_cli() {
         hello(
             wire,
             &[
-                "provider.management",
+                "provider.management.list",
                 "account.grok.login.begin",
                 "account.grok.login.status",
                 "account.grok.login.cancel",
             ],
         );
-        let listed = wire.read("provider.management");
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([described(
@@ -129,11 +129,127 @@ fn a_described_device_provider_signs_in_and_cancels_from_the_cli() {
 }
 
 #[test]
+fn dim_device_login_refreshes_the_model_catalog_before_exiting() {
+    for fail in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[
+                "provider.management.list",
+                "account.login.begin",
+                "account.login.status",
+                "provider.refresh",
+            ]);
+            let listed = wire.read("provider.management.list");
+            wire.reply(&listed, management(json!([described(
+                "dim-fixture", "DimAgent", "account", &["device"], false
+            )])));
+            let begin = wire.read("account.login.begin");
+            wire.reply(&begin, json!({"attemptId":"dim-attempt","verificationUri":"https://fixture.invalid/device","userCode":"DIM-CODE"}));
+            let status = wire.read("account.login.status");
+            assert_eq!(status["params"], json!({"providerId":"dim-fixture","attemptId":"dim-attempt"}));
+            wire.reply(&status, json!({"status":"completed"}));
+            let refresh = wire.read("provider.refresh");
+            assert_eq!(refresh["params"], json!({"providerId":"dim-fixture"}));
+            if fail {
+                wire.send(json!({"jsonrpc":"2.0","id":refresh["id"],"error":{"code":-32000,"message":"Relay timeout"}}));
+            } else {
+                wire.reply(&refresh, json!({"version":1,"models":[]}));
+            }
+        });
+        let output = home
+            .command()
+            .args(["login", "dim-fixture", "--device"])
+            .output()
+            .unwrap();
+        daemon.join().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Signed in."));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if fail {
+            assert!(
+                stderr.contains("Model list refresh failed: Relay timeout"),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("dimcode models dim-fixture --refresh"),
+                "{stderr}"
+            );
+        } else {
+            assert!(!stderr.contains("Model list refresh failed"), "{stderr}");
+        }
+    }
+}
+
+#[test]
+fn dim_device_login_can_retry_the_model_refresh_from_the_account_panel() {
+    const PROVIDER: &str = "dimcode-api-oauth";
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["account.login.begin", "account.login.status", "provider.refresh"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        wire.no_context();
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        let listed = json!([{"providerId":PROVIDER,"displayName":"DimAgent","loginMethods":["device"]}]);
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, listed.clone());
+        let status = wire.read("account.status");
+        wire.reply(&status, json!({"account":null}));
+        let begin = wire.read("account.login.begin");
+        wire.reply(&begin, json!({"attemptId":"dim-attempt","verificationUri":"https://fixture.invalid/device","userCode":"DIM-CODE"}));
+        let status = wire.read("account.login.status");
+        wire.reply(&status, json!({"status":"completed"}));
+        let refresh = wire.read("provider.refresh");
+        assert_eq!(refresh["params"], json!({"providerId":PROVIDER}));
+        wire.send(json!({"jsonrpc":"2.0","id":refresh["id"],"error":{"code":-32000,"message":"Relay timeout"}}));
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, listed.clone());
+        let status = wire.read("account.status");
+        let signed_in = json!({"account":{"issuer":"https://fixture.invalid","subject":"fixture","name":"Fixture Account"}});
+        wire.reply(&status, signed_in.clone());
+        let usage = wire.read("account.usage");
+        wire.reply(&usage, json!({}));
+        let retry = wire.read("provider.refresh");
+        assert_eq!(retry["params"], json!({"providerId":PROVIDER}));
+        let catalog = json!({"version":1,"disabledModelIds":[],"models":[{
+            "id":"fixture-model","name":"Refreshed Model",
+            "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,"structuredOutput":true,
+                "vision":false,"audio":false,"reasoning":false,"contextWindow":128000,"maxOutputTokens":16384}
+        }]});
+        wire.reply(&retry, catalog.clone());
+        let models = wire.read("provider.models.query");
+        wire.reply(&models, super::models::picker_page(PROVIDER, "DimAgent", json!({"catalog":catalog})));
+        wire.hold();
+    });
+    let mut command = home.command();
+    command.arg("--fullscreen");
+    sized(&mut command, 100, 32);
+    let mut terminal = Terminal::resume_tui(command);
+    terminal.until("test / model");
+    terminal.write(b"/login\r");
+    terminal.until("Not signed in");
+    terminal.write(b"\t\t\r");
+    terminal.until("Model list refresh failed: Relay timeout");
+    terminal.until_anywhere("Fixture Account");
+    terminal.until_anywhere("Refresh model list");
+    terminal.write(b"\r");
+    terminal.until("Model list refreshed");
+    terminal.write(b"\x1b[A\r");
+    terminal.until("DimAgent / fixture-model");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn login_without_a_provider_lists_the_described_accounts() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        hello(wire, &["provider.management"]);
-        let listed = wire.read("provider.management");
+        hello(wire, &["provider.management.list"]);
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([
@@ -173,8 +289,8 @@ fn login_without_a_provider_lists_the_described_accounts() {
 fn a_provider_without_a_descriptor_offers_no_sign_in() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        hello(wire, &["provider.management"]);
-        let listed = wire.read("provider.management");
+        hello(wire, &["provider.management.list"]);
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([
@@ -216,8 +332,8 @@ fn a_provider_without_a_descriptor_offers_no_sign_in() {
 fn an_unsupported_daemon_reports_the_missing_sign_in_method() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        hello(wire, &["provider.management"]);
-        let listed = wire.read("provider.management");
+        hello(wire, &["provider.management.list"]);
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([described(
@@ -248,8 +364,8 @@ fn an_unsupported_daemon_reports_the_missing_sign_in_method() {
 fn account_and_logout_follow_the_described_namespace() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        hello(wire, &["provider.management", "account.codex.status"]);
-        let listed = wire.read("provider.management");
+        hello(wire, &["provider.management.list", "account.codex.status"]);
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([described(
@@ -282,8 +398,8 @@ fn account_and_logout_follow_the_described_namespace() {
 
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        hello(wire, &["provider.management", "account.codex.logout"]);
-        let listed = wire.read("provider.management");
+        hello(wire, &["provider.management.list", "account.codex.logout"]);
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([described(
@@ -320,8 +436,8 @@ fn account_commands_name_the_missing_account_provider() {
     for command in ["account", "login", "logout"] {
         let home = Home::new();
         let daemon = home.daemon(|wire| {
-            hello(wire, &["provider.management"]);
-            let listed = wire.read("provider.management");
+            hello(wire, &["provider.management.list"]);
+            let listed = wire.read("provider.management.list");
             wire.reply(
                 &listed,
                 management(json!([
@@ -383,6 +499,7 @@ fn the_provider_panel_signs_in_through_each_described_namespace() {
                 wire,
                 &[
                     "provider.management",
+                    "provider.management.list",
                     "provider.create",
                     "provider.update",
                     "provider.probe",
@@ -402,7 +519,7 @@ fn the_provider_panel_signs_in_through_each_described_namespace() {
             wire.no_context();
             let providers = wire.read("account.providers");
             wire.reply(&providers, json!([]));
-            let listed = wire.read("provider.management");
+            let listed = wire.read("provider.management.list");
             wire.reply(
                 &listed,
                 management(json!([
@@ -464,6 +581,7 @@ fn a_panel_without_the_sign_in_method_shows_the_unsupported_daemon_error() {
             wire,
             &[
                 "provider.management",
+                "provider.management.list",
                 "provider.create",
                 "provider.update",
                 "provider.probe",
@@ -479,7 +597,7 @@ fn a_panel_without_the_sign_in_method_shows_the_unsupported_daemon_error() {
         wire.no_context();
         let providers = wire.read("account.providers");
         wire.reply(&providers, json!([]));
-        let listed = wire.read("provider.management");
+        let listed = wire.read("provider.management.list");
         wire.reply(
             &listed,
             management(json!([described(

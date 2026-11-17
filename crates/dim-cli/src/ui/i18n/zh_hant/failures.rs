@@ -1,6 +1,7 @@
 //! Traditional Chinese model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => "詳細資料無法載入；收合後展開重試",
         "The response above is incomplete." => "以上回應不完整。",
         "Could not reach the provider, or the connection dropped" => "無法連線至提供方，或連線中斷",
         "The provider is rate limiting requests" => "提供方正在限流",

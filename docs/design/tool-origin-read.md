@@ -14,11 +14,19 @@ selects only the matching data and retains no event list. It never invokes the
 historical tool. Request cancellation ends the query.
 
 Clients keep request and call identity on a result whose origin is outside the
-transcript window. When displaying that row they resolve its origin with this
-method and install the returned name and arguments in that existing row. They do
-not extend the transcript to find it. Reads belong to the attachment that started
-them; replacement and row eviction discard their results. A failure is shown and
-can be retried by reopening the conversation.
+transcript window. That result renders with its existing status and content;
+its missing name or arguments do not block display or current-state controls.
+The native UI requests the origin only when the user opens tool details. ACP
+emits the existing placeholder call with `rawInput: null` and its original call
+identity, without automatically fetching the missing origin. No client extends
+the transcript to find it. Reads belong to the attachment that started them;
+replacement and row eviction discard their results. A failed detail read is
+reported without blocking the existing result.
+
+```text
+window: result(c1) -> show result(c1)
+expand details(c1) -> session.tool.get(r1, c1) -> install name and arguments
+```
 
 ## Rule check
 

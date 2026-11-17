@@ -17,8 +17,16 @@ const STORED: &[&str] = &[
     "woff2", "woff", "png", "jpg", "jpeg", "webp", "ico", "gz", "br",
 ];
 
+#[path = "build/catalog.rs"]
+mod catalog;
+#[path = "src/model_catalog/tokens.rs"]
+mod catalog_tokens;
+#[path = "src/model_catalog/name_inputs.rs"]
+mod name_inputs;
+
 fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    catalog::build(&out);
     println!("cargo::rerun-if-env-changed=CARGO_FEATURE_EMBEDDED_WEB");
     if std::env::var_os("CARGO_FEATURE_EMBEDDED_WEB").is_none() {
         fs::write(out.join("web_assets.rs"), "&[]").unwrap();

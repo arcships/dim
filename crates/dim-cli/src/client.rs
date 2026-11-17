@@ -2,7 +2,7 @@ use crate::{
     Result,
     args::{Options, SERVER_REQUIREMENT},
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     ffi::OsString,
@@ -11,6 +11,22 @@ use std::{
     process::{Command, Stdio},
     time::Duration,
 };
+
+pub(crate) const STARTUP_RETRY: &str = "DIMCODE_STARTUP_RETRY";
+
+#[derive(Clone, Debug)]
+pub(crate) struct NewerStore {
+    pub(crate) format: u32,
+    pub(crate) diagnostic: String,
+}
+
+impl std::fmt::Display for NewerStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.diagnostic)
+    }
+}
+
+impl std::error::Error for NewerStore {}
 
 pub use dim_client::{
     Client, ConnectionConfig, DaemonProfile, Message, RequestTooLarge, RpcError, Server, app_error,
@@ -111,7 +127,7 @@ fn default_plugins(executable: &Path) -> Option<PathBuf> {
 /// `dimcode web install`, while a build from source, which has none
 /// published, is pointed at `DIMCODE_WEB_ASSETS` or the embedded-web build.
 pub fn web_hint(error: &crate::Error, executable: &Path, home: &Path) -> Option<(String, String)> {
-    let install = if crate::version::RELEASE {
+    let install = if dim_agent_capabilities::build::RELEASE {
         "Install it with `dimcode web install`".to_owned()
     } else {
         "Set DIMCODE_WEB_ASSETS to a frontend built from this source, or build the App Server with the embedded-web feature".to_owned()
@@ -125,12 +141,32 @@ pub fn web_hint(error: &crate::Error, executable: &Path, home: &Path) -> Option<
         "web_assets_incompatible" => Some((
             format!(
                 "The installed Web workspace does not fit dimcode {}",
-                crate::version::current()
+                dim_agent_capabilities::build::current()
             ),
             install,
         )),
         _ => None,
     }
+}
+
+/// Why a startup step of a resumed Session failed. A Session the daemon
+/// refuses for its protocol version is returned unchanged: its text names the
+/// recorded and the connection's versions when both are known, and no startup
+/// step is what refused it. Every other failure keeps `context` before the
+/// daemon's text.
+pub fn resume_failure(context: &str, error: crate::Error) -> crate::Error {
+    match app_error(&error) {
+        Some("session_protocol_version") => error,
+        _ => format!("{context}: {error}").into(),
+    }
+}
+
+/// Whether running the same command again could open the resumed Session:
+/// false when the daemon refuses it for its protocol version, which fails the
+/// same way for as long as the Session exists. The refusal arrives both
+/// through [`resume_failure`] and directly from `session.attach`.
+pub fn resume_can_succeed(error: &crate::Error) -> bool {
+    app_error(error) != Some("session_protocol_version")
 }
 
 /// The name the daemon shows in process lists.
@@ -156,6 +192,11 @@ const START_LOCK_TIMEOUT: Duration =
     Duration::from_secs(DAEMON_SHUTDOWN_TIMEOUT.as_secs() + DAEMON_START_TIMEOUT.as_secs() + 10);
 /// The bypass note a starting daemon writes beside its store.
 const STARTUP_NOTE: &str = "dimcode.sqlite.startup";
+const STARTUP_POLL: Duration = Duration::from_millis(50);
+/// The oldest protocol this client can hand-shake with. A daemon's `hello`
+/// reply below v3 carries no `features` at all, and this client requires
+/// `session.create` and `session.history` from it.
+const CLIENT_PROTOCOL_FLOOR: u32 = 3;
 
 /// The startup bound a spawned daemon is given.
 fn daemon_start_timeout() -> Duration {
@@ -218,6 +259,31 @@ fn open_start_lock(native_home: &Path) -> io::Result<std::fs::File> {
 pub struct StoreUpgrade {
     pub from: u32,
     pub to: u32,
+    /// The stage the upgrade reported, when it reported one; a daemon from
+    /// before stages reports none.
+    pub stage: Option<UpgradeStage>,
+    /// How long the upgrade has been running, from the first note read.
+    pub elapsed: Duration,
+}
+
+/// The stage of a store upgrade a progress note names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpgradeStage {
+    Images,
+    Index,
+    Verify,
+}
+impl UpgradeStage {
+    /// The stage a note names, `None` for a name this client does not know:
+    /// a stage is worth naming only when it can be shown.
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "images" => Some(Self::Images),
+            "index" => Some(Self::Index),
+            "verify" => Some(Self::Verify),
+            _ => None,
+        }
+    }
 }
 
 /// What a startup progress note reports.
@@ -228,6 +294,7 @@ struct ProgressNote {
     to: u32,
     /// Rises with each rewrite; a reader counts only increases.
     counter: u64,
+    stage: Option<UpgradeStage>,
 }
 
 /// The note's text when it is a regular file of a bounded size, owned by the
@@ -259,15 +326,16 @@ fn read_progress_note(path: &Path) -> Option<ProgressNote> {
     if fields.next()? != "store-upgrade" {
         return None;
     }
-    let (mut from, mut to, mut counter) = (None, None, None);
+    let (mut from, mut to, mut counter, mut stage) = (None, None, None, None);
     for field in fields {
         let (name, value) = field.split_once('=')?;
-        let value: u64 = value.parse().ok()?;
         match name {
-            "from" => from = Some(u32::try_from(value).ok()?),
-            "to" => to = Some(u32::try_from(value).ok()?),
-            "progress" => counter = Some(value),
-            // A later kind may add fields; an older client ignores them.
+            "from" => from = Some(u32::try_from(value.parse::<u64>().ok()?).ok()?),
+            "to" => to = Some(u32::try_from(value.parse::<u64>().ok()?).ok()?),
+            "progress" => counter = Some(value.parse().ok()?),
+            "stage" => stage = UpgradeStage::parse(value),
+            // A later kind may add fields; an older client ignores them,
+            // whatever their values, as the daemon's own reader does.
             _ => {}
         }
     }
@@ -276,6 +344,7 @@ fn read_progress_note(path: &Path) -> Option<ProgressNote> {
         from: from?,
         to: to?,
         counter: counter?,
+        stage,
     })
 }
 
@@ -292,6 +361,11 @@ struct ProgressWatch {
     counter: u64,
     /// The upgrade line has been printed.
     reported: bool,
+    /// When the first note of the series was read, so later reports can say
+    /// how long the upgrade has been running.
+    started: Option<std::time::Instant>,
+    /// Where the upgrade line goes; a redrawn line replaces the last one.
+    line: crate::UpgradeLine,
 }
 
 impl ProgressWatch {
@@ -311,63 +385,198 @@ impl ProgressWatch {
         if self.pid != Some(note.pid) {
             self.pid = Some(note.pid);
             self.counter = 0;
+            self.started = None;
+            self.line = crate::UpgradeLine::default();
         }
         if note.counter <= self.counter {
             return None;
         }
         self.counter = note.counter;
+        let started = *self.started.get_or_insert_with(std::time::Instant::now);
         *deadline = tokio::time::Instant::now() + timeout;
         Some(StoreUpgrade {
             from: note.from,
             to: note.to,
+            stage: note.stage,
+            elapsed: started.elapsed(),
         })
     }
     /// Starts counting again for a child whose notes begin at one.
     fn reset(&mut self) {
         self.pid = None;
         self.counter = 0;
+        self.started = None;
+        self.line = crate::UpgradeLine::default();
     }
-    /// Prints the upgrade line once per watch, in `locale`.
+    /// Prints the upgrade's first line and then the progress of it, in
+    /// `locale`: one line on a terminal that shows the elapsed time and the
+    /// stage again each time a note reports, and one line per note otherwise.
     fn announce(&mut self, locale: crate::locale::Locale, upgrade: StoreUpgrade) {
-        if !self.reported {
-            self.reported = true;
-            eprintln!("{}", crate::store_upgrade_line(locale, &upgrade));
+        let text = match (self.reported, upgrade.stage) {
+            (false, _) => crate::store_upgrade_line(locale, &upgrade),
+            (true, Some(stage)) => {
+                crate::store_upgrade_progress_line(locale, stage, upgrade.elapsed)
+            }
+            // A daemon that reports no stage leaves the first line as the
+            // whole report, as it always did.
+            (true, None) => return,
+        };
+        self.reported = true;
+        self.line.write(&text);
+    }
+    /// Ends the redrawn line, if one is on screen, so the lines after it do
+    /// not share it.
+    fn finish(&mut self) {
+        self.line.finish();
+    }
+}
+
+impl Drop for StartupWait<'_> {
+    /// The redrawn upgrade line belongs to this wait's screen area: leaving it
+    /// drawn would let the next output share its line.
+    fn drop(&mut self) {
+        self.watch.finish();
+    }
+}
+
+/// Whether a process with this pid exists and this user may signal it. The
+/// note lives in this user's private home, so the daemon that wrote it runs
+/// as this user: a pid this user cannot signal is not that daemon.
+fn pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        // A pid that does not fit `pid_t` is not one to ask about; `kill`
+        // would read a wrapped value as a process group.
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return false;
+        };
+        // Signal 0 only checks that the process exists. `EPERM` means it
+        // belongs to another user, and the daemon that wrote the note cannot
+        // as the note is in this user's home, so it counts as gone.
+        unsafe { libc::kill(pid, 0) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        unsafe { CloseHandle(handle) };
+        true
+    }
+}
+
+/// The pid a progress note names, when it names another process: a daemon
+/// another client started owns the store and has no socket until its upgrade
+/// finishes (#1335). A note that names this client is stale, because a client
+/// never upgrades a store itself, so its pid has been reused. Whether the pid
+/// is still alive is the wait's question, which asks again on every poll.
+fn another_daemon_starting(note: &Path) -> Option<u32> {
+    let note = read_progress_note(note)?;
+    (note.pid != std::process::id()).then_some(note.pid)
+}
+
+/// A startup wait bounded by inactivity: each new progress counter the daemon
+/// reports moves the bound one `timeout` forward. The start-lock wait, the
+/// wait for a daemon another client started, and the spawn wait all use this
+/// one path.
+struct StartupWait<'a> {
+    note: &'a Path,
+    watch: ProgressWatch,
+    timeout: Duration,
+    deadline: tokio::time::Instant,
+    locale: crate::locale::Locale,
+}
+
+impl<'a> StartupWait<'a> {
+    fn new(note: &'a Path, timeout: Duration, locale: crate::locale::Locale) -> Self {
+        Self {
+            note,
+            watch: ProgressWatch::default(),
+            timeout,
+            deadline: tokio::time::Instant::now() + timeout,
+            locale,
+        }
+    }
+
+    /// Reads the note, moves the bound and prints what it reports: the first
+    /// report says which upgrade is running, each later one redraws it.
+    fn observe(&mut self, pid: Option<u32>) {
+        if let Some(upgrade) = self
+            .watch
+            .observe(self.note, pid, &mut self.deadline, self.timeout)
+        {
+            self.watch.announce(self.locale, upgrade);
+        }
+    }
+
+    /// Starts another phase: its own bound and a new counter series.
+    fn rebind(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+        self.deadline = tokio::time::Instant::now() + timeout;
+        self.watch.finish();
+        self.watch.reset();
+    }
+
+    fn expired(&self) -> bool {
+        tokio::time::Instant::now() >= self.deadline
+    }
+    /// Takes the reply to a `hello` this client sent under this wait's own
+    /// inactivity bound. A server that is bound but not yet open answers
+    /// nothing yet, and its startup progress moves the bound forward like any
+    /// other phase's. The note's pid is not compared: the server that accepted
+    /// this connection is the one being waited for.
+    async fn reply(&mut self, client: &mut Client, id: u64) -> Result<Value> {
+        let reply = client.response(id);
+        tokio::pin!(reply);
+        loop {
+            tokio::select! {
+                biased;
+                reply = &mut reply => return reply,
+                () = tokio::time::sleep(STARTUP_POLL) => {}
+            }
+            self.observe(None);
+            if self.expired() {
+                return Err(format!(
+                    "App Server did not answer hello during startup; see {}",
+                    self.note.with_file_name("daemon.log").display()
+                )
+                .into());
+            }
         }
     }
 }
 
-/// Waits for the start lock, polling every 50 ms as the spawn wait does. The
-/// bound is inactivity: the holder's fixed budget covers a verified shutdown,
-/// a startup and a margin, and a progress note in the home moves it forward,
-/// whatever pid it names, because the holder's child may be upgrading the
-/// store. A waiter that outlasts the bound fails and names the daemon log; it
-/// never spawns without the lock.
-async fn start_lock(
-    native_home: &Path,
-    watch: &mut ProgressWatch,
-    locale: crate::locale::Locale,
-) -> Result<std::fs::File> {
+/// Waits for the start lock, polling every `STARTUP_POLL` as the spawn wait
+/// does. The bound is inactivity: the holder's fixed budget covers a verified
+/// shutdown, a startup and a margin, and a progress note in the home moves it
+/// forward, whatever pid it names, because the holder's child may be
+/// upgrading the store. A waiter that outlasts the bound fails and names the
+/// daemon log; it never spawns without the lock.
+async fn start_lock(native_home: &Path, wait: &mut StartupWait<'_>) -> Result<std::fs::File> {
     let file = open_start_lock(native_home)?;
-    let note = native_home.join(STARTUP_NOTE);
-    let timeout = start_lock_timeout();
-    let mut deadline = tokio::time::Instant::now() + timeout;
     loop {
         match file.try_lock() {
             Ok(()) => return Ok(file),
             Err(std::fs::TryLockError::WouldBlock) => {}
             Err(std::fs::TryLockError::Error(error)) => return Err(error.into()),
         }
-        if let Some(upgrade) = watch.observe(&note, None, &mut deadline, timeout) {
-            watch.announce(locale, upgrade);
-        }
-        if tokio::time::Instant::now() >= deadline {
+        wait.observe(None);
+        if wait.expired() {
             return Err(format!(
                 "Another client is starting or replacing the App Server and has not finished; see {}",
                 native_home.join("daemon.log").display()
             )
             .into());
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep(STARTUP_POLL).await;
     }
 }
 
@@ -510,12 +719,128 @@ async fn daemon_in_use(client: &mut Client) -> bool {
     })
 }
 
+/// Uses the daemon behind `client` when it is this build at this protocol,
+/// stops it when it is another build or a lower protocol and idle, and keeps
+/// it with a notice when it is in use. `None` means the daemon stopped and the
+/// caller may start its own. Every client that reaches a serving daemon goes
+/// through here, whether the first attempt found it or a startup wait
+/// connected to it, and it has already greeted the daemon.
+async fn adopt(
+    mut client: Client,
+    start: bool,
+    server: &Server,
+    startup_note: &Path,
+    desired: u32,
+    locale: crate::locale::Locale,
+) -> Result<Option<Link>> {
+    let version = client.server_version().to_owned();
+    let protocol = client.connection_config().protocol_version;
+    if !(start && server.embedded && (version != env!("CARGO_PKG_VERSION") || protocol < desired)) {
+        let _ = std::fs::remove_file(startup_note);
+        return Ok(Some(Link {
+            client,
+            notice: None,
+        }));
+    }
+    // A daemon of another build or of a lower protocol is replaced only while
+    // it is idle: one that serves other clients is kept, and the client says
+    // so. `hello` proved that this negotiated version is usable and offered
+    // the required methods, which is not the same as the daemon being ours;
+    // the restart happens on a later start that finds it idle.
+    let counts = if client.offers("daemon.shutdown.ifIdle") {
+        match shutdown_if_idle(&mut client).await? {
+            IdleShutdown::Busy(counts) => counts,
+            IdleShutdown::Stopped => return Ok(None),
+        }
+    } else if client.offers("daemon.shutdown.completed") && daemon_in_use(&mut client).await {
+        None
+    } else {
+        // A daemon without verified shutdown is reported by `shutdown` as
+        // before.
+        shutdown(client).await?;
+        return Ok(None);
+    };
+    let _ = std::fs::remove_file(startup_note);
+    let notice = DaemonNotice {
+        server: version,
+        counts,
+    };
+    // The daemon is still there: it refused the idle replacement, or it cannot
+    // be asked as well as this client needs. A Session created over it would
+    // be stored at its protocol and hidden from builds of this one, so a start
+    // that agreed on a lower protocol ends here instead.
+    if protocol < desired {
+        return Err(crate::daemon_too_old(locale, &notice, protocol).into());
+    }
+    Ok(Some(Link {
+        client,
+        notice: Some(notice),
+    }))
+}
+
+/// Opens the endpoint and greets the daemon; `None` when no daemon answers at
+/// the endpoint, which `WouldBlock` counts as only during the startup wait.
+/// With `negotiate`, a typed `protocol_version` refusal steps one version
+/// down, no lower than [`CLIENT_PROTOCOL_FLOOR`], and every attempt opens a
+/// new connection; any other failure is final, as is a refusal at the floor.
+/// The greeting's reply is taken under `wait`, so a daemon that accepted the
+/// connection before it finished opening is a startup phase like the rest.
+async fn connect_negotiating(
+    config: &ConnectionConfig,
+    starting: bool,
+    negotiate: bool,
+    wait: &mut StartupWait<'_>,
+) -> Result<Option<Client>> {
+    let mut config = config.clone();
+    // One discarded connection per version from this client's protocol down to
+    // CLIENT_PROTOCOL_FLOOR, each only after the daemon's typed refusal, so the
+    // floor sets the bound.
+    loop {
+        let mut client = match Client::open(&config, starting).await {
+            Ok(client) => client,
+            Err(error)
+                if missing(&error)
+                    || starting && cfg!(unix) && error.kind() == io::ErrorKind::WouldBlock =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        // A server that is bound but not open has accepted this connection and
+        // answers nothing yet. Its reply is a startup phase, never a request
+        // with a bound of its own (#1620). A refusal arrives as an error, so the
+        // step-down keeps the greeting as one result beside the reply check.
+        let id = client.greet().await?;
+        let greeting = wait.reply(&mut client, id).await;
+        match greeting.and_then(|reply| client.complete_hello(reply)) {
+            Ok(_) => return Ok(Some(client)),
+            Err(error)
+                if negotiate
+                    && protocol_refused(&error)
+                    && config.protocol_version > CLIENT_PROTOCOL_FLOOR =>
+            {
+                config.protocol_version -= 1;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Whether a `hello` failure is the daemon's typed refusal of this client's
+/// protocol version: the only failure another version may answer.
+fn protocol_refused(error: &crate::Error) -> bool {
+    error
+        .downcast_ref::<RpcError>()
+        .is_some_and(|refusal| refusal.code == -32000)
+        && app_error(error) == Some("protocol_version")
+}
+
 /// The connection to the daemon of `options.home` after `hello`. Without a
 /// daemon, starts one when `start` and waits for it; else `None`. With
 /// `start`, one client at a time decides under `<native_home>/daemon.start.lock`
 /// whether to reuse the daemon, replace it, or start one. A daemon that
 /// reports a store upgrade while it starts is waited for, and the line is
-/// printed once in `locale`; both waits are bounded by inactivity, not by
+/// printed once in `locale`; every wait is bounded by inactivity, not by
 /// total time.
 pub async fn connect_inner(
     options: &Options,
@@ -583,61 +908,41 @@ pub async fn connect_inner(
         } else {
             "dimcode"
         },
+        protocol_version: if matches!(options.action, crate::args::Action::Acp { .. }) {
+            3
+        } else {
+            4
+        },
+    };
+    // `daemon stop` addresses the home's daemon whatever binary runs it, and a
+    // start reuses a `--server` daemon as it is and never replaces it, so it
+    // greets that daemon once.
+    let desired = connection.protocol_version;
+    let negotiate = match options.action {
+        crate::args::Action::DaemonStop => true,
+        _ => start && server.embedded,
     };
     // One client at a time decides whether to reuse, replace or start the
     // daemon; everyone else waits here and then runs the same decision, which
     // normally finds the successor at its own version. `--server` daemons are
-    // never started or replaced, so they take no lock.
-    let mut watch = ProgressWatch::default();
+    // never started or replaced, so they take no lock. The connect below meets a
+    // daemon that may still be starting, so it is bounded like the spawn wait;
+    // only the lock has the wider bound, because its holder may shut one down
+    // first.
+    let mut wait = StartupWait::new(&startup_note, daemon_start_timeout(), locale);
     let _start_lock = if start && server.embedded {
-        Some(start_lock(&native_home, &mut watch, locale).await?)
+        wait.rebind(start_lock_timeout());
+        let lock = start_lock(&native_home, &mut wait).await?;
+        wait.rebind(daemon_start_timeout());
+        Some(lock)
     } else {
         None
     };
-    match Client::open(&connection, false).await {
-        Ok(mut client) => {
-            let version = client.hello().await?;
-            if !(start && server.embedded && version != env!("CARGO_PKG_VERSION")) {
-                let _ = std::fs::remove_file(&startup_note);
-                return Ok(Some(Link {
-                    client,
-                    notice: None,
-                }));
-            }
-            // A daemon of another build is replaced only while it is idle:
-            // one that serves other clients is kept, and the client says so.
-            // `hello` already proved the protocol and the required methods,
-            // so the stale build is usable; the restart happens on a later
-            // start that finds it idle.
-            if client.offers("daemon.shutdown.ifIdle") {
-                if let IdleShutdown::Busy(counts) = shutdown_if_idle(&mut client).await? {
-                    let _ = std::fs::remove_file(&startup_note);
-                    return Ok(Some(Link {
-                        client,
-                        notice: Some(DaemonNotice {
-                            server: version.clone(),
-                            counts,
-                        }),
-                    }));
-                }
-            } else if client.offers("daemon.shutdown.completed") && daemon_in_use(&mut client).await
-            {
-                let _ = std::fs::remove_file(&startup_note);
-                return Ok(Some(Link {
-                    client,
-                    notice: Some(DaemonNotice {
-                        server: version.clone(),
-                        counts: None,
-                    }),
-                }));
-            } else {
-                // A daemon without verified shutdown is reported by
-                // `shutdown` as before.
-                shutdown(client).await?;
-            }
-        }
-        Err(error) if missing(&error) => {}
-        Err(error) => return Err(error.into()),
+    let found = connect_negotiating(&connection, false, negotiate, &mut wait).await?;
+    if let Some(client) = found
+        && let Some(link) = adopt(client, start, &server, &startup_note, desired, locale).await?
+    {
+        return Ok(Some(link));
     }
     if !start {
         return Ok(None);
@@ -696,6 +1001,7 @@ pub async fn connect_inner(
     }
     command
         .current_dir(options.launch_dir())
+        .env_remove(STARTUP_RETRY)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(log);
@@ -736,30 +1042,67 @@ pub async fn connect_inner(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000 | 0x00000200);
     }
-    let _ = std::fs::remove_file(&startup_note);
-    watch.reset();
-    let mut child = command.spawn()?;
-    let timeout = daemon_start_timeout();
-    let mut deadline = tokio::time::Instant::now() + timeout;
+    // A daemon another client started may already own the store: a store
+    // upgrade runs before it serves, so it has no socket yet. Its progress
+    // note, from a pid that is still alive, says so, and this client waits
+    // for that daemon instead of spawning a second one that would fail
+    // admission (#1335). The note belongs to that daemon, so this client
+    // removes it only when it starts its own.
+    let mut waiting = another_daemon_starting(&startup_note);
+    wait.rebind(daemon_start_timeout());
+    let mut child: Option<std::process::Child> = None;
+    let mut poll = Duration::from_millis(5);
     loop {
-        match Client::open(&connection, true).await {
-            Ok(mut client) => {
-                client.hello().await?;
-                let _ = std::fs::remove_file(&startup_note);
-                return Ok(Some(Link {
-                    client,
-                    notice: None,
-                }));
+        if let Some(client) = connect_negotiating(&connection, true, negotiate, &mut wait).await? {
+            match adopt(client, start, &server, &startup_note, desired, locale).await? {
+                Some(link) => return Ok(Some(link)),
+                // The daemon behind the endpoint was another build's; it is
+                // stopped now. A child this client already spawned may have
+                // lost the store or the endpoint to it, so it is reaped, and
+                // the loop starts this client's own.
+                None => {
+                    if let Some(mut child) = child.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                    waiting = None;
+                }
             }
-            Err(error)
-                if missing(&error) || cfg!(unix) && error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(error.into()),
         }
+        if let Some(pid) = waiting {
+            if pid_alive(pid) {
+                wait.observe(None);
+                if !wait.expired() {
+                    tokio::time::sleep(STARTUP_POLL).await;
+                    continue;
+                }
+                // The daemon went quiet; whatever store ownership it still
+                // holds is a spawned child's to report.
+            }
+            waiting = None;
+        }
+        if child.is_none() {
+            let _ = std::fs::remove_file(&startup_note);
+            wait.rebind(daemon_start_timeout());
+            child = Some(command.spawn()?);
+            poll = Duration::from_millis(5);
+            tokio::time::sleep(poll).await;
+            continue;
+        }
+        let child = child.as_mut().expect("the loop spawned a child");
         if let Some(status) = child.try_wait()? {
             let cause = startup_failure(&startup_note, child.id());
             let _ = std::fs::remove_file(&startup_note);
             return Err(match cause {
-                Some(cause) => format!("{cause}\n  Details: {}", log_path.display()).into(),
+                Some((cause, newer)) => {
+                    let diagnostic = format!("{cause}\n  Details: {}", log_path.display());
+                    match newer {
+                        Some(format) if server.embedded => {
+                            Box::new(NewerStore { format, diagnostic })
+                        }
+                        _ => diagnostic.into(),
+                    }
+                }
                 None if server.embedded => {
                     format!("App Server exited ({status}); see {}", log_path.display()).into()
                 }
@@ -770,12 +1113,8 @@ pub async fn connect_inner(
                 .into(),
             });
         }
-        if let Some(progress) =
-            watch.observe(&startup_note, Some(child.id()), &mut deadline, timeout)
-        {
-            watch.announce(locale, progress);
-        }
-        if tokio::time::Instant::now() >= deadline {
+        wait.observe(Some(child.id()));
+        if wait.expired() {
             return Err(if server.embedded {
                 format!("App Server startup timed out; see {}", log_path.display())
             } else {
@@ -786,24 +1125,39 @@ pub async fn connect_inner(
             }
             .into());
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        poll = (poll * 2).min(STARTUP_POLL);
+        tokio::time::sleep(poll).await;
     }
 }
 
 /// The storage startup note this child left, if it is a private file owned by
 /// the current user and the header names this child.
-fn startup_failure(path: &std::path::Path, pid: u32) -> Option<String> {
+fn startup_failure(path: &Path, pid: u32) -> Option<(String, Option<u32>)> {
     let text = read_note(path)?;
     let (header, body) = text.split_once('\n')?;
     if header != format!("dimcode-startup-failure v1 pid={pid}") {
         return None;
+    }
+    let mut body = body.trim_end();
+    let mut newer = None;
+    if let Some((diagnostic, metadata)) = body.rsplit_once('\n')
+        && let Some(formats) = metadata.strip_prefix("store-newer found=")
+    {
+        body = diagnostic;
+        newer = formats
+            .split_once(" supported=")
+            .and_then(|(found, supported)| {
+                let found = found.parse::<u32>().ok()?;
+                let supported = supported.parse::<u32>().ok()?;
+                (found > supported).then_some(found)
+            });
     }
     let body: String = body
         .chars()
         .filter(|character| *character == '\n' || *character == '\t' || !character.is_control())
         .collect();
     let body = body.trim_end();
-    (!body.is_empty()).then(|| body.to_owned())
+    (!body.is_empty()).then(|| (body.to_owned(), newer))
 }
 
 fn missing(error: &io::Error) -> bool {
@@ -811,6 +1165,34 @@ fn missing(error: &io::Error) -> bool {
         error.kind(),
         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
     ) || cfg!(windows) && error.raw_os_error() == Some(231)
+}
+
+#[cfg(all(test, unix))]
+mod starting_note_tests {
+    use super::another_daemon_starting;
+    use std::{fs, os::unix::fs::PermissionsExt};
+
+    /// A progress note names the daemon to wait for, unless it names this
+    /// client; a missing note names nothing. The failed-note and permission
+    /// cases live in the startup flow tests, where the client runs.
+    #[test]
+    fn a_progress_note_names_another_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dimcode.sqlite.startup");
+        let write = |pid: u32| {
+            fs::write(
+                &path,
+                format!("dimcode-startup-progress v1 pid={pid}\nstore-upgrade from=34 to=36 progress=1\n"),
+            )
+            .unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        };
+        write(4242);
+        assert_eq!(another_daemon_starting(&path), Some(4242));
+        write(std::process::id());
+        assert_eq!(another_daemon_starting(&path), None);
+        assert_eq!(another_daemon_starting(&dir.path().join("missing")), None);
+    }
 }
 
 #[cfg(test)]
@@ -875,5 +1257,88 @@ mod same_file_tests {
             !same_file(&file, &root.path().join("missing")),
             "missing path"
         );
+    }
+}
+
+#[cfg(test)]
+mod progress_note_tests {
+    use super::{ProgressNote, UpgradeStage, read_progress_note};
+    use std::path::PathBuf;
+
+    /// Writes a note as the daemon writes it and reads it back: the header
+    /// binds the note to a pid, and a client that knows fewer fields than the
+    /// note carries reads the ones it knows.
+    fn note(name: &str, body: &str) -> Option<(ProgressNote, PathBuf)> {
+        let root = std::env::temp_dir().join(format!(
+            "dim-progress-{}-{name}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("dimcode.sqlite.startup");
+        std::fs::write(
+            &path,
+            format!(
+                "dimcode-startup-progress v1 pid={}\n{body}\n",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let note = read_progress_note(&path);
+        std::fs::remove_dir_all(&root).unwrap();
+        note.map(|note| (note, path))
+    }
+
+    /// A note that names a known stage is read with it, and one that names a
+    /// stage this client does not know keeps every field it does know.
+    #[test]
+    fn a_progress_note_reads_the_stage_it_knows_and_ignores_the_rest() {
+        let (known, _) = note(
+            "known",
+            "store-upgrade from=49 to=50 progress=7 stage=index",
+        )
+        .unwrap();
+        assert_eq!((known.from, known.to, known.counter), (49, 50, 7));
+        assert_eq!(known.stage, Some(UpgradeStage::Index));
+
+        let (unknown, _) = note(
+            "unknown",
+            "store-upgrade from=49 to=50 progress=8 stage=compacting future=value",
+        )
+        .unwrap();
+        assert_eq!((unknown.from, unknown.to, unknown.counter), (49, 50, 8));
+        assert_eq!(
+            unknown.stage, None,
+            "a stage this client cannot show is not a stage it shows as something else"
+        );
+
+        let (older, _) = note("older", "store-upgrade from=49 to=50 progress=9").unwrap();
+        assert_eq!(older.counter, 9);
+        assert_eq!(older.stage, None, "a daemon from before stages names none");
+        for stage in ["images", "verify"] {
+            let (read, _) = note(
+                stage,
+                &format!("store-upgrade from=49 to=50 progress=1 stage={stage}"),
+            )
+            .unwrap();
+            assert!(read.stage.is_some(), "{stage}");
+        }
+        assert!(note("broken", "store-upgrade from=49 to=50").is_none());
+    }
+
+    /// A note the daemon writes without a counter, or with an unknown header,
+    /// is not a progress note at all.
+    #[test]
+    fn a_note_that_is_not_a_progress_note_is_no_report() {
+        assert!(note("no-counter", "store-upgrade from=49 to=50").is_none());
+        assert!(note("no-kind", "something-else from=49 to=50 progress=1").is_none());
     }
 }

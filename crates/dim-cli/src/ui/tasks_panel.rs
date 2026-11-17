@@ -4,8 +4,8 @@
 //! conversation; Workflow details show the owner's stored stages and logs.
 
 use crate::model::view::{
-    MemberConversationState, MemberTarget, RowKind, TaskKind, TaskOutputState, TaskTarget,
-    TaskView, ViewSnapshot, WorkflowInventory, WorkflowView,
+    MemberConversationState, MemberTarget, RowKind, TaskKind, TaskOutcome, TaskOutputState,
+    TaskTarget, TaskView, ViewSnapshot, WorkflowInventory, WorkflowView,
 };
 use crate::sanitize::safe;
 use crate::ui::i18n::t;
@@ -37,7 +37,7 @@ pub struct TasksPanel {
     list: ListPanel,
     tasks: Vec<TaskView>,
     detail: Option<Box<Detail>>,
-    /// Opened from a transcript card: leaving the detail returns to it.
+    /// Opened directly: leaving the detail returns to the composer.
     from_card: bool,
 }
 
@@ -185,10 +185,14 @@ impl TasksPanel {
                 .as_ref()
                 .and_then(|finish| finish.exit_code)
                 .map_or(String::new(), |code| format!(" · exit {code}"));
+            let agent = task
+                .agent
+                .as_deref()
+                .map_or(String::new(), |name| format!(" · {}", safe(name)));
             Item::new(
                 task.id.clone(),
                 safe(&task.label),
-                format!("{kind} · {status} · {elapsed}s{exit}"),
+                format!("{kind}{agent} · {status} · {elapsed}s{exit}"),
             )
         }));
         self.list.set_items(Ok(items), selected.as_deref());
@@ -218,7 +222,7 @@ impl TasksPanel {
                 *text = finish.text.clone();
                 *state = TaskOutputState::Finished {
                     status: finish.status,
-                    failed: finish.failed,
+                    outcome: finish.outcome,
                 };
             }
         }
@@ -298,7 +302,8 @@ impl TasksPanel {
                         state: MemberConversationState::Closed,
                         ..
                     }
-                ) {
+                ) || detail.task.finished.is_some()
+                {
                     return Effect::None;
                 }
                 return self.stop(&detail.task);
@@ -343,7 +348,7 @@ impl TasksPanel {
         match self.list.handle_key(key) {
             Event::None | Event::Refresh => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick(id) => {
+            Event::Pick { id, .. } => {
                 let Some(task) = self.tasks.iter().find(|task| task.id == id).cloned() else {
                     return Effect::None;
                 };
@@ -352,7 +357,7 @@ impl TasksPanel {
         }
     }
 
-    /// A transcript card's delegation, which may have left the task list.
+    /// Opens a transcript card or background row directly, without the list.
     pub fn open_card(&mut self, task: TaskView) -> Effect {
         self.from_card = true;
         self.open(task)
@@ -371,7 +376,7 @@ impl TasksPanel {
                     .map_or(TaskOutputState::Loading, |finish| {
                         TaskOutputState::Finished {
                             status: finish.status,
-                            failed: finish.failed,
+                            outcome: finish.outcome,
                         }
                     }),
             },
@@ -428,6 +433,32 @@ impl TasksPanel {
             (TaskKind::Member(MemberTarget::Session(id)), DetailBody::Member { .. }) => Some(id),
             _ => None,
         }
+    }
+
+    pub fn compaction_targets(&self) -> Vec<crate::model::view::CompactionTarget> {
+        let Some(detail) = &self.detail else {
+            return Vec::new();
+        };
+        let (
+            TaskKind::Member(MemberTarget::Session(session_id)),
+            DetailBody::Member { snapshot, .. },
+        ) = (&detail.task.kind, &detail.body)
+        else {
+            return Vec::new();
+        };
+        snapshot
+            .rows
+            .iter()
+            .filter_map(|row| {
+                let detail = row.compaction.as_ref()?.detail.as_ref()?;
+                Some(crate::model::view::CompactionTarget {
+                    session_id: session_id.clone(),
+                    branch_id: "main".into(),
+                    event_id: detail.event_id.clone(),
+                    sequence: detail.sequence,
+                })
+            })
+            .collect()
     }
 
     pub fn output(&mut self, target: &TaskTarget, text: Option<String>, state: TaskOutputState) {
@@ -497,6 +528,9 @@ impl TasksPanel {
         let mut lines = Vec::new();
         let mut hint = "Esc back";
         let mut title = safe(&detail.task.label);
+        if let Some(agent) = &detail.task.agent {
+            title.push_str(&format!(" · {}", safe(agent)));
+        }
         match &detail.body {
             DetailBody::Command { text, state } => {
                 let (status, color) = match state {
@@ -515,12 +549,24 @@ impl TasksPanel {
                         format!("{}: {}", t("Output read failed"), safe(error)),
                         &p.danger,
                     ),
-                    TaskOutputState::Finished { status, failed } => (
+                    TaskOutputState::Finished { status, outcome } => (
                         t(status).to_owned(),
-                        if *failed { &p.danger } else { &p.muted },
+                        if *outcome == TaskOutcome::Failed {
+                            &p.danger
+                        } else {
+                            &p.muted
+                        },
                     ),
                 };
                 content.push(fg(&truncate_cells(&status, inner), color));
+                if let Some(command) = &detail.task.command {
+                    lines.extend(
+                        wrap_cells(&safe(command), inner)
+                            .into_iter()
+                            .map(|line| fg(&line, &p.muted)),
+                    );
+                    lines.push(String::new());
+                }
                 let text = if text.is_empty() {
                     match state {
                         TaskOutputState::Loading => t("Loading output..."),
@@ -586,7 +632,7 @@ impl TasksPanel {
                     }
                     let block = project_row(&snapshot.rows, index, ToolDetail::Expanded);
                     lines.extend(crate::ui::transcript::blocks::render_block(
-                        &block, inner, p, markdown,
+                        &block, inner, p, markdown, false,
                     ));
                     lines.push(String::new());
                 }
@@ -648,7 +694,7 @@ impl TasksPanel {
                 title = format!("{}: {title}", t("Delegation result"));
                 content.push(fg(
                     t(finish.status),
-                    if finish.failed { &p.danger } else { &p.muted },
+                    if finish.failed() { &p.danger } else { &p.muted },
                 ));
                 lines.extend(
                     wrap_cells(&safe(&finish.text), inner)
@@ -671,6 +717,87 @@ impl TasksPanel {
             Some(&title_plain(&title, inner, p)),
             Some(&key_hints(t(hint), p)),
         )
+    }
+}
+
+impl TasksPanel {
+    /// Whether the panel shows a member's conversation.
+    pub fn shows_member(&self) -> bool {
+        matches!(
+            self.detail.as_deref(),
+            Some(Detail {
+                body: DetailBody::Member { .. },
+                ..
+            })
+        )
+    }
+
+    pub fn member_snapshot(&self) -> Option<&ViewSnapshot> {
+        match &self.detail.as_deref()?.body {
+            DetailBody::Member { snapshot, .. } => Some(snapshot),
+            _ => None,
+        }
+    }
+
+    /// The boundary above the transcript and the read-only composer bar.
+    pub fn member_chrome(&self, width: usize, p: &Palette) -> (String, Vec<String>) {
+        let Some(Detail {
+            task,
+            body:
+                DetailBody::Member {
+                    snapshot,
+                    state,
+                    model,
+                },
+            ..
+        }) = self.detail.as_deref()
+        else {
+            unreachable!("shows_member")
+        };
+        let content = width.saturating_sub(2).max(1);
+        let stoppable =
+            task.finished.is_none() && !matches!(state, MemberConversationState::Closed);
+        let status = match (state, &task.finished) {
+            (MemberConversationState::ReadError(error), _) => {
+                format!("{}: {}", t("Conversation unavailable"), safe(error))
+            }
+            (MemberConversationState::Closed, _) => t("Session closed").to_owned(),
+            (_, Some(finish)) => t(finish.status).to_owned(),
+            (MemberConversationState::Loading, None) => t("Loading conversation...").to_owned(),
+            (MemberConversationState::Live, None) if snapshot.running => t("Running").to_owned(),
+            (MemberConversationState::Live, None) => t("Observing conversation").to_owned(),
+        };
+        let agent = task.agent.as_deref().map_or_else(String::new, safe);
+        let model = model
+            .as_deref()
+            .map_or_else(|| t("No model observed").to_owned(), safe);
+        let note = if stoppable {
+            t("Read-only: you can watch this agent or stop it.")
+        } else {
+            t("Read-only: this agent has finished.")
+        };
+        let keys = if stoppable {
+            t("Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump")
+        } else {
+            t("Esc back · ↑↓ PgUp PgDn scroll · Home/End jump")
+        };
+        let bar = bordered(
+            &[
+                fg(&truncate_cells(note, content), &p.muted),
+                key_hints(&truncate_cells(keys, content), p),
+            ],
+            width,
+            None,
+            &p.border,
+            Some(&title_plain(&format!("{agent} · {model}"), content, p)),
+            Some(&fg(&truncate_cells(&status, content), &p.muted)),
+        );
+        let mut title = safe(&task.label);
+        if !agent.is_empty() {
+            title.push_str(&format!(" · {agent}"));
+        }
+        title.push_str(&format!(" · {}", t("read-only")));
+        (title, bar)
     }
 }
 

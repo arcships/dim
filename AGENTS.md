@@ -31,6 +31,19 @@ This repository is Dim: a Rust coding agent (Agent v4), its App Server and the n
 - `ToolResult.content` is the only text the model can read. Handles, cursors and state the model needs later must be written into `content`; `structuredContent` is only for persistence, UI and internal logic.
 - Incompatible persistence changes require an explicit format decision; do not silently reuse a version for incompatible committed formats. Validate against disposable databases, never a user's existing store.
 
+## Cross-language compatibility
+
+Every public service is a data face. The contract is [service faces](docs/design/service-faces.md) §2.
+
+- An existing `internal(reason)` entry must migrate to a data face or leave the catalog when its role is private implementation. New public services start as data faces. Secret values stay with the owner and public methods expose operations.
+- A data face is a name shared in the catalog **and** a `HostDispatch` at `host_key(name)`. Shared alone is not enough.
+- The face is the only public contract. Rust bindings call the same operations directly in-process and share the owner's business logic. Test binding and wire parity.
+- Method parameters, replies and errors are data: serde types, ids, operations and events. Handles, `&mut`, iterators, channels and `PathBuf`/`OsString` do not cross; the bridge may carry references and callbacks, but they are not the default, and a callback is never called synchronously inside the commit lock.
+- A part is leaf-ready only if every `inject` is a data face, every name it `provides` is a data face, it uses only dispatched methods, and it captures no non-service Rust state.
+- Every design and implementation states the face of each service it adds or consumes; link to the owner contract instead of restating or changing it.
+- Do not add an adapter layer or a second business logic. The data face delegates to the owner.
+- Before review, check the name, shape, field spelling, cancellation and owner document against the current head.
+
 ## Comments
 
 - Prefer code that needs no comment. A comment is only for what code cannot carry: a stable external reference (`#169`, `ADR 006 D3`), a tool or compiler directive, a `// SAFETY:` precondition, a generated-file marker, or a license header.
@@ -40,6 +53,7 @@ This repository is Dim: a Rust coding agent (Agent v4), its App Server and the n
 
 ## Documentation
 
+- For changes affecting a plugin's Timeline events, state or lifecycle, explain the actual use, affected public promises and how to verify them. Link existing design material where it already answers these questions; no separate argument or proof is required. The [design guide](docs/design/capability-design-arguments.md) offers optional help.
 - Cross-module flows live in higher-level documents; lower-level documents only describe their own inputs, outputs and error contracts.
 - Read the [foundation ADR](docs/adr/001-harness-foundation.md) for its decision and proposals requiring maintainer alignment. Do not use it as the source of implementation status; that lives in issues. Keep accepted decisions, current contracts and proposals distinct. A branch implementation does not supersede an issue's agreed design, and contributors must not be required to use APIs that do not exist yet.
 - A rule is stated once, at its layer ([ADR 006](docs/adr/006-plugin-contract.md) D1, D9): theory and contract rules do not restate a binding's spelling, and rule documents and ADRs carry no delivery status or history. Status and history live in issues.

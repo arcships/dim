@@ -5,7 +5,7 @@
 //! affects only its own namespace. Accepted calls belong to their provider.
 use dim_agent_capabilities::methods::{
     Accepted, CallSite, Check, ForeignMethods, MethodDecl, MethodProvider, MethodTable, Owner,
-    RpcError, SessionMethods, valid_name, within,
+    ReservedMethods, RpcError, SessionMethods, valid_name, within,
 };
 use dim_agent_runtime::Session;
 use rutis::host::{CtxHost, ErrorKind, FiberState, Key, Snapshot};
@@ -118,8 +118,8 @@ impl Plugin for ManagementMethodsPlugin {
 /// The names a Session namespace may not take: the protocol's roots and
 /// built-ins (methods contract A.1). A Session namespace may lie under
 /// `session`, but never equals, contains or lies inside an exact built-in.
-pub(crate) fn reserved_for_sessions() -> Check {
-    Arc::new(|namespace, declarations| {
+pub(crate) fn reserved_for_sessions() -> ReservedMethods {
+    ReservedMethods::new(Arc::new(|namespace, declarations| {
         let overlaps = |other: &str| within(namespace, other) || within(other, namespace);
         if !valid_name(namespace)
             || ["hello", "daemon", "agent", "approval"]
@@ -137,7 +137,7 @@ pub(crate) fn reserved_for_sessions() -> Check {
             )));
         }
         Ok(())
-    })
+    }))
 }
 
 /// Unlike `service_reloading`, a retry fails the same way until the owner is

@@ -5,7 +5,7 @@ use crate::{
     protocol::{Empty, canonical_cwd, optional_non_null},
 };
 use dim_agent_capabilities::methods::{
-    Interruption, MethodCall, MethodDecl, RpcError, params, reply,
+    ErrorData, Interruption, MethodCall, MethodDecl, RpcError, params, reply,
 };
 use rutis::{Ctx, Error};
 use serde::{Deserialize, Serialize};
@@ -20,8 +20,9 @@ pub struct ImportLegacyProviders {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagementScope {
+    pub provider_id: String,
     #[serde(default, deserialize_with = "optional_non_null")]
-    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -29,6 +30,8 @@ pub struct UpdateProvider {
     pub provider_id: String,
     pub expected_version: u32,
     pub patch: super::ProviderPatch,
+    #[serde(default)]
+    pub reply: super::UpdateReplyKind,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -107,6 +110,7 @@ pub(super) fn provide(
         "provider",
         [
             "provider.management",
+            "provider.management.list",
             "provider.create",
             "provider.update",
             "provider.probe",
@@ -114,6 +118,7 @@ pub(super) fn provide(
             "provider.models.delete",
             "provider.preferences.update",
             "provider.catalog",
+            "provider.models.query",
             "provider.refresh",
             "provider.models.set_enabled",
             "provider.models.edit",
@@ -131,9 +136,11 @@ pub(super) fn provide(
                 !matches!(
                     name,
                     "provider.catalog"
+                        | "provider.models.query"
                         | "provider.selection"
                         | "provider.list"
                         | "provider.management"
+                        | "provider.management.list"
                         | "provider.probe"
                 ),
                 Interruption::Drain,
@@ -150,11 +157,21 @@ pub(super) fn provide(
             Box::pin(async move {
                 let cancel = &stopping;
                 match method.as_str() {
+                    "provider.models.query" => reply(
+                        provider
+                            .query_models(params(value)?, cancel)
+                            .await
+                            .map_err(error)?,
+                    ),
+                    "provider.management.list" => {
+                        let p: super::ManagementPageRequest = params(value)?;
+                        reply(provider.management_page(p, cancel).await.map_err(error)?)
+                    }
                     "provider.management" => {
                         let p: ManagementScope = params(value)?;
                         reply(
                             provider
-                                .management(p.provider_id, cancel)
+                                .management(p.provider_id, p.model_id, cancel)
                                 .await
                                 .map_err(error)?,
                         )
@@ -171,7 +188,13 @@ pub(super) fn provide(
                         let p: UpdateProvider = params(value)?;
                         reply(
                             provider
-                                .update(p.provider_id, p.expected_version, p.patch, cancel)
+                                .update_reply(
+                                    p.provider_id,
+                                    p.expected_version,
+                                    p.patch,
+                                    p.reply,
+                                    cancel,
+                                )
                                 .await
                                 .map_err(error)?,
                         )
@@ -210,13 +233,17 @@ pub(super) fn provide(
                         )
                     }
                     "provider.catalog" => {
-                        let p: ProviderTarget = params(value)?;
-                        reply(CatalogResult {
-                            catalog: provider
-                                .catalog_for(p.provider_id, cancel)
-                                .await
-                                .map_err(error)?,
-                        })
+                        let p: ManagementScope = params(value)?;
+                        let catalog = match p.model_id {
+                            Some(model_id) => {
+                                provider
+                                    .catalog_target(p.provider_id, model_id, cancel)
+                                    .await
+                            }
+                            None => provider.catalog_for(p.provider_id, cancel).await,
+                        }
+                        .map_err(error)?;
+                        reply(CatalogResult { catalog })
                     }
                     "provider.refresh" => {
                         let p: ProviderTarget = params(value)?;
@@ -343,6 +370,8 @@ fn error(error: impl Into<super::ProviderError>) -> RpcError {
     let kind = match &error {
         ProviderError::NotFound => "provider_not_found",
         ProviderError::Conflict(_) => "provider_conflict",
+        ProviderError::CatalogStale { .. } => "provider_catalog_stale",
+        ProviderError::AccountChanged => "provider_account_changed",
         ProviderError::InvalidConfig(_) => "provider_invalid_config",
         ProviderError::Unsupported(_) => "provider_unsupported",
         ProviderError::AuthRequired => "provider_auth_required",
@@ -351,5 +380,40 @@ fn error(error: impl Into<super::ProviderError>) -> RpcError {
         ProviderError::Cancelled => "provider_cancelled",
         ProviderError::Failed => "provider_failed",
     };
-    RpcError::app(-32000, kind, error.to_string())
+    let details = match &error {
+        ProviderError::CatalogStale {
+            provider_id,
+            expected_version,
+            current_version,
+            issuer,
+            subject,
+        } => std::collections::BTreeMap::from([
+            ("providerId".into(), serde_json::json!(provider_id)),
+            (
+                "expectedVersion".into(),
+                serde_json::json!(expected_version),
+            ),
+            ("currentVersion".into(), serde_json::json!(current_version)),
+            ("issuer".into(), serde_json::json!(issuer)),
+            ("subject".into(), serde_json::json!(subject)),
+            (
+                "requiredAction".into(),
+                serde_json::json!(if issuer.is_some() {
+                    "provider.refresh"
+                } else {
+                    "account.login"
+                }),
+            ),
+        ]),
+        _ => Default::default(),
+    };
+    RpcError {
+        code: -32000,
+        message: error.to_string(),
+        data: Some(ErrorData {
+            app_error: kind.into(),
+            details,
+            daemon_busy: None,
+        }),
+    }
 }

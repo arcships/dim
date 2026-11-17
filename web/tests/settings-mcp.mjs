@@ -4,6 +4,7 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 registerHooks({
   resolve(specifier, context, next) {
@@ -161,6 +162,7 @@ test("an endpoint template is a valid draft and a malformed literal URL is not",
   })
   const root = node("root")
   const app = renderer.createApp(McpSettings)
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   try {
     await flush()
@@ -215,6 +217,7 @@ test("changing MCP scope keeps cancelled or failed drafts and saves only to the 
     } },
   })
   const root = node("root"), app = renderer.createApp(McpSettings)
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   t.after(() => { app.unmount(); delete globalThis.settingsConnection; delete globalThis.window })
   await flush()
@@ -223,20 +226,18 @@ test("changing MCP scope keeps cancelled or failed drafts and saves only to the 
   enter(field(root, "Executable"), "server"); await flush()
   const scope = field(root, "Configuration scope")
   globalThis.window.confirm = () => false
-  const cancelled = { value: "/project" }
-  await scope.props.onChange({ target: cancelled }); await flush()
-  assert.equal(cancelled.value, "")
+  await scope.props["onUpdate:modelValue"]("/project"); await flush()
+  assert.equal(scope.props.value, "__user__")
   assert.ok(button(root, "Save server"))
   globalThis.window.confirm = () => true
   fail = true
-  const failed = { value: "/project" }
-  await scope.props.onChange({ target: failed }); await flush()
-  assert.equal(failed.value, "")
+  await scope.props["onUpdate:modelValue"]("/project"); await flush()
+  assert.equal(scope.props.value, "__user__")
   assert.match(text(root), /project unavailable/)
   await submit(root); await flush()
   assert.equal(saves[0].cwd, undefined)
   fail = false
-  await scope.props.onChange({ target: { value: "/project" } }); await flush()
+  await scope.props["onUpdate:modelValue"]("/project"); await flush()
   await button(root, "Add server").props.onClick(); await flush()
   enter(field(root, "Server ID"), "project-server")
   enter(field(root, "Executable"), "server")
@@ -276,6 +277,7 @@ function mountImport({ preview, catalogs, apply, sources = [] }) {
   })
   const root = node("root")
   const app = renderer.createApp(McpSettings)
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   const mounted = flush().then(() => ({ root, app, calls }))
   return mounted
@@ -390,7 +392,7 @@ test("a project import applies without confirmation and says where withheld valu
   const projectCatalog = { ...catalog(undefined), projectRevision: "project:1" }
   const { root, app, calls } = await mountImport({ preview, catalogs: [catalog(undefined), projectCatalog] })
   try {
-    await field(root, "Configuration scope").props.onChange({ target: { value: "/project" } })
+    await field(root, "Configuration scope").props["onUpdate:modelValue"]("/project")
     await flush()
     assert.match(text(root), /Import into: project \/project/)
     await chooseImportFile(root, "{}")

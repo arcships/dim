@@ -23,6 +23,9 @@ pub struct ModelProgress {
     pub text_part_id: Option<String>,
     /// Stable identity of the open thinking block, when one is being produced.
     pub thinking_part_id: Option<String>,
+    /// Unix milliseconds at which the open thinking block started; present
+    /// while `thinking_part_id` names it.
+    pub thinking_started_at: Option<u64>,
     /// Text of this request not yet published as `step/text`: committed
     /// and unpublished, then received and not yet committed.
     pub text: String,

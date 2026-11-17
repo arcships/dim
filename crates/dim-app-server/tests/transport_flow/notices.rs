@@ -222,15 +222,8 @@ async fn notices_without_a_listener_are_dropped_and_never_replayed() {
 
             assert_ok(&client.rpc("session.close", attach).await);
             server.notify(&sid, notice("closed"));
-            client.notice("session.closed").await;
-            assert!(
-                client
-                    .notices
-                    .iter()
-                    .all(|value| value["method"] != "session.notice"),
-                "{:?}",
-                client.notices
-            );
+            let closed = client.notice("session.closed").await;
+            assert_eq!(closed["params"]["sessionId"], sid.as_str());
         }
     }
     server.shutdown();

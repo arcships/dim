@@ -338,7 +338,7 @@ pub fn convert_legacy_provider(
         None => None,
     };
     let kind = match source_kind.as_str() {
-        "custom" if bundled.provider(&source.id).is_some() => {
+        "custom" if bundled.provider_ids().any(|id| id == source.id) => {
             return Err("Builtin identity cannot be imported as custom".into());
         }
         "custom" if previous.is_some() => {
@@ -582,18 +582,22 @@ pub fn convert_legacy_provider(
         endpoint_overrides: BTreeMap::new(),
         disabled_model_ids: disabled,
         enabled: enabled == 1,
+        // The legacy source states an endpoint and its credential, not a
+        // statement about the ids it lists.
+        glued_prefix: None,
+        model_aliases: BTreeMap::new(),
         definition_fingerprint: previous
             .as_ref()
             .and_then(|p| p.definition_fingerprint.clone()),
         version: if previous.is_some() { 2 } else { 1 },
     };
     if let Some(previous) = previous {
-        if record.display_name != previous.display_name
-            || record.driver_kind != previous.driver_kind
-            || record.auth != previous.auth
-        {
+        if record.driver_kind != previous.driver_kind || record.auth != previous.auth {
             return Err("Legacy builtin definition differs from the current definition".into());
         }
+        // A builtin's name is the bundled definition's, so a catalog rename
+        // reaches the row and an older source name does not reject it.
+        record.display_name = previous.display_name;
         record.endpoint_types = previous.endpoint_types;
     }
     validate_static_record(&source.id, &mut record)
@@ -624,23 +628,21 @@ impl ProviderService {
                         let seen: Option<String> = tx.query_row("SELECT source_digest FROM provider_imports WHERE kind=?1 AND id=?2", params![kind, source.id], |row| row.get(0)).optional().map_err(storage)?;
                         if let Some(digest) = seen {
                             if kind == "provider" && digest == source.digest {
-                                let stored = tx.query_row("SELECT version,record FROM providers WHERE provider_id=?1", [&source.id], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))).optional().map_err(storage)?;
-                                match stored.map(|(version, body)| parse_static(&source.id, version, &body)) {
-                                    Some(Ok(record)) => { imported.insert(source.id.clone(), record); }
-                                    Some(Err(_)) => { unreadable.insert(source.id.clone(), "Target provider is unreadable; preserved".into()); }
-                                    None => {}
+                                match read_stored_static(&tx,&source.id) {
+                                    Ok(Some(record)) => { imported.insert(source.id.clone(),record); }
+                                    Err(_) => { unreadable.insert(source.id.clone(),"Target provider is unreadable; preserved".into()); }
+                                    Ok(None) => {}
                                 }
                             }
                             items.push(ImportItem { kind, id: source.id, status: ImportStatus::AlreadyImported, reason: Some(if digest == source.digest { "Source row was already imported" } else { "Previously imported identity changed; automatic replay refused" }.into()), omitted: None });
                             continue;
                         }
                         let result: Result<Option<Vec<String>>, String> = if kind == "provider" {
-                            let previous = tx.query_row("SELECT version,record FROM providers WHERE provider_id=?1", [&source.id], |row| Ok((row.get::<_, u32>(0)?, row.get::<_, String>(1)?))).optional().map_err(storage)?;
-                            let previous = previous.map(|(version, body)| parse_static(&source.id, version, &body)).transpose().map_err(|_| "Target provider is unreadable; preserved".to_owned());
+                            let previous = read_stored_static(&tx,&source.id).map_err(|_| "Target provider is unreadable; preserved".to_owned());
                             match previous.and_then(|previous| convert_legacy_provider(&source, previous, &bundled)) {
                                 Err(reason) => Err(reason),
                                 Ok(conversion) => {
-                                    tx.execute("INSERT INTO providers(provider_id,version,record) VALUES (?1,?2,?3) ON CONFLICT(provider_id) DO UPDATE SET version=excluded.version,record=excluded.record", params![source.id, conversion.record.version(), serde_json::to_string(&conversion.record).map_err(storage)?]).map_err(storage)?;
+                                    persistence::write(&tx, &source.id, conversion.record.version(), &serde_json::to_string(&conversion.record).map_err(storage)?).map_err(storage)?;
                                     imported.insert(source.id.clone(), conversion.record);
                                     Ok(Some(conversion.omitted))
                                 }

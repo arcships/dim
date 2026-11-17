@@ -88,6 +88,7 @@ async fn host(work: &Work) -> RunningServer {
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: work.home.join("outputs"),
         },
         Default::default(),
@@ -250,10 +251,14 @@ async fn ordinary_exec_worktrees_admit_files_and_share_current_branch_policy() {
         repository: work.repo.join(".git"),
         root: tree.clone(),
     };
-    assert_eq!(
-        store.worktree_directories().await.unwrap(),
-        std::slice::from_ref(&directory)
-    );
+    let directories: Vec<_> = store
+        .worktree_directories()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.directory)
+        .collect();
+    assert_eq!(directories, std::slice::from_ref(&directory));
     assert_eq!(
         store
             .worktree_usages(directory.clone())
@@ -636,4 +641,384 @@ async fn invalid_git_metadata_cannot_block_discovery_or_publish_a_root() {
     );
     server.shutdown();
     server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_worktree_ownership_and_tool_workspace_survive_host_restart() {
+    for relative_cwd in ["", "packages/a"] {
+        let work = Work::new();
+        let server = host(&work).await;
+        let mut client = Client::new_version(&server, false, 3).await;
+        let source_cwd = work.repo.join(relative_cwd);
+        let created = client
+            .rpc("session.create", json!({"cwd": source_cwd, "worktree": {}}))
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        let task_id = created["result"]["worktree"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let root = PathBuf::from(created["result"]["worktree"]["root"].as_str().unwrap());
+        let cwd = root.join(relative_cwd).canonicalize().unwrap();
+        assert!(root.starts_with(work.home.join("worktrees")));
+        assert_eq!(created["result"]["worktree"]["cwd"], json!(cwd));
+        assert!(root.join("packages/a/seed.txt").is_file());
+        let listed = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&listed);
+        assert_eq!(listed["result"]["worktrees"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["result"]["worktrees"][0]["taskId"], task_id);
+        assert_eq!(
+            listed["result"]["worktrees"][0]["sessions"],
+            json!([session_id])
+        );
+        drop(client);
+        server.shutdown();
+        server.join().await.unwrap();
+
+        let server = host(&work).await;
+        let mut client = Client::new_version(&server, false, 3).await;
+        let restored = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&restored);
+        assert_eq!(restored["result"], listed["result"]);
+        let attached = client
+            .rpc("session.attach", json!({"sessionId": session_id}))
+            .await;
+        assert_ok(&attached);
+        assert_eq!(attached["result"]["cwd"], json!(cwd));
+        let managed = server.agent().unwrap().get_session(&session_id).unwrap();
+        let written = cwd.join("after-restart.txt");
+        succeeded(
+            run(
+                &managed,
+                "write",
+                json!({"path":"after-restart.txt","content":"managed workspace after restart"}),
+            )
+            .await,
+        );
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "managed workspace after restart"
+        );
+        assert!(!source_cwd.join("after-restart.txt").exists());
+        assert!(
+            chain_events(&managed, "main", ..)
+                .await
+                .unwrap()
+                .iter()
+                .all(|event| !matches!(event.kind, EventKind::ApprovalRequest(_))),
+            "workspace-write must not ask for per-file approval in the restored cwd"
+        );
+        let refused = client
+            .rpc("worktree.remove", json!({"taskId": task_id, "force": true}))
+            .await;
+        assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "managed workspace after restart"
+        );
+
+        let shared = session(&server, &source_cwd).await;
+        succeeded(run(&shared, "read", json!({"path": written})).await);
+        let owners = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&owners);
+        let owners = owners["result"]["worktrees"][0]["sessions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(owners.len(), 2);
+        assert!(owners.contains(&json!(session_id)));
+        assert!(owners.contains(&json!(shared.id())));
+        assert_ok(
+            &client
+                .rpc("session.delete", json!({"sessionId": session_id}))
+                .await,
+        );
+        let refused = client
+            .rpc("worktree.remove", json!({"taskId": task_id, "force": true}))
+            .await;
+        assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+        assert_ok(
+            &client
+                .rpc("session.delete", json!({"sessionId": shared.id()}))
+                .await,
+        );
+        let dirty = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&dirty);
+        assert_eq!(dirty["result"]["worktrees"][0]["sessions"], json!([]));
+        assert_eq!(dirty["result"]["worktrees"][0]["untracked"], 1);
+        let refused = client
+            .rpc("worktree.remove", json!({"taskId": task_id}))
+            .await;
+        assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+        assert!(written.exists());
+        std::fs::remove_file(written).unwrap();
+        let removed = client
+            .rpc("worktree.remove", json!({"taskId": task_id}))
+            .await;
+        assert_ok(&removed);
+        assert_eq!(removed["result"]["removed"], true);
+        assert!(!root.exists());
+        let empty = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&empty);
+        assert_eq!(empty["result"]["worktrees"], json!([]));
+        server.shutdown();
+        server.join().await.unwrap();
+    }
+}
+
+/// A home that never created a worktree has no root directory; listing and
+/// pruning there answer an empty set instead of a storage failure.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn managed_worktree_listing_and_pruning_on_a_fresh_home_are_empty() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let listed = client.rpc("worktree.list", json!({})).await;
+    assert_ok(&listed);
+    assert_eq!(listed["result"]["worktrees"], json!([]));
+    let pruned = client
+        .rpc("worktree.prune", json!({"keep": 1, "apply": false}))
+        .await;
+    assert_ok(&pruned);
+    assert_eq!(pruned["result"]["candidates"], json!([]));
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A task directory swapped for a symlink must not let a recorded removal
+/// reach outside the managed root.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_swapped_task_directory_symlink_cannot_escape_the_managed_root() {
+    let work = Work::new();
+    let server = host(&work).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let created = client
+        .rpc("session.create", json!({"cwd": work.repo, "worktree": {}}))
+        .await;
+    assert_ok(&created);
+    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let task_id = created["result"]["worktree"]["taskId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let root = PathBuf::from(created["result"]["worktree"]["root"].as_str().unwrap());
+    assert_ok(
+        &client
+            .rpc("session.delete", json!({"sessionId": session_id}))
+            .await,
+    );
+    let outside = work.home.join("outside");
+    std::fs::create_dir_all(outside.join("repo")).unwrap();
+    std::fs::write(outside.join("repo/secret.txt"), "secret").unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    let task = root.parent().unwrap().to_path_buf();
+    std::fs::remove_dir_all(&task).unwrap();
+    std::os::unix::fs::symlink(&outside, &task).unwrap();
+    let removed = client
+        .rpc("worktree.remove", json!({"taskId": task_id, "force": true}))
+        .await;
+    assert!(removed.get("error").is_some(), "{removed}");
+    assert_eq!(
+        std::fs::read_to_string(outside.join("repo/secret.txt")).unwrap(),
+        "secret"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_shell_completion_recovers_after_notice_failure_and_host_loss() {
+    const CHILD_HOME: &str = "DIM_TEST_EXEC_RECOVERY_HOME";
+    if let Some(home) = std::env::var_os(CHILD_HOME) {
+        let home = PathBuf::from(home);
+        let work = Work {
+            repo: home.join("repo"),
+            home,
+        };
+        let server = host(&work).await;
+        let session = session(&server, &work.repo).await;
+        session.idle("main").await.unwrap();
+        let connection =
+            rusqlite::Connection::open(work.home.join("native/dimcode.sqlite")).unwrap();
+        connection.execute_batch("CREATE TRIGGER fail_exec_notice BEFORE INSERT ON timeline_events WHEN NEW.kind = 'input/message' AND EXISTS (SELECT 1 FROM timeline_events WHERE kind = 'exec/ended' AND session_id = NEW.session_id) BEGIN SELECT RAISE(ABORT, 'injected exec notice failure'); END").unwrap();
+        session
+            .service::<ShellSession>("main")
+            .unwrap()
+            .run(
+                "echo executed >> execution-count".into(),
+                CallContext {
+                    turn_id: "fixture-turn".into(),
+                    request_id: "fixture-request".into(),
+                    call_id: "fixture-call".into(),
+                },
+                10_000,
+                true,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let error = tokio::time::timeout(Duration::from_secs(30), session.closed())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("injected exec notice failure"),
+            "{error}"
+        );
+        let ready = work.home.join("ready.tmp");
+        std::fs::write(&ready, session.id()).unwrap();
+        std::fs::rename(ready, work.home.join("ready")).unwrap();
+        std::future::pending::<()>().await;
+        return;
+    }
+
+    let work = Work::new();
+    let log = std::fs::File::create(work.home.join("child.log")).unwrap();
+    let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "worktrees::committed_shell_completion_recovers_after_notice_failure_and_host_loss",
+            "--nocapture",
+        ])
+        .env(CHILD_HOME, &work.home)
+        .stdout(log.try_clone().unwrap())
+        .stderr(log)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while !work.home.join("ready").exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                panic!(
+                    "child exited {status}: {}",
+                    std::fs::read_to_string(work.home.join("child.log")).unwrap()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "child did not reach the committed-end/missing-notice boundary: {}",
+            std::fs::read_to_string(work.home.join("child.log")).unwrap()
+        );
+    });
+    child.kill().await.unwrap();
+    let status = child.wait().await.unwrap();
+    assert!(
+        !status.success(),
+        "the host must exit without graceful shutdown"
+    );
+    let id = std::fs::read_to_string(work.home.join("ready")).unwrap();
+    let connection = rusqlite::Connection::open(work.home.join("native/dimcode.sqlite")).unwrap();
+    let terminals: i64 = connection
+        .query_row(
+            "SELECT count(*) FROM timeline_events WHERE session_id=?1 AND kind='exec/ended'",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        terminals, 1,
+        "the terminal survived before notification failed"
+    );
+    let pending_notices: i64 = connection.query_row(
+        "SELECT count(*) FROM timeline_events WHERE session_id=?1 AND kind='input/message' AND sequence > (SELECT max(sequence) FROM timeline_events WHERE session_id=?1 AND kind='exec/ended')",
+        [&id], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        pending_notices, 0,
+        "no post-terminal input committed before host loss"
+    );
+    connection
+        .execute_batch("DROP TRIGGER fail_exec_notice")
+        .unwrap();
+    drop(connection);
+    let mut notice_id = None;
+    for generation in 0..2 {
+        let server = host(&work).await;
+        let session = server
+            .agent()
+            .unwrap()
+            .restore_session(id.clone())
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), session.idle("main"))
+            .await
+            .unwrap()
+            .unwrap();
+        let input = format!("user input after restore {generation}");
+        session
+            .submit(input.clone(), InputMode::Queue, "main")
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), session.idle("main"))
+            .await
+            .unwrap()
+            .unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::ExecStarted(_)))
+                .count(),
+            1
+        );
+        let ends = events
+            .iter()
+            .filter_map(|e| match &e.kind {
+                EventKind::ExecEnded(data) => Some((e, data)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ends.len(), 1);
+        assert_eq!(ends[0].1.status, dim_agent_types::ExecStatus::Completed);
+        let notices = events
+            .iter()
+            .filter(|e| {
+                matches!(e.kind, EventKind::InputMessage(_))
+                    && e.tags
+                        .iter()
+                        .flatten()
+                        .any(|tag| tag.starts_with("exec-wake-result:"))
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            notices.len(),
+            1,
+            "restore must publish exactly one missing notice"
+        );
+        assert!(
+            notices[0]
+                .tags
+                .as_ref()
+                .unwrap()
+                .contains(&format!("exec-wake-result:{}", ends[0].0.id))
+        );
+        if let Some(previous) = &notice_id {
+            assert_eq!(&notices[0].id, previous);
+        }
+        notice_id = Some(notices[0].id.clone());
+        assert!(
+            events.iter().any(|event| matches!(&event.kind,
+                EventKind::InputConsumed(data) if data.input_id == notices[0].id
+            )),
+            "the recovered notice must reach the Loop's input handoff"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(&e.kind, EventKind::Text(data) if data.delta.contains(&input))),
+            "new user input must still produce model output"
+        );
+        assert_eq!(
+            std::fs::read_to_string(work.repo.join("execution-count")).unwrap(),
+            "executed\n",
+            "restore must not rerun the completed command"
+        );
+        server.shutdown();
+        server.join().await.unwrap();
+    }
 }

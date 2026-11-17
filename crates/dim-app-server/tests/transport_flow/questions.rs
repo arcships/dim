@@ -110,7 +110,14 @@ async fn a_client_answers_a_waiting_question_through_rpc() {
             .contains(&json!({"name":"session.question.pending","mutating":false}))
     );
 
-    submit(&mut client, &sid, ASK).await;
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":sid,"branchId":"main","text":ASK}),
+        )
+        .await;
+    assert_ok(&submitted);
+    let submitted_input = submitted["result"]["event"]["id"].clone();
     let asked = step(&mut client, "tool-call").await;
     assert_eq!(asked["branchId"], "main");
     let call = &asked["event"]["data"]["calls"][0];
@@ -149,9 +156,23 @@ async fn a_client_answers_a_waiting_question_through_rpc() {
         asked["event"]["data"]["turn_id"]
     );
     assert_eq!(active["result"]["turn"]["ended"], false);
+    let identified = client.rpc("session.turn.get",json!({"sessionId":sid,"branchId":"main","inputId":submitted_input,"through":active["result"]["through"]})).await;
+    assert_ok(&identified);
+    assert_eq!(identified["result"]["turn"], active["result"]["turn"]);
+    assert!(identified["result"]["output"].is_null());
+    let ambiguous = client.rpc("session.turn.get",json!({"sessionId":sid,"branchId":"main","inputId":submitted_input,"turnId":active["result"]["turn"]["turnId"]})).await;
+    assert_eq!(app_error(&ambiguous), "invalid_params");
     let queued = client.rpc("session.submit", json!({"sessionId":sid,"branchId":"main","text":"queued outside the transcript window","mode":"queue"})).await;
     assert_ok(&queued);
     let input_id = queued["result"]["event"]["id"].clone();
+    let unconsumed = client
+        .rpc(
+            "session.turn.get",
+            json!({"sessionId":sid,"branchId":"main","inputId":input_id}),
+        )
+        .await;
+    assert_ok(&unconsumed);
+    assert!(unconsumed["result"]["turn"].is_null());
     let inputs = client
         .rpc(
             "session.input.pending",
@@ -191,6 +212,15 @@ async fn a_client_answers_a_waiting_question_through_rpc() {
         json!([]),
         "{empty_inputs}"
     );
+    let deleted_turn = client
+        .rpc(
+            "session.turn.get",
+            json!({"sessionId":sid,"branchId":"main","inputId":input_id}),
+        )
+        .await;
+    assert_ok(&deleted_turn);
+    assert!(deleted_turn["result"]["turn"].is_null());
+    assert_eq!(deleted_turn["result"]["inputDeleted"], true);
     let old_inputs = client
         .rpc(
             "session.input.pending",
@@ -281,6 +311,11 @@ async fn a_client_answers_a_waiting_question_through_rpc() {
         .await;
     assert_ok(&ended);
     assert_eq!(ended["result"]["turn"]["ended"], true);
+    assert_eq!(ended["result"]["turn"]["outcome"]["status"], "completed");
+    let ended_input = client.rpc("session.turn.get",json!({"sessionId":sid,"branchId":"main","inputId":submitted_input,"through":ended["result"]["through"]})).await;
+    assert_ok(&ended_input);
+    assert_eq!(ended_input["result"]["turn"], ended["result"]["turn"]);
+    assert!(ended_input["result"]["output"].is_null());
     let old_turn = client
         .rpc(
             "session.turn.get",

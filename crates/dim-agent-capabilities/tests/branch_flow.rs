@@ -1028,7 +1028,17 @@ async fn a_restart_completes_an_end_without_its_result() {
     let info = commands
         .info("grand".into())
         .expect("an ended line keeps its record");
-    assert_eq!(info.source, Some(options("grandchild").source));
+    assert_eq!(info.source, None);
+    assert_eq!(
+        commands
+            .display("grand".into())
+            .await
+            .unwrap()
+            .entry
+            .info
+            .source,
+        Some(options("grandchild").source)
+    );
     soon(agent.close()).await.unwrap();
 }
 
@@ -1519,7 +1529,7 @@ async fn a_restore_reads_a_line_end_in_one_page_and_no_range() {
             ancestor: None,
         }]
     );
-    let pages = counting.pages("B", &["branch/end"]);
+    let pages = counting.pages("B", &["branch/start", "branch/end"]);
     assert_eq!(
         pages, 1,
         "a line with no end costs one page, whatever its length; the restore asked {pages} times"
@@ -2674,6 +2684,23 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
         .unwrap();
     soon(session.idle("main")).await.unwrap();
     let high = session.sequence("main").unwrap();
+    let fixed = soon(session.branch("main".into(), high, options("fixed head")))
+        .await
+        .unwrap();
+    soon(session.idle(&fixed)).await.unwrap();
+    let fixed_create = create_event(&branch_events(&session, "main", ..).await.unwrap());
+    assert!(matches!(&fixed_create.kind, EventKind::BranchCreate(data)
+        if data.at == BranchCreateAt::Sequence { sequence: high }));
+    assert_eq!(
+        session
+            .branches()
+            .iter()
+            .find(|info| info.id == fixed)
+            .unwrap()
+            .branch_point,
+        Some(high),
+        "a caller's head remains a fixed cut while the parent can advance"
+    );
     *probe.rewrite.lock().unwrap() = Rewrite::Business(
         BranchCreateAt::Sequence { sequence: 1 },
         "final prompt".into(),
@@ -2696,8 +2723,12 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     assert!(
         matches!(&local[0].kind, EventKind::BranchStart(data) if data.create_event == Some(create.sequence))
     );
+    let prompt = local
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::InputMessage(_)))
+        .expect("the branch's first input");
     assert!(
-        matches!(&local[1].kind, EventKind::InputMessage(data) if matches!(
+        matches!(&prompt.kind, EventKind::InputMessage(data) if matches!(
             data.user.as_ref().map(|user| user.content.as_slice()),
             Some([ContentBlock::Text { text }]) if text == "final prompt"
         ))
@@ -2719,12 +2750,12 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     assert_eq!(
         applied
             .iter()
-            .filter(|id| **id == local[1].id.as_str())
+            .filter(|id| **id == prompt.id.as_str())
             .count(),
         1,
         "the opening input is applied once"
     );
-    for id in applied.iter().filter(|id| **id != local[1].id.as_str()) {
+    for id in applied.iter().filter(|id| **id != prompt.id.as_str()) {
         let input = local
             .iter()
             .find(|event| event.id == **id)
@@ -2772,7 +2803,7 @@ async fn final_prompt_position_and_fixed_ancestor_prefix_drive_creation() {
     );
     assert_eq!(
         probe.child_builds.load(Ordering::SeqCst),
-        3,
+        4,
         "inherited create events must not be dispatched"
     );
     soon(agent.close()).await.unwrap();
@@ -2823,10 +2854,11 @@ async fn delayed_create_uses_its_anchor_and_survives_an_abandoned_waiter() {
     soon(session.idle(&child.id)).await.unwrap();
     assert_eq!(
         (child.branch_point, child.create_anchor),
-        (Some(create.sequence), Some(create.sequence))
+        (Some(high), Some(create.sequence))
     );
     let prefix = chain_events(&session, &child.id, ..=0).await.unwrap();
-    assert_eq!(prefix.last().unwrap().id, create.id);
+    assert_eq!(prefix.last().unwrap().sequence, high);
+    assert!(!prefix.iter().any(|event| event.id == create.id));
     assert!(!prefix.iter().any(|event| event.id == later.id));
     soon(agent.close()).await.unwrap();
 }
@@ -3391,9 +3423,8 @@ async fn until_branch(session: &Session, branch: &str) {
     }
     panic!("branch {branch} was not restored");
 }
-/// Waits for the line to be idle with a parent block held at the parent's
-/// current head; a block behind the head is consumed by running the line one
-/// turn. Returns the block's sequence, its text and the head it reports.
+/// Waits for a held parent block covering the parent's latest operator input
+/// or tool use. Returns its sequence, text and the parent's observed head.
 async fn settle_line(session: &Session, branch: &str) -> (u64, String, u64) {
     for _ in 0..400 {
         patient(session.idle("main")).await.unwrap();
@@ -3411,7 +3442,17 @@ async fn settle_line(session: &Session, branch: &str) -> (u64, String, u64) {
             continue;
         }
         let (block_head, _) = parent_block(&text);
-        if block_head != head {
+        let activity = local_events(session, "main")
+            .await
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::InputMessage(data) if data.user.is_some())
+                    || matches!(event.kind, EventKind::ToolUse(_))
+            })
+            .map(|event| event.sequence)
+            .max()
+            .unwrap_or(0);
+        if block_head < activity {
             patient(session.submit("settle".into(), InputMode::Queue, branch))
                 .await
                 .unwrap();
@@ -4643,12 +4684,16 @@ async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
         .await,
     );
     let sequences = page_sequences(&zero);
-    assert!(
-        zero.to_string().contains("check the parser"),
-        "after 0 starts at the line's first event: {zero}"
-    );
+    let prompt_on_first_page = zero.to_string().contains("check the parser");
+    if !prompt_on_first_page {
+        assert!(
+            sequences.is_empty(),
+            "the opening page contains only hidden facts: {zero}"
+        );
+        assert_eq!(zero["done"], false, "hidden facts do not finish the read");
+    }
     let cursor = zero["nextCursor"].as_u64().unwrap();
-    assert!(cursor >= *sequences.last().unwrap());
+    assert!(cursor > 0 && cursor >= sequences.last().copied().unwrap_or(0));
     let next = page_of(
         &tool_call(
             &session,
@@ -4658,6 +4703,12 @@ async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
         .await,
     );
     let sequences = page_sequences(&next);
+    if !prompt_on_first_page {
+        assert!(
+            next.to_string().contains("check the parser"),
+            "the next page reaches the opening input: {next}"
+        );
+    }
     assert!(
         sequences.iter().all(|sequence| *sequence > cursor),
         "the next read continues after {cursor}: {next}"
@@ -4670,10 +4721,11 @@ async fn main_re_reads_a_line_from_zero_and_the_cursor_follows_that_read() {
         )
         .await,
     );
-    assert!(
-        again.to_string().contains("check the parser"),
-        "after 0 re-reads a line from its start: {again}"
+    assert_eq!(
+        again["items"], zero["items"],
+        "after 0 re-reads the opening page"
     );
+    assert_eq!(again["nextCursor"], zero["nextCursor"]);
     assert_eq!(page_sequences(&again), page_sequences(&zero));
     let cursor = again["nextCursor"].as_u64().unwrap();
     let next = page_of(
@@ -5683,14 +5735,13 @@ async fn an_ending_line_and_main_get_no_parent_block() {
     let session = soon(agent.restore_session("saved".into())).await.unwrap();
     until_branch(&session, "main").await;
     soon(session.idle("main")).await.unwrap();
+    until_branch(&session, "line").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    if session.sequence("line").is_ok() {
-        let events = local_events(&session, "line").await;
-        assert!(
-            parent_block_events(&events).is_empty(),
-            "an ending line gets no block: {events:#?}"
-        );
-    }
+    let events = local_events(&session, "line").await;
+    assert!(
+        parent_block_events(&events).is_empty(),
+        "an ending line gets no block: {events:#?}"
+    );
     let events = local_events(&session, "main").await;
     assert!(parent_block_events(&events).is_empty(), "main gets none");
     soon(agent.close()).await.unwrap();
@@ -5755,6 +5806,7 @@ async fn the_creating_turn_alone_does_not_tell_the_line() {
     let child = open_line(&session, "watch the tests").await;
     soon(session.idle("main")).await.unwrap();
     soon(session.idle(&child)).await.unwrap();
+    // Stands in for the parent-block writer handling the creating turn's end.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &child).await;
     assert!(
@@ -5829,6 +5881,7 @@ async fn a_line_message_answered_with_text_tells_the_line_nothing() {
     assert_eq!(result.is_error, None, "{:?}", result.content);
     soon(session.idle("main")).await.unwrap();
     soon(session.idle(&child)).await.unwrap();
+    // Stands in for the parent-block writer handling the creating turn's end.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &child).await;
     assert!(
@@ -5985,6 +6038,7 @@ async fn a_host_line_cut_at_the_start_is_not_told_what_happened_before_it() {
     let (agent, session, host, tool, _) = a_host_line_opened_after_main_moved(&probe, false).await;
     steer_main_from(&session, &tool).await;
     quiet(&session, &host).await;
+    // Stands in for the parent-block writer handling the parent's turn end.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &host).await;
     assert!(
@@ -6062,6 +6116,7 @@ async fn a_host_line_cut_before_it_was_opened_is_not_told_about_the_gap() {
     );
     steer_main_from(&session, &tool).await;
     quiet(&session, &host).await;
+    // Stands in for the parent-block writer handling the parent's turn end.
     tokio::time::sleep(Duration::from_millis(50)).await;
     let events = local_events(&session, &host).await;
     assert!(
@@ -6161,6 +6216,80 @@ async fn an_idle_line_tells_main_once_when_its_turn_ends_without_a_word() {
         blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").len(),
         2
     );
+    soon(agent.close()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_line_without_idle_notices_stays_quiet_after_restore() {
+    let store = Arc::new(MemoryTimelineStore::default());
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let id = session.id().to_owned();
+    let result = tool_call(
+        &session,
+        "main",
+        r#"{"action":"create","prompt":"watch the tests","idleNotice":"none"}"#,
+    )
+    .await;
+    assert_eq!(result.is_error, None, "{:?}", result.content);
+    let child = session
+        .branches()
+        .into_iter()
+        .find(|info| info.id != "main")
+        .expect("the create result names a published line")
+        .id;
+    until_events(&session, &child, |events| {
+        events.iter().any(|event| {
+            matches!(&event.kind, EventKind::TurnEnd(data) if matches!(&data.outcome, TurnOutcome::Completed { .. }))
+        })
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").is_empty());
+    soon(agent.close()).await.unwrap();
+
+    let agent = MinimalHost::start(&builder_with_store(&probe, store))
+        .await
+        .unwrap();
+    let session = soon(agent.restore_session(id)).await.unwrap();
+    soon(session.idle(&child)).await.unwrap();
+    let before = local_events(&session, &child)
+        .await
+        .last()
+        .unwrap()
+        .sequence;
+    session
+        .submit("Check again".into(), InputMode::Queue, &child)
+        .await
+        .unwrap();
+    until_events(&session, &child, |events| {
+        events.iter().any(|event| {
+            event.sequence > before
+                && matches!(&event.kind, EventKind::TurnEnd(data) if matches!(&data.outcome, TurnOutcome::Completed { .. }))
+        })
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").is_empty());
+
+    let result = tool_call(
+        &session,
+        &child,
+        r#"{"action":"message","to":"main","content":"A test failed","mode":"steer"}"#,
+    )
+    .await;
+    assert_eq!(result.is_error, None, "{:?}", result.content);
+    until_events(&session, "main", |events| {
+        blocks_with(events, "<dim-branch-message")
+            .iter()
+            .any(|text| text.contains("A test failed"))
+    })
+    .await;
     soon(agent.close()).await.unwrap();
 }
 
@@ -6922,7 +7051,16 @@ async fn a_stop_settles_the_branch_tool_while_the_tree_still_builds_the_child() 
             _ => None,
         })
         .unwrap();
-    assert_eq!(result.is_error, Some(true));
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "the stopped call is an error: {:?}",
+        result.content
+    );
+    assert_eq!(
+        result.content,
+        ToolContent::Text("stopped waiting; the branch creation continues".into())
+    );
     assert!(events.iter().any(|event| matches!(&event.kind,
         EventKind::TurnEnd(data) if matches!(data.outcome, TurnOutcome::Cancelled { .. }))));
     assert!(
@@ -7060,6 +7198,9 @@ async fn an_ancestors_end_closes_a_pending_end_whose_delivery_was_held() {
                 .await
         })
     };
+    // Stands in for the ancestor's end reaching the child's held end: its own
+    // commit only proves `end()` was polled, and the cascade that waits for
+    // the child runs on a task spawned from that commit's delivery.
     tokio::time::sleep(Duration::from_millis(300)).await;
     gate.release.notify_one();
     tokio::time::timeout(Duration::from_secs(8), ender)
@@ -7215,6 +7356,136 @@ async fn a_turn_spanning_a_restart_after_a_steer_writes_no_idle_notice() {
         after, before,
         "a turn that steered main before the restart writes no idle notice"
     );
+    soon(agent.close()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
+    async fn texts(tree: &TreeCommands, branch: &str) -> Vec<String> {
+        let mut query = TimelineQuery {
+            scope: TimelineQueryScope::Chain,
+            from: None,
+            through: None,
+            include_publishing: false,
+            query: QuerySpec {
+                filter: Some(QueryFilter::Prefix {
+                    value: QueryOperand::Field {
+                        path: "data.user.content[0].text".into(),
+                    },
+                    prefix: "visible-".into(),
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["data.user.content[0].text".into()],
+                },
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: std::num::NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let mut texts = Vec::new();
+        loop {
+            let reply = tree.query(branch.into(), query.clone()).await.unwrap();
+            query.through = Some(reply.through);
+            let QueryOutput::Rows { rows } = reply.result else {
+                panic!("property rows")
+            };
+            for row in rows {
+                let QueryValue::Value { value } = &row.values[0] else {
+                    panic!("input text")
+                };
+                texts.push(value.as_str().unwrap().to_owned());
+            }
+            if reply.next.is_none() {
+                break;
+            }
+            query.page.as_mut().unwrap().after = reply.next;
+        }
+        query.include_publishing = true;
+        assert!(matches!(
+            tree.query(branch.into(), query).await,
+            Err(AgentError::InvalidInput(_))
+        ));
+        texts
+    }
+    let probe = Arc::new(Probe::default());
+    let store = Arc::new(MemoryTimelineStore::default());
+    let config = builder_with_store(&probe, store);
+    let agent = MinimalHost::start(&config).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("visible-root".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    soon(session.idle("main")).await.unwrap();
+    let cut = session.sequence("main").unwrap();
+    let child = session
+        .branch("main".into(), cut, options("child"))
+        .await
+        .unwrap();
+    soon(session.idle(&child)).await.unwrap();
+    session
+        .submit("visible-child".into(), InputMode::Queue, &child)
+        .await
+        .unwrap();
+    soon(session.idle(&child)).await.unwrap();
+    let leaf = session
+        .branch(
+            child.clone(),
+            session.sequence(&child).unwrap(),
+            options("leaf"),
+        )
+        .await
+        .unwrap();
+    let zero = session
+        .branch(child.clone(), 0, options("zero cut"))
+        .await
+        .unwrap();
+    soon(session.idle(&leaf)).await.unwrap();
+    soon(session.idle(&zero)).await.unwrap();
+    for branch in ["main", child.as_str()] {
+        session
+            .submit(
+                "visible-excluded-after-cut".into(),
+                InputMode::Queue,
+                branch,
+            )
+            .await
+            .unwrap();
+        soon(session.idle(branch)).await.unwrap();
+    }
+    session
+        .submit("visible-leaf".into(), InputMode::Queue, &leaf)
+        .await
+        .unwrap();
+    soon(session.idle(&leaf)).await.unwrap();
+    let tree = session.session_service::<TreeCommands>().unwrap();
+    let expected = ["visible-root", "visible-child", "visible-leaf"];
+    assert_eq!(texts(&tree, &leaf).await, expected);
+    assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
+    session
+        .end_branch(
+            &leaf,
+            BranchSource::Host {
+                operation_id: "test-end".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(texts(&tree, &leaf).await, expected);
+    let session_id = session.id().to_owned();
+    soon(agent.close()).await.unwrap();
+    let agent = MinimalHost::start(&config).await.unwrap();
+    let restored = agent.restore_session(session_id).await.unwrap();
+    let tree = restored.session_service::<TreeCommands>().unwrap();
+    assert_eq!(texts(&tree, &leaf).await, expected);
+    assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
     soon(agent.close()).await.unwrap();
 }
 

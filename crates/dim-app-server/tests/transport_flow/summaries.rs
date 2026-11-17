@@ -1,6 +1,6 @@
 use super::*;
 use dim_agent_runtime::testing::branch_events as read_branch_events;
-use dim_agent_types::{InputBlock, InputMessageData};
+use dim_agent_types::{EventKind, InputBlock, InputMessageData};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn summaries_are_v3_filtered_and_bounded() {
@@ -17,6 +17,17 @@ async fn summaries_are_v3_filtered_and_bounded() {
     let empty = client.rpc("session.create", create(json!([]))).await;
     let empty_id = empty["result"]["sessionId"].as_str().unwrap().to_owned();
     let empty_session = server.agent().unwrap().get_session(&empty_id).unwrap();
+
+    let acted = client.rpc("session.create", create(json!([]))).await;
+    let acted_id = acted["result"]["sessionId"].as_str().unwrap().to_owned();
+    let acted_session = server.agent().unwrap().get_session(&acted_id).unwrap();
+    while dim_agent_runtime::core::unix_millis() <= acted_session.created_at() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    acted_session
+        .input(InputMessageData::text("the first thing said", None), "main")
+        .await
+        .unwrap();
 
     let created = client.rpc("session.create", create(json!([]))).await;
     let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
@@ -107,6 +118,36 @@ async fn summaries_are_v3_filtered_and_bounded() {
         activity_time(&initial).unwrap_or(empty_session.created_at())
     );
     assert!(empty_row.get("preview").is_none());
+    let acted_row = rows
+        .iter()
+        .find(|row| row["sessionId"] == acted_id)
+        .unwrap();
+    let through = acted_row["sequence"].as_u64().unwrap();
+    let acted_events = read_branch_events(&acted_session, "main", ..=through)
+        .await
+        .unwrap();
+    let said = acted_events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::InputMessage(data) if data.user.is_some() => Some(event.create_at),
+            _ => None,
+        })
+        .expect("the session's user message");
+    assert!(
+        said > acted_session.created_at(),
+        "the user message's event time is past the creation time"
+    );
+    assert_eq!(
+        acted_row["updatedAt"],
+        activity_time(&acted_events).expect("the session's user message is its activity"),
+        "the row's activity time is its newest activity event's own"
+    );
+    assert_ne!(
+        acted_row["updatedAt"],
+        acted_session.created_at(),
+        "the row's activity time is not the creation time"
+    );
+    assert!(acted_row.get("preview").is_some());
     let row = rows
         .iter()
         .find(|row| row["sessionId"] == session_id)

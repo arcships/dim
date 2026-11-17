@@ -6,6 +6,7 @@
 use super::AgentIndex;
 use crate::protocol::{Empty, PROTOCOL_VERSION, SessionId, SessionOrigin, session_cwd};
 use dim_agent_capabilities::{
+    host::ModelSelectionRequest,
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
 };
@@ -19,7 +20,7 @@ use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, Reply, Value, caller_row};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
-use std::{future::Future, sync::Arc};
+use std::{future::Future, sync::Arc, sync::atomic::Ordering};
 use tokio_util::sync::CancellationToken;
 
 /// A branch of a Session.
@@ -86,6 +87,31 @@ pub struct LaunchRequest {
     /// Session defaults.
     #[serde(default)]
     pub starter: Option<SessionRef>,
+    /// The class of work the launch runs; absent: the caller's own work, which
+    /// makes the Session `internal`.
+    #[serde(default)]
+    pub origin: Option<LaunchOrigin>,
+    /// The title the caller knows for the Session before its first input
+    /// (#1421). Agents only checks that it is a string; SessionTitle applies
+    /// its text rules and writes it as the first manual title.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+/// The creation origins a `sessions.launch` caller may declare: work a saved
+/// configuration runs with no person present. A closed enum, so a caller
+/// names a purpose the App Server owns rather than a free-form visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LaunchOrigin {
+    Automation,
+}
+impl LaunchOrigin {
+    /// The stored origin this declared class names.
+    pub const fn session_origin(self) -> SessionOrigin {
+        match self {
+            Self::Automation => SessionOrigin::Automation,
+        }
+    }
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +180,18 @@ pub enum LookupReply {
     Unknown,
 }
 
+/// `exists` (§6.9): whether the Session id still exists.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ExistsRequest {
+    pub session_id: String,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExistsReply {
+    pub exists: bool,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryRequest {
@@ -182,6 +220,21 @@ const HISTORY_PAGE_LIMIT: usize = 256;
 pub struct HistoryPage {
     pub through: u64,
     pub events: Vec<Arc<AgentEvent>>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PendingRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    /// The `inputId` an earlier write or lookup named.
+    pub input_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReply {
+    pub pending: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -258,6 +311,7 @@ impl From<AgentError> for SessionsError {
             AgentError::UnknownBranch(_) => Self::BranchMissing { message },
             AgentError::BranchEnded(_) => Self::BranchEnded { message },
             AgentError::Reloading(_) => Self::Reloading { message },
+            AgentError::PublicationUnknown(_) => Self::PublicationUnknown { message },
             AgentError::InvalidInput(_) => Self::Rejected { message },
             AgentError::AmbiguousSubmission(_) => Self::Ambiguous { message },
             _ => Self::Failed { message },
@@ -281,7 +335,7 @@ async fn published(publication: &Publication, sequence: u64) -> Result<(), Sessi
     Ok(())
 }
 
-/// A failed wait for a branch to settle (`stop`, `idle`): apart from a closed
+/// A failed wait for branch dispatch: apart from a closed
 /// Session, an unknown branch or a reloading capability, it is the branch's
 /// dispatch failure.
 fn settlement(error: AgentError) -> SessionsError {
@@ -317,6 +371,10 @@ impl AgentIndex {
         self: &Arc<Self>,
         request: LaunchRequest,
     ) -> Result<LaunchReply, SessionsError> {
+        let activity = self
+            .activity
+            .take_hold()
+            .ok_or_else(|| SessionsError::reloading("process admission"))?;
         let (host, config, policy) = self
             .until_unloaded(async {
                 if request.policy.as_ref().is_some_and(|policy| {
@@ -361,15 +419,22 @@ impl AgentIndex {
                 config.cwd = cwd;
                 config.permission_policy = policy.clone();
                 config.interactive = false;
+                config.initial_title = request.title;
                 if self.selects_models {
                     let selection = self
                         .model_selection()
                         .ok_or_else(|| SessionsError::reloading("model selection"))?;
                     config.model = selection
-                        .0
                         .resolve(
-                            request.model.or_else(|| host.profile.model.clone()),
-                            Some(config.cwd.clone().into()),
+                            ModelSelectionRequest::at(
+                                request.model.or_else(|| host.profile.model.clone()),
+                                Some(std::path::Path::new(&config.cwd)),
+                            )
+                            .map_err(|error| {
+                                SessionsError::Failed {
+                                    message: format!("model resolution: {error}"),
+                                }
+                            })?,
                             self.stopping.clone(),
                         )
                         .await
@@ -388,15 +453,18 @@ impl AgentIndex {
                 Ok((host, config, policy))
             })
             .await?;
+        let origin = request.origin.map(LaunchOrigin::session_origin);
         let index = self.clone();
         let session = tokio::spawn(async move {
+            let _activity = activity;
             let session = index
                 .create_session(
                     &host,
                     config,
                     PROTOCOL_VERSION,
                     None,
-                    SessionOrigin::Internal,
+                    origin.unwrap_or(SessionOrigin::Internal),
+                    None,
                 )
                 .await?;
             index.retain_versions();
@@ -509,6 +577,40 @@ impl AgentIndex {
         .await
     }
 
+    /// Answers whether Session `id` still exists (§6.9): it has an owner or
+    /// SessionStore records, the facts `acquire` reads before it restores
+    /// anything. A read: it creates no slot, takes no lease, acquires
+    /// nothing, restores nothing and writes no event, so idle unload sees no
+    /// effect. `false` means the Session was deleted; a closed, restorable
+    /// Session is `true` because its rows remain.
+    pub async fn exists(&self, request: ExistsRequest) -> Result<ExistsReply, SessionsError> {
+        self.until_unloaded(async {
+            let id = &request.session_id;
+            let (deleted, owned) = {
+                let inner = self.directory.inner.lock().expect("agent index");
+                (
+                    inner
+                        .sessions
+                        .get(id)
+                        .is_some_and(|slot| slot.deleted.load(Ordering::Acquire)),
+                    inner.owner(id).is_some(),
+                )
+            };
+            if deleted {
+                return Ok(ExistsReply { exists: false });
+            }
+            if owned {
+                return Ok(ExistsReply { exists: true });
+            }
+            let exists = match &self.session_store {
+                Some(store) => store.has_records(id).await?,
+                None => false,
+            };
+            Ok(ExistsReply { exists })
+        })
+        .await
+    }
+
     /// Pages the branch's own events through a fixed sequence. A caller pages
     /// with `after` set to the last returned sequence until it reaches
     /// `through`.
@@ -554,6 +656,47 @@ impl AgentIndex {
         .await
     }
 
+    /// Answers whether `inputId` is still pending on the branch
+    /// (session-access §2): pending from its `input/message` until
+    /// `input/applied` followed by `input/consumed`, or `input/deleted`,
+    /// references it. Waits for dispatch through the published head captured
+    /// on entry, then reads the branch's InputQueue without reading history.
+    /// An id the branch does not hold is not pending.
+    pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError> {
+        self.until_unloaded(async {
+            if request.input_id.is_empty() {
+                return Err(SessionsError::rejected("inputId must not be empty"));
+            }
+            let lease = self.acquire(&request.session_id).await?;
+            let publication = lease.session.publication(&request.branch_id)?;
+            let through = publication.sequence();
+            let mut dispatch = lease.session.dispatch_watch(&request.branch_id)?;
+            let mut published = publication.watch();
+            tokio::select! {
+                result = async {
+                    dispatch.wait_for(|state| state.sequence >= through || state.failure.is_some())
+                        .await.map(|state| state.failure.clone())
+                } => {
+                    if let Some(error) = result.map_err(|_| AgentError::Closed(request.branch_id.clone()))? {
+                        return Err(settlement(error));
+                    }
+                }
+                _ = published.wait_for(|&(_, closed)| closed) => {
+                    let error = dispatch.borrow().failure.clone()
+                        .or_else(|| publication.failure())
+                        .unwrap_or_else(|| AgentError::Closed(request.branch_id.clone()));
+                    return Err(settlement(error));
+                }
+            }
+            let pending = lease
+                .session
+                .service::<InputQueue>(&request.branch_id)?
+                .pending(&request.input_id);
+            Ok(PendingReply { pending })
+        })
+        .await
+    }
+
     /// Withdraws an input the caller wrote, by its `inputId`, through the
     /// branch's InputQueue, and returns InputQueue's decision. A deletion
     /// replies once `input/deleted` is published.
@@ -561,21 +704,19 @@ impl AgentIndex {
         self.until_unloaded(async {
             let lease = self.acquire(&request.session_id).await?;
             let publication = lease.session.publication(&request.branch_id)?;
-            let (withdrawal, _) = lease
+            let answer = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?
-                .withdraw(
-                    InputWithdrawData {
-                        input_id: request.input_id,
-                        reason: request.reason,
-                    },
-                    None,
-                )
+                .withdraw(InputWithdrawData {
+                    input_id: request.input_id,
+                    reason: request.reason,
+                    steer: None,
+                })
                 .await?;
-            if let Withdrawal::Deleted { sequence } = withdrawal {
+            if let Withdrawal::Deleted { sequence } = answer {
                 published(&publication, sequence).await?;
             }
-            Ok(withdrawal)
+            Ok(answer)
         })
         .await
     }
@@ -636,8 +777,8 @@ pub(crate) struct SessionsService(pub(crate) Ctx);
 impl HostDispatch for SessionsService {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({
-            "launch": "async", "input": "async", "lookup": "async",
-            "history": "async", "withdraw": "async", "stop": "async", "idle": "async",
+            "launch": "async", "input": "async", "lookup": "async", "exists": "async",
+            "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
             "delete": "async",
         }))
     }
@@ -701,7 +842,9 @@ async fn call(
             })
         }
         "lookup" => reply(index.lookup(request(args)?).await?),
+        "exists" => reply(index.exists(request(args)?).await?),
         "history" => reply(index.history(request(args)?).await?),
+        "pending" => reply(index.pending(request(args)?).await?),
         "withdraw" => reply(match index.withdraw(request(args)?).await? {
             Withdrawal::Deleted { sequence } => json!({"status": "deleted", "sequence": sequence}),
             Withdrawal::NotHeld => json!({"status": "notHeld"}),

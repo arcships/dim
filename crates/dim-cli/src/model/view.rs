@@ -20,6 +20,17 @@ pub enum RowKind {
     ToolCall,
     /// A `context/compaction-start` and the `context/compaction` that ends it.
     Compaction,
+    /// Context a hook injected after the operator's words: drawn as one muted
+    /// status row under the message, its body behind the detail setting. Not a
+    /// message, so no pick, count or rail reads it.
+    HookContext,
+    /// A `Stop` hook's follow-up: the input that continued the conversation.
+    /// One muted status row where the input was written, with the same detail
+    /// setting as a hook's context, and never a message either.
+    HookFollowUp,
+    /// A member's completed delegation result: a header naming the task and
+    /// its Markdown body, folded to a preview unless expanded.
+    MemberResult,
     Error,
     Status,
     /// A row kind the UI does not draw specially; it falls back to a status
@@ -48,8 +59,10 @@ pub enum RowTone {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ViewRow {
     pub row_id: String,
+    /// The progress-only thinking ID replaced by the first durable event.
+    pub provisional_id: Option<String>,
     pub kind: RowKind,
-    /// Presentation of an image message; `text` remains editable text only.
+    /// Display-only message text or a bounded original thinking excerpt.
     pub display: Option<String>,
     pub text: String,
     pub streaming: bool,
@@ -63,6 +76,9 @@ pub struct ViewRow {
     /// The model request a tool call came from: the calls of one request are
     /// drawn as one group.
     pub batch: Option<String>,
+    /// The outer `codemode` call a child call belongs to; absent for a
+    /// top-level call.
+    pub parent_call_id: Option<String>,
     /// Work this row stands for that has not settled yet: a tool call
     /// without its result, or a user message the model has not consumed.
     pub pending: bool,
@@ -83,10 +99,15 @@ pub struct ViewRow {
     /// A line-opened marker: the line it opened, which a pick enters
     /// (timeline UI §4.4).
     pub line: Option<String>,
+    /// The user message row this row belongs to: a hook's context is part of
+    /// its message's group, so whatever settles the message settles it
+    /// (timeline UI §4.8).
+    pub parent_row: Option<String>,
     /// A compaction row's state and detail.
     pub compaction: Option<CompactionView>,
     /// A model failure's details, shown when the row is expanded.
     pub failure: Option<FailureDetail>,
+    pub reportable: bool,
 }
 
 /// A model failure as its error row's details print it.
@@ -119,13 +140,37 @@ pub struct RetryView {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompactionView {
     pub state: CompactionState,
+    pub detail: Option<CompactionDetail>,
     /// A completed compaction's summary text — the strategy's part of what
     /// replaced the cut history — or the reason or error of one that did not
     /// complete.
-    pub text: String,
+    pub text: std::sync::Arc<str>,
     /// The parts that keep a completed compaction above its bound, as the
     /// record names them; empty when the record carries no such mark.
     pub insufficient: Vec<CompactionPartSize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionDetail {
+    pub event_id: String,
+    pub sequence: u64,
+    pub state: CompactionDetailState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionDetailState {
+    Unloaded,
+    Loading,
+    Loaded,
+    Failed(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CompactionTarget {
+    pub session_id: String,
+    pub branch_id: String,
+    pub event_id: String,
+    pub sequence: u64,
 }
 
 /// One part the record names in a compaction's insufficient-space mark.
@@ -163,12 +208,6 @@ pub enum CompactionState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemberCard {
     pub task: TaskView,
-    /// The temporary profile's name, or a native Agent's name once
-    /// `agent.list` named it; its ID until then.
-    pub agent: String,
-    /// The native Agent `agent.list` can name; none for a temporary profile
-    /// or a provider member.
-    pub agent_id: Option<String>,
     pub prompt: String,
     /// Member activity, not a claim about the model that ran this task: an
     /// ended card keeps the last observation made while it ran.
@@ -260,17 +299,67 @@ pub struct TaskView {
     pub branch_id: String,
     pub kind: TaskKind,
     pub label: String,
+    pub command: Option<String>,
+    /// The member Agent's name, or its id until `agent.list` names it.
+    pub agent: Option<String>,
+    /// An existing native Agent that `agent.list` can name.
+    pub agent_id: Option<String>,
     pub started_at: u64,
+    /// The model request and call that dispatched it, with its start event's
+    /// sequence; a Workflow run has none.
+    pub dispatch: Option<Dispatch>,
     pub finished: Option<TaskFinish>,
+}
+
+/// Where a command or delegation was dispatched: the list orders tasks by
+/// it, so finishing never moves a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Dispatch {
+    pub request_id: String,
+    pub call_id: String,
+    /// The call's index in its model response, when that response was read.
+    pub position: Option<u32>,
+    pub sequence: u64,
+}
+
+/// How a task ended, as the owner that ended it classified it: a stop is not
+/// a failure, so the three outcomes stay distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskOutcome {
+    Completed,
+    Failed,
+    Stopped,
+}
+
+impl TaskOutcome {
+    /// The mark the task row draws before a finished task's label, one cell
+    /// each.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Self::Completed => "\u{2713} ",
+            Self::Failed => "\u{2717} ",
+            Self::Stopped => "\u{2298} ",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskFinish {
     pub at: u64,
+    /// The owner's own status name, which the panel and a card show.
     pub status: &'static str,
-    pub failed: bool,
+    pub outcome: TaskOutcome,
+    /// Whether a read of recorded events produced this finish rather than the
+    /// live event stream: a replayed end is history, not news.
+    pub replayed: bool,
     pub text: String,
     pub exit_code: Option<i64>,
+}
+
+impl TaskFinish {
+    pub fn failed(&self) -> bool {
+        self.outcome == TaskOutcome::Failed
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -286,7 +375,10 @@ pub enum TaskOutputState {
     Unavailable,
     Unsupported,
     ReadError(String),
-    Finished { status: &'static str, failed: bool },
+    Finished {
+        status: &'static str,
+        outcome: TaskOutcome,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,6 +387,20 @@ pub enum MemberConversationState {
     Live,
     ReadError(String),
     Closed,
+}
+
+/// Whether the shown line has history older than the loaded window, and
+/// whether an earlier read for it is requested or in flight.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Earlier {
+    /// The shown line's first event is loaded, or no window has loaded yet:
+    /// nothing earlier to read.
+    #[default]
+    AtStart,
+    /// Older history exists and is not loaded.
+    Unread,
+    /// An earlier read is requested or in flight. It follows `Unread` only.
+    Reading,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +466,10 @@ pub struct ViewSnapshot {
     pub projection_id: u64,
     /// The shown line's history has loaded: its transcript can be laid out.
     pub history_complete: bool,
+    /// Whether history older than the loaded window exists, and whether an
+    /// earlier read is in flight; `/earlier`, PageUp at the drawn top and the
+    /// load-more row act on it.
+    pub earlier: Earlier,
     /// Shared with the worker's projection: publishing copies pointers.
     pub rows: Vec<std::sync::Arc<ViewRow>>,
     pub running: bool,
@@ -377,6 +487,8 @@ pub struct ViewSnapshot {
     pub queued: Vec<QueuedInput>,
     /// Unfinished tasks followed by the latest 50 terminal facts.
     pub tasks: Vec<TaskView>,
+    /// Native Agent identities whose shared name lookup has not settled.
+    pub pending_agent_names: Vec<String>,
     pub task_history_loading: usize,
     pub task_history_errors: Vec<String>,
     pub workflow: WorkflowInventory,
@@ -386,6 +498,7 @@ pub struct ViewSnapshot {
     pub ended: Option<(u64, TurnEnd)>,
     /// `main` followed by this Session's lines, as the lines panel lists them.
     pub lines: Vec<LineView>,
+    pub unread_lines: std::collections::BTreeSet<String>,
     pub focus: String,
     /// The line opened beside the shown one, while its panel is open.
     pub side: Option<SideLine>,

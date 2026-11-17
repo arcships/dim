@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     hooks::{HookSourcesHost, NoHookSources},
     host::{
-        SessionFileError, SessionFileErrorCode, SessionFilesHost, SessionFilesService,
+        SessionFileError, SessionFileErrorCode, SessionFiles, SessionFilesService,
         StoredSessionFile,
     },
     host_platform::{HostPlatform, ShellStatus},
@@ -85,9 +85,9 @@ impl DynPlugin for GraphPlatform {
                 reason: "Graph generation does not execute commands".into(),
             })
             .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?
-            .with_execution_settings(ExecutionSettingsHost(execution.0.clone()));
+            .with_execution_settings((*execution).clone());
             let toolchain = ctx.require_at(&self.toolchain)?;
-            platform = platform.with_toolchain_source(ToolchainSourceHost(toolchain.0.clone()));
+            platform = platform.with_toolchain_source((*toolchain).clone());
             platform.home = self.home.clone();
             ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
             Ok(Effect::Done)
@@ -207,6 +207,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: dir.join("outputs"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
@@ -220,7 +221,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(Arc::new(
             MemorySkillSettings::default(),
         ))))?;
-        root.provide_as::<SessionFilesHost>(Arc::new(SessionFilesHost(Arc::new(GraphFiles))))?;
+        root.provide_as::<SessionFiles>(Arc::new(SessionFiles(Arc::new(GraphFiles))))?;
         root.provide_as::<ExecutionSettingsHost>(Arc::new(ExecutionSettingsHost::fixed(
             Default::default(),
         )))?;

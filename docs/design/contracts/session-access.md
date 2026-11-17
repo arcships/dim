@@ -4,12 +4,12 @@ Status: Draft. Overall design: [overview §3 integration](../overview.md#3-integ
 
 > **Offline resource nodes.** Rows about an offline resource node describe P3 multi-node behaviour. #5 is withdrawn (rutis is an external dependency, and it withdraws imported services when a link drops), so these rows are redesigned in P3 following overview §6.3: node services are looked up on each call by the Session's resource node, which P3 adds to `SessionConfig` ([A.3](#a3-sessionconfig-fields)). In P1/P2 every Session uses the control node.
 
-Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `history`, `withdraw`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
+Process plugins reach Sessions the way Collaboration already does: through Agents and the public Session interface. This document defines that access as the language-neutral process service `sessions` (ADR 002 D5), provided by Agents, so a TypeScript or Python process plugin (Scheduler, Workflow) uses it by name. Its methods are `launch`, `input`, `lookup`, `exists`, `history`, `withdraw`, `pending`, `stop`, `idle` and `delete`, with request and reply as data ([A.1](#a1-the-sessions-service)). In Rust it is `AgentIndex` plus the `Session` facade ([Appendix E](#appendix-e-rust-binding)). It adds no host or facade plugin. Agents provides it from its directory part, which does not reload, so an Agents reload ends cancellable calls, retains own-outcome calls, and never reloads a caller (D3, #35); the binding, the lifecycle and the spike behind them are in the [sessions service](../appserver/sessions-service.md) design.
 
 | Supplement | Owner | Used by |
 | --- | --- | --- |
 | `sessions` service: named, data-only access to Sessions | Agents | Scheduler, Workflow process parts |
-| `launch` with a policy capped by the starter | Agents | Scheduler, Workflow |
+| `launch` with a policy capped by the starter or the host bound | Agents | Scheduler, Workflow |
 | `SessionConfig` field `interactive` | Agents | Plugins that read it from the Session's `SessionConfig` (Questions, SessionTitle) |
 | Input with source raw blocks (marker, keys, `submissionId`) | InputQueue data contract, runtime facade | Scheduler, Workflow; Goal branch parts write the same form, and Hooks branch parts (to be designed) would too |
 | Fixed-prefix read | Runtime facade (`sequence` and `history`) and the page read `AgentIndex::history_page` (A.5) | Process callers and branch parts deciding from Timeline facts |
@@ -54,7 +54,7 @@ flowchart LR
 | Session facade ([agent.rs](../../../crates/dim-agent-runtime/src/agent.rs), [branch.rs](../../../crates/dim-agent-runtime/src/branch.rs)) | Session, branch | Existing |
 | InputQueue | Branch | Change: consumes `input/withdraw`, writes `input/deleted`; withdrawal service |
 
-Contracts defined here are the `sessions` service with `LaunchRequest`, `InputWrite`, `RawBlock`, `HistoryRequest`, `HistoryPage`, `LookupReply`, `WithdrawRequest`, `WithdrawReply` and `SessionsError`; the live keyed-block projection `session.keys` (Rpc built-in, `KeysRequest`, `KeysResult`, `KeyEntry`); the `SessionConfig` field `interactive` and the `interactive` parameter of `session.create`; the source marker, key and `submissionId` conventions; and the withdrawal contract. Contracts used are the runtime facade, Agents loading, the `input/message` data and consumption contract, the existing context-block element format and the Session input path.
+Contracts defined here are the `sessions` service with `LaunchRequest`, `InputWrite`, `RawBlock`, `HistoryRequest`, `HistoryPage`, `LookupReply`, `WithdrawRequest`, `WithdrawReply`, `PendingRequest`, `PendingReply` and `SessionsError`; the live keyed-block projection `session.keys` (Rpc built-in, `KeysRequest`, `KeysResult`, `KeyEntry`); the `SessionConfig` field `interactive` and the `interactive` parameter of `session.create`; the source marker, key and `submissionId` conventions; and the withdrawal contract. Contracts used are the runtime facade, Agents loading, the `input/message` data and consumption contract, the existing context-block element format and the Session input path.
 
 ## 2. Data and state
 
@@ -66,9 +66,11 @@ Contracts defined here are the `sessions` service with `LaunchRequest`, `InputWr
 | Keyed block effect | History projection ([history.rs](../../../crates/dim-agent-capabilities/src/history.rs)) | From the fixed prefix and compaction facts |
 | Caller progress (runs, pending `submissionId`s) | Caller's process storage | Caller's document |
 
-An input is pending from its `input/message` until either `input/applied` followed by `input/consumed`, or `input/deleted`, references its event id. `input/withdraw` alone never changes whether an input is pending; only InputQueue's result fact does. Every "pending input" derivation (Goal, AcpGateway, Scheduler, Workflow) uses exactly this rule.
+An input is pending from its `input/message` until either `input/applied` followed by `input/consumed`, or `input/deleted`, references its event id. `input/withdraw` alone never changes whether an input is pending; only InputQueue's result fact does. Every "pending input" derivation (Goal, AcpGateway, Scheduler, Workflow) uses exactly this rule. The `sessions.pending` read captures the branch's published sequence after acquisition, waits for dispatch through that sequence, and then reads the current InputQueue. It does not wait for the turn to end or read history; later dispatched consumption or deletion may already be reflected. Abandoning the wait stops only that call. An id the branch does not hold answers `pending: false`, so a caller that lost a round to a restart reads the same answer as one whose round was consumed.
 
 ## 3. Flows
+
+The native `session.attach.expectedCwd` capability permits an optional `expectedCwd` on `session.attach`. The boundary canonicalizes that one path and checks the target Session's stored or live cwd by Session ID under its acquire gate, before project authorization, Session restore or plugin activation. A mismatch fails without attaching or running that project's configuration. Omitting it preserves existing callers. Attach already returns cwd and title metadata; a checked attach never lists all Sessions to find its target.
 
 ### 3.1 Launch, write, wait
 
@@ -141,7 +143,7 @@ Full table: Appendix B.
 | Retire block | Delivered once; the key leaves effect | Consumed position |
 | Deleted input (never applied) | Nothing: its user content and raw blocks never enter context, its keyed blocks never take effect, and compaction never sees it. Clients may show it as deleted from `input/deleted`, and it is absent from `session.keys` | — |
 
-Queue inputs are consumed when Loop starts the turn they drive. Steer inputs are consumed at the next boundary of the running turn and start a turn when the branch is idle. Append inputs are consumed with the next model request and never start a turn. Through compaction, consumed inputs survive only in the summary, except that the latest block of each live key is replayed verbatim. A child branch sees the ancestor prefix up to its cut, including the keys in effect at the cut, and never adopts the parent's pending inputs. The model never sees `submissionId`, mode, `SessionConfig` fields or leases.
+Queue inputs are consumed when Loop starts the turn they drive. Steer inputs are consumed at the next boundary of the running turn and start a turn when the branch is idle. Append inputs are consumed with the next model request and never start a turn. Through compaction, consumed inputs survive only in the summary, except that the latest block of each live key is replayed verbatim. A child branch sees the ancestor prefix up to its cut, including the keys in effect at the cut, and never adopts the parent's pending inputs. Prompt state follows the same rule: an ancestor `prompt/changed` whose delivery inputs the prefix has not consumed does not apply to the child's state, and the child adopts the source's current value as its own change, delivered at its own consumption point; the change's `System` part comes from the prefix's configuration and applies either way. The model never sees `submissionId`, mode, `SessionConfig` fields or leases.
 
 ## 6. Interfaces (summary)
 
@@ -171,10 +173,10 @@ Only plugins in the control node's process hold `sessions`, and it is never expo
 | §4 rule 2 (handover) | `input/applied` hands an input from InputQueue to Loop; after it the input cannot be withdrawn, only interrupted with `stop/interrupt`. |
 | §4 rule 3 (before callbacks only) | Entries check only param shape and authorization; no before callback is used. |
 | §4 rule 4 (no business meaning in core) | `reason`, markers, keys and `submissionId` are generic data; InputQueue and Agents never interpret a source. |
-| §4 rule 5 (batch) | InputQueue handles `input/message` and `input/withdraw` in sequence order; "withdraw and re-submit as Steer" writes the withdraw first in one batch. |
+| §4 rule 5 (batch) | InputQueue handles `input/message` and `input/withdraw` in sequence order; an accepted queued-input Steer commits its replacement and deletion together, with the deletion decision last (A.4). |
 | §4 rule 6 (model context) | A deleted input never enters context; consumed inputs are placed at their consumed position (§5). |
 | §4 rule 7 (public events and services) | Process callers reach Sessions only through `sessions`, and withdraw only through InputQueue's public withdrawal service. |
-| §4 rule 8 (requirements) | #4 and optional-part assembly are raised in §9; the fixed-prefix read is composed from the existing facade (§9.2). |
+| §4 rule 8 (requirements) | #4 and optional-part assembly are raised in §9; the fixed-prefix read is composed from the existing facade (§9.2). Conditional Steer's durable candidate is InputQueue's own event-format decision (A.4); no mechanism change is requested. |
 | §4 rule 9 (only decision facts in the Timeline) | `SessionConfig`, leases and caller progress stay out of the Timeline; only inputs, withdrawal commands and results, and `stop/interrupt` from `stop` are events; the descriptive `reason` on the required `input/withdraw` is allowed by rule 9. `submissionId` is a field of the required `input/message` that callers' recovery decisions read through `lookup` (#32). |
 | §1 (Capability and App Server boundary) | Agents only exposes access; callers keep their business logic in their own plugins. |
 | ADR 002 D1 | `sessions` is a process service of Agents; InputQueue's withdrawal stays in its branch part, served to clients by its Session part. |
@@ -219,14 +221,16 @@ Withdrawn ([#24](https://github.com/arcships/dim/issues/24)): a caller withdraws
 
 ### A.1 The sessions service
 
-`sessions` is a process service provided by Agents, without an instance key. Shapes are JSON with camelCase fields; a `?` after a field name marks it optional and `|` separates alternatives. Each call except `launch` and `delete` acquires the Session (restoring it if needed) and holds it loaded until the reply. The calls carry no caller identity. The [sessions service](../appserver/sessions-service.md) design gives each method's steps, the policy cap and the lifecycle.
+`sessions` is a process service provided by Agents, without an instance key. Shapes are JSON with camelCase fields; a `?` after a field name marks it optional and `|` separates alternatives. Each call except `launch`, `delete` and `exists` acquires the Session (restoring it if needed) and holds it loaded until the reply; `exists` reads whether the Session still exists and never acquires or restores one. The calls carry no caller identity. The [sessions service](../appserver/sessions-service.md) design gives each method's steps, the policy cap and the lifecycle.
 
 | Method | Mode | Request | Reply | Errors |
 | --- | --- | --- | --- | --- |
 | `launch` | async | `LaunchRequest` | `{sessionId, policy}` | `rejected`, `agent_unknown`, `session_closed`, `branch_missing` (the starter), `branch_ended` (the starter), `reloading`, `failed` |
 | `input` | async | `InputWrite` | `{inputId, sequence}` | `rejected`, `ambiguous`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `publication_unknown`, `failed` |
 | `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`, `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
+| `exists` | async | `{sessionId}` | `{exists}` | `rejected`, `reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`, `future_sequence`, `session_closed`, `branch_missing`, `reloading` |
+| `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | [S2 §6.10](../appserver/sessions-service.md#610-pending) |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `publication_unknown` |
 | `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
 | `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`, `branch_missing`, `branch_ended`, `reloading` |
@@ -303,6 +307,7 @@ Implemented: every method above, served by Agents' directory part (S2, [#98](htt
 ```text
 // SessionConfig (new field; existing: permissionPolicy, cwd, model, systemPrompt, tools?, collaborationRole)
 { "interactive": true }             // false: exec, automation; absent: true
+{ "language": "zh-CN" }             // absent: no selection, the base rule stands
 ```
 
 `interactive` means the Session has an interaction counterpart that can answer its questions and approvals: the user through a client, or another Session's or branch's agent (for example a Collaboration leader). It does not require a human. An ACP Session is interactive: the editor answers its approvals. `interactive` is fixed at creation. Assembly never reads it (ADR 002 D3, #30), so the tool set stays the same and a fork keeps the prompt prefix and its KV cache. Plugins that care read it from the Session's config directly: Questions (`ask_user` stays declared and answers that no one is available to answer) and SessionTitle (titles interactive leader Sessions only).
@@ -320,6 +325,10 @@ Implemented (C2): `session.create` sets the field, and the native store writes i
 | No `interactive` (every record before C2, interactive records after it) | Interactive | Interactive |
 | `"interactive": false` | Non-interactive | Interactive (field ignored; accepted) |
 
+`language` is the operator's reply-language choice for the Session: one of `en`, `zh-CN`, `zh-Hant`, `ja`, `ko`, `id`, `de`, `fr`, `es`, `pt-BR` and `pt-PT`, the names [PromptSources §3](../plugins/PromptSources.md#3-the-agent-prompt-language-state-source) states in English. `session.create` accepts `language?`; `session.language.get` and `session.language.update` read and change it, the update taking a code or `{action: "clear"}`. Clients send the create member only when `hello.features` names `session.language`, because `session.create` rejects unknown fields on older daemons. A record without the member means no selection and produces no state block. The native store keeps version 13 and updates the member in place while the Session runs; an older daemon ignores it. A fork copies the value with the rest of the configuration. An update adopts the value on `main` and, before it replies, on every loaded branch, so a branch's next request carries it without a wake; a branch loaded later reads the current value, and each branch's periodic check is the fallback.
+
+An update writes the record, replaces the live value and then has Prompt adopt the source. A failure before the record is written leaves the value unchanged. A failure after it, or an `interrupted` reply, leaves the new value stored, and each branch's periodic check delivers it to that branch; a client that receives an error reads the value back with `session.language.get`.
+
 `tools` is the Session's optional mount list, fixed at creation. `session.create {tools?}` sets it; without the parameter the Session takes its Agent profile's optional `tools`, and a profile without one gives none (the product default). A profile's or member's list limits what that agent sees; a Collaboration member with a list always mounts `agent`. Without a mount list the Session declares every host tool, in the host's order, and every tool a part registers with `toolRegistry`, by name. With one it declares exactly the host and registered tools the list names, in its order; `[]` declares none of them. Other sources' tools (MCP) follow in both cases and are governed by their own configuration. A named tool that nothing has registered is not declared and is reported once; it is declared once something registers it. Duplicate names fail Session creation. Permission decides whether a declared tool's call runs and never changes the declarations ([session-boundary A.5](session-boundary.md#a5-tool-contribution)). The native store writes `tools` only when the Session has a mount list.
 
 Not in this contract: `createdBy` (the Session's origin) and the `client` parameter of `session.create` are added when something decides with them. The resource node is a P3 addition (overview §6.3): an additive optional `SessionConfig` field, where a missing value means the control node.
@@ -328,15 +337,92 @@ Not in this contract: `createdBy` (the Session's origin) and the `client` parame
 
 | Item | Content |
 | --- | --- |
-| Command | `input/withdraw { input_id, reason? }`, a branch command event. `reason` is generic optional text with no business meaning, which clients show for the deleted input; events written without it are unchanged. Producers: the withdrawal service (clients, process callers). It is never a fact about the input by itself |
+| Command | `input/withdraw { input_id, reason?, steer? }`, a branch command event. `reason` is generic optional text with no business meaning, which clients show for the deleted input; events written without it are unchanged. `steer` is the checked candidate input, durably carried by the command, not an adopted input or model context. Producers: the withdrawal service (clients, process callers). It is never a fact about the input by itself |
 | Result fact | `input/deleted { input_id }`, written only by InputQueue, only when it consumes an `input/withdraw` while it holds that input unapplied |
 | Held | InputQueue holds an input from its `input/message` until it writes `input/applied` or `input/deleted` for it. |
-| No effect | Unknown id, input already applied, or already deleted: InputQueue writes nothing and no failure event exists; the caller's reply is `notHeld` |
-| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), the reply also carries `steer: {inputId, sequence}` for the new Steer input |
+| No effect | Unknown id, input already applied, or already deleted: InputQueue writes no result fact or replacement input and no failure event exists; the caller's reply is `notHeld` |
+| Client path | `session.input.withdraw {sessionId, branchId, inputId, reason?, steer?}`, provided by InputQueue through `sessionMethods` (namespace `session.input`; Session-scoped part `InputMethods`, implemented in S1, that calls the branch's withdrawal service), so Rpc names no owning service → `{status: "deleted", sequence}` or `{status: "notHeld"}`. With `steer` (a `UserInput`), only a `deleted` reply also carries `steer: {inputId, sequence}` for the committed replacement, and with it `warnings?: [{check, message}]` for the submit checks' work that did not happen (Hooks A.6.2), absent when there is none. The warnings describe the replacement this call wrote, so they appear only with its receipt: a reply that wrote no replacement carries neither |
 | Process and branch-part path | `sessions.withdraw` for process callers, InputQueue's branch withdrawal service for branch parts: by the `input_id` returned when the caller wrote the input |
 | Write path | The service appends `input/withdraw`, then replies with InputQueue's decision for that command. InputQueue's recheck uses only its own decision state (held set), never a lock on another owner's facts |
-| Withdraw and re-submit as Steer | One atomic batch: `input/withdraw` for the old input plus the new Steer `input/message`. The withdraw takes effect only if the old input is still held; the new input is written either way |
+| Withdraw and re-submit as Steer | InputQueue accepts the replacement only when it accepts withdrawal of the old held input. The replacement Steer `input/message` and the old input's `input/deleted` commit in one atomic result batch, with `input/deleted` last. A `notHeld` decision creates no replacement |
 | After apply | An applied input cannot be withdrawn; Loop consumes it as usual and needs no change |
+| Refused `steer` | The steer is validated as the operator sent it before any submit check and before the withdrawal is decided, so a steer without operator content fails the call with `session_invalid_input`; an invalid steer for an input the queue does not hold still answers that error rather than `notHeld`, and neither the withdrawal nor the replacement is written |
+
+#### Conditional Steer ordering
+
+The operation is scoped to the original input id in the addressed branch, not
+to its text, a client connection or a time window. For one original input,
+competing withdrawals with or without `steer` share InputQueue's ordered withdrawal
+decision. At most one can delete that input, and only an accepted Steer can
+create a replacement. If deletion or recall wins, a later Steer cannot resurrect
+the message. If application wins, the original is consumed normally and no
+replacement is created. Other held inputs and explicit new submissions, including
+identical text, remain independent.
+
+InputMethods runs the existing validation and submission checks before admitting
+a Steer command. A blocked check writes neither a command nor a replacement and
+leaves a still-held input retryable. Passing the checks is not a reservation:
+InputQueue must still decide when it consumes the command. Two callers may both
+pass their checks, but cannot both replace the same original input.
+
+The command and its result are distinct. A committed command may remain when
+the decision is `notHeld`; no result or replacement is written for that decision.
+The service must not publish a candidate as `input/message` before acceptance,
+or delete the original and submit its replacement in separate result commits.
+Replies follow publication of the accepted result batch; `sequence` identifies
+the deletion and `steer.sequence` identifies the preceding replacement.
+
+InputQueue remains the branch Capability that owns the decision; InputMethods
+remains a Session method provider, not another Capability. The client-facing
+entry remains a data-only RPC through `sessionMethods`; request fields,
+authorization and Session method interruption/disconnect rules are unchanged.
+Timeline and Dispatcher provide their existing ordering, atomic commit and
+publication mechanisms, not a special Steer transaction or a new service face.
+A client snapshot, debounce timer, per-connection lock or in-memory deduplication
+set cannot substitute for the owner's ordered decision.
+
+#### Recovery and compatibility
+
+A committed command awaiting a result must retain enough durable information to
+settle the checked replacement after recovery; the candidate must not become
+model context merely because it is recorded. Recovery must distinguish this
+case from an already committed result batch, settle the former once and never
+recreate the latter. It must not rerun external submission checks to reconstruct
+the previously checked content. Reload or a lost reply cannot authorize another
+replacement of the deleted original; a retry returns `notHeld` without a Steer
+receipt, rather than resending the accepted replacement.
+
+This changes the meaning of the existing optional `steer` parameter: callers
+must no longer expect a new receipt when withdrawal returns `notHeld`. Plain
+withdrawal keeps its existing replies. Historical replacement inputs remain
+ordinary committed inputs; recovery must not rewrite or remove them to enforce
+the new rule retroactively. The guarantee is per branch, not a global claim
+across independently forked histories.
+
+The durable command representation is an InputQueue event-format decision, not
+a new Timeline primitive. The optional command member `steer` holds the complete
+checked input, including submit-check context, with mode `steer`. It is omitted
+for plain withdrawals and old commands. Only the accepted result's
+`input/message` adopts that content. External validation rejects an invalid
+candidate before admission, regardless of whether the original is held.
+
+The native store writes **v43** and upgrades the formats accepted by v42 without
+rewriting historical events. v43 reads commands with or without `steer`; v42 and
+earlier readers reject the v43 store at startup because their strict command
+decoder cannot read the new member. The format gate, not a per-command fallback,
+prevents an older writer from opening the upgraded store. See the
+[storage owner's format decision](../appserver/native-storage-format.md#v43-conditional-queued-input-steer).
+Frozen event fixtures remain unchanged.
+
+Wire compatibility is independent of the store gate: v3 delivers the native
+`input/withdraw` event, including its optional `steer` member. A client built
+with the old strict command type rejects an event carrying that member; the
+store upgrade cannot protect an already connected old client. No protocol
+version, field-stripping adapter or fallback replacement is added. This follows
+the paired client/daemon policy in
+[Session boundary A.6](session-boundary.md#a6-tool-effects): clients decoding
+native events must be upgraded with the daemon. Plain withdrawals keep their
+previous wire shape, and the frozen v1 projection remains unchanged.
 
 ### A.5 Fixed-prefix read
 
@@ -380,7 +466,9 @@ while the first write is still unpublished.
 | `input/withdraw` after apply | `input/applied` < withdraw | No effect; `notHeld`; consumed normally | InputQueue, Loop |
 | Two withdraws for one input | withdraw₁ < withdraw₂ | First deletes (if held); second `notHeld` | InputQueue |
 | Withdraw of an unknown id | — | No effect; `notHeld` | InputQueue |
-| Withdraw and re-submit as Steer, old input already applied | applied < batch | Old input consumed normally; new Steer input applied as usual | InputQueue |
+| Withdraw and re-submit as Steer, old input already applied | applied < withdraw | Old input consumed normally; `notHeld`, no replacement or Steer receipt | InputQueue |
+| Two queued-input Steers for one held input | withdraw₁ < withdraw₂ | First deletes and replaces once; second `notHeld`, no replacement or Steer receipt | InputQueue |
+| Withdrawal without `steer` before queued-input Steer | deletion decision < later withdrawal decision | `notHeld`; the deleted input is not resubmitted | InputQueue |
 | Compaction between write and consumption | input < compaction < consumed | Placed after the summary; a deleted input is never seen by compaction | ContextPreparation |
 | Child branch cut between write and consumption | input < cut < consumed | Child does not adopt it | InputQueue (child) |
 | Two writers, same key | Timeline order | Later supersedes; owner prefixes avoid collisions by convention | History projection |
@@ -398,6 +486,24 @@ while the first write is still unpublished.
 3. Queue, Steer and Append written during a tool batch are consumed in the documented order, with the marker before the user content.
 4. A keyed block survives compaction, a retired key does not, and a child branch inherits keys independently.
 5. `input/withdraw` while InputQueue holds the input yields `input/deleted` and the input is never applied; after `input/applied` it writes nothing and replies `notHeld`; for one input at most one of `input/applied` and `input/deleted` exists. A deleted input's raw and keyed blocks never reach the model.
+
+   Queued-input Steer acceptance also requires these public-flow cases, checking
+   persisted Timeline facts as well as RPC replies:
+   - Two independent clients concurrently steering one held input create exactly
+     one replacement and one deletion. The loser returns `notHeld` without a
+     `steer` receipt, including when the callers supply different replacement text.
+   - Withdrawal without `steer` racing with Steer and application racing with Steer follow
+     InputQueue's decision order; no losing operation creates a replacement.
+     Unknown and already-deleted ids also create none.
+   - A blocked submission check leaves no command or replacement; retrying while
+     still held can succeed. Explicitly submitting identical text remains valid.
+   - A restart after command commit but before its result settles the accepted
+     operation once. Restart after result commit but before its reply, followed
+     by retry, creates no second replacement. The original deletion and its
+     accepted replacement cannot be partially committed or recovered.
+   - Two different held inputs can each be steered once; deduplication must not
+     merge distinct input identities or independent branch histories.
+
 6. `history` with `atLeast` after a dispatched `turn/end` returns `through` ≥ that sequence.
 
 ## Appendix D. Assumptions
@@ -407,7 +513,7 @@ while the first write is still unpublished.
 | A1 | Every source input starts with one marker block | Existing context-block format | Each plugin defines recognition |
 | A2 | Moved to the format decision in [A.3](#a3-sessionconfig-fields) | — | — |
 | A3 | Process callers may call `idle` and `stop` on Sessions they started | Collaboration precedent | Another stop path |
-| A4 | "Withdraw and re-submit as Steer" is written as one batch by InputQueue's `session.input.withdraw` through its optional `steer` parameter, the new input's user content (S1) | Judgment | A separate built-in |
+| A4 | "Withdraw and re-submit as Steer" uses InputQueue's `session.input.withdraw` with optional `steer` user content; only an accepted withdrawal commits the replacement/deletion result batch (A.4) | Judgment | A separate built-in |
 
 ## Appendix E. Rust binding
 
@@ -419,7 +525,8 @@ while the first write is still unpublished.
 | `input` | `Session::input(InputMessageData, branch)` (existing; returns the committed input for an id the branch already holds); a key is `InputBlock::Raw { key: Some(name), retire }` |
 | `lookup` | `Session::lookup(branch, submission_id)`, shared with `session.input_lookup`: a query of the branch's committed input identities; waits for the found input's publication |
 | `history` | `Session::sequence(branch)`, failing `future_sequence` below `at_least`, then `AgentIndex::history_page(id, branch, after, limit, through)` |
-| `withdraw` | `Session::service::<InputQueue>(branch)` then `InputQueue::withdraw(InputWithdrawData { input_id, reason }, None) -> Result<(Withdrawal, Option<Arc<AgentEvent>>), AgentError>` (S1): appends `input/withdraw` and replies with InputQueue's decision once it is written; `Withdrawal::Deleted { sequence }` or `Withdrawal::NotHeld`. Agents replies `deleted` once that `input/deleted` is published |
+| `withdraw` | `Session::service::<InputQueue>(branch)` then `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`. The data face permits only plain withdrawal and returns `Deleted { sequence }` or `NotHeld`. `InputMethods` uses the Rust-only `withdraw_checked` for an already checked Steer candidate, retains its committed event, and confirms publication before returning the receipt (A.4). |
+| `pending` | Capture `Session::publication(branch).sequence()`, wait through it with `Session::dispatch_watch(branch)` while observing publication closure, then `Session::service::<InputQueue>(branch)` and `InputQueue::pending(input_id) -> bool`: the branch's queue answers §2's rule; an id it does not hold is `false` |
 | `stop`, `idle` | `Session::stop`, `Session::idle` (existing) |
 | `delete` | `AgentIndex::delete(id)` (S5c, crate-internal): admission gate, close, `SessionStore::delete_session`, forget |
 | `SessionConfig` | Rust struct below |

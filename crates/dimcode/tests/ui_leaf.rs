@@ -102,7 +102,7 @@ impl Pty {
                 }
             }
         }
-        String::from_utf8_lossy(&output).into_owned()
+        String::from_utf8_lossy_owned(output)
     }
 
     fn read_until(&self, needle: &str) -> String {
@@ -257,7 +257,7 @@ impl Home {
         .unwrap();
         std::fs::write(
             assets.join("dimcode-web.json"),
-            r#"{"version":"0.0.1","protocolVersion":3,"sourceCommit":"test"}"#,
+            r#"{"version":"0.0.1","protocolVersion":4,"sourceCommit":"test"}"#,
         )
         .unwrap();
         Self { root, home, assets }
@@ -304,7 +304,7 @@ impl Home {
         let mut rpc = Rpc::connect(&self.socket());
         rpc.ok(
             "hello",
-            json!({"protocolVersion": 3, "clientKind": "cli", "clientName": "ui-leaf-test"}),
+            json!({"protocolVersion": 4, "clientKind": "cli", "clientName": "ui-leaf-test"}),
         );
         rpc
     }
@@ -483,7 +483,9 @@ fn normal_dimcode_is_the_leaf_until_it_leaves() {
         "resume must attach eagerly without creating another Session"
     );
     assert_raw(&resumed_pty);
-    resumed_pty.write(b"/exit\r");
+    resumed_pty.write(b"/exit");
+    resumed_pty.read_until("/exit");
+    resumed_pty.write(b"\r");
     let shown = wait_exit(&mut resumed, &resumed_pty);
     assert!(shown.contains("SHELL-RETURNED:0"), "{shown:?}");
     assert_restored(&resumed_pty);

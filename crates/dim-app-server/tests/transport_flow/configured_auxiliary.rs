@@ -5,7 +5,7 @@ use super::*;
 use axum::{Json, Router, extract::State, routing::post};
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
 use dim_agent_capabilities::{
-    host::{AuxiliaryErrorCode, AuxiliaryModelHost, AuxiliaryRequest},
+    host::{AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest},
     model_provider::ModelProviderPlugin,
     timeline_tree::BranchToolConfig,
     workspace_tools::WorkspaceToolsConfig,
@@ -117,6 +117,7 @@ async fn launch_configured_with(
         &mut builder,
         ModelProviderPlugin::process,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: directory.join("outputs"),
         },
         BranchToolConfig::default(),
@@ -202,7 +203,7 @@ async fn the_configured_profile_provides_and_runs_the_auxiliary_model() {
         assert_eq!(owner.name, "ConfiguredModels");
 
         let auxiliary = server
-            .service::<AuxiliaryModelHost>()
+            .service::<AuxiliaryModel>()
             .expect("the auxiliary model host")
             .clone();
         let reply = auxiliary

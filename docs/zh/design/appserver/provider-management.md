@@ -59,15 +59,30 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 
 | 方法 | 请求 | 回复 | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.management` | `{providerId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}` | false | `Drain` |
-| `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令 | false | `Drain` |
-| `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立 | false | `Drain` |
-| `provider.catalog` | `{providerId}` | 既有 `{catalog}` 和 `ProviderModel`，**不修改** | false | `Drain` |
+| `provider.management` | `{providerId, modelId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}`；每个连接新增 `gluedPrefix`，即其记录声明的前缀，每个模型新增 `alias`，即所列 id 所指的 catalog id，以及 `catalogName`，即 `provider.catalog` 为该行发布的名字；未设置时省略 | false | `Drain` |
+| `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令，以及 `gluedPrefix`，即其记录声明的前缀，未设置时省略 | false | `Drain` |
+| `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立。带 `cwd` 时只读该作用域的行，该文件夹没有行时返回 `null`；工作区优先于全局是一条 `configuration` 规则，不属于此读取 | false | `Drain` |
+| `provider.catalog` | `{providerId, modelId?}` | 既有 `{catalog}` 和 `ProviderModel`；每个模型的 `name` 在其 Provider 内唯一（见下方 §3.1） | false | `Drain` |
 
-省略 ID 返回全部已知条目，包含未登录账号；指定 ID 返回该项或明确错误。
+`provider.catalog` 发布的 `name` 在所属 Provider 内唯一。重复判定覆盖该目录的全部行，
+停用或不可用的行也算在内，因此开关某一行不会改名其他行，各客户端读到的名字一致。名字按
+去除首尾空白后比较。名字唯一的行为保留原文。与其他行同名的行发布其标签候选名
+`<自身名字> · <列举结果为该行声明的来源>`，来源取它携带的标签中最后一个 ` · ` 之后的
+文字（group 行为 `routing group`）；仅当没有其他行得到同一候选名、且没有行自身声明该名字
+时才采用它。同组的其他行改在末尾追加自己的 id，因此两行共用的标签不能命名其中任何一行；
+列举结果未声明来源的行没有候选名，同样追加 id。计算所得的名字均由去除空白后的片段拼成，
+追加的 id 也算在内，因此仅在空白上不同的两个 id 得到同一个名字。没有任何其他行得到、也没有行
+自身声明的追加 id 名字照原样保留，这样保留的名字（标签或 id）都在分配计数之前占位，因此计数
+不会抢走其他行自己发布的名字。此后仍被占用的名字再加计数，剩下的行按同一顺序取号：先按 id 名，
+再按 id，最后按声明的名字。只有这一步可能受列举顺序影响，且有了该顺序后只有共用同一个 id 与
+同一个声明名字的行才会走到，因此同一批行换序后每行得到的名字相同。
+这个名字在构建回复时计算，从不存储：所有 descriptor 和持久字段都保留 Provider 或用户声明
+的名字，因此保存编辑不会写回后缀，后缀也随其重复行一起消失。此规则适用于所有 Provider，
+包括两行同名的自定义 Provider。
+
+详情必须指定 Provider ID，返回该项或明确错误；可再指定 modelId，只返回该模型和它的偏好。模型不存在时返回明确的未找到错误。
 管理读取独自提供编辑视图：version、模型 descriptor、管理说明来自同一 Provider 记录快照，
-不能把另一次 `provider.catalog` 的目录与该 version 拼接后写入。选择和只读 web 客户端
-继续使用原 catalog。不承诺账号 owner 之间的原子快照。
+不能把另一次 `provider.catalog` 的目录与该 version 拼接后写入。已知目标的能力读取指定 Provider 和模型 ID；模型选择界面使用 `provider.models.query`。不承诺账号 owner 之间的原子快照。
 
 | `ManagementProvider` 字段 | 类型与含义 |
 | --- | --- |
@@ -79,7 +94,7 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 | `account` | 可选 `{namespace, loginMethods, state}`；namespace 为 `account` / `account.codex` / `account.grok`，登录方式为 `browser` / `device`，state 沿该 namespace 现有公开 status 回复；静态 authority 不含该字段 |
 | `actions` | 当前可用操作名：`update`、`delete`、`refresh`、`models.create`、`models.edit`、`models.reset`、`models.delete`、`models.set_enabled`、`preferences.update`、`login`、`logout`、`usage`；没有逐操作原因代码 |
 | `connection` | 下表静态记录安全连接；连接配置只在可选账号包内时为 `null` |
-| `models` | `{model:ModelEntry,source:"default"\|"override"\|"user",enabled:boolean,endpoint:ModelProtocol\|null,unavailableReason:string\|null,missingLimits:("contextWindow"\|"maxOutputTokens")[],actions:string[],endpointOverride?:NewApiEndpoint}[]`；路由覆盖限 §6 可执行子集。仅账号无本地目录记录时为 `null`，坏目录报错。`missingLimits` 指出没有任何来源声明的上限（§3.5），否则为空。模型操作为 `set_enabled`、`edit`、`reset`、`delete`，按来源/authority 限制；`set_enabled` 只出现在没有 `unavailableReason` 的条目上，因为集合会保留不可用条目的启用状态 |
+| `models` | `{model:ModelEntry,source:"default"\|"override"\|"user",enabled:boolean,endpoint:ModelProtocol\|null,unavailableReason:string\|null,missingLimits:("contextWindow"\|"maxOutputTokens")[],actions:string[],endpointOverride?:NewApiEndpoint}[]`；路由覆盖限 §6 可执行子集。仅账号无本地目录记录时为 `null`，坏目录报错。`missingLimits` 指出没有任何来源声明的上限（§3.5），否则为空。`catalogName` 是 `provider.catalog` 为该行发布的名字，仅当它不同于 `model.displayName` 时出现；字段缺失表示显示名就是应显示的名字。它是计算所得，因此 `model.displayName` 始终是 Provider 或用户声明的名字，编辑也不会把计算出的名字写回。模型操作为 `set_enabled`、`edit`、`reset`、`delete`，按来源/authority 限制；`set_enabled` 只出现在没有 `unavailableReason` 的条目上，因为集合会保留不可用条目的启用状态 |
 | `preferences` | model ID 到既有 `ModelPreferences` 的映射 |
 | `modelsListed` | 读取和不改 `baseUrl`、`credential`、`headers` 的更新不含该字段；其余更新说明本次写入如何处理记录自身的模型：`listed`、`bundled`、`unsupported` 或 `disabled` |
 
@@ -99,13 +114,97 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 列表错误沿用 `ProviderRecordError {providerId,message}`，健康项仍可使用。内置记录没有
 remoteModels 且存储 fingerprint 不同于 bundled 定义时，推导 reseed 诊断（§6），
 已准入条目和删除操作仍可用。有冲突时指出模型 ID；删除冲突项后，仍提示需重启，
-直到启动采用新定义。seed 和管理读取共用一个 Provider 自有候选构建函数，包含远程模型
-替换规则，避免候选不一致。不持久化另一份状态，也不禁用条目。
+直到下次激活允许访问时采用新定义。接纳和管理读取共用一个 Provider 自有候选构建函数，
+包含远程模型替换规则，避免候选不一致。pending 尝试归源接纳所有，不禁用条目。
 actions 只说明当前可用性，
 不是授权或后续写成功的承诺。模型来源由 §6 的独立持久列表推导；默认项消失后，其覆盖
 不能变成用户新增。
 账号退出或切换后，已有目录仍保留版本和描述，但模型标为不可用；刷新到当前账号前不提供模型写操作。
 `source:"override"` 表示有 descriptor 覆盖的默认模型；编辑用户模型后仍为 `source:"user"`。
+
+### 启动、选择与内存
+
+远程模型列表共用的默认 HTTP 客户端在首次列表请求时创建。本地读取、模型选择和
+内置连接配置不会创建它。构建失败通过既有 Provider 错误返回给该操作，不使进程
+装配失败；指定代理或超时的请求仍按自己的网络配置创建客户端。
+
+显式选择读取指定 Provider 和模型。默认选择先尝试工作区，再尝试全局保存的选择；
+第一个可用目标直接返回。只有两者均不可用时才查询启用且已配置的候选，继续遵守
+账号优先、Provider ID 排序和 owner 的实时账号可用性判断。仅给模型 ID 的启动
+按精确模型 ID 查询，优先有效 Provider，多个可用 Provider 时拒绝歧义。
+
+内置目录在构建时生成可独立读取的记录和识别键，运行时不展开或保留全量目录。
+激活只公布可用源代次，不展开 Provider。逐 Provider 接纳、退役和 pending 冲突
+遵循下文“索引源与稀疏接纳”合同。
+
+普通连接和模型编辑保留已接纳的模型基线，包括没有已知源代次的历史行。定义指纹
+相同不表示已有历史行可以改为隐式默认值；只有首次配置尚未保存的内置 Provider，
+或执行下述明确的源接纳流程时，才建立新基线。
+
+Web 与 CLI 模型选择器打开时查询、关闭时释放结果。已采用模型的能力读取携带
+Provider 和模型 ID，不枚举候选目录。具体选择、同步、保留量和峰值验证合同见
+[英文对应章节](../../../design/appserver/provider-management.md#startup-selection-and-memory)。
+
+### 模型显示查询
+
+`provider.models.query` 是进程 `managementMethods` 的只读操作，请求为
+`{providerId?, modelId?, query?, after?, limit?}`。limit 默认 32，范围 1–128。
+query 分别匹配模型 ID、显示名和 Provider 名；`zdr` 也匹配账号 owner 声明的 ZDR 标志。
+after 和 next 是按序、排他的 `{providerId, modelId}` 游标，空模型 ID 表示没有模型行的
+启用 Provider；客户端原样传回游标，不把游标当作可选模型。
+
+回复为 `{models, empty, next}`。模型行含 providerId、providerName、model、version、
+preferences 和 disabled；停用或不可用模型仍可见，以供诊断。empty 项含 providerId、
+providerName 和 reason：`{kind:"no_models", listable}` 或 `{kind:"unreadable"}`。
+每页最多准入 limit 个模型或空 Provider 候选；错误页可能少于 limit 个模型。
+next 为 null 表示结束。非法 limit 返回 `provider_invalid_config`；取消和存储错误
+沿用 Provider 操作合同。查询不刷新远端目录，刷新是显式管理操作。
+
+`provider.catalog` 的可选 modelId 用于已知目标的能力读取；回复仍是同一个 catalog
+封装，但只含指定模型，并保留所属 Provider 的命名规则。完整字段和游标合同见
+[英文对应章节](../../../design/appserver/provider-management.md#model-display-queries)。
+
+### 按需读取管理数据
+
+`provider.management.list` 提供分页概要，请求为
+`{providerId?, after?, limit?, accountsOnly?, query?}`。每页默认 32 条，范围 1–128。
+`providerId` 与 `after` 互斥；游标是上一页最后访问的 Provider ID。`query` 按 ID
+或显示名搜索，`accountsOnly` 只列账户提供商。回复为 `{drivers,providers,errors,next}`；
+末页的 `next` 为 null，损坏记录占用页位置并进入 errors，翻页可以越过它。
+
+概要只包含身份、来源、凭据归属、版本、启用状态、账户、操作和安全连接信息，
+不包含 models 和 preferences 字段。Web 按需翻页，连接配置使用摘要，打开 Models 后读取详情；
+CLI 列表逐页读取概要，指定账户或模型的操作携带相应 ID。
+
+Provider 按 ID 点查或按页读取，每次请求结束释放结果，不保留目录结果、seed 记录
+映射或模型投影缓存。版本检查仍以 Provider 为单位；模型详情在同一本地快照内
+读取头部、目标载荷和状态以及索引定位的命名依赖，不展开其他模型载荷。接口、所有权和流程见[英文对应章节](../../../design/appserver/provider-management.md#on-demand-management-reads)。
+
+### 索引源与稀疏接纳
+
+使用构建期不可变偏移目录，包含 Provider 声明指纹、有序目标键、命名/匹配输入和
+可单独读取的模型载荷。名称复用同一业务规则，包含有效名称补全、Unicode 空白、
+覆盖与冲突依赖分量；不缓存发布名称。冲突分量可能覆盖整个 Provider，任意子串
+查询也可能需要检查较多索引候选，不能宣称所有查找均为常数工作量。
+
+连接配置通过现有 `provider.management.list` 读取摘要，通过 `provider.update` 的
+`reply:"summary"` 接收已提交版本与安全摘要；未指定 `reply` 时仍返回完整快照。
+CLI/Web 的普通连接配置不展开模型，Web 在打开 Models 标签时才读取完整编辑快照。
+
+```text
+Provider 列表 -> 连接配置 -> 保存（摘要与提交版本）
+                   |
+                   +-> Models -> 完整模型编辑快照
+```
+
+原生 v52 将模型级禁用、偏好、别名和路由按模型键保存，保留原有顺序及凭据引用。
+可用目录代次与每个 Provider 已接纳的基线分开：启动不解码或插入内置模型；
+访问时按 Provider 原子接纳变化，冲突保留旧基线，在下次启动后访问时重试。
+源代次变化时，只重建持久化可变行的有效命名输入，并读取其覆盖或别名所需的基线目标；
+不展开无关默认项，派生更新不改变版本或模型载荷。
+迁移逐 Provider 保留不可重建的历史，归档源随备份恢复。协议细节由
+[英文所有者契约](../../../design/appserver/provider-management.md#indexed-source-and-sparse-adoption)与
+[原生格式契约](../../../design/appserver/native-storage-format.md#v52-sparse-provider-state)定义。
 
 ### 3.2 写入与字段操作
 
@@ -115,7 +214,7 @@ actions 只说明当前可用性，
 
 | 方法 | 请求 | 回复与语义 | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突 | true | `Drain` |
+| `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled,gluedPrefix?}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突；`gluedPrefix` 按 patch 的规则：去空白，空值即未声明 | true | `Drain` |
 | `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入；patch 改动 `baseUrl`、`credential` 或 `headers` 时，同一次 CAS 写入还用新 endpoint 的列举结果替换记录自身的模型，`modelsListed` 说明结果；只改 `network` 时单独保存 | true | `Drain` |
 | `provider.probe` | `{providerId,connection}` | `{models:ModelEntry[]}`；只做 §3.3 网络探测，不写入或检查版本 | false | `Drain` |
 | `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry}` | 既有 catalog；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
@@ -159,6 +258,7 @@ bundled catalog（bundled 未定义该 Provider，或 `remoteModels` 已为真�
 | `headers` | `{name,action:"set",value}` / `{name,action:"remove"}` 数组；未提及名称保留 | 静态 authority 的 builtin/custom |
 | `network.proxy` | `{action:"set",value:URL}` / `{action:"clear"}` | 本地 builtin/custom，沿用 authority 校验 |
 | `network.timeoutMs` | `{action:"set",value:正整数}` / `{action:"clear"}` | 本地 builtin/custom |
+| `gluedPrefix` | 字符串设置该 Provider 列出 id 携带的前缀；`null` 清除它 | 静态 authority 的 builtin/custom |
 
 空的 `provider.update` patch 返回 `provider_invalid_config`，不修改记录或版本。
 
@@ -179,9 +279,13 @@ driver、auth、默认模型只读。custom 的 driverKind/auth 创建后同样�
 override 优先，clear 回到发现结果，不删除 metadata；未知上游字符串仅作描述。
 仅设置或清除 endpoint 的编辑只写 endpointOverrides，不创建或修改 descriptor 覆盖。
 models.reset 只移除 descriptor 覆盖，保留端点覆盖；endpoint: clear 只移除路由覆盖。
+models.edit 另增 `alias:{action:"set",value:string}|{action:"clear"}`，写入记录的别名映射而不是
+descriptor 覆盖：别名是 Provider 对其 id 的声明，只设置别名的编辑不留覆盖给 reset 处理。
 models.reset 恢复仍存在的默认项，用户项用 delete。refresh 保留用户模型、覆盖、偏好和
 显式禁用，沿用 admitted 配置冲突检查。托管目录换账号 refresh 时，偏好随 descriptor 覆盖
 和禁用项一起清空；同账号 refresh 则保留它们。托管账号目录不通过这些方法新增用户模型/路由。
+静态提供方只要已保存凭据或使用匿名认证，且驱动和定义都支持远端发现，就可以显式刷新。
+禁用的提供方刷新后仍保持禁用，模型仍不可用于执行。
 models.edit 修改用户模型的 descriptor 时替换该项 userModels，不把用户 ID 写入 modelConfigOverrides。
 models.set_enabled 接受默认模型及用户模型的 ID，并给出账号可用的完整集合：不对应任何目录项的
 ID 被拒绝，不可用项保持原有启用状态。这些操作从同一记录更新有效目录和路由，
@@ -212,10 +316,16 @@ create/update 相同的 URL/header/network 校验。测试修改后的 base URL 
 
 Provider 持久保存的偏好供客户端读取；[F3 客户端](../../../design/model-configuration.md) 把偏好和其所属的**完整 `{providerId,modelId}`** 一起传给既有
 session.create/session.model.update。指定目标不可用就报错，不去掉目标重试或回退其他模型。
-服务端不自动应用保存偏好；显式目标省略偏好仍从目录默认开始，包括模型声明的默认推理档位和
-服务层级；无目标 F3 只改已采用模型的
-指定参数。`/fast` 仍只修改当前 Session；保存 serviceTier 是持久 fast/tier 选择，但只有客户端
-显式传入才生效。其他消费模型不自动继承聊天偏好。
+请求没有声明的字段，由服务端按该 `{providerId,modelId}` 已保存的值补齐：
+session.create、session.model.preview 和带目标的 session.model.update 逐个字段取值，
+先是客户端声明的值，再是该模型保存的值，最后是模型声明的默认值。客户端声明的字段优先。
+模型已不再接受的保存值只丢弃该字段，改用声明的默认值，并由服务端记一条警告；
+客户端声明的值被拒仍使采用失败。无目标 F3 只改已采用模型的
+指定参数。哪些目录声明会被应用、其余为何只描述模型，见
+[模型配置规则](../../../design/model-configuration.md#model-parameters)。
+`/fast` 仍只修改当前 Session；保存 serviceTier 与保存推理档位一样由服务端应用。
+sessions.launch——Scheduler、Workflow 及其他插件启动工作的方式——不是客户端 Session：
+它保留目录默认值，不继承聊天偏好；其他消费模型同样不继承。
 
 用量复用已交付的 `account.usage {providerId} -> Usage`：原生 account namespace 转发
 一次调用到可选包既有 usage 方法。[Usage DTO](../../../../crates/dim-app-server/README.md)
@@ -236,10 +346,30 @@ provider/management.rs 直接把其变体映射为下列代码。不扩展共享
 业务错误沿 JSON-RPC `code:-32000`、安全 message 和 data.appError：
 provider_not_found、provider_conflict、provider_invalid_config、provider_unsupported、
 provider_auth_required、provider_auth_failed、provider_transport_failed、provider_cancelled、
-provider_failed。按 owner 类型错误分类，不解析 message。已有 delete、models.edit/reset/
+provider_failed、provider_catalog_stale、provider_account_changed。按 owner 类型错误分类，不解析 message。已有 delete、models.edit/reset/
 set_enabled、select、refresh 的不存在、CAS/admitted-refresh 冲突、校验错误也分别映射这些
 类型；请求/回复和 JSON-RPC code 不变。未知方法和错误 RPC 参数保持通用边界错误。
 秘密、secret reference、header 值、代理认证和上游正文不进入错误、日志或诊断。
+
+托管 Provider 的 models.set_enabled、models.edit、models.reset 与 preferences.update
+先检查记录版本；版本不匹配仍返回 provider_conflict，即使账号同时变化，也应先重读。
+版本匹配但账号已退出，或目录来自另一账号 epoch/generation，返回 provider_catalog_stale，
+不修改记录。普通凭据刷新仅增加 credentialRevision，不使目录失效。
+
+provider_catalog_stale 在 data.appError 旁增加以下字段：
+
+| 字段 | 类型和含义 |
+| --- | --- |
+| providerId | 托管 Provider ID |
+| expectedVersion、currentVersion | 请求和拒绝时的记录版本；版本检查优先，所以二者相等 |
+| issuer、subject | 当前公开账号身份；已退出时均为 null；不包含资料、scope、凭据 epoch 或 generation |
+| requiredAction | 已登录时为 provider.refresh，包括身份变化；已退出时为 account.login |
+
+provider.refresh 表示刷新该 Provider，使用回复的版本重试原写入至多一次。
+account.login 表示完成账号所公布的登录流程，并在新写入前刷新目录。
+客户端不解析消息、不比较账号代次，也不因 provider_conflict 自动刷新。
+账号 owner 报告变化，或刷新进行期间检测到账号变化时，返回 provider_account_changed；
+先重读账号状态再决定后续动作，不把它当作记录版本冲突。
 
 新方法、endpoint 编辑和类型化 owner 错误随可发现的 provider.management 单元一起发布。
 create/update 替代 provider.save 并与 CLI 调用者一起移除旧方法，不回退 save/直接改库。
@@ -259,6 +389,88 @@ Rpc 沿用 service_reloading/service_unavailable 和准入；调用由 owner 追
 | Provider 描述 | 存储描述上的 `capabilityOverrideFields`；描述中的非正值视为未声明 | 该描述所述的模型 |
 | 捆绑目录 | `metadataSource` 指向匹配的捆绑 Provider：条目仅在其 `metadata.raw` 声明处才有上限，其余取值在捆绑加载时删除；该 Provider 的 `contextWindowOverride`、`contextWindowFallback` 元数据仍是声明 | 匹配到的模型，或该 Provider 的全部模型 |
 | 用户 | 同一 `capabilityOverrideFields` 字段，写在描述覆盖或用户模型上：`models.edit` 为它编辑的每项上限写入，两个旧版导入器为导入时保留的每项值写入 | 覆盖所指的模型 |
+
+清单以同样的方式声明模型的推理档位，且它声明的第一个形状就是模型自己的列表：先取
+`reasoning_options` 中 `type` 为 `effort` 那一项的 `values`，否则取各项
+`supported_reasoning_levels` 的 `effort`，最后才是扁平的 `reasoning_levels` 列表。
+`reasoning_options` 仍在原处读取，即清单项的顶层或存储条目保留的 `raw` 旁；另两个形状按同样
+方式读取。每个取值去空白，非字符串与空串丢弃，重复值保留第一个，因此顺序即清单的顺序。某个
+已声明的形状取值全被丢弃即声明空列表：该模型不提供推理档位，识别出的行不补它，存储的描述保留
+`effortOptions: []`，使之后再次读取仍声明它。清单未声明任何形状、以及 `reasoning` 为 `false`
+的模型都保持原状：识别出的行仍只补未声明的列表，绝不补已声明的列表。`reasoning` 本身不变：
+未声明 `reasoning` 的清单仍仅凭档位声明 `supported: true`，与今天仅凭 `reasoning_options`
+声明时一致。
+
+先识别模型，再从识别指明的条目读取数字。识别在目录上进行，第一个只留下一个模型的步骤胜出：
+Provider 的声明按精确 id；然后是整个限定 id，当它携带的命名空间正是持有该 id 那一行的
+Provider 时，聚合方自有的 house model 因此不会被其末段 token 偶然指名的无关行作答；然后是自有
+token 是 id 头部、尾部至多为日期、`latest`、tag 后缀或方括号上下文修饰的厂商条目；接着把厂商的
+上游规范 id 与显示名合看，显示名将多个规范命中收窄为一个，仍有分歧即歧义而非猜测；然后按同样
+两条规则读取 `custom-provider` 行；然后是 Provider 声明该 id 所指的模型，即别名；最后，对既没有
+厂商条目、也没有 `custom-provider` 行、也没有别名指名的模型，合并自有 id 为同名同 tag 的聚合行，
+且只取安全方向：最小窗口、最小输出上限与 effort 选项的交集。Provider 默认值不是声明，携带其
+Provider 在大量行上写出的那一对数值的行在该处不声明任何上限。
+
+第一步的声明是 Provider 自己对某个 id 的说明，绝不是它的列举产出。捆绑 Provider 的声明是它的
+捆绑行与用户自行添加的模型；自定义 Provider 在这一步不声明任何东西。列举写出的行属于列举的产出，
+既不为它自己作答，也不为同级的另一个 id 作答：列表中的 id 在每次发现与每次读取时都对着目录识别，
+而不是对着更早的列举留下的那一行。用户声明的内容在两种 Provider 上都照旧生效，经由
+`capabilityOverrideFields` 与其余用户自有状态。
+
+厂商条目是 role 为 `vendor` 的 Provider 上的行，且该行的规范 id 命名该 Provider 自有的命名空间，
+或该行未声明规范 id。vendor Provider 上规范 id 指向另一家厂商的行是转售：读取厂商条目的各步骤
+跳过它，合并像读取聚合行那样读它。第一步仍会为所属 Provider 读取它，因为无论转售哪家的模型，
+捆绑行都是该 Provider 的声明。Provider 自有的命名空间是 `metadata.vendorNamespace`，由同步从该
+Provider 的策略写入，与 role 相邻；凡是行上携带规范 id 的 vendor Provider 都声明它。转售另一家
+厂商模型、而 upstream 未给出规范 id 的 plan 行，其规范 id 在已提交的 catalog 中声明，并由同步保持。
+
+只有 kind 与该 id 的 kind 相符的行才加入该合并。不声明 kind 的行，也就是 raw `type` 缺失或为
+`model` 的行，可加入任意 id。声明 `chat` 的 id 只取声明 `chat` 的行，声明其他 kind 的 id 只取
+声明同一 kind 的行，不做同义归并。不声明 kind 的 id，在其同名行中有任一声明 `chat` 时只取声明
+`chat` 或不声明 kind 的行，否则取该名的全部行：它因此保留原有合并的那些 media 行，并携带它们的
+`type`，正是这个 `type` 让 media 模型不进入对话。没有任何行加入的 id 保持未识别。
+
+Provider 记录声明其列出 id 携带的前缀。该前缀在 id 头部、不区分大小写地只去除一次，早于 id 被
+拆成各 token 与名称步骤所比的 token。第一步与限定 id 步骤读取整个 id，因此精确行与限定 id 不受该
+声明影响；限定 id 步骤在去前缀之前作答，因为它读的是整个 id，会让它不剩 token 的前缀因此夺不走
+它。名称步骤看到的是去前缀后的 id，因为中转方给 id 加了前缀，而不是给模型加了前缀。前缀是
+token 头部，因此 `auto` 与 `auto-` 是同一份声明；把整个 id 消耗掉的前缀不留下任何名称，于是识别
+不出任何模型，而不是匹配一个空名称。发现流程写入 Provider 上报的 id，并在不带前缀的情况下读取
+捆绑目录：前缀是用户对其所见 id 的声明，不是列举可以推断的东西。`provider.create` 按与
+`provider.update` 相同的规则声明前缀：去空白，空值与未声明是同一份声明。
+
+Provider 记录还把列出的 id 映射到它所指的模型 id。该别名是规则读不出的 id 的退路，因此在所有
+规则之后、合并之前读取：它从不覆盖规则能读出的 id。它的目标按同一套步骤解析，只是排除别名步骤
+本身，因此别名作答的是目标行自己的 rule、score 与数值，而不是另一套词；也正因如此，别名不会
+再链到另一个别名。目标本身存在歧义时仍然歧义，并带着目标自己的候选行，因为别名指名一个模型，
+不得替分歧选边；目标什么都指不出时，id 保留没有该别名时的拒绝或合并结果，因此过时的声明绝不会
+让 id 比原来更差。别名以 Provider 自己拼写的精确 id 为键，区分大小写，因为那个拼写属于 Provider
+自身；目标则经过各步骤，大小写折叠已经在那里。
+
+限定 id 的命名空间是身份，不是提示。当它指名某个捆绑 Provider 时，token、规范 id 或显示名步骤
+若只找到其他 Provider 的行，则该步骤不作答，并以这些行作为候选拒绝该 id：仅凭末段 token 不得把
+限定 id 交给 id 未指名的厂商。命名空间不指名任何捆绑 Provider 的 id 是多个卖方共同列出的普通
+名字，这些步骤照常读取。
+
+投影把结果记入 `metadata.identification`：`rule` 取 `provider-exact`、`qualified`、`token`、
+`canonical`、`custom-provider`、`merge`、`ambiguous` 之一；`narrowedByDisplayName` 表示显示名
+收窄了多个规范命中；`candidates` 指出歧义拒绝的各行；`filled` 指出为该行未声明的每项上限提供
+取值的条目、规则与数值。合并对每项上限各取一个最小值，各自来自一行，因此其 `filled` 指出声明
+该值的行，并带该合并自己的 `rule`。行自身声明的上限没有 `filled` 记录，`provider.models.edit`
+为其声明的每项上限删除对应记录。拒绝时消息指出 Provider 与模型 id、缺失的上限、仍然分歧的
+候选行，以及声明它们的写入 `provider.models.edit`。
+
+`metadataSource` 与 `matchedProviderId` 指出投影条目复制自哪一行，对合并即第一行加入的行：
+条目的显示名、价格、能力，以及该行自身声明的上限都来自它。它们不指出合并后某项上限的卖方；
+`filled` 逐项指出。
+
+识别结果是可用性旁边的事实，不是其理由的一部分。没有任何 reason 值用来指出它：识别成功的模型、
+多行仍分歧的模型与什么都没识别出的模型，在未声明上限时都保持 `limits_undeclared`，而结果说的
+是三者中的哪一种。列举模型的客户端从它本就取得的回复中读取该结果。终端的模型列表把结果附在行
+的 effort 之后，而为 Provider 未声明模型指明写入命令的提示行也一并指出候选行。Web 客户端的读取
+器在条目上保留 `identification`，其模型列表把结果作为后缀渲染在行本就写出的理由或上限之后，因此
+行原有的内容不会被替换。两端都说明 id 被认作哪个模型、数值来自多行、仍然分歧的行，或什么都没
+指名该 id。不读取该字段的客户端照常工作，只是不显示新增内容。
 
 缺失是类型上的值，不是数字。目录侧使用 `CatalogCapabilities`：两项上限都是可选的，没有来源
 声明时缺省；存储描述、其覆盖、用户模型、投影结果和托管目录的模型都用它。面向 Session 的
@@ -314,9 +526,17 @@ Session 保留已采用的能力快照。模型变为未声明的 Session 仍可
 解析器处失败，错误指出缺失的上限，且发生在凭据或网络 I/O 之前。两项都声明后再选择该模型
 即采用新值；在此之前 `/usage` 报告已采用快照，与其他描述修改相同（§6）。
 
-托管账号目录遵循同一规则：中继与捆绑目录都未声明上限的模型按缺失投影，并保留其
-`unavailableReason`（托管目录投影）；其自有家族规则仍然声明窗口。宿主只在模型带原因时接受
-缺失的上限。[模型文件配置](../../../../crates/dim-cli/README.md#api-key-configuration)
+托管账号目录遵循同一规则，并像任何 Provider 一样识别其模型：记录的自身前缀与别名就是识别所读的
+投影，因此目录叫不出名字的账号模型由别名所指行提供上限，只设置别名的编辑也不是描述覆盖。账号
+模型条目带上与其他 Provider 条目相同的记录：`metadata.identification` 指出命名其行的规则、被拒时
+的候选行，或没有任何步骤指名该 id 时为空；匹配的 Provider、模型、策略与分数；以及 `filled` 指出为
+条目未自行声明的每项上限提供取值的行。该记录在每次读取时重新得出，因此清空别名或刷新清单都会
+重算它，指名不了的声明既不留规则也不留过期的行。账号清单与任何覆盖自身声明的值仍然归它们：在
+`capabilityOverrideFields` 中标记的上限永不被填也不被列出，模态、推理、价格与 `metadataSource`
+保留账号自己的描述。中继
+清单在记录存在之前就已投影，因此它只用捆绑目录能说的内容。中继与捆绑目录都未声明上限的模型按
+缺失投影，并保留其 `unavailableReason`（托管目录投影）；其自有家族规则仍然声明窗口。宿主只在
+模型带原因时接受缺失的上限。[模型文件配置](../../../../crates/dim-cli/README.md#api-key-configuration)
 不变：它仍在加载时拒绝缺少任一项的条目并指出该条目
 （[#517](https://github.com/arcships/dim/issues/517)）。
 
@@ -344,8 +564,8 @@ Session 保留已采用的能力快照。模型变为未声明的 Session 仍可
 `ModelCapabilitySnapshot`——`{target: {providerId, modelId}, capabilities:
 ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：它已经携带 provider/model
 标识与已声明能力，就是执行时采用的那份描述。可选模型一定声明了两项上限（§3.5），因此既有
-`capability_snapshot` 转换不会失败。调用方传入自己的取消 token；取消它即取消本次读取并返回
-`Cancelled`。
+`capability_snapshot` 转换不会失败。放弃调用会取消 owner 的本次读取；丢弃回复不表示读取成功。
+错误使用下文列出的公开错误码。
 
 **第二个操作：`selectableForModality`。** 同一端口还提供一次面向非对话用途的进程读取
 （Modality §9.2）：操作 `selectableForModality`，异步，请求 `{}`，回复
@@ -358,10 +578,9 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 仍是候选；不可用状态、停用的 Provider 或模型、缺少路由、已登出的账号与缺少静态凭据仍会排除
 它们。它不携带原因字段：消费方从选项推导可用性，并用自己的快照解释不再可选的持久默认值。
 
-**Provider 应用的规则。** 候选 provider 与默认解析一致：托管包公布的每个账号 provider，以及
-`provider.list` 返回的每个静态 provider。每个模型来自与 `provider.catalog` 相同的单 provider
-目录读取（`catalog_for`），所以捆绑替换、descriptor 覆盖、用户模型、路由、禁用和账号状态
-都是执行时看到的那一份。模型只有在既有 `ProviderCatalog::selectable` 接受时才出现：
+**Provider 应用的规则。** 候选是按 Provider 启用状态、凭据配置和模型状态查询的持久模型目标。
+每个候选按 Provider ID 和模型 ID 点查，账号可用性由账号拥有方判断。捆绑替换、descriptor
+覆盖、用户模型、路由和禁用状态都按该目标的执行规则投影。模型只有在既有 `ProviderCatalog::selectable` 接受时才出现：
 `unavailableReason` 缺失，且 ID 不在 `disabledModelIds` 中。该原因已覆盖全部排除项：
 `ModelStatus::Unavailable` 的模型、未声明 `text` modality 的模型、在 `new-api-router`
 之外的 driver 上的非 chat 模型、禁用的 Provider 记录、没有路由的模型、已登出的账号、
@@ -381,15 +600,15 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 §3.7：它接收已准入的持久化静态记录和显式模型 ID，回答该选择能否执行；本次读取没有输入，
 只枚举当前可用项。两者定义在同一目录和同一可选性谓词上，因此对同一个模型不会给出不同答案。
 
-**快照与一致性。** 一次调用对每个 provider 各读一次。没有跨 provider 事务、没有版本、
-没有缓存：并发的 `provider.*` 写入可能对部分 provider 可见、对另一部分不可见，下一次调用
-返回新状态。不发起实时请求：不 refresh、不列 provider 端点，也不写记录、选择或偏好；账号
+**快照与一致性。** 一次调用先枚举持久目标 ID，再分别点查。每个目标记录读取使用自己的
+已提交快照；并发的 `provider.*` 写入可能对部分目标可见、对其他目标不可见，同一 Provider
+内的模型也一样。读取前已删除的目标跳过。回复没有整体版本，不保留结果缓存；下次调用
+读取当前状态。不发起实时请求：不 refresh、不列 provider 端点，也不写记录、选择或偏好；账号
 状态沿用 `provider.catalog` 的同一读取。回复是派生数据，消费方不得持久化，也不得当作已
 采用的快照。采用仍走模型选择，后者只解析一次配置。
 
-**错误。** 本次读取没有自己的错误码，返回 Provider 既有错误：调用方取消传入的 token 时
-`Cancelled`，Provider 卸载时 `Failed` 且 `HostErrorKind::OwnerClosed`，Provider 存储不可读时
-`Failed`。单个 provider 的记录或账号状态不可读时按默认解析的方式跳过；它不会遮蔽其他
+**错误。** 公开数据面及其 Rust 绑定在调用方取消时返回 `cancelled`，Provider 卸载时返回
+`owner_closed`，Provider 存储不可读时返回 `failed`。单个 provider 的记录或账号状态不可读时按默认解析的方式跳过；它不会遮蔽其他
 provider，读取也不返回逐项错误列表。需要该 provider 诊断的调用方使用 `provider.list` 或
 `provider.management`。
 
@@ -410,23 +629,16 @@ leader 的模型，同样不自留规则（[Collaboration](../plugins/Collaborat
 Dispatcher、before 回调、Session 与分支部件；driver、路由和非 chat 规则。读取不增加状态、
 缓存、通知、crate 或模块。
 
-**Rust 绑定。** 端口定义在 `crates/dim-agent-capabilities/src/host.rs`，`ModelSelectionHost`
-旁。Provider 在 `ProviderPlugin::apply` 中提供该端口，App Server 的 catalog 以 Rust-only 名字
-`selectableModelsHost` 注册它（[#4](https://github.com/arcships/dim/issues/4) 之前没有跨语言绑定）：
+**Rust 绑定。** 绑定直接调用类型化操作，不经过 JSON 或桥接任务。绑定接收
+`CancellationToken`；取消它返回 `ModelPortError::Cancelled`。每次调用持有独立的子 token，
+调用完成或被丢弃时取消该子 token，不取消调用方的 token。操作将 owner 的 `HostError`
+映射为公开的 `ModelPortError`；dispatcher 调用同一个操作并编码回复或错误。
 
-```rust
-pub trait SelectableModels: Send + Sync + 'static {
-    fn selectable(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModelCapabilitySnapshot>>;
-    fn selectable_for_modality(
-        &self,
-        cancel: CancellationToken,
-    ) -> HostFuture<'_, Vec<ModalityModelSnapshot>>;
-}
-pub struct SelectableModelsHost(pub Arc<dyn SelectableModels>);
-```
+端口是 `crates/dim-agent-capabilities/src/host.rs` 中的
+`SelectableModelsHost`，位于 `ModelSelectionHost` 旁。它的两个读取就是 §3.6 列出的操作：
+端口类型持有 owner 的闭包，dispatcher 写出 wire 形状，Rust 读取方通过绑定调用同样的操作。
+Provider 在 `ProviderPlugin::apply` 中用 `provide_selectable_models` 提供该端口；catalog 以
+shared 名注册它（[服务面 §4.10](../../../design/service-faces.md#410-宿主端口executionsettingshost-等五个)）。
 
 owner 实现是 `ProviderService::selectable_models` 与
 `ProviderService::selectable_modality_models`，`ProductResolver` 转调两者；配置式模型配置
@@ -435,21 +647,19 @@ owner 实现是 `ProviderService::selectable_models` 与
 （[aimux](../../../crates/dim-agent-aimux/README.md)）。需要这次读取的消费方在 `Deps` 中声明
 `Keyed<SelectableModelsHost>` 并以它作为加载门槛（Modality）；必须在没有该读取时也能加载的消费方
 在提供时按名读取、不设门槛（Collaboration 的 `models` 动作），并在加载时取得快照，因此提供方
-重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方在
-运行时按名暴露服务的要求（[#4](https://github.com/arcships/dim/issues/4)）交付后按名访问；
-该要求已在 [Modality §9](../plugins/Modality.md#9-向机制所有者提出的需求) 提出，这里不重复提出。
+重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方按名调用
+`selectableModelsHost`，方法即 §3.6 列出的那些；该面委托同一次 owner 读取，两种语言的
+消费方得到执行会选的同一批模型。
 
-**连接合同：`resolveModalityConnection`。** 同一个 owner 解析一次非对话调用所用的连接，
-适配器因此不持有 Provider 凭据，也不读取 Provider 记录。它是 `ProviderConnectionResolver`
-旁边的第二个进程 host 端口，不是管理方法：操作 `resolveModalityConnection`，异步，请求
-`{target: {providerId, modelId}, operation: string}`，回复 `{connection, protocol,
-model, realtime}`。
+**连接合同。** Provider 为可信进程内适配器解析一次非对话连接。这是
+`ProviderConnectionResolver` 旁的原生端口，不是管理方法或按名字提供的数据面。
+输入是模型身份与操作，回复包含本次连接及其协议、模型和实时声明。解析后的连接含有凭据，
+只在本次适配器调用期间留在进程内。
 
-`connection` 是同一模型的对话调用会取得的既有 `ResolvedModelConnection`——连接事实、失败
-策略，以及托管账号上的凭据恢复——因此适配器执行与执行时相同的一次恢复规则。`protocol` 是
-目录为该模型携带的路由，`model` 是请求发送的 id。两个端口共用一次解析：静态或托管记录的
-读取、目录构建、选择与托管凭据租约都在同一处完成，只有可选性规则与请求事实不同。对话路径的
-临时启动连接与已采用能力快照不适用；调用者传入目录标识与操作。
+两个原生连接端口复用 owner 的记录读取、目录选择和凭据租约。一次 modality 调用只解析一次，
+路由事实与凭据来自同一次解析；对话路径的临时启动连接与已采用快照不适用。
+这个端口不另增 HTTP 执行器，媒体协议与传输行为仍由现有适配器负责。
+跨语言操作契约由 [#1613](https://github.com/arcships/dim/issues/1613) 跟踪。
 
 **规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
 凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
@@ -471,18 +681,16 @@ base URL 之后。
 **凭据规则与生命周期。** 连接只活在那一次调用中。Provider 从不持久化它，从不把它返回给
 客户端，也从不写进任务记录、结果、诊断或错误。它的 `Debug` 打印模型、路由、base URL、头名
 以及是否存在凭据，从不打印头的值、bearer 或 key；`ModelConnection` 当前未实现 `Debug`，
-因此没有其他连接会格式化凭据。托管账号的连接携带与对话调用相同的
-`RecoverModelConnection`。`recovery::invoke` 是基于 `ModelHost`、`ModelRequest` 与
-`ModelStream` 的对话执行路径，适配器不能原样复用；它自行执行该规则：把 provider 的拒绝
-映射为恢复逻辑可解释的 `HostError`，以当前阶段询问 `rejection`，可恢复时 `recover` 一次并
-重试，终止时 `finish_rejected`。
+因此没有其他连接会格式化凭据。托管连接保留供可信进程内调用方使用的恢复 handle，但现有媒体适配器
+不调用托管凭据恢复；媒体拒绝会返回调用方，该端口不提供自动刷新与重试。
+对话恢复路径独立，不构成非对话调用的重试保证。
 
-**Rust binding。** 端口是 `dim-agent-capabilities` 中的 `ResolveModalityConnection` 与
-`ModalityConnectionHost`，`ModalityTarget` 携带模型标识与操作。Provider 在
-`ProviderPlugin::apply` 提供它，配置式模型配置从模型文件提供它，其条目未声明任何操作，
-因此对每个 target 都以声明拒绝作答。App Server catalog 以 Rust-only 名
-`modalityConnectionHost` 注册它。回复复用 `ResolvedModelConnection` 与 `ModelProtocol`，并新增
-`RealtimeDeclaration`（条目声明的传输）；不新增凭据类型。
+**Rust binding。** `ModalityConnectionHost` 持有 `Arc<dyn ResolveModalityConnection>`。
+`resolve_for_modality(target, cancel)` 返回 `ModalityConnection { resolved, protocol,
+model, realtime }`；`resolved` 是 `ResolvedModelConnection`，适用时包含恢复 handle。
+`ProviderPlugin::apply` 提供类型化端口；配置式模型配置实现同一个 trait，其条目未声明
+modality 操作，因此逐操作拒绝。catalog 名字没有 dispatcher。
+调用方将 `CancellationToken` 传入现有原生解析路径。
 
 ### 3.7 已存选择的离线校验
 
@@ -567,7 +775,40 @@ pub fn stored_selection(
 ) -> Result<StoredSelection, StoredSelectionError>;
 ```
 
+### 3.8 适配器的媒体执行
+
+Provider 为一次非对话调用解析模型的连接，Modality 在该调用中把连接交给适配器（[Modality A.2](../plugins/Modality.md#a2-适配器与-ocr)）。该连接不是公开合同，也不作为 data face 暴露。
+
+**连接为何不能是面。** 它的返回值包含仅限这一次调用的凭据材料，`ResolvedModelConnection` 为一次最终请求解析且从不序列化（`dim-agent-capabilities` `host.rs`）。[服务面 §2.2](../../../design/service-faces.md#22-migration-marker) 要求秘密值留在所有者内部、公开方法暴露使用它们的操作，因此能跨语言的只有**操作**——代适配器执行的那次请求——而不是连接。
+
+**决定：现在不提供该操作。** 该连接是 Provider 的私有 typed binding，不是公开服务：它返回的是一次调用的凭据材料，因此既不会成为 data face，也不作为目录中的名字保留。[服务面 §2.6](../../../design/service-faces.md#26-migration-rule) 已规定角色为 typed binding 的名字从目录移出。媒体适配器在进程内（`dim-modality-aimux`）经由这条原生路径执行。本决定不改变任何媒体操作、签名、重试、重定向、上传、下载或流式行为。
+
+**为何 `modalityRequest` 执行器是另一份合同。** 它是新的 HTTP 执行器，而不是既有操作的序列化，无法保留原生路径今天的行为（[#1613](https://github.com/arcships/dim/issues/1613)）：
+
+| 既有行为 | 操作必须做到 |
+| --- | --- |
+| 每次适配器调用一次解析 | 每次调用解析一次，并把这一次解析用于该调用的重试；用缓存回答后续调用会报出一个适配器从未解析过的配置，因此后续调用重新解析 |
+| 流式下载到文件，2 GiB 上限（`dim-modality-aimux`） | 流式写入文件；不得把整个响应缓冲成 base64 |
+| WebSocket realtime open/send/receive/close | 连接级协议，而不是一次请求/应答 |
+| 厂商路由与凭据路由，包括 fal 图像路由与查询参数 | 与目录声明相同的路由选择与凭据处理 |
+| 重定向与厂商错误映射 | 与当前连接查询相同的规则 |
+| 每一步的取消与释放 | 取消所有者工作；丢弃调用即结算，且保留调用方的 token |
+
+在 [#1399](https://github.com/arcships/dim/pull/1399) 较早修订中提出的 `modalityRequest` 还接受 Bedrock 路由却不做 SigV4 签名，而所有内置媒体适配器都拒绝 Bedrock 连接。Bedrock 上的媒体支持是新增特性，不是既有操作的序列化。
+
+**若日后实现该操作的验收。** 实现前由维护者确认操作形状、所有权与覆盖面；既有媒体操作及其上限保持不变，或明确声明范围变更；每次调用生命周期内只解析一次且不混用快照；Rust 与真实外部运行时流程覆盖相同的请求、应答、取消与错误合同；测试覆盖受影响的流程边界，包括凭据隔离、厂商路由、查询参数、重定向、下载流与 realtime 清理；文件传输与 [#1564](https://github.com/arcships/dim/issues/1564) 及其进行中的改动保持一致，不另立上传实现。
+
+**对使用方的影响。** Provider 没有暴露媒体执行操作，因此外部语言适配器不提供任何媒体操作。Modality 在自己的文档中说明这一点；本页不定义适配器如何声明或运行其工作。
+
 ## 4. 客户端集成
+
+`provider.management` 只作用于单个 Provider；原先的无参聚合读取已移除。需要所有
+Provider 的版本、连接与模型描述符的客户端，用 `provider.management.list` 分页读取
+概览，并按需用 `provider.models.query` 读取要展示或编辑的模型；单个编辑表单使用精确的
+`provider.management {providerId, modelId?}` 快照。这些读取都是有界分页或一个显式目标，
+服务器不保留其结果，也不保留解析后的目录。从 `provider.management {}` 迁移时，提供方
+列表与保存版本读取改为 `provider.management.list`，模型能力与上限读取改为
+`provider.models.query` 或精确的 management 快照。
 
 ```text
 Desktop / CLI             Local App Server            Provider / account
@@ -600,25 +841,30 @@ credential clear 和 enabled:false，修复只 clear 导致已启用记录缺凭
 刷新后的列表先于操作结果提示送达选择器，用户看到提示后重试时使用刷新后的目录版本。
 非交互入口为 `dimcode models PROVIDER --clear-preferences MODEL`，先重读版本再同样更新。
 两者都不改当前 Session 已采用的模型；发现和采用失败不会自动删除历史偏好。
-`←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型；若强度被切换过，
+`←` 与 `→` 在选中模型上循环其声明的推理强度。Enter 采用该模型，并写入该文件夹中
+下一个 Session 读取的默认值：该文件夹已有工作区选择时写工作区作用域，否则写全局作用域，
+`expectedVersion` 取自同一作用域。写工作区时确认行写明该文件夹，写全局时确认行不提文件夹。
+若强度被切换过，
 先把它存成该模型的 `reasoningEffort`，再连同其余已保存偏好一起发送。编辑提供方的模型列表属于
 Models 管理领域（[CLI 命令 § Models 领域](../cli-commands.md#models-领域)）：`/models` 的
-`Edit models` 与 `dimcode models PROVIDER add|edit|set|remove|inspect` 读取
+`Manage models` 与 `dimcode models PROVIDER add|edit|set|remove|inspect` 读取
 `provider.management`，并经 `provider.models.*` 写入；上面的选择器动作保持不变。
 
 catalog 条目带 `zdr: true` 的模型在推理强度前显示 `ZDR` 标签，固定子代理模型选择器也一样。
 搜索 `zdr` 会包含这些模型；字段缺失或为 false 时不显示标签。替换模型列表时，
 标签随服务端最新字段更新，不保留已撤销的标记。
 
-列表还会通过 `provider.refresh` 填充 catalog 无模型的静态 provider：`provider.list`
-说其模型可列举时，每个连接对 catalog 的每个版本只问一次，并显示刷新写入的 catalog。
-刷新成功时记录它写入的版本，因此列举为空的结果不会再次询问；记录被写入（启停用、
-改端点）后再问一次。读取或刷新失败时该 provider 的提示行保留；面板关闭后才到达的
-回复只记录这次填充，下次打开再读。
+模型列表通过 `provider.models.query` 按页读取和服务端搜索。远程目录刷新由 Provider 或
+账号管理面板中的显式操作发起；模型选择器关闭时释放结果，重新打开时重新查询。
 
-未声明的模型不是选择器行。每个至少有一个此类模型的 Provider 在模型行之后保留一行灰色提示：
-统计需要窗口的模型数量并给出声明命令；该 Provider 没有任何可选模型时，这条提示取代空 Provider
-行，而不是与之并列。`dimcode models PROVIDER --set-limits MODEL --context-window N
+未声明的模型不是选择器行。选择器的 `Model management` 分区位于滚动的候选列表之外，保留紧凑的诊断：
+多少模型缺少上限、多少不可用或已禁用、多少 Provider 没有模型、多少目录所有者无法读取
+（[CLI 命令 § Models 领域](../cli-commands.md#models-领域)）。Enter 打开 Provider 列表，每行写明
+Provider 及其状态；至少有一个模型缺少上限的 Provider 写明数量，footer 给出声明命令
+（`dimcode models PROVIDER --set-missing-limits ...`）。没有任何可选模型的 Provider 仍可在该列表中
+找到，并写明原因，包括 `no models` 与 `catalog unreadable`。选择 Provider 打开既有的 Models
+管理领域，因此诊断从不成为模型候选。守护进程未声明 `provider.management` 时，同样的原因及其
+恢复命令以只读行显示，没有可执行的管理操作。`dimcode models PROVIDER --set-limits MODEL --context-window N
 --max-output-tokens N` 通过 `models.edit` 为单个模型声明两项上限；
 `--set-missing-limits --context-window N --max-output-tokens N` 为列表标为 `undeclared`
 的每个模型声明，即缺失上限是唯一障碍的启用模型；被禁用或因其他原因不可用的模型不写入。
@@ -628,9 +874,11 @@ catalog 条目带 `zdr: true` 的模型在推理强度前显示 `ZDR` 标签，�
 `undeclared`，并在行下列出声明命令。
 
 ```text
-Select a model
-> Provider / model          ZDR  ‹ high ›
-Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close
+Models
+  Conversation model
+  > Provider / model          ZDR  ‹ high ›
+  Selected: Provider / model
+Enter select + default · ←/→ effort · Tab section · Esc clear/close
 ```
 
 ```text
@@ -655,7 +903,9 @@ Settings 一起另行决定，不作为本方案前置。
 
 ## 6. 持久化、已运行 Session 与迁移
 
-**格式决定：保持 v19 和现有 SQL schema。** 只增加以下可选顶层字段，缺失表示无对应用户数据：
+[v19 决定](../../../design/appserver/native-storage-format.md#329-格式决定)引入的以下逻辑字段
+承载用户配置，缺失表示无对应用户数据；原生表示现遵循
+[v52](../../../design/appserver/native-storage-format.md#v52-sparse-provider-state)。
 
 | 结构 / JSON 字段 | 值与用途 |
 | --- | --- |
@@ -676,27 +926,23 @@ Settings 一起另行决定，不作为本方案前置。
 列举新端点的 update 遵循同一规则：失败，点名冲突的用户模型，不写入任何内容。
 解决时通过 `provider.models.delete` 显式删除冲突的用户模型，再重试 refresh 或该 update。
 
-bundled reseed 遇到这种冲突不能导致 seed 或 Provider 激活失败。fingerprint 改变后的实际
-替换候选若与用户模型冲突，保留该记录已准入的定义、fingerprint 和 version，继续在既有
-事务中处理其他记录；remoteModels 为真的记录继续保留其远程默认列表。§3.1 沿既有逐项
-错误列表提示冲突，Provider 和 models.delete 保持可用。显式删除冲突用户模型后，下次
-启动采用新 bundled 定义。其他校验错误沿用原失败行为。替代用户模型的 ID 须与新 bundled
-默认列表中的 ID 不同；不自动
-改名/覆盖、不持久化警告，也不新增迁移服务。
+源接纳遵循 §3.1 的索引源合同。冲突沿既有逐项错误提示，保留已准入基线。
+[v52 原生格式](../../../design/appserver/native-storage-format.md#v52-sparse-provider-state)
+替代 v51 的全量投影存储，不重新解释已提交的旧格式。
 
 两项模型上限另有自己的格式决定：[#522 格式决定](../../../design/appserver/native-storage-format.md#522-v26-格式决定)
 把未声明的上限变为缺省键（上一格式的读取器两种取值都解不了），并在启动事务内原地升级既有记录，
 而不是沿用版本号。该决定写明本次改动引入的格式版本、启动事务执行的改写，以及旧二进制的启动拒绝；
 §3.5 说明有效目录随后如何按来源补齐声明值。
 
-旧 v19 能读取新记录，但重写会丢新增顶层字段，包含 fingerprint 变化触发的自动 seed_bundled，
-不只用户主动编辑。明确接受该降级损失。一次性数据库验收须用旧 v19 代码读取并实际重写新记录。
-不增加存储 owner 门禁、删除历史或格式号；未知数据库格式仍按原规则拒绝并保留字节。
+v19 的历史决定接受旧 v19 二进制重写时丢失当时新增顶层字段，包括自动
+seed_bundled 重写。这不允许旧 daemon 打开 v52 存储。未知数据库格式仍按原规则
+拒绝并保留字节。
 
 | 改动 | 对已采用 Session 的影响 |
 | --- | --- |
 | 凭据、base URL、headers、代理、超时 | 下次请求解析当前连接；已发 I/O 保持其准入连接 |
-| 模型 descriptor/capability、持久偏好 | 已采用快照不变，下次显式采用生效；偏好还需客户端显式传入 |
+| 模型 descriptor/capability、持久偏好 | 已采用快照不变，下次显式采用生效；保存的偏好届时由服务端应用，请求声明了则以声明为准 |
 | 禁用/删除 Provider 或模型 | 下次请求/采用返回不可用/不存在，不强制切换或跨写引用 |
 | 声明上限，或移除其来源 | 已采用 Session 保留快照。出现未声明的上限时，下一次请求在凭据或网络 I/O 之前失败并指出缺失项；两项都声明后，重新选择该模型即采用（§3.5） |
 | refresh 或 endpoint override 改变有效路由 | 已采用路由标记不匹配时失败，提示重新选择；无标记 Session 在下次请求使用当前路由，两种修改均可能破坏协议相关历史，或丢失按旧协议映射的 effort/tier 选项 |
@@ -739,9 +985,12 @@ Migration 保留自己的快照、回执、账本与报告。明确映射连接�
 
 旧行 source 为 builtin 时映射到该 ID 的内置项。没有目标时导入从该内置项的捆绑定义
 开始，与在已播种目标上的导入完全相同，因此 ID 没有捆绑定义的 builtin 行会被拒绝；已有
-目标必须是未改动的播种记录。custom 行的 ID 属于捆绑目录时拒绝。两个入口用同一解析器
-解析并校验既有目标记录，校验不通过则拒绝该项。Migration 在转换之前把不是未改动播种记录的
-目标归为 Conflict 且不带原因；其余情况下转换的拒绝原因同时到达两个入口。
+目标必须是未改动的播种记录。转换后的记录写的是定义的名称，而不是源行的名称：内置项的
+名称是用户不设置的目录数据，所以目录改名之前写下的源行仍能导入，并带上当前名称。它写的
+driver 与 auth 必须一致，因为这两项决定记录到达哪里。custom 行的 ID 属于捆绑目录时拒绝。
+两个入口用同一解析器解析并校验既有目标记录，校验不通过则拒绝该项。Migration 在转换之前把
+不是未改动播种记录的目标归为 Conflict 且不带原因；其余情况下转换的拒绝原因同时到达两个
+入口。
 
 provider_selections 同样共用一次转换：工作区作用域是已存在目录的规范路径，所选模型
 必须在 Provider 目录中对该记录可用。目录已不存在的选择按该原因拒绝，它本就无法匹配。
@@ -766,7 +1015,7 @@ provider_selections 同样共用一次转换：工作区作用域是已存在目
 | 已存选择 | 对同一条已准入静态记录和捆绑目录，`stored_selection` 接受的模型 ID 与 `select`/`configuration` 完全一致，并返回相同协议和已采用能力；固定 driver 以及 New API 显式、推断、不支持、歧义路由；缺失、禁用、不可用、非文本、禁用 Provider、缺凭据和未声明上限的模型均被拒绝；`account_owned` 记录被拒绝；mock 端点未收到请求；Migration 的 provider/选择流程和 `provider.import_legacy` 经共享合同给出相同结果 |
 | 账号 | 既有登录/登出/用量；托管目录同账号 refresh 保留偏好、descriptor 覆盖和禁用项，换账号则一起清空；方法已公布但包缺实现的实际错误；Usage 不变，无静态用量配置 |
 | 并发/恢复 | 新旧写方法双客户端类型化冲突；丢 create 回复按规范 UUID 恢复；拒绝非规范 create ID，其他方法仍支持已有非 UUID ID；重复 create 冲突；坏条目/草稿保留 |
-| 存储/导入 | 旧 v19 读取并重写新记录含 reseed；bundled 升级与内置 Provider 的用户新增模型冲突时 Provider 激活，该记录/定义/fingerprint/version 不变，其他记录更新，管理返回冲突；显式删除后保留需重启提示，启动再采用新定义；删除禁用用户模型时清理遗留禁用项，新内置项为启用状态；用已消失默认模型的 ID 新建用户模型时，新项启用且不继承原默认项的 descriptor 覆盖、偏好或端点覆盖；有效/非法/重复导入及源保留，均用一次性数据库 |
+| 存储/导入 | 旧 v19 读取并重写新记录含 reseed；bundled 升级与内置 Provider 的用户新增模型冲突时 Provider 激活，该记录/定义/fingerprint/version 不变，独立接纳的其他记录更新，管理返回冲突；显式删除后保留需重启提示，下次激活后访问再采用新定义；删除禁用用户模型时清理遗留禁用项，新内置项为启用状态；用已消失默认模型的 ID 新建用户模型时，新项启用且不继承原默认项的 descriptor 覆盖、偏好或端点覆盖；有效/非法/重复导入及源保留，均用一次性数据库 |
 | 客户端 | 实际源码 App Server 和 Desktop/CLI：草稿→probe→创建→选模型→调用→修改→调用→重启→断开/删除，不只 fake daemon |
 
 Provider、transport、托管账号与源码构建的原生 CLI 流程使用隔离 home 和真实 HTTP 请求
@@ -786,7 +1035,7 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | §4.5 | 自有模型/选择/偏好/路由同事务；既有采用原子性不变 |
 | §4.6 | 管理数据不进模型上下文，配置只沿现有采用路径 |
 | §4.7 | 账号沿公开方法，Modality 经 §3.6 的 core host 端口读取可选模型，Migration 使用 §3.7 由 Provider 拥有的判断，不跨写其他 owner 引用 |
-| §4.8 | §5 无机制需求，复用 metadata 和 v19 顶层 JSON；§3.6、§3.7 不增加需求，非 Rust 消费方使用 Modality 已提出的 [#4](https://github.com/arcships/dim/issues/4) |
+| §4.8 | 下述错误数据需求使用方法 owner 的通用字段；§5 复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.10](../../../design/service-faces.md#410-宿主端口executionsettingshost-等五个)），非 Rust 消费方按名调用；§3.7 不增加需求 |
 | §4.9 | 不加 Timeline 事件或进程推送通知 |
 | §1 | 扩展现有进程 Provider，不增 Capability/接线插件 |
 | ADR 002 D1 | 进程记录归 Provider，已采用分支状态归原 owner，草稿归客户端 |
@@ -795,18 +1044,32 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | ADR 002 D4 | 业务配置归 owner，修改不 reload |
 | ADR 002 D5 | §3 明确字段、方法、mutating/interruption、错误，不只写 Rust trait；§3.6 以中立形式给出进程读取，core host 端口是消费方声明的绑定；§3.7 是 Rust-only 模块边界，因为输入是 Provider 已准入且携带凭据引用的记录，且没有跨语言消费方 |
 
+### 向机制所有者提出的需求
+
+- **问题：** §3.4 的恢复合同需要结构化错误数据，固定代码和安全消息无法携带版本和公开身份。
+- **既有机制：** 解析消息丢失类型合同，另行读取也无法分类被拒绝写入当时观察到的状态。
+- **通用能力：** 原生方法提供安全的 owner 自有错误字段，由[方法错误合同](../../../design/contracts/session-boundary.md#appendix-c-errors-and-recovery)保留，Rpc 不解释 Provider 字段。
+- **顺序影响：** 不影响序号、批次、中断或重载；被拒绝的写入不修改记录。
+- **owner/issue：** dim-agent-capabilities 方法错误与 App Server；[#1495](https://github.com/arcships/dim/issues/1495)。
+
 ## 9. 消融检查
 
-管理读取只保留一份编辑快照；原 catalog 服务选择。create/update/probe 分别承担可恢复
+管理读取按范围提供编辑快照；已知目标的能力读取指定 Provider 和模型 ID，模型选择器使用
+`provider.models.query`。create/update/probe 分别承担可恢复
 identity、保留秘密的局部写和未保存网络探测；Disconnect 复用 update。独立用户模型列表
 用于区分默认覆盖并让新增项可执行；路由标记沿已有 metadata 保留采用时协议含义。
 声明的上限不需要新状态：目录已有的标记与匹配说明值是否存在，缺失由目录类型承载，原因在投影处
 推导，因此不增加平行模型列表、第二份目录或 `limits` 实体。
 可选模型读取不增加状态、缓存、事件或模型类型：它把既有 `ProviderCatalog::selectable`
-应用到同一份单 provider 目录，并返回既有 `ModelCapabilitySnapshot`，因此没有第二个可用性
+应用到每个目标的点查目录，并返回既有 `ModelCapabilitySnapshot`，因此没有第二个可用性
 谓词或平行目录。
 已存选择合同同样不增加状态、存储或账号读取、缓存或谓词：它构建既有目录、应用既有谓词，
 并返回既有已采用快照和执行已经派生的路由。需要一个命名的回复类型，因为路由与快照就是
 公开形状；返回整个目录或客户端 DTO 会暴露更多，且仍需同一判断。Migration 侧不增加谓词或
 目录构建，选择转换调用本合同，而不是保留一份只服务旧格式的私有判断。
 不需要通知、跨删除版本服务、模板实体、凭据抽象或第二份客户端配置。
+
+稀疏表示不需要重复头部投影、模型重写触发器、驻留解码目录或第二解析器。
+源归档让已接纳基线无需旧二进制即可读取；按键保存的可变行独立保留用户状态。
+命名依赖索引保存既有冲突规则所需的输入，不另存发布名称。摘要回复复用既有管理数据面
+与版本合同。这些结构承担必要的持久化和读取边界，无需额外层次。

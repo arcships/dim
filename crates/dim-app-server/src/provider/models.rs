@@ -60,14 +60,15 @@ impl ProviderService {
         + 'static,
         cancel: &CancellationToken,
     ) -> Result<StaticProviderRecord, ProviderError> {
+        self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
                 db.run(move |connection| {
                     Ok((|| -> Result<_, ProviderError> {
                         let tx = connection.transaction()?;
-                        let mut record =
-                            read_static(&tx, &provider_id)?.ok_or(ProviderError::NotFound)?;
+                        let mut record = read_stored_static(&tx, &provider_id)?
+                            .ok_or(ProviderError::NotFound)?;
                         if record.version != expected_version {
                             return Err(ProviderError::Conflict(
                                 "Provider version changed; reread before retrying".into(),
@@ -85,9 +86,11 @@ impl ProviderService {
                             record.version.checked_add(1).ok_or(ProviderError::Failed)?;
                         validate_static_record(&provider_id, &mut record)
                             .map_err(|error| ProviderError::InvalidConfig(error.to_string()))?;
-                        tx.execute(
-                            "UPDATE providers SET version=?2,record=?3 WHERE provider_id=?1",
-                            params![provider_id, record.version, serde_json::to_string(&record)?],
+                        persistence::write(
+                            &tx,
+                            &provider_id,
+                            record.version,
+                            &serde_json::to_string(&record)?,
                         )?;
                         tx.commit()?;
                         Ok(record)
@@ -165,13 +168,7 @@ impl ProviderService {
                                 let tx = connection.transaction()?;
                                 let mut record = read_catalog(&tx, &provider_id)?
                                     .ok_or(ProviderError::NotFound)?;
-                                if record.version != expected_version
-                                    || !same_account(&record.account, &current)
-                                {
-                                    return Err(ProviderError::Conflict(
-                                        "Provider version or account changed".into(),
-                                    ));
-                                }
+                                record.check_write(&provider_id, expected_version, &current)?;
                                 let model = record
                                     .catalog(&catalog_bundled)
                                     .models
@@ -355,9 +352,13 @@ impl ProviderService {
             ));
         }
         let endpoint = edit.as_mut().and_then(|edit| edit.endpoint.take());
-        let descriptor = edit.as_ref().is_some_and(|edit| {
-            endpoint.is_none()
-                || edit.display_name.is_some()
+        // An alias is the provider's statement about its ids, so it is written
+        // to the record's map rather than to a descriptor override: an edit
+        // that names one writes no override, which the reset path could
+        // otherwise not remove.
+        let alias = edit.as_mut().and_then(|edit| edit.alias.take());
+        let named = edit.as_ref().is_some_and(|edit| {
+            edit.display_name.is_some()
                 || edit.context_window.is_some()
                 || edit.max_output_tokens.is_some()
                 || edit.tool_calling.is_some()
@@ -365,6 +366,9 @@ impl ProviderService {
                 || edit.reasoning.is_some()
                 || edit.modality_capabilities.is_some()
         });
+        // An edit that names only an endpoint or an alias writes no descriptor,
+        // which is the difference between an edit and a reset of one.
+        let descriptor = edit.is_some() && (named || (endpoint.is_none() && alias.is_none()));
         if !self.oauth.contains(&provider_id, cancel).await? {
             let available = self.account_available(&provider_id, cancel).await?;
             let bundled = self.bundled.clone();
@@ -403,6 +407,23 @@ impl ProviderService {
                                 }
                                 FieldUpdate::Clear => {
                                     record.endpoint_overrides.remove(&model_id);
+                                }
+                            }
+                        }
+                        if let Some(alias) = alias {
+                            match alias {
+                                FieldUpdate::Set { value } => {
+                                    if value.trim().is_empty() {
+                                        return Err(ProviderError::InvalidConfig(
+                                            "Model alias must not be empty".into(),
+                                        ));
+                                    }
+                                    record
+                                        .model_aliases
+                                        .insert(model_id.clone(), value.trim().to_owned());
+                                }
+                                FieldUpdate::Clear => {
+                                    record.model_aliases.remove(&model_id);
                                 }
                             }
                         }
@@ -466,13 +487,7 @@ impl ProviderService {
                             let tx = connection.transaction()?;
                             let mut record =
                                 read_catalog(&tx, &provider_id)?.ok_or(ProviderError::NotFound)?;
-                            if !same_account(&record.account, &account)
-                                || record.version != expected_version
-                            {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version or account changed".into(),
-                                ));
-                            }
+                            record.check_write(&provider_id, expected_version, &account)?;
                             let index = record
                                 .model_config_overrides
                                 .iter()
@@ -482,8 +497,25 @@ impl ProviderService {
                                 .iter()
                                 .find(|entry| entry.entry.model_id == model_id)
                                 .ok_or(ProviderError::NotFound)?;
+                            if let Some(alias) = alias {
+                                match alias {
+                                    FieldUpdate::Set { value } => {
+                                        if value.trim().is_empty() {
+                                            return Err(ProviderError::InvalidConfig(
+                                                "Model alias must not be empty".into(),
+                                            ));
+                                        }
+                                        record
+                                            .model_aliases
+                                            .insert(model_id.clone(), value.trim().to_owned());
+                                    }
+                                    FieldUpdate::Clear => {
+                                        record.model_aliases.remove(&model_id);
+                                    }
+                                }
+                            }
                             match edit {
-                                Some(edit) => {
+                                Some(edit) if descriptor => {
                                     let next = bundled.merge_visible_edit(
                                         index
                                             .map(|index| &record.model_config_overrides[index])
@@ -496,6 +528,9 @@ impl ProviderService {
                                         record.model_config_overrides.push(next);
                                     }
                                 }
+                                // An alias-only edit writes no descriptor, the
+                                // same as on a static record.
+                                Some(_) => {}
                                 None => {
                                     record
                                         .model_config_overrides
@@ -578,13 +613,7 @@ impl ProviderService {
                             let tx = connection.transaction()?;
                             let mut record =
                                 read_catalog(&tx, &provider_id)?.ok_or(ProviderError::NotFound)?;
-                            if !same_account(&record.account, &account)
-                                || record.version != expected_version
-                            {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version or account changed".into(),
-                                ));
-                            }
+                            record.check_write(&provider_id, expected_version, &account)?;
                             if ids.iter().any(|id| {
                                 !record
                                     .models

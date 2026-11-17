@@ -90,6 +90,11 @@ export interface AuxiliaryReply {
   usage?: {
     promptTokens: number; completionTokens: number; totalTokens: number;
     cacheReadTokens?: number; cacheWriteTokens?: number;
+    /** The part of `completionTokens` spent thinking, already inside it and
+     * in `totalTokens`. It is the count the protocol adapter gives: absent
+     * when the adapter gives none, and zero when Gemini or a Responses adapter
+     * reads a missing field as zero, as it does for the cached count. */
+    reasoningTokens?: number;
     cost?: number; currency?: string;
   };
 }
@@ -101,6 +106,19 @@ export interface AuxiliaryModel {
   /** Resolving or rejecting cancelled cancels and joins the original model call. */
   complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
 }
+
+export type ModalityTargetReply =
+  { status: 'resolved'; target: ModelId } |
+  { status: 'unavailable'; reasons: { dimension: string; detail: string }[] };
+export interface ModalityTargetError extends Error {
+  code: 'invalid_params' | 'modality_unknown_operation' | 'modality_failed' |
+    'operation_interrupted' | 'service_reloading';
+}
+/** Process service `modalityTargets`; current operation selection, without credentials or execution. */
+export interface ModalityTargets {
+  resolve(request: { category: string; operation: string; model?: ModelId | null }): Promise<ModalityTargetReply>;
+}
+
 export type PermissionPreset = 'read-only' | 'workspace-write' | 'full-access';
 export interface PermissionPolicy {
   preset: PermissionPreset;
@@ -122,6 +140,10 @@ export interface LaunchRequest {
   model?: ModelId | null;
   policy?: Partial<PermissionPolicy> | null;
   starter?: SessionRef | null;
+  /** The class of work the launch runs; absent: the caller's own, `internal`. */
+  origin?: 'automation' | null;
+  /** The label a picker shows before the first input; SessionTitle writes it. */
+  title?: string | null;
 }
 export interface LaunchReply { sessionId: string; policy: PermissionPolicy }
 export interface RawBlock {
@@ -152,13 +174,17 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
 /** The services Dim's Rust types serve to other languages, by name:
  * `ctx.use<Services['name']>('name')`. */
 export type {
-  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, Services, SessionIdentity, SessionLifecycle,
+  AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
+/** Whether an input is still pending on the branch (session access §2): from
+ * its write until consumption or deletion. An id the branch does not hold is
+ * not pending. */
+export interface PendingRequest extends SessionRef { inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
 export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
@@ -171,11 +197,99 @@ export interface Sessions {
   launch(request: LaunchRequest): Promise<SessionsResult<LaunchReply>>;
   input(request: InputWrite): Promise<SessionsResult<InputReceipt>>;
   lookup(request: LookupRequest): Promise<SessionsResult<LookupReply>>;
+  /** Whether the id still exists: absent means deleted, and a closed,
+   * restorable Session exists. Reads only; never acquires or restores a
+   * Session. */
+  exists(request: { sessionId: string }): Promise<SessionsResult<{ exists: boolean }>>;
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
+  pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
   idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
+}
+
+/** One type an `eventHub` source declares (design A.1). */
+export interface EventHubType {
+  type: string;
+  description: string;
+  mode: 'queue' | 'steer' | 'append';
+}
+/** `eventHub.declare`: a source whose declaration lasts while the calling row
+ * is loaded (design A.1). */
+export interface EventHubDeclaration {
+  source: string;
+  guide: string;
+  types: EventHubType[];
+}
+/** One explicit target of a publish (design A.2). */
+export interface EventHubTarget {
+  sessionId: string;
+  branchId?: string;
+  mode?: 'queue' | 'steer' | 'append';
+}
+/** `eventHub.publish` (design A.2). */
+export interface EventHubPublishRequest {
+  source: string;
+  type: string;
+  /** At most 128 bytes; absent: a UUID. Retrying with the same id is idempotent per branch. */
+  id?: string;
+  title?: string;
+  body: string;
+  attributes?: Record<string, string>;
+  to?: EventHubTarget[];
+}
+/** One target branch's outcome of a publish (design 2.3). */
+export type EventHubDelivery =
+  | { status: 'delivered'; sessionId: string; branchId: string; subscriptionIds: string[];
+      inputId: string; sequence: number; truncated?: boolean; repeated?: boolean }
+  | { status: 'gone'; sessionId: string; branchId: string; subscriptionIds: string[];
+      code: 'branch_missing' | 'branch_ended' }
+  | { status: 'failed'; sessionId: string; branchId: string; subscriptionIds: string[];
+      code: 'session_closed' | 'reloading' | 'rejected' | 'ambiguous' |
+        'publication_unknown' | 'transport' | 'failed'; message: string };
+/** `publish`'s reply, after every target has an outcome (design A.2). */
+export interface EventHubPublishReply { eventId: string; deliveries: EventHubDelivery[] }
+/** The codes the `eventHub` service throws (design Appendix C): its own and
+ * the `sessions` codes it answers unchanged. */
+export type EventHubErrorThrown = import('./branch-services.js').RustError<'EventHubError',
+  'invalid_params' | 'invalid_event' | 'invalid_declaration' | 'duplicate_source' |
+  'no_caller_row' | 'unknown_source' | 'unknown_type' | 'too_large' | 'storage' |
+  'transport' | 'failed' | 'session_closed' | 'branch_missing' | 'branch_ended' |
+  'reloading' | 'rejected' | 'ambiguous' | 'publication_unknown', undefined>;
+/** Process service `eventHub`, provided by EventHub to producer rows. A
+ * `definePlugin` row injects `eventHub` and reads it with
+ * `ctx.use<EventHub>('eventHub')`: the row loads only while EventHub runs,
+ * and declares at `apply`. */
+export interface EventHub {
+  declare(declaration: EventHubDeclaration): Promise<void>;
+  publish(request: EventHubPublishRequest): Promise<EventHubPublishReply>;
+}
+
+/** `eventSubscriptions.subscribe`: the subscription the calling row creates
+ * for one Session (design A.3, §3.3). */
+export interface EventSubscriptionCall {
+  sessionId: string;
+  types: string[];
+  match?: Record<string, string>;
+  mode?: 'queue' | 'steer' | 'append';
+  /** Defaults to `main`. */
+  branchId?: string;
+}
+/** `eventSubscriptions.unsubscribe` (design A.3). */
+export interface EventUnsubscribeCall {
+  sessionId: string;
+  subscriptionId: string;
+}
+/** Process service `eventSubscriptions`, EventHub's subscription core: a row
+ * of any language manages the subscriptions of the Session it names, as
+ * `eventhub.subscribe`, `eventhub.unsubscribe` and `eventhub.subscriptions`
+ * do (design Appendix F). */
+export interface EventSubscriptions {
+  sources(): Promise<unknown>;
+  subscribe(call: EventSubscriptionCall): Promise<unknown>;
+  unsubscribe(call: EventUnsubscribeCall): Promise<unknown>;
+  list(call: { sessionId: string }): Promise<unknown>;
 }
 
 /** The host's creation-time snapshot (`sessionConfig.get()`, `ToolCall.config`);
@@ -293,10 +407,19 @@ export interface ToolResult {
 }
 /** How a registered tool runs a call; `cancelled` settles when the call is cancelled. */
 export type ToolExecute = (call: ToolCall, cancelled: Promise<void>) => Promise<ToolResult>;
+/** What a registration says besides its declaration and its function. It is an
+ * execution property of the bound handler, not part of the persisted
+ * `ToolDefinition`. */
+export interface ToolRegistrationOptions {
+  /** `'concurrent'` lets this tool's calls share a step with the calls around
+   * them. Absent means the tool's calls run alone, in the order the model wrote
+   * them, which is what a tool whose effects are not declared needs. */
+  concurrency?: 'concurrent';
+}
 /** Session service `toolRegistry`: a Session row registers each of its tools,
  * which stays registered until the row unloads. The declaration must name its risk. */
 export interface ToolRegistry {
-  register(declaration: ToolDefinition, execute: ToolExecute): Promise<void>;
+  register(declaration: ToolDefinition, execute: ToolExecute, options?: ToolRegistrationOptions): Promise<void>;
 }
 
 /** One entry of the input guide: the markers it explains, its position among
@@ -381,4 +504,43 @@ export interface CallChannel {
   /** Resolves when the connection closes or the Rpc load that admitted the
    * call unloads. An id the row never received a call from rejects `gone`. */
   closed(request: { connectionId: string }): Promise<void>;
+}
+
+/** Process data face `sessionFiles`; errors reject with SessionFileError {code,message}. */
+export interface SessionFiles {
+  put(request: { sessionId: string; name: string; content: string }): Promise<StoredSessionFile>;
+  import(request: { sessionId: string; name: string; source: string }): Promise<StoredSessionFile>;
+  read(request: { sessionId: string; fileId: string; offset: number }): Promise<{ data: string; eof: boolean }>;
+  register(request: { sessionId: string; path: string }): Promise<Record<string, never>>;
+  owns(request: { sessionId: string; path: string }): Promise<{ owned: boolean }>;
+  owned_paths(request: { sessionId: string }): Promise<{ paths: string[] }>;
+}
+export interface StoredSessionFile { fileId: string; path: string; bytes: number }
+
+/** Process data face owned by the managed provider; credentials remain with the owner. */
+export interface ManagedSearch {
+  /** Rejects with unavailable or search_failed; abandoning the call cancels the request. */
+  search(request: { query: string; count: number }): Promise<{
+    results: { title: string; url: string; snippet: string; publishedAt?: string }[]
+  }>
+}
+
+/** The existing user override; null keeps the consumer's factory or built-in text. */
+export interface BasePromptSettingsHost {
+  base(request: Record<string, never>): Promise<string | null>;
+}
+export interface SkillsInstructionsSettingsHost {
+  instructions(request: Record<string, never>): Promise<string | null>;
+}
+export interface SummaryPromptSettingsHost {
+  systemPrompt(request: Record<string, never>): Promise<string | null>;
+}
+
+/** The ToolRegistry owner's read-only source status view. */
+export interface ToolSourceRejection { version: string; reason: string }
+export interface ToolSourceStatus { adopted: string | null; rejected: ToolSourceRejection | null }
+export type ToolSourcesState = Record<string, ToolSourceStatus>
+export interface ToolSourcesView {
+  get(request: Record<string, never>): ToolSourcesState
+  observe(request: Record<string, never>, onState: (state: ToolSourcesState) => void | Promise<void>): Promise<void>
 }

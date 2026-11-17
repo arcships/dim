@@ -7,7 +7,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentConfig {
     pub name: String,
@@ -26,6 +26,14 @@ impl Default for AgentConfig {
         }
     }
 }
+#[service]
+impl AgentConfig {
+    /// The Agent's identity and default model as data, for parts in other
+    /// languages.
+    pub fn get(&self) -> AgentConfig {
+        self.clone()
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfig {
@@ -40,6 +48,11 @@ pub struct SessionConfig {
     /// tool's call runs, without changing what is declared.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
+    /// Tool names this Session never mounts, even when `tools` is absent or
+    /// names them. The App Server uses it to keep the pre-v4 `codemode` tool
+    /// out of a Session whose client cannot read child batches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_tools: Vec<String>,
     /// Fixed at creation; only the collaboration host creates members.
     #[serde(default)]
     pub collaboration_role: CollaborationRole,
@@ -56,12 +69,104 @@ pub struct SessionConfig {
         skip_serializing_if = "is_interactive"
     )]
     pub interactive: bool,
+    /// The language the model writes to the operator in (model-facing prompts
+    /// §7), when the operator selected one. Absent means no selection and the
+    /// base rule stands. Unlike the other fields, the native store updates this
+    /// member in place while the Session runs; a fork copies it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<ReplyLanguage>,
+    /// The title the creating caller already knew for the Session, fixed at
+    /// creation. Only `sessions.launch` sets it (#1421); SessionTitle applies
+    /// its text rules and writes it as the first manual title. It stays in the
+    /// stored record, so a daemon that stops before that write still makes it
+    /// on the next load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_title: Option<String>,
 }
 fn default_interactive() -> bool {
     true
 }
 fn is_interactive(interactive: &bool) -> bool {
     *interactive
+}
+
+/// The operator's reply-language choices, by their stable wire codes. The
+/// names are the ones the operator selects, named in English for the prompt
+/// text ([PromptSources §3]).
+///
+/// [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplyLanguage {
+    #[serde(rename = "en")]
+    English,
+    #[serde(rename = "zh-CN")]
+    SimplifiedChinese,
+    #[serde(rename = "zh-Hant")]
+    TraditionalChinese,
+    #[serde(rename = "ja")]
+    Japanese,
+    #[serde(rename = "ko")]
+    Korean,
+    #[serde(rename = "id")]
+    Indonesian,
+    #[serde(rename = "de")]
+    German,
+    #[serde(rename = "fr")]
+    French,
+    #[serde(rename = "es")]
+    Spanish,
+    #[serde(rename = "pt-BR")]
+    PortugueseBrazil,
+    #[serde(rename = "pt-PT")]
+    PortuguesePortugal,
+}
+impl ReplyLanguage {
+    /// Every choice, in the order the design names them.
+    pub const ALL: [Self; 11] = [
+        Self::English,
+        Self::SimplifiedChinese,
+        Self::TraditionalChinese,
+        Self::Japanese,
+        Self::Korean,
+        Self::Indonesian,
+        Self::German,
+        Self::French,
+        Self::Spanish,
+        Self::PortugueseBrazil,
+        Self::PortuguesePortugal,
+    ];
+    /// The stable wire code.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::SimplifiedChinese => "zh-CN",
+            Self::TraditionalChinese => "zh-Hant",
+            Self::Japanese => "ja",
+            Self::Korean => "ko",
+            Self::Indonesian => "id",
+            Self::German => "de",
+            Self::French => "fr",
+            Self::Spanish => "es",
+            Self::PortugueseBrazil => "pt-BR",
+            Self::PortuguesePortugal => "pt-PT",
+        }
+    }
+    /// The English name the prompt states for this choice.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::SimplifiedChinese => "Simplified Chinese",
+            Self::TraditionalChinese => "Traditional Chinese",
+            Self::Japanese => "Japanese",
+            Self::Korean => "Korean",
+            Self::Indonesian => "Bahasa Indonesia",
+            Self::German => "German",
+            Self::French => "French",
+            Self::Spanish => "Spanish",
+            Self::PortugueseBrazil => "Portuguese (Brazil)",
+            Self::PortuguesePortugal => "Portuguese (Portugal)",
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -76,6 +181,16 @@ impl SessionConfig {
     /// languages.
     pub fn get(&self) -> SessionConfig {
         self.clone()
+    }
+}
+impl SessionConfig {
+    /// Removes tools a connection below protocol 4 cannot project. The
+    /// App Server calls this on every creation, fork and restore path; the
+    /// stored `excluded_tools` keeps an old Session settled across restart.
+    pub fn exclude_codemode_below(&mut self, protocol_version: u32) {
+        if protocol_version < 4 && !self.excluded_tools.iter().any(|name| name == "codemode") {
+            self.excluded_tools.push("codemode".into());
+        }
     }
 }
 impl Default for SessionConfig {
@@ -93,8 +208,11 @@ impl Default for SessionConfig {
             },
             system_prompt: String::new(),
             tools: Some(vec!["echo".into(), "wait".into(), "branch".into()]),
+            excluded_tools: Vec::new(),
             collaboration_role: CollaborationRole::Leader,
             interactive: default_interactive(),
+            language: None,
+            initial_title: None,
         }
     }
 }
@@ -304,7 +422,7 @@ impl SessionLifecycle {
             return None;
         }
         self.holds
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |holds| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |holds| {
                 (holds & RELEASING == 0).then_some(holds + 1)
             })
             .ok()?;
@@ -357,6 +475,10 @@ impl SessionLifecycle {
         self.holds
             .compare_exchange(0, RELEASING, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+    }
+
+    pub(crate) fn resume_holds(&self) {
+        self.holds.store(0, Ordering::Release);
     }
 }
 

@@ -5,19 +5,16 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter steer · x delete held · Esc close" => "Enter steer · x 刪除暫存訊息 · Esc 關閉",
         "No queued messages." => "佇列中沒有訊息。",
         "Held · awaiting application" => "暫存中 · 等待套用",
-        "Incorporating · awaiting model consumption" => "納入中 · 等待模型讀取",
+        "Unread" => "未讀取",
         "Held" => "暫存中",
-        "Incorporating" => "納入中",
         "Enter export · Esc cancel" => "Enter 匯出 · Esc 取消",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "附有附件的訊息會留在佇列中；使用 /queue 對其執行 steer 或刪除"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 編輯最後一則 · ctrl+s 立即 steer"
+        "/queue · Shift+← edit last · empty: {key} steer · Ctrl+Enter send now" => {
+            "/queue · Shift+← 編輯最後一則 · 草稿為空時按 {key} steer · Ctrl+Enter 立即傳送"
         }
-        "+{count} more · /queue manage · shift+← edit last · ctrl+s steer now" => {
-            "還有 {count} 則 · /queue 管理 · shift+← 編輯最後一則 · ctrl+s 立即 steer"
-        }
+        "+{count} more · {hint}" => "還有 {count} 則 · {hint}",
         "steer or delete queued messages" => "對佇列訊息執行 steer 或刪除",
         "export this conversation" => "匯出此對話",
         "That message has already left the queue." => "該訊息已離開佇列。",
@@ -99,7 +96,23 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "工作階段現在沒有標題。",
         "This daemon does not support renaming Sessions" => "此守護進程不支援重新命名工作階段",
         "Renaming failed" => "重新命名失敗",
+        "Delete \"{name}\"?" => "刪除「{name}」？",
+        "Deleted {name}." => "已刪除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "沒有刪除任何內容：沒有已儲存的工作階段 {name}。"
+        }
+        "Delete failed" => "刪除失敗",
+        "This daemon does not support deleting Sessions" => "此守護進程不支援刪除工作階段",
         "Starting" => "啟動中",
+        "agent result" => "子 agent 結果",
+        "Read-only: you can watch this agent or stop it." => "唯讀：可以查看這個 agent，或終止它。",
+        "Read-only: this agent has finished." => "唯讀：這個 agent 已結束。",
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 返回 · x 終止 agent · ↑↓ PgUp PgDn 捲動 · Home/End 跳轉"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 返回 · ↑↓ PgUp PgDn 捲動 · Home/End 跳轉"
+        }
         "Delegation result" => "委派結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
             "Enter 詳細資料 · x 停止所選 · Ctrl+X 全部停止 · Esc 關閉"
@@ -112,6 +125,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Observing conversation" => "正在檢視對話",
         "Conversation unavailable" => "對話無法使用",
         "Session closed" => "工作階段已關閉",
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "此工作階段已關閉，無法繼續對話。使用相同的 --home 執行 dimcode export {id} 可讀取已儲存的歷史。"
+        }
         "Member conversation" => "成員對話",
         "x stop command · Esc back" => "x 停止指令 · Esc 返回",
         "Esc back" => "Esc 返回",
@@ -195,6 +211,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "連線已中斷，草稿已保留。請離開後繼續此工作階段。"
         }
+        "Cannot open this Session; draft kept." => "無法開啟此工作階段，草稿已保留。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "連線已中斷，草稿已保留。請離開後執行：{command}"
         }
@@ -257,7 +274,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "錯誤：{message}",
         "working…  {elapsed}" => "處理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "問點什麼…",
+        "Ask anything... · Ctrl+J newline" => "問點什麼… · Ctrl+J 換行",
         "Earlier history · {id} · {count} messages" => "較早歷程 · {id} · {count} 則訊息",
         "No active session" => "無目前工作階段",
         "answer required" => "需要回答",
@@ -269,6 +286,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Queue ({count})" => "佇列（{count}）",
         "Thinking…" => "思考中…",
+        "Thinking excerpt" => "思考摘錄",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "歡迎使用 DIM {version}！",
@@ -315,14 +333,19 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "離開",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 選擇 · ←/→ 推理強度 · Ctrl+X 清除已儲存 · Esc 清除/關閉"
+        "Default for new sessions in {folder}: {model}" => {
+            "新工作階段在 {folder} 的預設模型：{model}"
         }
+        "Default for new sessions: {model}" => "新工作階段的預設模型：{model}",
         "Enter select · Esc clear/close" => "Enter 選擇 · Esc 清除/關閉",
         "esc close" => "esc 關閉",
         "Suggestions" => "建議",
         "Skills" => "技能",
         "Skill loaded: {name}" => "已載入技能：{name}",
+        "Hook context · {count} line" => "鉤子上下文 · {count} 行",
+        "Hook context · {count} lines" => "鉤子上下文 · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop 鉤子後續輸入 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop 鉤子後續輸入 · {count} 行",
         "Commands" => "指令",
         "Command Palette" => "命令面板",
         "No matches" => "無相符項目",
@@ -342,6 +365,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "主題",
         "Language" => "語言",
         "Startup UI form" => "啟動介面形式",
+        "Default send mode" => "預設傳送模式",
         "fullscreen" => "全螢幕",
         "scrollback" => "回捲",
         "Tool details" => "工具詳情",
@@ -375,8 +399,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "目前工作區沒有已儲存的工作階段。Ctrl+S 顯示更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 開啟 · Ctrl+S 切換範圍 · Ctrl+R 重新整理 · Esc 關閉"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 開啟 · Ctrl+X 刪除 · Ctrl+S 切換範圍 · Ctrl+R 重新整理 · Esc 關閉"
         }
         "Loading sessions..." => "正在載入工作階段…",
         "No saved sessions yet." => "尚無已儲存的工作階段。",
@@ -389,6 +413,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // models_panel.rs
         "Select a model" => "選擇模型",
         "Loading models..." => "正在載入模型…",
+        "Previous page" => "上一頁",
+        "Next page" => "下一頁",
         "No models available. Connect a provider first." => "沒有可用的模型。請先連線供應商。",
         "No matching models." => "沒有相符的模型。",
         "current" => "目前",
@@ -447,6 +473,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Fixed model" => "固定模型",
         "Applies to new members, including named Agents." => "適用於新成員，包括具名 Agent。",
         "Existing members keep their models." => "既有成員保留原模型。",
+        "Conversation model" => "對話模型",
+        "Selected: {model}" => "已選擇：{model}",
+        "Model management" => "模型管理",
+        "Manage models" => "管理模型",
+        "1 provider" => "1 個 Provider",
+        "{count} providers" => "{count} 個 Provider",
+        "ready" => "就緒",
+        "no models" => "沒有模型",
+        "catalog unreadable" => "無法讀取 catalog",
+        "{count} with missing limits" => "{count} 個缺少上限",
+        "{count} unavailable" => "{count} 個不可用",
+        "{count} disabled" => "{count} 個已停用",
+        "{count} without models" => "{count} 個沒有模型",
+        "{count} unreadable" => "{count} 個無法讀取",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} 個不可用、{disabled} 個已停用"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter 選擇並設為預設 · ←/→ 推理強度 · Tab 切換區段 · Esc 清除/關閉"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter 變更 · Tab 切換區段 · Esc 清除/關閉"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter 管理 · Tab 切換區段 · Esc 清除/關閉"
+        }
+        "Enter manage · Esc back" => "Enter 管理 · Esc 返回",
         "unknown" => "不明",
         "Subagent model policy saved" => "已儲存子代理模型原則",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -456,6 +509,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "正在繪製圖表… {count} 行",
         // notify.rs
         "Task complete" => "任務已完成",
+        "Background task finished: {label}" => "後台任務已完成：{label}",
+        "Background task failed: {label}" => "後台任務失敗：{label}",
+        "Background task stopped: {label}" => "後台任務已停止：{label}",
         "Permission needed: {tool}" => "需要授權：{tool}",
         "Question waiting for your answer" => "有問題等你回答",
         "Notify when agent needs you" => "需要你時通知",
@@ -467,16 +523,42 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         // keys.rs
         "show the key bindings" => "顯示快速鍵",
+        "show the command that updates this installation" => "顯示如何更新目前安裝",
         "Application keys" => "應用程式快速鍵",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 送出或排隊 · 草稿為空時 steer 第一則佇列訊息 · Shift+Enter 或 Ctrl+J 換行 · ↑↓ 歷程"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "閒置時 Enter 送出 · Shift+Enter / Alt+Enter / Ctrl+J 換行 · ↑↓ 歷程"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O 或 Ctrl+P 指令 · Esc 中斷，佇列訊息回到輸入框 · Ctrl+S steer 草稿或第一則佇列訊息 · Shift+← 編輯最後一則佇列訊息"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "執行中有草稿：Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "草稿為空時按 {keys} steer 第一則佇列訊息",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 指令 · Esc 中斷，佇列訊息回到輸入框 · Shift+← 編輯最後一則佇列訊息"
+        }
+        "Ctrl+Enter interrupt and send now: the draft and every held message, as one message" => {
+            "Ctrl+Enter 中斷並立即傳送：草稿與所有暫存訊息合成一則送出"
+        }
+        "Send now failed: {error}; the draft was kept" => "立即傳送失敗：{error}；草稿已保留",
+        "Send now cancelled; the draft was kept" => "已取消立即傳送；草稿保留",
+        "Send now is still stopping the run; the draft was kept" => {
+            "立即傳送仍在停止執行；草稿已保留"
+        }
+        "Send now is stopping the run; paste again when the draft is sent" => {
+            "立即傳送正在停止執行；草稿送出後再貼上"
+        }
+        "Send now is waiting for the insertion before sending" => {
+            "立即傳送正在等待插入內容後再送出"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清除，按兩次離開 · 草稿為空時 Ctrl+D 離開"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab 循環切換權限（輸入框聚焦時）"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "選取歷史項時 Shift+Tab 選擇較新項 · Esc 返回輸入框"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab 切換)",
         "Fullscreen" => "全螢幕",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown 捲動 · Home/End 至頂端或底端 (草稿為空時) · Tab 選擇訊息，e 編輯，q 引用"
@@ -521,12 +603,24 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因為其他用戶端正在使用它；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
         }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因為其他用戶端正在使用它，而它使用協定 v{protocol}，這個 {client} 用戶端無法使用。沒有啟動工作階段。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因為其他用戶端正在使用它（連線：{connections}，已附加工作階段：{attached}，執行中的回合：{running}），而它使用協定 v{protocol}，這個 {client} 用戶端無法使用。沒有啟動工作階段。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因為其他用戶端正在使用它（連線：{connections}，已附加工作階段：{attached}，執行中的回合：{running}）；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
         }
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "正在把本機資料庫從格式 v{from} 升級到 v{to}；大型資料庫可能需要一段時間。"
         }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "正在升級本機資料庫 · 已用 {seconds} 秒 · {stage}"
+        }
+        "moving retained images into Session files" => "把保留的圖片寫入工作階段檔案",
+        "updating the text index of the rows that changed" => "更新已改動列的文字索引",
+        "checking and committing the upgraded store" => "校驗並提交升級後的資料庫",
         _ => return None,
     })
 }

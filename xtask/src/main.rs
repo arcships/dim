@@ -2,6 +2,7 @@ mod allocation;
 mod app_server;
 mod catalog;
 mod modules;
+mod npm;
 mod plugins;
 mod prompt_eval;
 mod rule;
@@ -53,22 +54,47 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("context-replay") => context_replay().await?,
         Some("restore-replay") => restore_replay().await?,
         Some("context-breakdown") => context_breakdown().await?,
+        Some("migrate-prompt-references") => migrate_prompt_references().await?,
         Some("summary-eval") => summary_eval::run().await?,
         Some("scenario-eval") => scenario_eval::run().await?,
+        // The hidden serve entry of an isolated scenario run: `run_once`
+        // starts its own binary with this subcommand and a params file, and
+        // the child serves the run, drives it over its socket and judges it.
+        Some("scenario-eval-serve") => scenario_eval::serve_entry(std::env::args().nth(2)).await?,
         Some("prompt-eval") => prompt_eval::run().await?,
         Some("check") => {
             boundaries(false)?;
             catalog::check(&root()).await?;
             types::check(&root())?;
+            npm::check(&root())?;
         }
         Some("types") => types::write(&root())?,
         _ => {
             return Err(
-                "usage: cargo run -p xtask -- graph|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
+                "usage: cargo run -p xtask -- graph|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|migrate-prompt-references DB SESSION BRANCH|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
                     .into(),
             );
         }
     }
+    Ok(())
+}
+async fn migrate_prompt_references() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let args = std::env::args().skip(2).collect::<Vec<_>>();
+    let [database, session, branch] = args.as_slice() else {
+        return Err(
+            "usage: cargo run -p xtask -- migrate-prompt-references DB SESSION BRANCH".into(),
+        );
+    };
+    let migrated = dim_app_server::storage::migrate_prompt_references(
+        PathBuf::from(database),
+        session.clone(),
+        branch.clone(),
+    )
+    .await?;
+    println!(
+        "{}",
+        json!({"sessionId":session,"branchId":branch,"written":migrated.written})
+    );
     Ok(())
 }
 async fn agent() -> dim_agent_runtime::Result<MinimalHost> {
@@ -159,7 +185,7 @@ async fn configured_agent()
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))));
         dim_agent_aimux::install(&mut builder);
-        builder.plugin(|_| Ok(Box::new(AimuxPlugin)));
+        builder.plugin(|_| Ok(Box::new(AimuxPlugin::default())));
         builder.plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));
         (
             MinimalHost::start(&builder).await?,
@@ -324,7 +350,7 @@ fn boundaries(write: bool) -> std::result::Result<(), Box<dyn std::error::Error>
         .current_dir(root())
         .output()?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        return Err(String::from_utf8_lossy_owned(output.stderr).into());
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)?;
     let mut edges = vec![];
@@ -793,7 +819,7 @@ fn disposable_database(
         database,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
-    source.backup(rusqlite::MAIN_DB, &copy, None)?;
+    source.backup(rusqlite::MAIN_DB, &copy, rusqlite::backup::NO_PROGRESS)?;
     Ok((directory, copy))
 }
 

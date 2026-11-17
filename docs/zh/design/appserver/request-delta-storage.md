@@ -64,7 +64,6 @@ release 构建，Apple M4，一次性数据库上的 `SqliteTimelineStore`，`de
 | Timeline（序号、原子批次、提交与发布、before）、Dispatcher（只有热窗口）、`TimelineStore` trait 及其读取语义、能力从 `local(..=S)` 重建 | [timeline-storage §1、§3、§4](../../../architecture/rust-agent/timeline-storage.md)、[时间总线](../../../architecture/rust-agent/time-bus.md)、[单树](../../../architecture/rust-agent/single-tree.md) | 存储之外的代码不变。对完好的数据，每次读取返回相同的事件、相同的顺序与批次、相同的错误；只有请求内容损坏时的存储错误换了文字（§8） |
 | 检查点读取“不扫描快照恢复位置之前的请求正文” | [timeline-storage §4](../../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) 有界读取表 | 请求行只由它自己的引用及其到达的内容行还原，从不经过其他事件行，所以读取的事件行照旧从 `resume` 开始。它加载的内容是所返回请求的消息，v16 经同样这些行的引用加载的正是这些（§10、验收 3a） |
 | 按段读取，每段释放读连接；不在读连接上解码无限历史（“每段结束释放读连接 … 不在锁内解码无限历史”） | [timeline-storage §4](../../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | 事件行照旧按段读取（256 个序号，校验时 64 行）。遍历列表每加载至多 256 个节点就释放读连接，再从下一个地址继续；两次持锁之间由该读取调用保留遍历到一半的状态，就像 #213 保留其缓存一样（§7.2、验收 3a） |
-| 恢复逐页校验事件及其引用，每页释放锁；缓存有界（“恢复”行） | [timeline-storage §4](../../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | `validate_session` 在同样的持锁区间内不加载正文地解码事件，并校验每个引用和每个节点的父引用都存在（§8）；它不加载正文，因此不使用缓存 |
 | 序列化、引用解析、hash 校验与类型转换集中在存储边界 | [timeline-storage §4](../../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | 每个节点加载时校验 hash，与现在的内容行相同（§8） |
 | 外部协议仍展开为原事件 | [timeline-storage §4](../../../architecture/rust-agent/timeline-storage.md#有界读取与恢复扫描) | 不动 |
 | 不兼容变化需要新版本与读取路径；升级只增加结构，不读取或改写任何业务行；单向 | [存储格式“格式版本”](../../../design/appserver/native-storage-format.md#格式版本)及 S5a/S5b 的决定 | 以标记升级到 v17（§11） |
@@ -321,7 +320,7 @@ node body      = { parent: string | null, message: Message }                    
 
 ### 7.5 不使用请求正文的读取
 
-分页或投影读取只返回事件所说的内容，不还原 `context/prepare` 与 `model/call` 存储的请求：这类记录中的请求保持其行所持有的空消息列表、缺席的 `tools` 与缺席的 `system`，它引用的内容行一律不加载、不校验 hash、不校验种类。这些读取从不查看这些请求：历史分页丢弃这两种记录，`session.summaries` 只读输入文本与最新一条活动事件的时间，上下文投影只投影输入与输出事实，协作只读工具调用、结果与轮次结局。协作取得对端 Session，通过其 query 只选择自己消费的事件种类，不选择模型请求行。端口只保留一个页读 `TimelineStore::read_page`，它会还原所返回行的请求；不读正文的变体已删除，因为不再有调用方绕过 Session 去提供存储事实。已装载线的历史分页改为经过该分支的 query，它会还原所返回行的请求（[ADR 020](../adr/020-timeline-read-convergence.md) D6）。使用请求的读取（`local`、`history`、`context`、`trace`、导出）仍按 §7.1–§8 逐个还原并校验；`validate_session` 不加载请求正文，只校验每个引用及每个节点的父引用都存在（§8）。
+分页或投影读取只返回事件所说的内容，不还原 `context/prepare` 与 `model/call` 存储的请求：这类记录中的请求保持其行所持有的空消息列表、缺席的 `tools` 与缺席的 `system`，它引用的内容行一律不加载、不校验 hash、不校验种类。这些读取从不查看这些请求：历史分页丢弃这两种记录，`session.summaries` 只读输入文本与最新一条活动事件的时间，上下文投影只投影输入与输出事实，协作只读工具调用、结果与轮次结局。协作取得对端 Session，通过其 query 只选择自己消费的事件种类，不选择模型请求行。端口只保留一个页读 `TimelineStore::read_page`，它会还原所返回行的请求；不读正文的变体已删除，因为不再有调用方绕过 Session 去提供存储事实。已装载线的历史分页改为经过该分支的 query，它会还原所返回行的请求（[ADR 020](../adr/020-timeline-read-convergence.md) D6）。使用请求的读取（`local`、`history`、`context`、`trace`、导出）仍按 §7.1–§8 逐个还原并校验。恢复只读分支目录，不扫描事件或内容引用，见[恢复读取边界](../../../design/appserver/restore-validation.md)。
 
 - 读取仍校验每条记录及其 before 轨迹的每个草稿是否带有其种类要求的引用，以及非请求记录是否没有引用；但它从不跟随这些引用。
 - 因此损坏的节点不会让分页读取失败，因为该读取本来就不会加载它。每个使用请求的读取仍会在它上面失败；恢复校验不加载正文，所以内容行或列表中间节点缺失的 Session 在恢复时被拒绝，正文损坏的 Session 恢复通过、由加载它的读取失败（§8）。
@@ -337,7 +336,7 @@ node body      = { parent: string | null, message: Message }                    
 - `tools` 与 `system` 地址解析到对应种类、hash 相符的内容行，与 v16 相同；
 - 还原出的请求可解析为 `ModelRequest`。
 
-在所保留请求处停下的按序遍历只校验它加载的节点；共享的节点在还原所保留请求时已校验。节点缺失或损坏时读取明确失败（“missing request content”“request content hash mismatch”“request list length mismatch”）；请求绝不会被还原为空或残缺。坏行保留原字节：读取从不写入。`validate_session` 不加载请求正文地解码每条事件，并校验每条记录所命名的每个引用都在 Session 中有对应的内容行、每个节点的父引用也都有对应的内容行，所以内容行缺失的 Session——包括消息列表中间缺失一个节点——在恢复时被拒绝并保留，与现在相同。内容行存在但正文损坏时通过这项检查：由加载它的读取失败，hash 与种类校验都在那里。导出是唯一保留完整前置校验的调用方：它在写出第一行之前重建并复核每个正文的 hash，正文损坏时不会留下部分导出。一个损坏的节点会影响列表经过它的每个请求，正常情况下是从新增它的请求到下一次压缩为止的每个请求：也就是 v16 中引用同一条消息的那些请求。
+在所保留请求处停下的按序遍历只校验它加载的节点；共享的节点在还原所保留请求时已校验。节点缺失或损坏时读取明确失败（“missing request content”“request content hash mismatch”“request list length mismatch”）；请求绝不会被还原为空或残缺。坏行保留原字节：读取从不写入。恢复不扫描事件或内容引用。导出在写出每个事件时解码并校验一次；读取失败时返回错误，不输出成功的 `end` 行。一个损坏的节点会影响列表经过它的每个请求，正常情况下是从新增它的请求到下一次压缩为止的每个请求：也就是 v16 中引用同一条消息的那些请求。
 
 ## 9. 分支、分叉与删除
 

@@ -7,19 +7,16 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "No queued messages." => "キューにメッセージはありません。",
         "Held · awaiting application" => "保留中 · 適用待ち",
-        "Incorporating · awaiting model consumption" => "取り込み中 · モデルの読み取り待ち",
         "Held" => "保留中",
-        "Incorporating" => "取り込み中",
+        "Unread" => "未読",
         "Enter export · Esc cancel" => "Enter エクスポート · Esc キャンセル",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "添付ファイル付きのメッセージはキューに残ります。/queue で steer または削除してください"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 最後を編集 · ctrl+s 今すぐ steer"
+        "/queue · Shift+← edit last · empty: {key} steer · Ctrl+Enter send now" => {
+            "/queue · Shift+← 最後を編集 · 下書きが空なら {key} で steer · Ctrl+Enter で即送信"
         }
-        "+{count} more · /queue manage · shift+← edit last · ctrl+s steer now" => {
-            "+{count} 件 · /queue 管理 · shift+← 最後を編集 · ctrl+s 今すぐ steer"
-        }
+        "+{count} more · {hint}" => "+{count} 件 · {hint}",
         "steer or delete queued messages" => "キューのメッセージを steer または削除",
         "export this conversation" => "この会話をエクスポート",
         "That message has already left the queue." => {
@@ -115,6 +112,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "このデーモンはセッションの名前変更に対応していません"
         }
         "Renaming failed" => "名前の変更に失敗しました",
+        "Delete \"{name}\"?" => "「{name}」を削除しますか?",
+        "Deleted {name}." => "{name} を削除しました。",
+        "Nothing was removed: no stored Session {name}." => {
+            "何も削除されませんでした: 保存されたセッション {name} はありません。"
+        }
+        "Delete failed" => "削除に失敗しました",
+        "This daemon does not support deleting Sessions" => {
+            "このデーモンはセッションの削除に対応していません"
+        }
         "Starting" => "起動中",
         "Delegation result" => "委任結果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
@@ -221,6 +227,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "切断。下書きは保持。終了してセッションを再開"
         }
+        "Cannot open this Session; draft kept." => "このセッションは開けません。下書きは保持。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "切断。下書きは保持。終了して実行：{command}"
         }
@@ -285,7 +292,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "エラー：{message}",
         "working…  {elapsed}" => "処理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "何でも質問…",
+        "Ask anything... · Ctrl+J newline" => "何でも質問… · Ctrl+J 改行",
         "Earlier history · {id} · {count} messages" => "過去の履歴 · {id} · {count} 件",
         "No active session" => "アクティブセッションなし",
         "answer required" => "要回答",
@@ -345,14 +352,19 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "終了",
 
         // composer/palette.rs
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 選択 · ←/→ 推論強度 · Ctrl+X 保存消去 · Esc 消去/閉じる"
+        "Default for new sessions in {folder}: {model}" => {
+            "新規セッションの {folder} での既定モデル：{model}"
         }
+        "Default for new sessions: {model}" => "新規セッションの既定モデル：{model}",
         "Enter select · Esc clear/close" => "Enter 選択 · Esc 消去/閉じる",
         "esc close" => "esc 閉じる",
         "Suggestions" => "候補",
         "Skills" => "スキル",
         "Skill loaded: {name}" => "スキル読み込み：{name}",
+        "Hook context · {count} line" => "フックのコンテキスト · {count} 行",
+        "Hook context · {count} lines" => "フックのコンテキスト · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop フックのフォローアップ入力 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop フックのフォローアップ入力 · {count} 行",
         "Commands" => "コマンド",
         "Command Palette" => "コマンドパレット",
         "No matches" => "一致なし",
@@ -372,6 +384,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "テーマ",
         "Language" => "言語",
         "Startup UI form" => "起動時の UI",
+        "Default send mode" => "既定の送信モード",
         "fullscreen" => "全画面",
         "scrollback" => "スクロールバック",
         "Tool details" => "ツール詳細",
@@ -407,8 +420,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "このワークスペースに保存済みセッションはありません。Ctrl+S で他のワークスペースを表示します。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 開く · Ctrl+S 範囲 · Ctrl+R 更新 · Esc 閉じる"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 開く · Ctrl+X 削除 · Ctrl+S 範囲 · Ctrl+R 更新 · Esc 閉じる"
         }
         "Loading sessions..." => "セッションを読込中…",
         "No saved sessions yet." => "保存済みセッションなし。",
@@ -421,6 +434,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         // models_panel.rs
         "Select a model" => "モデルを選択",
         "Loading models..." => "モデルを読込中…",
+        "Previous page" => "前のページ",
+        "Next page" => "次のページ",
         "No models available. Connect a provider first." => {
             "利用可能なモデルなし。先にプロバイダーに接続"
         }
@@ -485,6 +500,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "名前付きエージェント含む新規メンバーに適用。"
         }
         "Existing members keep their models." => "既存メンバーはモデルを維持。",
+        "Conversation model" => "会話モデル",
+        "Selected: {model}" => "選択中：{model}",
+        "Model management" => "モデル管理",
+        "Manage models" => "モデルを管理",
+        "1 provider" => "1 Provider",
+        "{count} providers" => "{count} Providers",
+        "ready" => "準備完了",
+        "no models" => "モデルなし",
+        "catalog unreadable" => "catalog を読めません",
+        "{count} with missing limits" => "{count} 件が上限未宣言",
+        "{count} unavailable" => "{count} 件が利用不可",
+        "{count} disabled" => "{count} 件が無効",
+        "{count} without models" => "{count} 件がモデルなし",
+        "{count} unreadable" => "{count} 件が読み取り不可",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} 件利用不可、{disabled} 件無効"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter 選択して既定に設定 · ←/→ 推論強度 · Tab セクション · Esc 消去/閉じる"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter 変更 · Tab セクション · Esc 消去/閉じる"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter 管理 · Tab セクション · Esc 消去/閉じる"
+        }
+        "Enter manage · Esc back" => "Enter 管理 · Esc 戻る",
         "unknown" => "不明",
         "Subagent model policy saved" => "サブエージェントモデル方針を保存",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -494,6 +536,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "drawing diagram… {count} lines" => "図を描画中… {count} 行",
         // notify.rs
         "Task complete" => "タスク完了",
+        "Background task finished: {label}" => "バックグラウンドタスク完了：{label}",
+        "Background task failed: {label}" => "バックグラウンドタスク失敗：{label}",
+        "Background task stopped: {label}" => "バックグラウンドタスク停止：{label}",
         "Permission needed: {tool}" => "許可が必要：{tool}",
         "Question waiting for your answer" => "回答待ちの質問あり",
         "Notify when agent needs you" => "要対応時に通知",
@@ -505,16 +550,46 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         // keys.rs
         "show the key bindings" => "キーバインドを表示",
-        "Application keys" => "アプリキー",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 送信またはキュー · 空の下書き: 最初のキューを steer · Shift+Enter/Ctrl+J 改行 · ↑↓ 履歴"
+        "show the command that updates this installation" => {
+            "このインストールを更新するコマンドを表示"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O/Ctrl+P コマンド · Esc 中断、キューのメッセージは入力欄へ戻る · Ctrl+S 下書きまたは最初のキューを steer · Shift+← 最後のキューを編集"
+        "Application keys" => "アプリキー",
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "待機中は Enter で送信 · Shift+Enter / Alt+Enter / Ctrl+J で改行 · ↑↓ 履歴"
+        }
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "実行中の下書き: Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "下書きが空なら {keys} でキューの先頭を steer",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O/Ctrl+P コマンド · Esc 中断、キューのメッセージは入力欄へ戻る · Shift+← 最後のキューを編集"
+        }
+        "Ctrl+Enter interrupt and send now: the draft and every held message, as one message" => {
+            "Ctrl+Enter で中断して即送信：下書きと保留中の全メッセージを 1 通にまとめます"
+        }
+        "Send now failed: {error}; the draft was kept" => {
+            "即時送信に失敗しました: {error}。下書きは残しました"
+        }
+        "Send now cancelled; the draft was kept" => "即時送信を取り消しました。下書きは残しました",
+        "Send now is still stopping the run; the draft was kept" => {
+            "送信即時はまだ実行を停止中です。下書きは保持されました"
+        }
+        "Send now is stopping the run; paste again when the draft is sent" => {
+            "送信即時は実行を停止中です。下書きの送信後に貼り付けてください"
+        }
+        "Send now is waiting for the insertion before sending" => {
+            "送信即時は挿入を待ってから送信します"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C クリア、2 回で終了 · 空なら Ctrl+D で終了"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab 権限を切り替え（入力欄にフォーカス時）"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "選択中は Shift+Tab で新しい項目へ · Esc 入力欄に戻る"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab で切替)",
         "Fullscreen" => "全画面",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown スクロール · Home/End 先頭/末尾 (下書きが空の場合) · Tab メッセージ選択、e 編集、q 引用"
@@ -561,11 +636,29 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server はまだ {server} です。他のクライアントが使用中のため、この {client} クライアントもそれを使います。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
         }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server はまだ {server} です。他のクライアントが使用中で、プロトコル v{protocol} を使用しており、この {client} クライアントはそれを使用できません。セッションは開始していません。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server はまだ {server} です。他のクライアントが使用中で（接続: {connections}、アタッチ中のセッション: {attached}、実行中のターン: {running}）、プロトコル v{protocol} を使用しており、この {client} クライアントはそれを使用できません。セッションは開始していません。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server はまだ {server} です。他のクライアントが使用中です（接続: {connections}、アタッチ中のセッション: {attached}、実行中のターン: {running}）。この {client} クライアントもそれを使います。終わったら `dimcode daemon stop` を実行してください。次回の起動では {client} が動きます。"
         }
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "ローカルストアをフォーマット v{from} から v{to} にアップグレードしています。大きなストアでは時間がかかることがあります。"
+        }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "ローカルストアをアップグレード中 · {seconds} 秒経過 · {stage}"
+        }
+        "moving retained images into Session files" => {
+            "保持された画像をセッションファイルに移しています"
+        }
+        "updating the text index of the rows that changed" => {
+            "変更された行のテキストインデックスを更新しています"
+        }
+        "checking and committing the upgraded store" => {
+            "アップグレードしたストアを検証してコミットしています"
         }
         _ => return None,
     })

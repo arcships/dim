@@ -5,6 +5,7 @@
 mod local_support;
 
 use dim_agent_runtime::*;
+use dim_agent_types::InputMode;
 use local_support::*;
 use std::{sync::Arc, time::Duration};
 
@@ -145,6 +146,63 @@ async fn no_hold_is_taken_once_a_release_is_under_way() {
     assert!(!session.unload_if_idle().await.unwrap());
     probe.release_close.notify_one();
     assert!(within("release", releasing).await.unwrap().unwrap());
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_idle_pause_restores_input_and_hold_admission() {
+    let dirs = Dirs::new();
+    let probe = Arc::new(LifecycleProbe::default());
+    let env = releasable(&dirs, &probe).await;
+    let (session, lifecycle) = idle_session(&env, &dirs, &probe).await;
+    let held = lifecycle.take_hold().unwrap();
+    assert!(session.pause_if_idle().is_none());
+    drop(held);
+    let paused = session.pause_if_idle().expect("idle Session pauses");
+    assert!(lifecycle.take_hold().is_none());
+    assert!(session.pause_if_idle().is_none());
+    assert!(
+        session
+            .submit("not admitted".into(), InputMode::Queue, "main")
+            .await
+            .is_err()
+    );
+    drop(paused);
+    let held = lifecycle.take_hold().expect("rollback restores holds");
+    session
+        .submit("admitted after rollback".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    within("idle", session.idle("main")).await.unwrap();
+    assert!(!session.unload_if_idle().await.unwrap());
+    drop(held);
+    assert!(session.unload_if_idle().await.unwrap());
+    env.agent.close().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_the_idle_unload_waiter_does_not_resume_admission() {
+    let dirs = Dirs::new();
+    let probe = Arc::new(LifecycleProbe::default());
+    let env = releasable(&dirs, &probe).await;
+    let (session, lifecycle) = idle_session(&env, &dirs, &probe).await;
+    probe.hold_next_close();
+    let releasing = tokio::spawn({
+        let session = session.clone();
+        async move { session.unload_if_idle().await }
+    });
+    within("release start", probe.close_held.notified()).await;
+    releasing.abort();
+    assert!(releasing.await.unwrap_err().is_cancelled());
+    assert!(lifecycle.take_hold().is_none());
+    assert!(
+        session
+            .submit("not admitted".into(), InputMode::Queue, "main")
+            .await
+            .is_err()
+    );
+    probe.release_close.notify_one();
+    within("close", session.closed()).await.unwrap();
     env.agent.close().await.unwrap();
 }
 

@@ -1,10 +1,12 @@
-# ModelRecovery
+# ModelRecovery — 提案
 
-设计：[model-retry-recovery §6](../../../design/research/model-retry-recovery.md#6-跨请求续接modelrecovery-的目标合同)。作用域：分支。所用所有者合同：[Loop](../../../architecture/rust-agent/plugins/Loop.md#a-failed-model-step-and-its-disposer)、[ModelProvider](../../../architecture/rust-agent/plugins/ModelProvider.md#failure-chain) 与 [InputQueue](../../../architecture/rust-agent/plugins/InputQueue.md#handover-inputs)。
+本文描述拟议插件，不是现有运行时能力。下述处置方注册和 `step/disposition` 需要 Loop 所有者定义合同并实现，调用方目前不能使用。是否需要这种额外的部分输出续接，仍是待决定的设计问题。已有请求内重试和 Loop 对已声明但未执行调用的续接不依赖本提案。决定与交付由 [#1669](https://github.com/arcships/dim/issues/1669) 跟踪。
+
+设计：[model-retry-recovery §6](../../../design/research/model-retry-recovery.md#6-跨请求续接modelrecovery-的目标合同)。作用域：分支。所用所有者合同：[Loop](../../../architecture/rust-agent/plugins/Loop.md#failure-handling-boundaries)、[ModelProvider](../../../architecture/rust-agent/plugins/ModelProvider.md#failure-chain) 与 [InputQueue](../../../architecture/rust-agent/plugins/InputQueue.md#handover-inputs)。
 
 需求（[#1210](https://github.com/arcships/dim/issues/1210)）：模型请求在已提交输出之后失败时，同一 turn 用一个新请求续接一次，而不是结束，续接请求共享失败链的预算。
 
-ModelRecovery 是一个分支部分。它把失败模型步骤的处置方注册到 Loop 的端口上，注册是它自己 `apply` 的效果，持续到该部分卸载。它没有设置，也不写自己类型的事件：它唯一的写入是经分支正常输入入口写的 handover 输入。它在默认产品配置中：没有设置，因此默认开启才能让续接到达用户；没有该行的配置走原有失败路径。它从不运行模型或工具，从不写 `turn/end`、`step/model-start` 或 `model/call`，也从不读其他部分的状态：它的决定只使用分支已提交的事实。
+ModelRecovery 是一个分支部分。它把失败模型步骤的处置方注册到 Loop 的端口上，注册是它自己 `apply` 的效果，持续到该部分卸载。它没有设置，也不写自己类型的事件：它唯一的写入是经分支正常输入入口写的 handover 输入。提案建议将它放入默认产品配置：没有设置，因此默认开启才能让续接到达用户；没有该行的配置走原有失败路径。它从不运行模型或工具，从不写 `turn/end`、`step/model-start` 或 `model/call`，也从不读其他部分的状态：它的决定只使用分支已提交的事实。
 
 ## 1. 结构
 
@@ -39,11 +41,11 @@ Loop 的端口在每个分支上只接受一个处置方，第二次注册失败
 
 处置方只读已提交事实：`failure_sequence` 指向的失败 `step/model-output-end`、该请求的输出事实、本 turn 的 `turn/start`，以及本 turn 的 `context/prepare` 事实。只有以下条件全部成立，它才回答 `continue {input_id}`；否则回答 `finish`。
 
-- **可重试的失败。** `failure.kind` 是 `network`、`rate_limited` 或 `server_error`。其他 kind，包括 `unknown`、`malformed_response`、`output_limit`、`context_too_long` 与凭据类，都不在首批覆盖内。
+- **可重试的失败。** `failure.kind` 是 `network`、`rate_limited` 或 `server_error`。其他 kind，包括 `unknown`、`malformed_response`、`output_limit`、`context_too_long` 与凭据类，都不在首批覆盖内。声明了工具调用而一个都没执行的失败输出，只有在本 turn 的一次续接已经用掉时才会到达这个决定：Loop 先自行续接它，不经处置方；handover 续接的消费落地后用的是同一个额度（[Loop](../../../architecture/rust-agent/plugins/Loop.md#a-failed-step-whose-calls-were-announced-and-never-executed)）。
 - **已提交输出。** 失败请求提交过 `step/text`、`step/thinking`、`step/tool-use-start`、`step/tool-use` 或 `step/model-content` 事实。已产生但在结算时被丢弃的输出不是已提交输出。`replay_safe` 是 ModelProvider 调用内的标志，不是事实，因此处置方从已提交的输出事实推导这个条件。
 - **未禁止重试。** `failure.retryForbidden` 未设置。策略禁止重试的失败仍会打开交接，但处置方会拒绝它，因此禁止覆盖续接。
 - **仍有预算。** 失败终态的 `failure` 中 `attempts` 小于 8，`waitedMs` 小于 300 秒。该部分读取 ModelProvider 的[公开上限](../../../architecture/rust-agent/plugins/ModelProvider.md#failure-chain)和失败自身的 `attempts`、`waitedMs`，从不重复这些数字。
-- **尚未接受过续接。** 本 turn 的 `turn/start` 之后，没有携带 `failure_chain` 的 `context/prepare`。续接自己的 `context/prepare` 会携带它，因此同一 turn 的第二次失败会拒绝。
+- **尚未接受过续接。** 本 turn 的 `turn/start` 之后，没有携带 `failure_chain` 的 `context/prepare`。续接自己的 `context/prepare` 会携带它，因此同一 turn 的第二次失败会拒绝。Loop 在续接「调用已声明但从未执行」的回复时也会用掉本 turn 的一次续接，两者共用同一个额度，一个 turn 只接受其中一次。
 
 工具边界的情形会因两个原因被拒绝：无工具续接请求发出的工具调用以 `failure.kind = unknown` 结算失败，不在覆盖范围内；并且该请求自己的 `context/prepare` 已携带 `failure_chain`，因此本 turn 的一次续接已经用掉。执行器的快照拒绝是第二道防线；按 Loop 的合同，该 turn 以保留已提交文本的方式结束。
 
@@ -63,7 +65,7 @@ InputQueue 从不采用这条输入；Loop 只在启动该交接续接的那个�
 
 ## 5. 观察者
 
-Goal、Scheduler 与 Workflow 观察 turn；续接不写中间 `turn/end`，因此它们只看到该 turn 的一个 `turn/end`，不会把失败的请求当成工作结束。若续接也失败，终态 `turn/end` 携带那次失败，它们读到的是它。
+Goal 与 Workflow 观察 turn；续接不写中间 `turn/end`，因此它们只看到该 turn 的一个 `turn/end`，不会把失败的请求当成工作结束。若续接也失败，终态 `turn/end` 携带那次失败，它们读到的是它。
 
 ## 6. 规则检查
 
@@ -87,4 +89,12 @@ Goal、Scheduler 与 Workflow 观察 turn；续接不写中间 `turn/end`，因�
 
 ## 7. 向机制所有者提出的需求
 
-无。本设计使用的合同都由其所有者陈述：Loop 的处置方端口与 `step/disposition`、ModelProvider 的 `failure_chain`、InputQueue 的 handover 输入。没有基础设施改动：不改 Timeline、Dispatcher、门面或 rutis。该部分增加自己的插件行与功能注册，生成的图与目录随之更新。
+Loop 交接是拟议需求，不是现有依赖：
+
+- **问题：** 部分输出之后，重放原请求可能不安全；Loop 通常会结算 turn，而不会询问恢复插件。
+- **现有机制：** 请求内重试和已声明调用的续接，不提供插件决定交接。
+- **所需能力：** 若选择实施本提案，Loop 需定义并实现注册、失败身份、回答接受与结算。
+- **顺序影响：** 回答必须与 stop、steer 排序；撤回、重载和关闭必须结算交接，不能重新激活过期输入。
+- **所有者：** Loop；[#1669](https://github.com/arcships/dim/issues/1669) 记录边界决定。未来实现需单独确定验收后，才能增加端口、事件或默认配置行。
+
+已有失败链和 handover 输入合同本身不足以建立这条端到端路径。本提案不改变 Timeline、Dispatcher、门面或 rutis。

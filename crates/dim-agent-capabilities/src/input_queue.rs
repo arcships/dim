@@ -1,4 +1,5 @@
 mod pending;
+mod recovery;
 
 use crate::{
     host::HostFuture,
@@ -6,42 +7,43 @@ use crate::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{
-    AgentError, Dispatcher, InputSnapshot, Names, QueryFilter, QueryOperand, QueryOutput,
-    QueryPage, QuerySelect, QuerySpec, QueryValue, Registrations, Result, StateCell, Timeline,
-    TimelineQuery, TimelineQueryScope,
+    AgentError, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell, Timeline,
+    TimelineIdentity,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
     collections::HashMap,
-    num::NonZeroU64,
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::CancellationToken;
 
 /// What InputQueue writes for an input it decided on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 enum Decision {
     Apply(String, InputMode),
-    Delete(String),
+    Delete(String, Option<InputMessageData>),
 }
-impl Decision {
-    fn input_id(&self) -> &str {
-        match self {
-            Self::Apply(id, _) | Self::Delete(id) => id,
-        }
-    }
-}
-
 /// InputQueue's answer to one `input/withdraw`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
 pub enum Withdrawal {
     /// The input was held: `input/deleted` at this sequence, never applied.
     Deleted { sequence: u64 },
     /// Unknown, already applied or already deleted: nothing was written.
     NotHeld,
 }
+
+/// The identity of one committed input.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputRef {
+    pub input_id: String,
+    pub sequence: u64,
+}
+
+type WithdrawalAnswer = (Withdrawal, Option<Arc<AgentEvent>>);
 
 /// One committed input until Loop consumes it.
 struct Entry {
@@ -58,6 +60,7 @@ enum EntryKind {
 #[derive(Default)]
 struct QueueState {
     entries: Vec<Entry>,
+    queued: usize,
     /// The open turn's id, between a dispatched `turn/start` and its
     /// `turn/end`.
     turn: Option<String>,
@@ -88,17 +91,24 @@ impl QueueState {
             }
             EventKind::TurnEnd(data) => self.end_turn(&data.turn_id),
             EventKind::InputConsumed(data) => {
-                self.entries.retain(|entry| entry.id != data.input_id);
+                if let Some(index) = self
+                    .entries
+                    .iter()
+                    .position(|entry| entry.id == data.input_id)
+                {
+                    let entry = self.entries.remove(index);
+                    self.queued -= usize::from(matches!(entry.kind, EntryKind::Input { .. }));
+                }
                 Vec::new()
             }
-            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id),
+            EventKind::InputWithdraw(data) => self.withdraw(&data.input_id, data.steer.clone()),
             _ => Vec::new(),
         }
     }
     fn input(&mut self, id: &str, mode: InputMode, handover: Option<&str>) -> Vec<Decision> {
         if let Some(turn_id) = handover {
             if self.turn.as_deref() != Some(turn_id) {
-                return vec![Decision::Delete(id.to_owned())];
+                return vec![Decision::Delete(id.to_owned(), None)];
             }
             self.entries.push(Entry {
                 id: id.to_owned(),
@@ -108,6 +118,7 @@ impl QueueState {
             });
             return Vec::new();
         }
+        self.queued += 1;
         self.entries.push(Entry {
             id: id.to_owned(),
             kind: EntryKind::Input {
@@ -135,7 +146,7 @@ impl QueueState {
         self.entries.retain(|entry| {
             let ended = matches!(&entry.kind, EntryKind::Handover { turn_id } if turn_id == turn);
             if ended {
-                decisions.push(Decision::Delete(entry.id.clone()));
+                decisions.push(Decision::Delete(entry.id.clone(), None));
             }
             !ended
         });
@@ -153,13 +164,14 @@ impl QueueState {
         }
         decisions
     }
-    fn withdraw(&mut self, id: &str) -> Vec<Decision> {
+    fn withdraw(&mut self, id: &str, steer: Option<InputMessageData>) -> Vec<Decision> {
         match self.entries.iter().position(|entry| {
             entry.id == id && !matches!(entry.kind, EntryKind::Input { released: true, .. })
         }) {
             Some(index) => {
-                self.entries.remove(index);
-                vec![Decision::Delete(id.to_owned())]
+                let entry = self.entries.remove(index);
+                self.queued -= usize::from(matches!(entry.kind, EntryKind::Input { .. }));
+                vec![Decision::Delete(id.to_owned(), steer)]
             }
             None => Vec::new(),
         }
@@ -193,258 +205,156 @@ impl QueueState {
 pub struct InputQueue {
     state: Mutex<QueueState>,
     observable: Arc<StateCell<InputSnapshot>>,
+    pending_snapshot: Mutex<Option<(u64, usize)>>,
     timeline: Arc<Timeline>,
+    tree: Arc<TreeCommands>,
+    branch_id: String,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
-    answers: Mutex<HashMap<u64, Withdrawal>>,
+    answers: Mutex<HashMap<u64, Option<(u64, WithdrawalAnswer)>>>,
     answered: tokio::sync::Notify,
     /// Ends waits when this generation unloads.
     lifecycle: CancellationToken,
 }
+
+struct WithdrawalWaiter<'a> {
+    queue: &'a InputQueue,
+    sequence: u64,
+}
+
+impl Drop for WithdrawalWaiter<'_> {
+    fn drop(&mut self) {
+        self.queue.answers.lock().unwrap().remove(&self.sequence);
+    }
+}
+
+#[rutis::service]
 impl InputQueue {
-    fn publish(&self, state: &QueueState) {
-        self.observable.set(InputSnapshot {
-            queued: state
-                .entries
-                .iter()
-                .filter(|entry| matches!(&entry.kind, EntryKind::Input { .. }))
-                .count(),
-        });
+    /// Commits an input through the branch entry, accepting each submission id once.
+    pub async fn submit(&self, input: InputMessageData) -> Result<InputRef> {
+        let event = self.tree.get(&self.branch_id)?.input(input).await?;
+        Ok(InputRef {
+            input_id: event.id.clone(),
+            sequence: event.sequence,
+        })
     }
-    /// Writes the decisions; returns the sequence of the last `input/deleted`.
-    fn write(&self, decisions: Vec<Decision>) -> Result<Option<u64>> {
-        let mut deleted = None;
-        for decision in decisions {
-            match decision {
-                Decision::Apply(input_id, mode) => {
-                    self.timeline.append(
-                        EventKind::InputApplied(InputAppliedData {
-                            input_id,
-                            mode: Some(mode),
-                        })
-                        .into(),
-                    )?;
-                }
-                Decision::Delete(input_id) => {
-                    let event = self
-                        .timeline
-                        .append(EventKind::InputDeleted(InputDeletedData { input_id }).into())?;
-                    deleted = Some(event.sequence);
-                }
+
+    /// Withdraws a held input without replacing it. Steer candidates must enter
+    /// through `session.input.withdraw`, which validates and checks them first.
+    pub async fn withdraw(&self, command: InputWithdrawData) -> Result<Withdrawal> {
+        if command.steer.is_some() {
+            return Err(AgentError::InvalidInput(
+                "Steer must use session.input.withdraw".into(),
+            ));
+        }
+        self.withdraw_checked(command)
+            .await
+            .map(|(answer, _)| answer)
+    }
+
+    fn publish(&self, through: u64, queued: usize) {
+        let mut pending = self.pending_snapshot.lock().unwrap();
+        let through = through.max(pending.as_ref().map_or(0, |(at, _)| *at));
+        *pending = Some((through, queued));
+        self.publish_ready(&mut pending);
+    }
+    fn publish_ready(&self, pending: &mut Option<(u64, usize)>) {
+        if pending
+            .as_ref()
+            .is_some_and(|(at, _)| self.timeline.sequence() >= *at)
+        {
+            let (_, queued) = pending.take().expect("a published snapshot");
+            if self.observable.get().queued != queued {
+                self.observable.set(InputSnapshot { queued });
             }
         }
-        Ok(deleted)
-    }
-    async fn rebuild(&self) -> Result<u64> {
-        let through = self.timeline.committed();
-        let mut request = TimelineQuery {
-            scope: TimelineQueryScope::Branch,
-            from: None,
-            through: Some(through),
-            include_publishing: true,
-            query: QuerySpec {
-                filter: Some(QueryFilter::In {
-                    value: QueryOperand::Field {
-                        path: "kind".into(),
-                    },
-                    values: [
-                        "input/message",
-                        "input/consumed",
-                        "input/withdraw",
-                        "input/applied",
-                        "input/deleted",
-                        "turn/start",
-                        "turn/end",
-                        "stop/interrupt",
-                    ]
-                    .map(serde_json::Value::from)
-                    .to_vec(),
-                }),
-                select: QuerySelect::Fields {
-                    fields: [
-                        "kind",
-                        "id",
-                        "data.mode",
-                        "data.user.content[].type",
-                        "data.input_id",
-                        "data.turn_id",
-                        "data.handover.turn_id",
-                    ]
-                    .map(String::from)
-                    .to_vec(),
-                },
-                group_by: Vec::new(),
-                pick: None,
-                order_by: Vec::new(),
-            },
-            page: Some(QueryPage {
-                limit: NonZeroU64::new(256).expect("a page contains queue transitions"),
-                after: None,
-            }),
-        };
-        let mut state = QueueState::default();
-        let mut owed = Vec::<Decision>::new();
-        loop {
-            let reply = self.timeline.query(request.clone()).await?;
-            let QueryOutput::Rows { rows } = reply.result else {
-                unreachable!("queue recovery selects transition fields")
-            };
-            for row in rows {
-                let Ok(
-                    [
-                        QueryValue::Value {
-                            value: serde_json::Value::String(kind),
-                        },
-                        QueryValue::Value {
-                            value: serde_json::Value::String(id),
-                        },
-                        mode,
-                        user,
-                        input,
-                        turn,
-                        handover,
-                    ],
-                ) = <[_; 7]>::try_from(row.values)
-                else {
-                    return Err(AgentError::fault(
-                        "InputQueue",
-                        "a queue transition has no kind or identity",
-                    ));
-                };
-                match kind.as_str() {
-                    "input/message" => {
-                        let mode = match mode {
-                            QueryValue::Missing if matches!(user, QueryValue::Missing) => {
-                                InputMode::Append
-                            }
-                            QueryValue::Missing => InputMode::Queue,
-                            QueryValue::Value { value } => {
-                                serde_json::from_value(value).map_err(|error| {
-                                    AgentError::fault("InputQueue", error.to_string())
-                                })?
-                            }
-                            QueryValue::Elements { .. } => unreachable!("an input mode is scalar"),
-                        };
-                        let handover = match &handover {
-                            QueryValue::Missing => None,
-                            QueryValue::Value { value } if value.is_null() => None,
-                            QueryValue::Value { value } => {
-                                Some(value.as_str().expect("handover turn identity"))
-                            }
-                            QueryValue::Elements { .. } => {
-                                unreachable!("handover turn identity is scalar")
-                            }
-                        };
-                        owed.extend(state.input(&id, mode, handover));
-                    }
-                    "turn/start" => {
-                        let QueryValue::Value { value: turn } = turn else {
-                            unreachable!("turn identity")
-                        };
-                        state.turn = Some(turn.as_str().expect("turn identity").to_owned());
-                        state.starting = false;
-                    }
-                    "turn/end" => {
-                        let QueryValue::Value { value: turn } = turn else {
-                            unreachable!("turn identity")
-                        };
-                        owed.extend(state.end_turn(turn.as_str().expect("turn identity")));
-                    }
-                    "stop/interrupt" => state.starting = false,
-                    "input/consumed" | "input/withdraw" | "input/applied" | "input/deleted" => {
-                        let QueryValue::Value {
-                            value: serde_json::Value::String(input_id),
-                        } = input
-                        else {
-                            return Err(AgentError::fault(
-                                "InputQueue",
-                                "a queue transition has no input identity",
-                            ));
-                        };
-                        match kind.as_str() {
-                            "input/consumed" => {
-                                state.entries.retain(|entry| entry.id != input_id);
-                                owed.retain(|decision| !matches!(decision, Decision::Apply(id, _) if *id == input_id));
-                            }
-                            "input/withdraw" => owed.extend(state.withdraw(&input_id)),
-                            _ => owed.retain(|decision| decision.input_id() != input_id),
-                        }
-                    }
-                    _ => unreachable!("queue recovery selects only queue transitions"),
-                }
-            }
-            let Some(next) = reply.next else {
-                break;
-            };
-            request
-                .page
-                .as_mut()
-                .expect("queue recovery is paged")
-                .after = Some(next);
-        }
-        owed.retain(|decision| match decision {
-            Decision::Apply(id, _) => state.entries.iter().any(|entry| entry.id == *id),
-            Decision::Delete(_) => true,
-        });
-        self.publish(&state);
-        *self.state.lock().unwrap() = state;
-        self.write(owed)?;
-        Ok(through)
     }
     fn on_event(&self, event: Arc<AgentEvent>) -> Result<()> {
-        let decisions = {
-            let mut state = self.state.lock().unwrap();
-            let decisions = state.step(&event);
-            self.publish(&state);
-            decisions
-        };
-        let deleted = self.write(decisions)?;
+        if matches!(
+            event.kind,
+            EventKind::InputApplied(_) | EventKind::InputDeleted(_)
+        ) {
+            self.publish_ready(&mut self.pending_snapshot.lock().unwrap());
+            return Ok(());
+        }
+        let mut state = self.state.lock().unwrap();
+        let decisions = state.step(&event);
+        let (published, answer) = self.write(decisions, event.sequence)?;
+        self.publish(published, state.queued);
         if matches!(event.kind, EventKind::InputWithdraw(_)) {
-            let answer = match deleted {
-                Some(sequence) => Withdrawal::Deleted { sequence },
-                None => Withdrawal::NotHeld,
-            };
-            self.answers.lock().unwrap().insert(event.sequence, answer);
+            if let Some(waiter) = self.answers.lock().unwrap().get_mut(&event.sequence) {
+                *waiter = Some((published, answer));
+            }
             self.answered.notify_waiters();
         }
         Ok(())
     }
+    /// Whether `input_id` is still pending: held by this queue and neither
+    /// consumed nor deleted (session-access §2). An id this queue does not
+    /// hold is not pending. The answer is this queue's state at the published
+    /// head, so a caller that asks after a write sees what it wrote.
+    #[service(skip)]
+    pub fn pending(&self, input_id: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.id == input_id)
+    }
+
     /// Withdraws an input by its `input_id` and replies with this queue's
-    /// decision for the command. With `steer`, the command and the new Steer
-    /// input are one batch: the withdrawal takes effect only if the old
-    /// input is still held, the new input is written either way.
-    pub async fn withdraw(
-        &self,
-        command: InputWithdrawData,
-        steer: Option<InputMessageData>,
-    ) -> Result<(Withdrawal, Option<Arc<AgentEvent>>)> {
+    /// decision for the command. Only an accepted withdrawal adopts its
+    /// optional checked Steer candidate, atomically with the deletion.
+    /// A Steer result is committed; callers confirm publication before exposing a receipt.
+    /// Plain withdrawals wait for publication here.
+    #[service(skip)]
+    pub async fn withdraw_checked(&self, command: InputWithdrawData) -> Result<WithdrawalAnswer> {
         command
             .validate_external()
             .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-        let mut drafts = vec![EventKind::InputWithdraw(command).into()];
-        if let Some(input) = steer {
-            if input.mode != Some(InputMode::Steer) {
-                return Err(AgentError::InvalidInput(
-                    "a replacement input must be Steer".into(),
-                ));
-            }
-            input
-                .validate()
-                .map_err(|reason| AgentError::InvalidInput(reason.into()))?;
-            drafts.push(EventKind::InputMessage(input).into());
-        }
-        let mut events = self.timeline.append_batch_registered(drafts, |_| Ok(()))?;
-        let replacement = (events.len() > 1).then(|| events.remove(1));
+        let drafts = vec![EventKind::InputWithdraw(command).into()];
+        let mut waiter = None;
+        let appended = self.timeline.append_batch_registered(drafts, |events| {
+            self.answers
+                .lock()
+                .unwrap()
+                .insert(events[0].sequence, None);
+            waiter = Some(WithdrawalWaiter {
+                queue: self,
+                sequence: events[0].sequence,
+            });
+            Ok(())
+        });
+        let _waiter = waiter;
+        let events = appended?;
         let sequence = events[0].sequence;
+        let unknown = || {
+            AgentError::PublicationUnknown(format!(
+                "withdrawal {sequence} was accepted, but its outcome was not published; check the input after recovery"
+            ))
+        };
+        let mut publication = self.timeline.watch();
         loop {
             let answered = self.answered.notified();
-            if let Some(answer) = self.answers.lock().unwrap().remove(&sequence) {
-                return Ok((answer, replacement));
+            {
+                let answers = self.answers.lock().unwrap();
+                if let Some(Some((published, answer))) = answers.get(&sequence)
+                    && (answer.1.is_some() || self.timeline.sequence() >= *published)
+                {
+                    return Ok(answer.clone());
+                }
+            }
+            if self.timeline.failure().is_some() {
+                return Err(unknown());
             }
             tokio::select! {
                 _ = answered => {}
+                result = publication.changed() => {
+                    result.map_err(|_| unknown())?;
+                }
                 _ = self.lifecycle.cancelled() => {
-                    return Err(AgentError::Reloading("InputQueue".into()));
+                    return Err(unknown());
                 }
             }
         }
@@ -455,6 +365,8 @@ pub struct InputQueuePlugin {
     queue: Key<InputQueue>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
+    tree: Key<TreeCommands>,
+    identity: Key<TimelineIdentity>,
 }
 impl InputQueuePlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -463,6 +375,8 @@ impl InputQueuePlugin {
             queue: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
+            tree: names.key()?,
+            identity: names.key()?,
         })
     }
 }
@@ -471,22 +385,33 @@ impl DynPlugin for InputQueuePlugin {
         "InputQueue"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.timeline.erase(), self.dispatcher.erase()]
+        vec![
+            self.timeline.erase(),
+            self.dispatcher.erase(),
+            self.tree.erase(),
+            self.identity.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
+            let tree = ctx.require_at(&self.tree)?;
+            let identity = ctx.require_at(&self.identity)?;
             let queue = Arc::new(InputQueue {
                 state: Mutex::new(QueueState::default()),
                 observable: Arc::new(StateCell::new(InputSnapshot::default())),
+                pending_snapshot: Mutex::new(None),
                 timeline,
+                tree,
+                branch_id: identity.branch_id.clone(),
                 answers: Mutex::new(HashMap::new()),
                 answered: tokio::sync::Notify::new(),
                 lifecycle: ctx.cancellation_token(),
             });
             let owner = queue.clone();
             let read = queue.clone();
+            let context = ctx.clone();
             dispatcher
                 .consume(
                     ctx,
@@ -498,12 +423,15 @@ impl DynPlugin for InputQueuePlugin {
                         "turn/start",
                         "turn/end",
                         "stop/interrupt",
+                        "input/applied",
+                        "input/deleted",
                     ]
                     .map(String::from)
                     .to_vec(),
                     Arc::new(move || {
                         let read = read.clone();
-                        Box::pin(async move { read.rebuild().await })
+                        let context = context.clone();
+                        Box::pin(async move { read.rebuild(&context).await })
                     }),
                     Arc::new(move |event| {
                         let owner = owner.clone();
@@ -556,8 +484,26 @@ pub struct SubmitCheckRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubmitCheckReply {
     /// The input may be written; these contexts go after the operator's own
-    /// content, in name order.
-    Proceed { blocks: Vec<String> },
+    /// content, in name order. `warnings` are for the caller to show, never
+    /// for the model: work the check did not do, which is not a block.
+    Proceed {
+        blocks: Vec<String>,
+        warnings: Vec<String>,
+    },
+    /// The input must not be written; the message is the caller's error.
+    Block { message: String },
+}
+
+/// What the table decided for the input (Hooks A.6.2): every check that ran,
+/// combined in name order. A block ends the table's work and carries neither
+/// blocks nor warnings.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubmitDecision {
+    /// The input may be written.
+    Proceed {
+        blocks: Vec<String>,
+        warnings: Vec<SubmitWarning>,
+    },
     /// The input must not be written; the message is the caller's error.
     Block { message: String },
 }
@@ -598,15 +544,16 @@ impl SubmitChecks {
     }
 
     /// Calls each registered check in name order. The first block in name
-    /// order is the answer; otherwise every check's blocks are returned in
-    /// name order. `Err` means the entry's own call was interrupted while a
-    /// check ran, and nothing may be written.
+    /// order is the answer; otherwise every check's blocks and warnings are
+    /// returned in name order. `Err` means the entry's own call was
+    /// interrupted while a check ran, and nothing may be written.
     pub async fn check(
         &self,
         request: &SubmitCheckRequest,
         cancel: &CancellationToken,
-    ) -> std::result::Result<SubmitCheckReply, CheckInterrupted> {
+    ) -> std::result::Result<SubmitDecision, CheckInterrupted> {
         let mut blocks = Vec::new();
+        let mut warnings = Vec::new();
         for registration in self.checks.all() {
             if cancel.is_cancelled() {
                 return Err(CheckInterrupted);
@@ -616,9 +563,30 @@ impl SubmitChecks {
                 .check(request.clone(), cancel.clone())
                 .await
             {
-                Ok(SubmitCheckReply::Proceed { blocks: added }) => blocks.extend(added),
+                Ok(SubmitCheckReply::Proceed {
+                    blocks: added,
+                    warnings: raised,
+                }) => {
+                    for block in added {
+                        // A context lands after the operator's own content, so
+                        // index 1 is the first place one may go; anything else
+                        // would be read as the operator's words (A.6.2).
+                        if !markup::runtime_context(1, &block) {
+                            tracing::warn!(
+                                check = %registration.name,
+                                "submit check context dropped: it is not a runtime marker element"
+                            );
+                            continue;
+                        }
+                        blocks.push(block);
+                    }
+                    warnings.extend(raised.into_iter().map(|message| SubmitWarning {
+                        check: registration.name.clone(),
+                        message,
+                    }));
+                }
                 Ok(SubmitCheckReply::Block { message }) => {
-                    return Ok(SubmitCheckReply::Block { message });
+                    return Ok(SubmitDecision::Block { message });
                 }
                 Err(_) if cancel.is_cancelled() => return Err(CheckInterrupted),
                 Err(_) => {}
@@ -627,21 +595,36 @@ impl SubmitChecks {
         if cancel.is_cancelled() {
             return Err(CheckInterrupted);
         }
-        Ok(SubmitCheckReply::Proceed { blocks })
+        Ok(SubmitDecision::Proceed { blocks, warnings })
     }
 }
 
 /// Appends the checks' contexts after the operator's own content (Hooks
-/// A.6.2); an input with no user content takes none.
+/// A.6.2); an input without operator content takes none. A context placed
+/// there would be the input's first block, which every reader takes for the
+/// operator's words.
+///
+/// Each block must be one runtime marker element
+/// (`dim_agent_types::markup::runtime_context`), which is the producer's
+/// precondition: a block that is not one is dropped with a diagnostic instead
+/// of appended, because both readers would take it for the operator's words.
 pub fn append_blocks(user: &mut Option<UserInput>, blocks: Vec<String>) {
-    let Some(user) = user else {
+    let Some(user) = user.as_mut().filter(|user| user.has_operator_content()) else {
         if !blocks.is_empty() {
-            tracing::warn!("submit check contexts dropped: the input has no user content");
+            tracing::warn!("submit check contexts dropped: the input has no operator content");
         }
         return;
     };
-    user.content
-        .extend(blocks.into_iter().map(|text| ContentBlock::Text { text }));
+    for text in blocks {
+        // The submit-check table decides this drop for every in-tree entry;
+        // the gate here guards a caller that appends blocks without going
+        // through the table.
+        if !markup::runtime_context(user.content.len(), &text) {
+            tracing::warn!("submit check context dropped: it is not a runtime marker element");
+            continue;
+        }
+        user.content.push(ContentBlock::Text { text });
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -654,7 +637,7 @@ struct WithdrawParams {
     input_id: String,
     #[serde(default)]
     reason: Option<String>,
-    /// Re-submits the content as Steer in the same batch as the withdrawal.
+    /// Replacement content adopted only when withdrawal is accepted.
     #[serde(default)]
     steer: Option<UserInput>,
 }
@@ -704,13 +687,22 @@ impl DynPlugin for InputMethodsPlugin {
                             return pending::read(&tree, value, &cancel).await;
                         }
                         let p: WithdrawParams = params(value)?;
-                        let queue = tree.get(&p.branch_id)?.service::<InputQueue>()?;
+                        let branch = tree.get(&p.branch_id)?;
+                        let queue = branch.service::<InputQueue>()?;
                         let mut steer = p.steer.map(|user| InputMessageData {
                             user: Some(user),
                             mode: Some(InputMode::Steer),
                             ..Default::default()
                         });
+                        let mut checks_warnings = Vec::new();
                         if let Some(input) = &steer {
+                            // The operator's own content is validated before
+                            // the checks run: a check's context must never be
+                            // what makes an input valid, and a refusal here
+                            // writes neither the withdrawal nor a replacement.
+                            input
+                                .validate()
+                                .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
                             // A blocked steer writes neither the withdrawal nor
                             // the new input (Hooks A.6.2).
                             match checks
@@ -726,33 +718,58 @@ impl DynPlugin for InputMethodsPlugin {
                                 .await
                             {
                                 Err(CheckInterrupted) => return Err(RpcError::interrupted()),
-                                Ok(SubmitCheckReply::Block { message }) => {
+                                Ok(SubmitDecision::Block { message }) => {
                                     return Err(RpcError::app(-32000, "input_blocked", message));
                                 }
-                                Ok(SubmitCheckReply::Proceed { blocks }) => {
+                                Ok(SubmitDecision::Proceed {
+                                    blocks,
+                                    warnings,
+                                }) => {
                                     if let Some(steer) = &mut steer {
                                         append_blocks(&mut steer.user, blocks);
                                     }
+                                    checks_warnings = warnings;
                                 }
                             }
                         }
                         let (answer, replacement) = queue
-                            .withdraw(
+                            .withdraw_checked(
                                 InputWithdrawData {
                                     input_id: p.input_id,
                                     reason: p.reason,
+                                    steer,
                                 },
-                                steer,
                             )
                             .await?;
                         let mut result = match answer {
                             Withdrawal::Deleted { sequence } => {
+                                if replacement.is_some() {
+                                    let publication = branch.publication();
+                                    let mut progress = publication.watch();
+                                    tokio::select! {
+                                        _ = progress.wait_for(|&(published, closed)| published >= sequence || closed) => {}
+                                        _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                                    }
+                                    if publication.sequence() < sequence {
+                                        return Err(RpcError::app(
+                                            -32000,
+                                            "publication_unknown",
+                                            "committed, but publication was not confirmed; query history after recovery",
+                                        ));
+                                    }
+                                }
                                 serde_json::json!({"status": "deleted", "sequence": sequence})
                             }
                             Withdrawal::NotHeld => serde_json::json!({"status": "notHeld"}),
                         };
                         if let Some(event) = replacement {
                             result["steer"] = serde_json::json!({"inputId": event.id, "sequence": event.sequence});
+                            // A warning describes the replacement this call
+                            // wrote; a withdrawal that wrote none carries
+                            // neither.
+                            if !checks_warnings.is_empty() {
+                                result["warnings"] = serde_json::json!(checks_warnings);
+                            }
                         }
                         reply(result)
                     })
@@ -776,6 +793,10 @@ mod tests {
     /// waits for the token it was handed and reports that the token fired.
     enum Answer {
         Proceed(Vec<String>),
+        ProceedWith {
+            blocks: Vec<String>,
+            warnings: Vec<String>,
+        },
         Block(String),
         Fail,
         Gate {
@@ -802,7 +823,16 @@ mod tests {
             match &self.answer {
                 Answer::Proceed(blocks) => {
                     let blocks = blocks.clone();
-                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks }) })
+                    Box::pin(async move {
+                        Ok(SubmitCheckReply::Proceed {
+                            blocks,
+                            warnings: Vec::new(),
+                        })
+                    })
+                }
+                Answer::ProceedWith { blocks, warnings } => {
+                    let (blocks, warnings) = (blocks.clone(), warnings.clone());
+                    Box::pin(async move { Ok(SubmitCheckReply::Proceed { blocks, warnings }) })
                 }
                 Answer::Block(message) => {
                     let message = message.clone();
@@ -842,8 +872,29 @@ mod tests {
             answer,
         })
     }
+    /// A check that proceeds with one runtime marker context per text, as a
+    /// producer builds them (A.6.2).
     fn proceed(blocks: &[&str]) -> Answer {
-        Answer::Proceed(blocks.iter().map(|block| (*block).to_owned()).collect())
+        Answer::Proceed(blocks.iter().map(|block| marker(block)).collect())
+    }
+    /// The same, with the check's own work that failed reported as warnings.
+    fn proceed_with(blocks: &[&str], warnings: &[&str]) -> Answer {
+        Answer::ProceedWith {
+            blocks: blocks.iter().map(|block| marker(block)).collect(),
+            warnings: warnings
+                .iter()
+                .map(|warning| (*warning).to_owned())
+                .collect(),
+        }
+    }
+    /// One context block, as a producer returns it: a single runtime marker
+    /// element (A.6.2).
+    fn marker(text: &str) -> String {
+        format!("<dim-hooks kind=\"prompt-submit\">{text}</dim-hooks>")
+    }
+    /// The contexts of `blocks`, in the form a producer returns them.
+    fn marked(blocks: &[&str]) -> Vec<String> {
+        blocks.iter().map(|block| marker(block)).collect()
     }
 
     /// A part that registers its checks on apply, as an owner does.
@@ -900,7 +951,7 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Block {
+            Ok(SubmitDecision::Block {
                 message: "no prompts".into()
             })
         );
@@ -928,11 +979,89 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed {
-                blocks: vec!["1".into(), "2".into(), "3".into()]
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["1", "2", "3"]),
+                warnings: Vec::new(),
             })
         );
         assert_eq!(*log.lock().unwrap(), ["alpha", "mid", "zeta"]);
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: each warning names the check that raised it, and the table keeps
+    /// them in name order beside the contexts.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn warnings_name_their_check_in_name_order() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![
+                (
+                    "zeta",
+                    check(&log, "zeta", proceed_with(&[], &["zeta failed"])),
+                ),
+                (
+                    "alpha",
+                    check(&log, "alpha", proceed_with(&["1"], &["alpha failed"])),
+                ),
+            ],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["1"]),
+                warnings: vec![
+                    SubmitWarning {
+                        check: "alpha".into(),
+                        message: "alpha failed".into(),
+                    },
+                    SubmitWarning {
+                        check: "zeta".into(),
+                        message: "zeta failed".into(),
+                    },
+                ],
+            })
+        );
+        part.shutdown().await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    /// A.6.2: a block that is not one runtime marker element is dropped here,
+    /// where the registration name is known, and is not a warning: it is a
+    /// producer defect, not work the check did not do.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_block_that_is_not_a_marker_is_dropped_and_is_no_warning() {
+        let root = Ctx::root().unwrap();
+        let checks = Arc::new(SubmitChecks::default());
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let part = mount(
+            &root,
+            &checks,
+            vec![(
+                "alpha",
+                check(
+                    &log,
+                    "alpha",
+                    Answer::ProceedWith {
+                        blocks: vec!["bare text".into(), marker("kept")],
+                        warnings: Vec::new(),
+                    },
+                ),
+            )],
+        )
+        .await;
+        assert_eq!(
+            checks.check(&request(), &CancellationToken::new()).await,
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["kept"]),
+                warnings: Vec::new(),
+            })
+        );
         part.shutdown().await.unwrap();
         root.shutdown().await.unwrap();
     }
@@ -955,8 +1084,9 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed {
-                blocks: vec!["b".into()]
+            Ok(SubmitDecision::Proceed {
+                blocks: marked(&["b"]),
+                warnings: Vec::new(),
             })
         );
         assert_eq!(*log.lock().unwrap(), ["alpha", "beta"]);
@@ -1083,7 +1213,10 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+            Ok(SubmitDecision::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            })
         );
         assert_eq!(*log.lock().unwrap(), ["dup"]);
         again.shutdown().await.unwrap();
@@ -1108,14 +1241,17 @@ mod tests {
         .await;
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Block {
+            Ok(SubmitDecision::Block {
                 message: "no prompts".into()
             })
         );
         part.shutdown().await.unwrap();
         assert_eq!(
             checks.check(&request(), &CancellationToken::new()).await,
-            Ok(SubmitCheckReply::Proceed { blocks: Vec::new() })
+            Ok(SubmitDecision::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            })
         );
         assert_eq!(
             *log.lock().unwrap(),

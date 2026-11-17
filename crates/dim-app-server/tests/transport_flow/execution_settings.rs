@@ -30,6 +30,7 @@ async fn execution_settings_decide_the_next_process_boundary() {
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: native.join("outputs"),
         },
         BranchToolConfig::default(),

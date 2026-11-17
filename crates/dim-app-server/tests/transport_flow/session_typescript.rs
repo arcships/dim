@@ -2190,6 +2190,50 @@ async fn node_session_typescript_accepts_type_array_schemas_and_names_a_refused_
     server.join().await.unwrap();
 }
 
+/// The registration's third argument carries the ordering class, and an
+/// unknown value is refused at the boundary rather than silently ignored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_session_typescript_takes_the_ordering_class_as_a_registration_option() {
+    let mut parts = fixture();
+    parts.rows[0]["config"] = json!({"concurrency": true});
+    let (server, _requests, _, mut recorded) = start_recording(ServerConfig {
+        session_typescript: Some(parts),
+        ..Default::default()
+    })
+    .await;
+    plugin_active(&server, &fixture().rows[0]).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let session = new_session(
+        &mut client,
+        json!(["ts_shared", "ts_alone", "ts_unknown", "echo"]),
+    )
+    .await;
+    when_served(
+        &mut client,
+        "session.typescript.status",
+        json!({"sessionId": session}),
+    )
+    .await;
+    submit(&mut client, &session, r#"tool:echo {"text":"offered"}"#).await;
+    let offered = recorded.recv().await.unwrap();
+    let mut names: Vec<&str> = offered.iter().map(|tool| tool.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["echo", "ts_alone", "ts_shared"], "{offered:?}");
+    let status = client
+        .rpc("session.typescript.status", json!({"sessionId": session}))
+        .await;
+    assert!(
+        status["result"]["refused"]
+            .as_str()
+            .is_some_and(|refused| refused.contains("ts_unknown")
+                && refused.contains("unknown tool concurrency")),
+        "{status}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// #207: Session creation does not wait for TypeScript parts, so a published
 /// Session can hold a Failed part. A part that failed before registering its
 /// namespace never held it, so the namespace answers the non-retryable
@@ -3040,4 +3084,175 @@ async fn node_session_typescript_closed_connection_does_not_hide_an_undeclared_n
     assert_eq!(codes["result"]["declared"], "gone", "{codes}");
     server.shutdown();
     server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_tool_source_observation_matches_native_watch_and_closes_a_pending_callback() {
+    use dim_agent_capabilities::tool_registry::{ToolProvider, ToolSourceSet, ToolSourcesView};
+    use rutis_bridge::session::HostDispatch;
+    struct Source(Arc<ToolSourceSet>);
+    impl ToolProvider for Source {
+        fn sets(&self) -> Vec<Arc<ToolSourceSet>> {
+            vec![self.0.clone()]
+        }
+    }
+    let home = PathBuf::from("/tmp").join(format!("dim-tool-source-view-{}", uuid::Uuid::new_v4()));
+    let audit = home.join("observations.jsonl");
+    let mut parts = fixture();
+    parts.rows = vec![json!({
+        "id":"tool-source-view", "name":parts.anchor.parent().unwrap().join("fixtures/tool-sources-view.ts"),
+        "provides":{}, "config":{"audit":audit}
+    })];
+    let (mut builder, _, _) = setup();
+    let (send, mut controls) = tokio::sync::mpsc::unbounded_channel();
+    builder.require_feature(ControlledGate::feature(send));
+    let server = serve(
+        builder,
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            unix_path: Some(home.join("server.sock")),
+            session_typescript: Some(parts.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    plugin_active(&server, &parts.rows[0]).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    process_typescript::select_model(&mut client).await;
+    let first = new_session(&mut client, json!([])).await;
+    let (_, ctx, _, registry) = controls.recv().await.unwrap();
+    let second = new_session(&mut client, json!([])).await;
+    let (_, _, _, other_registry) = controls.recv().await.unwrap();
+    let mut native = registry.sources_state();
+    let initial = when_served(
+        &mut client,
+        "session.toolsources.status",
+        json!({"sessionId":first}),
+    )
+    .await;
+    assert_eq!(
+        initial["result"]["current"],
+        json!(*native.borrow_and_update())
+    );
+    let initial_deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = client
+            .rpc("session.toolsources.status", json!({"sessionId":first}))
+            .await;
+        if !reply["result"]["snapshots"].as_array().unwrap().is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < initial_deadline,
+            "Node receives its initial snapshot: {reply}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_ok(
+        &client
+            .rpc("session.toolsources.hold", json!({"sessionId":first}))
+            .await,
+    );
+    registry
+        .register_source(
+            &ctx,
+            "fixture",
+            Arc::new(Source(Arc::new(ToolSourceSet {
+                key: "fixture".into(),
+                version: "v1".into(),
+                tools: vec![],
+            }))),
+        )
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), native.changed())
+        .await
+        .unwrap()
+        .unwrap();
+    let expected = native.borrow_and_update().clone();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let reply = client
+            .rpc("session.toolsources.status", json!({"sessionId":first}))
+            .await;
+        assert_ok(&reply);
+        if reply["result"]["entered"] == true {
+            assert_eq!(reply["result"]["current"], json!(expected));
+            assert_eq!(
+                reply["result"]["snapshots"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap(),
+                &json!(expected)
+            );
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Node observes the changed source: {reply}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let face = server
+        .agent()
+        .unwrap()
+        .get_session(&first)
+        .unwrap()
+        .session_service::<ToolSourcesView>()
+        .unwrap();
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let entered_callback = entered.clone();
+    let reply = face
+        .invoke(
+            "observe",
+            rutis_bridge::session::Value::List(vec![
+                json!({}).into(),
+                rutis_bridge::session::Value::callback(move |_| {
+                    let entered = entered_callback.clone();
+                    Ok(rutis_bridge::session::Value::cancellable_future(
+                        async move {
+                            entered.notify_one();
+                            std::future::pending().await
+                        },
+                    ))
+                }),
+            ]),
+        )
+        .unwrap();
+    let observing = tokio::spawn(rutis_bridge::session::settle(reply));
+    tokio::time::timeout(Duration::from_secs(5), entered.notified())
+        .await
+        .unwrap();
+    let closed = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.rpc("session.close", json!({"sessionId":first})),
+    )
+    .await
+    .expect("owner unload ends an observation even with its callback pending");
+    assert_ok(&closed);
+    tokio::time::timeout(Duration::from_secs(5), observing)
+        .await
+        .expect("owner unload ends the host observation without a caller-row token")
+        .unwrap()
+        .unwrap();
+    let records = std::fs::read_to_string(&audit).unwrap();
+    let record: Value = serde_json::from_str(records.lines().next().unwrap()).unwrap();
+    assert_eq!(record["entered"], true);
+    assert_eq!(record["settled"], true);
+    let remaining = client
+        .rpc("session.toolsources.status", json!({"sessionId":second}))
+        .await;
+    assert_ok(&remaining);
+    assert_eq!(
+        remaining["result"]["current"],
+        json!(*other_registry.sources_state().borrow())
+    );
+    assert_eq!(remaining["result"]["settled"], false);
+    drop((ctx, registry, other_registry, native, client));
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
 }

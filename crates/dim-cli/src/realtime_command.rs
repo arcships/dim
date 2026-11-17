@@ -196,7 +196,7 @@ mod tests {
         json!({
             "instanceId": "scripted",
             "serverVersion": "test",
-            "protocolVersion": 3,
+            "protocolVersion": 4,
             "features": ["session.create", "session.history"],
             "daemonProfile": {"kind": "product"},
         })
@@ -242,6 +242,7 @@ mod tests {
                 profile: None,
                 client_kind: "cli",
                 client_name: "dimcode",
+                protocol_version: 4,
             };
             let mut client = Client::open(&config, false).await.unwrap();
             client.hello().await.unwrap();

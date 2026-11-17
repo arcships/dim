@@ -299,7 +299,7 @@ async fn catalog(client: &mut Client, cwd: &str) -> Result<Catalog, String> {
 
 /// Enables or disables the project definition `id` names.
 async fn toggle(client: &mut Client, id: &str, enabled: bool, cwd: &str) -> Result<(), Failure> {
-    let name = id.strip_prefix("project:").unwrap_or(id);
+    let name = id.trim_prefix("project:");
     // The panel lists project entries only; the CLI twin's name is typed, so
     // it is checked against the owner's list rather than trusted.
     let entries = catalog(client, cwd)
@@ -356,7 +356,7 @@ async fn save(
     document: &Value,
     cwd: &str,
 ) -> Result<String, Failure> {
-    let name = id.strip_prefix("user:").unwrap_or(id);
+    let name = id.trim_prefix("user:");
     // The owner keys a definition by the document's name, and this area has
     // no remove: a rename would save a second definition and leave the old
     // one behind.

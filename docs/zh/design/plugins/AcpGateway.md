@@ -45,7 +45,7 @@ Gateway 实现位于 `crates/dim-acp`。公开 RPC 引擎、产品事件边界�
 
 每个稳定 v1 agent/client/protocol 方法、选定的 unstable 表面和 Lody 方法，分别在[计划 §4](../../../design/acp-gateway-implementation.md#4-稳定-acp-v1-方法逐项映射)、[§8](../../../design/acp-gateway-implementation.md#8-lody-方法和能力逐项决策) 判定。能力只来自已实现 handler 和真实 native availability，不复制历史能力对象。
 
-首版覆盖标准 Session create/list/load/resume、prompt/cancel、工具输出、审批、图片和文本资源。账户认证、mode/model、表单提问、close/delete、fork 按现有 native 接口的可用性提供。Lody 子集为 history、compaction、终态 turn fork 锚点、新会话 startup model 和 permission mode、detached exec task lifecycle 和双向协商的 snapshot-only subagent events。steering、Goal 控制、token 统计、额度、subagent 查询/输出/取消、scheduled tasks、session activity、标题接管、项目归属及文件回滚不在首版；计划区分原生合同缺口与交付取舍。
+标准协议覆盖 Session create/list/load/resume、prompt/cancel、工具输出、审批、图片和文本资源。账户认证、mode/model/effort、表单提问、close/delete、fork 按现有 native 接口的可用性提供。原生 `/compact`、`/usage`、`/goal`、`/loop` 命令的发布和交互见[计划 §4.7](../../../design/acp-gateway-implementation.md#47-原生命令交互)，使用可读回复，无须客户端专用面板。Lody 子集为 history、compaction、终态 turn fork 锚点、新会话 startup model 和 permission mode、detached exec task lifecycle 和双向协商的 snapshot-only subagent events。Lody steering、Goal 控制、token 统计、额度面板、subagent 查询/输出/取消、scheduled tasks、session activity、标题接管、项目归属及文件回滚仍不支持；slash command 不隐含这些扩展合同。
 
 Lody 方法和 metadata 按固定 Core DTO 及语义注释实现，不设连接级 Lody 总开关，不从一项推导整套支持。Subagent snapshot 可以如实声明无输出流、progress、read 或 cancel；最小投影不需要旧 SDK task API。准确协商、native fact 关联、startup config 和各项限制见[计划 §8](../../../design/acp-gateway-implementation.md#8-lody-方法和能力逐项决策)。Lody canonical tool ID 不能填任意 native 工具名。
 
@@ -74,15 +74,17 @@ Provider 管理已经归 daemon 的 ProviderPlugin 所有，CLI 使用其公开�
 
 创建普通交互 Session（session.create 省略 interactive），然后经 RPC attach。已有 Session 保留自己的配置。并发 load/resume 共用每 Session 的一个准备/runtime 槽位。
 
-load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence 合并缓存 live，回放写完才响应。resume 重建同一投影但不输出旧消息。raw-only 和 deleted inputs 不成为普通 user message。标题 revision/progress snapshot 各按公开合同处理，因为它们没有 durable sequence。算法见[计划 §5.2](../../../design/acp-gateway-implementation.md#52-固定头与-live-合流)。
+load 固定 native 历史头，按 nextAfter/done 分页，按分支 sequence 合并缓存 live，回放写完才响应。resume 重建同一投影但不输出旧消息。raw-only 和 deleted inputs 不成为普通 user message；能力在操作者的话之后追加的上下文也一样：`dim-hooks` 块会被存储、导出并被模型读到，但网关不为它回放任何 `user_message_chunk`，所以编辑器里的消息仍是操作者发出的内容。`Stop` 钩子的后续输入同样不回放任何东西：它是驱动 turn 的 Queue 输入，不是操作者写的消息，而网关的 `sessionUpdate` 也没有可以显示它的状态通道。已加载的 Skill 保留它那一行。标题 revision/progress snapshot 各按公开合同处理，因为它们没有 durable sequence。算法见[计划 §5.2](../../../design/acp-gateway-implementation.md#52-固定头与-live-合流)。
 
 ### 4.2 Prompt 与取消
 
-一个 ACP prompt 写成带唯一 submission id 的 Queue session.submit。回复由该 input 被删除，或消费它的 turn 的终态决定；别的客户端的 turn 不决定本 prompt。progress/committed text 通过每 request offset 合流，避免重复。
+普通 ACP prompt 写成带唯一 submission id 的 Queue session.submit；识别出的原生命令改走[计划 §4.7](../../../design/acp-gateway-implementation.md#47-原生命令交互)，不把 slash 文本提交给模型。普通 prompt 的回复由该 input 被删除，或消费它的 turn 的终态决定；别的客户端的 turn 不决定本 prompt。progress/committed text 通过每 request offset 合流，避免重复。
 
 取消尊重 InputQueue → Loop 的交接：held 输入走 withdrawal，随后按需 session.stop。现有原生合同不能保证 stop 精确指向预期 turn，也不能保证已 adopted、未 consumed 输入已删除。状态、顺序和竞态见[计划 §5](../../../design/acp-gateway-implementation.md#5-prompt回放和响应关联)、[§6.4](../../../design/acp-gateway-implementation.md#64-取消的交接边界)。
 
 本连接收到 cancel 后，prompt 必须返回 ACP cancelled，即使取消触发底层异常。Hooks 对 session.submit 的 input_blocked 拒绝显示原消息并返回 refusal；Gateway 不实现 Hooks。
+
+Session 已有未答复的 prompt 时，新到的 prompt 以 `session_busy` 拒绝；Gateway 既不排队它，也不把它 steer 进正在运行的 turn。因此运行期间用户输入的消息如何暂存，是 client 自己的选择。TUI 用[运行按键](../cli-commands.md#运行按键与排队)以它自己的方式达成这两个动作；在 ACP 上，同样的两步是 `session/cancel`、等待运行中 prompt 返回 `cancelled`，然后发送新的 `session/prompt`。Gateway 不 steer 第二个 prompt：ACP v1 未定义 turn 中途到达的 prompt，而且每个 prompt 的回复就是它自己 turn 的结束，两个 prompt steer 进同一个 turn 会共用一个结束点，无法各自给出诚实的停止原因。待协议定义 turn 中途投递后再重新讨论。
 
 ### 4.3 审批与提问
 
@@ -96,7 +98,7 @@ submission id 是查询键，不是 native exactly-once 保证。是否保证未
 
 ## 5. 安全与上下文
 
-保留既有 socket ownership/权限、Windows authenticated pipe、协议/profile 检查及 frame limit。使用明确 native-method 白名单，ACP 方法不能变成任意 RPC proxy。Session 操作外只读取安全 provider catalog，并执行计划 §4.4 中自有的登录流程；原生 Provider 管理的复用与首版写入边界见 §4.5。不开放 logout、quota 或任意 account management。provider 私有 realm、client ID 和 token 流程不进入本仓库。
+保留既有 socket ownership/权限、Windows authenticated pipe、协议/profile 检查及 frame limit。使用明确 native-method 白名单，ACP 方法不能变成任意 RPC proxy。Session 操作外只读取安全 provider catalog、执行计划 §4.4 中自有的登录流程，以及 §4.7 当前 provider 的只读订阅查询；原生 Provider 管理的复用与写入边界见 §4.5。不开放 logout 或任意 account management。provider 私有 realm、client ID 和 token 流程不进入本仓库。
 
 ACP 内容经现有 session.submit.user 进入，外部边界完成解析和转换。Gateway 不写任意 Timeline 事件、raw context blocks、插件设置或 host tools。模型只看到正常 adopted input/tool result，不注入 ACP identity 或 transport diagnostics。
 

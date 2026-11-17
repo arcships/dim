@@ -10,7 +10,7 @@
 //! generation can run, so the `operation_interrupted` reply of the call's
 //! admission is the end a client can observe.
 
-use crate::runs::Run;
+use crate::runs::Delivery;
 use dim_agent_capabilities::methods::{Caller, Progress};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -102,7 +102,7 @@ impl Watchers {
     }
 
     /// One state the run's record took, `terminal` on the last.
-    pub(crate) fn run(&self, run: &Run) {
+    pub(crate) fn run(&self, run: &Delivery) {
         self.send(json!({
             "kind": "run",
             "jobId": run.job_id,

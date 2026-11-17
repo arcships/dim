@@ -38,11 +38,7 @@ fn walk(root: &Path, dir: &Path, hasher: &mut Sha256) -> Result<(), SkillsError>
                 path.display()
             )));
         }
-        let relative = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .replace('\\', "/");
+        let relative = path.trim_prefix(root).to_string_lossy().replace('\\', "/");
         if meta.is_dir() {
             hasher.update(b"d");
             hasher.update(relative.as_bytes());

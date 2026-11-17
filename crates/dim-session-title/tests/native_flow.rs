@@ -516,9 +516,16 @@ async fn native_session_title_generation_rename_settings_restore_fork_and_close(
     titled(&mut client, &disabled, "Enabled", "auto").await;
 
     let images = create(&mut client, &store.0, true).await;
-    client.rpc("session.submit", json!({"sessionId":images,"branchId":"main","user":{"content":[
-        {"type":"image","source":{"type":"url","mediaType":"image/png","url":"https://example.com/image.png"}}
-    ]}})).await.unwrap();
+    let image = import_image(&mut client, &images, &store.0).await;
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId":images,"branchId":"main","user":{"content":[
+                {"type":"image","source":image}
+            ]}}),
+        )
+        .await
+        .unwrap();
     idle(&mut client, &images).await;
     submit(
         &mut client,

@@ -4,6 +4,7 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
@@ -43,6 +44,7 @@ const skill = (id, enabled = true, shadowedBy) => ({ id, name: id, description: 
 function mount(t, call, supports = () => true) {
   globalThis.skillsConnection = reactive({ phase: "connected", supports, client: { call: async (method, params, read) => read(await call(method, params)) } })
   const root = node("root"), app = renderer.createApp(SkillSettings)
+  app.use(nuxtUiTestPlugin)
   app.mount(root)
   t.after(() => app.unmount())
   return root
@@ -60,9 +62,9 @@ test("installed skills retain search and scope across reloads and authoritative 
   })
   await flush()
   assert.equal(button(root, "Disable shadowed").props.disabled, true)
-  assert.equal(all(root).filter(el => el.type === "details").length, 3)
+  assert.equal(all(root).filter(el => el.type === "button" && text(el) === "Details").length, 3)
   assert.equal(all(root).filter(el => el.type === "input").length, 1, "search is the only text input")
-  await all(root).find(el => el.type === "select").props.onChange({ target: { value: "/project-b" } }); await flush()
+  await all(root).find(el => el.type === "select").props["onUpdate:modelValue"]("/project-b"); await flush()
   const search = all(root).find(el => el.type === "input")
   search.props["onUpdate:modelValue"]("AUTHOR")
   await flush()
@@ -120,11 +122,9 @@ test("failed scope switches retain the loaded skills and target subsequent actio
   })
   await flush()
   const scope = all(root).find(el => el.type === "select")
-  await scope.props.onChange({ target: { value: "/project-a" } }); await flush()
+  await scope.props["onUpdate:modelValue"]("/project-a"); await flush()
   fail = true
-  const target = { value: "/project-b" }
-  await scope.props.onChange({ target }); await flush()
-  assert.equal(target.value, "/project-a")
+  await scope.props["onUpdate:modelValue"]("/project-b"); await flush()
   assert.equal(scope.props.value, "/project-a")
   assert.match(text(root), /Workspace discovery failed/)
   assert.ok(button(root, "Disable project-a"))
@@ -136,7 +136,7 @@ test("failed scope switches retain the loaded skills and target subsequent actio
     ["skills.set_enabled", { cwd: "/project-a", id: "project-a", enabled: false }],
     ["skills.refresh", { cwd: "/project-a" }],
   ])
-  await scope.props.onChange({ target: { value: "/project-b" } }); await flush()
+  await scope.props["onUpdate:modelValue"]("/project-b"); await flush()
   assert.equal(scope.props.value, "/project-b")
   assert.ok(button(root, "Disable project-b"))
 })

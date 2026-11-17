@@ -470,7 +470,7 @@ pub fn check_links(root: &Path, dir: &Path) -> Result<(), PluginError> {
                     "invalid_manifest",
                     format!(
                         "{}: a symbolic link leads outside the plugin",
-                        path.strip_prefix(root).unwrap_or(&path).display()
+                        path.trim_prefix(root).display()
                     ),
                 ));
             }

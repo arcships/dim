@@ -11,17 +11,140 @@ export type BranchSource =
   | { kind: "tool"; turn_id: string; request_id: string; call_id: string }
   | { kind: "host"; operation_id: string }
 
-export interface TimelineInfo {
-  id: string
-  parent?: string | null
-  branch_point?: number | bigint | null
-  create_anchor?: number | bigint | null
-  source?: BranchSource | null
+export interface ApprovalCallData {
+  name: string
+  input: Record<string, unknown>
 }
 
-export type ImageSourceType = "base64" | "url"
+export interface ApprovalRequestData {
+  approval_id: string
+  source: BranchSource
+  call: ApprovalCallData
+  reason: string
+}
+
+export type ApprovalDecision = "allow" | "deny"
+
+export interface Approval {
+  /**
+   * The committed requests no answer or cancellation ended, in request
+   * order: what the `approval` face's `pending` reads.
+   */
+  pending(): Promise<ApprovalRequestData[]>
+  /**
+   * Answers request `request_id` with `decision`: what the `approval`
+   * face's `decide` calls, and answered once the branch dispatched the
+   * answer.
+   * @throws {ApprovalRespondErrorThrown}
+   */
+  decide(requestId: string, decision: ApprovalDecision): Promise<void>
+}
+
+/** The connections attached to one Session now. */
+export interface SessionPresenceRequest {
+  sessionId: string
+}
+
+/**
+ * The channels the model may see. `tui` is a UI leaf; a leaf's underlying
+ * connection is not counted again.
+ */
+export type ClientChannel = "tui" | "cli" | "web" | "acp" | "remote" | "desktop" | "unknown"
+
+/** One attached connection. */
+export interface ClientPresence {
+  channel: ClientChannel
+  /** The client's self-declared `hello.clientName`; never an identity. */
+  label?: string | null
+}
+
+/** The `presences` reply; an unknown Session is empty. */
+export interface SessionPresencesReply {
+  presences: ClientPresence[]
+}
+
+/**
+ * The `sessionClientsHost` face: the connections attached to each Session,
+ * as data. The App Server binds its connection and UI registries; a Rust
+ * reader calls [`Self::presences`] directly and a part of another language
+ * calls the same operation by name.
+ */
+export interface SessionClientsHost {
+  /** The connections attached to `request.session_id` now. */
+  presences(request: SessionPresenceRequest): Promise<SessionPresencesReply>
+}
+
+/**
+ * One worktree association to record: the Session, the Git common directory
+ * and worktree root it belongs to, and the Session's verified subtree. The
+ * paths are UTF-8 strings, as every path that crosses is ([service faces
+ * §1](../../../docs/design/service-faces.md#1-规则)).
+ */
+export interface WorktreeAssociation {
+  sessionId: string
+  repository: string
+  root: string
+  subtree: string
+}
+
+/** What `worktreeAssociations.associate` fails with: `{code, message}`. */
+export type WorktreeAssociationError = { code: "failed"; message: string }
+
+/**
+ * The `worktreeAssociations` face: the association store records a verified
+ * directory and its Session subtree atomically. The owner binds its write; a
+ * Rust reader calls [`Self::associate`] directly and a part of another
+ * language calls the same operation by name.
+ */
+export interface WorktreeAssociations {
+  /**
+   * Records `request`'s directory and Session subtree as one association.
+   * @throws {WorktreeAssociationErrorThrown}
+   */
+  associate(request: WorktreeAssociation): Promise<void>
+}
+
+/** The `variables` reply: the names only, never a credential value. */
+export interface CredentialVariablesReply {
+  variables: string[]
+}
+
+/**
+ * The `credentialVariablesHost` face: the names of the environment variables
+ * the owner reads credentials from. The owner binds its read; a Rust reader
+ * calls [`Self::variables`] directly and a part of another language calls the
+ * same operation by name.
+ */
+export interface CredentialVariablesHost {
+  /** The names, in the owner's set order. */
+  variables(): Promise<CredentialVariablesReply>
+}
+
+export interface ToolExecutionContext {
+  turnId: string
+  requestId: string
+  branchId: string
+}
+
+export interface ToolHost {
+  /**
+   * Runs one call through the host's tools as `caller` names the branch's
+   * execution. The driver is the implementation; this is the `toolHost`
+   * face ([tool contributions §2.1](../../../docs/architecture/rust-agent/tool-contributions.md#21-宿主工具的-toolhost-数据面)).
+   *
+   * This is raw driver execution: it does not resolve write targets or run
+   * Permission or Approval. The caller owns admission; model-driven calls
+   * must use the branch ToolExecutor flow before reaching the driver.
+   * `caller` identifies execution context and does not grant authority.
+   * @throws {HostErrorThrown}
+   */
+  execute(call: { id: string; name: string; input: { [key: string]: unknown } }, caller: ToolExecutionContext, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').ToolResult>
+}
+
+export type ImageSourceType = "base64" | "url" | "file"
 
 export interface ImageSource {
+  fileId?: string | null
   type: ImageSourceType
   mediaType: string
   data?: string | null
@@ -59,6 +182,162 @@ export interface InputMessageData {
   handover?: InputHandover | null
 }
 
+/** The identity of one committed input. */
+export interface InputRef {
+  inputId: string
+  sequence: number | bigint
+}
+
+/**
+ * A command to withdraw an input InputQueue still holds unapplied. It is
+ * never a fact about the input by itself: only `input/deleted` is.
+ */
+export interface InputWithdrawData {
+  input_id: string
+  /** Text for clients to show with the deleted input; no decision reads it. */
+  reason?: string | null
+  /** Checked replacement content, adopted only if withdrawal is accepted. */
+  steer?: InputMessageData | null
+}
+
+/** InputQueue's answer to one `input/withdraw`. */
+export type Withdrawal =
+  | /** The input was held: `input/deleted` at this sequence, never applied. */ { status: "deleted"; sequence: number | bigint }
+  | /** Unknown, already applied or already deleted: nothing was written. */ { status: "notHeld" }
+
+/**
+ * Consumes `input/message` and decides by its mode when Loop may consume
+ * it, writing `input/applied` with the mode then: steer and append inputs
+ * at once; a queue input when no turn runs or is about to start,
+ * otherwise after the turn ends, one per turn. A handover input is never
+ * released: it waits for the turn it names and is deleted when that turn
+ * ends, or on arrival when no such turn is open. Knows of turns only
+ * through `turn/start`, `turn/end` and `stop/interrupt`; Loop decides how
+ * to consume what is applied. Consumes `input/withdraw` in order and
+ * writes `input/deleted` for an input it still holds unapplied.
+ */
+export interface InputQueue {
+  /**
+   * Commits an input through the branch entry, accepting each submission id once.
+   * @throws {AgentErrorThrown}
+   */
+  submit(input: InputMessageData): Promise<InputRef>
+  /**
+   * Withdraws a held input without replacing it. Steer candidates must enter
+   * through `session.input.withdraw`, which validates and checks them first.
+   * @throws {AgentErrorThrown}
+   */
+  withdraw(command: InputWithdrawData): Promise<Withdrawal>
+}
+
+/**
+ * One declared method as the reservation question reads it: the name, whether
+ * it mutates and the notification names it may send. `interruption` and
+ * `progress` belong to an actual registration, not to the question, so they do
+ * not cross.
+ */
+export interface ReservedMethod {
+  name: string
+  mutating: boolean
+  notifications?: string[]
+}
+
+/** A namespace and the declarations it would register. */
+export interface ReservedMethodsRequest {
+  namespace: string
+  declarations?: ReservedMethod[]
+}
+
+/** What `reservedMethods` fails with: `{code, message}`. */
+export type ReservedMethodsError = { code: "reserved"; message: string }
+
+/**
+ * The method names a host keeps from Session namespaces, such as its
+ * protocol's built-ins and roots: a process value the Session's table
+ * consults when a namespace is registered. A host that serves no protocol
+ * names no such value, and its Session tables reserve nothing.
+ */
+export interface ReservedMethods {
+  /**
+   * Refuses a namespace and declarations the host keeps for itself.
+   * @throws {ReservedMethodsErrorThrown}
+   */
+  check(request: ReservedMethodsRequest): Promise<void>
+}
+
+export type Decision =
+  | { decision: "allow" }
+  | { decision: "ask"; reason: string }
+  | { decision: "deny"; reason: string }
+
+export interface Permission {
+  /**
+   * Decides `call` now, as the `permission` face's `check` does: the
+   * dispatched policy, the file facts and the command rules of the moment,
+   * with no advisor (Hooks A.6.1 asks advisors for admission only).
+   * @throws {HostErrorThrown}
+   */
+  check(call: ApprovalCallData, risk: string | null, cancelled: () => void | Promise<void>): Promise<Decision>
+}
+
+/**
+ * The operator's reply-language choices, by their stable wire codes. The
+ * names are the ones the operator selects, named in English for the prompt
+ * text ([PromptSources §3]).
+ *
+ * [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
+ */
+export type ReplyLanguage = "en" | "zh-CN" | "zh-Hant" | "ja" | "ko" | "id" | "de" | "fr" | "es" | "pt-BR" | "pt-PT"
+
+/**
+ * The `get` reply: the Session's reply language when the operator selected
+ * one, `null` otherwise.
+ */
+export interface SessionLanguageReply {
+  language?: ReplyLanguage | null
+}
+
+/**
+ * The Session's reply language, when the operator selected one: the live
+ * value the `dim/language` source reads and the App Server's
+ * `session.language.*` methods change. It starts from `SessionConfig.language`
+ * when the Session is created or restored.
+ */
+export interface SessionLanguage {
+  /**
+   * The reply language the operator selected, as data. The App Server's
+   * `session.language.get` answers the same value; its update also writes
+   * the Session record and has Prompt adopt the source, so changing the
+   * value is not this face's operation.
+   */
+  get(): Promise<SessionLanguageReply>
+}
+
+/** The `get` reply: the factory instructions text, when the assembly set one. */
+export interface SkillsConfigReply {
+  instructions?: string | null
+}
+
+/**
+ * Skills' factory configuration: the text that replaces [`INSTRUCTIONS`]
+ * ([model-prompts §9.2](../../../docs/design/model-prompts.md#92-every-capability-that-writes-model-facing-text)).
+ */
+export interface SkillsConfig {
+  /**
+   * The instructions text the assembly configured, as data; `null` means
+   * the built-in [`INSTRUCTIONS`].
+   */
+  get(): Promise<SkillsConfigReply>
+}
+
+export interface TimelineInfo {
+  id: string
+  parent?: string | null
+  branch_point?: number | bigint | null
+  create_anchor?: number | bigint | null
+  source?: BranchSource | null
+}
+
 /** Which branches a query covers. */
 export type TimelineQueryScope =
   | /** The queried branch alone. */ "branch"
@@ -67,6 +346,8 @@ export type TimelineQueryScope =
 export type QueryOperand =
   | { kind: "field"; path: string }
   | { kind: "outer"; path: string }
+  | { kind: "root"; path: string }
+  | { kind: "concat"; parts: QueryOperand[] }
   | { kind: "element"; path: string }
   | { kind: "value"; value: unknown }
 
@@ -197,8 +478,9 @@ export interface TreeCommands {
    */
   page(id: string, after: number | bigint, limit: number | bigint, through: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
   /**
-   * Computes properties of one line at a fixed cutoff. Chain scope is invalid.
-   * An ended line reads its persisted facts and has no publishing tail.
+   * Computes properties at a fixed cutoff. Chain scope reads only published
+   * facts, with each ancestor bounded by its inherited cut. An ended line
+   * reads its persisted facts and has no publishing tail.
    * @throws {AgentErrorThrown}
    */
   query(id: string, query: TimelineQuery): Promise<TimelineQueryReply>
@@ -216,6 +498,129 @@ export interface TreeCommands {
    * @throws {AgentErrorThrown}
    */
   create(parent: string, at: number | bigint, options: BranchOptions, cancelled: () => void | Promise<void>): Promise<string>
+}
+
+export type WaitResult =
+  | { reason: "notification"; taskIds: string[]; waitedMs: number | bigint }
+  | { reason: "user_steer"; waitedMs: number | bigint }
+  | { reason: "timeout"; waitedMs: number | bigint }
+  | { reason: "interrupted"; waitedMs: number | bigint }
+
+export interface Wait {
+  /**
+   * Waits for the next matching arrival, the timeout or the caller's
+   * cancellation, as the `wait` tool's call does.
+   *
+   * The caller cancels the call with `cancelled`; the wait then ends as
+   * [`WaitResult::Interrupted`] and that answer stands. A caller that
+   * drops the native Rust future releases the single-wait slot. A bridge
+   * caller must signal `cancelled` before abandoning its reply. An ended
+   * service generation refuses new calls and ends active calls with
+   * [`WaitCallError::Reloading`].
+   * @throws {WaitCallErrorThrown}
+   */
+  wait(taskId: string | null, timeoutMs: number | bigint, cancelled: () => void | Promise<void>): Promise<WaitResult>
+}
+
+export type TaskError =
+  | /** Required task facts could not be read. */ { read: [] }
+  | /** No matching task or live output on this branch. */ "unknown"
+  | /** This instance was unloaded. */ "closed"
+
+/**
+ * One page of a task's registered output file, as
+ * `session.exec.output.page` answers it.
+ */
+export interface OutputPage {
+  /** The page's text, sanitized like the tail preview. */
+  text: string
+  /**
+   * The file bytes this page consumed; a client's next cursor is always
+   * `cursor + bytes`. `text` can be shorter because sanitization drops
+   * control characters.
+   */
+  bytes: number | bigint
+  /**
+   * Present when the read found at least `limit` bytes, so the client may
+   * continue immediately; always `cursor + bytes`. Absent on a shorter or
+   * empty page, which does not mean the file ended: the client advances by
+   * `bytes` and asks again.
+   */
+  nextCursor?: number | bigint | null
+  /** Whether the output file reached `OUTPUT_FILE_BYTE_LIMIT`. */
+  truncated: boolean
+}
+
+/** Why one paged read of a task's registered output file answered nothing. */
+export type OutputPageError =
+  | /** Required task facts could not be read. */ { read: [] }
+  | /** No matching task on this branch. */ "unknown"
+  | /** The registered output file is gone or unreadable: it was cleaned, or the task's Session was deleted. */ "unavailable"
+  | /** This instance was unloaded. */ "closed"
+  | /** The page budget was zero. */ "invalidLimit"
+
+export type ExecStatus = "completed" | "failed" | "cancelled"
+
+export interface ExecEndedData {
+  task_id: string
+  status: ExecStatus
+  result: import('./plugin.js').ToolResult
+}
+
+/** Why waiting for a task's end answered nothing. */
+export type WaitError =
+  | /** Required task facts could not be read. */ { read: [] }
+  | /** No matching task on this branch. */ "unknown"
+  | /** This instance was unloaded, or the task's record was released. */ "closed"
+  | /** The wait's own timeout elapsed first. */ "timeout"
+
+export interface BackgroundExec {
+  /**
+   * Reads the live capture without reconstructing a resource from history:
+   * what `backgroundExec.output` answers.
+   * @throws {TaskErrorThrown}
+   */
+  output(taskId: string): Promise<string>
+  /**
+   * Reads one page of the task's registered output file, by byte offset:
+   * what `backgroundExec.outputPage` answers. `limit` rejects 0 and clamps
+   * to [`OUTPUT_PAGE_BYTES_MAX`]; a dropped call drops the read.
+   * @throws {OutputPageErrorThrown}
+   */
+  outputPage(taskId: string, cursor: number | bigint, limit: number | bigint): Promise<OutputPage>
+  /**
+   * Waits until the task ends, or `timeout_ms` elapses: what
+   * `backgroundExec.wait` answers. An ended task answers its record at
+   * once; a dropped call releases the wait.
+   * @throws {WaitErrorThrown}
+   */
+  wait(taskId: string, timeoutMs: number | bigint): Promise<ExecEndedData>
+  /**
+   * Stops a task: cancels it while running, so it ends `cancelled` and
+   * does not wake. Returns once its `exec/ended` is dispatched; a task that
+   * already ended keeps its result and its wake.
+   * @throws {TaskErrorThrown}
+   */
+  stop(taskId: string): Promise<ExecEndedData>
+}
+
+export interface ModelId {
+  providerId: string
+  modelId: string
+}
+
+export interface AgentConfig2 {
+  name: string
+  systemPrompt: string
+  model: ModelId
+}
+
+export interface AgentConfig {
+  /**
+   * The Agent's identity and default model as data, for parts in other
+   * languages.
+   */
+  get(): Promise<AgentConfig2>
 }
 
 export interface SessionConfig {
@@ -433,6 +838,155 @@ export interface SessionPermissions {
   permissionDefaults(request: Empty): Promise<import('./plugin.js').PermissionPolicy>
 }
 
+/**
+ * The `get` reply: each description text the assembly configured, or `null`
+ * for the built-in one.
+ */
+export interface CollaborationConfigReply {
+  leaderDescription?: string | null
+  memberDescription?: string | null
+}
+
+/**
+ * Collaboration's factory configuration: the two `agent` descriptions, each
+ * a whole text in place of its built-in one (Collaboration §3).
+ */
+export interface CollaborationConfig {
+  /** The two `agent` descriptions the assembly configured, as data. */
+  get(): Promise<CollaborationConfigReply>
+}
+
+/** One member relation as `collaborationDirectory.relations` answers it. */
+export interface CollaborationRelation {
+  memberSessionId: string
+  leaderSessionId: string
+  memberAgentId: string
+}
+
+/** The `relations` reply: every member relation this process holds. */
+export interface CollaborationRelationsReply {
+  relations: CollaborationRelation[]
+}
+
+/** Process-lifetime records, independent of reloadable AgentIndex logic. */
+export interface CollaborationDirectory {
+  /** Every member relation this process holds, by member Session id. */
+  relations(): Promise<CollaborationRelationsReply>
+}
+
+/**
+ * Admission for process-owned work, including work accepted before a Session
+ * exists. A hold starts before acceptance and ends after the last owned effect.
+ */
+export interface ProcessActivity {
+  /**
+   * Admits work unless admission is paused. Release the returned id after
+   * settlement. A lost owner leaves admission busy until process shutdown;
+   * an unload or crash is not evidence that its accepted work settled.
+   */
+  hold(): Promise<number | bigint | null>
+  /** Releases a settled operation's hold. Already released holds return false. */
+  release(id: number | bigint): Promise<boolean>
+}
+
+export type McpSourceState =
+  | { state: "disabled" }
+  | { state: "connecting" }
+  | { state: "ready"; version: string }
+  | { state: "failed"; message: string }
+  | /** The transport is gone but the last tools stay published and callable. The reason is kept until a connection succeeds. */ { state: "disconnected"; message: string }
+  | /** The server needs the user to sign in; clears by itself once the server's credential changes. */ { state: "authRequired"; expired: boolean }
+
+export interface McpSessionState {
+  servers: Record<string, McpSourceState>
+  catalogError?: string | null
+  closed: boolean
+}
+
+export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+
+/**
+ * A tool input schema.
+ *
+ * Deserialization accepts the JSON Schema forms an MCP server may send and
+ * stores the canonical shape the v22 format defines: a `type` array of one
+ * name becomes that name, two or more names become `anyOf` branches (under
+ * `allOf` when the node already has an `anyOf`), and a boolean subschema
+ * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
+ * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
+ * walked. A rejected node's error names its path under `inputSchema`.
+ */
+export type JsonSchema = {
+  type?: SchemaType | null
+  properties?: Record<string, JsonSchema> | null
+  items?: JsonSchema | null
+  required?: string[] | null
+  enum?: unknown[] | null
+  description?: string | null
+} & Record<string, unknown>
+
+/**
+ * The mount read's reply (MCP Apps §4.1). `text` and `blob` are exclusive;
+ * `app` is the document's own `_meta.ui`, which the host applies.
+ */
+export interface McpWidgetResult {
+  server: string
+  name: string
+  description?: string | null
+  inputSchema: JsonSchema
+  uri: string
+  mimeType: string
+  text?: string | null
+  blob?: string | null
+  app?: Record<string, unknown> | null
+}
+
+export type ToolContent = string | ContentBlock[]
+
+/**
+ * A view's tool result (MCP Apps §4.2), `_meta` included. It is the reply to
+ * the client that asked; the Timeline's `ToolResult` is never built from it.
+ */
+export interface McpAppCallResult {
+  content: ToolContent
+  structuredContent?: Record<string, unknown> | null
+  isError?: boolean | null
+  meta?: Record<string, unknown> | null
+}
+
+/** Management view, without credentials, transport handles or registry access. */
+export interface McpSession {
+  /**
+   * This Session's entries and their states: what the `mcpSession`
+   * face's `state` reads.
+   */
+  state(): Promise<McpSessionState>
+  /**
+   * Requests rediscovery, including external file edits and failed connections.
+   * Completion is reflected in state and B's ToolSourcesView, not this return.
+   * @throws {McpErrorThrown}
+   */
+  refresh(): Promise<void>
+  /**
+   * The widget a published tool declares (MCP Apps D4): its entry, the
+   * server's own tool name, the document that entry's connection serves,
+   * and the tool definition a host applies to the view. What the
+   * `mcpSession` face's `widget` answers; a dropped call cancels the
+   * document read.
+   * @throws {McpAppErrorThrown}
+   */
+  widget(published: string): Promise<McpWidgetResult>
+  /**
+   * One tool call on one entry of this Session, on that entry's own
+   * connection (MCP Apps D5). It is the user's action on an enabled entry,
+   * not an agent decision: no branch admits it and it writes no fact. What
+   * the `mcpSession` face's `call` answers; a dropped call cancels the
+   * server request.
+   * @throws {McpAppErrorThrown}
+   */
+  call(server: string, tool: string, arguments: Record<string, unknown>): Promise<McpAppCallResult>
+}
+
 export type WorkflowRoot = { project: string } | { package: string }
 
 export interface WorkflowReadRequest {
@@ -496,6 +1050,28 @@ export interface WorkflowFiles {
   createDirectory(request: WorkflowDirectoryRequest): Promise<void>
 }
 
+/**
+ * The `read` reply: the addresses as UTF-8 text, as every path that crosses
+ * is ([service faces §1](../../../docs/design/service-faces.md#1-规则)).
+ */
+export interface BoundAddresses {
+  unixPath?: string | null
+  pipeName?: string | null
+  websocketAddress?: string | null
+}
+
+/** What `listenAddresses.read` fails with: `{code, message}`. */
+export type ListenAddressesError = { code: "invalid_path"; message: string }
+
+/** Addresses actually bound by the transport plugin. */
+export interface ListenAddresses {
+  /**
+   * The addresses this process bound, if any.
+   * @throws {ListenAddressesErrorThrown}
+   */
+  read(): Promise<BoundAddresses>
+}
+
 export interface PublishFile {
   /** Absolute host path inside an already authorized FileStorage root. */
   path: string
@@ -528,7 +1104,28 @@ export interface UiResources {
 }
 
 /** What a method returning `Err(AgentError)` throws. */
-export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
+export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed" | "UnknownBranch" | "BranchEnded" | "Storage" | "PublicationUnknown" | "Build" | "Cancelled" | "Reloading" | "AmbiguousSubmission" | "PartialSubmission" | "Fault" | "Framework" | "Multiple", undefined>
+
+/** What a method returning `Err(ApprovalRespondError)` throws. */
+export type ApprovalRespondErrorThrown = RustError<"ApprovalRespondError", "Unknown" | "Cancelled" | "Closed", undefined>
+
+/** What a method returning `Err(HostError)` throws. */
+export type HostErrorThrown = RustError<"HostError", "Failed" | "Cancelled", undefined>
+
+/** What a method returning `Err(ListenAddressesError)` throws. */
+export type ListenAddressesErrorThrown = RustError<"ListenAddressesError", "invalid_path", ListenAddressesError>
+
+/** What a method returning `Err(McpAppError)` throws. */
+export type McpAppErrorThrown = RustError<"McpAppError", "Absent" | "Unsupported" | "NotCallable" | "UnknownServer" | "Unavailable" | "Refused" | "Unknown", undefined>
+
+/** What a method returning `Err(McpError)` throws. */
+export type McpErrorThrown = RustError<"McpError", "Settings" | "InvalidId" | "UnknownServer" | "InvalidEntry" | "MoveConflict" | "MovePartial" | "CredentialsAreUserScoped" | "StaleSecretRecord" | "ImportConflict" | "ImportPartial" | "Disabled" | "Unavailable" | "Server" | "Auth" | "Closed" | "Cancelled" | "Worker", undefined>
+
+/** What a method returning `Err(OutputPageError)` throws. */
+export type OutputPageErrorThrown = RustError<"OutputPageError", "read" | "unknown" | "unavailable" | "closed" | "invalidLimit", OutputPageError>
+
+/** What a method returning `Err(ReservedMethodsError)` throws. */
+export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "reserved", ReservedMethodsError>
 
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
@@ -536,12 +1133,37 @@ export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceErr
 /** What a method returning `Err(SessionsError)` throws. */
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
+/** What a method returning `Err(TaskError)` throws. */
+export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
+
+/** What a method returning `Err(WaitCallError)` throws. */
+export type WaitCallErrorThrown = RustError<"WaitCallError", "AlreadyWaiting" | "Reloading", undefined>
+
+/** What a method returning `Err(WaitError)` throws. */
+export type WaitErrorThrown = RustError<"WaitError", "read" | "unknown" | "closed" | "timeout", WaitError>
+
 /** What a method returning `Err(WorkflowFilesError)` throws. */
 export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_path" | "closed" | "cancelled" | "locked" | "unsupported" | "unsynced" | "io" | "not_found" | "invalid_data", WorkflowFilesError>
 
+/** What a method returning `Err(WorktreeAssociationError)` throws. */
+export type WorktreeAssociationErrorThrown = RustError<"WorktreeAssociationError", "failed", WorktreeAssociationError>
+
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
+  approval: Approval
+  sessionClientsHost: SessionClientsHost
+  worktreeAssociations: WorktreeAssociations
+  credentialVariablesHost: CredentialVariablesHost
+  toolHost: ToolHost
+  inputQueue: InputQueue
+  reservedMethods: ReservedMethods
+  permission: Permission
+  sessionLanguage: SessionLanguage
+  skillsConfig: SkillsConfig
   treeCommands: TreeCommands
+  wait: Wait
+  backgroundExec: BackgroundExec
+  agentConfig: AgentConfig
   sessionConfig: SessionConfig
   timelineIdentity: TimelineIdentity
   sessionIdentity: SessionIdentity
@@ -551,6 +1173,11 @@ export interface Services {
   timeline: Timeline
   partRegistry: PartRegistry
   sessionPermissions: SessionPermissions
+  collaborationConfig: CollaborationConfig
+  collaborationDirectory: CollaborationDirectory
+  processActivity: ProcessActivity
+  mcpSession: McpSession
   workflowFiles: WorkflowFiles
+  listenAddresses: ListenAddresses
   uiResources: UiResources
 }

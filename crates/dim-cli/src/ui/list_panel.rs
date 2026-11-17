@@ -54,7 +54,13 @@ impl Item {
 pub enum Event {
     None,
     Close,
-    Pick(String),
+    /// The selected row: its id, and the label it was drawn with, so a caller
+    /// that needs the row's text takes it from the event instead of reading
+    /// the selection again.
+    Pick {
+        id: String,
+        label: String,
+    },
     Refresh,
 }
 
@@ -71,6 +77,8 @@ pub struct ListPanel {
     /// shows at once; a set title is drawn as it was given.
     title: Title,
     hint: String,
+    /// A section title above the filter, drawn before the list's own rows.
+    lead: Option<String>,
     /// A question with the key that answers it and the key that cancels it,
     /// drawn in the hint's place until the next [`ListPanel::set_hint`].
     confirmation: Option<(String, String, String)>,
@@ -79,6 +87,7 @@ pub struct ListPanel {
     no_match_text: &'static str,
     /// The detail follows the label on one string (`name  detail`).
     inline_detail: bool,
+    section_headings: bool,
     /// Headings stay while filtering.
     all_rows: bool,
     /// Typed characters filter the list.
@@ -113,11 +122,13 @@ impl ListPanel {
         Self {
             title: Title::Fixed(title),
             hint: hint.into(),
+            lead: None,
             confirmation: None,
             loading_text,
             empty_text,
             no_match_text,
             inline_detail: false,
+            section_headings: false,
             all_rows: false,
             filterable: true,
             remote_filter: false,
@@ -139,6 +150,19 @@ impl ListPanel {
     pub fn with_inline_rows(mut self) -> Self {
         self.inline_detail = true;
         self.all_rows = true;
+        self
+    }
+
+    /// A section title above the filter: the panel holds more than one part
+    /// and names the one its list is.
+    pub fn with_lead(mut self, lead: impl Into<String>) -> Self {
+        self.lead = Some(lead.into());
+        self
+    }
+
+    /// Emphasizes group headings and outdents them from selectable entries.
+    pub fn with_section_headings(mut self) -> Self {
+        self.section_headings = true;
         self
     }
 
@@ -180,6 +204,11 @@ impl ListPanel {
     pub fn with_notes(mut self, notes: Vec<String>) -> Self {
         self.notes = notes;
         self
+    }
+
+    /// Replaces the explanation when the focused entry changes.
+    pub fn set_notes(&mut self, notes: Vec<String>) {
+        self.notes = notes;
     }
 
     pub fn filter_is_empty(&self) -> bool {
@@ -260,6 +289,18 @@ impl ListPanel {
         }
     }
 
+    /// Drops the row `id`, keeping the selection on a row that is still
+    /// shown: the row at the same place takes over, and the last one keeps
+    /// the selection on the row before it.
+    pub fn remove(&mut self, id: &str) {
+        let Some(at) = self.items.iter().position(|item| item.id == id) else {
+            return;
+        };
+        self.items.remove(at);
+        let count = self.shown().iter().filter(|item| !item.heading).count();
+        self.selected = self.selected.min(count.saturating_sub(1));
+    }
+
     /// Rows for the current filter: headings only while nothing is typed.
     fn shown(&self) -> Vec<&Item> {
         let query = self.filter.text().trim().to_lowercase();
@@ -330,7 +371,10 @@ impl ListPanel {
                 .into_iter()
                 .filter(|i| !i.heading)
                 .nth(self.selected)
-                .map_or(Event::None, |item| Event::Pick(item.id.clone())),
+                .map_or(Event::None, |item| Event::Pick {
+                    id: item.id.clone(),
+                    label: item.label.clone(),
+                }),
             _ if self.filterable && self.filter.handle_key(key) => {
                 self.selected = 0;
                 Event::None
@@ -363,8 +407,8 @@ impl ListPanel {
     /// from the end, the blank row going with the last line. When not even
     /// one list row fits beside the other parts, it gives them up in this
     /// order: the rest of the notes, the filter's padding (the row below the
-    /// query first), the footer's first line first, the hint's rows above
-    /// the border, the query row, and the list's last row. The selected
+    /// query first), the lead, the footer's first line first, the hint's rows
+    /// above the border, the query row, and the list's last row. The selected
     /// entry and the hint's closing key stay the longest; a confirmation
     /// keeps its confirm key the longest instead.
     pub fn render_with_footer(
@@ -381,6 +425,7 @@ impl ListPanel {
         }
         let inner = width.saturating_sub(4).max(1);
         let shown = self.shown();
+        let lead = self.lead.as_deref().map(|lead| title_plain(lead, inner, p));
         let hint = self.hint_text();
         let hint_above = hint_rows(&hint, width);
         let mut notes = Vec::new();
@@ -433,15 +478,19 @@ impl ListPanel {
             notes.len(),
             footer.len(),
             hint_above.as_ref().map_or(0, Vec::len),
+            lead.is_some(),
         );
-        self.query_row
-            .set(match (self.filterable, fitted.query, fitted.above) {
-                (true, true, true) => Some(2),
-                (true, true, false) => Some(1),
-                _ => None,
-            });
+        self.query_row.set(match (self.filterable, fitted.query) {
+            (true, true) => Some(1 + usize::from(fitted.lead) + usize::from(fitted.above)),
+            _ => None,
+        });
         self.page.set(fitted.list);
         let mut content = Vec::new();
+        if fitted.lead
+            && let Some(lead) = lead
+        {
+            content.push(lead);
+        }
         if self.filterable {
             if fitted.above {
                 content.push(String::new());
@@ -478,7 +527,9 @@ impl ListPanel {
             let start = follow_window(self.window.get(), current_at, fitted.list, list.len());
             self.window.set(start);
             for (offset, row) in list.iter().skip(start).take(fitted.list).enumerate() {
-                if matches!(row.kind, Kind::Heading) {
+                if matches!(row.kind, Kind::Heading) && self.section_headings {
+                    content.push(title_plain(&row.label, inner, p));
+                } else if matches!(row.kind, Kind::Heading) {
                     content.push(fg(
                         &truncate_cells(&format!("  {}", row.label), inner),
                         &p.muted,
@@ -548,8 +599,8 @@ impl ListPanel {
     /// lines from the end, the blank row going with the last line. When not
     /// even one list row fits, the panel gives the rest up in order: the rest
     /// of the notes, the filter's padding (the row below the query first),
-    /// the footer's first line first, the hint's rows above the border, the
-    /// query row, and the list's last row.
+    /// the lead, the footer's first line first, the hint's rows above the
+    /// border, the query row, and the list's last row.
     fn fit(
         &self,
         rows: usize,
@@ -557,10 +608,12 @@ impl ListPanel {
         notes: usize,
         footer: usize,
         hint_above: usize,
+        lead: bool,
     ) -> Fitted {
         let filterable = self.filterable;
         let page = |parts: &Fitted| {
             let fixed = 2
+                + usize::from(parts.lead)
                 + usize::from(parts.above)
                 + usize::from(parts.below)
                 + usize::from(parts.query)
@@ -572,6 +625,7 @@ impl ListPanel {
                 .unwrap_or(0)
         };
         let mut parts = Fitted {
+            lead,
             above: filterable,
             below: filterable,
             query: filterable,
@@ -602,6 +656,11 @@ impl ListPanel {
         if parts.list > 0 {
             return parts;
         }
+        parts.lead = false;
+        parts.list = page(&parts);
+        if parts.list > 0 {
+            return parts;
+        }
         while parts.footer > 0 {
             parts.footer -= 1;
             parts.list = page(&parts);
@@ -622,6 +681,8 @@ impl ListPanel {
 
 /// The parts of a panel's layout that survived the row budget.
 struct Fitted {
+    /// The section title above the filter.
+    lead: bool,
     /// The blank row above the `> query` line.
     above: bool,
     /// The blank row below the `> query` line.
@@ -781,6 +842,7 @@ mod tests {
         let configurations = [
             ("plain", three_rows().without_filter(), Vec::new()),
             ("filterable", three_rows(), Vec::new()),
+            ("lead", three_rows().with_lead("Section"), Vec::new()),
             (
                 "notes",
                 three_rows().with_notes(vec![

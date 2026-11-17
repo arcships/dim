@@ -1,6 +1,6 @@
 # Cold first `session.attach`
 
-Status: Draft for review ([#713](https://github.com/arcships/dim/issues/713)).
+Status: Historical measurement; current restore contract is [Native Session restore read boundary](restore-validation.md). Original profile ([#713](https://github.com/arcships/dim/issues/713)).
 Scope: the first `session.attach` after daemon start for a stored, unloaded Session: what is measured,
 the release-build cost split, and whether the restore before the reply needs a bound. It changes no
 event, service, capability, protocol, configuration or storage format.
@@ -24,29 +24,15 @@ Desktop thread open pays; history paging starts only after the reply.
   97.6 ms: validation about 45%, the branch opening's first history read about 39%, the
   `branch/resume` append about 5%, and Session/branch assembly and scheduling about 7%. The attach
   total and that first-restore total are different scopes, not one series (§3.3).
-- **Decision.** No contract or implementation change in this design. The cold attach cost is linear in
-  stored history, both dominant steps are reads of the same immutable events, and the first open must
-  validate. #601 removes the repeated validation on a re-acquisition; this design keeps the first
-  open's full pass and states a provisional budget. The attach call's own work (Session record, title
-  metadata, listener, approval replay, reply) does not read history and the warm path is
-  0.13–0.22 ms, but the cold attach-only span is not isolated by either example and is not used as a
-  trigger. The product's MCP and skill startup is not in this measurement and remains the open part
-  of the issue's live-daemon numbers.
-- **Unchanged.** The `session.attach` reply, its pinned `SessionInfo.sequence`, the live subscription,
-  approval replay, leases, idle unload, history paging (#712), restore validation (#601), storage
-  format, protocol, events, services and configuration.
-
-The smallest implementation change this profile would justify is stated in §7: hand the events the
-validation pass already decoded to the branch opening's first read, removing the second full decode.
-It is not adopted here because the attach and product-startup measurements in §6 do not yet show a
-budget breach.
+- **Current boundary.** Restore reads Session and branch directory metadata. Each owner reads the objects it needs through the current indexed APIs. There is no first-open full-history validation pass, validation cache, shared decoded opening copy or validation-to-runtime handover. Selected damaged content fails its actual read; unrelated damaged history does not block publication.
+- **Measurement scope.** The figures below describe the earlier validation/shared-opening implementation. They are baseline evidence, not timings or requirements for the current path. Client windows, leases and the attach reply keep their own contracts.
 
 ## 2. What a cold first attach is
 
 | Term | Meaning in this design |
 | --- | --- |
-| Cold first attach | The first `session.attach` for a Session id in a new App Server generation (daemon start or an Agents reload) with a native store, while the Session is not loaded and its store has not validated it in that generation |
-| Re-acquisition | A later attach in the same generation after idle unload; [#601](https://github.com/arcships/dim/issues/601) makes it reuse the earlier validation while the directory is unchanged |
+| Cold first attach | The first `session.attach` for a Session id in a new App Server generation (daemon start or an Agents reload) with a native store, while the Session is not loaded |
+| Re-acquisition | A later attach in the same generation after idle unload; it restores owners again without a whole-history audit |
 | Warm attach | A second attach in the same generation while the Session is loaded and leased; no restore |
 
 The first request that names a Session gets a lease through `Agents::acquire`
@@ -61,7 +47,7 @@ handler then builds the reply and installs the subscription
 client                Connection::handle          Agents::acquire        Agent restore                         attach
   | session.attach --------->|                          |                     |                                   |
   |                          | acquire(session) ------->|                     |                                   |
-  |                          |                          | restore_session --->| branches (validation)             |
+  |                          |                          | restore_session --->| branch directory metadata             |
   |                          |                          |                     | Session and branch assembly       |
   |                          |                          |                     | opening reads, branch/resume      |
   |                          |                          |<--------------------|                                   |
@@ -69,15 +55,12 @@ client                Connection::handle          Agents::acquire        Agent r
   |<------- reply -----------|                          |                     |                                   |
 ```
 
-The restore path is the one [restore-scoped shared history read](restore-shared-read.md) describes:
-validation decodes every stored event once, each branch opens and its parts read what they rebuild
-from, and the opening appends `branch/resume` before the Session is published. The attach reply is
-sent after that. The measurement below separates the restore spans from the attach call's own work.
+The current restore read boundary is owned by [restore-validation](restore-validation.md). The branch opens, its owners read their required state, and the opening appends `branch/resume` before publication. The historical measurements below separate the old restore spans from the attach call's own work.
 
 Excluded from "cold first attach": the client's connection and `hello`, daemon process startup, the
 Desktop fold, and the history paging that #712 owns. They are outside the timed call.
 
-## 3. Measurement
+## 3. Historical measurement
 
 ### 3.1 Scenario
 
@@ -196,12 +179,9 @@ release; the live daemon's 0.75–1.9 s is not reproduced by a release build at 
 difference includes the build profile, one of the uncovered steps, or a different event mix/machine.
 The next measurement isolates the product startup rather than guessing it (§6).
 
-## 4. Why the cost is what it is
+## 4. Historical cost breakdown
 
-- **Two decodes on a cold open.** Validation decodes every stored event once; the branch opening's
-  first read decodes the same events again. #235/#239 made the opening's readers share one decode, not
-  validation's. #601 removes the validation pass on a re-acquisition, but the first open keeps it by
-  design.
+- **Two decodes in the measured old path.** Validation decoded every stored event and the shared opening decoded them again. Both mechanisms have since been removed; this is not the current first-open requirement.
 - **Sequential, one connection.** Validation finishes before the branch is built, and the store has
   one connection; the two decodes cannot overlap. Both are linear in the event count, so the cold
   attach is linear: 20.2 → 76.7 → 165.0 ms for 1k → 5k → 10k. Nothing is superlinear after #235/#239.
@@ -212,22 +192,11 @@ The next measurement isolates the product startup rather than guessing it (§6).
 - **Warm is different.** Once loaded and leased, attach installs a listener and replies; the measured
   warm median is 0.13–0.22 ms, so the cost is entirely in the cold restore.
 
-## 5. Decision
+## 5. Current decision and historical budget
 
-**No contract change, and no implementation change in this design.**
+The current decision is directory admission plus validation at actual reads, as specified in [restore-validation](restore-validation.md). The old requirement to validate the entire history on first open and the validation handover proposal are withdrawn. This page does not add an admission scan, repair pass or cache.
 
-The issue asked for a measurement first and a bound only if one is needed. The release measurement
-shows:
-
-1. A cold first attach is one restore per Session per daemon generation. Idle unload makes the
-   *second* use pay a restore too, and #601 removes its validation pass; the first use is the one this
-   design owns.
-2. The first open must validate. Skipping or deferring that changes when damage is reported and what
-   `session.attach` may answer; the [#601](https://github.com/arcships/dim/issues/601) design keeps it
-   and the issue keeps it.
-3. The two dominant steps are storage reads of immutable events. The opening read is already shared
-   across the branch's readers; validation's decode is the only duplicate.
-4. The cost is below a provisional budget on this machine:
+The following provisional budgets and measurements belong to the old implementation. They do not establish current performance or acceptance:
 
 | Size | Profile | Provisional cold-attach budget | Measured |
 | ---: | --- | ---: | ---: |
@@ -243,7 +212,7 @@ leave room for that startup (about +80% over the measured product rows), while t
 about +20–30% over their rows. The budget is a target for a later change, not an acceptance that
 blocks this design.
 
-5. No Desktop preload or cache is required: an attached client is a lease holder, and pinning Sessions
+No Desktop preload or cache is required: an attached client is a lease holder, and pinning Sessions
    would conflict with idle unload. A preload would move the same work before the user asks for it.
 
 A lazy attach or a catalog-derived restore was considered and rejected for now: it would shift the
@@ -251,7 +220,7 @@ wait to the first history read rather than remove it, and it would change the re
 live subscription, pending-approval replay and the lease that keeps the Session loaded. That is a
 separate protocol and lifecycle design, not a profile of the restore.
 
-## 6. Evidence that would justify a later change
+## 6. Historical follow-up: Evidence that would justify a later change
 
 The remaining unknown is the product startup that neither `restore_cost` nor the plain `attach_cost`
 includes. The follow-up extends `attach_cost` (or adds an example) to install one MCP server and one
@@ -262,7 +231,7 @@ changing the restore path:
 | --- | --- |
 | The extended product `attach_cost` at 5k and 10k stays within the §5 budget and the two store spans remain about 85% of the instrumented first restore | Close #713 as measured; no change |
 | The product total exceeds the budget and MCP/skill startup is more than half of it | The change belongs to MCP/skills startup, not to attach or the restore path; open it with that owner |
-| The product total exceeds the budget and the storage restore is still the largest step after startup is separated | Implement the candidate in §7 |
+| The product total exceeds the budget and current owner reads remain the largest step after startup is separated | Measure those actual reads under the current restore boundary |
 | The issue's live-daemon 0.75–1.9 s is reproduced | Profile that environment; it is outside the release baseline measured here |
 
 The attach call's own span (Session record, title metadata, listener, approval replay, reply) is not
@@ -272,51 +241,15 @@ scopes (§3.3), so it is not a usable trigger until the harness reports it.
 A cold attach that is already inside the budget at 1k, 5k and 10k does not justify a read-path change
 whose only effect is to remove one decode.
 
-## 7. Candidate: validation's decoded events to the opening read
+## 7. Withdrawn candidate: reuse validation output
 
-Adopt this candidate only after the follow-up's product `attach_cost` with one MCP server and one skill
-at 5k and 10k still exceeds the §5 budget and the storage restore is still the largest step. Do not
-implement it before that measurement. The change is to stop decoding the same committed events twice
-on a cold open.
-
-- **Input.** The full validation pass already decodes every `StoredEvent` of every branch with its
-  batch end, then drops them. Keep the decoded events and batch ends of the branch that is about to
-  open, in the store, until that branch's first committed-history read.
-- **Output.** The branch opening's first read of `1..=h` is served from that copy. Later reads, reads
-  past `h`, and every other branch read from the store as today. The returned `StoredEvent` values,
-  their `Arc<AgentEvent>` identities and batch ends are the same a store read returns.
-- **Errors.** The same errors as the read it replaces: a range that ends inside an atomic batch still
-  fails with `InvalidInput`; a storage failure that validation would report fails the restore before a
-  copy exists; a read the copy does not cover falls back to `read_page`. A failed validation keeps no
-  copy.
-- **Bound.** The copy is one branch's history and is dropped when that branch's opening ends: no read
-  holds a whole branch ([ADR 021 D6](../adr/021-reads-follow-the-state-owner.md)).
-  A Session with several branches must not retain all of them at once; if the store cannot bound it to
-  the branch being opened (or, at most, `main`), do not adopt the change.
-- **Contract.** The cache is inside the SQLite store's read path; `TimelineStore`'s signatures and the
-  attach reply do not change. If the runtime's rule that validation's cache is released when validation
-  ends ([timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#4-读取)) must be
-  widened, that is one sentence raised to the runtime owner, not a new public contract.
-- **What does not change.** Full validation and its checks, the attach reply and pinned sequence, the
-  live subscription, approval replay, leases, idle unload, the history window, events, storage format,
-  protocol and services.
-- **Verification.** A flow test on a disposable store that fails the opening's store read after
-  `branches`; the Session still restores and attaches, which shows the read was served from the
-  validation copy. The existing corruption and restore flows keep their results.
-
-This candidate removes 38.2 ms from the instrumented 97.6 ms first restore at 5k (39% of that restore)
-and 54.1 ms from 128.5 ms at 6.9k (42%). Its share of the attach total (82.7 ms at 5k product) is not
-derived here because the attach-scope split is not measured; if the opening read were the same 38.2 ms,
-it would be about half, but that is not measured. It does not help a re-acquisition, where #601 already
-skips validation and there is no copy to reuse.
+This candidate is withdrawn. There is no admission validation pass or decoded opening copy to reuse.
+Cold and warm restore follow the [restore read boundary](restore-validation.md). The profiling scenarios and
+historical measurements above remain evidence about the versions measured, not requirements for a startup scan.
 
 ## 8. Requirements raised to mechanism owners
 
-None in this design. If §7 is adopted, the requirement is one sentence to the runtime port owner:
-a `TimelineStore` implementation may keep the events and batch ends a successful validation pass
-already decoded until the next read of that branch, and must drop them when its opening ends. The
-problem, the generic capability, the ordering impact and the verification are in §7; the owner and
-issue are the runtime mechanism owner and [#713](https://github.com/arcships/dim/issues/713).
+No mechanism requirement remains from this historical profile. The validation-output handover was withdrawn; current requirements belong to [restore-validation](restore-validation.md) and the owners of the selected reads.
 
 ## 9. Rule check
 
@@ -347,7 +280,7 @@ With this design:
 
 - [the documentation index](../../INDEX.md) links this page.
 - [restore-scoped shared history read](restore-shared-read.md) and the #601 design already assign the
-  first open's validation to storage; this page owns only the cold attach measurement and decision.
+  current read boundary to [restore-validation](restore-validation.md); this page retains historical attach measurements.
 - [idle unload](idle-unload.md) and [session history window](session-history-window.md) already state
   that an attach may restore the Session; they do not change.
 
@@ -355,8 +288,7 @@ With the measurement follow-up:
 
 - Extend `attach_cost` (or add an example) to install one MCP server and one skill, and add the
   product rows at 1k, 5k and 10k.
-- If the candidate in §7 is adopted, update [timeline-storage §4](../../architecture/rust-agent/timeline-storage.md#4-读取)
-  for the copy's lifetime and link it from this page. No accepted ADR changes.
+- Any future read optimization must use the current selected-read contract; the withdrawn validation handover is not an implementation option.
 
 ## 11. Acceptance and next steps
 
@@ -373,7 +305,6 @@ isolated by the current harness; add it before using it as a trigger. Then:
 
 - within the budget at all sizes: close #713 with this design and the numbers;
 - over the budget for a startup step: open the change with that owner;
-- over the budget for storage: propose §7 as its own implementation PR, with the flow test in §7 and
-  the same measurement before and after.
+- over the budget for storage: profile current owner queries and propose a bounded read change with before/after measurements.
 
 No Desktop preload, cache or pinned Session is part of any step.

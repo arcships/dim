@@ -54,7 +54,7 @@ flowchart LR
 
 A branch's `Timeline` exists from the moment its Session is loaded until the line ends or the Session unloads. Loading is what builds the runtime objects; it does not read the branch's facts into memory, and the facts are still read in pages.
 
-`session.history` and the in-process `sessions.history` acquire the Session, so a client read and the scheduler's run tracking both work on a loaded Session. `session.attach` is not a prerequisite and does not change which read serves the page.
+`session.history` and the in-process `sessions.history` acquire the Session, so a client read and a process read both work on a loaded Session. `session.attach` is not a prerequisite and does not change which read serves the page.
 
 A Collaboration peer read authorizes the peer, acquires its Session and holds
 that lease through the page and supplemental call lookups. Outcome collection

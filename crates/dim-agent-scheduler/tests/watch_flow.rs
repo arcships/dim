@@ -76,7 +76,8 @@ async fn save_job(client: &mut Client, name: &str, cwd: &Path) -> String {
         .typed(
             "schedule.save",
             json!({"job": {"name": name, "schedule": {"at": "2030-01-01T00:00:00Z"},
-                "prompt": "Report the day.", "cwd": cwd}}),
+                "prompt": "Report the day.",
+                "target": {"kind": "launch", "cwd": cwd}}}),
         )
         .await
         .unwrap();
@@ -174,10 +175,7 @@ async fn run_states_reach_the_watcher_in_order() {
         let terminal = item["terminal"].as_bool().unwrap();
         assert_eq!(
             terminal,
-            matches!(
-                state.as_str(),
-                "completed" | "failed" | "cancelled" | "timed_out" | "lost" | "skipped" | "missed"
-            ),
+            matches!(state.as_str(), "delivered" | "failed" | "lost" | "missed"),
             "{item}"
         );
         states.push(state);
@@ -187,11 +185,11 @@ async fn run_states_reach_the_watcher_in_order() {
     }
     assert_eq!(
         states,
-        ["launching", "submitted", "running", "completed"],
+        ["delivering", "delivered"],
         "one item per state the record took, in order"
     );
     let settled = support::settled(&mut client, &job_id, &run_id).await;
-    assert_eq!(settled["state"], json!("completed"), "{settled}");
+    assert_eq!(settled["state"], json!("delivered"), "{settled}");
 
     drop(client);
     server.shutdown();
@@ -264,7 +262,7 @@ async fn concurrent_sources_deliver_each_watch_item_in_sequence() {
     let mut jobs_items = 0;
     let mut run_items = 0;
     let mut runs: HashMap<String, Vec<(String, bool)>> = HashMap::new();
-    while jobs_items < SAVES || run_items < RUNS * 4 {
+    while jobs_items < SAVES || run_items < RUNS * 2 {
         let item = wait_item(&mut watcher, watch, "the next concurrent item").await;
         assert_eq!(item["seq"], json!(expected), "{item}");
         expected += 1;
@@ -285,11 +283,11 @@ async fn concurrent_sources_deliver_each_watch_item_in_sequence() {
         let names: Vec<&str> = states.iter().map(|(state, _)| state.as_str()).collect();
         assert_eq!(
             names,
-            ["launching", "submitted", "running", "completed"],
+            ["delivering", "delivered"],
             "run {run_id}: {states:?}"
         );
         let terminals: Vec<bool> = states.iter().map(|(_, terminal)| *terminal).collect();
-        assert_eq!(terminals, [false, false, false, true], "run {run_id}");
+        assert_eq!(terminals, [false, true], "run {run_id}");
     }
 
     let mut replied = HashSet::new();
@@ -480,4 +478,57 @@ async fn wait_served(client: &mut Client) {
     })
     .await
     .expect("the schedule namespace is served");
+}
+
+/// A `session` delivery streams the new vocabulary: `delivering`, then
+/// `delivered` as the terminal item, one item per state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_session_delivery_reaches_the_watcher_with_the_new_vocabulary() {
+    let home = support::home();
+    let model = Arc::new(support::Script::default());
+    let server = support::start(home.path(), model).await;
+    let mut client = support::connect(&server).await;
+    let session = support::create_session(&mut client, home.path(), true).await;
+    let watch = client.send("schedule.watch", json!({})).await.unwrap();
+    wait_watching(&mut client, watch).await;
+
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "inbox", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Report the day.",
+                "target": {"kind": "session", "session_id": session, "branch_id": "main"}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+
+    let mut states = Vec::new();
+    loop {
+        let item = wait_item(&mut client, watch, "the next item").await;
+        if item["kind"] != json!("run") || item["runId"] != json!(run_id) {
+            continue;
+        }
+        let state = item["state"].as_str().unwrap().to_owned();
+        let terminal = item["terminal"].as_bool().unwrap();
+        assert_eq!(terminal, state == "delivered", "{item}");
+        states.push(state);
+        if terminal {
+            break;
+        }
+    }
+    assert_eq!(
+        states,
+        ["delivering", "delivered"],
+        "one item per state the record took, in order"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
 }

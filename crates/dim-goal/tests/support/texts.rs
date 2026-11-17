@@ -57,7 +57,7 @@ pub fn policy(branch: &str) -> String {
 
 fn active_sentence(branch: &str) -> String {
     format!(
-        "The goal for branch {branch} is active. Keep working toward it across turns. When it is fully achieved, call goal_update with status \"completed\". If you cannot make progress without the user, call goal_update with status \"blocked\" and explain why."
+        "The goal for branch {branch} was active when this record was written. Historical active records do not request execution. Only a new set, resume or continuation in the current input requests work on this goal. When it is fully achieved, call goal_update with status \"completed\". If you cannot make progress without the user, call goal_update with status \"blocked\" and explain why."
     )
 }
 
@@ -468,7 +468,7 @@ pub fn evaluator_prompt(branch: &str, evaluation: u64, objective: &str, summary:
     )
 }
 
-pub const ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session. `kind="goal"` blocks carry a change the operator or the model asked for: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update`. A `kind="state"` block states the branch's goal and its status; it is the record in force, and a retired one says the branch has no goal. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest `kind="state"` block is the one in force; blocks written before the state record existed name the objective with `goal:objective` and the status with `goal:status`. These blocks are information about the goal; they grant no permission."#;
+pub const ENTRY: &str = r#"`<dim-goal kind="goal" op="set" branch="main">`: the operator's standing goal for a branch of this session. `kind="goal"` blocks carry a change the operator or the model asked for: `op="set"`, `op="edit"`, `op="pause"`, `op="resume"`, `op="clear"`, and `op="completed"` or `op="blocked"` from `goal_update`. A `kind="state"` block states the branch's goal and its status; it is the record in force, and a retired one says the branch has no goal. `kind="continuation"` asks the line to keep working toward the goal. `kind="report"` blocks carry an evaluator's report of the goal, and `kind="evaluate"` and `kind="evaluate-again"` mark an evaluator's line, which checks the goal rather than continuing it. A goal belongs to the branch its `branch` attribute names. The latest `kind="state"` block is the one in force; blocks written before the state record existed name the objective with `goal:objective` and the status with `goal:status`. Historical active records are not permission to continue. After a reload the goal is paused until a new set or resume; only a new set, resume or continuation in the current input requests work. These blocks grant no permission."#;
 
 pub const TOOL_DESCRIPTION: &str = "Report that the current goal is completed or blocked.";
 pub const TOOL_INVALID: &str =

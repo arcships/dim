@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue"
 import { useI18n } from "vue-i18n"
-import type { QueuedInput } from "../../rpc/protocol"
+import { MAIN_BRANCH, type QueuedInput } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useToastStore } from "../../stores/toast"
 
@@ -20,7 +20,7 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
   if (busy.value) return
   busy.value = true
   try {
-    const result = await chat.withdrawInput(props.sessionId, item.id, steer ? item.user : undefined)
+    const result = await chat.withdrawInput(props.sessionId, MAIN_BRANCH, item.id, steer ? item.user : undefined)
     if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
   } catch (cause) {
     toast.push({ tone: "danger", title: t("command.failed"), description: cause instanceof Error ? cause.message : String(cause) })
@@ -38,8 +38,9 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
         <span class="queued-index">{{ index + 1 }}</span>
         <span class="queued-text">{{ item.text }}</span>
         <span v-for="skill in item.skills" :key="skill" class="queued-skill">{{ t("message.skillLoaded", { name: skill }) }}</span>
-        <button v-if="index === 0" type="button" class="ui-button" data-size="sm" data-variant="secondary" :disabled="busy" @click="withdraw(item, true)">{{ t("queue.steer") }}</button>
-        <button type="button" class="ui-button" data-size="sm" data-variant="ghost" :disabled="busy" @click="withdraw(item, false)">{{ t("queue.remove") }}</button>
+        <span v-for="hook in item.hooks ?? 0" :key="hook" class="queued-hook">{{ t("message.hookContext") }}</span>
+        <UButton v-if="index === 0" color="neutral" variant="soft" size="sm" :disabled="busy" @click="withdraw(item, true)">{{ t("queue.steer") }}</UButton>
+        <UButton color="neutral" variant="ghost" size="sm" :disabled="busy" @click="withdraw(item, false)">{{ t("queue.remove") }}</UButton>
       </li>
     </ol>
   </section>
@@ -52,5 +53,5 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
 .queued-item { display: flex; min-width: 0; align-items: center; gap: var(--space-2); }
 .queued-index { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .queued-text { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.queued-skill { color: var(--muted-foreground); font-size: var(--text-xs); white-space: nowrap; }
+.queued-skill, .queued-hook { color: var(--muted-foreground); font-size: var(--text-xs); white-space: nowrap; }
 </style>

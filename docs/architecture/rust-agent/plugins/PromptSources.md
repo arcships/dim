@@ -48,16 +48,21 @@ checks `system_is_static_and_instructions_and_environment_arrive_as_inputs`.
 ## PromptSources
 
 Owner: [prompt_sources.rs](../../../../crates/dim-agent-capabilities/src/prompt_sources.rs).
-Provides named base, Session, environment/date and user/project instruction
-sources for PromptRegistry; source loading is separate from branch adoption.
+Provides named base, Session, environment/date, reply-language and
+user/project instruction sources for PromptRegistry; source loading is separate
+from branch adoption.
 
 ### Dependencies
 
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Home, environment and shell/platform context. |
-| `S:SessionConfig` | Working directory and Session context. |
+| `S:SessionConfig` | Working directory, Session context and the reply language a record carries. |
 | `S:PromptRegistry` | Register each of its sources by name, until this part unloads. |
+
+The Session's live reply-language cell is `S:SessionLanguage`; its `get` is the `sessionLanguage`
+data face, which a part of another language reads by name. The face has no write: an update also
+writes the Session record and has Prompt adopt the source, which stays the App Server's method.
 
 The policy texts — `dim/base`'s identity and rules, the shell guidance and the
 file-encoding guidance — are the plugin's factory configuration: an optional
@@ -68,6 +73,12 @@ text at a request boundary
 ([PromptSources design §2](../../../design/plugins/PromptSources.md#2-policy-at-the-factory-configuration)).
 The shell and file-encoding guidance stay inside the environment state block,
 where the model reads them today.
+
+The product profile sets no factory text, so the App Server may fill `base` from
+its `prompts` setting through `BasePromptSettingsHost`. The port is optional and
+read while the part applies; the factory configuration stays authoritative, a
+read failure keeps the built-in text, and a change applies to Sessions loaded
+after it.
 
 ### Events and lifetime
 
@@ -82,6 +93,10 @@ existing refresh/adoption flow also picks up exec shell preference changes.
 Explicit refresh, like periodic checks, refreshes only instructions, environment
 and date. Base and Session System entries stay adopted. Profile adoption uses
 `session_entry` to construct or revoke the same `dim/session` entry as creation.
+The part provides the Session's `SessionLanguage` cell, initialized from
+`SessionConfig.language`; the language source reads that live value on each
+load, and the branch part re-exposes the cell as `PromptSourcesBranch` for the
+Session methods that change it.
 
 ### Rule check
 
@@ -102,20 +117,25 @@ None (§4 rule 8). Existing source refresh and adoption cover shell changes.
 `user_instructions_appear_once_and_absent_files_produce_no_entry`,
 `a_restored_session_receives_the_changed_environment_once`.
 
+[session_language_flow.rs](../../../../crates/dim-app-server/tests/session_language_flow.rs)
+covers the reply language end to end, including a branch opened after the value
+was applied (`a_branch_opened_after_the_value_was_applied_holds_one_block`).
+
 <!-- generated:plugin PromptSources — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `P:HostPlatform`、`S:PromptRegistry`、`S:SessionConfig` |
-| 提供 | — |
-| 被注入于 | — |
+| 提供 | `S:SessionLanguage`、`S:dyn HostDispatch#sessionLanguage` |
+| 被注入于 | `PromptSourcesBranch` |
 <!-- /generated -->
 
 ## PromptSourcesBranch
 
 Owner: [prompt_sources.rs](../../../../crates/dim-agent-capabilities/src/prompt_sources.rs).
-Periodically compares checked instruction, environment and date sources against
-the branch's adopted prompt entries and asks Prompt to adopt differences.
+Periodically compares checked instruction, environment, date and reply-language
+sources against the branch's adopted prompt entries and asks Prompt to adopt
+differences, and re-exposes the Session's reply-language cell on the branch.
 
 ### Dependencies
 
@@ -124,7 +144,8 @@ the branch's adopted prompt entries and asks Prompt to adopt differences.
 | `S:PromptHost` | Load the current source contents. |
 | `B:BranchLifecycle` | Activation and closing gates. |
 | `B:StateCell<PromptSnapshot>` | Compare with already adopted entries. |
-| `B:dyn ConfigureControl` | Request adoption of changed sources. |
+| `B:Prompt` | Adopt already loaded changed source values through the existing Prompt owner. |
+| `S:SessionLanguage` | The Session's reply-language cell, re-exposed on this branch. |
 
 ### Events and lifetime
 
@@ -146,7 +167,7 @@ configured checked set, not automatic adoption of every possible source.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl`、`S:PromptHost` |
-| 提供 | — |
+| 注入 | `B:BranchLifecycle`、`B:Prompt`、`B:StateCell<PromptSnapshot>`、`S:PromptHost`、`S:SessionLanguage` |
+| 提供 | `B:PromptSourcesBranch` |
 | 被注入于 | — |
 <!-- /generated -->

@@ -1,9 +1,9 @@
 //! The unified background-task stop port.
 //!
-//! The branch's current task holder provides `dyn ExecStop`. Local assembly
-//! provides it from BackgroundExec; minimal assembly provides it from
-//! ShellSession. Neither knows the other; the protocol layer routes
-//! `session.exec.stop` through this port.
+//! ShellSession provides `dyn ExecStop` for stopping the minimal profile's
+//! shell tasks. It depends on BackgroundExec for recovery;
+//! live PTY cancellation remains owned by ShellSession. The local profile
+//! uses BackgroundExec's own service and face for native-process stops.
 
 use dim_agent_types::ExecEndedData;
 use rutis::host::BoxFuture;

@@ -151,9 +151,125 @@ async fn submit(client: &mut Client, sid: &str, branch: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn model_preview_resolves_startup_without_creating_sessions_or_saving_choices() {
+    let home = std::env::temp_dir().join(format!("dim-preview-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let server = start(&home).await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.model.preview"))
+    );
+    let provider = uuid::Uuid::new_v4().to_string();
+    assert_ok(&client.rpc("provider.create", json!({
+        "providerId":provider,"displayName":"Preview fixture","enabled":true,
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://127.0.0.1:1/v1","auth":{"type":"anonymous"}},
+        "models":(["alpha","beta"].map(|name| json!({"modelId":name,"displayName":name,"status":"active",
+            "capabilities":dim_agent_types::CatalogCapabilities::with_limits(64000,2048)})))
+    })).await);
+    let automatic = client
+        .rpc("session.model.preview", json!({"cwd":home}))
+        .await;
+    assert_ok(&automatic);
+    assert_eq!(
+        automatic["result"]["model"],
+        json!({"providerId":provider,"modelId":"alpha"})
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"providerId":provider,"modelId":"beta"}),
+            )
+            .await,
+    );
+    let global = client
+        .rpc("session.model.preview", json!({"cwd":home}))
+        .await;
+    assert_ok(&global);
+    assert_eq!(global["result"]["model"]["modelId"], "beta");
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({"cwd":home,"providerId":provider,"modelId":"alpha"}),
+            )
+            .await,
+    );
+    let before = client
+        .rpc("provider.management", json!({"providerId":provider}))
+        .await;
+    assert_ok(&before);
+    for (params, expected) in [
+        (json!({"cwd":home}), "alpha"),
+        (
+            json!({"cwd":home,"model":{"provider":provider,"modelId":"beta"}}),
+            "beta",
+        ),
+        (
+            json!({"cwd":home,"model":{"modelId":"beta"},"startup":{}}),
+            "beta",
+        ),
+        (
+            json!({"cwd":home,"model":{"modelId":"direct-model"},"startup":startup("http://127.0.0.1:1/v1", "openai-compatible", "preview-secret")}),
+            "direct-model",
+        ),
+    ] {
+        let preview = client.rpc("session.model.preview", params).await;
+        assert_ok(&preview);
+        assert_eq!(preview["result"]["model"]["modelId"], expected);
+        assert!(!preview.to_string().contains("preview-secret"));
+        assert!(
+            server.agent().unwrap().sessions().is_empty(),
+            "Preview must not create a Session"
+        );
+    }
+    let invalid = client
+        .rpc(
+            "session.model.preview",
+            json!({"cwd":home,"model":{"modelId":"missing"},"startup":{}}),
+        )
+        .await;
+    assert!(invalid.get("error").is_some(), "{invalid}");
+    assert!(server.agent().unwrap().sessions().is_empty());
+    let after = client
+        .rpc("provider.management", json!({"providerId":provider}))
+        .await;
+    assert_eq!(before["result"], after["result"]);
+    let created = client.rpc("session.create", json!({"cwd":home})).await;
+    assert_ok(&created);
+    assert_eq!(
+        created["result"]["model"],
+        json!({"providerId":provider,"modelId":"alpha"}),
+        "Previewing beta and a direct model must not change the workspace default"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    let db = std::fs::read(home.join("native/dimcode.sqlite")).unwrap();
+    assert!(!String::from_utf8_lossy(&db).contains("preview-secret"));
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn temporary_startup_connections_execute_all_formats_without_sharing_or_persisting_secrets() {
     let home = std::env::temp_dir().join(format!("dim-startup-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&home).unwrap();
+    use base64::Engine;
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4zwAE/xkgFAAb8gP9PpddpAAAAABJRU5ErkJggg==";
+    let image_path = home.join("image.png");
+    std::fs::write(
+        &image_path,
+        base64::engine::general_purpose::STANDARD
+            .decode(png)
+            .unwrap(),
+    )
+    .unwrap();
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(std::fs::read(&image_path).unwrap()));
+    let reference = format!("img:{}", &digest[..16]);
     let seen = Seen::default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/gateway/v1", listener.local_addr().unwrap());
@@ -209,7 +325,38 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
                 &home.join("startup-recordings"),
             ))
             .unwrap();
-            submit(&mut client, &sid, "main").await;
+            let session = server.agent().unwrap().get_session(&sid).unwrap();
+            let mut selection = session.config().model.clone();
+            selection
+                .capability_snapshot
+                .as_mut()
+                .unwrap()
+                .capabilities
+                .vision = true;
+            session
+                .configure(
+                    dim_agent_runtime::ConfigureUpdate {
+                        model: Some(selection),
+                        ..Default::default()
+                    },
+                    "main",
+                )
+                .await
+                .unwrap();
+            let imported = client
+                .rpc(
+                    "attachment.import",
+                    json!({"sessionId":sid,"path":image_path,"image":true}),
+                )
+                .await;
+            assert_ok(&imported);
+            let image = imported["result"]["image"].clone();
+            assert_ok(&client.rpc("session.submit", json!({"sessionId":sid,"branchId":"main","user":{"content":[{"type":"text","text":"hello"},{"type":"image","source":image}]}})).await);
+            assert_ok(
+                &client
+                    .rpc("session.idle", json!({"sessionId":sid,"branchId":"main"}))
+                    .await,
+            );
             let history = client
                 .rpc(
                     "session.history",
@@ -231,6 +378,22 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
                 uri.path(),
                 format!("/gateway/v1{suffix}"),
                 "{format}: {uri}"
+            );
+            assert!(
+                body.to_string().contains(&reference),
+                "{format}: the provider receives the image reference: {body}"
+            );
+            assert!(!body.to_string().contains(png), "{format}: {body}");
+            assert!(!body.to_string().contains(image["fileId"].as_str().unwrap()));
+            assert!(
+                history
+                    .to_string()
+                    .contains(image["fileId"].as_str().unwrap()),
+                "History preserves the file reference"
+            );
+            assert!(
+                !history.to_string().contains(png),
+                "History must not expand image bytes"
             );
             let auth_header = if bearer { "authorization" } else { key_header };
             let expected = if auth_header == "authorization" {
@@ -349,11 +512,7 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
         assert_ok(&cleared);
         submit(&mut client, &sid, "main").await;
         let body = seen.lock().unwrap().last().unwrap().2.clone();
-        assert_eq!(
-            body.pointer(effort_pointer),
-            (format == "openai-chat").then_some(&json!("none")),
-            "{body}"
-        );
+        assert!(body.pointer(effort_pointer).is_none(), "{body}");
         assert!(body.get("service_tier").is_none(), "{body}");
         sessions.push((sid, credential));
 
@@ -369,11 +528,7 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
         let sid = created["result"]["sessionId"].as_str().unwrap().to_owned();
         submit(&mut client, &sid, "main").await;
         let body = seen.lock().unwrap().last().unwrap().2.clone();
-        assert_eq!(
-            body.pointer(effort_pointer),
-            (format == "openai-chat").then_some(&json!("none")),
-            "{body}"
-        );
+        assert!(body.pointer(effort_pointer).is_none(), "{body}");
         sessions.push((sid, credential));
     }
     submit(&mut client, &sessions[0].0, "main").await;
@@ -790,8 +945,37 @@ async fn temporary_startup_rebinds_after_restart_and_preserves_parent_cut_connec
         seen.lock().unwrap().last().unwrap().1["authorization"],
         "Bearer private-original"
     );
-    assert_ok(&client.rpc("session.detach", json!({"sessionId":sid})).await);
-    assert!(session.unload_if_idle().await.unwrap());
+    // The earlier `delegate-startup` request is detached work: Collaboration
+    // holds this Session from that request until its `collaboration/result`
+    // commits (idle unload R4, §5.1), and the result wakes a turn on `main`
+    // that runs after the hold is gone. `idle` excludes detached work, so no
+    // call above witnesses either the hold or that turn; the release below is
+    // due only once both are history, which is what this waits for.
+    let mut changed = session.watch("main").unwrap();
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let events = branch_events(&session, "main", ..).await.unwrap();
+            let woken = events
+                .iter()
+                .rposition(|event| matches!(&event.kind, EventKind::CollaborationResult(_)))
+                .is_some_and(|result| {
+                    events[result + 1..]
+                        .iter()
+                        .any(|event| matches!(&event.kind, EventKind::TurnEnd(_)))
+                });
+            if woken {
+                break;
+            }
+            changed.changed().await.unwrap();
+        }
+        session.idle("main").await.unwrap();
+        assert_ok(&client.rpc("session.detach", json!({"sessionId":sid})).await);
+        while !session.unload_if_idle().await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the request settles and the detached Session unloads");
     assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
     submit(&mut client, &sid, &child_id).await;
     assert_eq!(
@@ -956,6 +1140,7 @@ async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_c
         json!({"model":{}}),
         json!({"startup":{}}),
         json!({"modelPreferences":{}}),
+        json!({"modelPreferences":{"reasoningEffort":"high"}}),
     ] {
         let mut params = json!({"cwd":home,"modelFromSession":sid});
         params
@@ -963,7 +1148,11 @@ async fn forks_and_new_sessions_retain_the_adopted_connection_after_the_source_c
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
         let rejected = client.rpc("session.create", params).await;
-        assert!(rejected.get("error").is_some(), "{rejected}");
+        assert_eq!(
+            rejected["error"]["message"],
+            "modelFromSession cannot be combined with model, startup or modelPreferences",
+            "{rejected}"
+        );
     }
     let rejected = remote
         .rpc("session.create", json!({"cwd":home,"modelFromSession":sid}))

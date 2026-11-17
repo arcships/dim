@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from "vue"
 import { useI18n } from "vue-i18n"
-import { Wifi, WifiOff } from "lucide-vue-next"
 import { useConnectionStore } from "../stores/connection"
 
 const connection = useConnectionStore()
@@ -17,8 +16,7 @@ const label = computed(() => ({
 
 <template>
   <div class="connection-badge" aria-live="polite" :data-state="connection.phase">
-    <Wifi v-if="connection.phase === 'connected'" :size="14" aria-hidden="true" />
-    <WifiOff v-else :size="14" aria-hidden="true" />
+    <UIcon :name="connection.phase === 'connected' ? 'i-lucide-wifi' : 'i-lucide-wifi-off'" class="size-4 flex-none" aria-hidden="true" />
     <span>
       <strong>{{ label }}</strong>
       <small>{{ t("connection.host") }}</small>

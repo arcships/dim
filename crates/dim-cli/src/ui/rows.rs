@@ -56,7 +56,7 @@ pub fn title_plain(text: &str, inner: usize, p: &Palette) -> String {
 
 pub fn title(text: &str, inner: usize, p: &Palette) -> String {
     let close = t(ESC_CLOSE);
-    let head = truncate_cells(text, inner.saturating_sub(display_width(close) + 2).max(1));
+    let head = truncate_cells(text, title_room(inner));
     let styled = paint(
         &head,
         Paint {
@@ -70,6 +70,13 @@ pub fn title(text: &str, inner: usize, p: &Palette) -> String {
         return styled;
     }
     format!("{styled}{}{}", " ".repeat(gap), fg(close, &p.faint))
+}
+
+/// The cells a title has for its text: the row minus the `esc close` hint
+/// and the gap before it. A caller that cuts its own text — a path keeps
+/// its tail — measures the same budget with this.
+pub fn title_room(inner: usize) -> usize {
+    inner.saturating_sub(display_width(t(ESC_CLOSE)) + 2).max(1)
 }
 
 /// Column widths shared by every row, not just the visible window, so

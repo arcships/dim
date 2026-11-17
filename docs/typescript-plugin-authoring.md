@@ -24,7 +24,8 @@ provider and the methods it serves to other languages. This table says which to 
 | Need | Service and scope | Availability |
 | --- | --- | --- |
 | Persist a process plugin's own data | `pluginFiles`, process | Implemented when the host supplies an authorized product root and provisions parent directories; use its native transactions and lifecycle scope. |
-| Start or drive another Session | `sessions`, process | Implemented by Agents; all eight methods are typed. |
+| Start or drive another Session | `sessions`, process | Implemented by Agents; all nine methods are typed. |
+| Publish events to subscribed branches | `eventHub`, process | Implemented by EventHub: `declare` and `publish`, served to the calling row. Inject it: the row loads only while EventHub runs and declares at `apply`. |
 | Read current branch permissions or host defaults | `sessionPermissions`, process | Generated from Agents: `permission({sessionId, branchId})` and `permissionDefaults({})`. |
 | Read or set a Session's title | `sessionMetadata`, process | Implemented by SessionStore: `read` and the revision-checked `setTitle` ([title metadata](design/appserver/session-title-metadata.md)). SessionTitle is the title's one writer; other plugins only read. |
 | Read/update business configuration | `settings`, process | Owner registration, read/write and Settings event delivery implemented; a row registers its sources with `register` in its `apply`. |
@@ -473,6 +474,55 @@ without native root indices or caller context arguments. Mutating methods decode
 package selectors but refuse them as `invalid_path` before I/O. Project enablement
 and definition semantics remain with Settings and the Workflow package.
 
+## Publishing events
+
+Declare `inject: ['eventHub']` and use `ctx.use<EventHub>('eventHub')`. EventHub serves
+this process service to every language of a row; it has `declare` and `publish` and
+nothing else, so a producer cannot create or remove another Session's subscriptions.
+The injected name gates the row: it starts once EventHub provides the service and
+unloads with it. It declares at `apply`, and again when a publish answers `unknown_source`.
+`declare` names the source, its guide (the text the model reads for its marker) and its
+types ([EventHub §2.1](design/plugins/EventHub.md#21-the-catalog-of-sources-and-types)).
+`publish` answers one receipt per target branch: `delivered` carries the `inputId` and
+`sequence`, `gone` a branch that takes no more input, and `failed` a `code` that says
+whether the write is in doubt — `transport` means the `sessions` call failed or its reply
+could not be read. A retry with the same `id` is safe: delivery is idempotent per branch,
+and a branch that already holds the input answers `repeated: true`. The
+[producer fixture](../runtime/fixtures/event-hub-producer.ts) is this row with the retry.
+
+```ts
+import { definePlugin } from '@arcships/rutis'
+import type { EventHub, EventHubDeclaration, EventHubErrorThrown } from 'dimcode/plugin'
+
+export default definePlugin({
+  name: 'ExampleProducer',
+  inject: ['eventHub'],
+  provides: {},
+  async apply(ctx) {
+    const hub = ctx.use<EventHub>('eventHub')
+    const declaration: EventHubDeclaration = {
+      source: 'example',
+      guide: 'An `example.ping` event says the producer is alive; no reply is needed.',
+      types: [{ type: 'example.ping', description: 'A liveness ping', mode: 'queue' }],
+    }
+    await hub.declare(declaration)
+    const request = { source: 'example', type: 'example.ping', id: 'ping-1', body: 'hello' }
+    try {
+      const reply = await hub.publish(request)
+      const failures = reply.deliveries.filter(delivery => delivery.status === 'failed')
+      if (failures.length > 0) console.warn('publish answered', failures)
+    } catch (error) {
+      const failure = error as EventHubErrorThrown
+      // unknown_source: this row holds no declaration, so declare and retry
+      // with the same id, which each branch accepts once.
+      if (failure.code !== 'unknown_source') throw failure
+      await hub.declare(declaration)
+      await hub.publish(request)
+    }
+  },
+})
+```
+
 ## Session tools and client methods
 
 A Session part registers its tools with the Session's `toolRegistry` and its client method
@@ -538,9 +588,15 @@ declared and does not fail the Session. Permission (its preset, `allowedTools`
 and `disallowedTools`) decides whether a declared tool's call runs; it never
 changes the declarations the model sees, so the prompt prefix stays stable.
 
-`register(declaration, execute)` refuses a declaration whose name is not a valid
+`register(declaration, execute, options?)` refuses a declaration whose name is not a valid
 tool name, is a host tool or is registered already, and one without a Permission
-risk. Permission recognises
+risk. The third argument is optional and carries `concurrency`: `'concurrent'`
+lets this tool's calls share a batch step with the calls around them, and any
+other value is refused. Omitting it means the tool's calls run alone, in the
+order the model wrote them, which is what a tool whose effects are not declared
+needs. The class orders execution only: it belongs to the bound handler, never
+appears in the declaration the model sees or in the persisted configuration, and
+grants no permission. Permission recognises
 `read_filesystem`, `write_filesystem`, `execute_process`, `network` and `session`.
 Any other string (including `read`) is unclassified: without a tool-specific policy
 override it is denied under read-only and requires approval under workspace-write. Use the exact category for the tool's
@@ -955,6 +1011,11 @@ pass the plugin module, or its object or function, to `registerDefinition`, and 
 
 
 ## Packaging and trust
+
+The [plugin distribution proposal](design/plugin-distribution.md) defines the requirements for
+catalog discovery, repository subdirectory installation, authoring and debugging skills, and
+their human guides and tool reference. Its new fields and commands are proposals; use the
+supported package contract below until the owning interfaces are available.
 
 Keep the `dimcode/plugin` import type-only. Use a plugin's own build dependencies
 to resolve it and bundle the rutis SDK/business dependencies, or include them in

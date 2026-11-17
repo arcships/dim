@@ -2,6 +2,9 @@
   "plugins": {
     "plugin-authoring": "plugins/plugin-authoring"
   },
+  "optional": {
+    "light-ocr": "plugins/light-ocr"
+  },
   "locked": ["PluginManager", "Rpc", "Transport"],
   "runtimes": {
     "node": { "source": "download", "auto": false },

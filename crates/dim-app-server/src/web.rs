@@ -2,13 +2,13 @@ mod content;
 mod network;
 
 use crate::{
-    managed_provider::{ManagedProviders, ManagedSearchError, WebSearchRequest},
+    managed_provider::{ManagedSearch, ManagedSearchError, WebSearchRequest},
     settings::{SettingsScope, SettingsService, SourceDeclaration},
 };
 use content::{convert, plain_text, redact};
 use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
+    tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
 use dim_agent_types::{ToolCall, ToolContent, ToolDefinition, ToolResult, ToolSource};
@@ -31,17 +31,35 @@ const CACHE_LIMIT: usize = 50 * 1024 * 1024;
 const CACHE_TTL_MS: u64 = 15 * 60_000;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WebDocument {
     #[serde(default)]
     pub allow_private_hosts: Vec<String>,
+    #[serde(default)]
+    pub block_private_addresses: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<String>,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub proxy_dns: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_service: Option<SearchServiceConfig>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for WebDocument {
+    fn default() -> Self {
+        Self {
+            allow_private_hosts: Vec::new(),
+            block_private_addresses: false,
+            proxy: None,
+            proxy_dns: true,
+            search_service: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -90,6 +108,10 @@ pub fn source_declaration() -> SourceDeclaration {
                     },
                     "default": []
                 },
+                "blockPrivateAddresses": {
+                    "type": "boolean",
+                    "default": false
+                },
                 "proxy": {
                     "type": "string",
                     "format": "uri",
@@ -97,13 +119,14 @@ pub fn source_declaration() -> SourceDeclaration {
                 },
                 "proxyDns": {
                     "type": "boolean",
-                    "default": false
+                    "default": true
                 }
             }
         }),
         user_only: vec![
             "/searchService".into(),
             "/allowPrivateHosts".into(),
+            "/blockPrivateAddresses".into(),
             "/proxyDns".into(),
         ],
     }
@@ -155,7 +178,7 @@ fn now_ms() -> u64 {
 pub struct WebSessionPlugin {
     settings: Key<SettingsService>,
     tools: Key<ToolRegistry>,
-    managed: Key<ManagedProviders>,
+    managed: Key<ManagedSearch>,
 }
 
 impl WebSessionPlugin {
@@ -245,6 +268,11 @@ struct WebToolHandler {
 }
 
 impl ToolHandler for WebToolHandler {
+    /// A fetch or a search reads a remote page and writes only this Session's
+    /// private page cache.
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        ToolConcurrency::Concurrent
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -329,7 +357,7 @@ struct Hit {
 
 struct SessionState {
     settings: Arc<SettingsService>,
-    managed: Arc<ManagedProviders>,
+    managed: Arc<ManagedSearch>,
     cache: Mutex<PageCache>,
     closing: CancellationToken,
     inflight: TaskTracker,
@@ -450,6 +478,7 @@ impl SessionState {
         let count = parse_integer(args.get("max_chars"), 20_000, 1_000, 50_000)? as usize;
         let config = NetworkConfig::new(
             document.allow_private_hosts.clone(),
+            document.block_private_addresses,
             document.proxy.as_deref(),
             document.proxy_dns,
         )?;
@@ -741,6 +770,7 @@ impl SessionState {
             })?;
             let config = NetworkConfig::new(
                 document.allow_private_hosts.clone(),
+                document.block_private_addresses,
                 document.proxy.as_deref(),
                 document.proxy_dns,
             )
@@ -931,7 +961,7 @@ fn within_domains(host: &str, domains: &[String]) -> bool {
 
 fn host_group(url: &Url) -> String {
     let h = hostname(url);
-    h.strip_prefix("www.").unwrap_or(&h).to_owned()
+    h.trim_prefix("www.").to_owned()
 }
 
 fn status_reason(status: u16) -> &'static str {

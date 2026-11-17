@@ -1,0 +1,44 @@
+{
+  "configuration": "ExecLifecycle-ShellRecovered.cfg",
+  "model": "ExecLifecycle.tla",
+  "runtime_branch": "codex/shell-exec-recovery",
+  "tlc_version": "2.19 (TLA+ tools 1.7.4)",
+  "command": "java -Xmx2g -XX:+UseParallelGC -cp \"$TLA_JAR\" tlc2.TLC -workers 1 -metadir /tmp/dim-shell-recovered-tlc -config ExecLifecycle-ShellRecovered.cfg ExecLifecycle.tla",
+  "exit_code": 0,
+  "generated_states": 2005,
+  "distinct_states": 624,
+  "queue_remaining": 0,
+  "depth": 14,
+  "invariants": [
+    "WakeHasTerminal",
+    "TerminalHasStart",
+    "LiveHasHold",
+    "ReleaseBeforeTerminal",
+    "NoWakeFromInheritedRecovery"
+  ],
+  "properties": [
+    "StopKeepsWork",
+    "RecoveredSettled",
+    "RecoveredWoken"
+  ],
+  "sha256": {
+    "ExecLifecycle.tla": "a76e2ce02a50895ee0d043f0aff6bd65e4ea308a5b2ec884a36dd8e7e1eb1120",
+    "ExecLifecycle-ShellRecovered.cfg": "7fb022b84409a9346669988d24128a135c4c08cb195f5c7524fa01a9f18d109c"
+  },
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "seed": "-6670300787061625064",
+  "fingerprint_index": 92,
+  "workers": 1,
+  "run_date": "2026-11-16",
+  "working_directory": "docs/design/examples/capability-models",
+  "java": "Homebrew 17.0.18",
+  "elapsed_seconds": 1,
+  "runtime_commit": "89a4e1760ee77cafbad4c3306e9dad532af0573a",
+  "runtime_pr": "https://github.com/arcships/dim/pull/1640",
+  "runtime_sources_sha256": {
+    "crates/dim-agent-capabilities/src/defaults.rs": "ce0539a96367e5d5607cb1613f76b26180b4f942e332437cfd9e2cd9f2cfbd1c",
+    "crates/dim-agent-capabilities/src/shell_session.rs": "9c3ad4dd297dc22cfa07a9c815cfeaeddd2642b9b60e7392e4fb67724bb42938",
+    "crates/dim-agent-capabilities/src/workspace_tools/background.rs": "fb0de37ff868a04157e6741f69ac6e0eb53a0499a203c0d7d96f112c39a144aa",
+    "tests/integration/tests/minimal_execution.rs": "0586b9fe497ec529bdb18514a4afa558806129f098106ee9ae347ba9d7910b8a"
+  }
+}

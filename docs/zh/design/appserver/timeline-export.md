@@ -41,13 +41,15 @@
    │  精确比对结构：当前格式，或本构建可从之升级的格式
    ▼
  storage::export
-   │  validate_session(S)：分支目录，按恢复时的规则校验
+   │  read_directory(S)：只读取、校验分支元数据
    │  每个分支 read_range 1..=head，分页读取：事件及其 before 轨迹
    ▼
  stdout：头行、分支行、事件行、结束行   ──►  F 或 CLI 的 stdout
 ```
 
-导出位于存储模块中、`timeline.rs` 旁边，因此与 Session 恢复使用同一套行解码、请求内容重建和校验。它给 `SqliteStorage` 增加一个构造函数，给二进制的 `main` 增加一个模式；守护进程的路径不变。
+导出位于存储模块中、`timeline.rs` 旁边，因此与其他 Timeline 读取使用同一套行解码、请求内容重建和校验。它给 `SqliteStorage` 增加一个构造函数，给二进制的 `main` 增加一个模式；守护进程的路径不变。
+
+读取失败可能留下部分 stdout；只有完整 `end` 行及成功退出才表示导出成功。导出前不扫描完整历史。
 
 ## 4. 打开数据库
 
@@ -114,7 +116,7 @@ UTF-8 JSONL，每行一个对象，各带一个 `kind`。外层字段用 snake_c
 
 ## 8. 区间指标
 
-导出不增加任何计时字段。每个事件都带 `create_at`，即 Timeline 提交它的时间，早于存储发布它。使用方用两端的事实为区间命名，不把它称为执行时间（ADR 005 D1）：例如 `model/call → step/model-output-end` 还包括存储写入、分发和 ModelProvider 的重试，`step/tool-call → step/tool-result` 覆盖整个工具批次及其 Approval。所有者内部的操作耗时在 `daemon.log` 中，即 D4 的 span。
+导出不增加任何计时字段。每个事件都带 `create_at`，即 Timeline 提交它的时间，早于存储发布它；唯一例外是 thinking 块的首个 `step/thinking` 事件，它携带该块打开时记下的起始时间，块自身跨度因此是从该起点到下一个持久事件的区间（#1330）。使用方用两端的事实为区间命名，不把它称为执行时间（ADR 005 D1）：例如 `model/call → step/model-output-end` 还包括存储写入、分发和 ModelProvider 的重试，`step/tool-call → step/tool-result` 覆盖整个工具批次及其 Approval。所有者内部的操作耗时在 `daemon.log` 中，即 D4 的 span。
 
 ## 9. 错误
 
@@ -123,7 +125,7 @@ UTF-8 JSONL，每行一个对象，各带一个 `kind`。外层字段用 snake_c
 | 路径上没有数据库 | `No dimcode database at PATH`；退出码 1 |
 | 不支持的格式 | `unsupported Timeline storage format at PATH; the database was not changed`；退出码 1 |
 | 没有该 Session | `Session S is not in PATH`；退出码 1 |
-| 存储的 Timeline 校验失败 | 读取器的错误，与恢复时报告的相同；退出码 1 |
+| 读取事件或请求内容失败 | 读取器的错误；退出码 1；已输出部分不带 `end` 行 |
 | 只读目录中缺少 `-wal` 与 `-shm` 文件 | SQLite 的错误；把数据库复制到可写目录；退出码 1 |
 | 写入失败（磁盘满、管道关闭） | 退出码 1；删除部分写出的文件 |
 | `--output` 指向已存在的路径 | 导出开始前拒绝；退出码 1 |

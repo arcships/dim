@@ -488,7 +488,7 @@ impl ManagementPanel {
         };
         let event = self.list.handle_key(key);
         self.refresh_hint();
-        let Event::Pick(key) = event else {
+        let Event::Pick { id: key, .. } = event else {
             return Effect::None;
         };
         let Some(entry) = self.entry(&key) else {
@@ -1755,7 +1755,7 @@ mod tests {
             },
             ManagementResult::Detail(ManagementDetail {
                 title: "Recent runs of nightly".into(),
-                lines: (0..30).map(|index| format!("run {index}")).collect(),
+                lines: Vec::from_fn(30, |index| format!("run {index}")),
             }),
         ));
         let first = shown(&panel, 40, 8);

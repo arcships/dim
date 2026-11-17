@@ -125,8 +125,34 @@ async fn the_agent_tool_lists_the_provider_ids_a_member_can_run() {
         }])
     );
 
-    let area = client.rpc("provider.management", json!({})).await;
+    let area = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":PROVIDER, "modelId":"served"}),
+        )
+        .await;
     assert_ok(&area);
+    assert_eq!(
+        area["result"]["providers"][0]["models"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let missing = client
+        .rpc(
+            "provider.management",
+            json!({"providerId":PROVIDER,"modelId":"missing"}),
+        )
+        .await;
+    assert!(missing.get("error").is_some());
+    assert!(
+        client
+            .rpc("provider.management", json!({}))
+            .await
+            .get("error")
+            .is_some()
+    );
     let version = area["result"]["providers"][0]["version"].clone();
     assert_ok(
         &client

@@ -18,10 +18,12 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::protocol::frame::Frame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::{Data, OpCode};
 use tokio_util::sync::CancellationToken;
+use tungstenite::protocol::WebSocketConfig;
 
 const KEY: &str = "sk-realtime-secret-key";
 const MODEL: &str = "stepaudio-2.5-realtime";
@@ -196,50 +198,6 @@ async fn the_relay_connects_with_the_declared_path_and_relays_frames() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_provider_message_over_the_bound_ends_the_session_at_the_socket() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let address = listener.local_addr().unwrap();
-    let stub: JoinHandle<()> = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.unwrap();
-        let mut socket = tokio_tungstenite::accept_hdr_async(stream, accepted)
-            .await
-            .unwrap();
-        // Over the relay's 1 MiB socket bound; the stub's own limit is
-        // tungstenite's default, so the write is legal for it.
-        let oversized = format!(
-            r#"{{"type":"response.text.delta","padding":"{}"}}"#,
-            "x".repeat(2 * 1024 * 1024)
-        );
-        let _ = socket.send(Message::Text(oversized.into())).await;
-        while let Some(message) = socket.next().await {
-            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
-                break;
-            }
-        }
-    });
-
-    let adapter = MediaAdapter::new();
-    let (events, mut received) = mpsc::channel(16);
-    let opened = adapter
-        .realtime_open(
-            connection(address),
-            json!({}),
-            events,
-            CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-    match next_event(&mut received).await {
-        RealtimeEvent::Ended(RealtimeEnd::Error(message)) => {
-            assert!(!message.contains(KEY), "{message}");
-        }
-        _ => panic!("an oversized provider message ends the session with an error"),
-    }
-    adapter.realtime_close(&opened.channel_id).await.unwrap();
-    stub.await.unwrap();
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_rejected_handshake_reports_the_status_and_no_secret() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -315,6 +273,155 @@ async fn the_relay_refuses_control_frames_and_unknown_channels() {
         )
         .await;
     assert!(unknown.is_err());
+    adapter.realtime_close(&opened.channel_id).await.unwrap();
+    stub.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_relay_delivers_a_provider_message_over_one_mebibyte_intact() {
+    let transcript = "a".repeat(2 * 1024 * 1024);
+    let text = json!({
+        "type": "response.audio_transcript.done",
+        "transcript": transcript.clone(),
+    })
+    .to_string();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let stub = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, accepted)
+            .await
+            .unwrap();
+        socket.send(Message::Text(text.into())).await.unwrap();
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+                break;
+            }
+        }
+    });
+
+    let adapter = MediaAdapter::new();
+    let (events, mut received) = mpsc::channel(16);
+    let opened = adapter
+        .realtime_open(
+            connection(address),
+            json!({}),
+            events,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    match next_event(&mut received).await {
+        RealtimeEvent::Event(event) => {
+            assert_eq!(event["type"], "response.audio_transcript.done");
+            let received = event["transcript"]
+                .as_str()
+                .expect("the transcript is a string");
+            assert!(
+                received == transcript.as_str(),
+                "the transcript changed on the wire: sent {} bytes, received {} bytes, \
+                 first difference at {}",
+                transcript.len(),
+                received.len(),
+                received
+                    .bytes()
+                    .zip(transcript.bytes())
+                    .position(|(received, sent)| received != sent)
+                    .unwrap_or(received.len().min(transcript.len())),
+            );
+        }
+        RealtimeEvent::Ended(end) => {
+            panic!("the provider's message ended the session: {end:?}")
+        }
+    }
+    adapter
+        .realtime_send(
+            &opened.channel_id,
+            RealtimeFrame {
+                kind: RealtimeFrameKind::Text,
+                data: json!({"type": "session.update"}),
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("the session stayed open");
+    adapter.realtime_close(&opened.channel_id).await.unwrap();
+    stub.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fragmented_provider_message_over_the_socket_limit_ends_the_session() {
+    let limits = WebSocketConfig::default();
+    let max_message = limits
+        .max_message_size
+        .expect("the socket library bounds a message");
+    let max_frame = limits
+        .max_frame_size
+        .expect("the socket library bounds a frame");
+    let chunk = max_frame / 2;
+    let mut fragments = Vec::new();
+    let mut sent = 0;
+    while sent + chunk <= max_message {
+        fragments.push(chunk);
+        sent += chunk;
+    }
+    fragments.push(max_message - sent + 1);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let stub = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_hdr_async(stream, accepted)
+            .await
+            .unwrap();
+        for (index, size) in fragments.iter().enumerate() {
+            let opcode = if index == 0 {
+                OpCode::Data(Data::Text)
+            } else {
+                OpCode::Data(Data::Continue)
+            };
+            let last = index + 1 == fragments.len();
+            let frame = Frame::message(vec![b'a'; *size], opcode, last);
+            if socket.send(Message::Frame(frame)).await.is_err() {
+                break;
+            }
+        }
+        while let Some(message) = socket.next().await {
+            if matches!(message, Ok(Message::Close(_)) | Err(_)) {
+                break;
+            }
+        }
+    });
+
+    let adapter = MediaAdapter::new();
+    let (events, mut received) = mpsc::channel(16);
+    let opened = adapter
+        .realtime_open(
+            connection(address),
+            json!({}),
+            events,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    match next_event(&mut received).await {
+        RealtimeEvent::Ended(RealtimeEnd::Error(message)) => {
+            // tungstenite 0.24 reports the complete message size, which is one
+            // byte past the bound for this fragment layout
+            // (`IncompleteMessage::extend`, protocol/message.rs).
+            let size = max_message + 1;
+            assert!(message.contains("The realtime socket failed"), "{message}");
+            assert!(
+                message.contains(&format!(
+                    "Space limit exceeded: Message too long: {size} > {max_message}"
+                )),
+                "{message}"
+            );
+        }
+        RealtimeEvent::Ended(end) => panic!("the session ended for another reason: {end:?}"),
+        RealtimeEvent::Event(event) => {
+            panic!("the socket accepted a message over its limit: {event}")
+        }
+    }
     adapter.realtime_close(&opened.channel_id).await.unwrap();
     stub.await.unwrap();
 }

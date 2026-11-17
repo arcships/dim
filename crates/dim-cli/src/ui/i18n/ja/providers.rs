@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "モデル一覧を更新",
+        "Model list refreshed" => "モデル一覧を更新しました",
+        "Model list refresh failed: {reason}" => "モデル一覧を更新できませんでした: {reason}",
+        "Refreshing model list… · esc close" => "モデル一覧を更新中… · Esc で閉じる",
         // providers_panel.rs
         "Providers" => "プロバイダー",
         "Enter open · Esc clear/close" => "Enter 開く · Esc 消去/閉じる",
@@ -75,6 +79,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ 移動 · enter 実行 · esc 戻る",
         "↑↓ move · enter activate · esc close" => "↑↓ 移動 · enter 実行 · esc 閉じる",
+        "Model id prefix" => "モデル ID の接頭辞",
+        "(none)" => "（なし）",
+        "identified: {model} at {provider}" => "特定済み: {provider} の {model}",
+        "inferred from several rows: {model} at {provider}" => {
+            "複数行から推定: {provider} の {model}"
+        }
+        "ambiguous: {candidates}" => "曖昧: {candidates}",
+        "unidentified" => "未特定",
+        "Identified {rule}" => "特定: {rule}",
+        "from the Provider's own list" => "プロバイダー自身の一覧から",
+        "from the whole qualified id" => "修飾された完全な ID から",
+        "by its tokens" => "トークンにより",
+        "by its canonical id or display name" => "正規 ID または表示名により",
+        "from the custom-provider list" => "custom-provider の一覧から",
+        "by merging the rows that name it" => "それを示す行の統合により",
+        "ambiguous" => "曖昧",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} の提供元: {provider}/{model}"
+        }
         "(paste here)" => "（ここに貼り付け）",
         _ => return None,
     })

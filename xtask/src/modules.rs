@@ -71,7 +71,7 @@ pub fn generate(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
         .current_dir(workspace)
         .output()?;
     if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        return Err(String::from_utf8_lossy_owned(output.stderr).into());
     }
     let metadata: Value = serde_json::from_slice(&output.stdout)?;
     let packages = metadata["packages"]
@@ -91,7 +91,9 @@ pub fn generate(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
                             | "dim-migration"
                             | "dim-session-title"
                             | "dim-goal"
+                            | "dim-report"
                             | "dim-modality"
+                            | "dim-image-understanding"
                             | "dim-ocr"
                     )
             })
@@ -190,7 +192,7 @@ pub fn generate(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
     let report = json!({
         "analysis": {
             "source":"syn AST: mod declarations, use trees, item definitions and symbol paths",
-            "scope":"dim-agent-*, dim-app-server, dim-client, dim-acp, dim-cli, dim-migration, dim-session-title and dim-goal library/binary targets; cfg branches are conservatively included",
+            "scope":"dim-agent-*, dim-app-server, dim-client, dim-acp, dim-cli, dim-migration, dim-session-title, dim-goal and dim-report library/binary targets; cfg branches are conservatively included",
             "glob":"glob/re-export chains are resolved for referenced names; an unused glob does not create every possible dependency",
             "limitations":["Macros are not expanded; unexpandedMacros names are reported per module", "Method receiver types, local-variable shadowing and trait-associated item inference are not resolved", "Qualified unresolved paths are reported; this graph supplements cargo check and is not complete rustc name resolution"],
             "typesAllowedDependencies":TYPES_VALUE_DEPENDENCIES,
@@ -246,11 +248,7 @@ impl SourceGraph {
         let mut module = Module {
             root: root.to_owned(),
             parent,
-            file: file
-                .strip_prefix(workspace)
-                .unwrap_or(file)
-                .to_string_lossy()
-                .into_owned(),
+            file: file.trim_prefix(workspace).to_string_lossy().into_owned(),
             definitions: BTreeMap::new(),
             imports: vec![],
             paths: BTreeSet::new(),

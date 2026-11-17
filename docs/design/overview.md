@@ -69,7 +69,7 @@ Green parts are new and orange-bordered parts are changed. Each new plugin part 
 | --- | --- | --- | --- | --- |
 | Questions | — | `ask_user` tool; `session.question.*` methods; in non-interactive Sessions `ask_user` answers that no one is available to answer | — (waiters of running `ask_user` calls live in the Session part; no events, the answer is the tool result) | The waiter is the Session-scoped tool handler's own call |
 | Goal | — | `goal_update` tool and `session.goal.*` methods, which only write one `input/message` with `goal:objective` and/or `goal:status` keyed blocks | Goal state folded in sequence order from consumed goal change blocks; continuation decided by Goal when it consumes `turn/end`, `stop/interrupt` or `input/deleted` through the Dispatcher | A goal belongs to exactly one branch: the fold uses only that branch's own events, so child branches and forked Sessions start with no goal; continuation follows its events in order |
-| ModelRecovery | — | — | The disposer registered with the Loop's port; the handover input it writes through the branch input entrance | The part decides only from committed branch facts and writes one input; the Loop keeps the turn and the batch |
+| ModelRecovery (proposal) | — | — | Proposed disposer registration (Loop port not implemented); the handover input it writes through the branch input entrance | The part decides only from committed branch facts and writes one input; the Loop keeps the turn and the batch |
 | Hooks | Configuration (`hooks`, `hooks-projects` and `hooks-plugins` Settings sources, `hooks.*` management methods and plugin `register`/`withdraw`/`plugins()`, `HookSources` port) in App Server | Hook documents (user, project and plugin); runner; a submit check registered with the Session's `submitChecks`, which the operator-input entries call (`UserPromptSubmit`) | advice registered with Permission (`PreToolUse`); `PermissionRequest` answered through Approval; `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionStart`, `Notification` from the Dispatcher | Rules apply to a Session; execution happens in a branch |
 | ShellInput | — | `shell.*` Session methods; runs in the Session's workspace and writes its input | — | Commands belong to the Session |
 | Attachments | — | `attachment.put`; Session files through SessionStore | — | Attachments are Session data |
@@ -102,6 +102,7 @@ Plugins never add wiring plugins (ADR 002 D2). Each need maps to a mechanism tha
 | Client method about a Session | A namespace registered with the Session's `sessionMethods`, which Rpc dispatches through the Session ([A.1](contracts/session-boundary.md#a1-method-contributions)) | Questions, Goal, SessionTitle, Attachments, ShellInput, InputQueue (`session.input.withdraw`) |
 | Host management method | A namespace a process plugin registers with `managementMethods`, looked up by Rpc per call | Existing management methods, Settings (business configuration, `settings.read`/`settings.update`/`settings.sources`/`settings.projects`, S8b, implemented), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RemoteGateway |
 | Reach other Sessions | Agents' `sessions` service (`launch`, `input`, `history`, `idle`, ...), as Collaboration does ([session access](contracts/session-access.md#a1-the-sessions-service)) | Scheduler, Workflow |
+| Hand an event to the Sessions that subscribed to it | The process service `eventHub`, which delivers each event through Agents' `sessions` service ([EventHub](plugins/EventHub.md)) | Producers: IM, SaaS and CI notifications, timers, other agents; a Session's `events` tool and clients' `eventhub.*` methods subscribe |
 
 ```mermaid
 flowchart LR
@@ -265,31 +266,28 @@ sequenceDiagram
 
 ### 5.5 Scheduled run through Agents
 
-[Scheduler](plugins/Scheduler.md) defines its own design status; its optional package and its public-flow verification are implemented ([#317](https://github.com/arcships/dim/pull/317)), and installation remains explicit under its §1.3. The diagram shows its owned create-mode run flow. S2, Settings and pluginFiles' [public composition](process-typescript.md#52-public-pluginfiles-binding) are available.
+[Scheduler](plugins/Scheduler.md) defines its own design status; its optional package and its public-flow verification are implemented ([#317](https://github.com/arcships/dim/pull/317)), and installation remains explicit under its §1.3. The diagram shows the delivery flow its design defines. S2, Settings and pluginFiles' [public composition](process-typescript.md#52-public-pluginfiles-binding) are available.
 
 ```mermaid
 sequenceDiagram
   participant SC as Scheduler (process)
   participant AI as Agents sessions
   participant PF as Scheduler pluginFiles
-  SC->>PF: persist run launching
-  SC->>AI: launch (S2 creates a non-interactive Session)
-  AI-->>SC: sessionId, effective policy
-  SC->>PF: persist launch reply
+  SC->>PF: persist the delivery delivering
+  opt launch target
+    SC->>AI: launch (S2 creates a non-interactive Session)
+    AI-->>SC: sessionId, effective policy
+    SC->>PF: persist the Session and the stop time
+  end
   SC->>AI: input Queue with dim-scheduler marker
   AI-->>SC: published input receipt
-  SC->>PF: persist submitted
-  loop own run input is not terminal
-    SC->>AI: history(main), fixed published prefix and pages
-    AI-->>SC: own input consumption and turn facts
-  end
-  SC->>PF: persist terminal run
-  opt report selected under A.6
-    SC->>AI: input Steer to recorded report branch
+  SC->>PF: persist delivered
+  opt launch target
+    SC->>AI: stop at the stop time
   end
 ```
 
-The tracker reads its own input's published history as [§3.2](plugins/Scheduler.md#32-completion-and-timeout) defines, with no outstanding native idle wait. It persists the terminal run before one report attempt under [A.6](plugins/Scheduler.md#a6-run-outcome-delivery); failed delivery is recorded and not resent. The target branch consumes the input normally before its text enters model context.
+The delivery writes one input to the target branch and reads nothing afterwards ([Scheduler §3.1](plugins/Scheduler.md#31-a-due-window), [A.5](plugins/Scheduler.md#a5-timeline-and-capability-mechanics)). A launch target is started first, recorded with its stop time, and stopped at it ([§3.2](plugins/Scheduler.md#32-completion-and-timeout)). The delivery record is the outcome, and no report is written. The target branch consumes the input normally before its text enters model context.
 
 ### 5.6 Collaboration delegation to an external agent
 
@@ -336,7 +334,7 @@ The table in [§3](#3-integration-by-existing-mechanisms) is exhaustive. A new p
 9. **Management plane**: management methods (`account.*`, `provider.*`, `mcp.*`, `skills.*`, `settings.read`/`settings.update`/`settings.sources`/`settings.projects`, and the methods of new process plugins) are registered by process plugins with `managementMethods`; a rutis session's far end reaches that service too ([rutis 0.19 upgrade M8](rutis-0.19-upgrade.md#m8-the-ui-leaf-is-a-plugin-whose-life-is-a-session)). Session methods have no level; `shell.*` is an ordinary Session method. Local RPC serves both kinds, RemoteGateway serves Session methods only, and a rutis session's far end reaches them through the exported `managementMethods` service (trusted local code). There are no identity tiers. `hello`, `daemon.*`, `agent.*` and the existing `session.*` methods stay Rpc built-ins; `daemon.shutdown` is a built-in never served to a paired device (a connection with a `deviceId`).
 10. **Remote Session methods**: paired devices may call every Session method, including `session.permission.update` and `shell.*` (compatibility change, [methods A.4](contracts/session-boundary.md#a4-migration-and-compatibility)).
 11. **In-flight work**: there is no shared registry. Each owner provides its own query and stop, and the CLI aggregates them.
-12. **Withdrawal**: one contract owned by InputQueue. `input/withdraw {input_id, reason?}` is a command event written by any legitimate producer: clients through `session.input.withdraw` (a Session method InputQueue provides through `sessionMethods`), and process callers through `sessions.withdraw`. InputQueue consumes it in order; only if it still holds that input unapplied (no `input/applied`) does it write the result fact `input/deleted {input_id}` and never apply the input. Otherwise (unknown, applied or already deleted) nothing is written and the caller's reply is `notHeld`. An applied input cannot be withdrawn, and Loop is unchanged. "Withdraw and re-submit as Steer" is one atomic batch. Every pending-input derivation excludes deleted inputs, which never enter model context (their keyed blocks never take effect).
+12. **Withdrawal**: InputQueue owns the withdrawal and conditional queued-input Steer contract ([Session access A.4](contracts/session-access.md#a4-withdrawal)). Every pending-input derivation excludes deleted inputs, which never enter model context (their keyed blocks never take effect).
 13. **Acting before commit**: a plugin acts on another owner's write before it is committed only through a Timeline before callback, which synchronously transforms the draft, never blocks the write and never waits for external work; the consumers of the write get no plugin-specific changes.
 14. **Low business coupling**: raw-block markers and keys, configuration keys and method namespaces carry the owner's prefix. A consumer's choice of model for its own task is its own configuration and is passed to shared services explicitly; shared services keep no per-consumer policy. Collectors never name contributors.
 15. **Interactive Sessions**: `interactive` means the Session has an interaction counterpart that can answer its questions and approvals, the user or another Session's or branch's agent ([session access A.3](contracts/session-access.md#a3-sessionconfig-fields)). `session.create` sets `interactive` (clients send it only when false). Exec and automation create non-interactive Sessions; an ACP Session is interactive, since the editor answers its approvals. Assembly does not depend on `interactive`, so the tool set and prompt prefix stay the same across a fork (#30); in such Sessions `ask_user` answers that no one is available to answer. SessionTitle acts only on interactive leader Sessions.
@@ -371,7 +369,7 @@ rutis nodes connect through connection rows: a connection hands a channel to a r
 
 | Event | Writer | Why it is needed |
 | --- | --- | --- |
-| `input/withdraw {input_id, reason?}` | Clients (`session.input.withdraw`, provided by InputQueue), process callers (`sessions.withdraw`) | A command ordered against adoption by sequence; the optional `reason` (generic text, no business meaning) is what clients show for a deleted input |
+| `input/withdraw` ([A.4](contracts/session-access.md#a4-withdrawal)) | Clients (`session.input.withdraw`, provided by InputQueue), process callers (`sessions.withdraw`) | A command ordered against adoption by sequence; its owner defines the optional reason and checked Steer candidate |
 | `input/deleted {input_id}` | InputQueue | Result fact: the held input is never applied; queue state must be rebuildable |
 
 Questions adds no events: a pending question is the `ask_user` `step/tool-call` without its `step/tool-result`, and the answer is the tool result ([Questions §2](plugins/Questions.md#2-data-and-state)).
@@ -384,7 +382,7 @@ Questions adds no events: a pending question is the `ask_user` `step/tool-call` 
 | `external_agent/*` | Collaboration facts, approval facts | External agents are Collaboration members; delegation facts are Collaboration's |
 | `session/titled` | SessionStore process state written through its typed operation, plus a Session broadcast notice | Does not affect branch behaviour |
 | Workflow and scheduled run outcomes | Tool results, consumed report input and `pluginFiles` records | No plugin-owned Timeline event or process-notice requirement |
-| Queued message to Steer | `input/withdraw` + new Steer input in one batch | No separate event |
+| Queued message to Steer | InputQueue's conditional operation ([Session access A.4](contracts/session-access.md#a4-withdrawal)) | No separate event |
 
 ## 8. Phases
 
@@ -444,7 +442,7 @@ The HostPlatform exec-shell change recorded in ADR 002 (business configuration r
 | System | `/exit`, `/theme`, `/keys`, upgrade | CLI |
 | System | `/settings` | Each item belongs to its plugin; the CLI aggregates |
 | System | `/usage` | Extension: ContextPreparation, ManagedProviders |
-| System | `/language` | CLI; Extension: PromptSources |
+| System | `/language` | CLI (the interface locale); the Session's reply language arrives through `session.language.get/update` from PromptSources |
 | System | `/debug`, debug logs | Existing: process logs (`daemon.log`, `RUST_LOG`, [ADR 005](../adr/005-observability.md) D1) |
 | System | `/stats`, mouse settings | Out of scope |
 | Agent behaviour | `/agent` | Extension: Agents, Prompt, PromptSources |
@@ -485,16 +483,16 @@ A **supplement** adds services, methods or configuration. A **change** alters ex
 | Plugin | Type | Content | Reason |
 | --- | --- | --- | --- |
 | **Withdrawn (#28).** Approval | Supplement | Accepts a host-source admission (made by ModelProvider for an `approval_ask` stream item) while a model step is open, writing the ordinary `approval/request`, `approval/respond`, `approval/cancelled` facts; generic, with no knowledge of the model kind | ExternalAgent (first user) |
-| InputQueue | Change | Consumes `input/withdraw {input_id, reason?}` in order (`reason`: proposed generic optional text, at most 2 KiB, written by any producer and shown by clients; InputQueue ignores it for its decision; events without it are unchanged; design rules §4 rule 9 allow descriptive fields on a required event) and writes `input/deleted {input_id}` only for an input it still holds unapplied (else nothing, `notHeld`); `session.input.withdraw` provided through `sessionMethods` (namespace `session.input`, proposed); "withdraw and re-submit as Steer" as one batch; queue state rebuilt from events ([session access A.4](contracts/session-access.md#a4-withdrawal)) | `Ctrl+S`, `/queue`; AcpGateway, Scheduler |
+| InputQueue | Change | Withdrawal and conditional queued-input Steer through `session.input.withdraw`; queue state rebuilt from events. The owner defines command, result and recovery semantics ([Session access A.4](contracts/session-access.md#a4-withdrawal)) | `Ctrl+S`, `/queue`; AcpGateway, Scheduler |
 | Permission, ToolExecutor, Approval | Change | Approval passes `AdmitCall.source` to Permission's admission decision; there Permission calls the advisors registered with it (after policy and command rules, only when not Deny) and folds their `none`/`allow`/`ask`/`deny` advice (deny, then ask, then allow; advice never overrides a Deny); Approval's post-response recheck stays a plain `decide` and does not ask again; ToolExecutor is unchanged. Generic, no business meaning ([Hooks A.6.1](plugins/Hooks.md#a61-tool-advice-in-permission)) | Hooks `PreToolUse` |
-| Rpc `session.submit` and `session.branch_create`, InputQueue `InputMethods`, CLI | Change | Before writing operator input (`session.submit`, `session.branch_create {prompt}`, `session.input.withdraw {steer}`), the entry calls the checks registered with the Session's `submitChecks`; a block fails the call with `input_blocked` (message `Hook <source>: <reason>`, `data.appError` only) and writes nothing, else the returned blocks are appended to the input's user content after the operator's own content, so it stays operator input (a new branch's prompt takes none). `input_blocked` joins the `session.submit` errors that guarantee nothing was committed, in the App Server README and the CLI. A caller's disconnect cancels nothing. No event or persistence change. Generic ([Hooks A.6.2](plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)) | Hooks `UserPromptSubmit`; Skills loads a referenced Skill ([Skills §9](plugins/Skills.md#9-references-load-with-the-operators-input)) |
+| Rpc `session.submit` and `session.branch_create`, InputQueue `InputMethods`, CLI | Change | Before writing operator input (`session.submit`, `session.branch_create {prompt}`, `session.input.withdraw {steer}`), the entry calls the checks registered with the Session's `submitChecks`; a block fails the call with `input_blocked` (message `Hook <source>: <reason>`, `data.appError` only) and writes nothing, else each returned block that is a runtime marker element is appended to the input's user content after the operator's own content, so it stays operator input, and a block that is not one is dropped (a new branch's prompt takes none). `input_blocked` joins the `session.submit` errors that guarantee nothing was committed, in the App Server README and the CLI. A check's warnings (work it did not do) ride on the reply's additive optional `warnings` field — `session.submit` and `session.branch_create` on the reply, `session.input.withdraw {steer}` beside `status` — absent when empty, unfilled on a frozen v1/v2 encoding (`branch_create` is served from v2 on), and carried on a `notHeld` withdrawal that still wrote its steer; no protocol version is added. A caller's disconnect cancels nothing. No event or persistence change. Generic ([Hooks A.6.2](plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries)) | Hooks `UserPromptSubmit`; Skills loads a referenced Skill ([Skills §9](plugins/Skills.md#9-references-load-with-the-operators-input)) |
 | **Withdrawn (existing facade).** Runtime Session facade | Supplement | Lookup of `sessionMethods` by namespace: Rpc reads the Session's one `sessionMethods` table through the existing facade, and the fixed-prefix read is composed from it (#50) | Rpc; process callers |
 | ToolRegistry | Supplement | Parts of any language register tools with `toolRegistry` ([methods A.5](contracts/session-boundary.md#a5-tool-contribution)) | Non-Rust Session tools |
 | Agent assembly | Supplement | Collects the named services each installed plugin declares in `provides`; optional Session and branch parts installed per enabled plugin | All Session plugins |
 | Permission | Supplement | Command rules read at use time (no new risk category: unknown risks are unclassified, #45) | `/approvals` |
 | ModelProvider | Supplement | When building a request, sends an image in user content or in a tool result, or replaces it with a text placeholder if the model lacks image support or the request cannot carry it; history is unchanged (moved out of Rpc) | Attachments |
 | Prompt, PromptSources | Supplement | Prompt's published adopted model configuration; atomic adoption of a profile's prompt and optional model, using PromptSources' existing `dim/session` System entry | `/effort`, `/fast`, `/agent` |
-| PromptSources | Supplement | Prompt language source | `/language` |
+| PromptSources | Supplement | Prompt language source | The Session's reply language (`session.language.*`) |
 | ContextPreparation | Supplement | Usage query; manual compaction; production compaction host implementing `ResolveContextModel` | `/usage`, `/compact` |
 | FileStorage | Supplement | Directory listing and removal under a root (S6); directory creation (S5a, [session files](appserver/session-files.md#7-filestorage-additions)) | Session files, cleanup |
 | HostPlatform | Supplement | OS isolation at process start for agent-decided commands (`exec` and the persistent shell; macOS seatbelt, Linux bubblewrap, Windows explicitly unavailable), per-node host-local configuration; a process start that writes the given bytes to the child's stdin and closes it, for configuration commands such as hook commands, which run without the agent sandbox as MCP stdio servers do ([ADR 003](../adr/003-approval-scope.md) D2, [Hooks A.6.3](plugins/Hooks.md#a63-process-start-with-an-initial-stdin)); exec-argv helper; a confined start for a host-owned helper with a timeout, bounded output and no network, independent of the user's switch; exec shell read per spawn (ADR 002); when the link to the control node drops, the node's HostPlatform ends the processes it started | Sandbox; ShellInput, Hooks, ExternalAgent |

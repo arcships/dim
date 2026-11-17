@@ -285,7 +285,7 @@ impl AgentRecords {
                     _ => None,
                 };
                 let protocol_version = match version {
-                    Value::Integer(version) if (1..=3).contains(&version) => Some(version as u32),
+                    Value::Integer(version) if (1..=crate::protocol::PROTOCOL_VERSION as i64).contains(&version) => Some(version as u32),
                     _ => None,
                 };
                 let error = if !has_session {

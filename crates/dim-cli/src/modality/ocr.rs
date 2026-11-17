@@ -8,7 +8,7 @@
 //! command writes.
 
 use super::Modality;
-use super::media::{MAX_INLINE_BYTES, file_name, input};
+use super::media::{file_name, input};
 use super::task::{self, Output};
 use crate::Result;
 use crate::args::Options;
@@ -234,6 +234,6 @@ fn request(file: &Path, output_mode: Option<&str>) -> Result<Value> {
         "category": "ocr",
         "operation": "recognize",
         "params": Value::Object(params),
-        "files": [input(name, file, metadata.len() <= MAX_INLINE_BYTES)?],
+        "files": [input(name, file)?],
     }))
 }

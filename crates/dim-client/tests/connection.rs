@@ -25,7 +25,7 @@ async fn an_owned_connection_preserves_identity_responses_and_partial_notificati
         assert_eq!(hello["params"]["clientKind"], "other");
         assert_eq!(hello["params"]["clientName"], "AcpGateway");
         let reply = json!({"jsonrpc":"2.0","id":hello["id"],"result":{
-            "instanceId":"fixture","serverVersion":"fixture","protocolVersion":3,
+            "instanceId":"fixture","serverVersion":"fixture","protocolVersion":4,
             "daemonProfile":{"kind":"product"},"features":["session.create","session.history"]
         }});
         write
@@ -37,7 +37,7 @@ async fn an_owned_connection_preserves_identity_responses_and_partial_notificati
             serde_json::from_str(&read.next_line().await.unwrap().unwrap()).unwrap();
         let replies = format!(
             "{}\n{}\n",
-            json!({"jsonrpc":"2.0","id":second["id"],"result":{"order":2}}),
+            json!({"jsonrpc":"2.0","id":second["id"],"result":null}),
             json!({"jsonrpc":"2.0","id":first["id"],"result":{"order":1}})
         );
         write.write_all(replies.as_bytes()).await.unwrap();
@@ -51,6 +51,12 @@ async fn an_owned_connection_preserves_identity_responses_and_partial_notificati
             .write_all(b"{\"text\":\"complete\"}}\n")
             .await
             .unwrap();
+        let missing: Value =
+            serde_json::from_str(&read.next_line().await.unwrap().unwrap()).unwrap();
+        write
+            .write_all(format!("{}\n", json!({"jsonrpc":"2.0","id":missing["id"]})).as_bytes())
+            .await
+            .unwrap();
     });
     let config = ConnectionConfig {
         endpoint,
@@ -61,6 +67,7 @@ async fn an_owned_connection_preserves_identity_responses_and_partial_notificati
         profile: Some(DaemonProfile::Product),
         client_kind: "other",
         client_name: "AcpGateway",
+        protocol_version: 4,
     };
     let mut client = Client::connect(&config).await.unwrap();
     assert_eq!(client.connection_config().endpoint, config.endpoint);
@@ -68,7 +75,7 @@ async fn an_owned_connection_preserves_identity_responses_and_partial_notificati
     let second = client.send("session.second", json!({})).await.unwrap();
     assert_eq!(client.response(first).await.unwrap(), json!({"order":1}));
     assert!(
-        matches!(client.next().await.unwrap(), Message::Response { id, result: Ok(_) } if id == second)
+        matches!(client.next().await.unwrap(), Message::Response { id, result: Ok(Value::Null) } if id == second)
     );
     written.await.unwrap();
     assert!(
@@ -79,6 +86,14 @@ async fn an_owned_connection_preserves_identity_responses_and_partial_notificati
     resume.send(()).unwrap();
     assert!(
         matches!(client.next().await.unwrap(), Message::Notice { method, params } if method == "session.notice" && params == json!({"text":"complete"}))
+    );
+    assert_eq!(
+        client
+            .rpc("session.missing", json!({}))
+            .await
+            .unwrap_err()
+            .to_string(),
+        "Invalid App Server response identity"
     );
     server.await.unwrap();
     client.wait_closed().await.unwrap();
@@ -123,14 +138,25 @@ async fn loopback_capture_rejects_other_paths_without_consuming_the_callback() {
 
 #[test]
 fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
-    use dim_client::{window::Window, wire::HistoryWindow};
+    use dim_client::{
+        window::Window,
+        wire::{DisplayPage, EventContent, HistoryWindow},
+    };
     let event = |at| json!({"id":format!("event-{at}"),"sequence":at,"create_at":at,"type":"input","name":"message","data":{"user":{"content":[{"type":"text","text":"message"}]}}});
     let mut window = Window::default();
+    let params = window.params_with_display("session", "main", true, true);
+    assert_eq!(params["limit"], 32);
+    assert_eq!(params["transcript"], true);
+    assert!(params.get("latestTurn").is_none());
     let empty: HistoryWindow = serde_json::from_value(
         json!({"events":[],"through":302,"nextAfter":302,"nextBefore":302,"done":false}),
     )
     .unwrap();
     assert!(!window.push(empty).unwrap());
+    assert_eq!(
+        window.params_with_display("session", "main", true, true)["limit"],
+        64
+    );
     let page: HistoryWindow = serde_json::from_value(json!({"events":(1..=301).map(event).collect::<Vec<_>>(),"through":302,"nextAfter":301,"nextBefore":1,"done":true})).unwrap();
     assert!(window.push(page).unwrap());
     assert_eq!(
@@ -139,7 +165,7 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
         "one oversized atomic page stays complete"
     );
     assert!(window.before.is_none());
-    let mut window = Window::default();
+    let mut window = Window::earlier(450, 449);
     let newest: HistoryWindow = serde_json::from_value(json!({"events":(351..=449).map(event).collect::<Vec<_>>(),"through":449,"nextAfter":449,"nextBefore":301,"done":false})).unwrap();
     assert!(!window.push(newest).unwrap());
     let older: HistoryWindow = serde_json::from_value(json!({"events":(1..=300).map(event).collect::<Vec<_>>(),"through":449,"nextAfter":300,"nextBefore":1,"done":true})).unwrap();
@@ -157,4 +183,32 @@ fn conversation_windows_keep_atomic_pages_and_their_raw_cursors() {
     assert!(earlier.push(page).unwrap());
     assert_eq!(earlier.take().len(), 300);
     assert!(earlier.before.is_none());
+    let page: DisplayPage = serde_json::from_value(json!({
+        "items":[event(1),{"id":"compaction-2","sequence":2,"create_at":2,
+            "type":"display","name":"compaction","data":{"strategy":"summary"}}],
+        "through":2,"nextAfter":2,"nextBefore":1,"done":true
+    }))
+    .unwrap();
+    let mut display = Window::default();
+    assert_eq!(display.params("session", "main")["limit"], 64);
+    assert!(display.push(page.into()).unwrap());
+    let items = display.take();
+    assert_eq!(items.len(), 2);
+    assert_eq!(display.params("session", "main")["limit"], 256);
+    assert!(
+        matches!(&items[1].content, EventContent::CompactionSummary(summary) if summary.strategy=="summary")
+    );
+    assert_eq!(items[1].id, "compaction-2");
+    let page: DisplayPage = serde_json::from_value(json!({
+        "items":[{"id":"summary","sequence":50,"create_at":2,
+            "type":"display","name":"compaction","data":{"strategy":"summary"}}],
+        "through":50,"nextAfter":50,"nextBefore":50,"done":false
+    }))
+    .unwrap();
+    let mut summary = Window::default();
+    assert!(
+        summary.push(page.into()).unwrap(),
+        "a visible compaction must not trigger earlier history reads"
+    );
+    assert_eq!(summary.take().len(), 1);
 }

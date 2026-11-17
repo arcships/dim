@@ -39,6 +39,16 @@ existing content records. A `migration/imported` extension and source tags ident
 the import, original message IDs and timestamps. There are no historical model
 calls, model starts, tool dispatches, approvals or usage measurements.
 
+Tool results retain the originating assistant message's `request_id` and `turn_id`,
+not the result message's identity. Each result is emitted separately in source
+order within its message batch, with `call_event_id: None` because no dispatch
+occurred. Pending call IDs identify their originating messages until answered;
+completed IDs can be reused by later messages. Missing, ambiguous or unfinished
+history pairs defer the Session before publication. Existing import receipts
+continue to preserve already-imported Sessions: upgrading or running migration
+again (including retry) does not repair previously imported tool identities or
+rewrite subsequent native conversation. This conversion applies only to new imports.
+
 A deterministic `migration` context replacement preserves the legacy effective
 summary and suffix, with an explicit source message. It performs no model call.
 Its diagnostics explicitly mark token estimates unavailable. Full original content

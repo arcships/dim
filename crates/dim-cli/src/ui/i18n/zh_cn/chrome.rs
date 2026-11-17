@@ -5,18 +5,15 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Enter steer · x delete held · Esc close" => "Enter steer · x 删除暂存消息 · Esc 关闭",
         "No queued messages." => "队列中没有消息。",
         "Held · awaiting application" => "暂存中 · 等待应用",
-        "Incorporating · awaiting model consumption" => "纳入中 · 等待模型读取",
+        "Unread" => "未读取",
+        "+{count} more · {hint}" => "还有 {count} 条 · {hint}",
         "Held" => "暂存中",
-        "Incorporating" => "纳入中",
         "Enter export · Esc cancel" => "Enter 导出 · Esc 取消",
         "Messages with attachments stay queued; use /queue to steer or delete them" => {
             "带附件的消息会留在队列中；使用 /queue 对其执行 steer 或删除"
         }
-        "/queue manage · shift+← edit last · ctrl+s steer now" => {
-            "/queue 管理 · shift+← 编辑最后一条 · ctrl+s 立即 steer"
-        }
-        "+{count} more · /queue manage · shift+← edit last · ctrl+s steer now" => {
-            "还有 {count} 条 · /queue 管理 · shift+← 编辑最后一条 · ctrl+s 立即 steer"
+        "/queue · Shift+← edit last · empty: {key} steer · Ctrl+Enter send now" => {
+            "/queue · Shift+← 编辑最后一条 · 草稿为空时按 {key} steer · Ctrl+Enter 立即发送"
         }
         "steer or delete queued messages" => "对队列消息执行 steer 或删除",
         "export this conversation" => "导出此对话",
@@ -98,7 +95,23 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The Session is now untitled." => "会话现在没有标题。",
         "This daemon does not support renaming Sessions" => "此守护进程不支持重命名会话",
         "Renaming failed" => "重命名失败",
+        "Delete \"{name}\"?" => "删除“{name}”？",
+        "Deleted {name}." => "已删除 {name}。",
+        "Nothing was removed: no stored Session {name}." => {
+            "没有删除任何内容：没有已保存的会话 {name}。"
+        }
+        "Delete failed" => "删除失败",
+        "This daemon does not support deleting Sessions" => "此守护进程不支持删除会话",
         "Starting" => "启动中",
+        "agent result" => "子 agent 结果",
+        "Read-only: you can watch this agent or stop it." => "只读：可以查看这个 agent，或终止它。",
+        "Read-only: this agent has finished." => "只读：这个 agent 已结束。",
+        "Esc back · x stop agent · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 返回 · x 终止 agent · ↑↓ PgUp PgDn 滚动 · Home/End 跳转"
+        }
+        "Esc back · ↑↓ PgUp PgDn scroll · Home/End jump" => {
+            "Esc 返回 · ↑↓ PgUp PgDn 滚动 · Home/End 跳转"
+        }
         "Delegation result" => "委派结果",
         "Enter details · x stop selected · Ctrl+X stop all · Esc close" => {
             "Enter 详情 · x 停止所选任务 · Ctrl+X 停止全部 · Esc 关闭"
@@ -111,6 +124,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Observing conversation" => "正在查看会话",
         "Conversation unavailable" => "会话不可用",
         "Session closed" => "会话已关闭",
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "此会话已关闭，无法继续对话。使用相同的 --home 运行 dimcode export {id} 可读取已保存的历史。"
+        }
         "Member conversation" => "成员会话内容",
         "x stop command · Esc back" => "x 停止命令 · Esc 返回",
         "Esc back" => "Esc 返回",
@@ -179,6 +195,21 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Result: {result}" => "结果：{result}",
         "Controlled by the leader" => "由主智能体控制",
         "› Open member conversation" => "› 打开成员会话",
+        "Waiting for result…" => "等待结果…",
+        "Running…" => "执行中…",
+        "Before/after comparison is unavailable for this record." => {
+            "此记录没有可用的修改前后对照。"
+        }
+        "No content changes." => "内容没有变化。",
+        "Old" => "旧",
+        "New" => "新",
+        "Changes" => "修改内容",
+        "Input" => "参数",
+        "Result" => "结果",
+        "Tab also picks tool headers · Enter/Space toggle the focused tool" => {
+            "Tab 也可选择工具标题 · Enter/空格展开或收起当前工具"
+        }
+        "… {count} unchanged lines" => "… {count} 行未修改",
         "Not started" => "未启动",
         "Reason: {reason}" => "原因：{reason}",
         "Copied to clipboard" => "已复制到剪贴板",
@@ -194,6 +225,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Disconnected; draft kept. Exit and resume this Session." => {
             "连接已断开，草稿已保留。请退出后恢复此会话。"
         }
+        "Cannot open this Session; draft kept." => "无法打开此会话，草稿已保留。",
         "Disconnected; draft kept. Exit and run: {command}" => {
             "连接已断开，草稿已保留。请退出后运行：{command}"
         }
@@ -256,7 +288,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Error: {message}" => "错误：{message}",
         "working…  {elapsed}" => "处理中…  {elapsed}",
         "thinking…  {elapsed}" => "思考中…  {elapsed}",
-        "Ask anything..." => "输入任何内容...",
+        "Ask anything... · Ctrl+J newline" => "输入你的问题… · Ctrl+J 换行",
         "Earlier history · {id} · {count} messages" => "更早历史 · {id} · {count} 条消息",
         "No active session" => "没有活动会话",
         "answer required" => "需要回答",
@@ -268,6 +300,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Queue ({count})" => "队列（{count}）",
         "Thinking…" => "思考中…",
+        "Thinking excerpt" => "思考摘录",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "欢迎使用 DIM {version}！",
@@ -310,16 +343,60 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "configure tool approvals" => "配置工具审批",
         "choose ask or full access" => "选择询问或完全访问",
         "open settings" => "打开设置",
+        "report the current session" => "上报当前会话",
+        "Run /report to create a report." => "输入 /report 生成报告。",
+        "No session to report." => "没有可上报的会话。",
+        "Usage: /report" => "用法：/report",
+        "Report this session" => "上报当前会话",
+        "Report this error" => "上报此错误",
+        "Report ready" => "报告已生成",
+        "ZIP contents: report.md, diagnostics.json" => "ZIP 内容：report.md、diagnostics.json",
+        "Model · Generate locally" => "模型 · 本地生成",
+        "Local generation makes zero model requests." => "本地生成不会调用模型。",
+        "Session model" => "会话模型",
+        "Redact [x]" => "脱敏 [x]",
+        "Redact [ ]" => "脱敏 [ ]",
+        "Options" => "选项",
+        "Generate report" => "生成报告",
+        "Refresh report plan" => "刷新报告计划",
+        "Prepare report again" => "重新准备报告",
+        "Evidence · Recent session activity" => "证据 · 最近的会话活动",
+        "Evidence · No recent session activity" => "证据 · 近期没有可上报的会话活动",
+        "Evidence · Observed error only" => "证据 · 只有观察到的错误",
+        "Evidence · Timeline omitted" => "证据 · 已省略时间线",
+        "Evidence · Timeline read failed" => "证据 · 无法读取时间线",
+        "Evidence · Timeline unavailable" => "证据 · 时间线不可用",
+        "Some options were unsupported." => "部分选项不受支持。",
+        "Options · for example: omit timeline, keep error codes" => {
+            "选项 · 例如 omit timeline, keep error codes"
+        }
+        "Options must fit within 1 KiB" => "选项不得超过 1 KiB",
+        "Enter apply · Esc back" => "Enter 应用 · Esc 返回",
+        "Save ZIP" => "保存 ZIP",
+        "Saved ZIP" => "ZIP 已保存至",
+        "Could not save ZIP" => "无法保存 ZIP",
+        "Invalid report ZIP" => "报告 ZIP 无效",
+        "Could not open the share destination" => "无法打开分享页面",
+        "Opened GitHub issue draft" => "已打开 GitHub Issue 草稿",
+        "Opened Discord" => "已打开 Discord",
+        "Preparing report…" => "正在准备报告…",
+        "Updating report plan…" => "正在更新报告计划…",
+        "Generating report…" => "正在生成报告…",
+        "Cancelling generation…" => "正在取消生成…",
+        "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 切换 · Enter 选择 · Esc 关闭",
         "exit" => "退出应用",
 
-        "Enter select · ←/→ effort · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 选择 · ←/→ 推理强度 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
-        }
+        "Default for new sessions in {folder}: {model}" => "新会话在 {folder} 的默认模型：{model}",
+        "Default for new sessions: {model}" => "新会话的默认模型：{model}",
         "Enter select · Esc clear/close" => "Enter 选择 · Esc 清除/关闭",
         "esc close" => "Esc 关闭",
         "Suggestions" => "建议",
         "Skills" => "技能",
         "Skill loaded: {name}" => "已加载技能：{name}",
+        "Hook context · {count} line" => "钩子上下文 · {count} 行",
+        "Hook context · {count} lines" => "钩子上下文 · {count} 行",
+        "Stop hook follow-up · {count} line" => "Stop 钩子后续输入 · {count} 行",
+        "Stop hook follow-up · {count} lines" => "Stop 钩子后续输入 · {count} 行",
         "Commands" => "命令",
         "Command Palette" => "命令面板",
         "No matches" => "无匹配项",
@@ -335,6 +412,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Theme" => "主题",
         "Language" => "语言",
         "Startup UI form" => "启动界面形态",
+        "Default send mode" => "默认发送模式",
         "fullscreen" => "全屏",
         "scrollback" => "回滚",
         "Tool details" => "工具详情",
@@ -365,8 +443,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "No saved sessions in this workspace. Ctrl+S shows more." => {
             "当前工作区没有已保存的会话。Ctrl+S 查看更多。"
         }
-        "Enter open · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
-            "Enter 打开 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
+        "Enter open · Ctrl+X delete · Ctrl+S scope · Ctrl+R refresh · Esc close" => {
+            "Enter 打开 · Ctrl+X 删除 · Ctrl+S 切换范围 · Ctrl+R 刷新 · Esc 关闭"
         }
         "Loading sessions..." => "正在加载会话...",
         "No saved sessions yet." => "暂无已保存的会话。",
@@ -378,6 +456,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
 
         "Select a model" => "选择模型",
         "Loading models..." => "正在加载模型...",
+        "Previous page" => "上一页",
+        "Next page" => "下一页",
         "No models available. Connect a provider first." => "无可用模型。请先连接 Provider。",
         "No matching models." => "无匹配的模型。",
         "current" => "当前",
@@ -436,6 +516,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Fixed model" => "固定模型",
         "Applies to new members, including named Agents." => "适用于新成员，包括具名 Agent。",
         "Existing members keep their models." => "已有成员保留其模型。",
+        "Conversation model" => "对话模型",
+        "Selected: {model}" => "已选择：{model}",
+        "Model management" => "模型管理",
+        "Manage models" => "管理模型",
+        "1 provider" => "1 个 Provider",
+        "{count} providers" => "{count} 个 Provider",
+        "ready" => "就绪",
+        "no models" => "没有模型",
+        "catalog unreadable" => "无法读取 catalog",
+        "{count} with missing limits" => "{count} 个缺少上限",
+        "{count} unavailable" => "{count} 个不可用",
+        "{count} disabled" => "{count} 个已禁用",
+        "{count} without models" => "{count} 个没有模型",
+        "{count} unreadable" => "{count} 个无法读取",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} 个不可用、{disabled} 个已禁用"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter 选择并设为默认 · ←/→ 推理强度 · Tab 切换分区 · Esc 清除/关闭"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter 更改 · Tab 切换分区 · Esc 清除/关闭"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter 管理 · Tab 切换分区 · Esc 清除/关闭"
+        }
+        "Enter manage · Esc back" => "Enter 管理 · Esc 返回",
         "unknown" => "未知",
         "Subagent model policy saved" => "子代理模型策略已保存",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -444,26 +551,76 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Subagent model policy: {error}" => "子代理模型策略：{error}",
         "drawing diagram… {count} lines" => "正在绘制图表…已收到 {count} 行",
         "Task complete" => "任务已完成",
+        "Background task finished: {label}" => "后台任务已完成：{label}",
+        "Background task failed: {label}" => "后台任务失败：{label}",
+        "Background task stopped: {label}" => "后台任务已停止：{label}",
         "Permission needed: {tool}" => "需要授权：{tool}",
         "Question waiting for your answer" => "有问题等你回答",
         "Notify when agent needs you" => "需要你时通知",
         "Show ACP sessions" => "显示 ACP 会话",
         "Prompt suggestion" => "提示建议",
+        "Prompts" => "提示词",
+        "Base prompt" => "基础提示",
+        "Compaction prompt" => "压缩提示",
+        "Skills instructions" => "Skills 说明",
+        "custom" => "自定义",
+        "built-in" => "内置",
+        "skills replaces the marker and call shape; the skill tool and list stay · r reset" => {
+            "skills 会替换标记与调用形状；skill 工具和列表不受影响 · r 重置"
+        }
+        "Prompt saved; applies to new Sessions" => "提示词已保存；对新会话生效",
+        "A prompt save is still in progress" => "提示词保存尚未完成",
+        "Prompt settings are not available" => "提示词设置不可用",
+        "↑↓ move · Enter edit · r reset · Esc close" => {
+            "↑↓ 移动 · Enter 编辑 · r 重置 · Esc 关闭"
+        }
+        "↑↓ move · Enter select · ←→/Space change · r reset · Esc close" => {
+            "↑↓ 移动 · Enter 选择 · ←→/空格 更改 · r 重置 · Esc 关闭"
+        }
+        "Resetting {field}; the old text is kept in {path}" => {
+            "正在重置 {field}；旧文本保留在 {path}"
+        }
         "Prompt suggestion: {error}" => "提示建议：{error}",
         "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume." => {
             "本会话因提示建议未被采用而暂停。在 /settings 中关闭再开启即可恢复。"
         }
         "show the key bindings" => "显示快捷键",
+        "show the command that updates this installation" => "显示如何升级当前安装",
         "Application keys" => "应用快捷键",
-        "Enter submit or queue · empty draft: steer first queued · Shift+Enter or Ctrl+J newline · ↑↓ history" => {
-            "Enter 提交或排队 · 草稿为空时 steer 第一条排队消息 · Shift+Enter 或 Ctrl+J 换行 · ↑↓ 历史"
+        "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
+            "空闲时 Enter 提交 · Shift+Enter / Alt+Enter / Ctrl+J 换行 · ↑↓ 历史"
         }
-        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Ctrl+S steer draft or first queued · Shift+← edit last queued" => {
-            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Ctrl+S steer 草稿或第一条排队消息 · Shift+← 编辑最后一条排队消息"
+        "Running with a draft: Enter {default} · Ctrl+S {alternate}" => {
+            "运行中有草稿：Enter {default} · Ctrl+S {alternate}"
+        }
+        "Empty draft: {keys} steer first queued" => "草稿为空时按 {keys} steer 第一条排队消息",
+        "Ctrl+O or Ctrl+P commands · Esc interrupt, queued messages return · Shift+← edit last queued" => {
+            "Ctrl+O 或 Ctrl+P 命令 · Esc 中断，排队消息回到输入框 · Shift+← 编辑最后一条排队消息"
+        }
+        "Ctrl+Enter interrupt and send now: the draft and every held message, as one message" => {
+            "Ctrl+Enter 中断并立即发送：草稿与所有暂存消息合成一条发出"
+        }
+        "Send now failed: {error}; the draft was kept" => "立即发送失败：{error}；草稿已保留",
+        "Send now cancelled; the draft was kept" => "已取消立即发送；草稿保留",
+        "Send now is still stopping the run; the draft was kept" => {
+            "立即发送仍在停止运行；草稿已保留"
+        }
+        "Send now is stopping the run; paste again when the draft is sent" => {
+            "立即发送正在停止运行；草稿发出后再粘贴"
+        }
+        "Send now is waiting for the insertion before sending" => {
+            "立即发送正在等待插入内容后再发送"
         }
         "Ctrl+C clear, twice to exit · Ctrl+D exit on an empty draft" => {
             "Ctrl+C 清空，连按两次退出 · 草稿为空时 Ctrl+D 退出"
         }
+        "Shift+Tab cycle permissions (composer focused)" => {
+            "Shift+Tab 循环切换权限（输入框聚焦时）"
+        }
+        "Shift+Tab newer target while picked · Esc return to composer" => {
+            "选中历史项时 Shift+Tab 选择较新项 · Esc 返回输入框"
+        }
+        "(shift+tab to cycle)" => "(Shift+Tab 切换)",
         "Fullscreen" => "全屏",
         "PageUp/PageDown scroll · Home/End top or bottom (empty draft) · Tab pick a message, e edit it, q quote it" => {
             "PageUp/PageDown 滚动 · Home/End 到顶部或底部 (草稿为空时) · Tab 选择消息，e 编辑，q 引用"
@@ -508,12 +665,24 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it; this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }
+        "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它，而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
+        "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
+            "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}），而它使用协议 v{protocol}，这个 {client} 客户端无法使用。没有启动会话。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
+        }
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因为其他客户端正在使用它（连接：{connections}，已附加会话：{attached}，运行中的轮次：{running}）；这个 {client} 客户端也使用它。等它们结束后运行 `dimcode daemon stop`，下次启动就会运行 {client}。"
         }
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "正在把本地库从格式 v{from} 升级到 v{to}；大库可能需要一段时间。"
         }
+        "Upgrading the local store · {seconds} s · {stage}" => {
+            "正在升级本地库 · 已用 {seconds} 秒 · {stage}"
+        }
+        "moving retained images into Session files" => "把保留下来的图片写入会话文件",
+        "updating the text index of the rows that changed" => "更新已改动行的文本索引",
+        "checking and committing the upgraded store" => "校验并提交升级后的库",
         _ => return None,
     })
 }

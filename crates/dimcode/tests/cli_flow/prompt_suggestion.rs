@@ -171,7 +171,9 @@ fn a_draft_keeps_the_interface_from_asking() {
         settled.send(()).unwrap();
         wire.hold();
     });
-    let mut terminal = Terminal::resume_tui(home.command());
+    let mut command = home.command();
+    sized(&mut command, 120, 24);
+    let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"a draft");
     terminal.until("a draft");
@@ -473,6 +475,11 @@ fn settings_shows_no_suggestion_row_without_the_methods() {
     let daemon = home.daemon(move |wire| {
         opened_with_methods(wire, &["settings.read", "settings.update"], vec![], false);
         ready.recv_timeout(PATIENCE).unwrap();
+        // The settings panel reads the prompt texts too; this test is about
+        // the absent suggestion source.
+        let read = wire.read("settings.read");
+        assert_eq!(read["params"]["source"], "prompts");
+        wire.reply(&read, json!({"revision":"r1","document":{}}));
         wire.quiet(Duration::from_millis(300));
         settled.send(()).unwrap();
         wire.hold();
@@ -513,6 +520,10 @@ fn settings_toggles_the_switch_through_the_daemon() {
             &read,
             json!({"revision":"r1","document":{"enabled":false,"maxChars":80}}),
         );
+        // `/settings` also reads the prompt texts when it opens.
+        let prompts = wire.read("settings.read");
+        assert_eq!(prompts["params"]["source"], "prompts");
+        wire.reply(&prompts, json!({"revision":"r2","document":{}}));
         let update = wire.read("settings.update");
         assert_eq!(
             update["params"],
@@ -534,7 +545,7 @@ fn settings_toggles_the_switch_through_the_daemon() {
     // The row shows the value the daemon reported; pressing before it is
     // applied makes the client read the source again.
     terminal.until_row("Prompt suggestion", "off");
-    for _ in 0..8 {
+    for _ in 0..9 {
         terminal.raw(b"\x1b[B");
     }
     terminal.raw(b"\r");

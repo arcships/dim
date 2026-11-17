@@ -6,7 +6,7 @@ use crate::{
     },
     prompt_registry::{PromptRegistry, targets},
     prompt_sources::sha256_version,
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
+    tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{
     BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget, SESSION_GROUP,
@@ -67,6 +67,7 @@ impl SessionSkills {
                 id: skill.id.clone(),
                 name: skill.name.clone(),
                 description: skill.description.clone(),
+                user_invocable: skill.user_invocable,
             })
             .collect())
     }
@@ -141,6 +142,9 @@ pub struct SkillsPlugin {
     /// not every such assembly installs the capability, so a part with no
     /// name to declare keeps the built-in [`super::INSTRUCTIONS`].
     factory: Option<Key<super::SkillsConfig>>,
+    /// The host's user override of the instructions, when the host provides
+    /// one.
+    settings: Option<Key<super::SkillsInstructionsSettingsHost>>,
 }
 impl SkillsPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
@@ -157,6 +161,10 @@ impl SkillsPlugin {
             factory: names
                 .registered::<super::SkillsConfig>()
                 .then(|| names.key::<super::SkillsConfig>())
+                .transpose()?,
+            settings: names
+                .registered::<super::SkillsInstructionsSettingsHost>()
+                .then(|| names.key::<super::SkillsInstructionsSettingsHost>())
                 .transpose()?,
         })
     }
@@ -225,14 +233,36 @@ impl DynPlugin for SkillsPlugin {
                 })
                 .await?;
             // The factory configuration's text replaces the built-in
-            // instructions ([`super::SkillsConfig`]).
-            let instructions: Arc<str> = match &self.factory {
-                Some(key) => ctx
-                    .require_at(key)?
-                    .instructions
-                    .clone()
-                    .unwrap_or_else(|| super::INSTRUCTIONS.into()),
-                None => super::INSTRUCTIONS.into(),
+            // instructions ([`super::SkillsConfig`]); the host's user
+            // override fills in when the factory sets none
+            // ([`super::SkillsInstructionsSettingsHost`]).
+            let factory = match &self.factory {
+                Some(key) => ctx.require_at(key)?.instructions.clone(),
+                None => None,
+            };
+            let instructions: Arc<str> = match factory {
+                Some(text) => text,
+                None => {
+                    let settings = match &self.settings {
+                        Some(key) => ctx.get_at(key),
+                        None => None,
+                    };
+                    match settings {
+                        Some(settings) => match settings
+                            .0
+                            .instructions(ctx.cancellation_token().child_token())
+                            .await
+                        {
+                            Ok(Some(text)) => text,
+                            Ok(None) => super::INSTRUCTIONS.into(),
+                            Err(error) => {
+                                tracing::warn!(%error, "skills instructions setting was not read");
+                                super::INSTRUCTIONS.into()
+                            }
+                        },
+                        None => super::INSTRUCTIONS.into(),
+                    }
+                }
             };
             let skills = Arc::new(SessionSkills::new(initial, instructions));
             let owner = skills.clone();
@@ -330,9 +360,9 @@ fn skill_text(skill: &SkillDefinition) -> String {
     parts.join("\n")
 }
 
-/// The `skills` submit check (Hooks A.6.2): an operator's `$skill: <name>`
-/// references load those Skills with the same input, before the model sees
-/// it.
+/// The `skills` submit check (Hooks A.6.2): an operator's `/skill:<name>`
+/// tokens load those Skills with the same input, before the model sees it.
+/// `$skill: <name>` still loads, for inputs and habits from before the token.
 struct SkillSubmitCheck {
     skills: Arc<SessionSkills>,
     /// The part's lifetime: a stopped or reloading part adds nothing.
@@ -349,7 +379,10 @@ impl CheckSubmission for SkillSubmitCheck {
             if cancel.is_cancelled() {
                 return Err(interrupted());
             }
-            let nothing = SubmitCheckReply::Proceed { blocks: Vec::new() };
+            let nothing = SubmitCheckReply::Proceed {
+                blocks: Vec::new(),
+                warnings: Vec::new(),
+            };
             // A branch's first input is built from its prompt alone.
             if request.entry == SubmitEntry::Branch {
                 return Ok(nothing);
@@ -390,13 +423,20 @@ impl CheckSubmission for SkillSubmitCheck {
                 let Some(skill) = view.skills.get(&name) else {
                     continue;
                 };
+                // `user-invocable: false` is the model's alone to load.
+                if !skill.user_invocable {
+                    continue;
+                }
                 blocks.push(crate::context_block::element(
                     "dim-skill",
                     &[("name", skill.name.as_str())],
                     &skill_text(skill),
                 ));
             }
-            Ok(SubmitCheckReply::Proceed { blocks })
+            Ok(SubmitCheckReply::Proceed {
+                blocks,
+                warnings: Vec::new(),
+            })
         })
     }
 }
@@ -446,19 +486,27 @@ fn referenced(content: &[ContentBlock]) -> Vec<String> {
     names
 }
 
-/// Pushes the Skill names `text` references: `$skill:`, optional spaces, then
-/// the run of non-whitespace characters that follows, matched exactly.
+/// Pushes the Skill names `text` references, in the order they appear: every
+/// `/skill:<name>` token ([`dim_agent_types::skill_token`]), and the
+/// compatibility marker `$skill:`, optional spaces and the run of
+/// non-whitespace characters that follows, matched exactly.
 fn references(text: &str, names: &mut Vec<String>) {
+    let mut found: Vec<(usize, &str)> = dim_agent_types::skill_token::tokens(text)
+        .map(|token| (token.start, token.name))
+        .collect();
     let mut from = 0;
     while let Some(at) = text[from..].find("$skill:") {
-        let after = from + at + "$skill:".len();
+        let start = from + at;
+        let after = start + "$skill:".len();
         let rest = text[after..].trim_start();
         let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
         if end > 0 {
-            names.push(rest[..end].to_owned());
+            found.push((start, &rest[..end]));
         }
         from = after + (text[after..].len() - rest.len()) + end;
     }
+    found.sort_by_key(|(start, _)| *start);
+    names.extend(found.into_iter().map(|(_, name)| name.to_owned()));
 }
 
 struct SkillTool {
@@ -466,6 +514,10 @@ struct SkillTool {
     stopped: CancellationToken,
 }
 impl ToolHandler for SkillTool {
+    /// Loading a skill reads its document and changes nothing.
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        ToolConcurrency::Concurrent
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -495,6 +547,11 @@ impl ToolHandler for SkillTool {
                 }
                 None => return Ok(failure(format!("Unknown skill: {name}"))),
             };
+            if !skill.model_invocable {
+                return Ok(failure(format!(
+                    "Skill {name} is operator-only: ask the operator to invoke it with /skill:{name}"
+                )));
+            }
             let content = skill_text(&skill);
             let structured = serde_json::json!({
                 "success": true,

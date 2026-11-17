@@ -9,7 +9,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
-        AuxiliaryErrorCode, AuxiliaryModelHost, AuxiliaryRequest, CredentialRecoveryPhase,
+        AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest, CredentialRecoveryPhase,
         CredentialRejection, HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget,
         ModelChunk, ModelHost, ModelProtocol, ProviderConnectionResolver, SelectableModelsHost,
     },
@@ -191,7 +191,7 @@ async fn model(
         .unwrap()
         .push((uri.path().into(), headers, body.clone()));
     if f.model_rejections
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
         .is_ok()
     {
         return (
@@ -317,16 +317,38 @@ async fn codex_login_refresh_logout_and_restart_preserve_account_boundaries() {
     let (_root, files, plugin, a) = codex(&home, &f.base).await;
     let (_other_root, other_files, other_plugin, b) = codex(&home, &f.base).await;
     let cancel = CancellationToken::new();
+    assert!(!a.http_client_initialized(), "startup built an HTTP client");
+    assert!(!b.http_client_initialized(), "startup built an HTTP client");
     assert!(!a.status(&cancel).await.unwrap().authenticated);
+    assert!(
+        !a.http_client_initialized(),
+        "reading account state built an HTTP client"
+    );
 
     let stale = a.begin_browser(&cancel).await.unwrap();
+    assert!(
+        !a.http_client_initialized(),
+        "starting a browser attempt built an HTTP client"
+    );
     login(&b, "account-first").await;
+    assert!(
+        b.http_client_initialized(),
+        "the token exchange did not build the HTTP client"
+    );
+    assert!(
+        !a.http_client_initialized(),
+        "another service's token exchange built this one's HTTP client"
+    );
     b.logout(&cancel).await.unwrap();
     assert!(matches!(
         a.complete_browser(stale.attempt_id, callback(&stale, "stale-account"), &cancel)
             .await,
         Err(OAuthError::AccountChanged)
     ));
+    assert!(
+        a.http_client_initialized(),
+        "the token exchange did not build the HTTP client"
+    );
     assert!(read(&home).get("openaiCodex").is_none());
 
     login(&a, "账户甲乙丙丁戊庚").await;
@@ -817,8 +839,35 @@ async fn grok_device_flow_observes_slowdown_expiry_cancellation_and_uri_trust() 
     active(&plugin).await;
     let grok = root.get::<GrokOAuthService>().unwrap();
     let cancel = CancellationToken::new();
+    assert!(
+        !grok.http_client_initialized(),
+        "startup built an HTTP client"
+    );
+    assert!(!grok.status(&cancel).await.unwrap().authenticated);
+    assert!(
+        !grok.http_client_initialized(),
+        "reading account state built an HTTP client"
+    );
+    grok.fail_next_http_client_build();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        grok.begin_device(&cancelled).await,
+        Err(OAuthError::Closed)
+    ));
+    assert!(!grok.http_client_initialized());
+    assert!(matches!(
+        grok.begin_device(&cancel).await,
+        Err(OAuthError::Transient(None))
+    ));
+    assert!(!grok.http_client_initialized());
+    assert_eq!(f.device_requests.load(Ordering::SeqCst), 0);
     let started = std::time::Instant::now();
     let begin = grok.begin_device(&cancel).await.unwrap();
+    assert!(
+        grok.http_client_initialized(),
+        "the device request did not build the HTTP client"
+    );
     assert_eq!(begin.user_code, "USER-42");
     assert_eq!(
         begin.verification_uri.as_str(),
@@ -906,12 +955,12 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     let (root, _, _, codex) = codex(&home, &f.base).await;
     let grok_plugin =
         root.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap());
-    let dim = root.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin);
+    let dim = root.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin::new(None));
     let sqlite = root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
         home.join("native.sqlite"),
     ));
     let provider_plugin = root.plugin(ProviderPlugin::new(&names).unwrap());
-    let aimux = root.plugin(dim_agent_aimux::AimuxPlugin);
+    let aimux = root.plugin(dim_agent_aimux::AimuxPlugin::default());
     for plugin in [&grok_plugin, &dim, &sqlite, &provider_plugin, &aimux] {
         active(plugin).await;
     }
@@ -1050,10 +1099,10 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             let listed = root.get::<SelectableModelsHost>().unwrap();
             assert!(
                 listed
-                    .0
                     .selectable_for_modality(cancel.clone())
                     .await
                     .unwrap()
+                    .models
                     .iter()
                     .any(|model| model.target.provider_id == id
                         && model.target.model_id == "gpt-image-2"
@@ -1316,7 +1365,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     .await
     .unwrap();
     assert!(grok.status(&cancel).await.unwrap().authenticated);
-    let auxiliary = root.get::<AuxiliaryModelHost>().unwrap();
+    let auxiliary = root.get::<AuxiliaryModel>().unwrap();
     let sent = f.model_requests.lock().unwrap().len();
     f.model_rejections.store(2, Ordering::SeqCst);
     let error = auxiliary
@@ -1370,7 +1419,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         )
         .await
         .unwrap();
-    assert!(updated.connection.unwrap().credential_configured);
+    assert!(updated.info.connection.unwrap().credential_configured);
     let old_request = {
         let selection = provider
             .configuration(
@@ -1419,12 +1468,12 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     let (restarted, _, _, _) = self::codex(&home, &f.base).await;
     let plugins = [
         restarted.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap()),
-        restarted.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin),
+        restarted.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin::new(None)),
         restarted.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
             home.join("native.sqlite"),
         )),
         restarted.plugin(ProviderPlugin::new(&names).unwrap()),
-        restarted.plugin(dim_agent_aimux::AimuxPlugin),
+        restarted.plugin(dim_agent_aimux::AimuxPlugin::default()),
     ];
     for plugin in &plugins {
         active(plugin).await;

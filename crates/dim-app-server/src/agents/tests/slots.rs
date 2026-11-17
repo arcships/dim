@@ -319,6 +319,54 @@ async fn a_pass_during_a_restore_keeps_the_slot_the_restore_holds() {
     server.join().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cancelled_restore_waiter_does_not_make_the_daemon_idle() {
+    let store = Store::new();
+    let held = HeldRestore::default();
+    let mut builder = builder();
+    held.install(&mut builder);
+    let server = store.serve(builder).await;
+    let index = server.root.get::<AgentIndex>().unwrap();
+    let mut client = Client::new(&server).await;
+    let id = client.create(&store).await;
+    let mut marks = Marks::new();
+    settle(&index, &mut marks, 0).await;
+    held.hold(&id);
+    let restoring = tokio::spawn({
+        let index = index.clone();
+        let id = id.clone();
+        async move { index.acquire(&id).await }
+    });
+    held.entered().await;
+    restoring.abort();
+    assert!(restoring.await.err().unwrap().is_cancelled());
+    let refused = client.rpc("daemon.shutdown", json!({"ifIdle": true})).await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "daemon_busy",
+        "{refused}"
+    );
+    held.release();
+    client
+        .ok(
+            "session.history",
+            json!({"sessionId": id, "branchId": "main"}),
+        )
+        .await;
+    tokio::time::timeout(DEADLINE, async {
+        loop {
+            let reply = client.rpc("daemon.shutdown", json!({"ifIdle": true})).await;
+            if reply.get("error").is_none() {
+                break;
+            }
+            assert_eq!(reply["error"]["data"]["appError"], "daemon_busy", "{reply}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("restoration settles and allows idle shutdown");
+    server.join().await.unwrap();
+}
+
 /// S5c §3.2 step 1 and idle unload §6.4: a delete that refuses a Session
 /// leaves no slot behind. The leader is unloaded when the delete names it,
 /// so the slot that call would create is one nothing keeps: the refusal

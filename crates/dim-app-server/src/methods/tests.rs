@@ -542,6 +542,22 @@ async fn namespace_validation_and_nested_ownership_follow_the_longest_provided_n
     }
 }
 
+/// The reservation question for one method of a namespace.
+fn reserved_request(
+    namespace: &str,
+    name: &str,
+    notification: &str,
+) -> dim_agent_capabilities::methods::ReservedMethodsRequest {
+    dim_agent_capabilities::methods::ReservedMethodsRequest {
+        namespace: namespace.into(),
+        declarations: vec![dim_agent_capabilities::methods::ReservedMethod {
+            name: name.into(),
+            mutating: false,
+            notifications: vec![notification.into()],
+        }],
+    }
+}
+
 /// Methods contract A.2: a contributed notification may not take a built-in
 /// notification's wire name, in either table, so a provider cannot
 /// impersonate a notification its connections already read.
@@ -566,19 +582,24 @@ fn both_checks_refuse_a_built_in_notification_name() {
     ManagementMethods::check()("management", &with("management.read", "management.changed"))
         .expect("a name of its own is fine");
 
-    let error = reserved_for_sessions()(
-        "session.event",
-        &with("session.event.read", "session.event"),
-    )
-    .expect_err("the Session table refuses a built-in notification");
+    let reserved = reserved_for_sessions();
+    let error = reserved
+        .check(reserved_request(
+            "session.event",
+            "session.event.read",
+            "session.event",
+        ))
+        .expect_err("the Session table refuses a built-in notification");
     assert!(
         error
             .to_string()
             .contains("invalid Session namespace session.event")
     );
-    reserved_for_sessions()(
-        "session.event",
-        &with("session.event.read", "session.event.read"),
-    )
-    .expect("a name of its own is fine");
+    reserved
+        .check(reserved_request(
+            "session.event",
+            "session.event.read",
+            "session.event.read",
+        ))
+        .expect("a name of its own is fine");
 }

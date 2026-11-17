@@ -4,12 +4,13 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 registerHooks({
   resolve(specifier, context, next) {
     if (context.parentURL?.endsWith("ModalitySettings.vue")) {
       if (specifier === "../../stores/connection") return { url: "data:text/javascript,export const useConnectionStore=()=>globalThis.settingsConnection", shortCircuit: true }
-      if (specifier === "../../stores/models") return { url: "data:text/javascript,export const useModelsStore=()=>globalThis.settingsModels", shortCircuit: true }
+      if (specifier === "../../stores/models") return { url: "data:text/javascript,export const useModels=()=>globalThis.settingsModels", shortCircuit: true }
     }
     if (specifier === "vue-i18n") return { url: "data:text/javascript,export const useI18n=()=>({t:key=>key,locale:{value:'en'}})", shortCircuit: true }
     if (specifier.endsWith(".vue") && !specifier.endsWith("ModalitySettings.vue")) return { url: "data:text/javascript,export default { props: ['busy', 'error', 'saved'], setup() { return () => null } }", shortCircuit: true }
@@ -73,7 +74,7 @@ function mount(call) {
   globalThis.settingsModels = models()
   globalThis.settingsConnection = reactive({ phase: "connected", client: { call }, supports: (method) => method === "modality.capabilities" || method === "modality.configure" })
   const root = node("root")
-  const app = renderer.createApp(ModalitySettings)
+  const app = renderer.createApp(ModalitySettings).use(nuxtUiTestPlugin)
   app.mount(root)
   return { root, app }
 }
@@ -101,15 +102,15 @@ test("modality rows show the automatic effective model and an unavailable defaul
     assert.match(body, /Currently effective: None\. The configured default is unavailable and is never replaced by another model\./)
     assert.match(body, /Currently effective: None\. No model serves this operation now\./)
     assert.match(body, /Model is no longer selectable/)
-    assert.match(body, /the Session image-understanding path does not read this default yet/)
+    assert.match(body, /Used by image_understand for each image question\. This does not change the conversational model\./)
     const [generate, edit, , understand] = selects(root)
-    assert.equal(generate.props.value, "")
+    assert.equal(generate.props.value, "__auto__")
     assert.doesNotMatch(text(generate), /\(unavailable\)/)
     assert.match(text(understand), /Fixture \/ Alpha \(unavailable\)/)
     assert.equal(understand.props.value, JSON.stringify([PROVIDER, "alpha"]))
     assert.equal(selects(root)[1].props.disabled, false)
     assert.equal(save(root).props.disabled, true, "nothing is dirty yet")
-    assert.equal(edit.props.value, "")
+    assert.equal(edit.props.value, "__auto__")
   } finally { app.unmount(); delete globalThis.settingsConnection; delete globalThis.settingsModels }
 })
 
@@ -141,8 +142,8 @@ test("a conflicting configure keeps the draft and asks for a reload", async () =
   try {
     await flush()
     const [generate, edit] = selects(root)
-    generate.props.onChange({ target: { value: JSON.stringify([PROVIDER, "alpha"]) } })
-    edit.props.onChange({ target: { value: "" } })
+    generate.props["onUpdate:modelValue"](JSON.stringify([PROVIDER, "alpha"]))
+    edit.props["onUpdate:modelValue"]("__auto__")
     await flush()
     assert.equal(save(root).props.disabled, false)
     submit(root).props.onSubmit({ preventDefault() {} })
@@ -151,7 +152,7 @@ test("a conflicting configure keeps the draft and asks for a reload", async () =
     assert.deepEqual(calls[0], { expectedRevision: "native:user/modality:3", category: "image", operation: "generate", model: { providerId: PROVIDER, modelId: "alpha" } })
     assert.deepEqual(calls[1], { expectedRevision: "native:user/modality:4", category: "image", operation: "edit", model: null })
     assert.equal(selects(root)[0].props.value, JSON.stringify([PROVIDER, "alpha"]), "the saved key keeps its value")
-    assert.equal(selects(root)[1].props.value, "", "the conflicting draft is preserved")
+    assert.equal(selects(root)[1].props.value, "__auto__", "the conflicting draft is preserved")
     assert.equal(selects(root)[1].props.disabled, true, "a conflict disables further picks until reload")
     assert.equal(save(root).props.disabled, true)
     const reload = () => all(root).find(el => el.type === "button" && text(el) === "Reload models")
@@ -161,7 +162,7 @@ test("a conflicting configure keeps the draft and asks for a reload", async () =
     globalThis.window.confirm = () => true
     failRead = true
     await reload().props.onClick(); await flush()
-    assert.equal(selects(root)[1].props.value, "")
+    assert.equal(selects(root)[1].props.value, "__auto__")
     assert.equal(selects(root)[1].props.disabled, true)
     assert.equal(save(root).props.disabled, true, "failed reload must not unlock a stale draft")
     submit(root).props.onSubmit({ preventDefault() {} }); await flush()
@@ -171,7 +172,7 @@ test("a conflicting configure keeps the draft and asks for a reload", async () =
     await reload().props.onClick(); await flush()
     assert.equal(selects(root)[0].props.value, JSON.stringify([PROVIDER, "beta"]))
     assert.equal(selects(root)[0].props.disabled, false)
-    selects(root)[0].props.onChange({ target: { value: "" } }); await flush()
+    selects(root)[0].props["onUpdate:modelValue"]("__auto__"); await flush()
     assert.equal(save(root).props.disabled, false)
     submit(root).props.onSubmit({ preventDefault() {} }); await flush()
     assert.deepEqual(calls[2], { expectedRevision: "native:user/modality:remote", category: "image", operation: "edit", model: null })
@@ -191,7 +192,7 @@ test("selecting and clearing defaults survive reload, while cancelling reload re
   const reload = () => all(root).find(el => el.type === "button" && text(el) === "Reload models")
   try {
     await flush()
-    selects(root)[0].props.onChange({ target: { value: JSON.stringify([PROVIDER, "alpha"]) } }); await flush()
+    selects(root)[0].props["onUpdate:modelValue"](JSON.stringify([PROVIDER, "alpha"])); await flush()
     globalThis.window = { confirm: () => false }
     await reload().props.onClick(); await flush()
     assert.equal(selects(root)[0].props.value, JSON.stringify([PROVIDER, "alpha"]))
@@ -199,10 +200,10 @@ test("selecting and clearing defaults survive reload, while cancelling reload re
     await reload().props.onClick(); await flush()
     assert.equal(selects(root)[0].props.value, JSON.stringify([PROVIDER, "alpha"]))
     assert.match(text(root), /Currently effective: Fixture \/ Alpha \(configured\)/)
-    selects(root)[0].props.onChange({ target: { value: "" } }); await flush()
+    selects(root)[0].props["onUpdate:modelValue"]("__auto__"); await flush()
     submit(root).props.onSubmit({ preventDefault() {} }); await flush()
     await reload().props.onClick(); await flush()
-    assert.equal(selects(root)[0].props.value, "")
+    assert.equal(selects(root)[0].props.value, "__auto__")
     assert.match(text(root), /Currently effective: Fixture \/ Beta \(automatic\)/)
     assert.deepEqual(writes, [
       { expectedRevision: "native:user/modality:1", category: "image", operation: "generate", model: { providerId: PROVIDER, modelId: "alpha" } },

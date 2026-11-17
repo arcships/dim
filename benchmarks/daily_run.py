@@ -310,22 +310,28 @@ def write_state(path: Path, head: str, run_id: str) -> None:
 
 
 def direct_pushes(repo: Path, window: Window) -> tuple[tuple[str, str], ...]:
-    """First-parent commits in the window that are not merges.
+    """First-parent commits not identified as PR landings in the window.
 
-    L1 judges MRs, and an MR is a merge commit — so a commit pushed straight to
-    main is not judged by anything. It must still be evaluated: a window that
-    contains only direct pushes would otherwise report "no merges", skip L2 and
-    close, which is the one outcome this pipeline may never reach silently.
+    L1 includes multi-parent merges and one-parent commits with a recognised PR
+    subject (``Merge pull request #N from ...`` or a trailing ``(#N)``). Unmarked
+    one-parent commits are treated as direct pushes and have no L1 record. They
+    must still be evaluated: a window that contains only direct pushes would
+    otherwise report "no merges", skip L2 and close, which is the one outcome
+    this pipeline may never reach silently.
 
     They do not hold the window. Unlike a judge outage there is nothing a later
     run could decide differently, so holding would stall the window forever.
     """
-    raw = git(repo, "log", "--first-parent", "--no-merges", "--reverse",
-              "--format=%H|%s", f"{window.base}..{window.head}")
-    return tuple(
-        (line.split("|", 1)[0], line.split("|", 1)[1])
-        for line in raw.splitlines() if line.strip()
-    )
+    raw = git(repo, "log", "--first-parent", "--reverse",
+              "--format=%H|%P|%s", f"{window.base}..{window.head}")
+    direct: list[tuple[str, str]] = []
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        sha, parents, subject = line.split("|", 2)
+        if len(parents.split()) < 2 and not daily_batch.is_github_pr_subject(subject):
+            direct.append((sha, subject))
+    return tuple(direct)
 
 
 def deliver_judge(host: str, scratch: str, runner_sha: str) -> str:

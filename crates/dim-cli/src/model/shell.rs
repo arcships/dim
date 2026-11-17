@@ -105,12 +105,12 @@ impl ShellResult {
 
 /// Output text as rows, without the final newline's empty row.
 fn lines(text: &str) -> Vec<String> {
-    let text = text.strip_suffix('\n').unwrap_or(text);
+    let text = text.trim_suffix('\n');
     if text.is_empty() {
         return Vec::new();
     }
     text.split('\n')
-        .map(|line| line.strip_suffix('\r').unwrap_or(line).to_owned())
+        .map(|line| line.trim_suffix('\r').to_owned())
         .collect()
 }
 

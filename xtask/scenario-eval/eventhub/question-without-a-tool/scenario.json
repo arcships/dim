@@ -1,0 +1,45 @@
+{
+  "description": "A rename across three files, and a chat message that asks for a confirmation",
+  "message": "Rename get_data to load_records across the project and keep the tests passing. The function lives in storage/store.py and app.py calls it.",
+  "sources": [
+    {
+      "name": "chat",
+      "guide": "Messages from the team's chat.",
+      "types": [
+        {
+          "type": "chat.message",
+          "description": "A message from the team's chat.",
+          "mode": "queue"
+        }
+      ],
+      "subscribe": {"types": ["chat.message"]}
+    }
+  ],
+  "events": [
+    {
+      "source": "chat",
+      "type": "chat.message",
+      "id": "chat-1042",
+      "title": "Delivery confirmation",
+      "body": "Can you confirm you got this?",
+      "whenToolCall": "unittest"
+    }
+  ],
+  "budget": {
+    "turns": 12,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "no-reply-in-conversation",
+      "kind": "must_not_show",
+      "text": "the run replies to the chat message in the conversation, for example 'Yes, received' or another confirmation addressed to the sender. Telling the operator about the event, or what was sent, is not this."
+    },
+    {
+      "id": "task-done",
+      "kind": "must_show",
+      "text": "get_data is renamed to load_records in storage/store.py and app.py, and the workspace tests pass"
+    }
+  ]
+}

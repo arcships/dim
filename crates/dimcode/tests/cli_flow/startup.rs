@@ -59,6 +59,530 @@ fn home_browsing_and_exit_need_no_session_in_both_tui_modes() {
 }
 
 #[test]
+fn first_shell_command_creates_once_without_submitting_a_model_turn() {
+    for fullscreen in [false, true] {
+        for private in [false, true] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&[]);
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                wire.created();
+                let attach = wire.read("session.attach");
+                wire.reply(&attach, attach_record(&attach));
+                let history = wire.read("session.history");
+                wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+                for text in ["printf first-shell", "printf second-shell"] {
+                    let run = wire.read("shell.run");
+                    assert_eq!(run["params"]["sessionId"], "session");
+                    assert_eq!(run["params"]["branchId"], "main");
+                    assert_eq!(run["params"]["command"], text);
+                    assert_eq!(run["params"]["mode"], if private { "private" } else { "record" });
+                    wire.reply(&run, json!({"runId":run["params"]["runId"],"status":"completed","exitCode":0,"output":format!("{text}-output\n"),"truncated":false,"durationMs":1}));
+                    if text == "printf first-shell" {
+                        wire.no_context();
+                    }
+                }
+                let submit = wire.read("session.submit");
+                assert_eq!(submit["params"]["sessionId"], "session");
+                assert_eq!(submit["params"]["text"], "next message");
+                wire.reply(&submit, json!({"event":{}}));
+                wire.event(9, "text", json!({"turn_id":"next","request_id":"model","delta":"message accepted"}));
+                assert_eq!(wire.trailing_request(), None);
+            });
+            let mut command = command(&home);
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until("Welcome to DIM");
+            terminal.write(if private {
+                b"!!printf first-shell\r"
+            } else {
+                b"!printf first-shell\r"
+            });
+            terminal.until("first-shell-output");
+            terminal.write(if private {
+                b"!!printf second-shell\r"
+            } else {
+                b"!printf second-shell\r"
+            });
+            terminal.until("second-shell-output");
+            terminal.write(b"next message\r");
+            terminal.until("message accepted");
+            terminal.write(b"/exit\r");
+            terminal.until("Bye!");
+            assert!(terminal.wait().success());
+            daemon.join().unwrap();
+            assert!(!terminal.transcript.contains("Sign in with /login"));
+        }
+    }
+}
+
+#[test]
+fn home_previews_the_model_without_creating_a_session_and_survives_preview_errors() {
+    for fullscreen in [false, true] {
+        for outcome in ["ready", "rejected", "preview-timeout"] {
+            let home = Home::new();
+            let daemon = home.daemon(move |wire| {
+                wire.hello(&["session.model.preview"]);
+                let preview = wire.read("session.model.preview");
+                assert!(preview["params"].get("model").is_none());
+                assert!(preview["params"].get("permissionPolicy").is_none());
+                assert!(
+                    preview["params"].get("modelPreferences").is_none(),
+                    "The server applies the model's saved preferences; the client sends none: {}",
+                    preview["params"]
+                );
+                if outcome == "rejected" {
+                    reject(wire, &preview);
+                } else if outcome == "ready" {
+                    wire.reply(&preview, json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},"modelPreferences":{"reasoningEffort":"high"}}));
+                }
+                let providers = wire.read("account.providers");
+                wire.reply(&providers, json!([]));
+                assert_eq!(wire.trailing_request(), None, "Preview and browsing must not create or attach a Session");
+            });
+            let mut command = command(&home);
+            command.args(["--permission", "read-only"]);
+            if fullscreen {
+                command.arg("--fullscreen");
+            }
+            let mut terminal = Terminal::launch_tui(command);
+            terminal.until(if outcome == "ready" {
+                "preview-provider / preview-model"
+            } else {
+                "Cannot preview startup model"
+            });
+            if outcome == "ready" {
+                terminal.until("high");
+            }
+            terminal.write(b"/permissions\r");
+            terminal.until("Full access");
+            terminal.write(b"\x1b[27u");
+            terminal.write(b"/exit\r");
+            terminal.until("Bye!");
+            assert!(terminal.wait().success());
+            daemon.join().unwrap();
+        }
+    }
+}
+
+/// The `provider.catalog` reply for a model that advertises `low`, `high`
+/// and reasoning off, and both service tiers.
+fn preview_catalog() -> Value {
+    json!({"catalog":{"version":1,"disabledModelIds":[],"models":[{
+        "id":"preview-model","name":"Preview model",
+        "capabilities":{"modalities":["text"],"toolCalling":true,"streaming":true,
+            "structuredOutput":true,"vision":false,"audio":false,"reasoning":true,
+            "contextWindow":128000,"maxOutputTokens":16384},
+        "metadata":{"reasoning":{"supported":true,"effortOptions":["low","high"],
+                "off":{"kind":"thinking_type","value":"disabled"}},
+            "serviceTier":{"supported":true,"options":["default","priority"]}}}]}})
+}
+
+/// Bare `/effort` at Home lists the preview's advertised efforts, with the
+/// preview's own preference marked current.
+#[test]
+fn bare_effort_at_home_lists_the_preview_models_choices() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.model.preview"]);
+            let preview = wire.read("session.model.preview");
+            wire.reply(
+                &preview,
+                json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},
+                "modelPreferences":{"reasoningEffort":"high"}}),
+            );
+            let providers = wire.read("account.providers");
+            wire.reply(&providers, json!([]));
+            let catalog = wire.read("provider.catalog");
+            assert_eq!(
+                catalog["params"],
+                json!({"providerId":"preview-provider","modelId":"preview-model"})
+            );
+            wire.reply(&catalog, preview_catalog());
+            assert_eq!(
+                wire.trailing_request(),
+                None,
+                "listing choices writes nothing"
+            );
+        });
+        let mut command = command(&home);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("preview-provider / preview-model · high");
+        terminal.write(b"/effort\r");
+        terminal.until("Current: high");
+        terminal.until("low");
+        terminal.write(b"\x1b[27u");
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+        assert!(!terminal.transcript.contains("adopted model"));
+    }
+}
+
+/// A Home with neither a preview nor a model says what to do instead of
+/// waiting for choices from a model it does not show.
+#[test]
+fn bare_effort_at_home_without_a_model_says_what_to_do() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[]);
+        let providers = wire.read("account.providers");
+        wire.reply(&providers, json!([]));
+        assert_eq!(wire.trailing_request(), None, "no model to ask for choices");
+    });
+    let mut terminal = Terminal::launch_tui(command(&home));
+    terminal.until("Welcome to DIM");
+    terminal.write(b"/effort\r");
+    terminal.until("No model to configure");
+    terminal.until("choose a model with /models");
+    terminal.write(b"\x1b[27u");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+    assert!(!terminal.transcript.contains("adopted model"));
+}
+
+/// A choice made at Home reaches the Session the first message creates, and
+/// writes no saved preference.
+#[test]
+fn a_choice_at_home_reaches_the_first_session_and_saves_nothing() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let original = fs::read(home.0.join("config.json")).unwrap();
+        let (created, creations) = std::sync::mpsc::channel::<Value>();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.model.preview"]);
+            let preview = wire.read("session.model.preview");
+            wire.reply(
+                &preview,
+                json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},
+                "modelPreferences":{"reasoningEffort":"high"}}),
+            );
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|read| read > 0) {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                if wire.2 && wire.empty_state(&request) {
+                    continue;
+                }
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "provider.catalog" => wire.reply(&request, preview_catalog()),
+                    "session.create" => {
+                        created.send(request["params"].clone()).ok();
+                        wire.reply(
+                            &request,
+                            json!({"sessionId":"session","sequence":8,
+                            "model":{"providerId":"preview-provider","modelId":"preview-model"}}),
+                        );
+                    }
+                    "session.attach" => {
+                        let mut record = attach_record(&request);
+                        record["model"] =
+                            json!({"providerId":"preview-provider","modelId":"preview-model"});
+                        record["modelPreferences"] = json!({"reasoningEffort":"low"});
+                        wire.reply(&request, record);
+                    }
+                    "session.history" => wire.reply(
+                        &request,
+                        json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                    ),
+                    "session.submit" => wire.reply(&request, json!({"event":{}})),
+                    "session.detach" => wire.reply(&request, json!({})),
+                    "provider.select" | "provider.selection" | "provider.preferences.update" => {
+                        panic!("Home's choice must not write a saved preference")
+                    }
+                    method => wire.reply(&request, json!({"method":method})),
+                }
+            }
+        });
+        let mut command = command(&home);
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        let mut terminal = Terminal::launch_tui(command);
+        terminal.until("preview-provider / preview-model · high");
+        terminal.write(b"/effort\r");
+        terminal.until("Current: high");
+        // The dialog paints `low` above the current `high`.
+        terminal.write(b"\x1b[A\r");
+        terminal.until("Reasoning effort for the first Session: low");
+        terminal.until("preview-provider / preview-model · low");
+        terminal.write(b"after the choice\r");
+        let params = creations
+            .recv_timeout(PATIENCE)
+            .expect("the first message created a Session");
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+        assert_eq!(
+            params["modelPreferences"],
+            json!({"reasoningEffort":"low"}),
+            "the effort chosen at Home is the creation's preference"
+        );
+        assert_eq!(fs::read(home.0.join("config.json")).unwrap(), original);
+    }
+}
+
+/// `/models` at Home drops the effort Home chose, because it was chosen for
+/// the model the picker replaced.
+#[test]
+fn a_model_picked_at_home_drops_the_effort_home_chose() {
+    let home = Home::new();
+    let (created, creations) = std::sync::mpsc::channel::<Value>();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&["session.model.preview"]);
+        let preview = wire.read("session.model.preview");
+        wire.reply(
+            &preview,
+            json!({"model":{"providerId":"preview-provider","modelId":"preview-model"},
+            "modelPreferences":{"reasoningEffort":"high"}}),
+        );
+        let mut picked = preview_catalog();
+        picked["catalog"]["models"][0]["id"] = json!("other-model");
+        picked["catalog"]["models"][0]["name"] = json!("Other model");
+        // The preview's own catalog names the model Home shows, until
+        // `/models` opens and the picker's provider lists another.
+        let previewed = preview_catalog();
+        let mut picking = false;
+        let mut read = false;
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|count| count > 0) {
+            let request: Value = serde_json::from_str(&line).unwrap();
+            line.clear();
+            if wire.2 && wire.empty_state(&request) {
+                continue;
+            }
+            match request["method"].as_str().unwrap() {
+                "account.providers" => wire.reply(&request, json!([])),
+                "provider.models.query" => {
+                    picking = true;
+                    wire.reply(
+                        &request,
+                        super::models::picker_page("preview-provider", "Preview", picked.clone()),
+                    );
+                }
+                "provider.catalog" => {
+                    let listed = if picking {
+                        picked.clone()
+                    } else {
+                        previewed.clone()
+                    };
+                    wire.reply(&request, listed);
+                }
+                "provider.selection" => {
+                    read = !read;
+                    wire.reply(
+                        &request,
+                        json!({"selection": if read { json!({"version":1}) } else { Value::Null }}),
+                    );
+                }
+                "provider.select" | "provider.preferences.update" => {
+                    wire.reply(&request, json!({}))
+                }
+                "session.create" => {
+                    created.send(request["params"].clone()).unwrap();
+                    wire.reply(
+                        &request,
+                        json!({"sessionId":"session","sequence":8,
+                        "model":{"providerId":"preview-provider","modelId":"other-model"}}),
+                    );
+                }
+                "session.attach" => {
+                    let mut record = attach_record(&request);
+                    record["model"] =
+                        json!({"providerId":"preview-provider","modelId":"other-model"});
+                    wire.reply(&request, record);
+                }
+                "session.history" => wire.reply(
+                    &request,
+                    json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                ),
+                "session.submit" => wire.reply(&request, json!({"event":{}})),
+                "session.detach" => wire.reply(&request, json!({})),
+                method => wire.reply(&request, json!({"method":method})),
+            }
+        }
+    });
+    let mut terminal = Terminal::launch_tui(command(&home));
+    terminal.until("preview-provider / preview-model · high");
+    terminal.write(b"/effort\r");
+    terminal.until("Current: high");
+    terminal.write(b"\x1b[A\r");
+    terminal.until("Reasoning effort for the first Session: low");
+    terminal.write(b"\x1b[27u/models\r");
+    terminal.until("Preview / other-model");
+    terminal.write(b"\r");
+    terminal.write(b"first message\r");
+    let params = creations
+        .recv_timeout(PATIENCE)
+        .expect("the first message created a Session");
+    home.kill(&terminal);
+    terminal.wait();
+    daemon.join().unwrap();
+    assert_eq!(
+        params["model"],
+        json!({"provider":"preview-provider","modelId":"other-model"}),
+        "the model the picker chose is the creation's model"
+    );
+    assert!(
+        params.get("modelPreferences").is_none(),
+        "the effort chosen for the previous model is gone: {params}"
+    );
+}
+
+/// A Home reached by `/new` from a Session inherits that Session's model
+/// through `modelFromSession`, which a creation's preferences cannot
+/// accompany, so a value says where it applies instead of never arriving.
+#[test]
+fn home_that_inherits_a_model_refuses_a_preference_choice() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.model.preview", "session.create.modelFromSession"]);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, attach_record(&attach));
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let mut line = String::new();
+        while wire.0.read_line(&mut line).is_ok_and(|count| count > 0) {
+            let request: Value = serde_json::from_str(&line).unwrap();
+            line.clear();
+            if wire.2 && wire.empty_state(&request) {
+                continue;
+            }
+            match request["method"].as_str().unwrap() {
+                "account.providers" => wire.reply(&request, json!([])),
+                "provider.catalog" => {
+                    let mut reply = preview_catalog();
+                    reply["catalog"]["models"][0]["id"] = json!("model");
+                    wire.reply(&request, reply);
+                }
+                "session.detach" => wire.reply(&request, json!({})),
+                method @ ("session.create" | "session.submit" | "provider.select") => {
+                    panic!("a Home that inherits its model writes nothing: {method}")
+                }
+                method => wire.reply(&request, json!({"method":method})),
+            }
+        }
+    });
+    let mut terminal = Terminal::resume_tui(command(&home));
+    terminal.until("test / model");
+    terminal.write(b"/new\r");
+    terminal.until("─ new session ─");
+    terminal.write(b"/effort high\r");
+    terminal.until("The next Session inherits its model");
+    terminal.write(b"/exit\r");
+    terminal.until("Bye!");
+    assert!(terminal.wait().success());
+    daemon.join().unwrap();
+}
+
+/// Bare `/fast` at Home lists the tiers the preview advertises; a valued form
+/// is held for the first Session, and refused when the model advertises no
+/// tiers.
+#[test]
+fn fast_at_home_lists_tiers_and_holds_a_choice_for_the_first_session() {
+    for tiers in [true, false] {
+        let home = Home::new();
+        let (created, creations) = std::sync::mpsc::channel::<Value>();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.model.preview"]);
+            let preview = wire.read("session.model.preview");
+            wire.reply(
+                &preview,
+                json!({"model":{"providerId":"preview-provider","modelId":"preview-model"}}),
+            );
+            let mut reply = preview_catalog();
+            if !tiers {
+                reply["catalog"]["models"][0]["metadata"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("serviceTier");
+            }
+            let mut line = String::new();
+            while wire.0.read_line(&mut line).is_ok_and(|count| count > 0) {
+                let request: Value = serde_json::from_str(&line).unwrap();
+                line.clear();
+                if wire.2 && wire.empty_state(&request) {
+                    continue;
+                }
+                match request["method"].as_str().unwrap() {
+                    "account.providers" => wire.reply(&request, json!([])),
+                    "provider.catalog" => wire.reply(&request, reply.clone()),
+                    "session.create" => {
+                        created.send(request["params"].clone()).unwrap();
+                        wire.reply(
+                            &request,
+                            json!({"sessionId":"session","sequence":8,
+                            "model":{"providerId":"preview-provider","modelId":"preview-model"}}),
+                        );
+                    }
+                    "session.attach" => {
+                        let mut record = attach_record(&request);
+                        record["model"] =
+                            json!({"providerId":"preview-provider","modelId":"preview-model"});
+                        wire.reply(&request, record);
+                    }
+                    "session.history" => wire.reply(
+                        &request,
+                        json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                    ),
+                    "session.submit" => wire.reply(&request, json!({"event":{}})),
+                    "session.detach" => wire.reply(&request, json!({})),
+                    "provider.select" | "provider.selection" | "provider.preferences.update" => {
+                        panic!("Home's choice must not write a saved preference")
+                    }
+                    method => wire.reply(&request, json!({"method":method})),
+                }
+            }
+        });
+        let mut terminal = Terminal::launch_tui(command(&home));
+        terminal.until("preview-provider / preview-model");
+        if tiers {
+            terminal.write(b"/fast\r");
+            terminal.until("Service tier choices: on (priority), off (default)");
+            terminal.write(b"/fast on\r");
+            terminal.until("Service tier for the first Session: on");
+            terminal.write(b"first message\r");
+        } else {
+            terminal.write(b"/fast\r");
+            terminal.until("This model does not advertise priority/default service tiers");
+        }
+        if tiers {
+            let params = creations
+                .recv_timeout(PATIENCE)
+                .expect("the first message created a Session");
+            assert_eq!(
+                params["modelPreferences"],
+                json!({"serviceTier":"priority"}),
+                "the tier chosen at Home is the creation's preference"
+            );
+        }
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+        if !tiers {
+            assert!(
+                creations.try_recv().is_err(),
+                "a refused value starts no Session"
+            );
+        }
+    }
+}
+
+#[test]
 fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
     for fullscreen in [false, true] {
         for draft in [false, true] {
@@ -67,10 +591,15 @@ fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
             let long = "x".repeat(16 * 1024 + 1);
             let expected_long = long.clone();
             let daemon = home.daemon(move |wire| {
-                wire.hello(&[]);
+                wire.hello(&["session.model.preview"]);
+                let preview = wire.read("session.model.preview");
+                wire.reply(&preview, json!({"model":{"providerId":"temporary-preview","modelId":"first-model"},"modelPreferences":{"reasoningEffort":"high"}}));
                 let providers = wire.read("account.providers");
                 wire.reply(&providers, json!([]));
                 let create = wire.created();
+                let mut model_params = create["params"].clone();
+                model_params.as_object_mut().unwrap().remove("permissionPolicy");
+                assert_eq!(preview["params"], model_params, "Preview must not replace launch options with its resolved identity");
                 assert_eq!(create["params"]["model"], json!({"modelId":"first-model"}));
                 assert_eq!(create["params"]["modelPreferences"], json!({"reasoningEffort":"high"}));
                 assert_eq!(create["params"]["permissionPolicy"], json!({"preset":"read-only"}));
@@ -120,7 +649,7 @@ fn first_text_or_draft_creates_once_with_startup_options_in_both_tui_modes() {
                 command.arg("--fullscreen");
             }
             let mut terminal = Terminal::launch_tui(command);
-            terminal.until("Welcome to DIM");
+            terminal.until("temporary-preview / first-model");
             if draft {
                 terminal.paste(&long);
                 terminal.until("16385 chars");
@@ -423,8 +952,8 @@ fn home_first_message_inherits_the_adopted_model_without_replaying_startup() {
             if wire.2 && wire.empty_state(&request) { continue; }
             let result = match request["method"].as_str().unwrap() {
                 "hello" => json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
-                    "protocolVersion":3,"daemonProfile":{"kind":"product"},
-                    "features":["session.create","session.create.modelFromSession","session.history","session.history.latestTurn","session.methods","provider.list"]}),
+                    "protocolVersion":4,"daemonProfile":{"kind":"product"},
+                    "features":["session.create","session.create.modelFromSession","session.history","session.history.latestTurn","session.input.pending.blockPresence","session.methods","provider.list"]}),
                 "session.create" => {
                     creates += 1;
                     calls.send(request["params"].clone()).unwrap();
@@ -891,11 +1420,21 @@ fn startup_environment_is_not_read_by_help_version_or_management() {
         );
         let text = String::from_utf8_lossy(&output.stdout);
         if matches!(args[0], "--help" | "-h") {
-            for name in STARTUP_ENV {
-                assert!(text.contains(name), "help missing {name}");
-            }
             assert!(text.contains("--autocompact"));
             assert!(text.contains("--model"));
+            let (_, entries) = text.split_once("\nCommands:\n").unwrap();
+            let (entries, _) = entries.split_once("\nModel startup:\n").unwrap();
+            for line in entries.lines().filter(|line| !line.is_empty()) {
+                assert!(
+                    line == "Options:" || line.starts_with("  "),
+                    "help entries and descriptions must be indented: {line:?}"
+                );
+            }
+            assert!(text.contains("\n                                  -p sends TEXT"));
+            assert!(text.contains("\n  dimcode exec --model model-id --effort high"));
+            for line in text.lines() {
+                assert!(line.len() <= 80, "help exceeds 80 columns: {line:?}");
+            }
         }
         assert!(!text.contains("invalid-secret"));
     }
@@ -917,7 +1456,7 @@ fn configured_model_selection_preserves_legacy_creation() {
         wire.reply(
             &hello,
             json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
-            "protocolVersion":3,"daemonProfile":{"kind":"configured","modelConfigSha256":digest},
+            "protocolVersion":4,"daemonProfile":{"kind":"configured","modelConfigSha256":digest},
             "features":["session.create","session.history","session.history.latestTurn","session.methods"]}),
         );
         let create = wire.read("session.create");
@@ -1065,12 +1604,12 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
                 if wire.2 && wire.empty_state(&request) { continue; }
                 let result = match request["method"].as_str().unwrap() {
                     "hello" => {
-                        let mut features = vec!["session.create", "session.history", "session.history.latestTurn", "session.methods", "provider.list"];
+                        let mut features = vec!["session.create", "session.history", "session.history.latestTurn", "session.input.pending.blockPresence", "session.methods", "provider.list"];
                         if management {
                             features.push("provider.management");
                         }
                         json!({"instanceId":"server","serverVersion":env!("CARGO_PKG_VERSION"),
-                            "protocolVersion":3,"daemonProfile":{"kind":"product"},"features":features})
+                            "protocolVersion":4,"daemonProfile":{"kind":"product"},"features":features})
                     }
                     "session.attach" => {
                         let mut record = attach_record(&request);
@@ -1082,7 +1621,7 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
                     "account.providers" => json!([]),
                     "provider.management" => {
                         assert!(management);
-                        assert_eq!(request["params"], json!({}), "Do not query a temporary identity as a saved Provider");
+                        assert_eq!(request["params"], json!({"providerId":provider}));
                         let providers = if configured { json!([{"providerId":provider,"source":"user",
                             "displayName":"Configured","preferences":{"model":{"reasoningEffort":"low","serviceTier":"priority"}}}]) } else { json!([]) };
                         json!({"providers":providers,"errors":[]})
@@ -1090,7 +1629,11 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
                     "session.create" => {
                         assert!(configured, "A temporary source must not reach legacy creation");
                         assert_eq!(request["params"]["model"], json!({"provider":provider,"modelId":"model"}));
-                        assert_eq!(request["params"]["modelPreferences"], json!({"reasoningEffort":"low","serviceTier":"priority"}));
+                        assert!(
+                            request["params"].get("modelPreferences").is_none(),
+                            "Nothing is stated, so the server applies the saved pair: {}",
+                            request["params"]
+                        );
                         assert!(request["params"].get("startup").is_none());
                         assert!(request["params"].get("modelFromSession").is_none());
                         reject(wire, &request);
@@ -1105,6 +1648,7 @@ fn old_daemon_home_creation_rejects_temporary_sources_and_keeps_configured_fallb
         let mut command = command(&home);
         command.args(["--resume", "session"]);
         let mut terminal = Terminal::launch_tui(command);
+        terminal.resize(160, 32);
         terminal.until(&format!("{provider} / model"));
         terminal.write(b"/new\r");
         // The palette row ("start a new session") carries the words before
@@ -1184,7 +1728,6 @@ fn a_first_prompt_is_submitted_once_and_the_interface_stays() {
 /// same composer a typed message uses.
 #[test]
 fn a_first_prompt_submits_its_image_with_the_text() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
     let home = Home::new();
     let image = home.0.join("shot.png");
     let bytes = image_fixture(image::ImageFormat::Png, 3, 2);
@@ -1192,7 +1735,7 @@ fn a_first_prompt_submits_its_image_with_the_text() {
     let expected = json!([
         {"type":"text","text":"hello "},
         {"type":"image","source":{
-            "type":"base64","mediaType":"image/png","data":STANDARD.encode(&bytes)}},
+            "type":"file","mediaType":"image/png","fileId":"image-file"}},
     ]);
     let (submitted, seen) = std::sync::mpsc::channel();
     let daemon = home.daemon(move |wire| {
@@ -1207,6 +1750,11 @@ fn a_first_prompt_submits_its_image_with_the_text() {
             &history,
             json!({"events":[],"through":8,"nextAfter":8,"done":true}),
         );
+        let import = wire.read("attachment.import");
+        assert_eq!(import["params"]["sessionId"], "session");
+        assert_eq!(import["params"]["image"], true);
+        assert_eq!(fs::read(import["params"]["path"].as_str().unwrap()).unwrap(), bytes);
+        wire.reply(&import, json!({"attachmentId":"image-file","path":"/owned/image","bytes":bytes.len(),"image":{"type":"file","mediaType":"image/png","fileId":"image-file"}}));
         let submit = wire.read("session.submit");
         assert_eq!(submit["params"]["mode"], "queue");
         assert!(

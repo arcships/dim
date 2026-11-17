@@ -1,34 +1,27 @@
 <script setup lang="ts">
-// DimCode brand mark, the six ring cells of Desktop's BrandMark. Colored via currentColor.
-// `animated`: an orbit highlight travels clockwise around the ring, the startup loading
+// Official DimAgent mark (45:32), the same shape as the favicon and the desktop icon.
+// Colored via currentColor. `animated`: the mark breathes, the startup loading
 // indicator. index.html draws the same mark before the bundle loads; keep them in step.
 withDefaults(defineProps<{ animated?: boolean }>(), { animated: false })
 
-const cells = [
-  { delay: "-1.6s", d: "M52.042 34C50.8561 34.0001 49.8945 34.9615 49.8945 36.1475V46.1689C49.8946 47.3549 50.8561 48.3163 52.042 48.3164H77.958C79.144 48.3164 80.1054 47.3549 80.1055 46.1689V36.1475C80.1055 34.9615 79.144 34 77.958 34H52.042Z" },
-  { delay: "-1.333s", d: "M83.8311 49.8945C82.6452 49.8947 81.6836 50.8561 81.6836 52.042V62.0635C81.6838 63.2493 82.6453 64.2108 83.8311 64.2109H93.8525C95.0384 64.2109 95.9998 63.2493 96 62.0635V52.042C96 50.856 95.0385 49.8945 93.8525 49.8945H83.8311Z" },
-  { delay: "-1.067s", d: "M83.8311 65.7891C82.6453 65.7892 81.6838 66.7508 81.6836 67.9365V77.958C81.6836 79.1439 82.6452 80.1053 83.8311 80.1055H93.8525C95.0385 80.1055 96 79.144 96 77.958V67.9365C95.9998 66.7507 95.0384 65.7891 93.8525 65.7891H83.8311Z" },
-  { delay: "-0.8s", d: "M52.042 81.6836C50.8561 81.6837 49.8946 82.6452 49.8945 83.8311V93.8525C49.8945 95.0385 50.8561 95.9999 52.042 96H77.958C79.144 96 80.1055 95.0385 80.1055 93.8525V83.8311C80.1054 82.6451 79.1439 81.6836 77.958 81.6836H52.042Z" },
-  { delay: "-0.533s", d: "M36.1475 65.7891C34.9616 65.7891 34.0002 66.7507 34 67.9365V77.958C34 79.144 34.9615 80.1055 36.1475 80.1055H46.1689C47.3548 80.1054 48.3164 79.1439 48.3164 77.958V67.9365C48.3162 66.7507 47.3547 65.7892 46.1689 65.7891H36.1475Z" },
-  { delay: "-0.267s", d: "M36.1475 49.8945C34.9615 49.8945 34 50.856 34 52.042V62.0635C34.0002 63.2493 34.9616 64.2109 36.1475 64.2109H46.1689C47.3547 64.2108 48.3162 63.2493 48.3164 62.0635V52.042C48.3164 50.8561 47.3548 49.8946 46.1689 49.8945H36.1475Z" },
-]
+const MARK_PATH =
+  "M30.5753 0.061063C24.084 -0.350713 17.6572 1.3463 12.0353 4.35976C5.50548 7.916 -1.94527 14.9536 0.463184 22.9957C2.3951 28.848 9.11815 30.9755 14.8817 30.9755C17.8697 31.0254 18.1981 26.8827 15.223 26.5021C14.3923 26.4085 13.2267 26.3523 12.4088 26.1839C6.3362 25.1045 3.08415 21.1802 6.96729 15.6524C11.0179 10.1808 18.1273 7.04878 24.889 6.15036C32.3526 5.07724 42.463 8.11566 35.7206 16.6569C34.1557 18.5723 32.1079 20.1944 29.8926 21.5046C29.2487 21.8852 28.4244 21.4422 28.4244 20.7123V16.8378C28.4244 15.2718 27.1171 14.0053 25.5008 14.0053C23.8844 14.0053 22.5771 15.2718 22.5771 16.8378V29.1599C22.5771 30.7259 23.8844 31.9924 25.5008 31.9924C26.8145 31.9924 27.9221 31.1564 28.2892 30.0022C28.4308 29.5654 28.7335 29.1973 29.1714 29.0164C29.6544 28.8168 30.1309 28.6046 30.6075 28.3863C36.5835 25.4976 42.4114 20.9868 44.1502 14.3297C46.1336 5.66371 38.6249 0.52899 30.5753 0.061063Z"
 </script>
 
 <template>
-  <svg viewBox="34 34 62 62" aria-hidden="true" class="brand-mark" :class="{ 'is-animated': animated }">
-    <path v-for="cell in cells" :key="cell.d" fill="currentColor" :d="cell.d" :style="{ animationDelay: cell.delay }" />
+  <svg viewBox="0 0 45 32" aria-hidden="true" class="brand-mark" :class="{ 'is-animated': animated }">
+    <path fill="currentColor" :d="MARK_PATH" />
   </svg>
 </template>
 
 <style scoped>
-.brand-mark.is-animated path { opacity: .26; animation: brand-mark-orbit 1.6s linear infinite; }
-@keyframes brand-mark-orbit {
+.brand-mark.is-animated { animation: brand-mark-breathe 1.6s ease-in-out infinite; }
+@keyframes brand-mark-breathe {
   0% { opacity: .26; }
-  12% { opacity: 1; }
-  46% { opacity: .26; }
+  50% { opacity: 1; }
   100% { opacity: .26; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .brand-mark.is-animated path { opacity: 1; animation: none; }
+  .brand-mark.is-animated { opacity: 1; animation: none; }
 }
 </style>

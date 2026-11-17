@@ -32,7 +32,10 @@ table, not on any owner ([methods contract §3.2](../contracts/session-boundary.
 The table has no dependencies, so it reloads neither with Rpc nor with an owner.
 The owners register `account`, `account.codex`, `account.grok` and `provider`
 with a product home; `settings` (SettingsMethods) wherever Settings is assembled;
-`storage` (StorageMethods) with native storage; `mcp`, `skills` and `permission`
+`storage` (StorageMethods) with native storage; `worktree`
+(ManagedWorktrees), whose `worktree.list` reads the managed root and whose
+`worktree.remove` and `worktree.prune` delete host directories, so all three are
+management methods, with a product home and native storage; `mcp`, `skills` and `permission`
 with local execution; and `workspace.files` (WorkspaceFiles), also with local
 execution, which injects the process file index WorkspaceTools provides and
 serves a sessionless working-directory file search. Adding an owner adds
@@ -48,8 +51,8 @@ dispatch. Adding a method changes its owner's declaration, parsing and
 implementation.
 
 Codex, Grok, Provider and Mcp register their namespaces directly, without
-adapter rows; ManagedProviderMethods, which depends on the process-owned
-managed-provider service, owns `account`. Settings supplies generic
+adapter rows; the ManagedProviders plugin registers `account` directly where
+the profile enables account methods. Settings supplies generic
 BusinessDocument persistence and the declared sources of
 [the settings service](settings-service.md), not approvals, a method contribution or a configuration
 namespace; SettingsMethods, which depends on it, owns
@@ -229,7 +232,7 @@ namespace and it was withdrawn; an owner that never registered answers
 
 | Case | Native process owner | TypeScript process owner ([process rows](../process-typescript.md)) | Shipped configuration today |
 | --- | --- | --- | --- |
-| Pending on a dependency whose row is Failed, Unresolved or Disabled | No. A required host row that fails during startup fails startup (`lib.rs`, required failures); after startup only `RunningServer::restart` can fail one, it has no caller in this repository, and its allow-list (`Rpc`, `Connection`, `Transport`, `Agents`, `Mcp`) holds no provider of an owner dependency | Yes, through the embedding input: an extension row's failure is its own diagnostic and does not fail startup (process rows §2.1), so an owner that injects another process row's service stays Pending when that row fails | None. `dimcode` configures no process rows; the planned Scheduler and Workflow owners inject only `sessions`, `settings`, `pluginFiles` and, respectively, `sessionPermissions` ([Scheduler §1](../plugins/Scheduler.md#1-structure)) and `workflowFiles` ([Workflow §1.3](../plugins/Workflow.md#13-concrete-package-rows)), all provided by required host rows that cannot be restarted (process rows §5.1) |
+| Pending on a dependency whose row is Failed, Unresolved or Disabled | No. A required host row that fails during startup fails startup (`lib.rs`, required failures); after startup only `RunningServer::restart` can fail one, it has no caller in this repository, and its allow-list (`Rpc`, `Connection`, `Transport`, `Agents`, `Mcp`) holds no provider of an owner dependency | Yes, through the embedding input: an extension row's failure is its own diagnostic and does not fail startup (process rows §2.1), so an owner that injects another process row's service stays Pending when that row fails | None. `dimcode` configures no process rows; the planned Scheduler and Workflow owners inject only `sessions`, `settings`, `pluginFiles` and, respectively, `managementMethods` ([Scheduler §1](../plugins/Scheduler.md#1-structure)) and `workflowFiles` ([Workflow §1.3](../plugins/Workflow.md#13-concrete-package-rows)), all provided by required host rows that cannot be restarted (process rows §5.1) |
 | Pending on a service no row provides | No: assembly wires every native dependency | Yes, once the owner has registered and reloads; before that its names are `unknown_method`, as process rows acceptance 2 asserts | None, as above |
 | Node runtime lost after startup | — | Yes: when the Node process exits, rutis-bridge 0.16.0 `watch_exit` (`runtime/plugin.rs`) records `RuntimeState::Down` and withdraws the runtime service, but the local runtime wrapper has already returned `Effect::Done` (`runtime/local.rs`), so its row stays `Running(Active)` while every owner on that runtime goes back to `Running(Pending)`. A probe with the real Workflow row from [#306](https://github.com/arcships/dim/pull/306) and `kill -KILL` on the runtime confirmed it ([review](https://github.com/arcships/dim/pull/247#discussion_r4344393184)) | Reachable by an explicitly installed optional package such as Workflow (#306, open); not by `dimcode`'s default configuration. Accepted, see below |
 | Disposed itself, row Inactive | No owner disposes itself | Yes: a JavaScript row whose plugin ends disposes its fiber (rutis-bridge `on_row_ended`, called from rutis-loader `runtime.rs`), and the process loader has no editable layer, so `SelfDisposed` carries the edit error | None, as above |

@@ -145,7 +145,7 @@ impl Read {
             }
             Status::Done => match self.mime.take() {
                 None => {
-                    let listed = String::from_utf8_lossy(&std::mem::take(&mut self.data))
+                    let listed = String::from_utf8_lossy_owned(std::mem::take(&mut self.data))
                         .split_whitespace()
                         .map(str::to_owned)
                         .collect::<Vec<_>>();

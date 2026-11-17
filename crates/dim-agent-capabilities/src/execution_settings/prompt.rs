@@ -9,7 +9,7 @@ use crate::{
     branch_input::append_own,
     host::ToolExecutionContext,
     settings::{SettingsChanged, settings_changes},
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
+    tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{BranchLifecycle, BranchPhase, Names, PartRegistry, PartScope, Timeline};
 use dim_agent_types::*;
@@ -113,7 +113,7 @@ impl SettingsHandler {
             Ok(arguments) => arguments,
             Err(error) => return ToolResult::error(format!("invalid settings arguments: {error}")),
         };
-        let settings = match self.host.0.read(cancel).await {
+        let settings = match self.host.read(cancel).await {
             Ok(settings) => settings,
             Err(error) => return ToolResult::error(format!("execution settings: {error}")),
         };
@@ -137,6 +137,10 @@ impl SettingsHandler {
     }
 }
 impl ToolHandler for SettingsHandler {
+    /// Both operations read the user's settings.
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        ToolConcurrency::Concurrent
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -258,7 +262,7 @@ impl DynPlugin for SettingsSnapshotBranch {
                     if pending {
                         let read = tokio::select! {
                             _ = phase.closing() => return,
-                            result = host.0.read(lifecycle.child_token()) => result,
+                            result = host.read(lifecycle.child_token()) => result,
                         };
                         match read {
                             Ok(settings) => {

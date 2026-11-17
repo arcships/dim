@@ -5,7 +5,7 @@
 //! takes, as `schedule.list` reports them — is what edit writes at the
 //! revision the owner reported. The id and the revision travel with the
 //! request, not in the document, and the owner derives `created_by`,
-//! `policy_cap` and `enabled_at`.
+//! `disabled_reason` and `enabled_at`.
 
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -21,20 +21,9 @@ use crate::ui::i18n::{t, tf};
 /// How many runs a detail asks for: what the owner calls recent history.
 const RECENT_RUNS: u32 = 20;
 
-/// The fields `schedule.save` takes, as `schedule.list` reports them.
-const EDITABLE: &[&str] = &[
-    "name",
-    "schedule",
-    "prompt",
-    "cwd",
-    "model",
-    "mode",
-    "policy",
-    "max_run_minutes",
-    "enabled",
-    "session_id",
-    "agent_id",
-];
+/// The fields `schedule.save` takes, as `schedule.list` reports them
+/// (Scheduler A.3). A job's target replaces the stored one whole.
+const EDITABLE: &[&str] = &["name", "schedule", "prompt", "target", "enabled"];
 
 #[derive(Debug, Deserialize)]
 pub struct Catalog {
@@ -49,6 +38,12 @@ pub struct Job {
     pub schedule: Schedule,
     pub enabled: bool,
     pub revision: i64,
+    /// Where the job delivers, as the owner reports it (Scheduler §2.1).
+    #[serde(default)]
+    pub target: Option<Target>,
+    /// Why the owner disabled the job, when it did (Scheduler A.3).
+    #[serde(default)]
+    pub disabled_reason: Option<DisabledReason>,
     /// The next window the owner computed; none while the job is disabled,
     /// or when it cannot use the schedule.
     #[serde(default)]
@@ -73,6 +68,10 @@ impl Job {
                 "name" => json!(self.name),
                 "schedule" => schedule_value(&self.schedule),
                 "enabled" => json!(self.enabled),
+                "target" => match &self.target {
+                    Some(target) => target.value(),
+                    None => continue,
+                },
                 other => match self.fields.get(other) {
                     Some(value) => value.clone(),
                     None => continue,
@@ -99,6 +98,132 @@ pub enum Schedule {
         #[serde(default)]
         tz: Option<String>,
     },
+}
+
+/// Where a job delivers (Scheduler §2.1): one Session branch that receives
+/// its prompt, or a launch target that starts a new Session.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Target {
+    Session {
+        session_id: String,
+        #[serde(default = "default_branch")]
+        branch_id: String,
+        #[serde(default)]
+        input_mode: InputMode,
+    },
+    Launch {
+        cwd: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        policy: Option<String>,
+        #[serde(default = "default_max_run_minutes")]
+        max_run_minutes: u64,
+    },
+}
+
+fn default_branch() -> String {
+    "main".to_owned()
+}
+
+fn default_max_run_minutes() -> u64 {
+    60
+}
+
+/// The input mode a session target delivers in (Scheduler A.1).
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputMode {
+    #[default]
+    Queue,
+    Steer,
+    Append,
+}
+
+impl InputMode {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Queue => "queue",
+            Self::Steer => "steer",
+            Self::Append => "append",
+        }
+    }
+}
+
+impl Target {
+    /// The target as `schedule.save` takes it: the stored shape, whole.
+    pub fn value(&self) -> Value {
+        match self {
+            Self::Session {
+                session_id,
+                branch_id,
+                input_mode,
+            } => json!({
+                "kind": "session",
+                "session_id": session_id,
+                "branch_id": branch_id,
+                "input_mode": input_mode.name(),
+            }),
+            Self::Launch {
+                cwd,
+                agent_id,
+                policy,
+                max_run_minutes,
+            } => {
+                let mut value = json!({
+                    "kind": "launch",
+                    "cwd": cwd,
+                    "max_run_minutes": max_run_minutes,
+                });
+                if let Some(agent) = agent_id {
+                    value["agent_id"] = json!(agent);
+                }
+                if let Some(policy) = policy {
+                    value["policy"] = json!(policy);
+                }
+                value
+            }
+        }
+    }
+
+    /// Where the job delivers, as one table cell.
+    pub fn column(&self) -> String {
+        match self {
+            Self::Session {
+                session_id,
+                branch_id,
+                input_mode,
+            } => format!("session {session_id} {branch_id} {}", input_mode.name()),
+            Self::Launch { cwd, .. } => format!("launch {cwd}"),
+        }
+    }
+
+    /// Where the job delivers, as one line.
+    pub fn text(&self) -> String {
+        match self {
+            Self::Session {
+                session_id,
+                branch_id,
+                input_mode,
+            } => tf(
+                "Delivers to Session {session} branch {branch} ({mode}).",
+                &[
+                    ("session", session_id),
+                    ("branch", branch_id),
+                    ("mode", input_mode.name()),
+                ],
+            ),
+            Self::Launch { cwd, .. } => tf("Launches a new Session in {cwd}.", &[("cwd", cwd)]),
+        }
+    }
+}
+
+/// Why the owner disabled a job (Scheduler A.3).
+#[derive(Debug, Clone, Deserialize)]
+pub struct DisabledReason {
+    pub code: String,
+    pub at: String,
 }
 
 /// One run of a job (Scheduler A.1): `schedule.history` reports these, and
@@ -337,15 +462,8 @@ async fn save(
                 }
             }
             // The patch schema has no null: a member the draft deleted would
-            // keep its stored value, so it is refused by name. The exception
-            // is the Session of a job that becomes a create, which the owner
-            // clears itself when the patch leaves it out.
+            // keep its stored value, so it is refused by name.
             None if stored.contains_key(*key) => {
-                if *key == "session_id"
-                    && draft.get("mode").and_then(Value::as_str) == Some("create")
-                {
-                    continue;
-                }
                 return Err(Failure::Refused(tf(
                     "The document deleted {field}, which the owner cannot clear; nothing was written.",
                     &[("field", key)],
@@ -500,6 +618,15 @@ fn detail_lines(job: &Job) -> Vec<String> {
         )),
         None => lines.push(t("No run yet.").to_owned()),
     }
+    if let Some(target) = &job.target {
+        lines.push(target.text());
+    }
+    if let Some(reason) = &job.disabled_reason {
+        lines.push(tf(
+            "Disabled: {code} at {instant}.",
+            &[("code", &reason.code), ("instant", &reason.at)],
+        ));
+    }
     if let Some(error) = &job.schedule_error {
         lines.push(error.clone());
     }
@@ -563,6 +690,6 @@ fn create(cwd: &str) -> Value {
         "name": "example",
         "schedule": {"every_minutes": 60},
         "prompt": "Summarize what changed in this workspace today.",
-        "cwd": cwd,
+        "target": {"kind": "launch", "cwd": cwd, "max_run_minutes": 60},
     })
 }

@@ -140,7 +140,12 @@ if [[ "$chat" == true && "$resumed" == false && "$explicit_selection" == false ]
   fi
 fi
 
-(cd -- "$repository" && cargo build --locked -p dimcode) >&2
+# A build cache that shares recorded build-script results between checkouts
+# replays the first commit it saw for this crate, because a script's declared
+# inputs are package-local. Resolving HEAD here and passing it keeps the
+# version label naming the tree that runs.
+DIM_BUILD_COMMIT=$(git -C "$repository" rev-parse --short=8 HEAD 2>/dev/null) || DIM_BUILD_COMMIT=
+(cd -- "$repository" && DIM_BUILD_COMMIT="$DIM_BUILD_COMMIT" cargo build --locked -p dimcode) >&2
 # The run path can start the daemon; only --help/--version, migration and
 # `daemon stop` cannot, and they stage nothing.
 if [[ "$native_help" == false && "$migration" == false && -z "${DIMCODE_DEFAULT_PLUGINS:-}" ]]; then

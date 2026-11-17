@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
     timeline_tree::TreeCommands,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
-use dim_agent_runtime::Names;
+use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -26,6 +26,7 @@ pub struct GoalSession {
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
+    identity: Key<SessionIdentity>,
     changes: Changes,
 }
 
@@ -36,6 +37,7 @@ impl GoalSession {
             tools: names.key()?,
             methods: names.key()?,
             guide: names.key()?,
+            identity: names.key()?,
             changes,
         })
     }
@@ -51,6 +53,7 @@ impl DynPlugin for GoalSession {
             self.tools.erase(),
             self.methods.erase(),
             self.guide.erase(),
+            self.identity.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -59,6 +62,7 @@ impl DynPlugin for GoalSession {
             let tools = ctx.require_at(&self.tools)?;
             let methods = ctx.require_at(&self.methods)?;
             let guide = ctx.require_at(&self.guide)?;
+            let identity = ctx.require_at(&self.identity)?;
             guide.register(
                 ctx,
                 GuideScope::Session,
@@ -83,11 +87,13 @@ impl DynPlugin for GoalSession {
                     },
                     handler: Arc::new(GoalUpdate {
                         changes: self.changes.clone(),
+                        identity: identity.clone(),
                     }),
                 },
             )?;
             let owner = Arc::new(Owner {
                 tree,
+                identity,
                 changes: self.changes.clone(),
             });
             methods.register(
@@ -112,11 +118,13 @@ impl DynPlugin for GoalSession {
                             return tokio::select! {
                                 result = async {
                                     match owner.tree.get(&id) {
-                                        Ok(_) => owner.changes.published(&id).await?,
-                                        Err(dim_agent_runtime::AgentError::BranchEnded(_)) => {},
-                                        Err(error) => return Err(error),
+                                        Ok(_) => owner.changes.current(&TimelineKey {
+                                            session_id: owner.identity.session_id.clone(),
+                                            branch_id: id,
+                                        }).await,
+                                        Err(dim_agent_runtime::AgentError::BranchEnded(_)) => crate::read::current(&owner.tree, &id, &cancel).await,
+                                        Err(error) => Err(error),
                                     }
-                                    crate::read::current(&owner.tree, &id, &cancel).await
                                 } => reply(result?),
                                 _ = cancel.cancelled() => Err(RpcError::interrupted()),
                             };
@@ -132,6 +140,7 @@ impl DynPlugin for GoalSession {
 
 struct Owner {
     tree: Arc<TreeCommands>,
+    identity: Arc<SessionIdentity>,
     changes: Changes,
 }
 
@@ -185,7 +194,13 @@ impl Owner {
         self.tree.get(&branch).map_err(RpcError::from)?;
         let sequence = self
             .changes
-            .change(&branch, change)
+            .change(
+                &TimelineKey {
+                    session_id: self.identity.session_id.clone(),
+                    branch_id: branch,
+                },
+                change,
+            )
             .await
             .map_err(RpcError::from)?;
         reply(json!({ "sequence": sequence }))
@@ -213,6 +228,7 @@ fn text_value(value: Option<&Value>, limit: usize) -> Option<String> {
 /// write.
 struct GoalUpdate {
     changes: Changes,
+    identity: Arc<SessionIdentity>,
 }
 
 impl ToolHandler for GoalUpdate {
@@ -235,7 +251,17 @@ impl ToolHandler for GoalUpdate {
                 completed: status == "completed",
                 summary,
             };
-            match self.changes.change(&context.branch_id, change).await {
+            match self
+                .changes
+                .change(
+                    &TimelineKey {
+                        session_id: self.identity.session_id.clone(),
+                        branch_id: context.branch_id,
+                    },
+                    change,
+                )
+                .await
+            {
                 Ok(_) => Ok(ToolResult::text(format!("goal_update recorded: {status}."))),
                 Err(error) => Ok(ToolResult::error(error.to_string())),
             }

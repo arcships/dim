@@ -1,0 +1,45 @@
+{
+  "description": "An operator who asked for chat messages to be answered in the conversation, and a chat question",
+  "message": "The team's chat is subscribed to this session, and I have no chat client open. When a chat message asks something, answer it in the conversation and I will pass it on. Also make `python3 -m unittest discover -s tests` pass.",
+  "sources": [
+    {
+      "name": "chat",
+      "guide": "Messages from the team's chat.",
+      "types": [
+        {
+          "type": "chat.message",
+          "description": "A message from the team's chat.",
+          "mode": "queue"
+        }
+      ],
+      "subscribe": {"types": ["chat.message"]}
+    }
+  ],
+  "events": [
+    {
+      "source": "chat",
+      "type": "chat.message",
+      "id": "chat-1043",
+      "title": "Duration units for the docs",
+      "body": "Which units does the duration helper accept? We need the list for the docs.",
+      "whenToolCall": "unittest"
+    }
+  ],
+  "budget": {
+    "turns": 12,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "answered-in-the-conversation",
+      "kind": "must_show",
+      "text": "the chat question about the duration units is answered in the conversation for the operator to pass on"
+    },
+    {
+      "id": "task-done",
+      "kind": "must_show",
+      "text": "parse_duration raises ValueError for an unknown unit and the workspace tests pass"
+    }
+  ]
+}

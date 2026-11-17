@@ -3,6 +3,7 @@ name = "dim-goal"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "The operator's standing goal for a branch, as a rutis plugin"
 
 [dependencies]

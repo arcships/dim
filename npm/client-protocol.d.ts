@@ -35,10 +35,12 @@ export type SessionSummary = SessionTitle & {
   running: boolean
   sequence: number
   preview?: string
-  origin?: "client" | "acp" | "internal" | "unknown"
+  origin?: "client" | "acp" | "internal" | "unknown" | "automation"
   parentSessionId?: string
   /** Unix milliseconds of the last main-branch event. */
   updatedAt: number
+  /** Whether this daemon closed the Session, reported by a read that asked for closed rows. */
+  closed?: boolean
 }
 
 export type CreateResult = { sessionId: string; model: ModelId; sequence: number }
@@ -83,8 +85,9 @@ export type BranchSource =
   | { kind: "host"; operationId: string }
 
 export type ToolResult = {
-  /** Text the model read; image blocks are dropped at the boundary. */
+  /** Text and durable images from the tool result. */
   text: string
+  images?: ImageBlock[]
   isError: boolean
   /** The edit tool's display diff (`structuredContent.diff`). */
   diff?: string
@@ -96,11 +99,23 @@ export type RawBlock = { text: string; key?: string; retire: boolean }
 /** A user message as the server holds it: content blocks forwarded unchanged to `session.input.withdraw`. */
 export type UserInput = { content: Array<Record<string, unknown>> }
 
-/** A base64 image content block, as the server's `ContentBlock::Image` reads it. */
-export type ImageBlock = { type: "image"; source: { type: "base64"; mediaType: string; data: string } }
+/** A stored image content block. */
+export type ImageBlock = { type: "image"; source: { type: "file"; mediaType: string; fileId: string } }
 
-/** What a composer draft adds to its text: images as content blocks, and pasted texts stored as Session attachments. */
-export type DraftAttachments = { images: ImageBlock[]; pastes: string[] }
+/** One run of a message's own content: the operator's text, or a stored image, in the order it was written. */
+export type OperatorBlock = { type: "text"; text: string } | ImageBlock
+
+/** A stored image a withdrawn message carried, and the offset it keeps its place at in the draft. */
+export type RestoredImage = { at: number; image: ImageBlock }
+
+/**
+ * Local files and pasted text held until the message is accepted, plus the
+ * stored images a withdrawn queue message carried, which are sent unchanged.
+ */
+export type DraftAttachments = { images: File[]; pastes: string[]; restored?: RestoredImage[]; onProgress?: (percent: number) => void }
+
+/** `session.submit.mode`: held for the next turn, or steered into the running one. */
+export type SubmitMode = "queue" | "steer"
 
 /** A file or directory the `@` mention picker offers: its path under the workspace and its absolute path. */
 export type FileCandidate = { relativePath: string; absolutePath: string; dir: boolean }
@@ -118,15 +133,20 @@ export type PermissionPolicy = {
 /** `session.permission.get`: the policy of `main` and the version a change must expect. */
 export type PermissionState = { version: number; policy: PermissionPolicy }
 
-/** A message the server holds in the queue of a running branch. */
-export type QueuedInput = { id: string; text: string; skills?: string[]; user: UserInput }
+/** A message the server holds in the queue of a running branch: the operator's own blocks in order, one line of them, its Skills and its stored images. */
+export type QueuedInput = { id: string; text: string; skills?: string[]; hooks?: number; content: OperatorBlock[]; user: UserInput }
 
-/** `session.input.withdraw`: the queued input was removed, or the server had already adopted it. */
-export type WithdrawResult = { status: "deleted" } | { status: "notHeld" }
+/**
+ * `session.input.withdraw`: the queued input was removed, or the server had already adopted it.
+ * `warnings` is present only when the call wrote a replacement Steer, and describes that replacement.
+ */
+export type WithdrawResult =
+  | { status: "deleted"; warnings?: SubmitWarning[] }
+  | { status: "notHeld"; warnings?: SubmitWarning[] }
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
-  | { kind: "input"; text?: string; user?: UserInput; skills?: string[]; blocks: RawBlock[] }
+  | { kind: "input"; text?: string; user?: UserInput; content: OperatorBlock[]; skills?: string[]; hooks?: number; blocks: RawBlock[] }
   | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
   | { kind: "input-consumed"; inputId: string }
   | { kind: "input-applied"; inputId: string }
@@ -142,6 +162,7 @@ export type EventContent =
   | { kind: "model-start"; requestId: string }
   | { kind: "thinking"; requestId: string; delta: string }
   | { kind: "text"; requestId: string; delta: string }
+  | { kind: "tool-use-start"; requestId: string; callId: string; name: string }
   | { kind: "tool-use"; requestId: string; callId: string; name: string; input: Record<string, unknown> }
   | { kind: "tool-call"; requestId: string; asks: AskCall[] }
   | { kind: "tool-completed"; requestId: string; callId: string; result: ToolResult }
@@ -175,8 +196,10 @@ export type ModelFailure = {
 export type SessionEvent = {
   id: string
   sequence: number
-  /** Unix milliseconds the runtime wrote the event at. */
+  /** Unix milliseconds at which the event's fact was recorded: the commit time, except a thinking block's first `step/thinking`, which carries the block's start. Order by `sequence`, not this field. */
   createAt: number
+  /** v4 only: the outer call of a child tool batch. */
+  parentCallId?: string
   content: EventContent
 }
 
@@ -186,6 +209,8 @@ export type BranchCreateResult = {
   parentBranchId?: string
   branchPoint?: number
   createEvent?: number
+  /** Work a submit check did not do; absent when it raised none. */
+  warnings?: SubmitWarning[]
 }
 
 
@@ -200,6 +225,8 @@ export type ModelProgress = {
   thinking: string
   /** Unicode scalar values of the request's `step/thinking` deltas before `thinking`. */
   thinkingOffset: number
+  /** Unix milliseconds at which the open thinking block started; absent when no block is open. */
+  thinkingStartedAt?: number
   /** The retry this request is waiting to make, while it sleeps. */
   retry?: ModelRetryProgress
 }
@@ -282,17 +309,22 @@ export interface AgentEvent {
   type: string;
   name: string;
   data: JsonObject;
+  /** v4 only: the outer call of a child tool batch. */
+  parent_call_id?: string;
   /** Extension events only: the producer's reading switches. */
   context_render?: boolean;
   context_state?: boolean;
 }
 export type TimelinePage = Omit<HistoryPage, "events"> & { events: AgentEvent[] }
-export type SubmitResult = { event: AgentEvent }
+/** Work a submit check did not do, for the caller to show (Hooks A.6.2). */
+export type SubmitWarning = { check: string; message: string }
+/** `warnings` is absent when no check raised one, and on protocol v1 and v2. */
+export type SubmitResult = { event: AgentEvent; warnings?: SubmitWarning[] }
 export type InterruptResult = { sequence: number }
 
 export type Notification =
   | { method: "ui.extensions.changed"; revision: number }
-  | { method: "session.event"; sessionId: string; branchId: string; event: SessionEvent }
+  | { method: "session.event" | "session.display"; sessionId: string; branchId: string; event: SessionEvent }
   | ({ method: "session.state" } & StateNotice)
   | { method: "session.model.progress"; progress: ModelProgress }
   | { method: "approval.request"; request: ApprovalRequest }

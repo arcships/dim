@@ -9,7 +9,7 @@ use super::{
     source_revision, sources_in_precedence,
 };
 use crate::settings::{SettingsScope, SettingsService};
-use dim_agent_capabilities::host::{CredentialVariables, CredentialVariablesHost};
+use dim_agent_capabilities::host::CredentialVariablesHost;
 use dim_agent_runtime::{
     Modules, Names, SessionLifecycle, SessionLoader, SessionPhase, StateCell,
     names::ServiceCatalog, register_part,
@@ -226,7 +226,7 @@ struct Worker {
     commands: mpsc::Receiver<Command>,
     released: watch::Receiver<()>,
     settings_changed: watch::Receiver<()>,
-    credentials: Arc<dyn CredentialVariables>,
+    credentials: Arc<CredentialVariablesHost>,
 }
 impl McpPublication {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
@@ -361,7 +361,7 @@ impl DynPlugin for McpPublication {
                 commands: receiver,
                 released: releases,
                 settings_changed: config::settings_changes(ctx)?,
-                credentials: credentials.0.clone(),
+                credentials,
             };
             ctx.provide_as::<Publication>(port)?;
             let stop = ctx.cancellation_token();
@@ -402,7 +402,7 @@ struct Generation {
 }
 struct Projection {
     port: Arc<Publication>,
-    credentials: Arc<dyn CredentialVariables>,
+    credentials: Arc<CredentialVariablesHost>,
     sources: BTreeMap<McpSource, Source>,
     generations: BTreeMap<String, Generation>,
     disconnected: BTreeMap<(McpSource, String), String>,
@@ -540,7 +540,7 @@ impl Projection {
             if project_unresolved {
                 error = Some("MCP configuration could not be resolved");
             }
-            let protected = self.credentials.credential_variables();
+            let protected = self.credentials.variables().variables;
             for (id, config) in servers {
                 if project_unresolved {
                     continue;
@@ -707,10 +707,7 @@ impl Projection {
                 && g.source == source
                 && g.id == id
                 && g.configuration == configuration
-                && !matches!(
-                    g.service.state(),
-                    McpServerState::Closed | McpServerState::Failed
-                )
+                && !matches!(g.service.state(), McpServerState::Closed)
         }) {
             if let Some(lease) = generation.lease.upgrade() {
                 return Ok(lease);
@@ -834,6 +831,11 @@ fn connection(port: &Publication, generation: &Generation) -> Arc<McpConnection>
 mod tests {
     use super::*;
     use crate::mcp::{McpChange, McpPlugin, McpService};
+    use axum::{
+        Json, Router,
+        http::StatusCode,
+        response::{IntoResponse, Response, Sse, sse::Event},
+    };
     use dim_agent_runtime::wait_active;
     use rutis_loader::Layer;
     use std::{
@@ -841,13 +843,6 @@ mod tests {
         time::Duration,
     };
     use tokio::sync::Notify;
-
-    struct NoCredentials;
-    impl CredentialVariables for NoCredentials {
-        fn credential_variables(&self) -> BTreeSet<String> {
-            BTreeSet::new()
-        }
-    }
 
     #[derive(Default)]
     struct Faults {
@@ -907,17 +902,23 @@ mod tests {
             Self::with_extra(None).await
         }
         async fn with_extra(extra: Option<&str>) -> Self {
+            Self::with_entry(extra, json!({"command":"first"})).await
+        }
+        /// A user entry whose document the caller chooses.
+        async fn with_entry(extra: Option<&str>, entry: serde_json::Value) -> Self {
             let home = std::env::temp_dir().join(format!("mcp-instance-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir(&home).unwrap();
             let home = home.canonicalize().unwrap();
             std::fs::write(
                 home.join("mcp.json"),
-                json!({"mcpServers":{"docs":{"command":"first"}}}).to_string(),
+                json!({"mcpServers":{"docs":entry}}).to_string(),
             )
             .unwrap();
             let root = Ctx::root().unwrap();
-            root.provide(CredentialVariablesHost(Arc::new(NoCredentials)))
-                .unwrap();
+            root.provide(CredentialVariablesHost::new(Arc::new(
+                BTreeSet::<String>::new,
+            )))
+            .unwrap();
             let faults = Arc::new(Faults::default());
             let catalog = crate::catalog();
             let mut builtins = Modules::new();
@@ -1290,6 +1291,284 @@ mod tests {
         );
         fixture.faults.fail.store(false, Ordering::SeqCst);
         fixture.acquire().await;
+        fixture.close().await;
+    }
+    /// The cooldown a request refused during start backoff reports.
+    async fn cooldown(connection: &Arc<McpConnection>) -> u64 {
+        recorded_cooldown(connection)
+            .await
+            .expect("a request inside the cooldown is refused with its seconds")
+    }
+    /// The cooldown a request refused during start backoff reports, if any.
+    async fn recorded_cooldown(connection: &Arc<McpConnection>) -> Option<u64> {
+        match connection.tools(&CancellationToken::new()).await {
+            Err(McpServerError::StartCooldown(seconds)) => Some(seconds),
+            _ => None,
+        }
+    }
+    /// A loopback address nothing listens on.
+    fn refused_address() -> std::net::SocketAddr {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        address
+    }
+    /// The entry under test: a remote server at `address`.
+    async fn remote_fixture(address: std::net::SocketAddr) -> Fixture {
+        Fixture::with_entry(
+            None,
+            json!({"type":"http","url":format!("http://{address}/mcp")}),
+        )
+        .await
+    }
+    /// A minimal MCP server over streamable HTTP on `listener`, answering
+    /// every page of `tools/list` with nothing. While `refused` is set, it
+    /// answers the connection's own `tools/list` with a 404 and every start
+    /// with a 503.
+    async fn serve(
+        listener: tokio::net::TcpListener,
+        refused: bool,
+    ) -> (
+        Arc<AtomicBool>,
+        tokio::task::JoinHandle<std::result::Result<(), std::io::Error>>,
+    ) {
+        async fn rpc(
+            axum::extract::State(refused): axum::extract::State<Arc<AtomicBool>>,
+            Json(body): Json<serde_json::Value>,
+        ) -> Response {
+            if refused.load(Ordering::SeqCst) {
+                match body["method"].as_str().unwrap_or_default() {
+                    "initialize" => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+                    "tools/list" => return StatusCode::NOT_FOUND.into_response(),
+                    _ => {}
+                }
+            }
+            let Some(id) = body.get("id").cloned() else {
+                return StatusCode::ACCEPTED.into_response();
+            };
+            let result = match body["method"].as_str().unwrap_or_default() {
+                "initialize" => json!({
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {"tools": {"listChanged": false}},
+                    "serverInfo": {"name": "publication-test", "version": "1"}
+                }),
+                "tools/list" => json!({"tools": []}),
+                method => panic!("unexpected MCP method: {method}"),
+            };
+            let mut response =
+                Json(json!({"jsonrpc":"2.0","id":id,"result":result})).into_response();
+            response
+                .headers_mut()
+                .insert("mcp-session-id", "s1".parse().unwrap());
+            response
+        }
+        async fn events()
+        -> Sse<futures_util::stream::Pending<std::result::Result<Event, std::convert::Infallible>>>
+        {
+            Sse::new(futures_util::stream::pending())
+        }
+        async fn delete() -> StatusCode {
+            StatusCode::NO_CONTENT
+        }
+        let refused = Arc::new(AtomicBool::new(refused));
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/mcp", axum::routing::post(rpc).get(events).delete(delete))
+                    .with_state(refused.clone()),
+            )
+            .into_future(),
+        );
+        (refused, server)
+    }
+    /// A Session's rediscovery (`session.mcp.refresh` → reconcile → discover)
+    /// acquires the entry again for the same owner while its generation is
+    /// cooling after a failed start. That returns the generation and keeps its
+    /// backoff.
+    #[tokio::test]
+    async fn a_second_discovery_during_the_cooldown_keeps_the_backoff() {
+        let fixture = remote_fixture(refused_address()).await;
+        tokio::time::pause();
+        let first = fixture.acquire().await;
+        let mut delays: Vec<u64> = Vec::new();
+        for _ in 0..3 {
+            if let Some(delay) = delays.last() {
+                // The cooldown the failed start recorded; wait it out.
+                tokio::time::advance(Duration::from_secs(*delay)).await;
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                first.tools(&CancellationToken::new()).await.is_err(),
+                "the refused start fails"
+            );
+            delays.push(cooldown(&first).await);
+        }
+        let second = fixture.acquire().await;
+        let same = Arc::ptr_eq(&first, &second);
+        let observed = second.tools(&CancellationToken::new()).await;
+        let after = fixture
+            .service
+            .publication
+            .inspect(McpSource::User, "docs".into(), &CancellationToken::new())
+            .await
+            .unwrap()
+            .len();
+        tokio::time::resume();
+
+        assert_eq!(delays, [1, 2, 4], "each failed start doubles its cooldown");
+        assert!(
+            same,
+            "a failed generation is cooling down, not gone: the acquire discarded it"
+        );
+        assert!(
+            matches!(observed, Err(McpServerError::StartCooldown(4))),
+            "a second discovery during the cooldown is refused without contacting the server"
+        );
+        assert_eq!(
+            after, 1,
+            "the cooling generation is reused, not left behind beside a new one"
+        );
+        drop((first, second));
+        fixture.close().await;
+    }
+    /// A server that becomes reachable during a cooldown starts on the attempt
+    /// after it, through the generation that recorded the cooldown.
+    #[tokio::test]
+    async fn a_server_that_returns_during_the_cooldown_connects_on_the_attempt_after_it() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = remote_fixture(listener.local_addr().unwrap()).await;
+        let (refused, server) = serve(listener, true).await;
+        let first = fixture.acquire().await;
+        assert!(first.tools(&CancellationToken::new()).await.is_err());
+        assert_eq!(cooldown(&first).await, 1);
+        let second = fixture.acquire().await;
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a cooling generation is reused, not replaced"
+        );
+        refused.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        let tools = second.tools(&CancellationToken::new()).await.unwrap();
+        assert!(tools.is_empty());
+        assert_eq!(second.state(), McpServerState::Connected);
+        assert_eq!(second.generation(), 1, "the cooling generation started");
+        server.abort();
+        let _ = server.await;
+        fixture.close().await;
+    }
+    /// An always-refusing server doubles to the five-minute cap and stays
+    /// there, with a rediscovery inside every cooldown.
+    #[tokio::test]
+    async fn an_unreachable_server_reaches_and_stays_at_the_backoff_cap() {
+        let fixture = remote_fixture(refused_address()).await;
+        tokio::time::pause();
+        let mut connection = fixture.acquire().await;
+        let mut delays = Vec::new();
+        for _ in 0..11 {
+            connection
+                .tools(&CancellationToken::new())
+                .await
+                .unwrap_err();
+            delays.push(cooldown(&connection).await);
+            connection = fixture.acquire().await;
+            tokio::time::advance(Duration::from_secs(delays[delays.len() - 1])).await;
+            tokio::task::yield_now().await;
+        }
+        let generations = fixture
+            .service
+            .publication
+            .inspect(McpSource::User, "docs".into(), &CancellationToken::new())
+            .await
+            .unwrap()
+            .len();
+        tokio::time::resume();
+        assert_eq!(
+            delays,
+            [1, 2, 4, 8, 16, 32, 64, 128, 256, 300, 300],
+            "the cooldown doubles to five minutes and stays there"
+        );
+        assert_eq!(generations, 1, "one generation retried every attempt");
+        fixture.close().await;
+    }
+    /// A configuration change starts a new generation, whose count begins at
+    /// one second: the count of the generation it replaced does not carry
+    /// over, so a rediscovery cannot reuse the old backoff across it.
+    #[tokio::test]
+    async fn a_configuration_change_starts_a_new_generation_at_one_second() {
+        let address = refused_address();
+        let url = format!("http://{address}/mcp");
+        let fixture = Fixture::with_entry(None, json!({"type":"http","url":url})).await;
+        tokio::time::pause();
+        let first = fixture.acquire().await;
+        assert!(first.tools(&CancellationToken::new()).await.is_err());
+        assert_eq!(cooldown(&first).await, 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(first.tools(&CancellationToken::new()).await.is_err());
+        assert_eq!(
+            cooldown(&first).await,
+            2,
+            "a second failure doubles the count"
+        );
+        let catalog = fixture.service.catalog(None, &fixture.stop).await.unwrap();
+        fixture
+            .service
+            .update(
+                SettingsScope::User,
+                catalog.user_revision,
+                "docs".into(),
+                McpChange::Put(
+                    serde_json::from_value(
+                        json!({"type":"http","url":url,"headers":{"X-Change":"two"}}),
+                    )
+                    .unwrap(),
+                ),
+                &fixture.stop,
+            )
+            .await
+            .unwrap();
+        let second = fixture.acquire().await;
+        tokio::time::resume();
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "a configuration change starts a new generation"
+        );
+        assert!(second.tools(&CancellationToken::new()).await.is_err());
+        assert_eq!(
+            cooldown(&second).await,
+            1,
+            "the new generation starts again at one second"
+        );
+        fixture.close().await;
+    }
+    /// A successful connection clears the count; this passes before the fix
+    /// and pins what keeping the generation must not lose.
+    #[tokio::test]
+    async fn a_successful_connection_clears_the_backoff() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = remote_fixture(listener.local_addr().unwrap()).await;
+        let (refused, server) = serve(listener, false).await;
+        // The server refuses the first start, and the connection succeeds
+        // once it is switched back after the cooldown.
+        refused.store(true, Ordering::SeqCst);
+        let connection = fixture.acquire().await;
+        assert!(connection.tools(&CancellationToken::new()).await.is_err());
+        assert_eq!(cooldown(&connection).await, 1);
+        refused.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(connection.tools(&CancellationToken::new()).await.is_ok());
+        assert_eq!(connection.state(), McpServerState::Connected);
+        // The server refuses the session, and then the start the retry makes.
+        refused.store(true, Ordering::SeqCst);
+        assert!(connection.tools(&CancellationToken::new()).await.is_err());
+        assert_eq!(
+            cooldown(&connection).await,
+            1,
+            "a successful connection cleared the count"
+        );
+        server.abort();
+        let _ = server.await;
         fixture.close().await;
     }
 }

@@ -109,7 +109,66 @@ test('workflow actions use immutable commits',()=>{
   }
 });
 
-test('the default list stages only its content plugin and runs no npm ci', {skip:process.platform==='win32'}, (t)=>{
+/** A checkout carrying `version` in every product field the release PR writes. */
+function versionCheckout(temporary,version) {
+  const checkout=path.join(temporary,'checkout');
+  mkdirSync(path.join(checkout,'npm'),{recursive:true});
+  mkdirSync(path.join(checkout,'runtime'),{recursive:true});
+  writeFileSync(path.join(checkout,'Cargo.toml'),`[workspace.package]\nversion = "${version}"\n`);
+  const platforms=['dimcode-web','dimcode-darwin-arm64','dimcode-darwin-x64','dimcode-linux-arm64',
+    'dimcode-linux-x64','dimcode-windows-arm64','dimcode-windows-x64'];
+  writeFileSync(path.join(checkout,'npm/package.json'),`${JSON.stringify({name:'dimcode',version,
+    bin:{dim:'bin/dim.js',dimcode:'bin/dim.js'},
+    optionalDependencies:Object.fromEntries(platforms.map(name=>[name,version]))},null,2)}\n`);
+  writeFileSync(path.join(checkout,'runtime/package.json'),`${JSON.stringify({name:'dimcode-runtime',version},null,2)}\n`);
+  writeFileSync(path.join(checkout,'runtime/package-lock.json'),`${JSON.stringify({name:'dimcode-runtime',version,
+    lockfileVersion:3,packages:{'':{name:'dimcode-runtime',version}}},null,2)}\n`);
+  return checkout;
+}
+
+const guard=async()=>(await import(pathToFileURL(path.join(root,'scripts/alpha-version.mjs')).href));
+
+test('the dispatch guard accepts a checkout that records the allocated version',async(t)=>{
+  const checkout=versionCheckout(fixture(t),version);
+  const {versionMismatches}=await guard();
+  assert.deepEqual(versionMismatches(checkout,version),[]);
+});
+
+const stale='0.1.0-alpha.1';
+for (const [field,file,edit] of [
+  ['Cargo.toml [workspace.package] version','Cargo.toml',(text)=>text.replace(`version = "${version}"`,`version = "${stale}"`)],
+  ['npm/package.json version','npm/package.json',(text)=>text.replace(`"version": "${version}"`,`"version": "${stale}"`)],
+  ['npm/package.json optionalDependencies dimcode-linux-x64','npm/package.json',(text)=>text.replace(`"dimcode-linux-x64": "${version}"`,`"dimcode-linux-x64": "${stale}"`)],
+  ['runtime/package.json version','runtime/package.json',(text)=>text.replace(`"version": "${version}"`,`"version": "${stale}"`)],
+  ['runtime/package-lock.json version','runtime/package-lock.json',(text)=>text.replace(`"version": "${version}"`,`"version": "${stale}"`)],
+]) {
+  test(`the dispatch guard names ${field} when it disagrees`,async(t)=>{
+    const checkout=versionCheckout(fixture(t),version);
+    const target=path.join(checkout,file);
+    const text=readFileSync(target,'utf8');
+    const edited=edit(text);
+    assert.notEqual(edited,text,`this case must change ${field}`);
+    writeFileSync(target,edited);
+    const {versionMismatches}=await guard();
+    assert.deepEqual(versionMismatches(checkout,version),[`${field} says ${stale}`]);
+  });
+}
+
+test('the dispatch refusal names both remedies, including an already published version',async(t)=>{
+  const checkout=versionCheckout(fixture(t),version);
+  const {assertReleaseVersion}=await guard();
+  assert.equal(assertReleaseVersion(checkout,version),version,'a checkout that records the version passes');
+  assert.throws(()=>assertReleaseVersion(checkout,'0.1.0-alpha.19'),(error)=>{
+    assert.match(error.message,/This main commit does not record 0\.1\.0-alpha\.19/);
+    assert.match(error.message,/Cargo\.toml \[workspace\.package\] version says/);
+    assert.match(error.message,/Merge the release PR that commits 0\.1\.0-alpha\.19/);
+    assert.match(error.message,/-f tag=v0\.1\.0-alpha\.19/);
+    assert.match(error.message,/already tagged or published is rebuilt from its tag/);
+    return true;
+  });
+});
+
+test('the default list stages its content and optional plugins and runs no npm ci', {skip:process.platform==='win32'}, (t)=>{
   const temporary=fixture(t);
   const bin=path.join(temporary,'bin');
   mkdirSync(bin);
@@ -123,13 +182,16 @@ test('the default list stages only its content plugin and runs no npm ci', {skip
   assert.equal(existsSync(log),false,'no default plugin needs npm ci');
   const record=JSON.parse(readFileSync(path.join(output,'.stage-plugins.json'),'utf8'));
   assert.equal(record.schemaVersion,1);
-  assert.deepEqual(Object.keys(record.plugins),['plugin-authoring']);
+  assert.deepEqual(Object.keys(record.plugins),['plugin-authoring','light-ocr']);
   for (const name of ['goal','workflow']) {
     assert.equal(existsSync(path.join(output,'plugins',name)),false,name);
   }
   assert(existsSync(path.join(output,'plugins/plugin-authoring/dim-plugin.json')));
+  assert(existsSync(path.join(output,'plugins/light-ocr/index.ts')));
+  assert.equal(existsSync(path.join(output,'plugins/light-ocr/node_modules')),false,'an optional plugin stages without dependencies');
   const defaults=JSON.parse(readFileSync(path.join(output,'default-plugins.json')));
   assert.deepEqual(Object.keys(defaults.plugins),['plugin-authoring']);
+  assert.deepEqual(Object.keys(defaults.optional),['light-ocr']);
 });
 
 test('staging a package plugin update is incremental and never leaves a half stage', {skip:process.platform==='win32'}, (t)=>{
@@ -708,7 +770,46 @@ test('the current default plugins pass the portable check', {skip:process.platfo
   assert.equal(staged.status,0,staged.stderr);
   const defaults=JSON.parse(readFileSync(path.join(output,'default-plugins.json')));
   assert.deepEqual(Object.keys(defaults.plugins),['plugin-authoring']);
-  assert.deepEqual(readdirSync(path.join(output,'plugins')),['plugin-authoring']);
+  // The portable check covers default plugins only: the optional plugin
+  // ships too, its platform packages are the install's business.
+  assert.deepEqual(readdirSync(path.join(output,'plugins')).sort(),['light-ocr','plugin-authoring']);
+});
+
+/// The repository's own optional map: every entry is a complete plugin
+/// directory, and staging copies it without its dependencies (LightOcr
+/// Appendix D item 9, on the real tree).
+test('the shipped optional plugins are complete and stage without dependencies', {skip:process.platform==='win32'}, (t)=>{
+  const runtime=path.join(root,'runtime');
+  const {plugins,optional}=JSON.parse(readFileSync(path.join(runtime,'default-plugins.json'),'utf8'));
+  const names=Object.keys(optional??{});
+  assert(names.length>0,'the default list ships at least one optional plugin');
+  for (const name of names) {
+    const directory=path.join(runtime,optional[name]);
+    assert(existsSync(directory),`${name}: ${optional[name]} does not exist`);
+    const manifest=JSON.parse(readFileSync(path.join(directory,'dim-plugin.json'),'utf8'));
+    assert.equal(manifest.name,name,`${name}: dim-plugin.json names ${manifest.name}`);
+    assert.match(manifest.version??'',/^\d+\.\d+\.\d+$/,`${name}: version ${manifest.version}`);
+    if (manifest.dependencies==='npm') {
+      for (const file of ['package.json','package-lock.json']) {
+        assert(existsSync(path.join(directory,file)),`${name}: declares npm dependencies without ${file}`);
+      }
+    }
+    assert.equal(Object.hasOwn(plugins,name),false,`${name} is listed as both a default and an optional plugin`);
+    assert.equal(readdirSync(directory).includes('node_modules'),false,`${name}: the shipped directory carries node_modules`);
+  }
+  const temporary=fixture(t);
+  const bin=path.join(temporary,'bin');
+  mkdirSync(bin);
+  writeFileSync(path.join(bin,'npm'),'#!/bin/bash\nexit 1\n',{mode:0o755});
+  const output=path.join(temporary,'staged');
+  const staged=run('stage-plugins.mjs',[output],{PATH:`${bin}:${process.env.PATH}`});
+  assert.equal(staged.status,0,staged.stderr);
+  for (const name of names) {
+    const shipped=readdirSync(path.join(runtime,optional[name])).sort();
+    const copied=readdirSync(path.join(output,optional[name])).sort();
+    assert.deepEqual(copied,shipped,`${name}: the stage does not carry the shipped files`);
+    assert.equal(existsSync(path.join(output,optional[name],'node_modules')),false,`${name}: the stage carries node_modules`);
+  }
 });
 
 test('stages public native payload, packs it and rejects modified content', {skip:process.platform==='win32'}, (t)=>{
@@ -721,6 +822,8 @@ test('stages public native payload, packs it and rejects modified content', {ski
   assert.equal(staged.status,0,staged.stderr);
   const manifest=JSON.parse(readFileSync(path.join(stage,'release-manifest.json')));
   assert.equal(manifest.account,false);
+  assert(manifest.storeFormats.includes(13), 'includes the oldest admitted store');
+  assert(!manifest.storeFormats.includes(14), 'omits the removed store format');
   assert.equal(existsSync(path.join(stage,'runtime')),false);
   const packed=run('pack-release.mjs',[stage,path.join(temporary,'packed')]);
   assert.equal(packed.status,0,packed.stderr);
@@ -730,10 +833,13 @@ test('stages public native payload, packs it and rejects modified content', {ski
   const native=path.join(temporary,'packed',packedManifest.nativeArchives[0].file);
   const npm=path.join(temporary,'packed',packedManifest.npmPackages[0].file);
   for (const [archive,prefix] of [[native,`dimcode-${manifest.platform}`],[npm,'package']]) {
+    const declared=spawnSync('tar',['-xOzf',archive,`${prefix}/release-manifest.json`],{encoding:'utf8'});
+    assert.deepEqual(JSON.parse(declared.stdout).storeFormats,manifest.storeFormats);
     assert.equal(spawnSync('tar',['-xOzf',archive,`${prefix}/licenses/RUST-THIRD-PARTY-NOTICES.txt`],{encoding:'utf8'}).stdout,
       'Rust dependency license fixture');
   }
-  assert.equal(spawnSync('tar',['-xOzf',npm,'package/licenses/aimux/LICENSE'],{encoding:'utf8'}).stdout,readFileSync(path.join(root,'vendor/aimux/LICENSE'),'utf8'));
+  assert.equal(spawnSync('tar',['-xOzf',npm,'package/licenses/aimux/LICENSE'],{encoding:'utf8'}).stdout,
+    readFileSync(path.join(root,'licenses/aimux/LICENSE'),'utf8'));
   for (const file of ['LICENSE','NOTICE','xai-ratatui-inline/NOTICE','xai-ratatui-textarea/NOTICE']) {
     const source=readFileSync(path.join(root,'vendor/grok-build',file),'utf8');
     for (const [archive,prefix] of [[native,`dimcode-${manifest.platform}`],[npm,'package']]) {
@@ -745,6 +851,19 @@ test('stages public native payload, packs it and rejects modified content', {ski
   writeFileSync(path.join(stage,'bin/dimcode'),'modified');
   assert.notEqual(run('pack-release.mjs',[stage,path.join(temporary,'tampered')]).status,0);
   assert.equal(existsSync(path.join(temporary,'tampered')),false);
+});
+
+test('reads the native store formats from a CRLF checkout', async ()=>{
+  const {readStoreFormats}=await import(pathToFileURL(path.join(root,'scripts/store-formats.mjs')).href);
+  const source=readFileSync(path.join(root,'crates/dim-app-server/src/storage/sqlite.rs'),'utf8');
+  assert.deepEqual(readStoreFormats(source.replace(/\n/g,'\r\n')),readStoreFormats(source));
+});
+
+test('names a storage source whose upgrade table cannot be read', async ()=>{
+  const {readStoreFormats}=await import(pathToFileURL(path.join(root,'scripts/store-formats.mjs')).href);
+  assert.throws(()=>readStoreFormats('pub const FORMAT: u32 = 1;\n'),/Could not read the native store upgrade table/);
+  assert.throws(()=>readStoreFormats('const UPGRADES: [(u32, &[&str]); 1] = [\n    (1, &[]),\n];\n'),
+    /Could not read the native store format/);
 });
 
 test('stages the default plugins beside bin/ in the native archive and the npm package', {skip:process.platform==='win32'}, (t)=>{
@@ -762,7 +881,7 @@ test('stages the default plugins beside bin/ in the native archive and the npm p
   writeFileSync(path.join(npmBin,'npm'),'#!/bin/bash\nmkdir -p "$PWD/node_modules/@arcships/rutis"\nexit 0\n',{mode:0o755});
   const selected=run('stage-plugins.mjs',[plugins],{PATH:`${npmBin}:${process.env.PATH}`});
   assert.equal(selected.status,0,selected.stderr);
-  assert.deepEqual(readdirSync(path.join(plugins,'plugins')),['plugin-authoring']);
+  assert.deepEqual(readdirSync(path.join(plugins,'plugins')).sort(),['light-ocr','plugin-authoring']);
   assert.notEqual(run('stage-release.mjs',[bin,path.join(temporary,'empty'),version,commit,'--plugins',bin]).status,0);
   const stage=path.join(temporary,'stage');
   assert.notEqual(run('stage-release.mjs',[bin,stage,version,commit,'--plugins',plugins]).status,0);
@@ -908,7 +1027,7 @@ test('collects exact platform packages, installs wrapper offline and rejects inc
     assert.equal(spawnSync('tar',['-czf',path.join(directory,npmFile),'-C',path.join(directory,'scratch'),'package']).status,0);
     const nativeFile=`dimcode-${platform}-${version}.${osName==='windows'?'zip':'tar.gz'}`;
     writeFileSync(path.join(directory,nativeFile),'native archive fixture');
-    writeFileSync(path.join(directory,'release-manifest.json'),JSON.stringify({schemaVersion:1,platform,version,sourceCommit:commit,toolchain:{rust:'1.98.1'},account:false,npmPackages:[{name:`dimcode-${platform}`,file:npmFile,sha256:digest(path.join(directory,npmFile))}],nativeArchives:[{platform,file:nativeFile,sha256:digest(path.join(directory,nativeFile))}]}));
+    writeFileSync(path.join(directory,'release-manifest.json'),JSON.stringify({schemaVersion:1,platform,version,sourceCommit:commit,toolchain:{rust:'1.100.0'},account:false,npmPackages:[{name:`dimcode-${platform}`,file:npmFile,sha256:digest(path.join(directory,npmFile))}],nativeArchives:[{platform,file:nativeFile,sha256:digest(path.join(directory,nativeFile))}]}));
   }
   const dist=path.join(temporary,'dist');
   mkdirSync(dist,{recursive:true});

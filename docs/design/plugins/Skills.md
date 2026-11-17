@@ -11,7 +11,7 @@ package is previewed, installed into the user scope, updated and removed. Skill 
 precedence, enablement, the Session view and the `skill` tool are the Skills capability's
 existing contract ([Skills](../../architecture/rust-agent/plugins/Skills.md)); plugin packages
 that carry Skills are PluginManager's ([PluginManager §3.7](PluginManager.md#37-content-registration)).
-How an operator's `$skill:` reference loads a Skill with the same input is §9.
+How an operator's `/skill:` token loads a Skill with the same input is §9.
 
 ## 1. Scope and non-goals
 
@@ -435,9 +435,9 @@ through installation forms on the Skills page.
 
 ## 9. References load with the operator's input
 
-An operator names a Skill with `$skill: <name>` in the input. That reference loads the Skill
-deterministically, before the model is asked, with the same input: no new input, no model round
-trip, and no AgentLoop change. The design is:
+An operator names a Skill with a `/skill:<name>` token in the input. That reference loads the
+Skill deterministically, before the model is asked, with the same input: no new input, no model
+round trip, and no AgentLoop change. The design is:
 
 - **The mechanism is `SubmitChecks`.** The Skills Session part registers the check `skills` with
   the Session's `submitChecks` ([Hooks A.6.2](Hooks.md#a62-submit-check-at-the-operator-input-entries)),
@@ -447,32 +447,95 @@ trip, and no AgentLoop change. The design is:
   input that drives the request and is recorded in the Timeline. The check is named `skills`, so
   its blocks follow `hooks`' in name order. `session.branch_create` returns no blocks: a
   branch's first input is built from the prompt alone.
-- **The marker is plain text.** A reference is `$skill:`, optional spaces, then the run of
-  non-whitespace characters that follows, matched exactly against the enabled Skill names. Plain
-  text keeps the composer free of atomic tokens and needs no argument syntax; `/` is the only
-  trigger, and `@` stays the file picker. A Skill whose name contains whitespace cannot be
-  referenced, and the palette does not list it.
-- **Lookup is the `skill` tool's view.** The check reads `SessionSkills::current()`: the enabled
-  Skills of the Session's current view. A disabled or unknown name adds nothing, and a view
-  error, a stopped part or a reloading part adds nothing: an error is no opinion. Each Skill is
-  resolved once, in the order of its first reference. References are read from the operator's own
-  content only: a block that starts with a runtime marker, which includes the blocks every submit
-  check adds, never adds one, so a steer of a queued input loads the same Skills as its submit.
+- **The token.** A reference is `/skill:` followed by the name: one unbroken token, with no space
+  after the colon. A token starts the message or follows whitespace, so it can stand
+  mid-sentence, and it never starts inside a word, so `a/skill:x` and `https://host/skill:y`
+  reference nothing. A name is one or more characters from `A-Z`, `a-z`, `0-9`, `_`, `-` and
+  `.`, and it never ends with a full stop: a trailing `.` ends the token and stays the
+  operator's text, so "Review it with /skill:review." references `review` and keeps its full
+  stop, while a full stop between other characters stays in the name (`/skill:a.b` is `a.b`). A
+  Skill whose name is spelled any other way, or ends with a full stop, cannot be referenced, and
+  the palettes do not list it. Names are matched exactly against the enabled Skill names.
+- **The token is the operator's words.** The message text stays as typed and whatever follows the
+  token reaches the model unchanged: there are no argument placeholders and nothing is rewritten.
+  A draft that begins with `/skill:` is sent as a message and never run as a command, and the
+  `skill:` namespace keeps the token apart from the built-in commands, so no collision rule is
+  needed. `/` stays the only trigger and `@` stays the file picker.
+- **One grammar, one definition.** `dim_agent_types::skill_token` states the token: where it may
+  start, which characters a name holds, and the spans it occupies in a text. The check, the CLI
+  composer, the web composer and the CLI, web and ACP transcript projections all read that one
+  definition, so every surface agrees on what loads and on what is drawn as one unit. The token
+  is drawn as one highlighted unit, or a chip, in the input and in the transcript, and a
+  transcript never repeats its prefix as prose. `dim-agent-types` is the crate the server and
+  every client already share as values; the web mirrors the same grammar in
+  `web/src/skill-token.ts`, with a test that pins the same cases.
+- **A drawn token is one unit wherever it was typed.** The spans are byte ranges of the text the
+  operator typed, so a surface marks the characters whose source byte lies in a token rather than
+  counting bytes per row: a wrapping that drops a break, expands a tab or joins a CRLF must not
+  move the highlight off the characters. A surface that already maps a byte range onto what it
+  paints uses that mapping directly; one that wraps the text itself carries each drawn
+  character's source byte out of the wrap and shares that one wrap with the plain rows.
+- **A filled reference shows its name, and only its name.** The CLI input draws a reference the
+  palette filled as the Skill's name (`/status`), and holds `/skill:<name> ` as its text: the name
+  is what the operator chose and what they read back, while the token stays what is submitted
+  and kept in the input history. The name is a projection over that text and never a
+  rewrite of it, so a Skill loads identically whether it was drawn by name or typed in full, and
+  text the operator typed is always drawn as typed. A name that is also a command the input
+  dispatches keeps the canonical token in the draft, because the plain name would read as that
+  command while the draft is still a message. The CLI's selection and copying behavior is
+  defined in [CLI commands](../cli-commands.md#command-menu); other surfaces state their own presentation.
+- **`$skill: <name>` keeps loading.** Inputs and habits from before this token keep working, so
+  the parser accepts the old marker too: `$skill:`, optional spaces, then the run of
+  non-whitespace characters that follows, matched exactly. No client writes it any more and the
+  documentation no longer describes it; the parser and its test are its only remaining statement.
+- **Lookup is the `skill` tool's view.** The check reads `SessionSkills::current()`: the enabled,
+  user-invocable Skills of the Session's current view. A disabled, unknown or non-user-invocable
+  name adds nothing, and a view error, a stopped part or a reloading part adds nothing: an error is
+  no opinion. Each Skill is resolved once, in the order of its first reference. References are read
+  from the operator's own content only: a block that starts with a runtime marker, which includes
+  the blocks every submit check adds, never adds one, so a steer of a queued input loads the same
+  Skills as its submit.
+- **Two invocation flags.** A `SKILL.md` may narrow who may invoke it. Both flags default to
+  allowing the invocation, so existing Skills keep their behaviour, and both are read at scan time
+  with the rest of the frontmatter:
+
+  | Field | Effect |
+  | --- | --- |
+  | `disable-model-invocation: true` | The model may not invoke the Skill: it is left out of the model's list (`dim/skills/list`) and the `skill` tool refuses it, while `/skill:<name>` still loads it |
+  | `user-invocable: false` | The operator may not invoke the Skill: it is left out of the CLI and web palettes and a token naming it loads nothing, while the `skill` tool still loads it |
+
+  A value that is neither `true` nor `false` is an invalid manifest, reported as a `skills.catalog`
+  issue and kept out of the catalog exactly as a missing `name` or `description` is: the existing
+  frontmatter error handling applies, and no default fills the gap. A number is such a value: the
+  frontmatter parser keeps it apart from a string, so `disable-model-invocation: 1` and
+  `user-invocable: 0` are refused rather than read as the default, which would silently widen a
+  mistyped restriction to both invocations. An absent key, `null`, `~` and an empty value are the
+  default, because they declare nothing.
 - **One block per Skill.** The block is `<dim-skill name="{name}">`, the exact text the `skill`
   tool returns, and `</dim-skill>`. The name is escaped with the attribute escaping every
   `<dim-…>` marker uses, and one function renders the loaded text for both the tool result and
   the block, so the two paths cannot drift. The block is a text block of the input's `user`
   content, never a raw block, so the input stays operator input.
 - **The model-facing text says which path loaded the Skill.** The instructions state that a
-  `$skill: name` marker followed in the same message by a `<dim-skill name="name">` block means
-  the Skill is already loaded: follow it, and do not call `skill` for it. A marker without such
-  a block is loaded with the tool, as today. Every other rule stays.
-- **Consumers see the block where hook contexts appear.** SessionTitle's title text and Recall
-  read the input's `user` content, so they see the added block after the operator's text,
-  exactly as they see a `UserPromptSubmit` context (Hooks A.6.2). That is accepted.
+  `/skill:name` token followed in the same message by a `<dim-skill name="name">` block means the
+  Skill is already loaded: follow it, and do not call `skill` for it. A token without such a block
+  is loaded with the tool, as today. Every other rule stays.
+- **Consumers see the block where hook contexts appear.** Recall reads the input's `user` content,
+  so it sees the added block after the operator's text, exactly as it sees a `UserPromptSubmit`
+  context (Hooks A.6.2). A reader that wants the operator's words alone leaves it out the same
+  way, as SessionTitle's title text does ([SessionTitle §0.1](SessionTitle.md#01-fields-read-for-one-title-attempt)).
 - **Clients show one line.** A text block of an operator input's `user` content that is not the
-  first block and starts with `<dim-skill name="` is shown as one line naming the loaded Skill,
-  never as its text ([clients](../clients.md)). The ACP gateway applies the same rule when it
-  replays an input to the editor on `session/load` and on a history read. A prefill for edit or
-  fork takes the operator's text only, so resending does not load the Skill twice. Export keeps
-  the raw record.
+  first block and that `dim_agent_types::markup::runtime_element` names `dim-skill` is shown as
+  one line naming the loaded Skill, never as its text ([clients](../clients.md)); the same
+  predicate tells a `dim-hooks` block beside it apart, which a client shows as its own row
+  (Hooks §3.3). The ACP gateway applies the same rule when it
+  replays an input to the editor on `session/load` and on a history read, and it delimits each
+  `/skill:<name>` token in the operator's own words so the editor can draw it as one unit; it
+  advertises no Skill as an ACP command, because that list carries the gateway's native
+  `/compact`, `/usage`, `/goal` and `/loop` only ([AcpGateway §4.7](AcpGateway.md)). A prefill for
+  edit or fork takes the operator's text only, so resending does not load the Skill twice. Export
+  keeps the raw record.
+- **The palettes offer the token, not a marker.** The CLI and web `/` menus list enabled,
+  unshadowed, user-invocable Skills whose names the token can carry, and choosing one fills
+  `/skill:<name> ` and sends nothing. Typing `/skill:` narrows the menu to Skills. Neither palette
+  writes the old marker.

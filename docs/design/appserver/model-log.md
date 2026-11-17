@@ -2,7 +2,7 @@
 
 The user's switch for recording the wire exchange of every model request
 ([#701](https://github.com/arcships/dim/issues/701)). The recording format is
-aimux's RFC-0023 JSONL (`vendor/aimux/aimux-core/src/recording.rs`).
+aimux's RFC-0023 JSONL (`aimux-core`'s `recording.rs`).
 
 ## Scope and owners
 

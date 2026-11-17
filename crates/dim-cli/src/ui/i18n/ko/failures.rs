@@ -1,6 +1,9 @@
 //! Korean model failures, retries and their details.
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Details unavailable; collapse and expand to retry" => {
+            "세부 정보를 불러올 수 없습니다. 접었다 펼쳐 다시 시도하세요"
+        }
         "The response above is incomplete." => "위 응답은 불완전합니다.",
         "Could not reach the provider, or the connection dropped" => {
             "공급자에 연결할 수 없거나 연결이 끊어졌습니다"

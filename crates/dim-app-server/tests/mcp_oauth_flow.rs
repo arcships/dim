@@ -79,6 +79,7 @@ struct Resource {
     require_write: AtomicBool,
     /// Publishes Protected Resource Metadata.
     prm: AtomicBool,
+    prm_origin: OnceLock<String>,
     /// Bearer tokens it received, in order.
     bearers: Mutex<Vec<String>>,
     unauthorized: AtomicUsize,
@@ -108,7 +109,7 @@ impl Resource {
                 let challenge = if self.prm.load(Ordering::SeqCst) {
                     format!(
                         r#"Bearer resource_metadata="{}/.well-known/oauth-protected-resource/{path}", scope="files:read""#,
-                        self.base.get().unwrap()
+                        self.prm_origin.get().or_else(|| self.base.get()).unwrap()
                     )
                 } else {
                     r#"Bearer scope="files:read""#.to_owned()
@@ -216,6 +217,7 @@ async fn protected_resource(resource: Arc<Resource>, path: &str) -> Response {
 struct Authority {
     base: OnceLock<String>,
     resource: Arc<Resource>,
+    foreign_prm_reads: AtomicUsize,
     /// Advertise PKCE `S256`.
     s256: AtomicBool,
     /// Advertise a cleartext, non-loopback authorization endpoint.
@@ -441,6 +443,13 @@ impl Servers {
                         "/.well-known/oauth-authorization-server",
                         get(authorization_metadata),
                     )
+                    .route(
+                        "/.well-known/oauth-protected-resource/mcp",
+                        get(|State(authority): State<Arc<Authority>>| async move {
+                            authority.foreign_prm_reads.fetch_add(1, Ordering::SeqCst);
+                            protected_resource(authority.resource.clone(), "mcp").await
+                        }),
+                    )
                     .route("/register", post(register))
                     .route("/token", post(token))
                     .route("/revoke", post(revoke))
@@ -600,6 +609,7 @@ impl Daemon {
             &mut builder,
             ModelProviderPlugin::new,
             WorkspaceToolsConfig {
+                boundary: None,
                 output_root: native.join("outputs"),
             },
             dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
@@ -727,8 +737,20 @@ async fn sign_in_connects_refreshes_once_per_key_and_signs_out() {
     let (resource, authority) = (servers.resource.clone(), servers.authority.clone());
     authority.code_expires_in.store(10, Ordering::SeqCst);
     let daemon = Daemon::start(&[("docs", json!({"type":"http","url":resource.url()}))]).await;
+    let auth = daemon
+        .server
+        .service::<dim_app_server::mcp::McpAuth>()
+        .unwrap();
+    assert!(
+        !auth.oauth_client_initialized(),
+        "startup built the OAuth HTTP client"
+    );
     let mut client = daemon.client().await;
     let first = daemon.session(&mut client).await;
+    assert!(
+        !auth.oauth_client_initialized(),
+        "a 401 connection built the OAuth HTTP client"
+    );
 
     let state = client.mcp_state(&first, "docs", "auth_required").await;
     assert_eq!(state["message"], "authorization required");
@@ -738,7 +760,39 @@ async fn sign_in_connects_refreshes_once_per_key_and_signs_out() {
         json!({"status":"required"})
     );
 
+    auth.fail_next_oauth_client_build();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let methods = daemon
+        .server
+        .service::<dim_app_server::methods::ManagementMethods>()
+        .unwrap();
+    let accepted = methods
+        .provider("mcp.auth.start")
+        .unwrap()
+        .accept(
+            "mcp.auth.start".into(),
+            user("docs"),
+            None,
+            cancelled,
+            |_| {},
+        )
+        .unwrap();
+    let error = accepted.reply.await.unwrap().unwrap_err();
+    assert_eq!(error.data.unwrap().app_error, "operation_interrupted");
+    let _ = accepted.settled.await;
+    assert!(!auth.oauth_client_initialized());
+    assert_eq!(
+        client.error("mcp.auth.start", user("docs")).await,
+        "mcp_auth_unavailable"
+    );
+    assert!(!auth.oauth_client_initialized());
+    assert!(authority.registrations.lock().unwrap().is_empty());
     let started = client.ok("mcp.auth.start", user("docs")).await;
+    assert!(
+        auth.oauth_client_initialized(),
+        "discovery did not build the OAuth HTTP client"
+    );
     assert_eq!(started["redirectUri"], "http://localhost:1456/callback");
     assert_eq!(started["resource"], resource.url());
     assert_eq!(started["issuer"], authority.base());
@@ -941,6 +995,31 @@ async fn sign_in_connects_refreshes_once_per_key_and_signs_out() {
     {
         assert!(!logs.contains(&secret), "{secret} leaked into logs");
     }
+    daemon.close().await;
+    servers.stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sign_in_rejects_cross_origin_resource_metadata_before_fetching_it() {
+    let servers = Servers::start().await;
+    servers
+        .resource
+        .prm_origin
+        .set(servers.authority.base().to_owned())
+        .unwrap();
+    let daemon =
+        Daemon::start(&[("docs", json!({"type":"http","url":servers.resource.url()}))]).await;
+    let mut client = daemon.client().await;
+    let session = daemon.session(&mut client).await;
+    client.mcp_state(&session, "docs", "auth_required").await;
+    assert_eq!(
+        client.error("mcp.auth.start", user("docs")).await,
+        "mcp_auth_discovery_failed"
+    );
+    assert_eq!(
+        servers.authority.foreign_prm_reads.load(Ordering::SeqCst),
+        0
+    );
     daemon.close().await;
     servers.stop.cancel();
 }

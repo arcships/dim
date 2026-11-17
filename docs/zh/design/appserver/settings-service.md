@@ -128,11 +128,12 @@ App Server 的装配和 PluginManager 都不声明来源。登记属于发起它
           "additionalProperties": false
         },
         "allowPrivateHosts": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "blockPrivateAddresses": { "type": "boolean", "default": false },
         "proxy": { "type": "string", "format": "uri" }
       },
       "additionalProperties": false
     },
-    "userOnly": ["/searchService", "/allowPrivateHosts"]
+    "userOnly": ["/searchService", "/allowPrivateHosts", "/blockPrivateAddresses", "/proxyDns"]
 }
 ```
 

@@ -6,9 +6,11 @@ import { HistoryWindow } from "../history-window"
 import { Lines, type LineView } from "../lines"
 import { ConnectionLost, RpcError } from "../rpc/client"
 import type { Goal, GoalCall } from "../goal"
-import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type UserInput, type WithdrawResult } from "../rpc/protocol"
+import { readLoops as readLoopsReply, readStartedLoop, type Loop } from "../loop"
+import { readUploadedImage } from "../rpc/read"
+import { MAIN_BRANCH, type ApprovalDecision, type ApprovalRequest, type DraftAttachments, type FileCandidate, type ModelId, type ModelProgress, type Notification, type PendingQuestion, type PermissionPreset, type ModelRetryProgress, type PermissionPolicy, type QueuedInput, type QuestionAnswer, type SessionEvent, type SubmitMode, type UserInput, type WithdrawResult } from "../rpc/protocol"
 import { readRevision, readRules } from "../rpc/general-settings"
-import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readWithdrawResult } from "../rpc/read"
+import { ProtocolError, readAttached, readBranches, readBranchDetail, readPendingInputs, readPendingQuestions, readTurn, readGoal, readTool, readAck, readAttachmentPath, readBranchCreate, readCompactResult, readConfigurationOutcome, readContextUsage, readFileCandidates, readForkedSessionId, readHistory, readDisplayHistory, readModelUpdate, readMemberApproval, readPermissionState, readPermissionVersion, readSessionMethods, readSessionSkills, readWithdrawResult } from "../rpc/read"
 import { useConnectionStore } from "./connection"
 import { useSessionsStore } from "./sessions"
 import { useUiStore } from "./ui"
@@ -21,6 +23,8 @@ export type BranchView = {
   rows: readonly TimelineRow[]
   running: boolean
   stopping: boolean
+  /** The messages the server still holds on this line, oldest first. */
+  queued: readonly QueuedInput[]
   status: "loading" | "ready" | "failed"
   error: string
   lastTurnEnd: number | undefined
@@ -196,7 +200,7 @@ export const useChatStore = defineStore("chat", () => {
       if (branch.opened && !channel.historyQueue.includes(id)) channel.historyQueue.push(id)
     }
     try {
-      const model = await client().call("session.attach", { sessionId: view.sessionId }, readAttached)
+      const model = await client().call("session.attach", { sessionId: view.sessionId, ...((useConnectionStore().supports("session.history.display") && useConnectionStore().supports("session.history.detail")) ? { display: true } : {}) }, readAttached)
       if (!useConnectionStore().supports("session.history.latestTurn")) throw new ProtocolError("This server does not support bounded conversation history")
       view.methods = await sessionMethods(view.sessionId)
       for (const required of ["session.input.pending", "session.question.pending", "session.turn.get"]) {
@@ -269,13 +273,14 @@ export const useChatStore = defineStore("chat", () => {
   function applyNotification(channel: Channel, notification: Notification): void {
     const view = channel.view
     switch (notification.method) {
-      case "session.event": {
+      case "session.event":
+      case "session.display": {
         const branchId = notification.branchId
         const stream = ensureBranch(channel, branchId)
         if (stream.syncing) {
           channel.lines.apply(branchId, notification.event)
           const content = notification.event.content
-          if (content.kind === "turn-end" || ((content.kind === "model-end" || content.kind === "tool-use") && content.requestId === stream.progress?.requestId)) stream.progress = undefined
+          if (content.kind === "turn-end" || ((content.kind === "model-end" || content.kind === "tool-use-start" || content.kind === "tool-use") && content.requestId === stream.progress?.requestId)) stream.progress = undefined
           stream.queued.push(notification.event)
         } else if (!stream.opened) {
           applyEvent(channel, branchId, notification.event)
@@ -353,7 +358,7 @@ export const useChatStore = defineStore("chat", () => {
     }
     if (!stream.projection.apply(event)) return
     const applied = event.content
-    if (applied.kind === "turn-end" || ((applied.kind === "model-end" || applied.kind === "tool-use") && applied.requestId === stream.progress?.requestId)) stream.progress = undefined
+    if (applied.kind === "turn-end" || ((applied.kind === "model-end" || applied.kind === "tool-use-start" || applied.kind === "tool-use") && applied.requestId === stream.progress?.requestId)) stream.progress = undefined
     if (event.content.kind === "branch-create") ensureBranch(channel, event.content.branchId)
     if (branchId === MAIN_BRANCH && event.content.kind === "permission-changed") channel.view.permission = event.content.policy
     if (branchId === MAIN_BRANCH && (applied.kind === "input-deleted" || ((applied.kind === "input" || applied.kind === "source-input") && applied.blocks.some(block => block.key?.startsWith("goal:"))))) void refreshGoal(channel)
@@ -361,6 +366,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function hydrateTools(channel: Channel, branchId: string, projection: Projection, event: SessionEvent): Promise<void> {
+    if (event.parentCallId !== undefined) return
     const content = event.content
     if (content.kind !== "tool-completed" && content.kind !== "tool-result") return
     const results = content.kind === "tool-result" ? content.results : [{ callId: content.callId, result: content.result }]
@@ -456,9 +462,11 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function window(channel: Channel, branchId: string, before?: number, through?: number) {
-    const window = new HistoryWindow(before, through)
+    const connection = useConnectionStore()
+    const display = connection.supports("session.history.display") && connection.supports("session.history.detail")
+    const window = new HistoryWindow(before, through, display && connection.supports("session.history.display.tail"), display && connection.supports("session.history.display.transcript"))
     for (;;) {
-      const page = await client().call("session.history", window.params(channel.view.sessionId, branchId), readHistory, HISTORY_TIMEOUT_MS)
+      const page = await client().call(display ? "session.history.display" : "session.history", window.params(channel.view.sessionId, branchId), display ? readDisplayHistory : readHistory, HISTORY_TIMEOUT_MS)
       if (window.push(page)) break
     }
     const events = window.take()
@@ -488,7 +496,7 @@ export const useChatStore = defineStore("chat", () => {
         branch.through = through
         for (const event of loaded.events) {
           const content = event.content
-          if (content.kind === "turn-end" || ((content.kind === "model-end" || content.kind === "tool-use") && content.requestId === branch.progress?.requestId)) branch.progress = undefined
+          if (content.kind === "turn-end" || ((content.kind === "model-end" || content.kind === "tool-use-start" || content.kind === "tool-use") && content.requestId === branch.progress?.requestId)) branch.progress = undefined
         }
         branch.queued = branch.queued.filter(event => event.sequence > through)
         branch.syncing = false
@@ -609,6 +617,7 @@ export const useChatStore = defineStore("chat", () => {
       const state = stateOf(channel, id)
       branches[id] = {
         rows: branch.projection.rows.slice(),
+        queued: branch.projection.queued(),
         running: state.running,
         stopping: state.stopping,
         status: branch.error !== "" ? "failed" : branch.done ? "ready" : "loading",
@@ -644,15 +653,74 @@ export const useChatStore = defineStore("chat", () => {
     publish(channel)
   }
 
-  async function submit(sessionId: string, branchId: string, text: string, attachments: DraftAttachments = { images: [], pastes: [] }): Promise<void> {
+  const uploadedImages = new WeakMap<File, Map<string, ReturnType<typeof readUploadedImage>>>()
+
+  async function upload(sessionId: string, file: Blob, name: string, image: boolean, progress?: (percent: number) => void): Promise<unknown> {
+    const form = new FormData()
+    form.append("file", file, name)
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest()
+      request.open("POST", `/api/sessions/${encodeURIComponent(sessionId)}/files${image ? "?image=true" : ""}`)
+      request.timeout = 125_000
+      request.upload.onprogress = (event) => {
+        if (event.lengthComputable) progress?.(Math.floor(event.loaded * 100 / event.total))
+      }
+      request.onerror = () => reject(new Error("Attachment upload failed"))
+      request.ontimeout = () => reject(new Error("Attachment upload timed out"))
+      request.onabort = () => reject(new Error("Attachment upload cancelled"))
+      request.onload = () => {
+        if (request.status < 200 || request.status >= 300) {
+          reject(new Error(`Attachment upload failed (${request.status})`))
+          return
+        }
+        try { resolve(JSON.parse(request.responseText)) }
+        catch (error) { reject(error) }
+      }
+      request.send(form)
+    })
+  }
+
+  async function submit(sessionId: string, branchId: string, text: string, attachments: DraftAttachments = { images: [], pastes: [] }, mode: SubmitMode = "queue"): Promise<void> {
     let body = text
+    const total = attachments.pastes.length + attachments.images.length
+    let completed = 0
+    const progress = (percent: number) => attachments.onProgress?.(Math.floor((completed * 100 + percent) / total))
     for (const paste of attachments.pastes) {
-      const path = await client().call("attachment.put", { sessionId, text: paste }, readAttachmentPath)
+      const uploaded = await upload(sessionId, new Blob([paste], { type: "text/plain" }), "paste.txt", false, progress)
+      completed++
+      const path = readAttachmentPath(uploaded)
       body = `${body}${body === "" ? "" : "\n"}[Pasted text: ${path} (${paste.split("\n").length} lines)]`
     }
-    const params: Record<string, unknown> = { sessionId, branchId, submissionId: crypto.randomUUID(), mode: "queue" }
-    if (attachments.images.length === 0) params.text = body
-    else params.user = { content: [...(body === "" ? [] : [{ type: "text", text: body }]), ...attachments.images] }
+    // Each recalled image keeps the draft offset it stood at; the text around
+    // them is sent as the runs those offsets split it into.
+    const content: Array<Record<string, unknown>> = []
+    let cursor = 0
+    for (const { at, image } of [...(attachments.restored ?? [])].sort((left, right) => left.at - right.at)) {
+      const offset = Math.max(cursor, Math.min(at, text.length))
+      if (offset > cursor) content.push({ type: "text", text: body.slice(cursor, offset) })
+      content.push(image)
+      cursor = offset
+    }
+    if (cursor < body.length) content.push({ type: "text", text: body.slice(cursor) })
+    for (const file of attachments.images) {
+      let source = uploadedImages.get(file)?.get(sessionId)
+      if (source === undefined) {
+        const uploaded = await upload(sessionId, file, file.name, true, progress)
+        source = readUploadedImage(uploaded)
+        let sessions = uploadedImages.get(file)
+        if (sessions === undefined) {
+          sessions = new Map()
+          uploadedImages.set(file, sessions)
+        }
+        sessions.set(sessionId, source)
+      }
+      progress(100)
+      completed++
+      content.push({ type: "image", source })
+    }
+    const params: Record<string, unknown> = { sessionId, branchId, submissionId: crypto.randomUUID(), mode }
+    if (!content.some((block) => block.type === "image")) params.text = body
+    else params.user = { content }
     await client().call("session.submit", params, readAck)
   }
 
@@ -741,6 +809,26 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** Starts a loop on the main line and returns its id. */
+  async function startLoop(sessionId: string, prompt: string, everySeconds: number | undefined): Promise<string> {
+    return await client().call("session.loop.start", {
+      sessionId,
+      branchId: MAIN_BRANCH,
+      prompt,
+      ...(everySeconds === undefined ? {} : { everySeconds }),
+    }, readStartedLoop)
+  }
+
+  /** The main line's loops, newest first. */
+  async function readLoops(sessionId: string): Promise<Loop[]> {
+    return [...await client().call("session.loop.list", { sessionId, branchId: MAIN_BRANCH }, readLoopsReply)]
+  }
+
+  /** Stops one loop of the main line. */
+  async function stopLoop(sessionId: string, loopId: string): Promise<void> {
+    await client().call("session.loop.stop", { sessionId, loopId }, readAck)
+  }
+
   /** Reads the main line's context window usage. */
   async function usage(sessionId: string) {
     return client().call("session.context.usage", { sessionId, branchId: MAIN_BRANCH }, readContextUsage)
@@ -756,10 +844,15 @@ export const useChatStore = defineStore("chat", () => {
     return client().call("session.files.search", { sessionId, query, limit: 20 }, readFileCandidates)
   }
 
+  /** The Skills the composer offers by `/skill:<name>`: enabled, unshadowed and user-invocable, from `session.skills`. */
+  async function sessionSkills(sessionId: string) {
+    return client().call("session.skills", { sessionId, branchId: MAIN_BRANCH }, readSessionSkills)
+  }
+
   /** Writes the main line's reasoning effort through `session.model.update`'s preferences; returns the server's outcome. */
-  /** Withdraws a queued message; with `steer`, the same content joins the running turn at its next boundary. */
-  async function withdrawInput(sessionId: string, inputId: string, steer: UserInput | undefined): Promise<WithdrawResult> {
-    return client().call("session.input.withdraw", { sessionId, branchId: MAIN_BRANCH, inputId, ...(steer === undefined ? {} : { steer }) }, readWithdrawResult)
+  /** Withdraws a queued message of `branchId`; with `steer`, the same content joins the running turn at its next boundary. */
+  async function withdrawInput(sessionId: string, branchId: string, inputId: string, steer: UserInput | undefined): Promise<WithdrawResult> {
+    return client().call("session.input.withdraw", { sessionId, branchId, inputId, ...(steer === undefined ? {} : { steer }) }, readWithdrawResult)
   }
 
   /** The policy of `main`, or undefined when the Session serves no permission method or the read fails. */
@@ -811,5 +904,5 @@ export const useChatStore = defineStore("chat", () => {
     publish(channel)
   }
 
-  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, submit, stop, createLine, endLine, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, setEffort, setPermission, withdrawInput, searchFiles, memberApproval, setModel }
+  return { views, open, resync, receive, ensureLine, loadEarlier, retryLine, submit, stop, createLine, endLine, respond, allowAlways, allowForSession, answerQuestion, compact, usage, fork, writeGoal, startLoop, readLoops, stopLoop, setEffort, setPermission, withdrawInput, searchFiles, sessionSkills, memberApproval, setModel }
 })

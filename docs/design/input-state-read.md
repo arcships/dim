@@ -19,14 +19,67 @@ request; interruption cancels it. InputQueue's write admission remains authorita
 Clients install the inventory independently of transcript history and consume later facts above
 its cutoff. Applied inputs remain pending until consumed; they cannot be treated as withdrawable.
 
+## Block-presence extension
+
+`session.input.pending` accepts optional `includeBlockPresence` (default false).
+When true, each returned input also carries required boolean `hasRawBlocks`, derived
+from whether its stored `input/message.blocks` is nonempty. The read projects only
+the presence of a first raw block, not its body, marker or source-specific meaning.
+Candidate selection, pagination, ordering and applied-state lookup stay unchanged.
+There is no new persisted field or input format.
+
+The App Server advertises `session.input.pending.blockPresence` in its negotiated
+features. Clients request the extension only when advertised. Without the request,
+the reply keeps its existing shape, including for inputs with raw blocks; existing
+clients that reject unknown fields remain compatible. A client that needs this
+distinction must report an unsupported daemon rather than interpret absent
+information as an operator input.
+
+The CLI uses this structural information for its user-only
+[Queue](cli-commands.md#queued-messages). Live events carry the same information in
+`input/message.blocks`. The distinction affects neither pending membership nor
+input execution, and does not remove automatic inputs from the read or transcript.
+Source raw blocks follow [session access A.2](contracts/session-access.md#a2-source-input-conventions);
+operator submit-check context remains inside user content, as specified by
+[Hooks A.6.2](plugins/Hooks.md#a62-submit-check-at-the-operator-input-entries).
+
+### Rule check
+
+This extends the existing stateless InputMethods read, not the InputQueue
+Capability's decisions. Its dependencies remain the `treeCommands` and
+`sessionMethods` data faces documented by [InputQueue](../architecture/rust-agent/plugins/InputQueue.md#inputmethods).
+It writes no facts, owns no background work, and retains no state between calls.
+Principles §4 rules 1–3, 5–6 and 9 require no new mechanism here: there is no
+write, handoff, `before`, batch or context injection. Rules 4, 7 and 8 are met by
+projecting generic structural data through the existing named query service,
+without parsing a producer's marker or changing infrastructure. Under §1 and
+ADR 002 D1–D5, the read remains Session-scoped, uses its declared dependencies,
+adds no wiring or configuration, and returns only language-neutral data.
+
+### Requirements raised to mechanism owners
+
+None. Existing Timeline field projection can read the first block's type without
+loading its body. The read owner supplies the requested presence bit; the CLI
+owns what that bit means for its Queue. No service, event, storage format,
+assembly or lifecycle change is required.
+
 ## Turn identity read
 
 Loop owns `session.turn.get`, registered by its Session part `LoopMethods` with declared
 TreeCommands and SessionMethods dependencies. It takes `sessionId`, `branchId`, optional
-`through`, optional `turnId`; returns `branchId`, published `through`, and nullable `turn`.
-A turn has `turnId`, boundary `sequence`, and `ended`. Without an identity the query selects the
+`through`, optional `turnId` or `inputId`; returns `branchId`, published `through`, and nullable `turn`.
+`turnId` and `inputId` are mutually exclusive and a supplied identity must be nonempty.
+A turn has `turnId`, boundary `sequence`, and `ended`; an ended boundary also carries its
+original typed `outcome` (`status` and `reason` or `error`). Without an identity the query selects the
 latest turn boundary. With one it selects that turn's latest boundary; this resolves old fork
-anchors without transcript replay. Null means no matching boundary, not an inferred idle state
+anchors without transcript replay. `inputId` addresses the turn that actually consumed that
+accepted input: find its `input/consumed` by input identity, then the last `turn/start` at or
+before that position, then that turn’s latest boundary at the original cutoff. An unconsumed
+or unknown input returns null and does not fall back to the currently running turn. These are
+three indexed position/identity reads, with no input/output body or historical paging.
+The first read selects consumed/deleted by the same input identity; a deleted input returns
+`inputDeleted=true`, null turn and null output. Other replies may omit `inputDeleted` (false).
+Null means no matching boundary, not an inferred idle state
 from a short transcript. Fork requires a matching ended turn. The reply contains no event or output body.
 Current uncommitted output remains ModelProvider's public progress, including the original block
 identities and offsets; it is not derived by rereading the complete active turn.
@@ -41,4 +94,4 @@ The current-turn reply also has nullable `output`: `requestId`, `textCharacters`
 `thinkingCharacters` for the latest model request without model-output-end at the same cutoff.
 Character counts sum Unicode scalar values in its text/thinking deltas. They do not return those
 deltas. Clients install these absolute offsets after projecting the truncated window, before
-consuming later durable events and progress. A historical `turnId` lookup does not read output.
+consuming later durable events and progress. An identity lookup (`turnId` or `inputId`) does not read output or calculate character counts.

@@ -3,8 +3,9 @@ name = "dim-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
-description = "Protected public RPC v3 transport for native Dim clients"
+description = "Protected public RPC transport for native Dim clients"
 
 [dependencies]
 dim-agent-types.workspace = true

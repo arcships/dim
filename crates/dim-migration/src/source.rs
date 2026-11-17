@@ -844,11 +844,7 @@ impl Source {
                         "SELECT * FROM {table} WHERE sessionId=?1 ORDER BY {identity}"
                     ))
                     .map_err(object_error)?;
-                let names = query
-                    .column_names()
-                    .into_iter()
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>();
+                let names = query.column_names().map(str::to_owned).collect::<Vec<_>>();
                 let mut rows = query.query([id]).map_err(object_error)?;
                 while let Some(row) = rows.next().map_err(object_error)? {
                     let mut data = serde_json::Map::new();

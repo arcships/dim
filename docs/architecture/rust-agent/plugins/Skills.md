@@ -126,8 +126,8 @@ the instructions are mixed.
 
 | Text | Class and sentences |
 | --- | --- |
-| `dim/skills/instructions`, in the system prefix | Protocol: "A skill is a local instruction bundle stored in a SKILL.md file." states what a skill is, "Discovery: The latest `<dim-state source="dim/skills/list">` lists the skills available in this session, each with a name and, when space allows, a description." names the state source the list arrives in, "A `$skill: name` marker names the exact skill to load." names a marker, "Use `skill({ "skill_name": "<name>" })` to load the full SKILL.md instructions." states the call shape, and "A `$skill: name` marker followed in the same message by a `<dim-skill name="name">` block means that skill is already loaded: follow the block and do not call `skill` for it." states which path loaded it. Policy: the trigger rules, loading, multiple-match, missing-or-blocked, context-hygiene and safety guidance, and "Use the `skill` tool to load the full instructions before applying a skill." |
-| `dim/skills/list`, as a `<dim-state>` block | Protocol: the format — one `- <name>: <description>` or `- <name>` line per enabled skill, names listed always and descriptions added cheapest first within the character budget, escaped — and the source name the block carries. The names and descriptions are the skills' own data |
+| `dim/skills/instructions`, in the system prefix | Protocol: "A skill is a local instruction bundle stored in a SKILL.md file." states what a skill is, "Discovery: The latest `<dim-state source="dim/skills/list">` lists the skills available in this session, each with a name and, when space allows, a description." names the state source the list arrives in, "A `/skill:name` token names the exact skill to load." names a token, "Use `skill({ "skill_name": "<name>" })` to load the full SKILL.md instructions." states the call shape, and "A `/skill:name` token followed in the same message by a `<dim-skill name="name">` block means that skill is already loaded: follow the block and do not call `skill` for it." states which path loaded it. Policy: the trigger rules, loading, multiple-match, missing-or-blocked, context-hygiene and safety guidance, and "Use the `skill` tool to load the full instructions before applying a skill." |
+| `dim/skills/list`, as a `<dim-state>` block | Protocol: the format — one `- <name>: <description>` or `- <name>` line per enabled skill the model may invoke, names listed always and descriptions added cheapest first within the character budget, escaped — and the source name the block carries. The names and descriptions are the skills' own data |
 
 The list arrives in a `<dim-state>` block, so its guide entry is Prompt's
 ([Prompt §4](../../../design/plugins/Prompt.md#4-the-built-in-entries-and-their-writers)):
@@ -151,10 +151,16 @@ protocol, and the loaded body is the skill author's own text.
 | `S:SessionConfig` | Select the Session working directory. |
 | `S:SessionLoader` | Lock-free creation of Session-owned content instances. |
 | `S:SessionLifecycle` | Start catalog-driven replacement only after the Session is published. |
-| `S:SkillsConfig` | The factory configuration of this plugin, registered and provided by `skills::install_with_config`; its `instructions` text replaces the built-in skill instructions when set, and a profile that registers the parts without the install declares and reads none. |
+| `S:SkillsConfig` | The factory configuration of this plugin, registered and provided by `skills::install_with_config`; its `instructions` text replaces the built-in skill instructions when set, `skillsConfig.get` exposes it as data, and a profile that registers the parts without the install declares and reads none. |
 | `S:PromptRegistry` | Register the list and instructions sources, until this part unloads. |
 | `S:ToolRegistry` | Register the `skill` tool, until this part unloads. |
-| `S:SubmitChecks` | Register the check `skills` with the Session's submit checks, until this part unloads: `$skill: <name>` references in operator input load those Skills with the same input ([Skills §9](../../../design/plugins/Skills.md#9-references-load-with-the-operators-input)). |
+| `S:SubmitChecks` | Register the check `skills` with the Session's submit checks, until this part unloads: `/skill:<name>` tokens in operator input load those Skills with the same input ([Skills §9](../../../design/plugins/Skills.md#9-references-load-with-the-operators-input)). |
+
+`SkillsInstructionsSettingsHost`, the operator's override of the instructions, is
+provided by the App Server's execution-root assembly. The part declares it only
+where its name is registered, reads it while applying, and keeps the built-in
+text when it is absent or fails; the factory `SkillsConfig` outranks it
+([prompt overrides](../../../design/appserver/prompt-overrides.md)).
 
 ### Content instances
 

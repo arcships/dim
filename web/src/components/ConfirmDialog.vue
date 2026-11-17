@@ -1,12 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, useId } from "vue"
+import { onBeforeUnmount, ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { TriangleAlert } from "lucide-vue-next"
 import { settingsMessages } from "../i18n/settings"
 
 const { t } = useI18n({ messages: settingsMessages })
-const id = useId()
-const dialog = ref<HTMLDialogElement>()
+const opened = ref(false)
 const message = ref("")
 const label = ref("")
 let settle: ((value: boolean) => void) | undefined
@@ -17,28 +15,38 @@ function open(text: string, options: { confirmLabel?: string } = {}): Promise<bo
   label.value = options.confirmLabel ?? t("confirm")
   return new Promise((resolve) => {
     settle = resolve
-    dialog.value?.showModal()
+    opened.value = true
   })
 }
+
 function finish(value: boolean): void {
   const resolve = settle
   settle = undefined
-  dialog.value?.close()
+  opened.value = false
   resolve?.(value)
 }
+
+function onOpenChange(next: boolean): void {
+  if (!next) finish(false)
+}
+
 onBeforeUnmount(() => settle?.(false))
 defineExpose({ open })
 </script>
 
 <template>
-  <dialog ref="dialog" class="ui-dialog" data-size="md" :aria-labelledby="id" @cancel.prevent="finish(false)" @close="finish(false)">
-    <header class="ui-dialog-header">
-      <span class="ui-dialog-icon" data-tone="warning"><TriangleAlert aria-hidden="true" /></span>
-      <h2 :id="id" class="ui-dialog-title">{{ message }}</h2>
-    </header>
-    <footer class="ui-dialog-footer">
-      <button class="ui-button" data-variant="secondary" type="button" autofocus @click="finish(false)">{{ t("cancel") }}</button>
-      <button class="ui-button" data-variant="danger" type="button" @click="finish(true)">{{ label }}</button>
-    </footer>
-  </dialog>
+  <UModal :open="opened" :close="false" :ui="{ content: 'sm:max-w-[560px]', footer: 'justify-end gap-2' }" @update:open="onOpenChange">
+    <template #header>
+      <div class="flex items-start gap-3">
+        <span class="inline-flex size-9 flex-none items-center justify-center rounded-lg bg-[var(--warning-soft)] text-[var(--warning)]">
+          <UIcon name="i-lucide-triangle-alert" class="size-4" aria-hidden="true" />
+        </span>
+        <h2 class="text-lg font-medium leading-snug text-highlighted">{{ message }}</h2>
+      </div>
+    </template>
+    <template #footer>
+      <UButton color="neutral" variant="outline" autofocus :label="t('cancel')" @click="finish(false)" />
+      <UButton color="error" :label="label" @click="finish(true)" />
+    </template>
+  </UModal>
 </template>

@@ -144,9 +144,15 @@ fn install_with_prompt_capability_and_branch(
             }),
         )
         .require_feature(
-            Feature::new("ContextPreparation").branch("ContextPreparation", |names| {
-                Ok(Box::new(ContextPreparationPlugin::new(names)?))
-            }),
+            Feature::new("ContextPreparation")
+                .branch("ContextUsage", |names| {
+                    Ok(Box::new(crate::context_usage::ContextUsagePlugin::new(
+                        names,
+                    )?))
+                })
+                .branch("ContextPreparation", |names| {
+                    Ok(Box::new(ContextPreparationPlugin::new(names)?))
+                }),
         )
         .require_feature(
             Feature::new("Prompt")
@@ -227,11 +233,17 @@ pub fn install_minimal_execution(
 ) {
     install_with_prompt_capability_no_branch(builder, model);
     builder.require_feature(
-        Feature::new("ShellSession").branch("ShellSession", |names| {
-            Ok(Box::new(crate::shell_session::ShellSessionPlugin::session(
-                names,
-            )?))
-        }),
+        Feature::new("ShellSession")
+            .branch("BackgroundExec", |names| {
+                Ok(Box::new(
+                    crate::workspace_tools::background::BackgroundExecPlugin::new(names)?,
+                ))
+            })
+            .branch("ShellSession", |names| {
+                Ok(Box::new(crate::shell_session::ShellSessionPlugin::session(
+                    names,
+                )?))
+            }),
     );
     crate::shell_tools::install(builder);
     crate::prompt_sources::install(builder);

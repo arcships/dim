@@ -1,5 +1,6 @@
-//! An operator's `$skill:` reference loads that Skill with the same input,
-//! before the model is asked (`docs/design/plugins/Skills.md`).
+//! An operator's `/skill:<name>` token loads that Skill with the same input,
+//! before the model is asked; `$skill: <name>` still loads for input written
+//! before the token (`docs/design/plugins/Skills.md` §9).
 use super::*;
 use dim_agent_capabilities::adapters::EchoModel;
 use dim_agent_capabilities::{
@@ -54,7 +55,10 @@ impl DynPlugin for CatalogHost {
 
 /// Answers like the mock model and keeps each request for inspection.
 #[derive(Default)]
-struct Recording(Mutex<Vec<Arc<ModelRequest>>>);
+struct Recording(
+    Mutex<Vec<Arc<ModelRequest>>>,
+    Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+);
 impl ModelDriver for Recording {
     fn invoke(
         &self,
@@ -63,7 +67,18 @@ impl ModelDriver for Recording {
         cancel: CancellationToken,
     ) -> HostFuture<'_, ModelStream> {
         self.0.lock().unwrap().push(request.clone());
-        EchoModel.invoke(request, ModelConnection::Local, cancel)
+        let hold = self.1.lock().unwrap().take();
+        Box::pin(async move {
+            if let Some(hold) = hold {
+                tokio::select! {
+                    _ = hold => {}
+                    _ = cancel.cancelled() => {}
+                }
+            }
+            EchoModel
+                .invoke(request, ModelConnection::Local, cancel)
+                .await
+        })
     }
 }
 impl Recording {
@@ -269,6 +284,36 @@ fn view_version(session: &dim_agent_runtime::Session) -> String {
         .clone()
 }
 
+/// The names of the Skills the input's blocks loaded, in order: the operator's
+/// text comes first and every block after it names its Skill.
+fn loaded(input: &InputMessageData) -> Vec<String> {
+    texts(input)
+        .into_iter()
+        .skip(1)
+        .filter_map(|text| {
+            let rest = text.strip_prefix("<dim-skill name=\"")?;
+            Some(rest.split('"').next()?.to_owned())
+        })
+        .collect()
+}
+
+/// Submits `text` and returns the input the server wrote for it.
+async fn submitted(
+    client: &mut Client,
+    id: &str,
+    session: &dim_agent_runtime::Session,
+    text: &str,
+) -> InputMessageData {
+    let reply = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": text}),
+        )
+        .await;
+    assert_ok(&reply);
+    operator_inputs(session).await.pop().expect("the input")
+}
+
 async fn wait_view_change(session: &dim_agent_runtime::Session, before: &str) {
     for _ in 0..500 {
         if view_version(session) != before {
@@ -349,6 +394,8 @@ async fn a_steer_reference_gets_the_block() {
     let home = home("steer");
     let project = project_skill(&home, "checkin", "Answers check-in questions", "STEER-BODY");
     let model = Arc::new(Recording::default());
+    let (release, hold) = tokio::sync::oneshot::channel();
+    *model.1.lock().unwrap() = Some(hold);
     let (server, _) = launch(&home, model.clone()).await;
     let (mut client, id, session) = session(&server, &project, json!([])).await;
     let submitted = client
@@ -358,19 +405,24 @@ async fn a_steer_reference_gets_the_block() {
         )
         .await;
     assert_ok(&submitted);
-    let idle = client
-        .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
+    let queued = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main", "text": "queued"}),
+        )
         .await;
-    assert_ok(&idle);
+    assert_ok(&queued);
 
     let withdrawn = client
         .rpc(
             "session.input.withdraw",
-            json!({"sessionId": id, "branchId": "main", "inputId": "unknown",
+            json!({"sessionId": id, "branchId": "main", "inputId": queued["result"]["event"]["id"],
                 "steer": {"content": [{"type": "text", "text": "$skill: checkin more"}]}}),
         )
         .await;
     assert_ok(&withdrawn);
+    assert_eq!(withdrawn["result"]["status"], "deleted", "{withdrawn}");
+    let _ = release.send(());
     let idle = client
         .rpc("session.idle", json!({"sessionId": id, "branchId": "main"}))
         .await;
@@ -663,6 +715,183 @@ async fn steering_a_queued_reference_keeps_one_block() {
     assert!(
         !sent.iter().any(|text| text.contains("SECOND-BODY")),
         "a steer follows no reference in a loaded block: {sent:?}"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_at_the_start_and_mid_sentence_loads_the_skill() {
+    let home = home("token-grammar");
+    let project = project_skill(&home, "checkin", "Answers check-ins", "CHECKIN-BODY");
+    let model = Arc::new(Recording::default());
+    let (server, _) = launch(&home, model).await;
+    let (mut client, id, session) = session(&server, &project, json!([])).await;
+
+    for text in [
+        "/skill:checkin what is new?",
+        "please /skill:checkin what is new?",
+    ] {
+        let input = submitted(&mut client, &id, &session, text).await;
+        let sent = texts(&input);
+        assert_eq!(sent[0], text, "the operator's words stay as typed");
+        assert_eq!(loaded(&input), ["checkin"], "{text}: {sent:?}");
+        assert!(sent[1].contains("CHECKIN-BODY"), "{text}: {sent:?}");
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slash_inside_a_word_loads_nothing() {
+    let home = home("token-word");
+    let project = project_skill(&home, "checkin", "Answers check-ins", "CHECKIN-BODY");
+    let model = Arc::new(Recording::default());
+    let (server, _) = launch(&home, model).await;
+    let (mut client, id, session) = session(&server, &project, json!([])).await;
+
+    for text in [
+        "a/skill:checkin",
+        "https://host/skill:checkin",
+        "/skill:",
+        "/skill: checkin",
+    ] {
+        let input = submitted(&mut client, &id, &session, text).await;
+        assert_eq!(
+            loaded(&input),
+            [] as [String; 0],
+            "{text}: {:?}",
+            texts(&input)
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_old_marker_still_loads_the_skill() {
+    let home = home("token-compat");
+    let project = project_skill(&home, "checkin", "Answers check-ins", "CHECKIN-BODY");
+    let model = Arc::new(Recording::default());
+    let (server, _) = launch(&home, model).await;
+    let (mut client, id, session) = session(&server, &project, json!([])).await;
+
+    for text in ["$skill: checkin", "$skill:  checkin what is new?"] {
+        let input = submitted(&mut client, &id, &session, text).await;
+        assert_eq!(loaded(&input), ["checkin"], "{text}: {:?}", texts(&input));
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_known_unknown_and_disabled_name_load_what_they_should() {
+    let home = home("token-names");
+    let project = project_skill(&home, "alpha", "Alpha", "ALPHA-BODY");
+    project_skill(&home, "beta", "Beta", "BETA-BODY");
+    let model = Arc::new(Recording::default());
+    let (server, catalog) = launch(&home, model).await;
+    let (mut client, id, session) = session(&server, &project, json!([])).await;
+    let catalog = catalog.lock().unwrap().clone().expect("the catalog");
+    let view = catalog.query(Some(&project)).await.unwrap();
+    let beta = view
+        .entries
+        .iter()
+        .find(|entry| entry.definition.name == "beta")
+        .expect("beta")
+        .definition
+        .id
+        .clone();
+    let before = view_version(&session);
+    catalog
+        .set_enabled(&beta, false, Some(&project))
+        .await
+        .unwrap();
+    wait_view_change(&session, &before).await;
+
+    let input = submitted(
+        &mut client,
+        &id,
+        &session,
+        "/skill:beta disabled then /skill:alpha enabled /skill:missing unknown",
+    )
+    .await;
+    assert_eq!(loaded(&input), ["alpha"], "{:?}", texts(&input));
+    assert!(
+        !texts(&input).iter().any(|text| text.contains("BETA-BODY")),
+        "a disabled Skill loads nothing: {:?}",
+        texts(&input)
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tokens_load_each_skill_once_in_first_reference_order() {
+    let home = home("token-order");
+    let project = project_skill(&home, "beta", "Beta", "BETA-BODY");
+    let alpha = project.join(".agents/skills/alpha");
+    std::fs::create_dir_all(&alpha).unwrap();
+    std::fs::write(
+        alpha.join("SKILL.md"),
+        "---\nname: alpha\ndescription: Alpha\n---\n\nALPHA-BODY\n",
+    )
+    .unwrap();
+    let model = Arc::new(Recording::default());
+    let (server, _) = launch(&home, model).await;
+    let (mut client, id, session) = session(&server, &project, json!([])).await;
+
+    let input = submitted(
+        &mut client,
+        &id,
+        &session,
+        "/skill:beta one /skill:alpha two /skill:beta three",
+    )
+    .await;
+    assert_eq!(
+        loaded(&input),
+        ["beta", "alpha"],
+        "each Skill once, in first-reference order: {:?}",
+        texts(&input)
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_in_a_runtime_block_loads_nothing() {
+    let home = home("token-runtime");
+    let project = project_skill(&home, "checkin", "Answers check-ins", "CHECKIN-BODY");
+    project_skill(&home, "second", "Answers follow-ups", "SECOND-BODY");
+    let model = Arc::new(Recording::default());
+    let (server, _) = launch(&home, model).await;
+    let (mut client, id, session) = session(&server, &project, json!([])).await;
+
+    let reply = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": id, "branchId": "main",
+                "user": {"content": [
+                    {"type": "text", "text": "/skill:checkin keep my words"},
+                    {"type": "text", "text": "<dim-hooks kind=\"prompt-submit\">/skill:second</dim-hooks>"},
+                ]}}),
+        )
+        .await;
+    assert_ok(&reply);
+    let input = operator_inputs(&session).await.pop().expect("the input");
+    assert_eq!(loaded(&input), ["checkin"], "{:?}", texts(&input));
+    assert!(
+        !texts(&input)
+            .iter()
+            .any(|text| text.contains("SECOND-BODY")),
+        "a token in a runtime block loads nothing: {:?}",
+        texts(&input)
     );
     server.shutdown();
     server.join().await.unwrap();

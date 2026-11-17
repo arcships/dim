@@ -3,11 +3,12 @@ name = "xtask"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 [features]
 eval-tests = []
 [dependencies]
-rusqlite = { version = "0.40.2", features = ["backup"] }
+rusqlite = { version = "0.41.1", features = ["backup"] }
 dim-agent-runtime = { workspace = true, features = ["testing"] }
 dim-agent-capabilities.workspace = true
 dim-agent-aimux.workspace = true
@@ -15,8 +16,12 @@ dim-agent-attachments.workspace = true
 dim-agent-questions.workspace = true
 dim-app-server.workspace = true
 dim-session-title.workspace = true
+dim-agent-scheduler = { path = "../crates/dim-agent-scheduler" }
 dim-goal.workspace = true
+dim-report.workspace = true
+dim-event-hub.workspace = true
 dim-modality.workspace = true
+dim-image-understanding.workspace = true
 dim-agent-types.workspace = true
 dim-client.workspace = true
 rutis.workspace = true
@@ -29,5 +34,11 @@ serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
 syn = { version = "2", features = ["full", "visit"] }
-[dev-dependencies]
 axum = { workspace = true, features = ["json"] }
+# The run child's process group: a cancelled run kills the group, so the
+# Node plugin runtimes it started go with it. std starts the group
+# (`process_group(0)`); signalling it needs the syscall, and no workspace
+# crate re-exports a group kill.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.189"
+[dev-dependencies]

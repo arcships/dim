@@ -21,7 +21,7 @@ impl QueuePanel {
             focus: snapshot.focus.clone(),
             list: ListPanel::new(
                 "Queue",
-                t("Enter steer · x delete held · Esc close"),
+                "",
                 "",
                 "No queued messages.",
                 "No queued messages.",
@@ -44,20 +44,25 @@ impl QueuePanel {
         let items = snapshot
             .queued
             .iter()
+            .filter(|input| input.held)
             .map(|input| {
                 let text = input.display.as_deref().unwrap_or(&input.text);
                 Item::new(
                     input.id.clone(),
                     safe(&text.split_whitespace().collect::<Vec<_>>().join(" ")),
-                    t(if input.held {
-                        "Held · awaiting application"
-                    } else {
-                        "Incorporating · awaiting model consumption"
-                    }),
+                    t("Held · awaiting application"),
                 )
             })
             .collect();
         self.list.set_items(Ok(items), selected.as_deref());
+        self.list.set_hint(
+            t(if self.list.selected_id().is_some() {
+                "Enter steer · x delete held · Esc close"
+            } else {
+                "Esc close"
+            })
+            .to_owned(),
+        );
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
@@ -71,7 +76,7 @@ impl QueuePanel {
                 });
         }
         match self.list.handle_key(key) {
-            Event::Pick(input_id) => Effect::InputControl {
+            Event::Pick { id: input_id, .. } => Effect::InputControl {
                 input_id,
                 action: "steer",
             },

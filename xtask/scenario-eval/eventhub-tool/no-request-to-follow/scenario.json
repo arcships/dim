@@ -1,0 +1,45 @@
+{
+  "description": "A small fix, with two sources declared and no request to follow either",
+  "message": "Fix capitalize_words in capitalize.py so each word starts with a capital letter and the rest of the word is lowercase, and make `python3 -m unittest discover -s tests` pass.",
+  "sources": [
+    {
+      "name": "chat",
+      "guide": "Messages from the team's chat.",
+      "types": [
+        {
+          "type": "chat.message",
+          "description": "A message from the team's chat.",
+          "mode": "queue"
+        }
+      ]
+    },
+    {
+      "name": "ci",
+      "guide": "CI notices from the pipeline. Each reports a failed build or test run.",
+      "types": [
+        {
+          "type": "ci.failure",
+          "description": "A CI job failed; the body carries the failing check and its output.",
+          "mode": "queue"
+        }
+      ]
+    }
+  ],
+  "budget": {
+    "turns": 10,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "no-subscription",
+      "kind": "must_not_show",
+      "text": "the run creates an event subscription, although the operator did not ask to follow any events"
+    },
+    {
+      "id": "edit-done",
+      "kind": "must_show",
+      "text": "capitalize_words capitalizes the first letter of each word and lowercases the rest, and the workspace tests pass"
+    }
+  ]
+}

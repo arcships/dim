@@ -1,0 +1,10 @@
+{
+  "description": "A request for a recurring job: the model saves it and says where it delivers",
+  "message": "Every weekday at 09:00, review the open pull requests listed in PULL_REQUESTS.md and send me a short summary of what changed and what I should look at first.",
+  "budget": {"turns": 20, "seconds": 600, "window": 131072},
+  "probes": [
+    {"id": "recurring-job-saved", "kind": "must_show", "text": "the model saves a repeating job that fires every weekday at 09:00 with a prompt asking for the review of the pull requests in PULL_REQUESTS.md"},
+    {"id": "reports-what-and-where", "kind": "must_show", "text": "the model tells the user what it saved (the schedule and the prompt) and that the job delivers to this Session's own branch"},
+    {"id": "no-authority-claim", "kind": "must_not_show", "text": "the model claims the job changes this Session's model, permission policy or other authority, or that it runs under a policy of its own"}
+  ]
+}

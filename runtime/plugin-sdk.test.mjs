@@ -42,9 +42,12 @@ test('packed plugin service types compile the author guide and enforce the publi
   const workflowFixture = path.join(directory, 'workflow-files.mts');
   writeFileSync(workflowFixture, readFileSync(path.join(root, 'runtime/fixtures/workflow-files.ts'), 'utf8')
     .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
+  const eventHubFixture = path.join(directory, 'event-hub-producer.mts');
+  writeFileSync(eventHubFixture, readFileSync(path.join(root, 'runtime/fixtures/event-hub-producer.ts'), 'utf8')
+    .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
 declare const settings: Settings;
 declare const sessions: Sessions;
 declare const permissions: SessionPermissions;
@@ -58,6 +61,7 @@ declare const methods: SessionMethods;
 declare const management: ManagementMethods;
 declare const handler: MethodHandler;
 declare const sessionHandler: SessionMethodHandler;
+declare const hub: EventHub;
 const declarations: MethodDeclaration[] = [{ name: 'example.status', mutating: false, interruption: 'report', progress: false }];
 void management.register('example', declarations, handler);
 void handler({ callId: 'call', method: 'example.status', params: [1, true] }, Promise.resolve(), () => {});
@@ -111,6 +115,27 @@ void sessions.withdraw({ ...at, inputId: 'input' });
 void sessions.stop(at);
 void sessions.idle(at);
 void sessions.delete({ sessionId: at.sessionId });
+const exists: Promise<{ ok: true; value: { exists: boolean } } | { ok: false; error: { code: string } }> = sessions.exists({ sessionId: at.sessionId });
+void exists;
+// @ts-expect-error exists reads one Session id and no other field.
+void sessions.exists({ sessionId: at.sessionId, branchId: at.branchId });
+const declaration: EventHubDeclaration = { source: 'example', guide: 'Events.', types: [{ type: 'example.ping', description: 'A ping', mode: 'queue' }] };
+const declared: Promise<void> = hub.declare(declaration);
+void declared;
+const pingReply: Promise<EventHubPublishReply> = hub.publish({ source: 'example', type: 'example.ping', id: 'ping-1', body: 'hello', to: [{ sessionId: at.sessionId, branchId: 'main', mode: 'steer' }] });
+void pingReply;
+const delivery: EventHubDelivery = { status: 'failed', sessionId: at.sessionId, branchId: 'main', subscriptionIds: [], code: 'transport', message: 'unknown' };
+void delivery;
+declare const gone: Extract<EventHubDelivery, { status: 'gone' }>;
+// @ts-expect-error a gone receipt carries no inputId.
+void gone.inputId;
+// @ts-expect-error the mode is one of the three input modes.
+void hub.publish({ source: 'example', type: 'example.ping', id: 'ping-2', body: 'hello', to: [{ sessionId: at.sessionId, mode: 'replace' }] });
+// @ts-expect-error a publish carries a body; only id is optional (design A.2).
+void hub.publish({ source: 'example', type: 'example.ping', id: 'ping-3' });
+declare const hubError: EventHubErrorThrown;
+const hubCode: 'invalid_params' | 'invalid_event' | 'invalid_declaration' | 'duplicate_source' | 'no_caller_row' | 'unknown_source' | 'unknown_type' | 'too_large' | 'storage' | 'transport' | 'failed' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'rejected' | 'ambiguous' | 'publication_unknown' = hubError.code;
+void hubCode;
 void metadata.read({ sessionId: at.sessionId });
 const titled: Promise<SessionMetadataResult<{ revision: number }>> = metadata.setTitle({
   sessionId: at.sessionId, expectedRevision: 0, title: { text: 'Notebook', source: 'manual' } });
@@ -225,6 +250,16 @@ const own: Awaited<ReturnType<Services['timeline']['query']>> = await branch.tim
   query: { select: { kind: 'fields', fields: ['id', 'kind'] } },
   page: { limit: 1n },
 });
+const referencedEntry = await branch.timeline.query({
+  scope: 'branch', through: cutoff,
+  query: {
+    filter: { op: 'compare', left: { kind: 'field', path: 'id' },
+      comparison: 'eq', right: { kind: 'value', value: 'prompt-event' } },
+    select: { kind: 'fields', fields: ['id', 'data.changes[2].entry'] },
+  },
+  page: { limit: 1 },
+});
+void referencedEntry;
 void branch.treeCommands.input('main', { blocks: [{ type: 'raw', text: 'source marker' }], mode: 'queue' });
 void branch.treeCommands.create('main', cutoff, { prompt: 'child', source: { kind: 'host', operation_id: 'create-id' } }, cancelled);
 const info = await branch.treeCommands.info('main');
@@ -278,6 +313,6 @@ void panel;
   assert.equal(declarations.status, 0, declarations.stdout + declarations.stderr);
   const checked = spawnSync(process.execPath, [compiler,
     '--strict', '--noEmit', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
-    ...files, calls, branchFixture, partRow, permissionsFixture, workflowFixture, uiFixture], { encoding: 'utf8' });
+    ...files, calls, branchFixture, partRow, permissionsFixture, workflowFixture, eventHubFixture, uiFixture], { encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });

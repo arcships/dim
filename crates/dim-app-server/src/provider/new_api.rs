@@ -35,8 +35,8 @@ struct Metadata {
     kind: Option<Value>,
 }
 
-pub(super) fn routes(
-    models: &[ModelEntry],
+pub(super) fn routes<'a>(
+    models: impl IntoIterator<Item = &'a ModelEntry>,
     configured: &BTreeMap<String, Endpoint>,
     overrides: &BTreeMap<String, Endpoint>,
 ) -> Result<HashMap<String, ModelProtocol>, HostError> {

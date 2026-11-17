@@ -1,19 +1,21 @@
 //! Prompt sources: the system prompt (`dim/base`, `dim/session`), the
 //! AGENTS.md rules (`dim/instructions/project`, `dim/instructions/user`) and
-//! the runtime environment and date states. Prompt delivers them; each loaded
-//! branch checks the changing ones and has Prompt adopt changes.
+//! the runtime environment, date and reply-language states. Prompt delivers
+//! them; each loaded branch checks the changing ones and has Prompt adopt
+//! changes.
 use crate::{
     context_block,
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     host_platform::{
         ExecShellRuntime, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
+    prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
     prompt_state::PromptSnapshot,
 };
 use dim_agent_runtime::{
-    AgentBuilder, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
-    SessionConfig, StateCell,
+    AgentBuilder, BranchLifecycle, BranchPhase, ConfigureUpdate, Names, PromptSourceTarget,
+    ReplyLanguage, SessionConfig, StateCell,
 };
 use dim_agent_types::*;
 use rutis::Ctx;
@@ -32,9 +34,17 @@ pub const USER_INSTRUCTIONS: &str = "dim/instructions/user";
 pub const SESSION: &str = "dim/session";
 pub const ENVIRONMENT: &str = "dim/environment/context";
 pub const DATE: &str = "dim/environment/date";
+pub const LANGUAGE: &str = "dim/language";
 /// Sources whose content changes while a Session runs, compared by each
-/// loaded branch.
-const CHECKED: [&str; 4] = [PROJECT_INSTRUCTIONS, USER_INSTRUCTIONS, ENVIRONMENT, DATE];
+/// loaded branch. The reply language is Session-wide: a side branch that was
+/// loaded before an update adopts it through this comparison.
+const CHECKED: [&str; 5] = [
+    PROJECT_INSTRUCTIONS,
+    USER_INSTRUCTIONS,
+    ENVIRONMENT,
+    DATE,
+    LANGUAGE,
+];
 
 /// Today's date as `YYYY-MM-DD` in the process-local time zone.
 pub type Today = Arc<dyn Fn() -> String + Send + Sync>;
@@ -67,6 +77,8 @@ pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Durat
                     host: names.key()?,
                     configure: names.key()?,
                     prompts: names.state_cell()?,
+                    language: names.key()?,
+                    service: names.key()?,
                     every,
                 }))
             }),
@@ -74,13 +86,14 @@ pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Durat
 }
 
 /// Every source this capability provides, in delivery order.
-const SOURCES: [&str; 6] = [
+const SOURCES: [&str; 7] = [
     BASE,
     SESSION,
     PROJECT_INSTRUCTIONS,
     USER_INSTRUCTIONS,
     ENVIRONMENT,
     DATE,
+    LANGUAGE,
 ];
 
 /// Refreshes dynamic sources without replacing adopted System entries.
@@ -89,6 +102,25 @@ pub fn refresh_update() -> ConfigureUpdate {
         sources: targets(CHECKED),
         model: None,
     }
+}
+
+/// The update that has Prompt adopt the reply-language state alone.
+pub fn language_update() -> ConfigureUpdate {
+    ConfigureUpdate {
+        sources: targets([LANGUAGE]),
+        model: None,
+    }
+}
+
+/// The one sentence the `dim/language` state carries: the setting itself,
+/// never an instruction ([PromptSources §3]).
+///
+/// [PromptSources §3]: ../../../docs/design/plugins/PromptSources.md
+pub fn language_body(language: ReplyLanguage) -> String {
+    format!(
+        "The operator set this session's reply language to {}.",
+        language.name()
+    )
 }
 
 /// The Session System entry used by both creation and explicit profile adoption.
@@ -260,54 +292,50 @@ fn read_project_instructions(path: &Path) -> Result<String, HostError> {
     })
 }
 
-/// The project and user rule bodies, escaped. Mirrors TS `manager.ts`: the nearest
-/// `AGENTS.md` from cwd upwards fails the load when unreadable;
-/// `~/AGENTS.md` is ignored when unreadable or when it is the project file.
-#[derive(PartialEq)]
-struct Instructions {
-    project: Option<String>,
-    user: Option<String>,
-}
-
-fn read_instructions(cwd: &Path, home: &Path) -> Result<Instructions, HostError> {
+fn read_instructions(cwd: &Path, home: &Path, project: bool) -> Result<Option<String>, HostError> {
     let project_path = cwd
         .ancestors()
         .map(|dir| dir.join("AGENTS.md"))
         .find(|candidate| candidate.exists());
-    let mut project = None;
-    if let Some(path) = &project_path {
-        let content = read_project_instructions(path)?;
-        let content = content.trim();
-        if !content.is_empty() {
-            project = Some(format!(
-                "# Project instructions ({}; applies to this directory and below)\n{}",
-                context_block::text(&path.display().to_string()),
-                context_block::text(content)
-            ));
-        }
+    if project {
+        return project_path
+            .map(|path| {
+                let content = read_project_instructions(&path)?;
+                Ok((!content.trim().is_empty()).then(|| {
+                    format!(
+                        "# Project instructions ({}; applies to this directory and below)\n{}",
+                        context_block::text(&path.display().to_string()),
+                        context_block::text(content.trim())
+                    )
+                }))
+            })
+            .transpose()
+            .map(Option::flatten);
     }
     let user_path = home.join("AGENTS.md");
-    let same = project_path.as_ref().is_some_and(|project| {
-        matches!(
-            (project.canonicalize(), user_path.canonicalize()),
-            (Ok(a), Ok(b)) if a == b
-        )
-    });
-    let user = std::fs::read_to_string(&user_path)
+    if project_path.as_ref().is_some_and(
+        |path| matches!((path.canonicalize(), user_path.canonicalize()), (Ok(a), Ok(b)) if a == b),
+    ) {
+        return Ok(None);
+    }
+    Ok(std::fs::read_to_string(user_path)
         .ok()
-        .filter(|content| !same && !content.trim().is_empty())
+        .filter(|content| !content.trim().is_empty())
         .map(|content| {
             format!(
                 "# User instructions (~/AGENTS.md)\n{}",
                 context_block::text(content.trim())
             )
-        });
-    Ok(Instructions { project, user })
+        }))
 }
 
-async fn load_instructions(cwd: &str, home: &Path) -> Result<Instructions, HostError> {
+async fn load_instructions(
+    cwd: &str,
+    home: &Path,
+    project: bool,
+) -> Result<Option<String>, HostError> {
     let (cwd, home) = (PathBuf::from(cwd), home.to_owned());
-    tokio::task::spawn_blocking(move || read_instructions(&cwd, &home))
+    tokio::task::spawn_blocking(move || read_instructions(&cwd, &home, project))
         .await
         .map_err(|_| HostError::failed("AGENTS.md read task failed"))?
 }
@@ -324,12 +352,110 @@ pub struct PromptSourcesConfig {
     pub file_encoding_guidance: Option<Arc<str>>,
 }
 
+/// The host's user override of `dim/base`. `None` keeps this plugin's factory
+/// configuration or the built-in text.
+pub trait BasePromptSettings: Send + Sync + 'static {
+    fn base(&self, cancel: CancellationToken) -> HostFuture<'_, Option<Arc<str>>>;
+}
+
+pub struct BasePromptSettingsHost(pub Arc<dyn BasePromptSettings>);
+
+impl rutis_bridge::session::HostDispatch for BasePromptSettingsHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"base":"async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        const NAME: &str = "basePromptSettingsHost";
+        if method != "base" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(NAME, args)?;
+        let owner = self.0.clone();
+        crate::port_faces::serving(NAME, async move {
+            let cancel = CancellationToken::new();
+            let _abandoned = cancel.clone().drop_guard();
+            owner
+                .base(cancel)
+                .await
+                .map_err(crate::host::ModelPortError::from)
+        })
+    }
+}
+/// The Session's reply language, when the operator selected one: the live
+/// value the `dim/language` source reads and the App Server's
+/// `session.language.*` methods change. It starts from `SessionConfig.language`
+/// when the Session is created or restored.
+pub struct SessionLanguage {
+    language: std::sync::Mutex<Option<ReplyLanguage>>,
+    /// Serializes the Session's reads and updates of the value and its
+    /// adopted entry with each branch's own check: an update writes the
+    /// record and the value and then has Prompt adopt it, and a check that
+    /// ran between those steps would adopt the value the update replaces.
+    gate: tokio::sync::Mutex<()>,
+}
+impl SessionLanguage {
+    pub fn new(language: Option<ReplyLanguage>) -> Self {
+        Self {
+            language: std::sync::Mutex::new(language),
+            gate: tokio::sync::Mutex::new(()),
+        }
+    }
+    /// The Session's language gate: held across a value's whole update and
+    /// across a branch's whole check, so the two never interleave.
+    pub async fn gate(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.gate.lock().await
+    }
+    /// Replaces the value with `language`.
+    pub fn replace(&self, language: Option<ReplyLanguage>) -> Option<ReplyLanguage> {
+        *self.language.lock().expect("session language") = language;
+        language
+    }
+}
+
+/// The `get` reply: the Session's reply language when the operator selected
+/// one, `null` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionLanguageReply {
+    pub language: Option<ReplyLanguage>,
+}
+
+#[rutis::service]
+impl SessionLanguage {
+    /// The reply language the operator selected, as data. The App Server's
+    /// `session.language.get` answers the same value; its update also writes
+    /// the Session record and has Prompt adopt the source, so changing the
+    /// value is not this face's operation.
+    pub fn get(&self) -> SessionLanguageReply {
+        SessionLanguageReply {
+            language: *self.language.lock().expect("session language"),
+        }
+    }
+}
+
+/// The Session's reply-language cell, reachable from its branches: the App
+/// Server's Session methods read and change it through `main`'s service.
+pub struct PromptSourcesBranch {
+    language: Arc<SessionLanguage>,
+}
+impl PromptSourcesBranch {
+    pub fn language(&self) -> Arc<SessionLanguage> {
+        self.language.clone()
+    }
+}
+
 struct Sources {
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
     today: Today,
     stopped: CancellationToken,
     policy: PromptSourcesConfig,
+    language: Arc<SessionLanguage>,
 }
 
 impl LoadPrompt for Sources {
@@ -355,13 +481,12 @@ impl LoadPrompt for Sources {
                     0,
                 ),
                 PROJECT_INSTRUCTIONS | USER_INSTRUCTIONS => {
-                    let instructions =
-                        load_instructions(&self.config.cwd, &self.platform.home).await?;
-                    let body = if target.source == PROJECT_INSTRUCTIONS {
-                        instructions.project
-                    } else {
-                        instructions.user
-                    };
+                    let body = load_instructions(
+                        &self.config.cwd,
+                        &self.platform.home,
+                        target.source == PROJECT_INSTRUCTIONS,
+                    )
+                    .await?;
                     let order = if target.source == PROJECT_INSTRUCTIONS {
                         100
                     } else {
@@ -383,6 +508,11 @@ impl LoadPrompt for Sources {
                     Some(context_block::text(&(self.today)())),
                     PromptDelivery::State,
                     210,
+                ),
+                LANGUAGE => (
+                    self.language.get().language.map(language_body),
+                    PromptDelivery::State,
+                    220,
                 ),
                 SESSION => {
                     return Ok(session_entry(
@@ -411,6 +541,8 @@ pub struct PromptSourcesPlugin {
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
     registry: Key<PromptRegistry>,
+    language: Key<SessionLanguage>,
+    settings: Option<Key<BasePromptSettingsHost>>,
     pub today: Today,
     policy: PromptSourcesConfig,
 }
@@ -429,6 +561,11 @@ impl PromptSourcesPlugin {
             platform: names.key()?,
             config: names.key()?,
             registry: names.key()?,
+            language: names.key()?,
+            settings: names
+                .registered::<BasePromptSettingsHost>()
+                .then(|| names.key::<BasePromptSettingsHost>())
+                .transpose()?,
             today,
             policy,
         })
@@ -450,32 +587,59 @@ impl DynPlugin for PromptSourcesPlugin {
             let platform = ctx.require_at(&self.platform)?;
             let config = ctx.require_at(&self.config)?;
             let registry = ctx.require_at(&self.registry)?;
+            // Apply runs once per Session instance: builder rows cannot
+            // reload, and every rebuilt daemon or fork creates a new
+            // instance, each reading its record.
+            let language = Arc::new(SessionLanguage::new(config.language));
+            let mut policy = self.policy.clone();
+            if policy.base.is_none() {
+                let settings = match &self.settings {
+                    Some(key) => ctx.get_at(key),
+                    None => None,
+                };
+                if let Some(settings) = settings {
+                    match settings
+                        .0
+                        .base(ctx.cancellation_token().child_token())
+                        .await
+                    {
+                        Ok(Some(base)) => policy.base = Some(base),
+                        Ok(None) => {}
+                        Err(error) => {
+                            tracing::warn!(%error, "base prompt setting was not read")
+                        }
+                    }
+                }
+            }
             let sources: Arc<dyn LoadPrompt> = Arc::new(Sources {
                 platform,
                 config,
                 today: self.today.clone(),
                 stopped: ctx.cancellation_token(),
-                policy: self.policy.clone(),
+                policy,
+                language: language.clone(),
             });
             for name in SOURCES {
                 registry.register(ctx, name, sources.clone())?;
             }
+            ctx.provide_at(self.language.clone(), language)?;
             Ok(Effect::Done)
         })
     }
 }
 
 /// Branch part: while the branch is loaded, compares what the checked
-/// sources hold now (AGENTS.md, runtime environment, date) with what Prompt
-/// adopted on this branch, and has Prompt adopt any difference. The first
-/// check runs when the branch becomes Active, then every `every`. What a new
-/// or resumed branch receives first is Prompt's, at `branch/start` and
-/// `branch/resume`.
+/// sources hold now (AGENTS.md, runtime environment, date, reply language)
+/// with what Prompt adopted on this branch, and has Prompt adopt any
+/// difference. Opening loads are reused; periodic checks begin one `every`
+/// later. A part reloaded on an active branch checks immediately.
 pub struct PromptSourcesBranchPlugin {
     branch: Key<BranchLifecycle>,
     host: Key<PromptHost>,
-    configure: Key<dyn ConfigureControl>,
+    configure: Key<Prompt>,
     prompts: Key<StateCell<PromptSnapshot>>,
+    language: Key<SessionLanguage>,
+    service: Key<PromptSourcesBranch>,
     every: Duration,
 }
 impl DynPlugin for PromptSourcesBranchPlugin {
@@ -488,6 +652,7 @@ impl DynPlugin for PromptSourcesBranchPlugin {
             self.host.erase(),
             self.configure.erase(),
             self.prompts.erase(),
+            self.language.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -496,41 +661,62 @@ impl DynPlugin for PromptSourcesBranchPlugin {
             let host = ctx.require_at(&self.host)?;
             let configure = ctx.require_at(&self.configure)?;
             let prompts = ctx.require_at(&self.prompts)?;
+            let language = ctx.require_at(&self.language)?;
             let (every, lifecycle) = (self.every, ctx.cancellation_token());
+            let checked_language = language.clone();
+            let initial_opening = branch.phase() != BranchPhase::Active;
+            let prompts = prompts.subscribe();
             let tasks = TaskTracker::new();
             tasks.spawn(async move {
                 tokio::select! {
                     _ = lifecycle.cancelled() => return,
                     active = branch.activated() => if !active { return },
                 }
+                if initial_opening {
+                    tokio::select! {
+                        _ = lifecycle.cancelled() => return,
+                        _ = branch.closing() => return,
+                        _ = tokio::time::sleep(every) => {}
+                    }
+                }
                 loop {
                     let mut changed = Vec::new();
-                    for target in targets(CHECKED) {
-                        let key = (target.source.clone(), target.scope.clone());
+                    for target in targets(CHECKED).into_iter().filter(|target| target.source != LANGUAGE) {
                         let current = tokio::select! {
                             _ = lifecycle.cancelled() => return,
-                            loaded = host.0.load(target, lifecycle.child_token()) => loaded,
+                            loaded = host.0.load(target.clone(), lifecycle.child_token()) => loaded,
                         };
                         match current {
-                            Ok(current) if current.as_ref() != prompts.get().entries.get(&key) => {
-                                changed.push(key.0);
-                            }
+                            Ok(current) if current.as_ref() != prompts.borrow().entries.get(&(target.source.clone(), target.scope.clone())) => changed.push((target, current)),
                             Ok(_) => {}
-                            Err(error) => tracing::warn!(%error, source = key.0, "prompt source was not checked"),
+                            Err(error) => tracing::warn!(%error, source = target.source, "prompt source was not checked"),
                         }
                     }
+                    let language_gate = checked_language.gate().await;
+                    let target = targets([LANGUAGE]).pop().expect("language target");
+                    let current = tokio::select! {
+                        _ = lifecycle.cancelled() => return,
+                        loaded = host.0.load(target.clone(), lifecycle.child_token()) => loaded,
+                    };
+                    let mut language_changed = false;
+                    match current {
+                        Ok(current) if current.as_ref() != prompts.borrow().entries.get(&(target.source.clone(), target.scope.clone())) => {
+                            changed.push((target, current));
+                            language_changed = true;
+                        }
+                        Ok(_) => {}
+                        Err(error) => tracing::warn!(%error, source = LANGUAGE, "prompt source was not checked"),
+                    }
+                    let _language_gate = language_changed.then_some(language_gate);
                     if !changed.is_empty() {
-                        let update = ConfigureUpdate {
-                            sources: targets(changed.iter().map(String::as_str)),
-                            model: None,
-                        };
                         tokio::select! {
                             _ = lifecycle.cancelled() => return,
-                            result = configure.clone().configure(update) => if let Err(error) = result {
+                            result = configure.clone().configure_loaded(None, changed) => if let Err(error) = result {
                                 tracing::warn!(%error, "changed prompt sources were not adopted");
                             },
                         }
                     }
+                    drop(_language_gate);
                     tokio::select! {
                         _ = lifecycle.cancelled() => return,
                         _ = branch.closing() => return,
@@ -543,6 +729,10 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                 tasks.wait().await;
                 Ok(())
             })?;
+            ctx.provide_at(
+                self.service.clone(),
+                Arc::new(PromptSourcesBranch { language }),
+            )?;
             Ok(Effect::Done)
         })
     }

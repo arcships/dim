@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { Puzzle } from "lucide-vue-next"
 import type { Dispose, PanelActivity, PanelEnvironment, PanelModule } from "../../../../npm/ui"
 import { readSessionMethods } from "../../rpc/read"
 import { useAppearanceStore } from "../../stores/appearance"
@@ -26,6 +25,7 @@ const loading = ref(false)
 const attempt = ref(0)
 const branchId = computed(() => ui.activeLineTab[props.sessionId] ?? "main")
 const view = computed(() => chat.views[props.sessionId])
+const lineOptions = computed(() => (view.value?.lines ?? []).map((line) => ({ label: line.purpose || line.id, value: line.id })))
 const extension = computed(() => extensions.directory?.extensions.find(extension => extension.pluginName === ui.extension?.pluginName))
 const panel = computed(() => extension.value?.panels.find(panel => panel.id === ui.extension?.panelId))
 const icon = computed(() => panel.value?.icon && extension.value ? resourceUrl(extension.value.generation, panel.value.icon) : undefined)
@@ -103,8 +103,9 @@ function close(): void {
   ui.closeDetail()
   void nextTick(() => document.querySelector<HTMLElement>("[data-extension-trigger]")?.focus())
 }
-function changeBranch(event: Event): void {
-  ui.activeLineTab = { ...ui.activeLineTab, [props.sessionId]: (event.target as HTMLSelectElement).value }
+function changeBranch(value: unknown): void {
+  if (typeof value !== "string" || value === "") return
+  ui.activeLineTab = { ...ui.activeLineTab, [props.sessionId]: value }
 }
 async function retry(): Promise<void> {
   await extensions.refresh(true)
@@ -117,15 +118,16 @@ onBeforeUnmount(() => dispose?.())
   <component :is="ui.shellMode === 'compact' ? 'dialog' : 'section'" ref="surface" class="extension-panel" :aria-label="title" tabindex="-1" @cancel.prevent="close" @keydown.stop @pointerdown.stop="ui.detailFocused = true" @focusin="ui.detailFocused = true">
     <header class="extension-header">
       <img v-if="icon && failedIcon !== icon" :src="icon" alt="" width="20" height="20" @error="failedIcon = icon">
-      <Puzzle v-else :size="20" aria-hidden="true" />
+      <UIcon v-else name="i-lucide-puzzle" class="size-5 shrink-0" aria-hidden="true" />
       <strong>{{ title }}</strong>
-      <button type="button" class="ui-button" data-variant="ghost" data-size="sm" @click="ui.openLines(sessionId)">{{ t("lines") }}</button>
-      <button type="button" class="ui-button" data-variant="ghost" data-size="sm" :aria-label="t('close')" @click="close">×</button>
+      <UButton color="neutral" variant="ghost" size="sm" @click="ui.openLines(sessionId)">{{ t("lines") }}</UButton>
+      <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-x" :aria-label="t('close')" @click="close" />
     </header>
-    <label class="extension-branch">{{ t("branch") }}
-      <select :value="branchId" @change="changeBranch"><option v-for="line in view?.lines" :key="line.id" :value="line.id">{{ line.purpose || line.id }}</option></select>
-    </label>
-    <div v-if="status" class="extension-status" role="status">{{ status }} <button v-if="failure || !panel" type="button" class="ui-button" data-size="sm" @click="retry">{{ t("retry") }}</button></div>
+    <div class="extension-branch">
+      <span class="extension-branch-label">{{ t("branch") }}</span>
+      <USelect :model-value="branchId" :items="lineOptions" size="sm" class="extension-branch-select" :aria-label="t('branch')" @update:model-value="changeBranch" />
+    </div>
+    <div v-if="status" class="extension-status" role="status">{{ status }} <UButton v-if="failure || !panel" color="neutral" variant="soft" size="sm" @click="retry">{{ t("retry") }}</UButton></div>
     <div ref="container" class="extension-root" :aria-label="title" tabindex="-1" :hidden="Boolean(status)" />
   </component>
 </template>
@@ -135,8 +137,9 @@ onBeforeUnmount(() => dispose?.())
 dialog.extension-panel { max-width: none; max-height: none; height: 100dvh; margin: 0; }
 .extension-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-3); border-bottom: 1px solid var(--border); }
 .extension-header strong { flex: 1; }
-.extension-branch { display: flex; gap: var(--space-2); padding: var(--space-2); }
-.extension-branch select { min-width: 0; flex: 1; }
+.extension-branch { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); }
+.extension-branch-label { font-size: var(--text-sm); color: var(--muted-foreground); }
+.extension-branch-select { min-width: 0; flex: 1; }
 .extension-status { padding: var(--space-3); }
 .extension-root { flex: 1; min-height: 0; overflow: auto; --dim-ui-background: var(--background); --dim-ui-foreground: var(--foreground); --dim-ui-muted: var(--muted-foreground); --dim-ui-border: var(--border); --dim-ui-accent: var(--primary); --dim-ui-font-family: var(--font-sans); }
 .extension-root[hidden] { display: none; }

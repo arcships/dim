@@ -147,11 +147,12 @@ A declaration, as the owner's code holds it:
           "additionalProperties": false
         },
         "allowPrivateHosts": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "blockPrivateAddresses": { "type": "boolean", "default": false },
         "proxy": { "type": "string", "format": "uri" }
       },
       "additionalProperties": false
     },
-    "userOnly": ["/searchService", "/allowPrivateHosts"]
+    "userOnly": ["/searchService", "/allowPrivateHosts", "/blockPrivateAddresses", "/proxyDns"]
 }
 ```
 

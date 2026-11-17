@@ -1,12 +1,12 @@
 //! `scenario-eval`: the scenario runner for policy texts (model-prompts §8.1,
 //! §8.2 and §9.8; Timeline branches §12.3). It calls real models, so it is not
-//! part of CI: the operator runs it against an isolated product home or a
-//! model configuration, and the output goes outside the repository.
+//! part of CI: the operator runs it against a model configuration, and the
+//! output goes outside the repository.
 //!
 //! ```text
 //! cargo run --locked -p xtask -- scenario-eval --scenarios DIR --text ID
 //!     --candidate FILE [--text ID --candidate FILE]... --model PROVIDER/MODEL
-//!     --judge PROVIDER/MODEL --runs N --home DIR --out DIR [--jobs N]
+//!     --judge PROVIDER/MODEL --runs N --out DIR [--jobs N]
 //!     [--model-config FILE]
 //! ```
 //!
@@ -19,7 +19,7 @@
 //! `candidate` one, so a drift in
 //! the endpoint lands on both arms alike, and the records come out in that
 //! order whatever order the runs complete in. `--jobs N` (default 1) runs N
-//! runs at once; each run keeps its own workspace copy, product home, local
+//! runs at once; each run keeps its own workspace copy, Dim home, local
 //! endpoint and Session, and the schedule and record order are fixed
 //! whatever N is. The outcomes can still vary: wall-clock budgets, timed
 //! steers and provider contention do not read the job count.
@@ -132,6 +132,18 @@
 //!   "description": "Two independent fixes, one of them on a line",
 //!   "message": "Make the failing tests pass.",
 //!   "calls": [{"method": "session.goal.set", "params": {"objective": "Keep the suite green."}}],
+//!   "sources": [{
+//!     "name": "chat",
+//!     "guide": "The team cannot see this conversation; answer through chat_reply.",
+//!     "types": [{"type": "chat.message", "description": "A chat message.", "mode": "turn"}],
+//!     "subscribe": {"types": ["chat.message"]},
+//!     "replyTool": "chat_reply"
+//!   }],
+//!   "events": [{
+//!     "source": "chat", "type": "chat.message", "id": "m-1",
+//!     "title": "The failing test", "body": "What does parse() do with an empty line?",
+//!     "whenToolCall": "read"
+//!   }],
 //!   "steers": [
 //!     {"afterSeconds": 30.0, "text": "Also update the README."},
 //!     {"whenToolCall": "config.py", "text": "DEFAULT_TIMEOUT is 45 now."}
@@ -152,6 +164,40 @@
 //!   Session id into `params.sessionId`; a branch defaults to `main` the
 //!   way the methods treat it. A call that fails fails the run, and the
 //!   error names the method.
+//! - `sources` declares the event producers a scenario runs with and the
+//!   Session's subscription to them. One producer row is installed, only
+//!   when `sources` is present, and it declares every source through the
+//!   `eventHub` service; `types` is that declaration's event types, and
+//!   `guide` is the source's guide. The runner subscribes `main` to
+//!   `subscribe.types` after `calls` and before the message, with the
+//!   declaration done first, so the guide is written as the live
+//!   `eventhub:guide:<name>` block from the first turn. Without
+//!   `subscribe` the source starts unsubscribed, for a scenario where the
+//!   model subscribes itself through the `events` tool. `replyTool` names
+//!   an optional tool the row registers for the scenario's Session: it
+//!   takes `{messageId, text}`, records the call in the run's record and
+//!   answers `sent`. A declaration or a subscription that fails fails the
+//!   run, naming the source.
+//! - `events` publishes each event through the same service: `source`,
+//!   `type`, `id`, `title`, `body`, `attributes` and exactly one trigger:
+//!   `afterSeconds` or `whenToolCall`, under the steers' rule, or
+//!   `afterSubscribedSeconds`, which publishes it that many seconds after
+//!   the first subscription naming its source exists — the model's own
+//!   `events` subscribe call, in a scenario whose source starts
+//!   unsubscribed (EventHub design A.4). Each receipt
+//!   goes in the run's record. A delivery whose status is not `delivered`
+//!   fails the run, for every trigger; a receipt with no deliveries fails
+//!   the run too, except for an `afterSubscribedSeconds` event, where the
+//!   model owns the subscription and missing the event is the run's
+//!   outcome. A run does not end while a steer is still to be sent or an
+//!   event is still to be published, except an `afterSubscribedSeconds`
+//!   event whose clock never started: a model that never subscribed cannot
+//!   make it fire, so it is never published and never holds the run open.
+//!   A delivery starts a turn unless its mode is `append`. For every
+//!   trigger, a delivery's mode is the strongest effective mode among the
+//!   subscriptions its delivery lists, each one's own `mode` or else the
+//!   type's declared mode, read from `eventhub.subscriptions` just before
+//!   the publish. A delivered receipt carries no mode of its own.
 //! - `message` is the operator's first message, submitted to `main`. A steer
 //!   is one more operator message to `main`, sent when the run reaches
 //!   `afterSeconds` of wall clock or, for `whenToolCall`, when a
@@ -171,24 +217,33 @@
 //!   wall clock from the first submission; both stop the run. `budget.window`
 //!   is the context window the scenario is written for and is checked, not
 //!   set: the window is the model's declared limit, so a run whose Session
-//!   declares another one is a failed run.
+//!   declares another one is a failed run. The Session reports it only after
+//!   its first request has counted the context, so the check waits for the
+//!   run to settle; a run that starts no request has no window to check.
 //! - A `must_show` probe passes when the judge finds that the run shows it; a
 //!   `must_not_show` probe passes when the run does not, and a run that shows
 //!   it is a violation.
 //!
-//! The runner copies the scenario's workspace and `--home` into a fresh
-//! directory for every run, so runs share no state, and writes one directory
-//! per run under `--out`, which it creates and resolves where the command
-//! line is read: `timeline.jsonl` (the whole Timeline, every line included:
-//! the run's account of record), `judge-view.jsonl` (the view of it the judge
-//! read), `home/` and `workspace/`. The App
-//! Server's local endpoint sits under the system temporary directory, because
-//! a Unix socket's path is short and a run's directory is not; each run
-//! owns its endpoint directory and removes it when the run ends, on success
-//! and on error, without affecting other runs. A run's home, Session, judge
-//! calls and endpoint are its own, so `--jobs` needs nothing of them: every
-//! run serves its own App Server on its own endpoint, and the runner holds no
-//! state a second run reads.
+//! Every run is isolated (issue #1309): the run's server is served in its
+//! own child process with a disposable environment — a fresh `HOME`, `TMPDIR`
+//! and `XDG_*` under the run root, `PATH` and the one credential variable the
+//! model configuration names, and nothing else of the operator's environment
+//! — the execution settings document turns the sandbox on, the file tools
+//! carry the root boundary, and a preflight Session checks the run's
+//! isolation and its tool set before the model's first turn. A run whose
+//! preflight fails, or a host with no sandbox backend, is a harness failure,
+//! not a model result.
+//!
+//! The runner copies the scenario's workspace into a fresh run root for every
+//! run — `workspace/` and the disposable environment directories, and nothing
+//! else — so runs share no state. The run's Dim home is a fresh directory
+//! under `--out` (`homes/`), and its account files (`timeline.jsonl`, the
+//! whole Timeline; `judge-view.jsonl`, the view the judge read; the preflight
+//! report) live under `--out/outputs/`, never inside the run root. The run's
+//! App Server endpoint is a Unix socket under `--out/sockets/`, outside the
+//! run root. A run's home, Session, judge calls and endpoint are its own, so
+//! `--jobs` needs nothing of them: every run serves its own App Server in its
+//! own process, and the runner holds no state a second run reads.
 //!
 //! A finished evaluation's saved runs are judged again, with no model turn,
 //! from the `judge-view.jsonl` each run saved:
@@ -229,23 +284,30 @@ use crate::summary_eval::{
 use dim_agent_capabilities::{
     context_model::{output_allowance, window_facts},
     host::{
-        ModelHost, ModelSelectionHost, ModelStopReason, ProviderConnectionResolver,
-        ResolveContextModel,
+        HostFuture, ModelHost, ModelSelectionHost, ModelSelectionRequest, ModelStopReason,
+        ProviderConnectionResolver, ResolveContextModel, ToolExecutionContext,
     },
+    tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
+    workspace_tools::FileToolBoundary,
 };
-use dim_agent_runtime::AgentBuilder;
+use dim_agent_runtime::{AgentBuilder, Names, PartRegistry, PartScope};
 use dim_agent_types::{
     InputMode, Message, ModelConfig, ModelId, ModelRequest, ModelSelection, Role, SystemPrompt,
+    ToolCall, ToolDefinition, ToolResult, ToolSource,
 };
 use dim_app_server::RunningServer;
 use dim_client::{Client, ConnectionConfig, Message as WireMessage, Server as WireServer};
+use dim_event_hub::{DeclareRequest, EventHub, PublishRequest, TypeDeclaration};
 use futures_util::StreamExt;
+use rutis::Ctx;
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Component, Path, PathBuf},
-    sync::Arc,
+    process::Stdio,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
@@ -258,6 +320,9 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 const QUIET: Duration = Duration::from_secs(1);
 /// How long one `session.idle` call may take before its line counts as busy.
 const IDLE_WAIT: Duration = Duration::from_secs(1);
+/// How long a failed run waits for its cancelled siblings to settle before
+/// their futures are dropped (and their children's groups killed with them).
+const SETTLE_BOUND: Duration = Duration::from_secs(30);
 
 const JUDGE_SYSTEM: &str = "You check statements against the exported Timeline of a coding session. The Timeline is JSONL: a header line, one branch line per line of the Session, one event line per event, and an end line. A context/prepare or model/call event carries its request: addedMessages are the messages added since that line's previous request, with messageCount the whole request's count, and messages is the whole list when the history changed; every other field of the request appears in full only when it changed, and otherwise reads {\"unchanged\": true}. For each statement answer \"present\" when the run shows it and \"absent\" when it does not. Add the Timeline events that support the verdict as a short quote. Answer with a JSON array only, one object per statement: {\"id\": \"<statement id>\", \"verdict\": \"present|absent\", \"quote\": \"<Timeline evidence>\"}.";
 
@@ -266,6 +331,229 @@ const JUDGE_SYSTEM: &str = "You check statements against the exported Timeline o
 const JUDGE_REASK: &str = "Your answer could not be used: {what}. Answer again with the JSON array only, one object per statement.";
 /// How many times one run's judge is asked again for an answer it cannot use.
 const REASKS: u32 = 2;
+
+/// A loopback OpenAI-compatible provider that answers by `reply`, holds an
+/// answer by `hold`, and records every request it receives. Every evaluation
+/// serves one for the run's preflight session (decision 5 of the isolation
+/// work) and the fixture tests script the run and judge answers with it.
+pub(crate) struct Provider {
+    pub(crate) requests: Mutex<Vec<String>>,
+    pub(crate) reply: Reply,
+    pub(crate) hold: Hold,
+}
+
+/// The provider's answer to one request: the stream event to send, or
+/// `None` for a plain text reply.
+pub(crate) type Reply = fn(&str) -> Option<Value>;
+/// How long the provider holds a request's whole answer back before it
+/// sends the first byte of it; `None` sends the answer at once.
+pub(crate) type Hold = fn(&str) -> Option<Duration>;
+/// The hold of a provider that answers every request at once.
+pub(crate) fn holds_nothing(_: &str) -> Option<Duration> {
+    None
+}
+
+pub(crate) async fn completion(
+    axum::extract::State(provider): axum::extract::State<Arc<Provider>>,
+    axum::Json(body): axum::Json<Value>,
+) -> String {
+    let text = body.to_string();
+    provider.requests.lock().unwrap().push(text.clone());
+    if let Some(hold) = (provider.hold)(&text) {
+        tokio::time::sleep(hold).await;
+    }
+    let event = (provider.reply)(&text).unwrap_or_else(|| content("ok"));
+    format!("data: {event}\n\ndata: [DONE]\n\n")
+}
+
+/// A text answer in the stream shape the provider speaks.
+pub(crate) fn content(text: &str) -> Value {
+    json!({"id":"fixture","choices":[{"index":0,"delta":{"content":text},"finish_reason":"stop"}]})
+}
+
+/// A tool call in the stream shape the provider speaks.
+pub(crate) fn tool_call(name: &str, arguments: &str) -> Value {
+    json!({"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{
+        "index":0,"id":"call-1","type":"function",
+        "function":{"name":name,"arguments":arguments}
+    }]},"finish_reason":"tool_calls"}]})
+}
+
+/// The `plugin` tool's name: PluginManager's own tool installs a plugin
+/// mid-run whose code runs in the serve process, holding the run's
+/// credential, constrained by neither the sandbox nor the file-tool
+/// boundary. No run's Session offers it.
+const PLUGIN_TOOL: &str = "plugin";
+/// The tools a run's Sessions declare: the served assembly's whole set —
+/// the workspace host's tools and every part's contributed tools — without
+/// `plugin`. A Session's mount list fixes what it declares, in this order;
+/// without one it declares every host tool and every tool a part registers
+/// (config.rs `SessionConfig::tools`, #364). The list stays explicit on
+/// purpose: a future tool must not reach a live run unreviewed, as
+/// `plugin` shows. A served process registers no `plugin` tool at all
+/// (`ServerConfig::plugin_tools` is false there), so the tools it registers
+/// — this list's host tools and the run's named plugin defaults'
+/// contributions — are the whole set any Session of the process can
+/// declare: a Session's tool list selects among registered contributions,
+/// whatever created the Session (an `agent` member with an inline or a
+/// stored profile, a scheduled launch, a branch). The `tools-product`
+/// preflight check compares the probe Session's declared set with this
+/// list at run time, so an addition or removal surfaces as a failed check,
+/// not a silent drift in what an evaluation offers the model under test;
+/// the fixture pin asserts the mounted order of the set.
+const RUN_TOOLS: &[&str] = &[
+    "read",
+    "write",
+    "edit",
+    "glob",
+    "grep",
+    "exec",
+    "exec_stop",
+    "agent",
+    "ask_user",
+    "branch",
+    "events",
+    "goal_update",
+    "image_understand",
+    "loop",
+    "member_approval_allow",
+    "member_approval_reject",
+    "recall",
+    "schedule",
+    "settings",
+    "skill",
+    "wait",
+    "wakeup",
+    "web_fetch",
+    "web_search",
+];
+/// The mount list of a run's Sessions: the product's whole tool set
+/// without the `plugin` tool, plus the reply tools the scenario's sources
+/// declare (`replyTool`), in declaration order: `ScenarioProducer`'s
+/// session part registers exactly those (`ScenarioReplySession`), so a
+/// whitelist without them would hide a tool the scenario itself drives.
+fn session_tools(scenario: &Scenario) -> Vec<String> {
+    let mut tools: Vec<String> = RUN_TOOLS.iter().map(|name| (*name).to_owned()).collect();
+    for source in &scenario.sources {
+        if let Some(tool) = &source.reply_tool
+            && !tools.iter().any(|mounted| mounted == tool)
+        {
+            tools.push(tool.clone());
+        }
+    }
+    tools
+}
+
+/// The offered tool names of a model request body, in declaration order.
+fn offered_tools(request: &str) -> Vec<String> {
+    serde_json::from_str::<Value>(request)
+        .ok()
+        .and_then(|body| body["tools"].as_array().cloned())
+        .map(|tools| {
+            tools
+                .iter()
+                .filter_map(|tool| tool["function"]["name"].as_str())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The served preflight endpoint of one run: a loopback OpenAI-chat provider
+/// whose scripted answers drive the run's preflight Session through every
+/// check. Every request after the first is answered as the step whose number
+/// of executed tool results the request already holds, so the replies need no
+/// state: the requests carry the full conversation, and each executed step's
+/// tool result appears in it exactly once, as its `tool_call_id`. (The
+/// assistant's tool calls all reuse the id `call-1`, so counting the calls
+/// would recount the results; the results' `tool_call_id` key is unique.) The
+/// two per-run paths (the run's socket and the
+/// operator's home, the probe targets) travel in the preflight message as
+/// `SOCKET=<path>` and `OPERATOR_HOME=<path>` lines, which the answers read
+/// back from the request text.
+/// The preflight message, as the mock reads it from the request: the user
+/// message that carries it in the OpenAI-chat body. The request arrives as
+/// one compact JSON line, so the message's own newlines are escaped inside
+/// it; the mock parses the body rather than splitting the request text, and
+/// finds the preflight message by its `SOCKET=` line among the session
+/// messages (the first user text in the body is the system prompt). The
+/// `OUTPUT_ROOT=` line names the outputs root the account files and the
+/// sibling runs' records live under.
+fn session_text(text: &str) -> String {
+    let text_of = |content: &Value| -> Option<String> {
+        match content {
+            Value::String(text) => Some(text.clone()),
+            Value::Array(parts) => Some(
+                parts
+                    .iter()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+            ),
+            _ => None,
+        }
+    };
+    serde_json::from_str::<Value>(text)
+        .ok()
+        .and_then(|body| body["messages"].as_array().cloned())
+        .and_then(|messages| {
+            messages
+                .iter()
+                .filter_map(|message| text_of(&message["content"]))
+                .find(|content| content.contains("SOCKET="))
+        })
+        .unwrap_or_default()
+}
+
+fn preflight_reply(text: &str) -> Option<Value> {
+    let session = session_text(text);
+    // A product-probe request carries no preflight message; answer it
+    // without a tool call, so the probe turns never execute anything and
+    // the scripted steps stay keyed to the preflight conversation.
+    if !session.contains("SOCKET=") {
+        return Some(content("PRODUCT TOOLS DONE"));
+    }
+    let path = |token: &str| {
+        session
+            .lines()
+            .find_map(|line| line.strip_prefix(token))
+            .unwrap_or_default()
+            .to_owned()
+    };
+    match text.matches("\"tool_call_id\"").count() {
+        0 => Some(tool_call("exec", r#"{"command":"echo $HOME"}"#)),
+        1 => Some(tool_call("exec", r#"{"command":"env"}"#)),
+        2 => Some(tool_call(
+            "exec",
+            r#"{"command":"cat ../preflight-outside"}"#,
+        )),
+        3 => Some(tool_call("read", r#"{"path":"../preflight-outside"}"#)),
+        4 => Some(tool_call(
+            "exec",
+            &format!(r#"{{"command":"ls {}"}}"#, path("SOCKET=")),
+        )),
+        5 => Some(tool_call(
+            "exec",
+            &format!(r#"{{"command":"ls {}"}}"#, path("OPERATOR_HOME=")),
+        )),
+        6 => Some(tool_call(
+            "read",
+            &format!(r#"{{"path":"{}"}}"#, path("OPERATOR_HOME=")),
+        )),
+        7 => Some(tool_call(
+            "exec",
+            &format!(
+                r#"{{"command":"cat {}/preflight-outside"}}"#,
+                path("OUTPUT_ROOT=")
+            ),
+        )),
+        8 => Some(tool_call(
+            "read",
+            &format!(r#"{{"path":"{}/preflight-outside"}}"#, path("OUTPUT_ROOT=")),
+        )),
+        _ => Some(content("PREFLIGHT DONE")),
+    }
+}
 
 /// Where one text lives in the assembly [`app_server::serve_home`] builds.
 enum TextMember {
@@ -319,26 +607,49 @@ const TEXTS: &[(&str, TextMember)] = &[
         "goal/continuation",
         TextMember::Rust(|overrides, text| overrides.goal_continuation = Some(text)),
     ),
+    (
+        "eventhub/entry",
+        TextMember::Rust(|overrides, text| overrides.eventhub_entry = Some(text)),
+    ),
+    (
+        "eventhub/tool",
+        TextMember::Rust(|overrides, text| overrides.eventhub_tool = Some(text)),
+    ),
+    (
+        "scheduler/description",
+        TextMember::Rust(|overrides, text| overrides.scheduler_description = Some(text)),
+    ),
 ];
 
+#[cfg(unix)]
 pub async fn run() -> Result<()> {
     let options = Options::parse()?;
     let report = match (&options.rejudge, options.pool.is_empty()) {
         (Some(source), _) => rejudge(&options, source, |_| {}).await?,
         (None, false) => pooled(&options, |_| {}).await?,
-        (None, true) => evaluate(&options, |_| {}).await?,
+        (None, true) => evaluate(&options).await?,
     };
     println!("{report}");
     println!("wrote {}", options.out.join("scenario.md").display());
     Ok(())
 }
 
+/// A scenario evaluation cannot isolate a run off unix: the run's own App
+/// Server endpoint, the sandbox backend and the file-tool boundary are
+/// unix-only, so the entry refuses at startup with the reason instead of
+/// failing per run.
+#[cfg(not(unix))]
+pub async fn run() -> Result<()> {
+    Err(
+        "scenario-eval runs only on unix: a run's App Server endpoint, the sandbox \
+         and the file-tool boundary are unix-only"
+            .into(),
+    )
+}
+
 /// Runs the evaluation and writes `runs.jsonl` and `scenario.md`; returns the
-/// report. `observe` sees every run's App Server builder before it is served,
-/// the seam [`app_server::serve_home`] gives a caller that places its own
-/// values; the flow tests point a run's process facts at a home of their own
-/// instead of the developer's.
-async fn evaluate(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Result<String> {
+/// report.
+async fn evaluate(options: &Options) -> Result<String> {
     if options.defaults.is_some() {
         if options.node.is_none() {
             return Err("set DIM_TEST_NODE: the default plugins run in Node".into());
@@ -350,19 +661,25 @@ async fn evaluate(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Res
     let candidate = overrides(&options.texts)?;
     let current = Overrides::default();
     let scenarios = read_scenarios(&options.scenarios)?;
-    let home = isolated_home(&options.home)?;
-    if let Some(path) = &options.model_config {
-        dim_app_server::cli::model_profile(path)
-            .map_err(|error| format!("--model-config {}: {error}", path.display()))?;
+    // A live evaluation is isolated: the run's server must come from a
+    // model configuration, which also names the credential its calls use.
+    if options.model_config.is_none() {
+        return Err("a live evaluation needs --model-config: the run's server is served in its own process from the model configuration it names (isolate each live scenario run)".into());
     }
     let cancel = CancellationToken::new();
+    // The differential native probe runs once per evaluation, before the
+    // first run: one child served exactly as a run child is served but
+    // without the plugin defaults, so its probe Session declares the
+    // assembly's native tool set. Every run's tools-product check reads its
+    // declared set against it.
+    let native = native_probe(options, &cancel).await?;
     let instrument = Instrument::new(options);
     // Every run keeps its own instrument, merged in schedule order below, so
     // nothing in the report depends on which run finished first.
     let schedule = schedule(options.runs, scenarios.len());
     let mut pending: Vec<Option<(RunRecord, Instrument)>> =
         (0..schedule.len()).map(|_| None).collect();
-    let (home, observe, scenarios, cancel) = (&home, &observe, &scenarios, &cancel);
+    let (scenarios, cancel) = (&scenarios, &cancel);
     let planned = schedule
         .iter()
         .enumerate()
@@ -372,16 +689,16 @@ async fn evaluate(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Res
                 "current" => &current,
                 _ => &candidate,
             };
+            let native = &native;
             async move {
                 let record = run_once(
                     options,
-                    home,
                     arm,
                     overrides,
-                    observe,
                     &scenarios[scenario],
                     run,
                     cancel,
+                    native,
                     &mut measured,
                 )
                 .await?;
@@ -390,8 +707,21 @@ async fn evaluate(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Res
         });
     let mut in_flight = futures_util::stream::iter(planned).buffer_unordered(options.jobs);
     while let Some(finished) = in_flight.next().await {
-        let (index, record, measured) = finished?;
-        pending[index] = Some((record, measured));
+        match finished {
+            Ok((index, record, measured)) => pending[index] = Some((record, measured)),
+            Err(error) => {
+                // A failed run cancels its in-flight siblings before the
+                // harness returns: their children drive the model and write
+                // under --out, so they must settle first. The bound keeps a
+                // stuck sibling from holding the harness; a sibling still
+                // unsettled when it expires is dropped, and its child's
+                // process group killed with it.
+                cancel.cancel();
+                let settle = async { while in_flight.next().await.is_some() {} };
+                let _ = tokio::time::timeout(SETTLE_BOUND, settle).await;
+                return Err(error);
+            }
+        }
     }
     drop(in_flight);
     let mut instrument = instrument;
@@ -642,6 +972,8 @@ fn pooled_record(source: &Path, run: SavedRun, scenarios: &[Scenario]) -> Result
         judge_calls: run.judge_calls,
         temperature_dropped: run.temperature_dropped,
         decline_retries: run.decline_retries,
+        events: run.events,
+        reply_calls: run.reply_calls,
         probes,
     })
 }
@@ -707,11 +1039,11 @@ async fn rejudge_one(
     let judging = if saved.judge_outcome == JudgeOutcome::NotAsked {
         Judging::not_asked(scenario, saved.judge_error.clone())
     } else {
-        let directory = source
+        let path = source
+            .join("outputs")
             .join(&saved.arm)
             .join(&saved.scenario)
-            .join(format!("run-{}", saved.run));
-        let path = directory.join("judge-view.jsonl");
+            .join(format!("run-{}.judge-view.jsonl", saved.run));
         let view = std::fs::read_to_string(&path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
         judge_export(host, resolver, judge, scenario, &view, limits, cancel).await
@@ -734,6 +1066,8 @@ async fn rejudge_one(
         judge_calls: judging.calls,
         temperature_dropped: Some(judging.temperature_dropped),
         decline_retries: saved.decline_retries,
+        events: saved.events.clone(),
+        reply_calls: saved.reply_calls.clone(),
         probes: judging.probes,
     })
 }
@@ -774,13 +1108,21 @@ struct SavedRun {
     /// before the runner recorded it.
     #[serde(default)]
     decline_retries: Option<u32>,
+    /// The events the run published, as the run recorded them; `None` in a
+    /// record written before the runner published any.
+    #[serde(default)]
+    events: Vec<EventRecord>,
+    /// The reply-tool calls the run made; empty in a record written before
+    /// the runner recorded them.
+    #[serde(default)]
+    reply_calls: Vec<ReplyCall>,
     #[serde(default)]
     probes: Vec<SavedProbe>,
 }
 
 /// One probe's record in a saved run: the kind the run was judged against,
 /// its verdict and the judge's quote.
-#[derive(serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedProbe {
     id: String,
@@ -841,7 +1183,7 @@ fn parse_selection(value: &str) -> Result<(&str, &str, usize)> {
     if arm != "current" && arm != "candidate" {
         return Err(format!("--run {value}: an arm is current or candidate").into());
     }
-    let index = run.strip_prefix("run-").unwrap_or(run);
+    let index = run.trim_prefix("run-");
     let run = index
         .parse::<usize>()
         .map_err(|_| format!("--run {value}: {run} is not a run index"))?;
@@ -908,8 +1250,30 @@ struct Options {
     /// it.
     jobs: usize,
     out: PathBuf,
-    home: PathBuf,
     model_config: Option<PathBuf>,
+    /// Whether each run is isolated: its server runs in its own process
+    /// with a disposable environment, the sandbox is on, the file tools
+    /// carry the root boundary, and the preflight is enforced. The command
+    /// line always isolates; the offline tests turn it off for an ablation.
+    isolate: bool,
+    /// A test hook that faults the preflight phase, to exercise the abort.
+    fail_preflight: bool,
+    /// A test hook that offers the `plugin` tool to the run's Sessions,
+    /// to exercise the tools check.
+    offer_plugin: bool,
+    /// A test hook that contributes one tool `RUN_TOOLS` does not name from
+    /// a part the run's plugin defaults do not name, to exercise the
+    /// tools-product check.
+    extra_tool: bool,
+    /// A test hook that makes one arm's run child wait for a marker file —
+    /// written once the other arm's model call is held — and then exit
+    /// non-zero, to exercise a failed run cancelling a still-working
+    /// sibling: the arm's name and the marker's path.
+    fail_child: Option<(String, PathBuf)>,
+    /// A test hook beside `fail_child`: the hook's descendant inherits the
+    /// child's standard output instead of detaching it, so only killing the
+    /// child's group lets the parent's read reach EOF.
+    fail_child_holds_stdout: bool,
     /// The default plugin configuration file both arms load; `None` serves
     /// the assembly without the product's plugins.
     defaults: Option<PathBuf>,
@@ -937,7 +1301,7 @@ impl Options {
         let usage = "usage: cargo run -p xtask -- scenario-eval --scenarios DIR \
                      --text ID --candidate FILE [--text ID --candidate FILE]... \
                      --model PROVIDER/MODEL --judge PROVIDER/MODEL --runs N \
-                     --home DIR --out DIR [--jobs N] [--model-config FILE] \
+                     --out DIR [--jobs N] [--model-config FILE] \
                      [--defaults FILE]; a text named twice is an error, and a \
                      run whose view does not fit the judge's own declared \
                      window is unjudged, so a model configuration narrowed for \
@@ -952,7 +1316,7 @@ impl Options {
         // Both arms serve the product's default plugins; `--defaults`
         // names another default configuration file.
         let mut args = args.into_iter();
-        let (mut scenarios, mut home, mut out) = (None, None, None);
+        let (mut scenarios, mut out) = (None, None);
         let (mut text, mut candidate, mut model, mut judge) = (None, None, None, None);
         let (mut runs, mut jobs, mut model_config, mut defaults) = (None, None, None, None);
         let mut rejudge = None;
@@ -999,7 +1363,7 @@ impl Options {
                 "--judge" => judge = Some(target(&value)?),
                 "--runs" => runs = Some(value.parse::<usize>()?),
                 "--jobs" => jobs = Some(value.parse::<usize>()?),
-                "--home" => home = Some(PathBuf::from(value)),
+
                 "--out" => out = Some(PathBuf::from(value)),
                 "--model-config" => model_config = Some(PathBuf::from(value)),
                 "--defaults" => defaults = Some(PathBuf::from(value)),
@@ -1033,11 +1397,10 @@ impl Options {
                     .into(),
             );
         }
-        if finished && (!texts.is_empty() || runs.is_some() || home.is_some() || defaults.is_some())
-        {
+        if finished && (!texts.is_empty() || runs.is_some() || defaults.is_some()) {
             return Err(
                 "--rejudge and --pool read finished evaluations' saved runs: --text, \
-                 --candidate, --runs, --home and --defaults belong to a new evaluation"
+                 --candidate, --runs and --defaults belong to a new evaluation"
                     .into(),
             );
         }
@@ -1049,11 +1412,6 @@ impl Options {
             0
         } else {
             runs.filter(|runs| *runs > 0).ok_or(usage)?
-        };
-        let home = if finished {
-            PathBuf::new()
-        } else {
-            home.ok_or(usage)?
         };
         let out = out.ok_or(usage)?;
         let scenarios = scenarios.ok_or(usage)?;
@@ -1071,11 +1429,16 @@ impl Options {
             runs,
             jobs: jobs.unwrap_or(1).max(1),
             out: resolved,
-            home,
             model_config,
             defaults,
             node: env_path("DIM_TEST_NODE"),
             js_runtime: env_path("DIM_TEST_JS_RUNTIME"),
+            isolate: true,
+            fail_preflight: false,
+            offer_plugin: false,
+            extra_tool: false,
+            fail_child: None,
+            fail_child_holds_stdout: false,
             rejudge,
             select,
             pool,
@@ -1269,27 +1632,6 @@ fn set_member(configs: &mut BTreeMap<String, Value>, plugin: &str, member: &str,
         .insert(leaf.to_owned(), value);
 }
 
-/// `--home` must be an isolated product home; it must never be the product
-/// home. Every run copies it, so a run never shares state with another.
-fn isolated_home(path: &Path) -> Result<PathBuf> {
-    let home = std::fs::canonicalize(path)
-        .map_err(|error| format!("--home {}: {error}", path.display()))?;
-    let mut products = Vec::new();
-    if let Some(user) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
-        products.push(PathBuf::from(&user).join(".dimcode-alpha"));
-        products.push(PathBuf::from(user).join(".dimcode"));
-    }
-    if let Some(path) = std::env::var_os("DIMCODE_HOME") {
-        products.push(PathBuf::from(path));
-    }
-    for product in products {
-        if std::fs::canonicalize(product).ok().as_deref() == Some(home.as_path()) {
-            return Err("--home must be an isolated product home, never the product home".into());
-        }
-    }
-    Ok(home)
-}
-
 /// The candidate text's own token cost, counted with the product's counter
 /// (`window_facts().count_tokens`) on the request the text travels in. The
 /// count reads the request's bytes; the window it is built with does not
@@ -1309,12 +1651,86 @@ struct ScenarioFile {
     /// Session method calls made before the message, in order.
     #[serde(default)]
     calls: Vec<Call>,
+    /// The EventHub sources the runner declares and subscribes the Session
+    /// to before the message.
+    #[serde(default)]
+    sources: Vec<Source>,
+    /// The events the runner publishes while the run is under way.
+    #[serde(default)]
+    events: Vec<EventSpec>,
     #[serde(default)]
     steers: Vec<Steer>,
     budget: Budget,
     probes: Vec<Probe>,
 }
-#[derive(Clone, serde::Deserialize)]
+/// One source a scenario declares through the `eventHub` service, and
+/// optionally subscribes its Session's `main` branch to (EventHub design A.1,
+/// A.3). Without `subscribe` the source starts unsubscribed, for a scenario
+/// where the model subscribes through the `events` tool. `Serialize` carries
+/// the scenario to the serve child.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Source {
+    pub(crate) name: String,
+    /// The source's manual for the model, as the declaration carries it.
+    pub(crate) guide: String,
+    /// The declaration's event types.
+    pub(crate) types: Vec<SourceType>,
+    #[serde(default)]
+    pub(crate) subscribe: Option<Subscribed>,
+    /// The tool name the runner registers for the Session, when the guide
+    /// names one; the tool takes `{messageId, text}` and answers `sent`.
+    #[serde(default)]
+    pub(crate) reply_tool: Option<String>,
+}
+/// One entry of a source's declared types (EventHub design A.1).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SourceType {
+    pub(crate) r#type: String,
+    #[serde(default)]
+    pub(crate) description: String,
+    pub(crate) mode: InputMode,
+}
+/// The subscription a scenario's source asks for (EventHub design A.3).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct Subscribed {
+    pub(crate) types: Vec<String>,
+    #[serde(default)]
+    pub(crate) mode: Option<InputMode>,
+}
+/// One event the runner publishes, and when: the steers' trigger rule.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct EventSpec {
+    pub(crate) source: String,
+    pub(crate) r#type: String,
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) title: Option<String>,
+    pub(crate) body: String,
+    #[serde(default)]
+    pub(crate) attributes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(crate) after_seconds: Option<f64>,
+    #[serde(default)]
+    pub(crate) when_tool_call: Option<String>,
+    /// Publish this many seconds after the first subscription naming the
+    /// event's source exists, so a scenario where the model subscribes
+    /// through the `events` tool can time the event (EventHub design A.4).
+    #[serde(default)]
+    pub(crate) after_subscribed_seconds: Option<f64>,
+    /// When the runner first saw a subscription naming the event's source:
+    /// the `afterSubscribedSeconds` clock, set by the runner, not the file.
+    #[serde(skip)]
+    pub(crate) subscribed_at: Option<Instant>,
+    /// The event type's declared mode: the effective mode of a subscription
+    /// that sets none (EventHub design §3.1).
+    #[serde(skip)]
+    pub(crate) declared_mode: InputMode,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Call {
     pub(crate) method: String,
@@ -1323,7 +1739,7 @@ pub(crate) struct Call {
     #[serde(default)]
     pub(crate) params: Value,
 }
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Steer {
     #[serde(default)]
@@ -1332,21 +1748,21 @@ pub(crate) struct Steer {
     pub(crate) when_tool_call: Option<String>,
     pub(crate) text: String,
 }
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Budget {
     pub(crate) turns: u32,
     pub(crate) seconds: f64,
     pub(crate) window: u64,
 }
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Probe {
     id: String,
     kind: ProbeKind,
     text: String,
 }
-#[derive(Clone, Copy, serde::Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ProbeKind {
     MustShow,
@@ -1363,13 +1779,18 @@ impl ProbeKind {
 
 /// A scenario as the runner runs it: its directory (its workspace is
 /// `workspace/` beside the file), the script and the probes.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Scenario {
     pub(crate) id: String,
     pub(crate) description: String,
+    /// The scenario's directory; the serve child never uses it, and a child
+    /// deserialization leaves it empty.
+    #[serde(default)]
     pub(crate) directory: PathBuf,
     pub(crate) message: String,
     pub(crate) calls: Vec<Call>,
+    pub(crate) sources: Vec<Source>,
+    pub(crate) events: Vec<EventSpec>,
     pub(crate) steers: Vec<Steer>,
     pub(crate) budget: Budget,
     probes: Vec<Probe>,
@@ -1412,7 +1833,7 @@ pub(crate) fn read_scenarios(directory: &Path) -> Result<Vec<Scenario>> {
 fn into_scenario(
     id: String,
     directory: PathBuf,
-    raw: ScenarioFile,
+    mut raw: ScenarioFile,
 ) -> std::result::Result<Scenario, String> {
     if raw.budget.turns == 0 {
         return Err("budget.turns must be positive".into());
@@ -1443,6 +1864,88 @@ fn into_scenario(
             return Err(format!("call {}: params must be an object", call.method));
         }
     }
+    if raw.sources.is_empty() && !raw.events.is_empty() {
+        return Err("an event needs the source it comes from declared in sources".into());
+    }
+    let mut names = BTreeSet::new();
+    let mut tools = BTreeSet::new();
+    for source in &raw.sources {
+        if source.name.trim().is_empty() {
+            return Err("a source needs a name".into());
+        }
+        if !names.insert(source.name.clone()) {
+            return Err(format!("source {}: the name is used twice", source.name));
+        }
+        if source.types.is_empty() {
+            return Err(format!("source {}: declare at least one type", source.name));
+        }
+        if let Some(subscribe) = &source.subscribe
+            && subscribe.types.is_empty()
+        {
+            return Err(format!(
+                "source {}: subscribe to at least one type",
+                source.name
+            ));
+        }
+        if let Some(tool) = &source.reply_tool {
+            if tool.trim().is_empty() {
+                return Err(format!(
+                    "source {}: the reply tool needs a name",
+                    source.name
+                ));
+            }
+            if !tools.insert(tool.clone()) {
+                return Err(format!(
+                    "source {}: the reply tool {tool} is used twice",
+                    source.name
+                ));
+            }
+        }
+    }
+    for event in &mut raw.events {
+        match (
+            &event.after_seconds,
+            &event.when_tool_call,
+            &event.after_subscribed_seconds,
+        ) {
+            (Some(after), None, None) if *after > 0. => {}
+            (None, Some(trigger), None) if !trigger.is_empty() => {}
+            (None, None, Some(after)) if *after > 0. => {}
+            _ => {
+                return Err(format!(
+                    "an event sets exactly one of afterSeconds (positive), whenToolCall (non-empty) and afterSubscribedSeconds (positive): {}",
+                    event.id
+                ));
+            }
+        }
+        if event.id.trim().is_empty() {
+            return Err("an event needs an id".into());
+        }
+        let Some(source) = raw
+            .sources
+            .iter()
+            .find(|source| source.name == event.source)
+        else {
+            return Err(format!(
+                "event {}: source {} is not declared in sources",
+                event.id, event.source
+            ));
+        };
+        let Some(declared) = source
+            .types
+            .iter()
+            .find(|declared| declared.r#type == event.r#type)
+        else {
+            return Err(format!(
+                "event {}: type {} is not declared by source {}",
+                event.id, event.r#type, event.source
+            ));
+        };
+        // The type's declared mode applies to a delivery whose subscription
+        // sets none; a subscription's own mode wins, from the snapshot the
+        // publish's receipt is read against (EventHub design §3.1).
+        event.declared_mode = declared.mode;
+    }
     if raw.probes.is_empty() {
         return Err("a scenario needs at least one probe".into());
     }
@@ -1467,6 +1970,8 @@ fn into_scenario(
         directory,
         message: raw.message,
         calls: raw.calls,
+        sources: raw.sources,
+        events: raw.events,
         steers: raw.steers,
         budget: raw.budget,
         probes: raw.probes,
@@ -1506,6 +2011,12 @@ struct RunRecord {
     /// How many declines the runner sent again after `question_not_pending`;
     /// `None` in a record written before the runner recorded it.
     decline_retries: Option<u32>,
+    /// One entry per event the run published, in order: the receipt EventHub
+    /// answered (EventHub design A.2). A receipt that is not `delivered`
+    /// fails the run and is recorded here as it came.
+    events: Vec<EventRecord>,
+    /// One entry per reply-tool call the run's tools recorded, in order.
+    reply_calls: Vec<ReplyCall>,
     probes: Vec<ProbeRecord>,
 }
 impl RunRecord {
@@ -1528,7 +2039,7 @@ impl RunRecord {
         !self.failed && self.judge_outcome == JudgeOutcome::Judged
     }
 }
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProbeRecord {
     id: String,
@@ -1616,22 +2127,1307 @@ impl JudgeCall {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// One run's serve child: the App Server of the run, served in its own
+/// process with a disposable environment (isolation decision 1). The parent
+/// starts its own binary with `scenario-eval-serve <params>`; the offline
+/// tests start the same entry through the `eval_server_child` test function,
+/// so live and offline runs go through the same child-process path.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ChildParams {
+    /// The run's Dim home, a fresh directory under the output root, never
+    /// the operator's `--home`.
+    home: PathBuf,
+    /// The run's workspace, the session cwd.
+    workspace: PathBuf,
+    /// The disposable `HOME` of the child, under the run root outside the
+    /// workspace.
+    env_home: PathBuf,
+    /// The run's output root (`--out/command-output`).
+    output_root: PathBuf,
+    /// The run's endpoint, under the output root outside the run root.
+    socket: PathBuf,
+    /// The run's model configuration; the child adds its own loopback
+    /// preflight provider to it before serving.
+    model_config: PathBuf,
+    /// The default plugin configuration, when the assembly serves it.
+    defaults: Option<PathBuf>,
+    node: Option<PathBuf>,
+    js_runtime: Option<PathBuf>,
+    /// The assembly overrides the arm runs with, as JSON.
+    overrides: Value,
+    /// The scenario as JSON.
+    scenario: Value,
+    model: ModelId,
+    judge: ModelId,
+    /// The file-tool root boundary of the run: workspace, disposable home
+    /// and the platform's read-only roots.
+    boundary: Option<FileToolBoundary>,
+    /// The outputs root of the run's arm: where the judge views and the
+    /// sibling runs' records live, the probe target of the output-root
+    /// checks.
+    outputs: PathBuf,
+    /// The environment names the parent passed through for the model
+    /// configuration's providers.
+    credentials: Vec<String>,
+    /// The operator's home, the probe target of the operator-home checks;
+    /// `None` skips them.
+    operator_home: Option<PathBuf>,
+    /// Whether the run is isolated: the execution settings document with
+    /// the sandbox on, the file-tool boundary, and the enforced preflight.
+    /// The offline tests turn it off for an ablation.
+    isolate: bool,
+    /// A test hook that fails the preflight phase before it starts, to
+    /// exercise the abort.
+    fail_preflight: bool,
+    /// A test hook that offers the `plugin` tool to the run's Sessions,
+    /// to exercise the tools check.
+    offer_plugin: bool,
+    /// A test hook that contributes one tool `RUN_TOOLS` does not name from
+    /// a part the run's plugin defaults do not name, to exercise the
+    /// tools-product check.
+    #[serde(default)]
+    extra_tool: bool,
+    /// A test hook: this child waits for the marker file — written once
+    /// the sibling arm's model call is held — bounded, then exits non-zero,
+    /// so a failed run cancels a sibling still working.
+    #[serde(default)]
+    fail_child: Option<PathBuf>,
+    /// A test hook beside `fail_child`: the hook's descendant inherits this
+    /// child's standard output instead of detaching it, so only killing the
+    /// child's group lets the parent's read reach EOF.
+    #[serde(default)]
+    fail_child_holds_stdout: bool,
+    /// The native probe's declared set: the assembly served without the
+    /// plugin defaults. Each run's `tools-product` check reads its own
+    /// declared set against it.
+    #[serde(default)]
+    native_tools: Vec<(String, ToolSource)>,
+    /// This child is the evaluation's differential native probe: it serves
+    /// the assembly without the plugin defaults and prints the probe
+    /// Session's declared tool set instead of driving a run.
+    #[serde(default)]
+    probe_only: bool,
+}
+
+/// One preflight check's outcome.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreflightCheck {
+    pub(crate) name: String,
+    pub(crate) passed: bool,
+    pub(crate) detail: String,
+}
+
+/// The run's serve child prints one JSON line on standard output: the run's
+/// record pieces, the export and the view, the configurations the report
+/// reads, and the preflight checks. A `harness` error aborts the run before
+/// (or instead of) it: the evaluation reports it as a harness failure, not a
+/// model result.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChildOutcome {
+    preflight: Vec<PreflightCheck>,
+    /// The harness failure, if the run was aborted by the harness: no
+    /// sandbox backend, a failed preflight, a serve or connect failure.
+    harness: Option<String>,
+    export: Option<String>,
+    view: Option<String>,
+    session: Option<String>,
+    stop: String,
+    turns: u32,
+    window: Option<f64>,
+    duration_ms: f64,
+    decline_retries: u32,
+    error: Option<String>,
+    judge_outcome: JudgeOutcome,
+    judge_error: Option<String>,
+    judge_reasks: u32,
+    judge_calls: Vec<JudgeCall>,
+    temperature_dropped: bool,
+    /// The events the run published, as the run's producer recorded them
+    /// (EventHub design A.2), and the reply-tool calls the run's tools made.
+    #[serde(default)]
+    events: Vec<EventRecord>,
+    #[serde(default)]
+    reply_calls: Vec<ReplyCall>,
+    probes: Vec<SavedProbe>,
+    /// The reasoning effort and service tier the run's requests carried.
+    model_configuration: Option<(Option<String>, Option<String>)>,
+    judge_configuration: Option<(Option<String>, Option<String>)>,
+    judge_window: (u64, u64),
+}
+
+/// The child outcome of a run the harness aborted.
+fn harness_outcome(error: String, preflight: Vec<PreflightCheck>) -> ChildOutcome {
+    ChildOutcome {
+        preflight,
+        harness: Some(error),
+        export: None,
+        view: None,
+        session: None,
+        stop: "error".into(),
+        turns: 0,
+        window: None,
+        duration_ms: 0.,
+        decline_retries: 0,
+        error: None,
+        judge_outcome: JudgeOutcome::NotAsked,
+        judge_error: None,
+        judge_reasks: 0,
+        judge_calls: Vec::new(),
+        temperature_dropped: false,
+        events: Vec::new(),
+        reply_calls: Vec::new(),
+        probes: Vec::new(),
+        model_configuration: None,
+        judge_configuration: None,
+        judge_window: (0, 0),
+    }
+}
+
+/// The hidden `xtask scenario-eval-serve` entry: reads one run's params file
+/// and runs the child.
+#[cfg(unix)]
+pub(crate) async fn serve_entry(params_path: Option<String>) -> Result<()> {
+    let path = params_path.ok_or("scenario-eval-serve needs a params file path")?;
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("{}: {error}", Path::new(&path).display()))?;
+    let params: ChildParams = serde_json::from_str(&text)
+        .map_err(|error| format!("{}: {error}", Path::new(&path).display()))?;
+    // The run's own preflight provider answers in the child, so its model
+    // requests — what the Session declared — are the child's to check.
+    let (preflight_url, provider, _) = serve_preflight().await?;
+    // The run's model configuration with that provider added, beside the
+    // run's params.
+    let config_path = Path::new(&path).with_extension("model.json");
+    augment_model_config(&params.model_config, &preflight_url, &config_path)?;
+    let mut params = params;
+    params.model_config = config_path;
+    // A test hook: the test writes `marker` once the sibling arm's model
+    // call is held; this child waits for that event, bounded, then exits
+    // non-zero. The wait's outcome is printed on a line of its own, so the
+    // parent's error says which happened instead of leaving a missed event
+    // to the exit status.
+    if let Some(marker) = &params.fail_child {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let seen = loop {
+            if marker.exists() {
+                break true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                break false;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let outcome = if seen {
+            "the held sibling's model call was seen"
+        } else {
+            "the held sibling's model call was not seen within the bound"
+        };
+        // The descendant a failed child leaves behind when the harness does
+        // not kill its group: `sleep` joins this child's process group (it
+        // starts no session of its own), and its pid goes beside the marker
+        // for the test to check. Its streams are detached, or — when the
+        // test asks for it — it inherits this child's standard output, so
+        // only killing the group lets the parent's read reach EOF.
+        let mut descendant = std::process::Command::new("sleep");
+        descendant
+            .arg("300")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null());
+        if params.fail_child_holds_stdout {
+            descendant.stdout(Stdio::inherit());
+        } else {
+            descendant.stdout(Stdio::null());
+        }
+        let descendant = descendant.spawn().map_err(|error| {
+            format!("the failing-child test hook cannot start its descendant: {error}")
+        })?;
+        std::fs::write(
+            marker.with_extension("descendant"),
+            descendant.id().to_string(),
+        )
+        .map_err(|error| {
+            format!("the failing-child test hook cannot record its descendant: {error}")
+        })?;
+        println!("{}", json!({"failChild": outcome}));
+        return Err(format!("the failing-child test hook: {outcome}").into());
+    }
+    if params.probe_only {
+        // The differential native probe: the assembly served without the
+        // plugin defaults, its probe Session's declared set printed for the
+        // parent's runs to check against.
+        let declared = native_probe_child(&params).await?;
+        println!(
+            "{}",
+            serde_json::to_string(&json!({"nativeTools": declared}))?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&child_outcome(&params, &provider).await)?
+    );
+    Ok(())
+}
+
+/// A non-unix host never starts a serve child: the entry refuses with the
+/// same reason [`run`] does.
+#[cfg(not(unix))]
+pub(crate) async fn serve_entry(_: Option<String>) -> Result<()> {
+    Err("scenario-eval-serve runs only on unix".into())
+}
+
+/// The child: serves the run's App Server, drives its preflight and its
+/// Session over the run's socket, exports the Timeline and judges it, all in
+/// its own process with its own environment. `preflight` is the run's own
+/// loopback provider, whose request list the tools check reads.
+async fn child_outcome(params: &ChildParams, preflight: &Arc<Provider>) -> ChildOutcome {
+    let scenario: Scenario = match serde_json::from_value(params.scenario.clone()) {
+        Ok(scenario) => scenario,
+        Err(error) => {
+            return harness_outcome(
+                format!("the scenario does not deserialize: {error}"),
+                Vec::new(),
+            );
+        }
+    };
+    let unparsed = unparsed(&scenario);
+    let settings = RunSettings {
+        overrides: child_overrides(&params.overrides),
+        model_config: Some(params.model_config.clone()),
+        unix_path: Some(params.socket.clone()),
+        defaults: params.defaults.clone(),
+        node: params.node.clone(),
+        js_runtime: params.js_runtime.clone(),
+        boundary: params.boundary.clone(),
+        plugin_tools: false,
+    };
+    // The scenario's event producers run in the child, whose process
+    // publishes what the run's Session subscribes to (EventHub design A.1).
+    let producer = Arc::new(ProducerState::default());
+    let server = match app_server::serve_home(
+        &params.home,
+        &params.workspace,
+        params.output_root.clone(),
+        settings.clone(),
+        |builder| {
+            if !scenario.sources.is_empty() {
+                install_producer(builder, &scenario.sources, producer.clone());
+            }
+            if params.extra_tool {
+                install_extra_tool(builder);
+            }
+        },
+    )
+    .await
+    {
+        Ok(server) => server,
+        Err(error) => {
+            return harness_outcome(
+                format!("the run server failed to start: {error}"),
+                Vec::new(),
+            );
+        }
+    };
+    let started = Instant::now();
+    let outcome = child_drive(
+        &server, &settings, params, &scenario, &unparsed, &producer, preflight,
+    )
+    .await;
+    let duration_ms = started.elapsed().as_secs_f64() * 1000.;
+    server.shutdown();
+    let _ = server.join().await;
+    let mut outcome = outcome.unwrap_or_else(|error| {
+        harness_outcome(format!("the run failed to finish: {error}"), Vec::new())
+    });
+    if outcome.duration_ms == 0. {
+        outcome.duration_ms = duration_ms;
+    }
+    outcome
+}
+
+/// The settings the native probe child serves: a model configuration rather
+/// than a product home, the run's boundary and overrides, and no `plugin`
+/// tool.
+fn native_probe_settings(
+    model_config: PathBuf,
+    socket: PathBuf,
+    boundary: Option<FileToolBoundary>,
+    overrides: Overrides,
+) -> RunSettings {
+    RunSettings {
+        overrides,
+        model_config: Some(model_config),
+        unix_path: Some(socket),
+        defaults: None,
+        node: None,
+        js_runtime: None,
+        boundary,
+        plugin_tools: false,
+    }
+}
+
+/// The native probe child: the assembly served as a run child is served —
+/// the same home, workspace and boundary — but without the plugin defaults,
+/// and one probe Session whose declared set the child prints for the
+/// parent's runs. The probe's one turn is answered by the child's own
+/// loopback provider and calls no tool.
+async fn native_probe_child(params: &ChildParams) -> Result<Vec<(String, ToolSource)>> {
+    let settings = native_probe_settings(
+        params.model_config.clone(),
+        params.socket.clone(),
+        params.boundary.clone(),
+        child_overrides(&params.overrides),
+    );
+    let server = app_server::serve_home(
+        &params.home,
+        &params.workspace,
+        params.output_root.clone(),
+        settings.clone(),
+        |builder| {
+            if params.extra_tool {
+                install_extra_tool(builder);
+            }
+        },
+    )
+    .await
+    .map_err(|error| format!("the native probe server failed to start: {error}"))?;
+    let connected: std::result::Result<_, String> = async {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("the child has no own executable: {error}"))?;
+        let mut client = Client::connect(&ConnectionConfig {
+            endpoint: params.socket.clone(),
+            server: WireServer {
+                program: executable,
+                embedded: true,
+            },
+            profile: None,
+            client_kind: "other",
+            client_name: "scenario-eval",
+            protocol_version: 4,
+        })
+        .await
+        .map_err(|error| format!("cannot connect to the served App Server: {error}"))?;
+        product_probe(&mut client, params, &settings.database(&params.home)).await
+    }
+    .await;
+    server.shutdown();
+    let _ = server.join().await;
+    Ok(connected?)
+}
+
+/// The drive half of the child, after the run's server is up.
+async fn child_drive(
+    server: &RunningServer,
+    settings: &RunSettings,
+    params: &ChildParams,
+    scenario: &Scenario,
+    unparsed: &[ProbeRecord],
+    producer: &ProducerState,
+    preflight: &Arc<Provider>,
+) -> std::result::Result<ChildOutcome, Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    let socket = settings
+        .unix_path
+        .clone()
+        .ok_or("a run serves its App Server on a local endpoint")?;
+    let mut client = Client::connect(&ConnectionConfig {
+        endpoint: socket,
+        server: WireServer {
+            program: std::env::current_exe()?,
+            embedded: true,
+        },
+        profile: None,
+        client_kind: "other",
+        client_name: "scenario-eval",
+        protocol_version: 4,
+    })
+    .await
+    .map_err(|error| format!("cannot connect to the served App Server: {error}"))?;
+    let checks = Vec::new();
+    if params.isolate {
+        let backend = client
+            .rpc("host.execution.backend", json!({}))
+            .await
+            .map_err(|error| error.to_string())?;
+        if !backend["available"].as_bool().unwrap_or(false) {
+            let reason = backend["reason"].as_str().unwrap_or("no backend");
+            return Ok(harness_outcome(
+                format!("no sandbox backend, so a live run cannot isolate its commands: {reason}"),
+                checks,
+            ));
+        }
+        let revision = client
+            .rpc(
+                "settings.read",
+                json!({"source": "execution", "scope": "user"}),
+            )
+            .await
+            .map_err(|error| error.to_string())?["revision"]
+            .clone();
+        let _ = client
+            .rpc(
+                "settings.update",
+                json!({
+                    "source": "execution", "scope": "user",
+                    "expectedRevision": revision,
+                    "document": {"sandbox": true, "network": false},
+                }),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    if settings.defaults.is_some() {
+        wait_for_plugins(&mut client).await?;
+    }
+    let model = selection(server, &params.model, &params.workspace, &cancel)
+        .await
+        .map_err(|error| error.to_string())?;
+    let judge = selection(server, &params.judge, &params.workspace, &cancel)
+        .await
+        .map_err(|error| error.to_string())?;
+    let limits = judge_window(&judge, Some(&params.model_config), &cancel)
+        .await
+        .map_err(|error| error.to_string())?;
+    // The preflight runs in every mode — its checks observe the run's
+    // actual behavior. An isolated run aborts on a failed check; an
+    // unisolated run (an offline ablation) reports the checks as they are
+    // and runs on.
+    let mut ceiling = None;
+    let (checks, preflight) = if params.isolate && params.fail_preflight {
+        (
+            vec![PreflightCheck {
+                name: "hook".into(),
+                passed: false,
+                detail: "the preflight phase is faulted by the test hook".into(),
+            }],
+            Some("the preflight phase is faulted by the test hook".to_owned()),
+        )
+    } else {
+        let expected = session_tools(scenario);
+        match preflight_session(
+            &mut client,
+            params,
+            preflight,
+            &expected,
+            &settings.database(&params.home),
+        )
+        .await
+        {
+            Ok((checks, tools)) => {
+                ceiling = Some(tools);
+                (checks, None)
+            }
+            Err((checks, error)) => {
+                let error = if params.isolate { Some(error) } else { None };
+                (checks, error)
+            }
+        }
+    };
+    let finished = match preflight {
+        None => match drive_once(
+            server,
+            settings,
+            &params.home,
+            &params.workspace,
+            scenario,
+            &model,
+            &judge,
+            limits,
+            &cancel,
+            producer,
+            (!params.offer_plugin)
+                .then(|| ceiling.clone().unwrap_or_else(|| session_tools(scenario))),
+        )
+        .await
+        {
+            Ok(finished) => finished,
+            Err(error) => Finished::failed(scenario, error.to_string()),
+        },
+        Some(error) => {
+            return Ok(harness_outcome(format!("preflight: {error}"), checks));
+        }
+    };
+    let driven = finished.driven;
+    let judging = finished.judging;
+    Ok(ChildOutcome {
+        preflight: checks,
+        harness: None,
+        export: finished.export,
+        view: finished.view,
+        session: (!driven.session.is_empty()).then_some(driven.session),
+        stop: driven.stop.to_owned(),
+        turns: driven.turns,
+        window: driven.window,
+        duration_ms: 0.,
+        decline_retries: driven.decline_retries,
+        error: driven.error,
+        judge_outcome: judging.outcome,
+        judge_error: judging.error,
+        judge_reasks: judging.reasks,
+        judge_calls: judging.calls,
+        temperature_dropped: judging.temperature_dropped,
+        events: producer.events(),
+        reply_calls: producer.reply_calls(),
+        probes: if judging.probes.is_empty() {
+            unparsed
+                .iter()
+                .map(|probe| SavedProbe {
+                    id: probe.id.clone(),
+                    kind: Some(probe.kind.to_owned()),
+                    verdict: probe.verdict,
+                    quote: probe.quote.clone(),
+                })
+                .collect()
+        } else {
+            judging
+                .probes
+                .iter()
+                .map(|probe| SavedProbe {
+                    id: probe.id.clone(),
+                    kind: Some(probe.kind.to_owned()),
+                    verdict: probe.verdict,
+                    quote: probe.quote.clone(),
+                })
+                .collect()
+        },
+        model_configuration: carried_parts(&instrument_configuration(&model)),
+        judge_configuration: carried_parts(&instrument_configuration(&judge)),
+        judge_window: (limits.window, limits.max_output),
+    })
+}
+
+/// The configuration a selection's request carries, as the report reads it.
+fn instrument_configuration(selection: &ModelSelection) -> Configuration {
+    Configuration::read(selection.config.as_ref())
+}
+
+fn carried_parts(configuration: &Configuration) -> Option<(Option<String>, Option<String>)> {
+    Some((configuration.effort.clone(), configuration.tier.clone()))
+}
+
+/// The assembly overrides as JSON, and back.
+///
+/// Every field is destructured first so a member added to [`Overrides`] but
+/// missing from this round trip fails the build, as `child_overrides`' struct
+/// literal already does.
+fn overrides_value(overrides: &Overrides) -> Value {
+    let Overrides {
+        summary_prompt,
+        plugin_configs,
+        branch_description,
+        roster_closing,
+        goal_objective,
+        goal_continuation,
+        eventhub_entry,
+        eventhub_tool,
+        scheduler_description,
+    } = overrides;
+    json!({
+        "summaryPrompt": summary_prompt.as_ref().map(ToString::to_string),
+        "eventhubEntry": eventhub_entry.as_ref().map(ToString::to_string),
+        "eventhubTool": eventhub_tool.as_ref().map(ToString::to_string),
+        "pluginConfigs": plugin_configs,
+        "branchDescription": branch_description.as_ref().map(ToString::to_string),
+        "rosterClosing": roster_closing.as_ref().map(ToString::to_string),
+        "goalObjective": goal_objective.as_ref().map(ToString::to_string),
+        "goalContinuation": goal_continuation.as_ref().map(ToString::to_string),
+        "schedulerDescription": scheduler_description.as_ref().map(ToString::to_string),
+    })
+}
+
+fn child_overrides(value: &Value) -> Overrides {
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(Arc::from);
+    Overrides {
+        summary_prompt: text("summaryPrompt"),
+        eventhub_entry: text("eventhubEntry"),
+        eventhub_tool: text("eventhubTool"),
+        plugin_configs: value
+            .get("pluginConfigs")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        branch_description: text("branchDescription"),
+        roster_closing: text("rosterClosing"),
+        goal_objective: text("goalObjective"),
+        goal_continuation: text("goalContinuation"),
+        scheduler_description: text("schedulerDescription"),
+    }
+}
+
+/// Well-known credential environment names. The preflight fails an isolated
+/// run when any of these is visible to an exec child: the run's own
+/// credential (the names the model configuration declares) is passed on
+/// purpose, everything else on this list is the operator's secret.
+const WELL_KNOWN_CREDENTIAL_NAMES: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GEMINI_API_KEY",
+    "MISTRAL_API_KEY",
+    "GROQ_API_KEY",
+    "OPENROUTER_API_KEY",
+    "AZURE_OPENAI_API_KEY",
+    "TOGETHER_API_KEY",
+    "XAI_API_KEY",
+    "GITHUB_TOKEN",
+    "GITLAB_TOKEN",
+    "HF_TOKEN",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "GOOGLE_API_KEY",
+];
+
+/// The product probe: one Session of the served assembly, created without a
+/// mount list, so its model request carries every tool the assembly offers —
+/// the host's own tools, the parts' contributed tools and the tools the
+/// run's plugin defaults contribute. Its declared set, without the `plugin`
+/// tool, is the ceiling every Session of the run mounts, and the
+/// tools-product check reads it against `RUN_TOOLS`. Its one turn is answered
+/// without a tool call, so the probe never executes anything. It runs under
+/// the most restrictive preset, `read-only` — the lowest `PermissionPreset`
+/// by `PermissionPreset::rank` — and the permission layer denies file writes
+/// outright under it, which costs the tool-free turn nothing.
+async fn product_probe(
+    client: &mut Client,
+    params: &ChildParams,
+    database: &Path,
+) -> std::result::Result<Vec<(String, ToolSource)>, String> {
+    let probe = client
+        .rpc(
+            "session.create",
+            json!({
+                "cwd": params.workspace,
+                "model": {"provider": "preflight", "modelId": "mock"},
+                "permissionPolicy": {"preset": "read-only"},
+            }),
+        )
+        .await
+        .map_err(|error| format!("session.create failed: {error}"))?;
+    let probe = probe["sessionId"].as_str().unwrap_or_default().to_owned();
+    if probe.is_empty() {
+        return Err("the product probe Session has no session id".into());
+    }
+    client
+        .rpc("session.attach", json!({"sessionId": probe}))
+        .await
+        .map_err(|error| format!("session.attach failed: {error}"))?;
+    submit(client, &probe, "PRODUCT-TOOLS\n", None)
+        .await
+        .map_err(|error| error.to_string())?;
+    loop {
+        match tokio::time::timeout(Duration::from_secs(60), client.next()).await {
+            Ok(Ok(WireMessage::Notice { method, params })) => match notice(&method, &params) {
+                Notice::Event { event, .. } => {
+                    if event["type"] == "turn" && event["name"] == "end" {
+                        if let Some(error) = event["data"]["error"].as_str() {
+                            return Err(format!("the product probe turn failed: {error}"));
+                        }
+                        break;
+                    }
+                }
+                Notice::Approval { branch, request } => {
+                    let _ = client
+                        .rpc(
+                            "approval.respond",
+                            json!({"sessionId": probe, "branchId": branch,
+                                   "requestId": request, "decision": "allow"}),
+                        )
+                        .await;
+                }
+                Notice::Other => {}
+            },
+            Ok(Ok(WireMessage::Response { .. })) => {}
+            Ok(Err(error)) => return Err(format!("the product probe Session failed: {error}")),
+            Err(_) => return Err("the product probe Session timed out".into()),
+        }
+    }
+    let _ = client
+        .rpc("session.close", json!({"sessionId": probe}))
+        .await;
+    // The declared tools and their sources: the probe's adopted
+    // configuration in its exported Timeline. The model request the loopback
+    // provider received carries the names; only the Timeline records each
+    // tool's `source`.
+    let mut export = Vec::new();
+    dim_app_server::storage::export_timeline(database.to_path_buf(), &probe, &mut export)
+        .await
+        .map_err(|error| format!("the product probe Session's export failed: {error}"))?;
+    let export = String::from_utf8_lossy_owned(export);
+    requested_tools(&export)
+}
+
+/// The tools a Session's model request declares, in request order, with
+/// each tool's source: the request of the last `model/call` event of an
+/// exported Timeline. The request's tools are `ToolDefinition` values
+/// (`ModelRequest::tools`), whose `source` — `ToolDefinition::source` — is
+/// a required field, so a declared tool without one cannot come from the
+/// product: the probe fails, naming the tool, rather than dropping it from
+/// the ceiling silently.
+fn requested_tools(export: &str) -> std::result::Result<Vec<(String, ToolSource)>, String> {
+    let mut declared = None;
+    for line in export.lines() {
+        let Ok(line) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if line["kind"] != "event" {
+            continue;
+        }
+        let event = &line["event"];
+        if event["type"] != "model" || event["name"] != "call" {
+            continue;
+        }
+        let Some(tools) = event["data"]["request"]["tools"].as_array() else {
+            continue;
+        };
+        let mut entries = Vec::with_capacity(tools.len());
+        for tool in tools {
+            let name = tool["name"]
+                .as_str()
+                .ok_or_else(|| "a model request tool entry carries no name".to_owned())?
+                .to_owned();
+            let source = serde_json::from_value(tool["source"].clone()).map_err(|_| {
+                format!("the model request declares the tool {name} without a source")
+            })?;
+            entries.push((name, source));
+        }
+        declared = Some(entries);
+    }
+    declared
+        .ok_or_else(|| "the product probe Session's Timeline holds no configured tools".to_owned())
+}
+
+/// The plugin names the run's default plugin configuration names: the
+/// `plugins` and `optional` maps of the defaults file. Empty when the run
+/// serves no default plugins or the file cannot be read.
+fn plugin_default_names(path: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&text) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for group in ["plugins", "optional"] {
+        if let Some(map) = value.get(group).and_then(Value::as_object) {
+            names.extend(map.keys().cloned());
+        }
+    }
+    names
+}
+
+/// The preflight Session: the product probe, then a scripted Session against
+/// the run's preflight provider that checks the run's isolation before the
+/// live model's first turn — the disposable `HOME`, the absence of credential
+/// names, an outside read refused for `exec` and for a file tool, the
+/// operator's home refused for both, and the run's socket unreachable. Any
+/// failure aborts the run and is reported as a harness failure.
+async fn preflight_session(
+    client: &mut Client,
+    params: &ChildParams,
+    preflight: &Arc<Provider>,
+    expected: &[String],
+    database: &Path,
+) -> std::result::Result<(Vec<PreflightCheck>, Vec<String>), (Vec<PreflightCheck>, String)> {
+    let declared = product_probe(client, params, database)
+        .await
+        .map_err(|error| (Vec::new(), error))?;
+    // The ceiling: every tool the served assembly offers, without the
+    // `plugin` tool. The probe declares the run's plugin defaults' tools
+    // too, so a run that evaluates a plugin still offers the model the thing
+    // under test, and the tools-product check reads what the product itself
+    // offers against `RUN_TOOLS`.
+    let ceiling: Vec<String> = declared
+        .iter()
+        .map(|(name, _)| name.clone())
+        .filter(|name| name != PLUGIN_TOOL)
+        .collect();
+    let message = format!(
+        "PREFLIGHT\nSOCKET={}\nOPERATOR_HOME={}\nOUTPUT_ROOT={}",
+        params.socket.display(),
+        params
+            .operator_home
+            .as_ref()
+            .map_or("", |home| home.to_str().unwrap_or("")),
+        params.outputs.display(),
+    );
+    let mut create = json!({
+        "cwd": params.workspace,
+        "model": {"provider": "preflight", "modelId": "mock"},
+        "permissionPolicy": {"preset": "full-access"},
+    });
+    if !params.offer_plugin {
+        // The preflight Session's mount list: exactly what the run's
+        // Session will declare. The tools check reads the request the
+        // loopback provider received and verifies what this Session
+        // actually offered.
+        create["tools"] = json!(ceiling);
+    }
+    let created = client
+        .rpc("session.create", create)
+        .await
+        .map_err(|error| (Vec::new(), format!("session.create failed: {error}")))?;
+    let session = created["sessionId"].as_str().unwrap_or_default().to_owned();
+    if session.is_empty() {
+        return Err((Vec::new(), "the preflight Session has no session id".into()));
+    }
+    client
+        .rpc("session.attach", json!({"sessionId": session}))
+        .await
+        .map_err(|error| (Vec::new(), format!("session.attach failed: {error}")))?;
+    submit(client, &session, &message, None)
+        .await
+        .map_err(|error| (Vec::new(), error))?;
+    // The tool results in arrival order: the scripted steps run one per
+    // turn, so their order is the check order.
+    let mut results: Vec<Value> = Vec::new();
+    loop {
+        match tokio::time::timeout(Duration::from_secs(60), client.next()).await {
+            Ok(Ok(WireMessage::Notice { method, params })) => match notice(&method, &params) {
+                Notice::Event { event, .. } => {
+                    if event["type"] == "step" && event["name"] == "tool-result" {
+                        for result in event["data"]["results"]
+                            .as_array()
+                            .map(Vec::as_slice)
+                            .unwrap_or_default()
+                        {
+                            results.push(result["result"].clone());
+                        }
+                    }
+                    if event["type"] == "turn" && event["name"] == "end" {
+                        if let Some(error) = event["data"]["error"].as_str() {
+                            return Err((
+                                Vec::new(),
+                                format!("the preflight turn failed: {error}"),
+                            ));
+                        }
+                        break;
+                    }
+                }
+                Notice::Approval { branch, request } => {
+                    let _ = client
+                        .rpc(
+                            "approval.respond",
+                            json!({"sessionId": session, "branchId": branch,
+                                   "requestId": request, "decision": "allow"}),
+                        )
+                        .await;
+                }
+                Notice::Other => {}
+            },
+            Ok(Ok(WireMessage::Response { .. })) => {}
+            Ok(Err(error)) => {
+                return Err((Vec::new(), format!("the preflight Session failed: {error}")));
+            }
+            Err(_) => return Err((Vec::new(), "the preflight Session timed out".into())),
+        }
+    }
+    let _ = client
+        .rpc("session.close", json!({"sessionId": session}))
+        .await;
+    // The tools the preflight Session's model request carried: the loopback
+    // provider received the request before it scripted any step, so its
+    // first PREFLIGHT request is this Session's declaration. The product
+    // probe's request is the first whose messages carry the probe marker.
+    let held = preflight.requests.lock().unwrap();
+    let offered = held
+        .iter()
+        .find_map(|request| {
+            if !request.contains("PREFLIGHT") {
+                return None;
+            }
+            let tools = offered_tools(request);
+            (!tools.is_empty()).then_some(tools)
+        })
+        .unwrap_or_default();
+    let product = held
+        .iter()
+        .find_map(|request| {
+            if !request.contains("PRODUCT-TOOLS") {
+                return None;
+            }
+            let tools = offered_tools(request);
+            (!tools.is_empty()).then_some(tools)
+        })
+        .unwrap_or_default();
+    drop(held);
+    let checks = preflight_checks(
+        &results, params, &offered, &ceiling, expected, &product, &declared,
+    );
+    if let Some(failed) = checks.iter().find(|check| !check.passed) {
+        let detail = format!("{}: {}", failed.name, failed.detail);
+        return Err((checks, detail));
+    }
+    Ok((checks, ceiling))
+}
+
+/// A tool source's name as the checks' detail prints it.
+fn source_name(source: ToolSource) -> &'static str {
+    match source {
+        ToolSource::Static => "static",
+        ToolSource::Builtin => "builtin",
+        ToolSource::Extension => "extension",
+        ToolSource::Dynamic => "dynamic",
+    }
+}
+
+/// The checks over the preflight Session's tool results and the model
+/// request it declared.
+fn preflight_checks(
+    results: &[Value],
+    params: &ChildParams,
+    offered: &[String],
+    ceiling: &[String],
+    expected: &[String],
+    product: &[String],
+    declared: &[(String, ToolSource)],
+) -> Vec<PreflightCheck> {
+    let mut checks = Vec::new();
+    let mut check = |name: &str, passed: bool, detail: String| {
+        checks.push(PreflightCheck {
+            name: name.into(),
+            passed,
+            detail,
+        });
+    };
+    let plugin = offered.iter().any(|tool| tool == PLUGIN_TOOL);
+    let exact = offered.len() == ceiling.len()
+        && offered
+            .iter()
+            .zip(ceiling)
+            .all(|(offered, ceiling)| offered == ceiling);
+    check(
+        "tools",
+        !plugin && exact,
+        if plugin {
+            "the preflight Session's model request offered the plugin tool".into()
+        } else if exact {
+            format!(
+                "the preflight Session's model request offered {} tools without the plugin tool",
+                offered.len()
+            )
+        } else {
+            format!(
+                "the preflight Session's model request offered {} tools, not the run's {}",
+                offered.len(),
+                ceiling.len()
+            )
+        },
+    );
+    // The tool set, by contribution: the native probe child served the same
+    // assembly without the plugin defaults, so its declared set N is what
+    // the product's own parts contribute, and the run child's set D is N
+    // plus what the run's plugin defaults contribute. A tool in N the run
+    // list does not name is a native tool the assembly added unreviewed,
+    // whatever a defaults file says; a tool in D beyond the run list, the
+    // scenario's reply tools and N is the run's plugin defaults'
+    // contribution — the harness names those plugins, never the model. A
+    // product tool the run list does not name would silently leave a live
+    // run without it, and a listed tool the product stopped serving would
+    // silently whitelist a name nobody registers; this check catches both
+    // at run time, where CI's eval-tests gating cannot hide them. With no
+    // named plugin nothing is exempt; with a named plugin a contribution is
+    // the defaults' as a whole — the check proves that the defaults name a
+    // plugin, not which one contributes the tool. `source` labels the
+    // contributed tools in the detail; it is not what decides them.
+    let declared_names: BTreeSet<&str> = declared.iter().map(|(name, _)| name.as_str()).collect();
+    let expected_set: BTreeSet<&str> = expected.iter().map(String::as_str).collect();
+    let native: BTreeSet<&str> = params
+        .native_tools
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .collect();
+    let run_list: BTreeSet<&str> = RUN_TOOLS.iter().copied().collect();
+    let unreviewed: Vec<&str> = native
+        .difference(&run_list)
+        .filter(|name| **name != PLUGIN_TOOL)
+        .copied()
+        .collect();
+    let mut contributed: Vec<(&str, ToolSource)> = Vec::new();
+    for (name, source) in declared {
+        if name == PLUGIN_TOOL || expected_set.contains(name.as_str()) {
+            continue;
+        }
+        if !native.contains(name.as_str()) {
+            contributed.push((name.as_str(), *source));
+        }
+    }
+    let requested: BTreeSet<&str> = product.iter().map(String::as_str).collect();
+    let agree = requested == declared_names;
+    let absent: Vec<&str> = expected_set.difference(&declared_names).copied().collect();
+    let plugins = params
+        .defaults
+        .as_deref()
+        .map(plugin_default_names)
+        .unwrap_or_default();
+    // Nothing is exempt without a named plugin: the harness keeps no
+    // per-tool owner record, so the check can only prove that the defaults
+    // name at least one plugin, not which one contributes a tool. With no
+    // plugin named, a declared tool beyond the run list, the reply tools
+    // and N fails the check; with one named, a contribution is the
+    // defaults' as a whole.
+    let unowned = plugins.is_empty() && !contributed.is_empty();
+    let passed = unreviewed.is_empty() && absent.is_empty() && agree && !unowned;
+    // The attributed contributions, in both outcomes: a reader sees what the
+    // run's plugin defaults added even when another tool failed the check.
+    let contributed_detail = |detail: &mut String| {
+        if contributed.is_empty() {
+            return;
+        }
+        if !detail.is_empty() {
+            detail.push_str("; ");
+        }
+        let listed: Vec<String> = contributed
+            .iter()
+            .map(|(name, source)| format!("{name} ({})", source_name(*source)))
+            .collect();
+        detail.push_str(&format!(
+            "the run's plugin defaults ({}) contribute: {}",
+            plugins.join(", "),
+            listed.join(", ")
+        ));
+    };
+    check(
+        "tools-product",
+        passed,
+        if passed {
+            let mut detail = "the product offered the run's tool set".to_owned();
+            contributed_detail(&mut detail);
+            detail
+        } else {
+            let mut detail = String::new();
+            if !agree {
+                detail.push_str(
+                    "the product probe's request and its Timeline declare different tools",
+                );
+            }
+            if !unreviewed.is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!(
+                    "the product's native assembly offers tools the run list does not name: {}; update RUN_TOOLS after review",
+                    unreviewed.join(", ")
+                ));
+            }
+            if !absent.is_empty() {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                detail.push_str(&format!(
+                    "the product's Sessions do not offer tools the run list names: {}",
+                    absent.join(", ")
+                ));
+            }
+            if unowned {
+                if !detail.is_empty() {
+                    detail.push_str("; ");
+                }
+                let listed: Vec<String> = contributed
+                    .iter()
+                    .map(|(name, source)| format!("{name} ({})", source_name(*source)))
+                    .collect();
+                detail.push_str(&format!(
+                    "the defaults name no plugin, so nothing is exempt: {}",
+                    listed.join(", ")
+                ));
+            } else {
+                contributed_detail(&mut detail);
+            }
+            detail
+        },
+    );
+    fn is_error(result: &Value) -> bool {
+        result["isError"].as_bool() == Some(true)
+    }
+    /// The text a tool result carries: the exec output ends with the
+    /// command's note, so the checks read it line by line.
+    fn text_of(result: &Value) -> String {
+        result["content"].as_str().unwrap_or_default().to_owned()
+    }
+    fn exec(results: &[Value], index: usize) -> Option<&Value> {
+        results.get(index)
+    }
+    /// The credential name a `env` output exposes, or none. The exec
+    /// children are what the model's commands see, so any credential name
+    /// is a leak: the run's declared name would mean the isolation leaked
+    /// the one secret the run exists to keep from the model, and a
+    /// well-known name would mean the operator's environment leaked. Shell
+    /// startup adds names of its own (`PWD`, `SHLVL`, `_`), which are not
+    /// credentials.
+    fn credential_name(output: &str, declared: &[String]) -> Option<String> {
+        for line in output.lines() {
+            let Some((name, _)) = line.split_once('=') else {
+                continue;
+            };
+            // Any credential name is a leak here: the exec children are
+            // what the model's commands see, and the sandbox drops every
+            // name the run's own server holds. The run's declared name must
+            // not appear either — it would mean the isolation leaked the
+            // one secret the run exists to keep from the model.
+            if declared.iter().any(|declared| declared == name)
+                || WELL_KNOWN_CREDENTIAL_NAMES.contains(&name)
+            {
+                return Some(name.to_owned());
+            }
+        }
+        None
+    }
+    if let Some(result) = exec(results, 0) {
+        let text = text_of(result);
+        let printed = text.lines().next().unwrap_or_default().trim();
+        check(
+            "home",
+            !is_error(result) && printed == params.env_home.to_string_lossy(),
+            if is_error(result) {
+                "echo $HOME was refused".into()
+            } else {
+                "echo $HOME printed another home".into()
+            },
+        );
+    } else {
+        check("home", false, "the preflight saw no echo result".into());
+    }
+    if let Some(result) = exec(results, 1) {
+        let output = text_of(result);
+        let offender = credential_name(&output, &params.credentials);
+        let detail = match (is_error(result), offender.as_deref()) {
+            (true, _) => format!(
+                "the env command was refused (exit {}): {}",
+                result["structuredContent"]["exitCode"], result["structuredContent"]["code"]
+            ),
+            (false, Some(name)) => {
+                format!("the exec environment showed the credential name {name}")
+            }
+            (false, None) => "the exec environment carried only the run's own names".into(),
+        };
+        check(
+            "credentials",
+            !is_error(result) && offender.is_none(),
+            detail,
+        );
+    } else {
+        check(
+            "credentials",
+            false,
+            "the preflight saw no env result".into(),
+        );
+    }
+    if let Some(result) = exec(results, 2) {
+        check(
+            "exec-outside",
+            is_error(result),
+            "a command read the marker outside the workspace".into(),
+        );
+    } else {
+        check(
+            "exec-outside",
+            false,
+            "the preflight saw no outside-exec result".into(),
+        );
+    }
+    if let Some(result) = results.get(3) {
+        let code = result["structuredContent"]["code"].as_str().unwrap_or("");
+        check(
+            "read-outside",
+            is_error(result) && code == "outside_file_roots",
+            "the read tool read the marker outside the workspace".into(),
+        );
+    } else {
+        check(
+            "read-outside",
+            false,
+            "the preflight saw no outside-read result".into(),
+        );
+    }
+    if let Some(result) = exec(results, 4) {
+        check(
+            "socket",
+            is_error(result),
+            "a command reached the run's socket".into(),
+        );
+    } else {
+        check(
+            "socket",
+            false,
+            "the preflight saw no socket probe result".into(),
+        );
+    }
+    if let Some(result) = exec(results, 5) {
+        check(
+            "exec-operator-home",
+            is_error(result),
+            "a command read the operator's home".into(),
+        );
+    } else {
+        check(
+            "exec-operator-home",
+            false,
+            "the preflight saw no operator-home exec result".into(),
+        );
+    }
+    if let Some(result) = results.get(6) {
+        let code = result["structuredContent"]["code"].as_str().unwrap_or("");
+        check(
+            "read-operator-home",
+            is_error(result) && code == "outside_file_roots",
+            "the read tool read the operator's home".into(),
+        );
+    } else {
+        check(
+            "read-operator-home",
+            false,
+            "the preflight saw no operator-home read result".into(),
+        );
+    }
+    if let Some(result) = exec(results, 7) {
+        check(
+            "exec-outputs",
+            is_error(result),
+            "a command read the marker under the outputs root".into(),
+        );
+    } else {
+        check(
+            "exec-outputs",
+            false,
+            "the preflight saw no outputs-root exec result".into(),
+        );
+    }
+    if let Some(result) = results.get(8) {
+        let code = result["structuredContent"]["code"].as_str().unwrap_or("");
+        check(
+            "read-outputs",
+            is_error(result) && code == "outside_file_roots",
+            "the read tool read the marker under the outputs root".into(),
+        );
+    } else {
+        check(
+            "read-outputs",
+            false,
+            "the preflight saw no outputs-root read result".into(),
+        );
+    }
+    checks
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_once(
     options: &Options,
-    home: &Path,
     arm: &'static str,
     overrides: &Overrides,
-    observe: &dyn Fn(&mut AgentBuilder),
     scenario: &Scenario,
     run: usize,
     cancel: &CancellationToken,
+    native: &[(String, ToolSource)],
     instrument: &mut Instrument,
 ) -> Result<RunRecord> {
-    let run_directory = options
-        .out
-        .join(arm)
-        .join(&scenario.id)
-        .join(format!("run-{run}"));
+    let run_directory = run_root(options, arm, scenario, run);
     if run_directory.exists() {
         return Err(format!(
             "{} exists; give a fresh --out for a new evaluation",
@@ -1639,79 +3435,807 @@ async fn run_once(
         )
         .into());
     }
+    // The run root: the workspace and the disposable environment
+    // directories, and nothing else.
     private_directory(&run_directory)?;
-    let run_home = run_directory.join("home");
-    copy_tree(home, &run_home)?;
-    let workspace = run_directory.join("workspace");
-    copy_tree(&scenario.directory.join("workspace"), &workspace)?;
-    let sockets = Sockets::new()?;
-    let settings = RunSettings {
-        overrides: overrides.clone(),
-        model_config: options.model_config.clone(),
-        unix_path: Some(sockets.0.join("rpc.sock")),
+    copy_tree(
+        &scenario.directory.join("workspace"),
+        &run_directory.join("workspace"),
+    )?;
+    let env_home = run_directory.join("env/home");
+    private_directory(&env_home)?;
+    private_directory(&run_directory.join("env/tmp"))?;
+    private_directory(&run_directory.join("env/xdg-config"))?;
+    private_directory(&run_directory.join("env/xdg-cache"))?;
+    private_directory(&run_directory.join("env/xdg-data"))?;
+    // The marker the preflight's outside probe reads; it sits in the run
+    // root, outside the workspace, so only an unisolated run can read it.
+    std::fs::write(run_directory.join("preflight-outside"), "outside marker")?;
+    // The marker the preflight's output-root probe reads; it sits under
+    // the outputs root, where the judge views and the sibling runs'
+    // records live, outside the boundary's roots, so only an unisolated
+    // run can read it.
+    let outputs_root = outputs_root(options, arm, scenario);
+    private_directory(&outputs_root)?;
+    std::fs::write(outputs_root.join("preflight-outside"), "outside marker")?;
+    // The run's Dim home: fresh, under the output root, never the
+    // operator's `--home`.
+    let run_home = options
+        .out
+        .join("homes")
+        .join(arm)
+        .join(&scenario.id)
+        .join(format!("run-{run}"));
+    private_directory(&run_home)?;
+    // The run's endpoint: under the output root, outside the run root. A
+    // Unix socket's path is bounded (SUN_LEN), so a deep --out binds the
+    // socket in a short directory and leaves the out-relative name as a
+    // link the layout still owns.
+    let socket = run_socket(options, arm, scenario, run);
+    private_directory(socket.parent().expect("a socket has a parent"))?;
+    let socket = bindable_socket(&socket)?;
+    let (record, outcome) = isolate_run(
+        options,
+        arm,
+        overrides,
+        scenario,
+        run,
+        cancel,
+        native,
+        &run_home,
+        &workspace_of(&run_directory),
+        &env_home,
+        &socket,
+        instrument,
+    )
+    .await?;
+    write_run_outputs(options, arm, scenario, run, &outcome)?;
+    Ok(record)
+}
+
+/// The workspace path of a fresh run root.
+fn workspace_of(run_directory: &Path) -> PathBuf {
+    run_directory.join("workspace")
+}
+
+/// The run root of one run: the workspace and the disposable environment
+/// directories under the output root, and nothing else.
+fn run_root(options: &Options, arm: &str, scenario: &Scenario, run: usize) -> PathBuf {
+    options
+        .out
+        .join(arm)
+        .join(&scenario.id)
+        .join(format!("run-{run}"))
+}
+
+/// The run's socket under the output root, outside the run root: the
+/// model's commands reach only what the sandbox and the file-root
+/// boundary grant, so the endpoint the harness drives must lie outside
+/// the workspace and the run root the workspace lives in.
+fn run_socket(options: &Options, arm: &str, scenario: &Scenario, run: usize) -> PathBuf {
+    options
+        .out
+        .join("sockets")
+        .join(format!("{arm}-{}-run-{run}.sock", scenario.id))
+}
+
+/// The run's own account files, under the output root, never inside the run
+/// root: the export and the view the judge read. A re-judge reads them from
+/// here ([`read_saved_runs`]).
+fn write_run_outputs(
+    options: &Options,
+    arm: &'static str,
+    scenario: &Scenario,
+    run: usize,
+    outcome: &ChildOutcome,
+) -> Result<()> {
+    let outputs = outputs_root(options, arm, scenario);
+    private_directory(&outputs)?;
+    if let Some(export) = &outcome.export {
+        std::fs::write(outputs.join(format!("run-{run}.timeline.jsonl")), export)?;
+    }
+    if let Some(view) = &outcome.view {
+        std::fs::write(outputs.join(format!("run-{run}.judge-view.jsonl")), view)?;
+    }
+    // The run root keeps only the workspace and the environment, so the
+    // preflight report lives beside the run's account files.
+    std::fs::write(
+        outputs.join(format!("run-{run}.preflight.json")),
+        serde_json::to_string_pretty(&outcome.preflight)?,
+    )?;
+    Ok(())
+}
+
+/// Starts the run's serve child: its own process, `env_clear`ed, with the
+/// disposable home, `PATH` and the model configuration's one credential
+/// variable, and nothing else of the operator's environment. The child
+/// prints one JSON line; the parent reads it and builds the record.
+#[allow(clippy::too_many_arguments)]
+async fn isolate_run(
+    options: &Options,
+    arm: &'static str,
+    overrides: &Overrides,
+    scenario: &Scenario,
+    run: usize,
+    cancel: &CancellationToken,
+    native: &[(String, ToolSource)],
+    run_home: &Path,
+    workspace: &Path,
+    env_home: &Path,
+    socket: &Path,
+    instrument: &mut Instrument,
+) -> Result<(RunRecord, ChildOutcome)> {
+    // The child serves the run's own preflight provider on its loopback
+    // and adds it to the run's model configuration; the parent only names
+    // the configuration the operator gave the evaluation.
+    let operator_home = std::env::var_os("HOME").map(PathBuf::from);
+    let boundary = run_boundary(options, workspace, env_home)?;
+    let credentials = augmented_credentials(options);
+    let params = ChildParams {
+        home: run_home.to_owned(),
+        workspace: workspace.to_owned(),
+        env_home: env_home.to_owned(),
+        output_root: options.out.join("command-output"),
+        socket: socket.to_owned(),
+        model_config: options.model_config.clone().ok_or(
+            "an evaluation needs --model-config: the model configuration \
+             names the model under test and the credential its calls use",
+        )?,
         defaults: options.defaults.clone(),
         node: options.node.clone(),
         js_runtime: options.js_runtime.clone(),
+        overrides: overrides_value(overrides),
+        scenario: serde_json::to_value(scenario)?,
+        model: options.model.clone(),
+        judge: options.judge.clone(),
+        boundary,
+        outputs: outputs_root(options, arm, scenario),
+        credentials,
+        operator_home,
+        isolate: options.isolate,
+        fail_preflight: options.fail_preflight,
+        offer_plugin: options.offer_plugin,
+        extra_tool: options.extra_tool,
+        fail_child: options
+            .fail_child
+            .as_ref()
+            .filter(|(arm_name, _)| arm_name == arm)
+            .map(|(_, marker)| marker.clone()),
+        fail_child_holds_stdout: options.fail_child_holds_stdout,
+        native_tools: native.to_vec(),
+        probe_only: false,
     };
-    let server = app_server::serve_home(
-        &run_home,
-        &workspace,
-        options.out.join("command-output"),
-        settings.clone(),
-        |builder| observe(builder),
-    )
-    .await?;
-    let started = Instant::now();
-    let model = selection(&server, &options.model, &workspace, cancel).await?;
-    let judge = selection(&server, &options.judge, &workspace, cancel).await?;
-    instrument
-        .model_configuration
-        .get_or_insert_with(|| Configuration::read(model.config.as_ref()));
-    instrument
-        .judge_configuration
-        .get_or_insert_with(|| Configuration::read(judge.config.as_ref()));
-    let limits = judge_window(&judge, options.model_config.as_deref(), cancel).await?;
-    instrument.judge_window.get_or_insert(limits);
-    let finished = match drive_once(
-        &server, &settings, &run_home, &workspace, scenario, &model, &judge, limits, cancel,
-    )
-    .await
+    let params_path = options
+        .out
+        .join("children")
+        .join(arm)
+        .join(&scenario.id)
+        .join(format!("run-{run}.json"));
+    private_directory(params_path.parent().expect("a params file has a parent"))?;
+    std::fs::write(&params_path, serde_json::to_string_pretty(&params)?)?;
+    let outcome = spawn_child(options, &params_path, &params, cancel).await?;
+    let record = child_record(arm, scenario, run, &outcome, instrument)?;
+    Ok((record, outcome))
+}
+
+/// The file-tool root boundary of a run's sessions: the workspace (writes),
+/// the disposable home and the platform's fixed roots (reads); `None` when
+/// the run is not isolated (the offline ablation).
+fn run_boundary(
+    options: &Options,
+    workspace: &Path,
+    env_home: &Path,
+) -> Result<Option<FileToolBoundary>> {
+    if !options.isolate {
+        return Ok(None);
+    }
+    let mut read_only_roots = platform_roots();
+    read_only_roots.sort();
+    read_only_roots.dedup();
+    // The read tools compare canonical paths, so the roots must be
+    // canonical too: `/var` and its firmlink `/private/var` resolve to one
+    // real path, and a non-canonical root would refuse everything under it.
+    let boundary = FileToolBoundary {
+        workspace: workspace.to_owned(),
+        home: env_home.to_owned(),
+        read_only_roots,
+    }
+    .canonicalize()
+    .map_err(|error| format!("cannot canonicalize the run's file roots: {error}"))?;
+    Ok(Some(boundary))
+}
+
+/// The differential native probe: one child served exactly as a run child is
+/// served, but without the plugin defaults, whose probe Session declares the
+/// assembly's native tool set. Its set N tells each run's `tools-product`
+/// check which declared tools the product's own parts contribute: a tool in
+/// N beyond `RUN_TOOLS` fails the check, and a tool beyond both the run list
+/// and N is what the run's plugin defaults added.
+async fn native_probe(
+    options: &Options,
+    cancel: &CancellationToken,
+) -> Result<Vec<(String, ToolSource)>> {
+    let root = options.out.join("native-probe");
+    let home = options.out.join("homes").join("native-probe");
+    let socket = options.out.join("sockets").join("native-probe.sock");
+    // The probe starts from clean directories and a fresh endpoint: a
+    // reused --out would otherwise let an earlier probe's database or
+    // workspace answer for this one, and the declared set would depend on
+    // that history.
+    for path in [&root, &home] {
+        if path.exists() {
+            std::fs::remove_dir_all(path)?;
+        }
+    }
+    let _ = std::fs::remove_file(&socket);
+    private_directory(&root)?;
+    let workspace = root.join("workspace");
+    private_directory(&workspace)?;
+    let env_home = root.join("env/home");
+    private_directory(&env_home)?;
+    for directory in ["tmp", "xdg-config", "xdg-cache", "xdg-data"] {
+        private_directory(&root.join("env").join(directory))?;
+    }
+    private_directory(&home)?;
+    private_directory(socket.parent().expect("a socket has a parent"))?;
+    let socket = bindable_socket(&socket)?;
+    let params = ChildParams {
+        home,
+        workspace: workspace.clone(),
+        env_home: env_home.clone(),
+        output_root: options.out.join("command-output"),
+        socket,
+        model_config: options.model_config.clone().ok_or(
+            "an evaluation needs --model-config: the model configuration \
+             names the model under test and the credential its calls use",
+        )?,
+        // The one difference from a run child: no plugin defaults, so the
+        // probe Session declares the assembly's native tools only.
+        defaults: None,
+        node: None,
+        js_runtime: None,
+        overrides: json!({}),
+        scenario: json!({}),
+        model: options.model.clone(),
+        judge: options.judge.clone(),
+        boundary: run_boundary(options, &workspace, &env_home)?,
+        outputs: root.clone(),
+        credentials: augmented_credentials(options),
+        operator_home: std::env::var_os("HOME").map(PathBuf::from),
+        isolate: options.isolate,
+        fail_preflight: false,
+        offer_plugin: false,
+        extra_tool: options.extra_tool,
+        fail_child: None,
+        fail_child_holds_stdout: false,
+        native_tools: Vec::new(),
+        probe_only: true,
+    };
+    let params_path = root.join("params.json");
+    std::fs::write(&params_path, serde_json::to_string_pretty(&params)?)?;
+    let outcome = spawn_child_json(options, &params_path, &params, cancel, "nativeTools").await?;
+    serde_json::from_value(outcome["nativeTools"].clone())
+        .map_err(|error| format!("the native probe printed no tool set: {error}").into())
+}
+
+/// The endpoint path the run's server binds: the out-relative socket when
+/// its path fits a Unix socket address, else a short directory under the
+/// system temporary directory with the out-relative name linked to it, so
+/// the run's layout keeps the socket under the output root either way. Only
+/// unix has the address length limit and the link; a non-unix run refuses
+/// before a run starts.
+fn bindable_socket(out_relative: &Path) -> Result<PathBuf> {
+    if out_relative.as_os_str().len() <= 96 {
+        return Ok(out_relative.to_owned());
+    }
+    #[cfg(unix)]
     {
-        Ok(finished) => finished,
-        Err(error) => Finished::failed(scenario, error.to_string()),
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "dim-eval-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        private_directory(&directory)?;
+        let socket = directory.join("rpc.sock");
+        let _ = std::fs::remove_file(out_relative);
+        std::os::unix::fs::symlink(&socket, out_relative).map_err(|error| {
+            format!("cannot link the socket {}: {error}", out_relative.display())
+        })?;
+        Ok(socket)
+    }
+    #[cfg(not(unix))]
+    {
+        Err("scenario-eval needs a unix socket".into())
+    }
+}
+
+/// The platform's fixed read-only roots, as the sandbox and the file-tool
+/// boundary share them (ADR 014): the one list lives in the capabilities
+/// crate, and this expands its requested paths and canonical forms.
+fn platform_roots() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for path in dim_agent_capabilities::host_platform::PLATFORM_ROOTS {
+        let path = PathBuf::from(path);
+        if !out.contains(&path) {
+            out.push(path.clone());
+        }
+        if let Ok(canonical) = std::fs::canonicalize(&path)
+            && !out.contains(&canonical)
+        {
+            out.push(canonical);
+        }
+    }
+    out
+}
+
+/// The run's model configuration with the run's own preflight provider
+/// added: the operator's file plus a `preflight` provider that points at
+/// the loopback the child serves, written beside the run's params.
+fn augment_model_config(source: &Path, preflight_url: &str, target: &Path) -> Result<()> {
+    private_directory(target.parent().expect("a model configuration has a parent"))?;
+    let bytes = std::fs::read(source)?;
+    let mut file: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        format!(
+            "Invalid model configuration {} at line {}, column {}",
+            source.display(),
+            error.line(),
+            error.column()
+        )
+    })?;
+    file["providers"]
+        .as_array_mut()
+        .ok_or("the model configuration has no providers list")?
+        .push(json!({
+            "id": "preflight",
+            "kind": "openai-chat",
+            "baseUrl": preflight_url,
+            "models": [{
+                "id": "mock",
+                "contextWindow": PREFLIGHT_WINDOW,
+                "maxOutputTokens": PREFLIGHT_OUTPUT,
+                "config": {"maxTokens": PREFLIGHT_OUTPUT}
+            }]
+        }));
+    std::fs::write(target, serde_json::to_string_pretty(&file)? + "\n")?;
+    Ok(())
+}
+
+/// The outputs root of one run's arm: where the run's account files, the
+/// judge views and the sibling runs' records live.
+fn outputs_root(options: &Options, arm: &str, scenario: &Scenario) -> PathBuf {
+    options.out.join("outputs").join(arm).join(&scenario.id)
+}
+
+/// The preflight provider's declared window and output limit.
+const PREFLIGHT_WINDOW: u64 = 24_000;
+const PREFLIGHT_OUTPUT: u64 = 200;
+
+/// The credential names the run's model configuration reads: the operator's
+/// environment names the parent passes the child, and the child passes
+/// nothing else of the operator's environment through.
+fn augmented_credentials(options: &Options) -> Vec<String> {
+    match options
+        .model_config
+        .as_ref()
+        .and_then(|config| dim_app_server::cli::model_profile(config).ok())
+    {
+        Some((models, _)) => models.api_key_envs().into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// Serves a run's preflight provider on a loopback endpoint, and returns
+/// the endpoint URL and the provider whose request list the checks read.
+async fn serve_preflight() -> Result<(String, Arc<Provider>, tokio::task::JoinHandle<()>)> {
+    let provider = Arc::new(Provider {
+        requests: Mutex::default(),
+        reply: preflight_reply,
+        hold: holds_nothing,
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = listener.local_addr()?;
+    let app = axum::Router::new()
+        .route("/v1/chat/completions", axum::routing::post(completion))
+        .with_state(provider.clone());
+    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    Ok((format!("http://{endpoint}/v1"), provider, handle))
+}
+
+/// The command line of the run's serve child: the runner's own binary — the
+/// `scenario-eval-serve` subcommand in the product binary, and the
+/// `eval_server_child` test function when the runner is a test binary.
+fn child_command(params_path: &Path) -> (PathBuf, Vec<OsString>, bool) {
+    let executable = std::env::current_exe().expect("the runner has its own binary");
+    // The runner's own binary: `xtask` (the product binary) or a test
+    // binary `xtask-<hash>` (the suite's bin tests). The test binary's
+    // `eval_server_child` entry is the child; the product binary's
+    // `scenario-eval-serve` subcommand is.
+    let is_test_binary = executable
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| name.starts_with("xtask-"));
+    let args = if is_test_binary {
+        vec![
+            "--exact".into(),
+            "scenario_eval::tests::eval_server_child".into(),
+            "--nocapture".into(),
+            "--test-threads=1".into(),
+        ]
+    } else {
+        vec!["scenario-eval-serve".into(), params_path.as_os_str().into()]
     };
-    server.shutdown();
-    server.join().await?;
-    if let Some(export) = &finished.export {
-        std::fs::write(run_directory.join("timeline.jsonl"), export)?;
+    (executable, args, is_test_binary)
+}
+
+/// The child's environment: `env_clear`, then the disposable home and the
+/// few names a server needs. The ablation (isolation off) inherits the
+/// operator's whole environment, as the runner served runs before this
+/// work.
+fn child_environment(
+    options: &Options,
+    params: &ChildParams,
+    params_path: &Path,
+    test_binary: bool,
+) -> std::io::Result<Vec<(OsString, OsString)>> {
+    let mut env = Vec::new();
+    if !options.isolate {
+        let mut env = std::env::vars_os().collect::<Vec<_>>();
+        if test_binary {
+            env.push((
+                OsString::from("DIM_EVAL_SERVE_PARAMS"),
+                params_path.as_os_str().to_owned(),
+            ));
+        }
+        return Ok(env);
     }
-    if let Some(view) = &finished.view {
-        std::fs::write(run_directory.join("judge-view.jsonl"), view)?;
+    let mut passthrough = |name: &str| {
+        if let Some(value) = std::env::var_os(name) {
+            env.push((OsString::from(name), value));
+        }
+    };
+    // The names a run's child keeps from the operator's environment: the
+    // globals its sessions' processes need. `PATH`, `LANG`, `LC_ALL`,
+    // `LC_CTYPE` and `TERM` are how a shell and its tools run.
+    // `DEVELOPER_DIR`: the sandbox's developer-directory read root comes
+    // from it (host_platform/isolation.rs `baseline_read_paths`).
+    // `NO_COLOR`: no reader in the child; its exec sessions force `1`.
+    // `PAGER`: no reader in the child; its exec sessions force `cat`.
+    // `GIT_PAGER`: no reader in the child; its exec sessions force `cat`.
+    // `GH_PAGER`: no reader in the child; its exec sessions force `cat`.
+    for name in [
+        "PATH",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TERM",
+        "NO_COLOR",
+        "PAGER",
+        "GIT_PAGER",
+        "GH_PAGER",
+        #[cfg(target_os = "macos")]
+        "DEVELOPER_DIR",
+    ] {
+        passthrough(name);
     }
-    let driven = finished.driven;
-    let error = driven.error;
-    Ok(RunRecord {
+    for (name, value) in [
+        ("HOME", params.env_home.as_os_str()),
+        (
+            "TMPDIR",
+            params.env_home.parent().unwrap().join("tmp").as_os_str(),
+        ),
+        (
+            "XDG_CONFIG_HOME",
+            params
+                .env_home
+                .parent()
+                .unwrap()
+                .join("xdg-config")
+                .as_os_str(),
+        ),
+        (
+            "XDG_CACHE_HOME",
+            params
+                .env_home
+                .parent()
+                .unwrap()
+                .join("xdg-cache")
+                .as_os_str(),
+        ),
+        (
+            "XDG_DATA_HOME",
+            params
+                .env_home
+                .parent()
+                .unwrap()
+                .join("xdg-data")
+                .as_os_str(),
+        ),
+    ] {
+        env.push((OsString::from(name), value.to_owned()));
+    }
+    for name in &params.credentials {
+        if let Some(value) = std::env::var_os(name) {
+            env.push((OsString::from(name), value));
+        }
+    }
+    if test_binary {
+        env.push((
+            OsString::from("DIM_EVAL_SERVE_PARAMS"),
+            params_path.as_os_str().to_owned(),
+        ));
+    }
+    Ok(env)
+}
+
+/// Spawns the run's serve child and reads its outcome line.
+async fn spawn_child(
+    options: &Options,
+    params_path: &Path,
+    params: &ChildParams,
+    cancel: &CancellationToken,
+) -> Result<ChildOutcome> {
+    let outcome = spawn_child_json(options, params_path, params, cancel, "judgeOutcome").await?;
+    Ok(serde_json::from_value(outcome)?)
+}
+
+/// The serve children this test binary started, by their params path: a
+/// test finds the child another run's failure must have taken down.
+#[cfg(test)]
+static SPAWNED: Mutex<Vec<(PathBuf, u32)>> = Mutex::new(Vec::new());
+
+/// Spawns a child and reads the JSON object of the output line that names
+/// `marker`: a run's child prints its outcome under `judgeOutcome`, the
+/// native probe's child its declared tool set under `nativeTools`.
+async fn spawn_child_json(
+    options: &Options,
+    params_path: &Path,
+    params: &ChildParams,
+    cancel: &CancellationToken,
+    marker: &str,
+) -> Result<Value> {
+    let (executable, args, test_binary) = child_command(params_path);
+    let env = child_environment(options, params, params_path, test_binary)?;
+    let mut command = tokio::process::Command::new(&executable);
+    command
+        .args(&args)
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        // The child is the run's only owner: dropped or cancelled, it must
+        // not outlive the harness, or it keeps calling the model and
+        // writing under --out after the report is written.
+        .kill_on_drop(true);
+    // The child leads its own process group, so the abort path takes the
+    // members left in it with it — the MCP stdio servers, and the git, npm
+    // and pip children, all spawned without a group of their own. Not a
+    // runtime host: rutis starts it with a stdin it does not inherit, and
+    // that spawn puts it in a group of its own (rutis-bridge pipe/spawn.rs).
+    // Not a shell's exec children either: they setsid. What ends a runtime
+    // host is its channel closing; rutis's own tests show a Node host exit
+    // by itself once its host's channel does.
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("cannot start the run's serve child: {error}"))?;
+    #[cfg(test)]
+    SPAWNED
+        .lock()
+        .unwrap()
+        .push((params_path.to_owned(), child.id().unwrap_or_default()));
+    #[cfg(unix)]
+    let mut group = ChildGroup::new(child.id().unwrap_or_default());
+    // Drain the pipe while the child runs: the child may print more than a
+    // pipe holds (the run's logged output rides the same stream), and a full
+    // pipe would block the child's last print forever, so waiting and then
+    // reading would deadlock.
+    let reading = child.stdout.take().map(|mut stdout| {
+        tokio::spawn(async move {
+            let mut output = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut stdout, &mut output)
+                .await
+                .map_err(|error| format!("cannot read the serve child's outcome: {error}"))?;
+            Ok::<Vec<u8>, String>(output)
+        })
+    });
+    let status = tokio::select! {
+        result = child.wait() => {
+            let status = result?;
+            // The group is killed before the output is read: a member the
+            // failed child left behind may hold the write end of its stdout,
+            // and the reader would wait for an EOF that never comes. A
+            // successful child left no member behind, so its group is
+            // disarmed instead.
+            #[cfg(unix)]
+            if status.success() {
+                group.disarm();
+            } else {
+                group.kill();
+            }
+            status
+        }
+        _ = cancel.cancelled() => {
+            #[cfg(unix)]
+            group.kill();
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err("the evaluation was cancelled".into());
+        }
+    };
+    let output = match reading {
+        Some(reading) => reading
+            .await
+            .map_err(|error| format!("the outcome reader failed: {error}"))??,
+        None => Vec::new(),
+    };
+    let text = String::from_utf8_lossy(&output);
+    if !status.success() {
+        // The group was killed as soon as the exit status was known: a
+        // member left in it may hold this child's stdout, and the read
+        // above would never see EOF. An empty group answered ESRCH and the
+        // kill ignored it.
+        // A test hook's child names the event that ended it on a line of
+        // its own; the error carries that name, so a test waiting for the
+        // event fails when it never arrived instead of reading only the
+        // exit status.
+        if let Some(message) = text
+            .lines()
+            .filter_map(|line| line.find('{').map(|start| &line[start..]))
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find_map(|value| value["failChild"].as_str().map(str::to_owned))
+        {
+            return Err(format!("the run's serve child exited with {status}: {message}").into());
+        }
+        return Err(format!("the run's serve child exited with {status}").into());
+    }
+    let line = text
+        .lines()
+        .find(|line| line.contains(marker))
+        .ok_or_else(|| {
+            format!(
+                "the run's serve child printed no {marker} line: {}",
+                text.trim()
+            )
+        })?;
+    // A test-binary child runs under the test harness, which opens its
+    // output line with the test's name; the outcome is the rest of the
+    // line.
+    let json = &line[line
+        .find('{')
+        .ok_or("the child's outcome line carries no JSON")?..];
+    Ok(serde_json::from_str(json)?)
+}
+
+/// The serve child's process group: the child leads it (`process_group(0)`),
+/// so signalling it takes the members left in it. Armed until the child
+/// exits on its own; dropping the guard kills whatever the group still
+/// holds.
+#[cfg(unix)]
+struct ChildGroup {
+    pid: u32,
+    armed: bool,
+}
+
+#[cfg(unix)]
+impl ChildGroup {
+    fn new(pid: u32) -> Self {
+        Self { pid, armed: true }
+    }
+
+    /// The child exited on its own: its group is not the harness's to kill.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Kills every process in the group, once.
+    fn kill(&mut self) {
+        if self.armed {
+            self.armed = false;
+            if self.pid != 0 {
+                // SAFETY: the child leads the group its own `process_group
+                // (0)` created, so the negated id signals only the group the
+                // child leads.
+                unsafe { libc::kill(-(self.pid as libc::pid_t), libc::SIGKILL) };
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ChildGroup {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+/// The record of a finished run: the child's outcome with the configs the
+/// report reads merged into the instrument.
+fn child_record(
+    arm: &'static str,
+    scenario: &Scenario,
+    run: usize,
+    outcome: &ChildOutcome,
+    instrument: &mut Instrument,
+) -> Result<RunRecord> {
+    let stop: &'static str = match outcome.stop.as_str() {
+        "idle" => "idle",
+        "turns" => "turns",
+        "seconds" => "seconds",
+        _ => "error",
+    };
+    let error = match &outcome.harness {
+        Some(harness) => Some(format!("harness failure: {harness}")),
+        None => outcome.error.clone(),
+    };
+    let record = RunRecord {
         arm,
         scenario: scenario.id.clone(),
         run,
-        session: (!driven.session.is_empty()).then_some(driven.session),
-        stop: driven.stop,
-        turns: driven.turns,
-        window: driven.window,
-        duration_ms: started.elapsed().as_secs_f64() * 1000.,
-        failed: failed(driven.stop, error.as_deref(), finished.judging.outcome),
-        judge_outcome: finished.judging.outcome,
+        session: outcome.session.clone(),
+        stop,
+        turns: outcome.turns,
+        window: outcome.window,
+        duration_ms: outcome.duration_ms,
+        failed: failed(stop, error.as_deref(), outcome.judge_outcome),
+        judge_outcome: outcome.judge_outcome,
         error,
-        judge_error: finished.judging.error,
-        judge_reasks: finished.judging.reasks,
-        judge_calls: finished.judging.calls,
-        temperature_dropped: Some(finished.judging.temperature_dropped),
-        decline_retries: Some(driven.decline_retries),
-        probes: finished.judging.probes,
-    })
+
+        judge_error: outcome.judge_error.clone(),
+        judge_reasks: outcome.judge_reasks,
+        judge_calls: outcome.judge_calls.clone(),
+        temperature_dropped: Some(outcome.temperature_dropped),
+        decline_retries: Some(outcome.decline_retries),
+        events: outcome.events.clone(),
+        reply_calls: outcome.reply_calls.clone(),
+        probes: outcome
+            .probes
+            .iter()
+            .map(|probe| {
+                let kind: &'static str = match probe.kind.as_deref() {
+                    Some("must_show") => "must_show",
+                    Some("must_not_show") => "must_not_show",
+                    _ => {
+                        return Err(format!(
+                            "the run's record carries an unknown probe kind: {:?}",
+                            probe.kind
+                        )
+                        .into());
+                    }
+                };
+                Ok(ProbeRecord {
+                    id: probe.id.clone(),
+                    kind,
+                    verdict: probe.verdict,
+                    quote: probe.quote.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    instrument.model_configuration = instrument.model_configuration.take().or_else(|| {
+        outcome
+            .model_configuration
+            .clone()
+            .map(|(effort, tier)| Configuration { effort, tier })
+    });
+    instrument.judge_configuration = instrument.judge_configuration.take().or_else(|| {
+        outcome
+            .judge_configuration
+            .clone()
+            .map(|(effort, tier)| Configuration { effort, tier })
+    });
+    if instrument.judge_window.is_none() {
+        instrument.judge_window = Some(JudgeWindow {
+            window: outcome.judge_window.0,
+            max_output: outcome.judge_window.1,
+        });
+    }
+    Ok(record)
 }
 
-/// What one run left behind: the driven Session, its export, the view of it
+/// What one run left behind: the driven Session, its export, the view of it/// What one run left behind: the driven Session, its export, the view of it
 /// the judge read, and the judge's part.
 struct Finished {
     driven: Driven,
@@ -1781,6 +4305,8 @@ async fn drive_once(
     judge: &ModelSelection,
     limits: JudgeWindow,
     cancel: &CancellationToken,
+    producer: &ProducerState,
+    tools: Option<Vec<String>>,
 ) -> Result<Finished> {
     let socket = settings
         .unix_path
@@ -1795,13 +4321,14 @@ async fn drive_once(
         profile: None,
         client_kind: "other",
         client_name: "scenario-eval",
+        protocol_version: 4,
     })
     .await
     .map_err(|error| format!("cannot connect to the served App Server: {error}"))?;
     if settings.defaults.is_some() {
         wait_for_plugins(&mut client).await?;
     }
-    let mut driven = drive(&mut client, scenario, workspace, model).await;
+    let mut driven = drive(&mut client, scenario, workspace, model, producer, tools).await;
     if driven.session.is_empty() {
         return Ok(Finished {
             driven,
@@ -1823,7 +4350,7 @@ async fn drive_once(
     .await
     {
         Ok(()) => {
-            let export = String::from_utf8_lossy(&export).into_owned();
+            let export = String::from_utf8_lossy_owned(export);
             let (turns, failed_turn) = turns_in_export(&export);
             driven.turns = turns;
             if let Some(error) = failed_turn
@@ -1938,14 +4465,13 @@ pub(crate) async fn selection(
     let host = server
         .service::<ModelSelectionHost>()
         .ok_or("the served profile resolves no model selection")?;
-    host.0
-        .resolve(
-            Some(target.clone()),
-            Some(cwd.to_path_buf()),
-            cancel.clone(),
-        )
-        .await
-        .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id).into())
+    host.resolve(
+        ModelSelectionRequest::at(Some(target.clone()), Some(cwd))
+            .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id))?,
+        cancel.clone(),
+    )
+    .await
+    .map_err(|error| format!("{}/{}: {error}", target.provider_id, target.model_id).into())
 }
 
 /// Waits until the default plugin rows leave `pending`: they start after
@@ -1994,24 +4520,51 @@ struct Driven {
     error: Option<String>,
 }
 
+/// Why a Session whose window is not the scenario's cannot be measured, or `None`.
+fn window_mismatch(window: Option<f64>, declared: u64) -> Option<String> {
+    (window != Some(declared as f64)).then(|| {
+        format!(
+            "the Session declares a context window of {}, and the scenario declares {declared}",
+            window.map_or_else(|| "none".to_owned(), |window| window.to_string())
+        )
+    })
+}
+
 /// Drives one Session through the App Server's client methods, as a client
 /// does: create, attach, submit the script, and wait for idle or a budget.
+/// `tools` is the Session's mount list; `None` is the tools-check
+/// ablation, which leaves the mount list unset so the Session offers the
+/// `plugin` tool.
 async fn drive(
     client: &mut Client,
     scenario: &Scenario,
     workspace: &Path,
     model: &ModelSelection,
+    producer: &ProducerState,
+    tools: Option<Vec<String>>,
 ) -> Driven {
-    let created = client
-        .rpc(
-            "session.create",
-            json!({
-                "cwd": workspace,
-                "model": {"provider": model.provider_id, "modelId": model.model_id},
-                "permissionPolicy": {"preset": "full-access"},
-            }),
-        )
-        .await;
+    if !scenario.sources.is_empty()
+        && let Err(error) = declare_sources(producer, &scenario.sources).await
+    {
+        return Driven {
+            session: String::new(),
+            stop: "error",
+            turns: 0,
+            window: None,
+            decline_retries: 0,
+            error: Some(error),
+        };
+    }
+    let mut create = json!({
+        "cwd": workspace,
+        "model": {"provider": model.provider_id, "modelId": model.model_id},
+        "permissionPolicy": {"preset": "full-access"},
+    });
+    if let Some(tools) = &tools {
+        // The run's mount list (config.rs `SessionConfig::tools`).
+        create["tools"] = json!(tools);
+    }
+    let created = client.rpc("session.create", create).await;
     let session = match created {
         Ok(reply) => reply["sessionId"].as_str().unwrap_or_default().to_owned(),
         Err(error) => {
@@ -2041,6 +4594,7 @@ async fn drive(
         driven.error = Some(format!("session.attach failed: {error}"));
         return driven;
     }
+    let mut window_deferred = false;
     match client
         .rpc(
             "session.context.usage",
@@ -2051,15 +4605,14 @@ async fn drive(
         Ok(usage) => {
             let window = usage["contextWindow"].as_f64();
             driven.window = window;
-            if window != Some(scenario.budget.window as f64) {
+            if let Some(error) = window_mismatch(window, scenario.budget.window) {
                 driven.stop = "error";
-                driven.error = Some(format!(
-                    "the Session declares a context window of {}, and the scenario declares {}",
-                    window.map_or_else(|| "none".to_owned(), |window| window.to_string()),
-                    scenario.budget.window
-                ));
+                driven.error = Some(error);
                 return driven;
             }
+        }
+        Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {
+            window_deferred = true;
         }
         Err(error) => {
             driven.stop = "error";
@@ -2085,6 +4638,28 @@ async fn drive(
             return driven;
         }
     }
+    for source in &scenario.sources {
+        let Some(subscribe) = &source.subscribe else {
+            // The scenario expects the model to subscribe through the
+            // `events` tool; the event trigger waits for that subscription.
+            continue;
+        };
+        let mut params = json!({
+            "types": subscribe.types.clone(),
+            "target": {"sessionId": session, "branchId": "main"},
+        });
+        if let Some(mode) = subscribe.mode {
+            params["mode"] = json!(mode);
+        }
+        if let Err(error) = client.rpc("eventhub.subscribe", params).await {
+            driven.stop = "error";
+            driven.error = Some(format!(
+                "the subscription of {} failed: {error}",
+                source.name
+            ));
+            return driven;
+        }
+    }
     if let Err(error) = submit(client, &session, &scenario.message, None).await {
         driven.stop = "error";
         driven.error = Some(error);
@@ -2099,6 +4674,13 @@ async fn drive(
         .map(|steer| (steer, false))
         .collect();
     let mut last_event = Instant::now();
+    // The events still to publish, and whether each was.
+    let mut events: Vec<(EventSpec, bool)> = scenario
+        .events
+        .iter()
+        .cloned()
+        .map(|event| (event, false))
+        .collect();
     // An input the runner submitted is outstanding until a turn starts for it
     // or the run consumes it; a line that has done neither is not idle.
     let mut awaiting = true;
@@ -2116,6 +4698,32 @@ async fn drive(
                 return driven;
             }
         }
+        match fire_events_due(client, producer, &mut events, started).await {
+            Ok((published, starts)) => {
+                awaiting |= starts;
+                if published {
+                    last_event = Instant::now();
+                }
+            }
+            Err(error) => {
+                driven.stop = "error";
+                driven.error = Some(error);
+                return driven;
+            }
+        }
+        match fire_events_after_subscribe(client, producer, &mut events).await {
+            Ok((published, starts)) => {
+                awaiting |= starts;
+                if published {
+                    last_event = Instant::now();
+                }
+            }
+            Err(error) => {
+                driven.stop = "error";
+                driven.error = Some(error);
+                return driven;
+            }
+        }
         if let Err(error) =
             retry_declines(client, &session, &mut declines, &mut driven.decline_retries).await
         {
@@ -2123,7 +4731,18 @@ async fn drive(
             driven.error = Some(error);
             return driven;
         }
-        let pending = steers.iter().any(|(_, fired)| !fired);
+        // An `afterSubscribedSeconds` event whose clock has not started is
+        // not pending: only a subscription of the model's can start it, so a
+        // model that never subscribed cannot make it fire, and the run ends
+        // idle with the event never published. The clock check above ran
+        // first in this pass, so a subscription the model made in its last
+        // turn has already started the clock and keeps the run open here
+        // (EventHub design A.4).
+        let pending = steers.iter().any(|(_, fired)| !fired)
+            || events.iter().any(|(event, fired)| {
+                !fired
+                    && (event.after_subscribed_seconds.is_none() || event.subscribed_at.is_some())
+            });
         if started.elapsed().as_secs_f64() >= scenario.budget.seconds {
             driven.stop = "seconds";
             break;
@@ -2143,7 +4762,7 @@ async fn drive(
                 }
             }
         }
-        let wait = wait_time(&steers, started, &scenario.budget);
+        let wait = wait_time(&steers, &events, started, &scenario.budget);
         match tokio::time::timeout(wait, client.next()).await {
             Ok(Ok(WireMessage::Notice { method, params })) => {
                 last_event = Instant::now();
@@ -2182,6 +4801,19 @@ async fn drive(
                         }
                         match fire_triggered(client, &session, &mut steers, &event).await {
                             Ok(submitted) => awaiting |= submitted,
+                            Err(error) => {
+                                driven.stop = "error";
+                                driven.error = Some(error);
+                                return driven;
+                            }
+                        }
+                        match fire_events_triggered(client, producer, &mut events, &event).await {
+                            Ok((published, starts)) => {
+                                awaiting |= starts;
+                                if published {
+                                    last_event = Instant::now();
+                                }
+                            }
                             Err(error) => {
                                 driven.stop = "error";
                                 driven.error = Some(error);
@@ -2241,6 +4873,25 @@ async fn drive(
                            "reason": format!("budget: {}", driven.stop)}),
                 )
                 .await;
+        }
+    }
+    if window_deferred && driven.error.is_none() {
+        match client
+            .rpc(
+                "session.context.usage",
+                json!({"sessionId":session,"branchId":"main"}),
+            )
+            .await
+        {
+            Ok(usage) => {
+                driven.window = usage["contextWindow"].as_f64();
+                driven.error = window_mismatch(driven.window, scenario.budget.window);
+            }
+            Err(error) if dim_client::app_error(&error) == Some("context_usage_unavailable") => {}
+            Err(error) => driven.error = Some(format!("Context window check failed: {error}")),
+        }
+        if driven.error.is_some() {
+            driven.stop = "error";
         }
     }
     driven
@@ -2401,6 +5052,671 @@ async fn decline_once(
     }
 }
 
+/// One reply-tool call the run's tools recorded, in the order they arrived.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ReplyCall {
+    pub(crate) tool: String,
+    pub(crate) message_id: String,
+    pub(crate) text: String,
+}
+
+/// One event a run published, and the receipt EventHub answered (EventHub
+/// design A.2).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventRecord {
+    pub(crate) source: String,
+    pub(crate) r#type: String,
+    pub(crate) id: String,
+    pub(crate) receipt: Value,
+}
+
+/// The scenario producer's state: its row's context and the `eventHub`
+/// service, as its `apply` or an `eventhub/ready` notice last found them,
+/// plus what the run's reply tools and publishes recorded.
+#[derive(Default)]
+pub(crate) struct ProducerState {
+    installed: Mutex<Option<(Ctx, Option<Arc<EventHub>>)>>,
+    reply_calls: Mutex<Vec<ReplyCall>>,
+    events: Mutex<Vec<EventRecord>>,
+}
+
+impl ProducerState {
+    fn install(&self, ctx: Ctx, hub: Option<Arc<EventHub>>) {
+        *self.installed.lock().unwrap() = Some((ctx, hub));
+    }
+    pub(crate) fn hub(&self) -> Option<Arc<EventHub>> {
+        self.installed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|(_, hub)| hub.clone())
+    }
+    fn ctx(&self) -> std::result::Result<Ctx, String> {
+        self.installed
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|(ctx, _)| ctx.clone())
+            .ok_or_else(|| "the scenario producer row has not applied".to_owned())
+    }
+    async fn declare(&self, request: DeclareRequest) -> std::result::Result<(), String> {
+        let hub = self
+            .hub()
+            .ok_or_else(|| "eventHub is not installed".to_owned())?;
+        hub.declare(&self.ctx()?, request)
+            .await
+            .map_err(|error| format!("{}: {}", error.code, error.message))
+    }
+    /// Publishes one event through the service and records its receipt. A
+    /// delivery that is not `delivered` fails the run; a model's missed
+    /// `afterSubscribedSeconds` event is recorded and starts no turn. Answers
+    /// whether any delivered branch starts a turn (EventHub design §3.1,
+    /// A.2).
+    async fn publish(
+        &self,
+        event: &EventSpec,
+        subscriptions: &BTreeMap<String, Option<InputMode>>,
+    ) -> std::result::Result<bool, String> {
+        let hub = self
+            .hub()
+            .ok_or_else(|| "eventHub is not installed".to_owned())?;
+        let request = PublishRequest {
+            source: event.source.clone(),
+            r#type: event.r#type.clone(),
+            id: Some(event.id.clone()),
+            title: event.title.clone(),
+            body: event.body.clone(),
+            attributes: event.attributes.clone(),
+            to: Vec::new(),
+        };
+        let receipt = hub
+            .publish(&self.ctx()?, request)
+            .await
+            .map_err(|error| format!("event {}: {}: {}", event.id, error.code, error.message))?;
+        self.events.lock().unwrap().push(EventRecord {
+            source: event.source.clone(),
+            r#type: event.r#type.clone(),
+            id: event.id.clone(),
+            receipt: receipt.clone(),
+        });
+        let deliveries = receipt["deliveries"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if deliveries.is_empty() {
+            // A model's subscription owns an `afterSubscribedSeconds` event:
+            // the publish matched nobody because the model left no
+            // subscription, and that miss is the outcome the probes judge,
+            // not a harness failure (EventHub design A.3, A.4).
+            if event.after_subscribed_seconds.is_some() {
+                return Ok(false);
+            }
+            return Err(format!(
+                "event {}: the receipt is not delivered: {receipt}",
+                event.id
+            ));
+        }
+        if deliveries
+            .iter()
+            .any(|delivery| delivery["status"] != json!("delivered"))
+        {
+            return Err(format!(
+                "event {}: the receipt is not delivered: {receipt}",
+                event.id
+            ));
+        }
+        // A delivered receipt carries no mode (EventHub design §3.1), so a
+        // delivery's mode is the strongest effective mode among the
+        // subscriptions it lists: an id names one the snapshot took just
+        // before the publish, its own `mode` or else the type's declared
+        // mode.
+        let mut starts = false;
+        for delivery in &deliveries {
+            let mode = delivery["subscriptionIds"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(|id| {
+                    subscriptions
+                        .get(id)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(event.declared_mode)
+                })
+                .max_by_key(|mode| mode_rank(*mode))
+                // A branch reached through no subscription takes the type's
+                // declared mode.
+                .unwrap_or(event.declared_mode);
+            starts |= starts_turn(mode);
+        }
+        Ok(starts)
+    }
+    pub(crate) fn events(&self) -> Vec<EventRecord> {
+        self.events.lock().unwrap().clone()
+    }
+    pub(crate) fn reply_calls(&self) -> Vec<ReplyCall> {
+        self.reply_calls.lock().unwrap().clone()
+    }
+    fn record_reply(&self, tool: &str, message_id: String, text: String) {
+        self.reply_calls.lock().unwrap().push(ReplyCall {
+            tool: tool.to_owned(),
+            message_id,
+            text,
+        });
+    }
+}
+
+/// Whether a delivery starts a turn: `append` joins the context without one
+/// (EventHub design §3.1).
+fn starts_turn(mode: InputMode) -> bool {
+    mode != InputMode::Append
+}
+
+/// The declaration a scenario's source makes (EventHub design A.1).
+fn declaration(source: &Source) -> DeclareRequest {
+    DeclareRequest {
+        source: source.name.clone(),
+        guide: source.guide.clone(),
+        types: source
+            .types
+            .iter()
+            .map(|declared| TypeDeclaration {
+                r#type: declared.r#type.clone(),
+                description: declared.description.clone(),
+                mode: declared.mode,
+            })
+            .collect(),
+    }
+}
+
+/// Installs the one producer row a scenario runs with: it reads the
+/// `eventHub` service optionally, declares every source, and registers the
+/// sources' reply tools for the Session (EventHub design §2.1’s producer
+/// pattern; the tool registration follows
+/// `crates/dim-agent-scheduler/src/session.rs`).
+pub(crate) fn install_producer(
+    builder: &mut AgentBuilder,
+    sources: &[Source],
+    state: Arc<ProducerState>,
+) {
+    let sources = sources.to_vec();
+    builder.plugin(move |names| {
+        Ok(Box::new(ScenarioProducer::new(
+            names,
+            sources.clone(),
+            state.clone(),
+        )?) as Box<dyn DynPlugin>)
+    });
+}
+
+/// A test hook: a Session part that contributes one tool `RUN_TOOLS` does
+/// not name, from a part no default plugin names, so a test can watch the
+/// tools-product check refuse it.
+fn install_extra_tool(builder: &mut AgentBuilder) {
+    builder.plugin(|names| Ok(Box::new(ExtraToolProducer::new(names)?) as Box<dyn DynPlugin>));
+}
+
+struct ExtraToolProducer {
+    parts: Key<PartRegistry>,
+}
+
+impl ExtraToolProducer {
+    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            parts: names.key()?,
+        })
+    }
+}
+
+impl DynPlugin for ExtraToolProducer {
+    fn name(&self) -> &str {
+        "ExtraToolProducer"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.parts.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            ctx.require_at(&self.parts)?.register(
+                ctx,
+                PartScope::Session,
+                "ExtraToolSession",
+                |mount| Ok(Some(Box::new(ExtraToolSession::new(mount.names)?))),
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct ExtraToolSession {
+    tools: Key<ToolRegistry>,
+}
+
+impl ExtraToolSession {
+    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Ok(Self {
+            tools: names.key()?,
+        })
+    }
+}
+
+impl DynPlugin for ExtraToolSession {
+    fn name(&self) -> &str {
+        "ExtraToolSession"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.tools.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let tools = ctx.require_at(&self.tools)?;
+            let mut extra = definition(
+                "fixture_extra",
+                "A test hook's tool outside the run list.",
+                json!({"type": "object"}),
+            );
+            extra.source = ToolSource::Extension;
+            tools.register(
+                ctx,
+                ToolContribution {
+                    definition: extra,
+                    handler: Arc::new(ExtraTool),
+                },
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct ExtraTool;
+
+impl ToolHandler for ExtraTool {
+    fn execute(
+        &self,
+        _call: ToolCall,
+        _context: ToolExecutionContext,
+        _cancel: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async move { Ok(ToolResult::text("extra")) })
+    }
+}
+
+struct ScenarioProducer {
+    state: Arc<ProducerState>,
+    hub: Key<EventHub>,
+    parts: Key<PartRegistry>,
+    sources: Vec<Source>,
+}
+
+impl ScenarioProducer {
+    fn new(
+        names: &Names<'_>,
+        sources: Vec<Source>,
+        state: Arc<ProducerState>,
+    ) -> rutis::Result<Self> {
+        Ok(Self {
+            state,
+            hub: names.key()?,
+            parts: names.key()?,
+            sources,
+        })
+    }
+}
+
+impl DynPlugin for ScenarioProducer {
+    fn name(&self) -> &str {
+        "ScenarioProducer"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        // The Session part registry gates the row; `eventHub` itself is read
+        // optionally with `get_at` and heard through `eventhub/ready`
+        // (EventHub design §2.1).
+        vec![self.parts.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let state = self.state.clone();
+            let key = self.hub.clone();
+            // The notice first, then the read: a service provided between the
+            // two steps is not missed (EventHub design §2.1).
+            {
+                let state = state.clone();
+                let key = key.clone();
+                let listen_ctx = ctx.clone();
+                ctx.listen::<dim_event_hub::Ready>().on(move |_, _| {
+                    let state = state.clone();
+                    let key = key.clone();
+                    let ctx = listen_ctx.clone();
+                    async move {
+                        let hub = ctx.get_at(&key);
+                        state.install(ctx.clone(), hub);
+                        Ok(None)
+                    }
+                })?;
+            }
+            let hub = ctx.get_at(&key);
+            state.install(ctx.clone(), hub);
+            let tools: Vec<String> = self
+                .sources
+                .iter()
+                .filter_map(|source| source.reply_tool.clone())
+                .collect();
+            let reply_state = self.state.clone();
+            ctx.require_at(&self.parts)?.register(
+                ctx,
+                PartScope::Session,
+                "ScenarioProducerSession",
+                move |mount| {
+                    Ok(Some(Box::new(ScenarioReplySession::new(
+                        mount.names,
+                        tools.clone(),
+                        reply_state.clone(),
+                    )?)))
+                },
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The producer's Session part: the reply tools the scenario's sources name.
+struct ScenarioReplySession {
+    tools: Key<ToolRegistry>,
+    tool_names: Vec<String>,
+    state: Arc<ProducerState>,
+}
+
+impl ScenarioReplySession {
+    fn new(
+        names: &Names<'_>,
+        tool_names: Vec<String>,
+        state: Arc<ProducerState>,
+    ) -> rutis::Result<Self> {
+        Ok(Self {
+            tools: names.key()?,
+            tool_names,
+            state,
+        })
+    }
+}
+
+impl DynPlugin for ScenarioReplySession {
+    fn name(&self) -> &str {
+        "ScenarioProducerSession"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.tools.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            let tools = ctx.require_at(&self.tools)?;
+            for name in &self.tool_names {
+                tools.register(
+                    ctx,
+                    ToolContribution {
+                        definition: reply_definition(name),
+                        handler: Arc::new(ReplyTool {
+                            name: name.clone(),
+                            state: self.state.clone(),
+                        }),
+                    },
+                )?;
+            }
+            Ok(Effect::Done)
+        })
+    }
+}
+
+/// The reply tool a scenario's source names: it takes `{messageId, text}`,
+/// records the call in the run's record and answers `sent`.
+struct ReplyTool {
+    name: String,
+    state: Arc<ProducerState>,
+}
+
+impl ToolHandler for ReplyTool {
+    fn execute(
+        &self,
+        call: ToolCall,
+        _context: ToolExecutionContext,
+        _cancel: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async move {
+            let input = Value::Object(call.input);
+            let Some(message_id) = input["messageId"].as_str() else {
+                return Ok(ToolResult::error(format!(
+                    "{}: invalid_params\nmessageId is required",
+                    self.name
+                )));
+            };
+            let Some(text) = input["text"].as_str() else {
+                return Ok(ToolResult::error(format!(
+                    "{}: invalid_params\ntext is required",
+                    self.name
+                )));
+            };
+            self.state
+                .record_reply(&self.name, message_id.to_owned(), text.to_owned());
+            Ok(ToolResult::text("sent"))
+        })
+    }
+}
+
+/// A reply tool's declaration.
+fn reply_definition(name: &str) -> ToolDefinition {
+    let mut tool = definition(
+        name,
+        "Replies to a message from this source, by the message's id.",
+        json!({
+            "type": "object",
+            "required": ["messageId", "text"],
+            "additionalProperties": false,
+            "properties": {
+                "messageId": {"type": "string", "description": "The id attribute of the event message being answered."},
+                "text": {"type": "string", "description": "The reply to send."}
+            }
+        }),
+    );
+    tool.source = ToolSource::Extension;
+    tool
+}
+
+/// Declares every source through the producer row before the Session
+/// subscribes: the subscription checks the catalog, and the service appears
+/// once EventHub applies (EventHub design §2.1, A.1, A.3).
+async fn declare_sources(
+    producer: &ProducerState,
+    sources: &[Source],
+) -> std::result::Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while producer.hub().is_none() {
+        if Instant::now() >= deadline {
+            return Err("the eventHub service is not installed".into());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for source in sources {
+        producer
+            .declare(declaration(source))
+            .await
+            .map_err(|error| format!("source {}: {error}", source.name))?;
+    }
+    Ok(())
+}
+
+/// The snapshot a publish's receipt is read against: each subscription's own
+/// `mode`, absent when the type's declared mode applies (EventHub design
+/// §3.1, A.2), read with the management call `eventhub.subscriptions` just
+/// before the publish.
+async fn subscription_modes(
+    client: &mut Client,
+) -> std::result::Result<BTreeMap<String, Option<InputMode>>, String> {
+    let reply = client
+        .rpc("eventhub.subscriptions", json!({}))
+        .await
+        .map_err(|error| format!("eventhub.subscriptions failed: {error}"))?;
+    let mut snapshot = BTreeMap::new();
+    for subscription in reply["subscriptions"].as_array().into_iter().flatten() {
+        let Some(id) = subscription["id"].as_str() else {
+            continue;
+        };
+        let mode = subscription["mode"]
+            .as_str()
+            .and_then(|mode| serde_json::from_value(json!(mode)).ok());
+        snapshot.insert(id.to_owned(), mode);
+    }
+    Ok(snapshot)
+}
+
+/// Publishes the timed events that are due; answers whether it published one
+/// and whether one starts a turn.
+async fn fire_events_due(
+    client: &mut Client,
+    producer: &ProducerState,
+    events: &mut [(EventSpec, bool)],
+    started: Instant,
+) -> std::result::Result<(bool, bool), String> {
+    let mut published = false;
+    let mut starts = false;
+    for (event, fired) in events.iter_mut() {
+        let due = event
+            .after_seconds
+            .is_some_and(|after| started.elapsed().as_secs_f64() >= after);
+        if due && !*fired {
+            *fired = true;
+            let snapshot = subscription_modes(client).await?;
+            starts |= producer.publish(event, &snapshot).await?;
+            published = true;
+        }
+    }
+    Ok((published, starts))
+}
+
+/// Publishes the events whose `whenToolCall` substring the notice's
+/// `step/tool-use` event carries; answers whether it published one and
+/// whether one starts a turn.
+async fn fire_events_triggered(
+    client: &mut Client,
+    producer: &ProducerState,
+    events: &mut [(EventSpec, bool)],
+    notice: &Value,
+) -> std::result::Result<(bool, bool), String> {
+    if notice["type"] != "step" || notice["name"] != "tool-use" {
+        return Ok((false, false));
+    }
+    let data = notice["data"].to_string();
+    let mut published = false;
+    let mut starts = false;
+    for (event, fired) in events.iter_mut() {
+        let triggered = event
+            .when_tool_call
+            .as_ref()
+            .is_some_and(|trigger| data.contains(trigger.as_str()));
+        if triggered && !*fired {
+            *fired = true;
+            let snapshot = subscription_modes(client).await?;
+            starts |= producer.publish(event, &snapshot).await?;
+            published = true;
+        }
+    }
+    Ok((published, starts))
+}
+
+/// Whether a subscription's `types` name `source`: an exact type of the
+/// source or its `<source>.*` pattern (EventHub design A.3).
+fn subscription_names_source(subscription: &Value, source: &str) -> bool {
+    subscription["types"].as_array().is_some_and(|types| {
+        types.iter().any(|pattern| {
+            pattern
+                .as_str()
+                .is_some_and(|pattern| match pattern.strip_suffix(".*") {
+                    Some(pattern_source) => pattern_source == source,
+                    None => pattern.split_once('.').map(|(source, _)| source) == Some(source),
+                })
+        })
+    })
+}
+
+/// Whether an `afterSubscribedSeconds` event is due: that many seconds after
+/// the runner first saw a subscription naming its source.
+fn subscribed_due(event: &EventSpec) -> bool {
+    event.after_subscribed_seconds.is_some_and(|after| {
+        event
+            .subscribed_at
+            .is_some_and(|at| at.elapsed().as_secs_f64() >= after)
+    })
+}
+
+/// The mode rank of EventHub design §3.1: `steer` over `queue` over `append`.
+fn mode_rank(mode: InputMode) -> u8 {
+    match mode {
+        InputMode::Steer => 2,
+        InputMode::Queue => 1,
+        InputMode::Append => 0,
+    }
+}
+
+/// Starts the clock of every `afterSubscribedSeconds` event whose source now
+/// has a subscription, and publishes the events whose clock has run out; it
+/// answers whether it published one and whether one starts a turn. The
+/// scenario's own sources carry no subscription here: the model creates it
+/// through the `events` tool (EventHub design A.4). A delivery's mode comes
+/// from the subscriptions the receipt lists, taken from a snapshot of each
+/// subscription's own `mode` read just before the publish (EventHub design
+/// §3.1, A.2).
+async fn fire_events_after_subscribe(
+    client: &mut Client,
+    producer: &ProducerState,
+    events: &mut [(EventSpec, bool)],
+) -> std::result::Result<(bool, bool), String> {
+    let needs_first = events.iter().any(|(event, fired)| {
+        !*fired && event.after_subscribed_seconds.is_some() && event.subscribed_at.is_none()
+    });
+    if needs_first {
+        let reply = client
+            .rpc("eventhub.subscriptions", json!({}))
+            .await
+            .map_err(|error| format!("eventhub.subscriptions failed: {error}"))?;
+        let subscriptions = reply["subscriptions"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let now = Instant::now();
+        for (event, fired) in events.iter_mut() {
+            if *fired || event.after_subscribed_seconds.is_none() || event.subscribed_at.is_some() {
+                continue;
+            }
+            if subscriptions
+                .iter()
+                .any(|subscription| subscription_names_source(subscription, &event.source))
+            {
+                event.subscribed_at = Some(now);
+            }
+        }
+    }
+    let due = events
+        .iter()
+        .any(|(event, fired)| !*fired && subscribed_due(event));
+    let snapshot = if due {
+        subscription_modes(client).await?
+    } else {
+        BTreeMap::new()
+    };
+    let mut published = false;
+    let mut starts = false;
+    for (event, fired) in events.iter_mut() {
+        if !*fired && subscribed_due(event) {
+            *fired = true;
+            starts |= producer.publish(event, &snapshot).await?;
+            published = true;
+        }
+    }
+    Ok((published, starts))
+}
+
 /// The `session.submit` params. A mode names how `main` takes the input: a
 /// steer ends a wait and replaces a request that has produced no output yet,
 /// while the operator's first message carries no mode and is queued.
@@ -2475,7 +5791,12 @@ async fn fire_triggered(
 
 /// How long to wait for the next notice: until the next timed steer, the
 /// quiet check or the wall-clock budget, whichever comes first.
-fn wait_time(steers: &[(Steer, bool)], started: Instant, budget: &Budget) -> Duration {
+fn wait_time(
+    steers: &[(Steer, bool)],
+    events: &[(EventSpec, bool)],
+    started: Instant,
+    budget: &Budget,
+) -> Duration {
     let mut wait = QUIET;
     let until = |seconds: f64| {
         let left = seconds - started.elapsed().as_secs_f64();
@@ -2485,6 +5806,19 @@ fn wait_time(steers: &[(Steer, bool)], started: Instant, budget: &Budget) -> Dur
     for (steer, fired) in steers {
         if let (Some(after), false) = (steer.after_seconds, *fired) {
             wait = wait.min(until(after));
+        }
+    }
+    for (event, fired) in events {
+        if let (Some(after), false) = (event.after_seconds, *fired) {
+            wait = wait.min(until(after));
+        }
+        // Before the first subscription the quiet period is the poll; after
+        // it, the clock is exact.
+        if let (Some(after), Some(at), false) =
+            (event.after_subscribed_seconds, event.subscribed_at, *fired)
+        {
+            let left = after - at.elapsed().as_secs_f64();
+            wait = wait.min(Duration::from_secs_f64(left.max(0.001)));
         }
     }
     wait.max(Duration::from_millis(10))
@@ -3467,6 +6801,8 @@ mod tests {
             directory: PathBuf::new(),
             message: "message".into(),
             calls: Vec::new(),
+            sources: Vec::new(),
+            events: Vec::new(),
             steers: Vec::new(),
             budget: Budget {
                 turns: 4,
@@ -3499,6 +6835,8 @@ mod tests {
             judge_calls: Vec::new(),
             temperature_dropped: Some(false),
             decline_retries: Some(0),
+            events: Vec::new(),
+            reply_calls: Vec::new(),
             probes: verdicts
                 .iter()
                 .map(|(id, verdict)| ProbeRecord {
@@ -3594,6 +6932,63 @@ mod tests {
         assert_eq!(both.goal_continuation.as_deref(), Some("second"));
     }
 
+    /// An event records its type's declared mode, whatever mode the
+    /// scenario's own subscription names: a delivery's effective mode comes
+    /// from the subscriptions the receipt lists (EventHub design §3.1, A.2).
+    #[test]
+    fn an_event_keeps_its_type_declared_mode() {
+        fn event_mode(
+            directory: &std::path::Path,
+            subscribe: Value,
+            declared: Value,
+        ) -> (InputMode, bool) {
+            let file: ScenarioFile = serde_json::from_value(json!({
+                "message": "message",
+                "sources": [{
+                    "name": "chat",
+                    "guide": "Messages from the team's chat.",
+                    "types": [{
+                        "type": "chat.message",
+                        "description": "A message from the team's chat.",
+                        "mode": declared
+                    }],
+                    "subscribe": {"types": ["chat.message"], "mode": subscribe}
+                }],
+                "events": [{
+                    "source": "chat", "type": "chat.message", "id": "m-1",
+                    "body": "question", "whenToolCall": "read"
+                }],
+                "budget": {"turns": 1, "seconds": 60, "window": 1000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }))
+            .unwrap();
+            let scenario = into_scenario("case".into(), directory.to_path_buf(), file).unwrap();
+            let mode = scenario.events[0].declared_mode;
+            (mode, starts_turn(mode))
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "dim-scenario-eval-event-mode-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(directory.join("workspace")).unwrap();
+        assert_eq!(
+            event_mode(&directory, json!("append"), json!("queue")),
+            (InputMode::Queue, true),
+            "the scenario's subscription mode stays out of the event; the type's mode is kept"
+        );
+        assert_eq!(
+            event_mode(&directory, Value::Null, json!("queue")),
+            (InputMode::Queue, true),
+            "without a subscription the type's declared mode applies"
+        );
+        assert_eq!(
+            event_mode(&directory, json!("steer"), json!("append")),
+            (InputMode::Append, false),
+            "an append-typed event starts no turn"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     /// A scenario's steers are the operator's: they go out in Steer mode, so
     /// a waiting `main` takes them, and the initial message carries no mode
     /// and is queued input (issue #728).
@@ -3645,6 +7040,149 @@ mod tests {
             workspace_files(&flooding.directory),
             workspace_files(&never_ending.directory),
             "flooding and never-ending start from one workspace"
+        );
+    }
+
+    /// The scheduler set parses through the runner's own reader (Scheduler
+    /// §5.1): three scenarios, each with a statement to see and a statement
+    /// not to see, and no EventHub source, since the subject is the `schedule`
+    /// tool. No model runs, so CI catches a schema or layout drift before a
+    /// manual run.
+    #[test]
+    fn the_scheduler_scenario_set_parses() {
+        let root = repository()
+            .join("xtask")
+            .join("scenario-eval")
+            .join("scheduler");
+        let scenarios = read_scenarios(&root).unwrap();
+        let ids: Vec<_> = scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            [
+                "a-target-the-tool-cannot-set",
+                "recurring-job-from-a-request",
+                "rename-an-existing-job",
+            ],
+            "the committed set is the three scenarios"
+        );
+        for scenario in &scenarios {
+            assert!(
+                scenario.sources.is_empty() && scenario.events.is_empty(),
+                "{}: the schedule tool is the subject, not an EventHub source",
+                scenario.id
+            );
+            assert!(
+                scenario
+                    .probes
+                    .iter()
+                    .any(|probe| probe.kind == ProbeKind::MustShow),
+                "{}: a statement to see",
+                scenario.id
+            );
+            assert!(
+                scenario
+                    .probes
+                    .iter()
+                    .any(|probe| probe.kind == ProbeKind::MustNotShow),
+                "{}: a statement not to see",
+                scenario.id
+            );
+        }
+    }
+
+    /// The `schedule` description is injected through the product's own
+    /// factory member (Scheduler §5.1, model-prompts §8.1): `--text
+    /// scheduler/description` lands on the `Overrides` field
+    /// [`app_server::serve_home`] hands `SchedulerTexts`, never on a
+    /// product string patched for the evaluation.
+    #[test]
+    fn the_schedule_description_is_a_factory_member() {
+        let overrides = overrides_in(
+            TEXTS,
+            &[(
+                "scheduler/description".to_owned(),
+                Arc::from("candidate description"),
+            )],
+        )
+        .unwrap();
+        assert_eq!(
+            overrides.scheduler_description.as_deref(),
+            Some("candidate description")
+        );
+        assert!(overrides.branch_description.is_none());
+    }
+
+    /// The `scheduler/description` candidate survives the serve child's JSON
+    /// overrides and arrives in the run's model request as the `schedule`
+    /// tool's declaration (§5.1): the candidate arm's every request names the
+    /// tool with the candidate text, the current arm's with the shipped one.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_schedule_description_candidate_reaches_the_run_through_the_child() {
+        const CANDIDATE: &str = "CANDIDATE SCHEDULE TOOL DESCRIPTION";
+        /// The shipped description's opening (`session.rs` `DESCRIPTION`).
+        const SHIPPED: &str = "Manage scheduled jobs across this host";
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| Some(content("ok")))
+        }
+        let fixture = Fixture::start(
+            "scheduler-description",
+            answers,
+            json!({
+                "message": "Say ok.",
+                "budget": {"turns": 2, "seconds": 60, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let candidate = overrides(&pairs(&[("scheduler/description", CANDIDATE)])).unwrap();
+        for (arm, overrides) in [("current", Overrides::default()), ("candidate", candidate)] {
+            let record = run_arm(&fixture, &options, arm, &overrides, 0).await;
+            assert_eq!(record.error, None, "{arm}");
+            assert!(!record.failed, "{arm}");
+        }
+        // The `schedule` tool's description in each request of an arm, one
+        // entry per request that declares the tool.
+        let descriptions = |arm: &str| -> Vec<Option<String>> {
+            fixture
+                .arm(arm)
+                .iter()
+                .filter_map(|request| serde_json::from_str::<Value>(request).ok())
+                .filter_map(|request| {
+                    request["tools"].as_array().and_then(|tools| {
+                        tools
+                            .iter()
+                            .find(|tool| tool["function"]["name"] == "schedule")
+                            .map(|tool| tool["function"]["description"].as_str().map(str::to_owned))
+                    })
+                })
+                .collect()
+        };
+        let current = descriptions("current");
+        let offered = descriptions("candidate");
+        assert!(
+            !current.is_empty(),
+            "the current arm's request declares the schedule tool"
+        );
+        assert!(
+            !offered.is_empty(),
+            "the candidate arm's request declares the schedule tool"
+        );
+        assert!(
+            current.iter().all(|description| description
+                .as_deref()
+                .is_some_and(|text| text.contains(SHIPPED))),
+            "the current arm carries the shipped description: {current:?}"
+        );
+        assert!(
+            offered
+                .iter()
+                .all(|description| description.as_deref() == Some(CANDIDATE)),
+            "the candidate arm's schedule tool description is the candidate text: {offered:?}"
         );
     }
 
@@ -3791,8 +7329,6 @@ mod tests {
             "gateway/model",
             "--runs",
             "1",
-            "--home",
-            "home",
             "--out",
             out.to_str().unwrap(),
             "--run",
@@ -4037,8 +7573,6 @@ mod tests {
                 "gateway/model",
                 "--runs",
                 "1",
-                "--home",
-                "home",
                 "--out",
                 directory.join("out").to_str().unwrap(),
             ]
@@ -4079,8 +7613,6 @@ mod tests {
                     "gateway/model",
                     "--runs",
                     "1",
-                    "--home",
-                    "home",
                     "--out",
                     out.to_str().unwrap(),
                 ]
@@ -4530,6 +8062,28 @@ mod tests {
             (2, Some("main: the turn failed: provider error".to_owned()))
         );
         assert_eq!(turns_in_export(""), (0, None));
+    }
+
+    /// A declared tool without a source cannot come from the product: the
+    /// request holds `ToolDefinition` values, whose `source` is a required
+    /// field. The probe fails naming the tool instead of dropping it from
+    /// the ceiling, where it would leave the `tools-product` comparison
+    /// silently uncompared.
+    #[test]
+    fn requested_tools_names_a_declared_tool_without_a_source() {
+        let line = |tools: &str| {
+            format!(
+                r#"{{"kind":"event","branch_id":"main","event":{{"type":"model","name":"call","data":{{"request":{{"tools":{tools}}}}}}}}}"#
+            )
+        };
+        let export = [
+            line(r#"[{"name":"read","source":"builtin"},{"name":"write","source":"builtin"}]"#),
+            // The last request is the one the probe's ceiling comes from.
+            line(r#"[{"name":"read","source":"builtin"},{"name":"write"}]"#),
+        ]
+        .join("\n");
+        let error = requested_tools(&export).expect_err("the missing source fails the probe");
+        assert!(error.contains("write"), "the error names the tool: {error}");
     }
 
     /// Every request the judge reads can be rebuilt from its rendered form,
@@ -4988,6 +8542,7 @@ mod tests {
                             total_tokens: 385_000.,
                             cache_read_tokens: None,
                             cache_write_tokens: None,
+                            reasoning_tokens: None,
                             cost: None,
                             currency: None,
                         },
@@ -5330,9 +8885,9 @@ mod tests {
             ("current", 1, "SAVED VIEW judged"),
             ("candidate", 1, "SAVED VIEW unselected"),
         ] {
-            let directory = source.join(arm).join("case").join(format!("run-{run}"));
+            let directory = source.join("outputs").join(arm).join("case");
             std::fs::create_dir_all(&directory).unwrap();
-            std::fs::write(directory.join("judge-view.jsonl"), view).unwrap();
+            std::fs::write(directory.join(format!("run-{run}.judge-view.jsonl")), view).unwrap();
         }
         let saved = [
             json!({"arm": "current", "scenario": "case", "run": 0, "session": null,
@@ -5842,51 +9397,28 @@ mod tests {
     /// it only once the `read` tool has returned it.
     const FILE_TEXT: &str = "The notes file says the read tool carried this line back.";
 
-    /// The provider's answer to one request: the stream event to send, or
-    /// `None` for a plain text reply.
-    type Reply = fn(&str) -> Option<Value>;
-    /// How long the provider holds a request's whole answer back before it
-    /// sends the first byte of it; `None` sends the answer at once.
-    type Hold = fn(&str) -> Option<Duration>;
-    /// The hold of a provider that answers every request at once.
-    fn holds_nothing(_: &str) -> Option<Duration> {
-        None
-    }
-
-    /// One loopback OpenAI-compatible provider that answers by `reply`, holds
-    /// an answer by `hold`, and records every request it receives.
-    struct Provider {
-        requests: Mutex<Vec<String>>,
-        reply: Reply,
-        hold: Hold,
-    }
-    async fn completion(
-        axum::extract::State(provider): axum::extract::State<Arc<Provider>>,
-        axum::Json(body): axum::Json<Value>,
-    ) -> String {
-        let text = body.to_string();
-        provider.requests.lock().unwrap().push(text.clone());
-        if let Some(hold) = (provider.hold)(&text) {
-            tokio::time::sleep(hold).await;
-        }
-        let event = (provider.reply)(&text).unwrap_or_else(|| content("ok"));
-        format!("data: {event}\n\ndata: [DONE]\n\n")
-    }
-    /// A text answer in the stream shape the provider speaks.
-    fn content(text: &str) -> Value {
-        json!({"id":"fixture","choices":[{"index":0,"delta":{"content":text},"finish_reason":"stop"}]})
-    }
-    /// A tool call in the stream shape the provider speaks.
-    fn tool_call(name: &str, arguments: &str) -> Value {
-        json!({"id":"fixture","choices":[{"index":0,"delta":{"tool_calls":[{
-            "index":0,"id":"call-1","type":"function",
-            "function":{"name":name,"arguments":arguments}
-        }]},"finish_reason":"tool_calls"}]})
-    }
     /// The judge's answer to a judge request, and `None` for any other.
     fn judged(text: &str) -> Option<Value> {
         text.contains("You check statements")
             .then(|| content(r#"[{"id":"ran","verdict":"present","quote":"turn/end"}]"#))
+    }
+    /// Every distinct subscription id a request carries, first seen first:
+    /// the `events` tool's subscribe answers, in the order they arrived.
+    fn subscription_ids(text: &str) -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find("sub_") {
+            let after = &rest[start + "sub_".len()..];
+            let end = after
+                .find(|c: char| !(c.is_ascii_hexdigit() || c == '-'))
+                .unwrap_or(after.len());
+            let id = format!("sub_{}", &after[..end]);
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+            rest = &after[end..];
+        }
+        ids
     }
     /// How many times one turn reads the workspace file before it answers.
     const READS: usize = 3;
@@ -5919,11 +9451,17 @@ mod tests {
             .then(|| content("SUMMARY OF EARLIER TURNS"))
         })
     }
-    /// The judge's verdict, and a `read` of the workspace's file for a run
-    /// request that does not carry the file's text yet.
+    /// The judge's verdict, the summarizer's text, and a `read` of the
+    /// workspace's file for a run request that does not carry the file's
+    /// text yet.
     fn reads_the_workspace_file(text: &str) -> Option<Value> {
         judged(text).or_else(|| {
-            (!text.contains(FILE_TEXT)).then(|| tool_call("read", r#"{"path":"notes.txt"}"#))
+            text.contains("You summarize a coding session")
+                .then(|| content("SUMMARY OF EARLIER TURNS"))
+                .or_else(|| {
+                    (!text.contains(FILE_TEXT))
+                        .then(|| tool_call("read", r#"{"path":"notes.txt"}"#))
+                })
         })
     }
 
@@ -5934,7 +9472,6 @@ mod tests {
         directory: PathBuf,
         provider: Arc<Provider>,
         http: tokio::task::JoinHandle<()>,
-        home: PathBuf,
         models: PathBuf,
         scenarios: PathBuf,
         /// The process facts a flow's runs see: the ones this process has,
@@ -5986,11 +9523,10 @@ mod tests {
                 .route("/v1/chat/completions", axum::routing::post(completion))
                 .with_state(provider.clone());
             let http = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-            let directory = std::env::temp_dir()
-                .join(format!("dim-scenario-eval-{label}-{}", std::process::id()));
+            let directory =
+                std::env::temp_dir().join(format!("dim-eval-{label}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&directory);
-            let home = directory.join("home");
-            std::fs::create_dir_all(&home).unwrap();
+            std::fs::create_dir_all(&directory).unwrap();
             let models = directory.join("models.json");
             std::fs::write(
                 &models,
@@ -6055,7 +9591,6 @@ mod tests {
                 directory,
                 provider,
                 http,
-                home,
                 models,
                 scenarios,
                 platform,
@@ -6066,13 +9601,10 @@ mod tests {
         /// context would otherwise measure the developer's machine (issue
         /// #635).
         async fn evaluate(&self, options: &Options) -> Result<String> {
-            evaluate(options, |builder| {
-                builder.process_value(Arc::new(self.platform.clone()));
-            })
-            .await
+            evaluate(options).await
         }
         /// [`rejudge`] over this fixture's provider, with the same process
-        /// facts as [`evaluate`](Self::evaluate).
+        /// facts as the re-judge flows served them before this work.
         async fn rejudge(&self, options: &Options) -> Result<String> {
             rejudge(
                 options,
@@ -6101,8 +9633,13 @@ mod tests {
                 runs: 1,
                 jobs: 1,
                 out,
-                home: self.home.clone(),
                 model_config: Some(self.models.clone()),
+                isolate: true,
+                fail_preflight: false,
+                offer_plugin: false,
+                extra_tool: false,
+                fail_child: None,
+                fail_child_holds_stdout: false,
                 defaults: None,
                 node: None,
                 js_runtime: None,
@@ -6199,17 +9736,16 @@ mod tests {
         let mut scenarios = read_scenarios(&fixture.scenarios).unwrap();
         let scenario = scenarios.remove(0);
         let mut instrument = Instrument::new(options);
+        let cancel = CancellationToken::new();
+        let native = native_probe(options, &cancel).await.unwrap();
         run_once(
             options,
-            &fixture.home,
             arm,
             overrides,
-            &|builder| {
-                builder.process_value(Arc::new(fixture.platform.clone()));
-            },
             &scenario,
             run,
-            &CancellationToken::new(),
+            &cancel,
+            &native,
             &mut instrument,
         )
         .await
@@ -6276,10 +9812,10 @@ mod tests {
         let export = std::fs::read_to_string(
             options
                 .out
+                .join("outputs")
                 .join("current")
                 .join("case")
-                .join("run-0")
-                .join("timeline.jsonl"),
+                .join("run-0.timeline.jsonl"),
         )
         .unwrap();
         let (mut estimate, mut message_tokens, mut prepared) = (None, 0., false);
@@ -6430,15 +9966,15 @@ mod tests {
         // the change carries the whole message list, not the messages added
         // since.
         for arm in ["current", "candidate"] {
-            let directory = options.out.join(arm).join("case").join("run-0");
+            let directory = options.out.join("outputs").join(arm).join("case");
             assert_view_rebuilds(&directory);
-            let export = std::fs::read_to_string(directory.join("timeline.jsonl")).unwrap();
+            let export = std::fs::read_to_string(directory.join("run-0.timeline.jsonl")).unwrap();
             assert_eq!(
                 submitted_mode(&export, "second"),
                 Some(json!("steer")),
                 "{arm}: the timed steer's input/message carries mode steer"
             );
-            let view = std::fs::read_to_string(directory.join("judge-view.jsonl")).unwrap();
+            let view = std::fs::read_to_string(directory.join("run-0.judge-view.jsonl")).unwrap();
             let changed = after_history_change(&export);
             let rendered: Value = serde_json::from_str(view.lines().nth(changed).unwrap()).unwrap();
             assert!(
@@ -6500,9 +10036,9 @@ mod tests {
             window_facts(VIEW_WINDOW, 200., &request).count_tokens(&request)
         };
         for arm in ["current", "candidate"] {
-            let directory = options.out.join(arm).join("case").join("run-0");
-            let export = std::fs::read_to_string(directory.join("timeline.jsonl")).unwrap();
-            let view = std::fs::read_to_string(directory.join("judge-view.jsonl")).unwrap();
+            let directory = options.out.join("outputs").join(arm).join("case");
+            let export = std::fs::read_to_string(directory.join("run-0.timeline.jsonl")).unwrap();
+            let view = std::fs::read_to_string(directory.join("run-0.judge-view.jsonl")).unwrap();
             assert!(
                 estimate(&export) > VIEW_WINDOW as f64,
                 "{arm}: the raw export is longer than the judge's window"
@@ -6543,8 +10079,8 @@ mod tests {
     /// with every request rebuilt from the view alone into the one the export
     /// carried, and answers the view's rendered requests in order.
     fn assert_view_rebuilds(directory: &Path) -> Vec<Value> {
-        let export = std::fs::read_to_string(directory.join("timeline.jsonl")).unwrap();
-        let view = std::fs::read_to_string(directory.join("judge-view.jsonl")).unwrap();
+        let export = std::fs::read_to_string(directory.join("run-0.timeline.jsonl")).unwrap();
+        let view = std::fs::read_to_string(directory.join("run-0.judge-view.jsonl")).unwrap();
         assert_eq!(
             view.lines().count(),
             export.lines().count(),
@@ -6588,6 +10124,21 @@ mod tests {
                         })
             })
             .map(|line| line["event"]["data"]["mode"].clone())
+    }
+
+    /// Whether any string in a request body carries `needle`: a request is
+    /// JSON, so a text with quotes in it is compared through the parsed
+    /// value, never through the escaped bytes.
+    fn carried(request: &str, needle: &str) -> bool {
+        fn holds(value: &Value, needle: &str) -> bool {
+            match value {
+                Value::String(text) => text.contains(needle),
+                Value::Array(items) => items.iter().any(|item| holds(item, needle)),
+                Value::Object(map) => map.values().any(|item| holds(item, needle)),
+                _ => false,
+            }
+        }
+        serde_json::from_str::<Value>(request).is_ok_and(|value| holds(&value, needle))
     }
 
     /// The line of a run's export holding the first request whose messages do
@@ -6736,10 +10287,10 @@ mod tests {
             let export = std::fs::read_to_string(
                 options
                     .out
+                    .join("outputs")
                     .join(arm)
                     .join("case")
-                    .join("run-0")
-                    .join("timeline.jsonl"),
+                    .join("run-0.timeline.jsonl"),
             )
             .unwrap();
             assert_eq!(
@@ -6763,12 +10314,16 @@ mod tests {
                         .collect()
                 })
                 .unwrap_or_default();
-            for tool in ["read", "write", "edit", "glob", "grep", "exec", "ask_user"] {
-                assert!(
-                    offered.contains(&tool),
-                    "{arm}: {tool} is offered: {offered:?}"
-                );
-            }
+            // The run's mount list: the product's whole tool set without
+            // the `plugin` tool, in mount order. This pin catches a
+            // product tool removal (the registry drops a mounted name it
+            // cannot resolve) and any divergence in the mounted order; a
+            // product tool addition is the `tools-product` preflight
+            // check's catch, at run time.
+            assert_eq!(
+                offered, RUN_TOOLS,
+                "{arm}: the run Session offers exactly the run's tool set"
+            );
             assert!(
                 requests[1].contains(FILE_TEXT),
                 "{arm}: the read result reaches the next request"
@@ -6817,8 +10372,6 @@ mod tests {
                 "gateway/mock",
                 "--runs",
                 "1",
-                "--home",
-                fixture.home.to_str().unwrap(),
                 "--model-config",
                 fixture.models.to_str().unwrap(),
                 "--out",
@@ -6854,56 +10407,6 @@ mod tests {
             assert_eq!(record["judgeOutcome"], "judged", "{record}");
         }
         assert!(options.out.join("current/case/run-0/workspace").is_dir());
-    }
-
-    /// A question is declined rather than awaited: the run's next request
-    /// carries the refusal, and the run ends its turn instead of sitting on
-    /// its wall-clock budget.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_question_is_declined_and_the_run_ends() {
-        /// The judge's verdict, and an `ask_user` call for a run request that
-        /// does not carry the refusal yet.
-        fn asks_a_question(text: &str) -> Option<Value> {
-            judged(text).or_else(|| {
-                (!text.contains("User declined to answer")).then(|| {
-                    tool_call(
-                        "ask_user",
-                        r#"{"questions":[{"question":"Where to deploy?","options":[{"label":"production"},{"label":"staging"}]}]}"#,
-                    )
-                })
-            })
-        }
-        let fixture = Fixture::start(
-            "question",
-            asks_a_question,
-            json!({
-                "message": "Ask me where to deploy.",
-                "budget": {"turns": 4, "seconds": 120, "window": 24000},
-                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
-            }),
-            &[],
-        )
-        .await;
-        let options = fixture.options(fixture.directory.join("out"));
-        let report = fixture.evaluate(&options).await.unwrap();
-        assert!(
-            report.contains("candidate is inconclusive: no comparison is a regression"),
-            "{report}"
-        );
-        let records = fixture.records(&options.out);
-        assert_eq!(records.len(), 2, "one run per arm");
-        for record in &records {
-            assert_eq!(record["stop"], "idle", "{record}");
-            assert_eq!(record["judgeOutcome"], "judged", "{record}");
-        }
-        for arm in ["current", "candidate"] {
-            let requests = fixture.arm(arm);
-            assert_eq!(requests.len(), 2, "{arm}: the question and the answer");
-            assert!(
-                requests[1].contains("User declined to answer. Proceed without these answers."),
-                "{arm}: the model reads the refusal"
-            );
-        }
     }
 
     /// A line that stays busy across many checks is asked once: its request
@@ -7353,6 +10856,7 @@ mod tests {
                 profile: None,
                 client_kind: "other",
                 client_name: "scenario-eval",
+                protocol_version: 4,
             },
             false,
         )
@@ -7391,7 +10895,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         let _ = std::fs::remove_dir_all(directory);
         // The budget writes `seconds`, so `error` is the run ending on the
         // reply, not on its budget.
@@ -7417,7 +10929,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         let _ = std::fs::remove_dir_all(directory);
         // The budget writes `seconds`, so `idle` is the retry ending the run.
         assert_eq!(driven.stop, "idle", "{:?}", driven.error);
@@ -7445,7 +10965,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         // The peer reads a request only after the driver sent it, so the
         // counts are final once it has read the last one.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -7477,7 +11005,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         // The peer reads a request only after the driver sent it, so the
         // counts are final once it has read the last one.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -7509,7 +11045,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         // The peer reads a request only after the driver sent it, so the
         // count is final once it has read the last one.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -7540,7 +11084,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         let _ = std::fs::remove_dir_all(directory);
         assert_eq!(driven.stop, "error", "{:?}", driven.error);
         let error = driven.error.unwrap_or_default();
@@ -7566,7 +11118,15 @@ mod tests {
         let mut client = driver_client(socket).await;
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 10.;
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         // The peer reads a request only after the driver sent it, so the
         // count is final once it has read the last one.
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -7596,7 +11156,15 @@ mod tests {
         let mut scenario = scenario(Vec::new());
         scenario.budget.seconds = 30.;
         let started = Instant::now();
-        let driven = drive(&mut client, &scenario, &std::env::temp_dir(), &peer_model()).await;
+        let driven = drive(
+            &mut client,
+            &scenario,
+            &std::env::temp_dir(),
+            &peer_model(),
+            &ProducerState::default(),
+            None,
+        )
+        .await;
         let elapsed = started.elapsed();
         let _ = std::fs::remove_dir_all(directory);
         assert_eq!(driven.stop, "idle", "{:?}", driven.error);
@@ -7711,10 +11279,10 @@ mod tests {
             let export = std::fs::read_to_string(
                 options
                     .out
+                    .join("outputs")
                     .join(arm)
                     .join("case")
-                    .join("run-0")
-                    .join("timeline.jsonl"),
+                    .join("run-0.timeline.jsonl"),
             )
             .unwrap();
             let (turn_end, closed) = last_turn_end_and_close(&export);
@@ -7823,10 +11391,10 @@ mod tests {
             let export = std::fs::read_to_string(
                 options
                     .out
+                    .join("outputs")
                     .join(arm)
                     .join("case")
-                    .join("run-0")
-                    .join("timeline.jsonl"),
+                    .join("run-0.timeline.jsonl"),
             )
             .unwrap();
             let continuation = export.lines().any(|line| {
@@ -7854,10 +11422,638 @@ mod tests {
         }
     }
 
+    /// A scenario's source and event reach a run: the subscription writes the
+    /// source's guide as a live block, the event is published at the tool
+    /// call and delivered to `main` with its marker, the reply tool the
+    /// source names records the answer, and the request after the event
+    /// carries the order-130 entry — the candidate arm's request carrying the
+    /// candidate text in place of the shipped `ENTRY` (EventHub design A.6).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_event_reaches_the_run_and_the_reply_tool_records_the_answer() {
+        const CANDIDATE: &str = "CANDIDATE EVENTHUB ENTRY TEXT";
+        const GUIDE: &str = "The team cannot see this conversation; answer through chat_reply.";
+        const REPLY: &str = "PARSE-SKIPS-EMPTY-LINES.";
+        const QUESTION: &str = "What does parse() do with an empty line?";
+        /// The judge's verdict, a `chat_reply` call the first time a request
+        /// carries the event, and a `read` of the workspace file until its
+        /// text is in the request.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| {
+                if text.contains(QUESTION) && !text.contains(REPLY) {
+                    return Some(tool_call(
+                        "chat_reply",
+                        &json!({"messageId": "m-1", "text": REPLY}).to_string(),
+                    ));
+                }
+                (!text.contains(FILE_TEXT)).then(|| tool_call("read", r#"{"path":"notes.txt"}"#))
+            })
+        }
+        let fixture = Fixture::start(
+            "eventhub-entry",
+            answers,
+            json!({
+                "message": "Read notes.txt and tell me what it says.",
+                "sources": [{
+                    "name": "chat",
+                    "guide": GUIDE,
+                    "types": [{
+                        "type": "chat.message",
+                        "description": "A message from the team's chat.",
+                        "mode": "queue"
+                    }],
+                    "subscribe": {"types": ["chat.message"]},
+                    "replyTool": "chat_reply"
+                }],
+                "events": [{
+                    "source": "chat",
+                    "type": "chat.message",
+                    "id": "m-1",
+                    "title": "The failing test",
+                    "body": QUESTION,
+                    "whenToolCall": "read"
+                }],
+                "budget": {"turns": 6, "seconds": 120, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let candidate = overrides(&pairs(&[("eventhub/entry", CANDIDATE)])).unwrap();
+        for (arm, overrides) in [("current", Overrides::default()), ("candidate", candidate)] {
+            let record = run_arm(&fixture, &options, arm, &overrides, 0).await;
+            assert_eq!(record.error, None, "{arm}");
+            assert!(!record.failed, "{arm}");
+            assert_eq!(record.events.len(), 1, "{arm}: one event was published");
+            let receipt = &record.events[0].receipt;
+            assert_eq!(
+                receipt["deliveries"][0]["status"],
+                json!("delivered"),
+                "{arm}: {receipt}"
+            );
+            assert_eq!(
+                record.reply_calls.len(),
+                1,
+                "{arm}: the reply tool was called once: {:?}",
+                record.reply_calls
+            );
+            assert_eq!(record.reply_calls[0].tool, "chat_reply", "{arm}");
+            assert_eq!(record.reply_calls[0].message_id, "m-1", "{arm}");
+            assert_eq!(record.reply_calls[0].text, REPLY, "{arm}");
+            let requests = fixture.arm(arm);
+            assert!(
+                requests.iter().any(|request| carried(
+                    request,
+                    "<dim-event source=\"chat\" type=\"chat.message\" id=\"m-1\">"
+                )),
+                "{arm}: the event's input carries the dim-event marker"
+            );
+            assert!(
+                requests.iter().any(|request| carried(
+                    request,
+                    &format!("<dim-event-guide source=\"chat\">{GUIDE}</dim-event-guide>")
+                )),
+                "{arm}: the guide block is live"
+            );
+            let entry = dim_event_hub::ENTRY;
+            if arm == "current" {
+                assert!(
+                    requests.iter().any(|request| carried(request, entry)),
+                    "the current arm's request carries the shipped entry"
+                );
+                assert!(
+                    requests.iter().all(|request| !carried(request, CANDIDATE)),
+                    "the current arm never carries the candidate text"
+                );
+            } else {
+                assert!(
+                    requests.iter().any(|request| carried(request, CANDIDATE)),
+                    "the candidate arm's request carries the candidate text"
+                );
+                assert!(
+                    requests.iter().all(|request| !carried(request, entry)),
+                    "the candidate arm never carries the shipped entry"
+                );
+            }
+        }
+    }
+
+    /// A scenario's source may start unsubscribed: the model subscribes
+    /// through the `events` tool, and the event fires `afterSubscribedSeconds`
+    /// after that subscription first exists, arriving on the branch with its
+    /// marker (EventHub design A.4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_model_subscribes_through_the_tool_and_the_event_fires_after_that() {
+        const GUIDE: &str = "CI publishes a failure notice when a build breaks.";
+        const BODY: &str = "The build failed on the release branch.";
+        const DESCRIPTION: &str = "Subscribe only when the user asks you to follow events.";
+        /// The judge's verdict, the `events` subscribe call until its result
+        /// is in the request, a read of the workspace file until the event
+        /// arrives, and plain text after.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| {
+                if !text.contains("sub_") {
+                    return Some(tool_call(
+                        "events",
+                        &json!({"action": "subscribe", "types": ["ci.*"], "mode": "steer"})
+                            .to_string(),
+                    ));
+                }
+                (!text.contains(BODY)).then(|| tool_call("read", r#"{"path":"build.txt"}"#))
+            })
+        }
+        let fixture = Fixture::start(
+            "eventhub-tool",
+            answers,
+            json!({
+                "message": "Subscribe to CI failures, then read build.txt.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": GUIDE,
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }]
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": BODY,
+                    "afterSubscribedSeconds": 1
+                }],
+                "budget": {"turns": 6, "seconds": 60, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[("build.txt", "build output\n")],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(!record.failed);
+        assert_eq!(record.events.len(), 1, "one event was published");
+        let receipt = &record.events[0].receipt;
+        assert_eq!(
+            receipt["deliveries"][0]["status"],
+            json!("delivered"),
+            "{receipt}"
+        );
+        assert!(
+            receipt["deliveries"][0]["subscriptionIds"]
+                .as_array()
+                .is_some_and(|ids| !ids.is_empty()),
+            "the model's own subscription carried the event: {receipt}"
+        );
+        let requests = fixture.arm("current");
+        assert!(
+            requests.iter().any(|request| carried(request, DESCRIPTION)),
+            "the request offers the events tool with its description"
+        );
+        assert!(
+            requests.iter().any(|request| carried(
+                request,
+                "<dim-event source=\"ci\" type=\"ci.failure\" id=\"f-1\">"
+            )),
+            "the event's input carries the dim-event marker"
+        );
+    }
+
+    /// A subscription whose `match` excludes the event directs no delivery:
+    /// a started clock whose publish matches nobody is the run's outcome,
+    /// recorded, not a failed run (EventHub design A.3, A.4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_event_no_subscription_takes_is_recorded_not_failed() {
+        const GUIDE: &str = "CI publishes a failure notice when a build breaks.";
+        /// The judge's verdict, one `events` subscribe whose `match`
+        /// excludes the event, and plain text after.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| {
+                (!text.contains("sub_")).then(|| {
+                    tool_call(
+                        "events",
+                        &json!({
+                            "action": "subscribe",
+                            "types": ["ci.*"],
+                            "match": {"branch": "release"},
+                            "mode": "steer"
+                        })
+                        .to_string(),
+                    )
+                })
+            })
+        }
+        let fixture = Fixture::start(
+            "eventhub-tool-missed",
+            answers,
+            json!({
+                "message": "Subscribe to CI failures, then leave it for now.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": GUIDE,
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }]
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": "The build failed on the release branch.",
+                    "attributes": {"branch": "main"},
+                    "afterSubscribedSeconds": 1
+                }],
+                "budget": {"turns": 6, "seconds": 30, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(!record.failed, "the miss is the run's outcome");
+        assert_eq!(record.stop, "idle", "no turn is expected for the miss");
+        assert_eq!(record.events.len(), 1, "one event was published");
+        assert_eq!(
+            record.events[0].receipt["deliveries"],
+            json!([]),
+            "the model left no subscription: {}",
+            record.events[0].receipt
+        );
+    }
+
+    /// A model's `append` subscription delivers without starting a turn, so
+    /// the run ends idle rather than on its seconds budget (EventHub design
+    /// §3.1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_append_delivery_from_a_model_subscription_starts_no_turn() {
+        const GUIDE: &str = "CI publishes a failure notice when a build breaks.";
+        /// The judge's verdict, one `events` subscribe call with `append`,
+        /// and plain text after.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| {
+                (!text.contains("sub_")).then(|| {
+                    tool_call(
+                        "events",
+                        &json!({"action": "subscribe", "types": ["ci.*"], "mode": "append"})
+                            .to_string(),
+                    )
+                })
+            })
+        }
+        let fixture = Fixture::start(
+            "eventhub-tool-append",
+            answers,
+            json!({
+                "message": "Subscribe to CI failures in the background.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": GUIDE,
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }]
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": "The build failed on the release branch.",
+                    "afterSubscribedSeconds": 1
+                }],
+                "budget": {"turns": 6, "seconds": 30, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(!record.failed);
+        assert_eq!(
+            record.stop, "idle",
+            "append starts no turn, so no budget stop"
+        );
+        // The run is isolated: this fixture path serves the run in the
+        // child with the sandbox and the file-tool boundary, and every
+        // preflight check passed for the run to finish idle.
+        let checks = recorded_checks(&options.out, "current");
+        for check in &checks {
+            assert!(check.passed, "{check:?}");
+        }
+        assert_eq!(record.events.len(), 1, "one event was published");
+        assert_eq!(
+            record.events[0].receipt["deliveries"][0]["status"],
+            json!("delivered"),
+            "{}",
+            record.events[0].receipt
+        );
+        assert!(
+            record.events[0].receipt["deliveries"][0]["subscriptionIds"]
+                .as_array()
+                .is_some_and(|ids| !ids.is_empty()),
+            "the model's own subscription carried the event: {}",
+            record.events[0].receipt
+        );
+    }
+
+    /// The scenario's own `append` subscription delivers without a turn, so
+    /// a timed event leaves the run idle rather than running to its budget
+    /// (EventHub design §3.1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_append_delivery_from_the_scenario_starts_no_turn() {
+        let fixture = Fixture::start(
+            "eventhub-tool-append-declared",
+            judged,
+            json!({
+                "message": "Say hello.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": "CI publishes a failure notice when a build breaks.",
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }],
+                    "subscribe": {"types": ["ci.failure"], "mode": "append"}
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": "The build failed on the release branch.",
+                    "afterSeconds": 1
+                }],
+                "budget": {"turns": 4, "seconds": 30, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(!record.failed);
+        assert_eq!(
+            record.stop, "idle",
+            "append starts no turn, so no budget stop"
+        );
+        assert_eq!(record.events.len(), 1, "one event was published");
+        assert_eq!(
+            record.events[0].receipt["deliveries"][0]["status"],
+            json!("delivered"),
+            "{}",
+            record.events[0].receipt
+        );
+    }
+
+    /// A subscription's `match` can exclude an event, and it then directs no
+    /// delivery: the mode comes from the subscriptions the receipt lists, so
+    /// a `steer` subscription that excluded the event starts no turn. The
+    /// event fires on a later tool call the model makes only after both
+    /// subscribe results are in its request (EventHub design §3.1, A.2).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_delivery_takes_its_mode_from_the_subscriptions_that_directed_it() {
+        const GUIDE: &str = "CI publishes a failure notice when a build breaks.";
+        /// The judge's verdict, a `steer` subscribe whose `match` excludes
+        /// the event, an `append` subscribe, a read once both ids are in the
+        /// request, and plain text after.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| match text.matches("sub_").count() {
+                0 => Some(tool_call(
+                    "events",
+                    &json!({
+                        "action": "subscribe",
+                        "types": ["ci.*"],
+                        "match": {"branch": "release"},
+                        "mode": "steer"
+                    })
+                    .to_string(),
+                )),
+                1 => Some(tool_call(
+                    "events",
+                    &json!({"action": "subscribe", "types": ["ci.failure"], "mode": "append"})
+                        .to_string(),
+                )),
+                _ => (!text.contains("build output"))
+                    .then(|| tool_call("read", r#"{"path":"build.txt"}"#)),
+            })
+        }
+        let fixture = Fixture::start(
+            "eventhub-tool-directed",
+            answers,
+            json!({
+                "message": "Subscribe to CI failures in the background.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": GUIDE,
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }]
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": "The build failed on the release branch.",
+                    "attributes": {"branch": "main"},
+                    "whenToolCall": "read"
+                }],
+                "budget": {"turns": 6, "seconds": 30, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[("build.txt", "build output\n")],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(!record.failed);
+        assert_eq!(
+            record.stop, "idle",
+            "the append delivery starts no turn, so no budget stop"
+        );
+        // The run is isolated: this fixture path serves the run in the
+        // child with the sandbox and the file-tool boundary, and every
+        // preflight check passed for the run to finish idle.
+        let checks = recorded_checks(&options.out, "current");
+        for check in &checks {
+            assert!(check.passed, "{check:?}");
+        }
+        assert_eq!(record.events.len(), 1, "one event was published");
+        let receipt = &record.events[0].receipt;
+        assert_eq!(
+            receipt["deliveries"][0]["status"],
+            json!("delivered"),
+            "{receipt}"
+        );
+        let requests = fixture.arm("current");
+        let ids = subscription_ids(requests.last().expect("the run made requests"));
+        assert_eq!(ids.len(), 2, "the model made two subscriptions: {ids:?}");
+        assert_eq!(
+            receipt["deliveries"][0]["subscriptionIds"],
+            json!([ids[1]]),
+            "only the append subscription directed the delivery: {receipt}"
+        );
+    }
+
+    /// A model that never subscribes cannot make an `afterSubscribedSeconds`
+    /// event fire: the event is not pending, so the run ends idle with no
+    /// event published rather than on its seconds budget (EventHub design
+    /// A.4).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_run_whose_model_never_subscribed_ends_idle() {
+        /// The judge's verdict; the run's own answer is plain text, and the
+        /// model never calls the `events` tool.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text)
+        }
+        let fixture = Fixture::start(
+            "eventhub-tool-never-subscribed",
+            answers,
+            json!({
+                "message": "Say hello.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": "CI publishes a failure notice when a build breaks.",
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }]
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": "The build failed on the release branch.",
+                    "afterSubscribedSeconds": 1
+                }],
+                "budget": {"turns": 4, "seconds": 30, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(!record.failed);
+        assert_eq!(
+            record.stop, "idle",
+            "an unstarted event cannot hold the run open"
+        );
+        assert!(
+            record.events.is_empty(),
+            "the event was never published: {:?}",
+            record.events
+        );
+    }
+
+    /// The same for a tool-triggered delivery: the trigger's tool call
+    /// publishes the event of a model `append` subscription, which starts no
+    /// turn (EventHub design §3.1, A.2).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_triggered_append_delivery_starts_no_turn() {
+        /// The judge's verdict, the `events` subscribe call until its result
+        /// is in the request, the trigger's `read` until its result is, and
+        /// plain text after.
+        fn answers(text: &str) -> Option<Value> {
+            judged(text).or_else(|| {
+                if !text.contains("sub_") {
+                    return Some(tool_call(
+                        "events",
+                        &json!({"action": "subscribe", "types": ["ci.failure"], "mode": "append"})
+                            .to_string(),
+                    ));
+                }
+                (!text.contains("build output"))
+                    .then(|| tool_call("read", r#"{"path":"build.txt"}"#))
+            })
+        }
+        let fixture = Fixture::start(
+            "eventhub-tool-triggered-append",
+            answers,
+            json!({
+                "message": "Subscribe to CI failures with append, then read build.txt.",
+                "sources": [{
+                    "name": "ci",
+                    "guide": "CI publishes a failure notice when a build breaks.",
+                    "types": [{
+                        "type": "ci.failure",
+                        "description": "A failed build.",
+                        "mode": "queue"
+                    }]
+                }],
+                "events": [{
+                    "source": "ci",
+                    "type": "ci.failure",
+                    "id": "f-1",
+                    "title": "The build failed",
+                    "body": "The build failed on the release branch.",
+                    "whenToolCall": "read"
+                }],
+                "budget": {"turns": 4, "seconds": 30, "window": 24000},
+                "probes": [{"id": "ran", "kind": "must_show", "text": "the run has a transcript"}]
+            }),
+            &[("build.txt", "build output\n")],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let record = run_arm(&fixture, &options, "current", &Overrides::default(), 0).await;
+        assert_eq!(record.error, None);
+        assert!(
+            !record.failed,
+            "the delivery is correct and nothing is outstanding"
+        );
+        assert_eq!(
+            record.stop, "idle",
+            "an append delivery starts no turn: {:?}",
+            record.events
+        );
+        // The run is isolated: this fixture path serves the run in the
+        // child with the sandbox and the file-tool boundary, and every
+        // preflight check passed for the run to finish idle.
+        let checks = recorded_checks(&options.out, "current");
+        for check in &checks {
+            assert!(check.passed, "{check:?}");
+        }
+        assert_eq!(record.events.len(), 1, "one event was published");
+        let receipt = &record.events[0].receipt;
+        assert_eq!(
+            receipt["deliveries"][0]["status"],
+            json!("delivered"),
+            "{receipt}"
+        );
+        assert!(
+            receipt["deliveries"][0]["subscriptionIds"]
+                .as_array()
+                .is_some_and(|ids| !ids.is_empty()),
+            "the model's own subscription carried the event: {receipt}"
+        );
+    }
+
     /// A candidate for a TypeScript plugin's text replaces that member of
     /// the plugin's factory configuration: the candidate arm's request
     /// carries it, and the current arm carries the shipped text (issue #612,
-    /// acceptance 3).
+    /// acceptance 3). The plugin's tool reaches the model too: a run's
+    /// Sessions mount the set the product probe declares, so both arms'
+    /// requests declare `fixture_prompt`, which the harness itself never
+    /// names.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
     async fn node_a_plugin_candidate_reaches_the_request() {
@@ -7918,6 +12114,1105 @@ mod tests {
         assert!(
             candidate.iter().all(|request| !request.contains(SHIPPED)),
             "the candidate arm never carries the shipped text"
+        );
+        for (arm, requests) in [("current", &current), ("candidate", &candidate)] {
+            let offered = offered_tools(&requests[0]);
+            assert!(
+                offered.iter().any(|tool| tool == "fixture_prompt"),
+                "{arm}: the run's request declares the plugin's tool: {offered:?}"
+            );
+        }
+    }
+
+    /// The serve child of a run when the runner is this test binary: the
+    /// parent starts this binary with `--exact` and this name, and the
+    /// params file in `DIM_EVAL_SERVE_PARAMS`. A normal run of the suite
+    /// executes the entry with no params and passes as a no-op.
+    #[test]
+    fn eval_server_child() {
+        let Some(params) = std::env::var_os("DIM_EVAL_SERVE_PARAMS") else {
+            return;
+        };
+        let params = PathBuf::from(params);
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // The same child entry as the product binary's `scenario-eval-serve`:
+        // the mock, the model configuration with its own preflight provider,
+        // and the run.
+        runtime
+            .block_on(serve_entry(Some(params.to_string_lossy().into_owned())))
+            .unwrap();
+    }
+
+    /// The preflight checks a run recorded, from its report under the output
+    /// root.
+    fn recorded_checks(out: &Path, arm: &str) -> Vec<PreflightCheck> {
+        let path = out
+            .join("outputs")
+            .join(arm)
+            .join("case")
+            .join("run-0.preflight.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        serde_json::from_str(&text).unwrap()
+    }
+
+    fn check<'a>(checks: &'a [PreflightCheck], name: &str) -> &'a PreflightCheck {
+        checks
+            .iter()
+            .find(|check| check.name == name)
+            .unwrap_or_else(|| panic!("no {name} check in {checks:?}"))
+    }
+
+    /// The scenario both arms of the isolation tests run: a single turn that
+    /// leaves a transcript the judge can find.
+    fn isolated_scenario() -> Value {
+        json!({
+            "description": "Isolation",
+            "message": "Run the probes.",
+            "budget": {"turns": 4, "seconds": 120, "window": 24000},
+            "probes": [{"id": "ran", "kind": "must_show",
+                        "text": "the run has a transcript"}]
+        })
+    }
+
+    /// An isolated run passes its preflight, and the same run without
+    /// isolation shows the check observing the operator's environment
+    /// (ablation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_prints_the_disposable_home() {
+        let fixture = Fixture::start(
+            "isolated-home",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let records = fixture.records(&options.out);
+        for record in &records {
+            assert_eq!(record["stop"], "idle", "{record}");
+            assert!(check(&recorded_checks(&options.out, "current"), "home").passed);
+        }
+        // Ablation: without the isolation switches the check observes the
+        // operator's home, not the run's disposable one, and fails.
+        let ablated = fixture.directory.join("ablated");
+        let mut ablated_options = fixture.options(ablated.clone());
+        ablated_options.isolate = false;
+        let _ = fixture.evaluate(&ablated_options).await.unwrap();
+        assert!(!check(&recorded_checks(&ablated, "current"), "home").passed);
+    }
+
+    /// The model configuration names a credential variable: an isolated
+    /// run's exec environment hides it, and an unisolated one shows it
+    /// (ablation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_run_exec_environment_shows_no_credential_name() {
+        // The credential under test: only its name must be checked, never
+        // its value.
+        unsafe { std::env::set_var("DIM_FIXTURE_CREDENTIAL", "fixture-secret") };
+        let fixture = Fixture::start(
+            "isolated-credential",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let models = std::fs::read_to_string(&fixture.models).unwrap();
+        let mut models: Value = serde_json::from_str(&models).unwrap();
+        models["providers"].as_array_mut().unwrap()[0]["apiKeyEnv"] =
+            json!("DIM_FIXTURE_CREDENTIAL");
+        std::fs::write(
+            &fixture.models,
+            serde_json::to_string_pretty(&models).unwrap(),
+        )
+        .unwrap();
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let records = fixture.records(&options.out);
+        for record in &records {
+            assert_eq!(record["stop"], "idle", "{record}");
+            assert!(check(&recorded_checks(&options.out, "current"), "credentials").passed);
+        }
+        // Ablation: the exec environment carries the credential name.
+        let ablated = fixture.directory.join("ablated");
+        let mut ablated_options = fixture.options(ablated.clone());
+        ablated_options.isolate = false;
+        let _ = fixture.evaluate(&ablated_options).await.unwrap();
+        assert!(!check(&recorded_checks(&ablated, "current"), "credentials").passed);
+    }
+
+    /// An isolated run refuses a command and a file-tool read that reach
+    /// outside the reads the boundary allows — the marker beside the
+    /// workspace and the one under the outputs root, where the judge views
+    /// and the sibling runs' records live — and an unisolated one reads
+    /// both markers (ablation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_refuses_a_command_that_reads_outside() {
+        let fixture = Fixture::start(
+            "isolated-cat",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let records = fixture.records(&options.out);
+        for record in &records {
+            // The checks first: an ablated run fails here, at the line of
+            // the check that caught the mechanism, not at the stop line.
+            let checks = recorded_checks(&options.out, "current");
+            assert!(check(&checks, "exec-outside").passed, "{checks:?}");
+            assert!(check(&checks, "read-outside").passed, "{checks:?}");
+            assert!(check(&checks, "exec-outputs").passed, "{checks:?}");
+            assert!(check(&checks, "read-outputs").passed, "{checks:?}");
+            assert_eq!(record["stop"], "idle", "{record}");
+        }
+        let ablated = fixture.directory.join("ablated");
+        let mut ablated_options = fixture.options(ablated.clone());
+        ablated_options.isolate = false;
+        let _ = fixture.evaluate(&ablated_options).await.unwrap();
+        let checks = recorded_checks(&ablated, "current");
+        assert!(!check(&checks, "exec-outside").passed);
+        assert!(!check(&checks, "read-outside").passed);
+        assert!(!check(&checks, "exec-outputs").passed);
+        assert!(!check(&checks, "read-outputs").passed);
+    }
+
+    /// An isolated run refuses an absolute path in the operator's home for
+    /// `exec` and for `read`, and an unisolated one reaches it (ablation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_refuses_the_operator_home() {
+        let fixture = Fixture::start(
+            "isolated-home-read",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let records = fixture.records(&options.out);
+        for record in &records {
+            assert_eq!(record["stop"], "idle", "{record}");
+            assert!(
+                check(
+                    &recorded_checks(&options.out, "current"),
+                    "exec-operator-home"
+                )
+                .passed
+            );
+            assert!(
+                check(
+                    &recorded_checks(&options.out, "current"),
+                    "read-operator-home"
+                )
+                .passed
+            );
+        }
+        let ablated = fixture.directory.join("ablated");
+        let mut ablated_options = fixture.options(ablated.clone());
+        ablated_options.isolate = false;
+        let _ = fixture.evaluate(&ablated_options).await.unwrap();
+        assert!(!check(&recorded_checks(&ablated, "current"), "exec-operator-home").passed);
+        assert!(!check(&recorded_checks(&ablated, "current"), "read-operator-home").passed);
+    }
+
+    /// The run's socket lies outside the run root and the workspace: the
+    /// model's commands reach only what the sandbox and the file-root
+    /// boundary grant, so a socket inside the workspace would be
+    /// reachable. (A socket under the run root but outside the workspace
+    /// stays unreachable too — the run root is granted to nothing — so
+    /// the layout is what the socket check rests on, and this test pins
+    /// it.)
+    #[test]
+    fn the_run_socket_lies_outside_the_run_root_and_workspace() {
+        let out = PathBuf::from("/tmp/out");
+        let options = Options {
+            out: out.clone(),
+            scenarios: PathBuf::new(),
+            texts: Vec::new(),
+            model: model(),
+            judge: model(),
+            runs: 1,
+            jobs: 1,
+            model_config: None,
+            isolate: true,
+            fail_preflight: false,
+            offer_plugin: false,
+            extra_tool: false,
+            fail_child: None,
+            fail_child_holds_stdout: false,
+            defaults: None,
+            node: None,
+            js_runtime: None,
+            rejudge: None,
+            select: Vec::new(),
+            pool: Vec::new(),
+        };
+        let arm = "current";
+        let scenario = scenario(Vec::new());
+        let run = 0usize;
+        let run_root = run_root(&options, arm, &scenario, run);
+        let socket = run_socket(&options, arm, &scenario, run);
+        assert!(
+            !socket.starts_with(&run_root),
+            "the socket must not live under the run root: {socket:?}"
+        );
+        assert!(
+            !socket.starts_with(workspace_of(&run_root)),
+            "the socket must not live under the workspace: {socket:?}"
+        );
+    }
+
+    /// An isolated run's commands cannot reach the run's socket, and an
+    /// unisolated one can (ablation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_commands_cannot_reach_the_socket() {
+        let fixture = Fixture::start(
+            "isolated-socket",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let records = fixture.records(&options.out);
+        for record in &records {
+            assert_eq!(record["stop"], "idle", "{record}");
+            assert!(check(&recorded_checks(&options.out, "current"), "socket").passed);
+        }
+        let ablated = fixture.directory.join("ablated");
+        let mut ablated_options = fixture.options(ablated.clone());
+        ablated_options.isolate = false;
+        let _ = fixture.evaluate(&ablated_options).await.unwrap();
+        assert!(!check(&recorded_checks(&ablated, "current"), "socket").passed);
+    }
+
+    /// A failed preflight aborts the run as a harness failure, not a model
+    /// result, and without the isolation switches the run proceeds
+    /// (ablation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_preflight_aborts_the_run() {
+        let fixture = Fixture::start(
+            "isolated-fault",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let mut faulted = fixture.options(fixture.directory.join("faulted"));
+        faulted.fail_preflight = true;
+        let report = fixture.evaluate(&faulted).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let records = fixture.records(&faulted.out);
+        for record in &records {
+            assert_eq!(record["stop"], "error", "{record}");
+            assert!(
+                record["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("harness failure: preflight"),
+                "{record}"
+            );
+        }
+        // Ablation: without the isolation switches the fault is not
+        // enforced and the run proceeds.
+        let ablated = fixture.directory.join("ablated");
+        let mut ablated_options = fixture.options(ablated.clone());
+        ablated_options.isolate = false;
+        ablated_options.fail_preflight = true;
+        let _ = fixture.evaluate(&ablated_options).await.unwrap();
+        let records = fixture.records(&ablated);
+        for record in &records {
+            assert_eq!(record["stop"], "idle", "{record}");
+        }
+    }
+
+    /// The served process registers no `plugin` tool (`ServerConfig::
+    /// plugin_tools` is false there), so the preflight Session's model
+    /// request carries the run's tool set without it: with the run's mount
+    /// list, and — left unset, the ablation that once offered the tool —
+    /// with every registered tool. Both pass the tools check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_offers_no_plugin_tool() {
+        let fixture = Fixture::start(
+            "isolated-plugin",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        for record in fixture.records(&options.out) {
+            assert_eq!(record["stop"], "idle", "{record}");
+            let checks = recorded_checks(&options.out, "current");
+            let tools = check(&checks, "tools");
+            assert!(tools.passed, "{tools:?}");
+            assert!(
+                tools.detail.contains("without the plugin tool"),
+                "{tools:?}"
+            );
+        }
+        // The mount list is not what removes the tool: left unset, the
+        // Session declares every registered tool and still no `plugin`.
+        let unset = fixture.directory.join("unset");
+        let mut unset_options = fixture.options(unset.clone());
+        unset_options.isolate = false;
+        unset_options.offer_plugin = true;
+        let _ = fixture.evaluate(&unset_options).await.unwrap();
+        let checks = recorded_checks(&unset, "current");
+        let tools = check(&checks, "tools");
+        assert!(tools.passed, "{tools:?}");
+        assert!(
+            tools.detail.contains("without the plugin tool"),
+            "{tools:?}"
+        );
+    }
+
+    /// The product's own tool set is checked at run time: a second
+    /// preflight Session, created without a mount list, declares what the
+    /// served assembly offers, and the `tools-product` check keeps that
+    /// set minus `plugin` equal to the run list. The ablation (an entry
+    /// removed from `RUN_TOOLS`, run once and reverted) fails the check
+    /// and aborts the run as a harness failure.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_checks_the_product_tool_set_against_the_run_list() {
+        let fixture = Fixture::start(
+            "isolated-tools-product",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        for record in fixture.records(&options.out) {
+            let checks = recorded_checks(&options.out, "current");
+            let product = check(&checks, "tools-product");
+            assert!(product.passed, "{product:?}");
+            assert_eq!(record["stop"], "idle", "{record}");
+        }
+    }
+
+    /// A tool `RUN_TOOLS` does not name, contributed by a part no plugin
+    /// defaults contribute, fails `tools-product`: the run list stays a
+    /// reviewed whitelist at run time, so a product tool can never reach a
+    /// live run unreviewed. The test hook contributes `fixture_extra`; the
+    /// unisolated run records the failed check and proceeds, the isolated
+    /// one aborts as a harness failure before the model's first turn.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_rejects_a_tool_outside_the_run_list() {
+        let fixture = Fixture::start(
+            "isolated-tools-extra",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let ablated = fixture.directory.join("ablated");
+        let mut options = fixture.options(ablated.clone());
+        options.isolate = false;
+        options.extra_tool = true;
+        let _ = fixture.evaluate(&options).await.unwrap();
+        let checks = recorded_checks(&ablated, "current");
+        let product = check(&checks, "tools-product");
+        assert!(!product.passed, "{product:?}");
+        assert!(product.detail.contains("fixture_extra"), "{product:?}");
+        let aborted = fixture.directory.join("aborted");
+        let mut options = fixture.options(aborted.clone());
+        options.extra_tool = true;
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        for record in fixture.records(&aborted) {
+            assert_eq!(record["stop"], "error", "{record}");
+            assert!(
+                record["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("harness failure: preflight"),
+                "{record}"
+            );
+        }
+        let checks = recorded_checks(&aborted, "current");
+        let product = check(&checks, "tools-product");
+        assert!(!product.passed, "{product:?}");
+    }
+
+    /// The differential probe's child: served as a run child is served but
+    /// without the plugin defaults, its probe Session declares the assembly's
+    /// native tool set — the run list, without `plugin`. Its one tool-free
+    /// turn is the evaluation's fixed cost.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_native_probe_child_declares_the_run_list() {
+        let fixture = Fixture::start(
+            "native-probe",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let started = std::time::Instant::now();
+        let native = native_probe(&options, &CancellationToken::new())
+            .await
+            .unwrap();
+        println!("native probe: {} ms", started.elapsed().as_millis());
+        let names: Vec<&str> = native.iter().map(|(name, _)| name.as_str()).collect();
+        for tool in RUN_TOOLS {
+            assert!(
+                names.contains(tool),
+                "the native set declares {tool}: {names:?}"
+            );
+        }
+        assert_eq!(
+            names.len(),
+            RUN_TOOLS.len(),
+            "the native set is the run list: {names:?}"
+        );
+        assert!(
+            !names.contains(&PLUGIN_TOOL),
+            "the served process registers no plugin tool: {names:?}"
+        );
+    }
+
+    /// The native probe starts from clean directories: a file left in the
+    /// probe's root and home by an earlier evaluation is gone when the
+    /// probe runs, so a reused --out cannot answer for this evaluation's
+    /// native set.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_native_probe_clears_its_directories() {
+        let fixture = Fixture::start(
+            "native-probe-clean",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let stale_root = options.out.join("native-probe").join("stale.json");
+        let stale_home = options
+            .out
+            .join("homes")
+            .join("native-probe")
+            .join("stale.json");
+        for path in [&stale_root, &stale_home] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "{}").unwrap();
+        }
+        let native = native_probe(&options, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(!native.is_empty(), "the probe declared its tool set");
+        assert!(!stale_root.exists(), "the probe starts from a clean root");
+        assert!(!stale_home.exists(), "the probe starts from a clean home");
+    }
+
+    /// A child's params for the checks that read only the tool sets: the
+    /// native set, the defaults file, and the paths the other checks name;
+    /// no serve child runs.
+    fn products_params(defaults: PathBuf, native: &[&str]) -> ChildParams {
+        ChildParams {
+            home: PathBuf::from("/nonexistent/home"),
+            workspace: PathBuf::from("/nonexistent/workspace"),
+            env_home: PathBuf::from("/nonexistent/env-home"),
+            output_root: PathBuf::from("/nonexistent/output"),
+            socket: PathBuf::from("/nonexistent/socket"),
+            model_config: PathBuf::from("/nonexistent/model.json"),
+            defaults: Some(defaults),
+            node: None,
+            js_runtime: None,
+            overrides: json!({}),
+            scenario: json!({}),
+            model: target("gateway/mock").unwrap(),
+            judge: target("gateway/mock").unwrap(),
+            boundary: None,
+            outputs: PathBuf::from("/nonexistent/outputs"),
+            credentials: Vec::new(),
+            operator_home: None,
+            isolate: false,
+            fail_preflight: false,
+            offer_plugin: false,
+            extra_tool: false,
+            fail_child: None,
+            fail_child_holds_stdout: false,
+            native_tools: native
+                .iter()
+                .map(|name| ((*name).to_owned(), ToolSource::Builtin))
+                .collect(),
+            probe_only: false,
+        }
+    }
+
+    /// A contribution no named plugin owns fails `tools-product`: with an
+    /// empty defaults file, the declared set is the native set plus one
+    /// stray tool and no plugin is named to own it, so the check fails
+    /// naming the tool; the same input passes once the defaults name a
+    /// plugin, and the detail attributes the tool to it.
+    #[test]
+    fn a_contribution_no_named_plugin_owns_fails_the_check() {
+        let directory = std::env::temp_dir().join(format!(
+            "dim-eval-unowned-contribution-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let native = &RUN_TOOLS[..2];
+        let mut declared: Vec<(String, ToolSource)> = native
+            .iter()
+            .map(|name| ((*name).to_owned(), ToolSource::Builtin))
+            .collect();
+        declared.push(("fixture_extra".to_owned(), ToolSource::Extension));
+        let named: Vec<String> = declared.iter().map(|(name, _)| name.clone()).collect();
+        let expected: Vec<String> = native.iter().map(|name| (*name).to_owned()).collect();
+        let empty = directory.join("empty.json");
+        std::fs::write(&empty, json!({"plugins": {}}).to_string()).unwrap();
+        let params = products_params(empty, native);
+        let checks = preflight_checks(&[], &params, &named, &named, &expected, &named, &declared);
+        let product = check(&checks, "tools-product");
+        assert!(!product.passed, "{product:?}");
+        assert!(product.detail.contains("fixture_extra"), "{product:?}");
+        assert!(product.detail.contains("nothing is exempt"), "{product:?}");
+        let owned = directory.join("owned.json");
+        std::fs::write(
+            &owned,
+            json!({"plugins": {"text-injector": {"path": "nowhere"}}}).to_string(),
+        )
+        .unwrap();
+        let params = products_params(owned, native);
+        let checks = preflight_checks(&[], &params, &named, &named, &expected, &named, &declared);
+        let product = check(&checks, "tools-product");
+        assert!(product.passed, "{product:?}");
+        assert!(product.detail.contains("text-injector"), "{product:?}");
+        assert!(
+            product.detail.contains("fixture_extra (extension)"),
+            "{product:?}"
+        );
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// A defaults file exempts nothing by its presence: with an empty
+    /// defaults (`{"plugins":{}}`) the run's declared set equals the native
+    /// set, so a harness-contributed native tool the run list does not name
+    /// still fails `tools-product` — the case a source-based exemption let
+    /// through. The run is unisolated, so the failed check is recorded and
+    /// the run proceeds.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+    async fn node_a_run_with_empty_defaults_rejects_a_native_tool() {
+        let fixture = Fixture::start(
+            "plugin-empty-defaults",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let defaults = fixture.directory.join("empty-defaults.json");
+        std::fs::write(&defaults, json!({"plugins": {}}).to_string()).unwrap();
+        let mut options = fixture.plugin_options(fixture.directory.join("out"), defaults);
+        options.isolate = false;
+        options.extra_tool = true;
+        let _ = fixture.evaluate(&options).await.unwrap();
+        let checks = recorded_checks(&options.out, "current");
+        let product = check(&checks, "tools-product");
+        assert!(!product.passed, "{product:?}");
+        assert!(product.detail.contains("fixture_extra"), "{product:?}");
+    }
+
+    /// A run's plugin defaults are attributed by the differential probe, not
+    /// by a tool's source: with the text-injector defaults, the plugin's
+    /// `fixture_prompt` is accepted as the defaults' contribution, and the
+    /// harness's native `fixture_extra` — the same Extension source — is
+    /// refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+    async fn node_a_run_with_plugin_defaults_refuses_an_unattributed_tool() {
+        let fixture = Fixture::start(
+            "plugin-defaults-extra",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let defaults = fixture.directory.join("plugin-defaults.json");
+        std::fs::write(
+            &defaults,
+            json!({"plugins": {"text-injector": repository().join("runtime/fixtures/text-injector")}})
+                .to_string(),
+        )
+        .unwrap();
+        let mut options = fixture.plugin_options(fixture.directory.join("out"), defaults);
+        options.isolate = false;
+        options.extra_tool = true;
+        let _ = fixture.evaluate(&options).await.unwrap();
+        let checks = recorded_checks(&options.out, "current");
+        let product = check(&checks, "tools-product");
+        assert!(!product.passed, "{product:?}");
+        assert!(product.detail.contains("fixture_extra"), "{product:?}");
+        assert!(
+            product.detail.contains("fixture_prompt (extension)"),
+            "the defaults' contribution is accepted: {product:?}"
+        );
+    }
+
+    /// A failed run cancels its in-flight siblings before `evaluate`
+    /// returns: the cancelled run's serve child, and the process group it
+    /// leads, is gone. The child drives the model and writes under `--out`,
+    /// so it must not outlive the harness.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_run_settles_its_in_flight_sibling() {
+        /// Holds the candidate arm's model calls until the failure cancels
+        /// it; the current arm's child never reaches a model call.
+        fn hold_the_candidate(text: &str) -> Option<Duration> {
+            text.contains("/candidate/")
+                .then(|| Duration::from_secs(60))
+        }
+        let fixture = Fixture::holding(
+            "failed-sibling",
+            reads_the_workspace_file,
+            hold_the_candidate,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+            24_000,
+        )
+        .await;
+        let directory = fixture.directory.join("out");
+        let mut options = fixture.options(directory.clone());
+        options.jobs = 2;
+        // The failing child waits for the event the assertions read, not
+        // for a fixed time: the marker is written as soon as the fixture
+        // provider records the candidate arm's model call, which it does
+        // just before it holds the answer.
+        let marker = fixture.directory.join("held.marker");
+        let _watcher = {
+            let provider = fixture.provider.clone();
+            let marker = marker.clone();
+            tokio::spawn(async move {
+                loop {
+                    let held = provider
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|request| request.contains("/candidate/"));
+                    if held {
+                        std::fs::write(&marker, "the candidate arm's call is held").unwrap();
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+        };
+        options.fail_child = Some(("current".into(), marker));
+        let settled = fixture.evaluate(&options).await;
+        let error = settled
+            .expect_err("the failing run fails the evaluation")
+            .to_string();
+        // The failing child saw the event this test waited for; a missed
+        // event fails here with the child's own message instead of passing
+        // because the sibling happened not to be working yet.
+        assert!(
+            error.contains("the held sibling's model call was seen"),
+            "the sibling's model call was held: {error}"
+        );
+        // Its child, and the group it leads, is gone.
+        let params = directory.join("children/candidate/case/run-0.json");
+        let pid = SPAWNED
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(path, _)| path == &params)
+            .map(|(_, pid)| *pid)
+            .expect("the sibling's serve child was spawned");
+        assert!(
+            child_tree_gone(pid).await,
+            "the sibling's process and its group are gone (pid {pid})"
+        );
+    }
+
+    /// A child that fails after it started a member of its group does not
+    /// leave it behind: the group the child leads is killed on the non-zero
+    /// exit, so the member is gone when `evaluate` returns. The failing
+    /// child records its descendant's pid beside the marker before it
+    /// exits; the descendant is a `sleep` that joins the child's group (it
+    /// starts no session of its own).
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_child_kills_the_group_it_leaves() {
+        let fixture = Fixture::start(
+            "failed-descendant",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let directory = fixture.directory.join("out");
+        let mut options = fixture.options(directory);
+        // The marker is already there: the failing child needs no held
+        // sibling, only its own non-zero exit path.
+        let marker = fixture.directory.join("fail.marker");
+        std::fs::write(&marker, "go").unwrap();
+        options.fail_child = Some(("current".into(), marker.clone()));
+        let settled = fixture.evaluate(&options).await;
+        let error = settled
+            .expect_err("the failing run fails the evaluation")
+            .to_string();
+        assert!(
+            error.contains("the held sibling's model call was seen"),
+            "the failing child saw its marker: {error}"
+        );
+        let pid: u32 = std::fs::read_to_string(marker.with_extension("descendant"))
+            .expect("the failing child recorded its descendant")
+            .trim()
+            .parse()
+            .expect("the descendant's pid");
+        assert!(
+            child_tree_gone(pid).await,
+            "the failed child's descendant and its group are gone (pid {pid})"
+        );
+    }
+
+    /// A failed child's descendant that inherits the child's standard
+    /// output must not keep `evaluate` from the run's error: the group is
+    /// killed as soon as the non-zero status is known, before the parent
+    /// reads the child's output, so the read reaches EOF. The bound makes
+    /// an ordering regression a failed assertion instead of a hang.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_failed_child_holding_stdout_returns_its_error() {
+        let fixture = Fixture::start(
+            "failed-stdout-holder",
+            reads_the_workspace_file,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let directory = fixture.directory.join("out");
+        let mut options = fixture.options(directory);
+        // The marker is already there: the failing child needs no held
+        // sibling, and its descendant inherits its standard output.
+        let marker = fixture.directory.join("fail.marker");
+        std::fs::write(&marker, "go").unwrap();
+        options.fail_child = Some(("current".into(), marker.clone()));
+        options.fail_child_holds_stdout = true;
+        let settled = tokio::time::timeout(Duration::from_secs(10), fixture.evaluate(&options))
+            .await
+            .expect("the evaluation returns within the bound");
+        let error = settled
+            .expect_err("the failing run fails the evaluation")
+            .to_string();
+        assert!(
+            error.contains("the held sibling's model call was seen"),
+            "the failing child saw its marker: {error}"
+        );
+        let pid: u32 = std::fs::read_to_string(marker.with_extension("descendant"))
+            .expect("the failing child recorded its descendant")
+            .trim()
+            .parse()
+            .expect("the descendant's pid");
+        assert!(
+            child_tree_gone(pid).await,
+            "the failed child's stdout holder and its group are gone (pid {pid})"
+        );
+    }
+
+    /// Whether a serve child and the process group it leads have no member
+    /// left, probed for up to five seconds: the harness kills the group, and
+    /// the kill and the reaping of its leader settle a moment later.
+    #[cfg(unix)]
+    async fn child_tree_gone(pid: u32) -> bool {
+        for _ in 0..250 {
+            // SAFETY: signal 0 only probes the process and its group.
+            let process = unsafe { libc::kill(pid as libc::pid_t, 0) };
+            let process_gone = process == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            let group = unsafe { libc::kill(-(pid as libc::pid_t), 0) };
+            let group_gone =
+                group == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            if process_gone && group_gone {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        false
+    }
+
+    /// A model-created collaboration member cannot mount the `plugin`
+    /// management tool: the served process does not register it, so the
+    /// member's own model request declares the profile tools that exist
+    /// (`read`) and not `plugin` (issue #1325). The scripted model asks the
+    /// `agent` tool for a member whose inline profile names `plugin`; the
+    /// member's request is the only one that declares `read` without the
+    /// run's whole set (`exec`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_isolated_run_member_declares_no_plugin_tool() {
+        fn delegates_to_a_member(text: &str) -> Option<Value> {
+            judged(text)
+                .or_else(|| {
+                    text.contains("You summarize a coding session")
+                        .then(|| content("SUMMARY OF EARLIER TURNS"))
+                })
+                .or_else(|| {
+                    // The member's own request (its profile's prompt), and
+                    // the preflight and probe Sessions: answer in text.
+                    (!text.contains("Run the probes.")).then(|| content("the member answered"))
+                })
+                .or_else(|| {
+                    // The leader's first turn: delegate once, then answer.
+                    (!text.contains("\\\"role\\\":\\\"tool\\\"")).then(|| {
+                        tool_call(
+                            "agent",
+                            r#"{"action":"request","profile":{"name":"helper","description":"","systemPrompt":"work","tools":["plugin","read"],"model":{"providerId":"gateway","modelId":"mock"}},"prompt":"work"}"#,
+                        )
+                    })
+                })
+        }
+        let fixture = Fixture::start(
+            "isolated-member",
+            delegates_to_a_member,
+            isolated_scenario(),
+            &[("notes.txt", FILE_TEXT)],
+        )
+        .await;
+        let options = fixture.options(fixture.directory.join("out"));
+        let report = fixture.evaluate(&options).await.unwrap();
+        assert!(report.contains("candidate is inconclusive"), "{report}");
+        let requests = fixture.provider.requests.lock().unwrap().clone();
+        let member = requests
+            .iter()
+            .find(|request| {
+                let tools = offered_tools(request);
+                tools.iter().any(|tool| tool == "read") && !tools.iter().any(|tool| tool == "exec")
+            })
+            .expect("the member's model request");
+        let offered = offered_tools(member);
+        assert!(
+            offered.iter().any(|tool| tool == "read"),
+            "the member declares the tools its profile names: {offered:?}"
+        );
+        assert!(
+            !offered.iter().any(|tool| tool == "plugin"),
+            "the member declares no plugin tool: {offered:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod run_tools_tests {
+    use super::*;
+    use dim_agent_runtime::{Feature, SessionConfig};
+    use std::path::{Path, PathBuf};
+
+    /// The probe Session's tool registry, once its parts have assembled.
+    #[derive(Clone, Default)]
+    struct RegistryProbe(Arc<Mutex<Option<Arc<ToolRegistry>>>>);
+
+    fn probe_part(names: &Names<'_>, probe: RegistryProbe) -> rutis::Result<Box<dyn DynPlugin>> {
+        Ok(Box::new(RegistryProbePart {
+            tools: names.key()?,
+            probe,
+        }) as Box<dyn DynPlugin>)
+    }
+
+    struct RegistryProbePart {
+        tools: Key<ToolRegistry>,
+        probe: RegistryProbe,
+    }
+
+    impl DynPlugin for RegistryProbePart {
+        fn name(&self) -> &str {
+            "RunToolsProbe"
+        }
+        fn injects(&self) -> Vec<TypeKey> {
+            vec![self.tools.erase()]
+        }
+        fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+            Box::pin(async move {
+                let tools = ctx.require_at(&self.tools)?;
+                *self.probe.0.lock().unwrap() = Some(tools);
+                Ok(Effect::Done)
+            })
+        }
+    }
+
+    /// The tool names one Session of `server` declares; the server is shut
+    /// down afterwards. No turn runs, so `model` is resolved but never called.
+    async fn declared_tools(
+        server: RunningServer,
+        probe: RegistryProbe,
+        cwd: &Path,
+        model: ModelSelection,
+    ) -> BTreeSet<String> {
+        let agent = server
+            .agent()
+            .expect("the served profile has a default Agent");
+        let session = agent
+            .create_session(SessionConfig {
+                cwd: cwd.to_string_lossy().into_owned(),
+                tools: None,
+                model,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let registry = probe
+            .0
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the probe part assembled with the profile's Session");
+        let declared: BTreeSet<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let _ = session.close().await;
+        server.shutdown();
+        let _ = server.join().await;
+        declared
+    }
+
+    /// A model configuration over an unreachable base URL: the profile is
+    /// served, never called.
+    fn fixture_models(directory: &Path) -> PathBuf {
+        let path = directory.join("models.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "defaultModel": {"providerId": "local", "modelId": "fixture"},
+                "providers": [{
+                    "id": "local",
+                    "kind": "openai-chat",
+                    "baseUrl": "http://127.0.0.1:1/v1",
+                    "models": [{
+                        "id": "fixture",
+                        "contextWindow": 24_000,
+                        "maxOutputTokens": 200,
+                        "config": {"maxTokens": 200}
+                    }]
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        path
+    }
+
+    /// A socket path short enough to bind: a profile's endpoint is a unix
+    /// socket path, and the platform bounds its length (`SUN_LEN`), which the
+    /// scratch directory's own path overruns. The test never connects to it;
+    /// `serve_home` only binds it.
+    fn socket_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("dim-run-tools-{label}-{}.sock", std::process::id()))
+    }
+
+    fn difference_message(
+        profile: &str,
+        declared: &BTreeSet<String>,
+        expected: &BTreeSet<String>,
+    ) -> String {
+        let unlisted: Vec<&String> = declared.difference(expected).collect();
+        let unserved: Vec<&String> = expected.difference(declared).collect();
+        format!(
+            "the {profile} profile offers tools its run list does not name: {unlisted:?}; \
+             its run list names tools the profile does not offer: {unserved:?}"
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_run_list_is_the_probes_tool_set_and_the_product_serves_it_with_plugin() {
+        let directory = app_server::scratch("run-tools").unwrap();
+        let workspace = directory.join("workspace");
+        private_directory(&workspace).unwrap();
+        let models = fixture_models(&directory);
+        let probe = RegistryProbe::default();
+        let serving = probe.clone();
+        let server = app_server::serve_home(
+            &directory.join("probe-home"),
+            &workspace,
+            directory.join("probe-output"),
+            native_probe_settings(models, socket_path("probe"), None, Overrides::default()),
+            move |builder| {
+                builder.require_feature(
+                    Feature::new("RunToolsProbe").session("RunToolsProbe", move |names| {
+                        probe_part(names, serving.clone())
+                    }),
+                );
+            },
+        )
+        .await
+        .unwrap();
+        let probe_tools = declared_tools(
+            server,
+            probe,
+            &workspace,
+            ModelSelection {
+                provider_id: "local".into(),
+                model_id: "fixture".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            },
+        )
+        .await;
+        let expected: BTreeSet<String> = RUN_TOOLS.iter().map(|name| (*name).to_owned()).collect();
+        assert!(
+            probe_tools == expected,
+            "{}",
+            difference_message("native probe", &probe_tools, &expected)
+        );
+        assert!(
+            !probe_tools.contains(PLUGIN_TOOL),
+            "the native probe profile turns plugin_tools off, so it offers no \
+             {PLUGIN_TOOL} tool: {probe_tools:?}"
+        );
+        let product = RegistryProbe::default();
+        let serving = product.clone();
+        let server = app_server::serve_product(&directory.join("product"), move |builder| {
+            builder.require_feature(
+                Feature::new("RunToolsProbe").session("RunToolsProbe", move |names| {
+                    probe_part(names, serving.clone())
+                }),
+            );
+        })
+        .await
+        .unwrap();
+        let product_tools = declared_tools(
+            server,
+            product,
+            &directory.join("product"),
+            ModelSelection {
+                provider_id: "mock".into(),
+                model_id: "deterministic".into(),
+                capability_snapshot: None,
+                config: None,
+                metadata: None,
+            },
+        )
+        .await;
+        let with_plugin: BTreeSet<String> = expected
+            .iter()
+            .cloned()
+            .chain(std::iter::once(PLUGIN_TOOL.to_owned()))
+            .collect();
+        let _ = std::fs::remove_dir_all(&directory);
+        assert!(
+            product_tools == with_plugin,
+            "{}",
+            difference_message("product", &product_tools, &with_plugin)
         );
     }
 }

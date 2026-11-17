@@ -3,15 +3,18 @@ use std::os::unix::fs::PermissionsExt;
 
 #[derive(Default)]
 struct Associations(AtomicUsize);
-impl file_access::AssociateWorktree for Associations {
-    fn associate(
-        &self,
-        _: String,
-        _: file_access::WorktreeDirectory,
-        _: PathBuf,
-    ) -> HostFuture<'_, ()> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async { Ok(()) })
+impl Associations {
+    fn port(self: &Arc<Self>) -> file_access::WorktreeAssociations {
+        let associations = self.clone();
+        file_access::WorktreeAssociations::new(Arc::new(move |request| {
+            let associations = associations.clone();
+            Box::pin(async move {
+                assert!(!request.session_id.is_empty());
+                assert!(Path::new(&request.subtree).starts_with(&request.root));
+                associations.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            })
+        }))
     }
 }
 struct Probes {
@@ -98,14 +101,20 @@ impl Probes {
             .lines()
             .count()
     }
-    async fn entered(&self) {
-        tokio::time::timeout(Duration::from_secs(2), async {
+    async fn entered(
+        &self,
+        decision: &mut tokio::task::JoinHandle<std::result::Result<Decision, HostError>>,
+    ) {
+        tokio::time::timeout(Duration::from_secs(10), async {
             while !self.root.join("entered").exists() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
+                tokio::select! {
+                    result = &mut *decision => panic!("permission answered before the Git probe was held: {result:?}"),
+                    _ = tokio::time::sleep(Duration::from_millis(5)) => {},
+                }
             }
         })
         .await
-        .unwrap();
+        .expect("Git probe did not enter its held phase within 10 seconds");
     }
     fn call(&self, name: &str) -> ApprovalCallData {
         ApprovalCallData {
@@ -144,7 +153,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
         grants,
         TestFiles::new(),
         probes.platform(),
-        Some(associations.clone()),
+        Some(associations.port()),
     )
     .await;
     let session = agent
@@ -184,7 +193,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
     assert_eq!(probes.count(), 0);
     std::fs::write(probes.root.join("pause"), "").unwrap();
     let cancel = CancellationToken::new();
-    let first = {
+    let mut first = {
         let permission = permission.clone();
         let call = probes.call("cancelled.txt");
         let cancel = cancel.clone();
@@ -194,7 +203,7 @@ async fn concurrent_discovery_is_shared_caller_cancellation_is_local_and_cache_i
                 .await
         })
     };
-    probes.entered().await;
+    probes.entered(&mut first).await;
     let second = {
         let permission = permission.clone();
         let call = probes.call("kept.txt");
@@ -277,7 +286,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
         TestGrants::new(Vec::new()),
         TestFiles::new(),
         probes.platform(),
-        Some(associations),
+        Some(associations.port()),
     )
     .await;
     let session = agent
@@ -286,7 +295,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
         .unwrap();
     let permission = session.service::<Permission>("main").unwrap();
     std::fs::write(probes.root.join("pause"), "").unwrap();
-    let pending = {
+    let mut pending = {
         let permission = permission.clone();
         let call = probes.call("waiting.txt");
         tokio::spawn(async move {
@@ -295,7 +304,7 @@ async fn a_policy_tightened_during_git_discovery_decides_the_waiting_call() {
                 .await
         })
     };
-    probes.entered().await;
+    probes.entered(&mut pending).await;
     permission
         .update(
             0,
@@ -323,7 +332,7 @@ async fn git_unavailability_timeout_reload_and_session_close_do_not_publish_perm
         TestGrants::new(Vec::new()),
         TestFiles::new(),
         probes.platform(),
-        Some(associations.clone()),
+        Some(associations.port()),
     )
     .await;
     let session = agent
@@ -442,7 +451,7 @@ async fn a_source_that_becomes_a_git_worktree_is_rechecked_after_a_negative_prob
         TestGrants::new(Vec::new()),
         TestFiles::new(),
         probes.platform(),
-        Some(associations.clone()),
+        Some(associations.port()),
     )
     .await;
     let session = agent

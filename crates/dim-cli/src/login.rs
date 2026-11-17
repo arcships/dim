@@ -27,6 +27,7 @@ struct Listed {
 #[derive(Deserialize)]
 struct Management {
     providers: Vec<Listed>,
+    next: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,18 +122,36 @@ async fn described(client: &mut Client) -> Result<Vec<Described>> {
         .collect())
 }
 
-/// Every Provider `provider.management` reports.
+/// Account providers enumerated through the paged management overview.
 async fn listed(client: &mut Client) -> Result<Vec<Listed>> {
-    if !client.supports(&["provider.management"]) {
+    if !client.supports(&["provider.management.list"]) {
         return Err("This daemon cannot describe account providers".into());
     }
-    let view: Management = client.typed("provider.management", json!({})).await?;
-    Ok(view.providers)
+    let mut providers = Vec::new();
+    let mut after: Option<String> = None;
+    loop {
+        let mut params = json!({"accountsOnly": true});
+        if let Some(id) = after {
+            params["after"] = json!(id);
+        }
+        let page: Management = client.typed("provider.management.list", params).await?;
+        providers.extend(page.providers);
+        after = page.next;
+        if after.is_none() {
+            return Ok(providers);
+        }
+    }
 }
 
 /// The described account `provider_id` names, or why this daemon has none.
 async fn described_account(client: &mut Client, provider_id: &str) -> Result<Described> {
-    let providers = listed(client).await?;
+    let page: Management = client
+        .typed(
+            "provider.management.list",
+            json!({"providerId": provider_id}),
+        )
+        .await?;
+    let providers = page.providers;
     if let Some(listed) = providers
         .iter()
         .find(|provider| provider.provider_id == provider_id)
@@ -261,18 +280,15 @@ pub async fn login(
     let method = format!("{}.login.browser.complete", provider.namespace);
     let mut complete = attempt(&provider.namespace, provider_id, &browser.attempt_id);
     complete["callbackUrl"] = json!(callback);
-    let complete = client.rpc(&method, complete);
-    tokio::pin!(complete);
     tokio::select! {
-        result = &mut complete => { result?; }
+        result = client.rpc(&method, complete) => { result?; }
         signal = tokio::signal::ctrl_c() => {
             signal?;
             eprintln!("Login is still settling; use account {provider_id} to inspect the result");
             return Ok(130);
         }
     }
-    println!("Signed in.");
-    Ok(0)
+    Ok(finish_sign_in(client, &provider).await)
 }
 
 /// `dimcode account PROVIDER`: the non-secret identity the account reports.
@@ -347,10 +363,7 @@ async fn poll(client: &mut Client, provider: &Described, attempt_id: &str) -> Re
             .await?;
         match status {
             State::Pending => {}
-            State::Completed => {
-                println!("Signed in.");
-                return Ok(0);
-            }
+            State::Completed => return Ok(finish_sign_in(client, provider).await),
             State::Failed { error } => return Err(format!("Login failed: {}", safe(&error)).into()),
             State::Cancelled => return Err("Login was cancelled".into()),
             State::Expired => return Err("Login expired; start login again".into()),
@@ -360,6 +373,30 @@ async fn poll(client: &mut Client, provider: &Described, attempt_id: &str) -> Re
             _ = tokio::time::sleep(Duration::from_secs(1)) => {},
         }
     }
+}
+
+async fn finish_sign_in(client: &mut Client, provider: &Described) -> i32 {
+    println!("Signed in.");
+    if provider.namespace == ACCOUNT_NAMESPACE
+        && let Err(error) = refresh_models(client, &provider.provider_id).await
+    {
+        eprintln!(
+            "Model list refresh failed: {error}. Retry with dimcode models {} --refresh.",
+            safe(&provider.provider_id)
+        );
+    }
+    0
+}
+
+pub(crate) async fn refresh_models(
+    client: &mut Client,
+    provider_id: &str,
+) -> std::result::Result<(), String> {
+    client
+        .rpc("provider.refresh", json!({"providerId": provider_id}))
+        .await
+        .map(|_| ())
+        .map_err(|error| crate::sanitize::safe_line(&error.to_string()))
 }
 
 async fn cancel(client: &mut Client, provider: &Described, attempt_id: &str) -> Result<()> {

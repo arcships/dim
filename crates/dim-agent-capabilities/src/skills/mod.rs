@@ -13,6 +13,7 @@ pub use catalog::{
 pub use install::selection_path;
 pub use session::{SessionSkills, SkillsBranch, SkillsBranchPlugin, SkillsPlugin};
 
+use crate::host::HostFuture;
 use crate::skill_settings::SkillInstallation;
 use dim_agent_runtime::{AgentBuilder, PartRegistry, PartScope};
 use rutis::{Ctx, Error};
@@ -21,6 +22,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
+use tokio_util::sync::CancellationToken;
 
 /// The parts the Skills plugin registers.
 const PARTS: [&str; 2] = ["Skills", "SkillsBranch"];
@@ -31,6 +33,59 @@ const PARTS: [&str; 2] = ["Skills", "SkillsBranch"];
 pub struct SkillsConfig {
     /// The how-to-use text in place of [`INSTRUCTIONS`].
     pub instructions: Option<Arc<str>>,
+}
+
+/// The `get` reply: the factory instructions text, when the assembly set one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SkillsConfigReply {
+    pub instructions: Option<String>,
+}
+
+#[rutis::service]
+impl SkillsConfig {
+    /// The instructions text the assembly configured, as data; `null` means
+    /// the built-in [`INSTRUCTIONS`].
+    pub fn get(&self) -> SkillsConfigReply {
+        SkillsConfigReply {
+            instructions: self.instructions.as_deref().map(str::to_owned),
+        }
+    }
+}
+
+/// The host's user override of [`INSTRUCTIONS`]. `None` keeps the factory
+/// configuration or the built-in text.
+pub trait SkillsInstructionsSettings: Send + Sync + 'static {
+    fn instructions(&self, cancel: CancellationToken) -> HostFuture<'_, Option<Arc<str>>>;
+}
+
+pub struct SkillsInstructionsSettingsHost(pub Arc<dyn SkillsInstructionsSettings>);
+
+impl rutis_bridge::session::HostDispatch for SkillsInstructionsSettingsHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"instructions":"async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        const NAME: &str = "skillsInstructionsSettingsHost";
+        if method != "instructions" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(NAME, args)?;
+        let owner = self.0.clone();
+        crate::port_faces::serving(NAME, async move {
+            let cancel = CancellationToken::new();
+            let _abandoned = cancel.clone().drop_guard();
+            owner
+                .instructions(cancel)
+                .await
+                .map_err(crate::host::ModelPortError::from)
+        })
+    }
 }
 
 /// Requires the Session and branch parts in the profile and adds the
@@ -45,9 +100,9 @@ pub fn install(builder: &mut AgentBuilder) {
 /// text.
 pub fn install_with_config(builder: &mut AgentBuilder, config: SkillsConfig) {
     crate::register_names(builder);
-    dim_agent_runtime::names::register::<SkillsConfig>(
-        builder.catalog_mut(),
-        Some(dim_agent_runtime::SESSION_GROUP),
+    builder.catalog_mut().register_shared_instance(
+        dim_agent_runtime::names::name_of::<SkillsConfig>(),
+        dim_agent_runtime::SESSION_GROUP,
     );
     builder.session_value(Arc::new(config));
     builder.session_extension_part::<content::ContentConfig>(
@@ -82,6 +137,14 @@ pub struct SkillDefinition {
     pub description: String,
     /// Descriptive only; never grants permissions.
     pub allowed_tools: Vec<String>,
+    /// `disable-model-invocation: true`: the model may not invoke the Skill, so
+    /// it is left out of the model's list and the `skill` tool refuses it. The
+    /// operator still loads it with `/skill:<name>`.
+    pub model_invocable: bool,
+    /// `user-invocable: false`: the operator may not invoke the Skill, so the
+    /// palettes leave it out and a token naming it loads nothing. The `skill`
+    /// tool still loads it.
+    pub user_invocable: bool,
     pub file_path: PathBuf,
     pub body: String,
 }
@@ -265,15 +328,19 @@ pub struct SkillView {
     pub version: String,
     pub skills: BTreeMap<String, Arc<SkillDefinition>>,
     pub disabled: BTreeSet<String>,
-    /// Rendered list state; `None` when no Skill is enabled.
+    /// Rendered list state of the Skills the model may invoke; `None` when no
+    /// such Skill is enabled.
     pub list: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SkillSummary {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// `user-invocable: false`: the palettes leave the Skill out.
+    pub user_invocable: bool,
 }
 
 const METADATA_BUDGET_CHARS: usize = 4000;
@@ -283,13 +350,20 @@ impl SkillView {
         skills: BTreeMap<String, Arc<SkillDefinition>>,
         disabled: BTreeSet<String>,
     ) -> Self {
-        let list = (!skills.is_empty()).then(|| render_skill_metadata(&skills));
+        let listed: BTreeMap<_, _> = skills
+            .iter()
+            .filter(|(_, skill)| skill.model_invocable)
+            .map(|(name, skill)| (name.clone(), skill.clone()))
+            .collect();
+        let list = (!listed.is_empty()).then(|| render_skill_metadata(&listed));
         let identity = serde_json::json!({
             "skills": skills.values().map(|skill| serde_json::json!([
                 skill.id,
                 skill.name,
                 skill.description,
                 skill.allowed_tools,
+                skill.model_invocable,
+                skill.user_invocable,
                 skill.file_path.to_string_lossy(),
                 skill.body,
             ])).collect::<Vec<_>>(),
@@ -346,8 +420,8 @@ A skill is a local instruction bundle stored in a SKILL.md file. Use the `skill`
 
 ### How to use skills
 - Discovery: The latest <dim-state source=\"dim/skills/list\"> lists the skills available in this session, each with a name and, when space allows, a description.
-- Trigger rules: When the user's request matches an available skill, calling the `skill` tool is a BLOCKING REQUIREMENT. A request matches a skill when the user names the skill or the request clearly aligns with the skill name or description. Invoke the relevant `skill` tool BEFORE generating any response about the task. A `$skill: name` marker names the exact skill to load.
-- Loading: Use `skill({ \"skill_name\": \"<name>\" })` to load the full SKILL.md instructions. After the tool returns, follow the loaded instructions. A `$skill: name` marker followed in the same message by a `<dim-skill name=\"name\">` block means that skill is already loaded: follow the block and do not call `skill` for it. A marker without such a block is loaded with the tool.
+- Trigger rules: When the user's request matches an available skill, calling the `skill` tool is a BLOCKING REQUIREMENT. A request matches a skill when the user names the skill or the request clearly aligns with the skill name or description. Invoke the relevant `skill` tool BEFORE generating any response about the task. A `/skill:name` token names the exact skill to load.
+- Loading: Use `skill({ \"skill_name\": \"<name>\" })` to load the full SKILL.md instructions. After the tool returns, follow the loaded instructions. A `/skill:name` token followed in the same message by a `<dim-skill name=\"name\">` block means that skill is already loaded: follow the block and do not call `skill` for it. A token without such a block is loaded with the tool.
 - Multiple matches: When multiple skills apply, load the smallest set that covers the request and apply them in a practical order.
 - Missing or blocked: If a named skill is unavailable or cannot be loaded, say so briefly and continue with the best fallback.
 - Context hygiene: Load full skill instructions only for skills you will use for the current request.

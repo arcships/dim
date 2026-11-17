@@ -4,6 +4,7 @@ use std::{net::Shutdown, os::fd::OwnedFd};
 
 const METHODS: &[&str] = &[
     "session.attach",
+    "session.attach.expectedCwd",
     "session.detach",
     "session.submit",
     "session.input_lookup",
@@ -61,7 +62,7 @@ fn recovery_hello(wire: &mut Wire, instance: &str) {
     let hello = wire.read("hello");
     assert_eq!(hello["params"]["clientName"], "AcpGateway");
     wire.2 = true;
-    wire.reply(&hello,json!({"instanceId":instance,"serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.input_lookup","session.methods"]}));
+    wire.reply(&hello,json!({"instanceId":instance,"serverVersion":env!("CARGO_PKG_VERSION"),"protocolVersion":3,"daemonProfile":{"kind":"product"},"features":["session.create","session.history","session.history.latestTurn","session.input_lookup","session.methods","session.attach.expectedCwd","session.turn.get.inputId"]}));
 }
 
 /// #557: `session/new` records the editor as its creation origin, on a daemon
@@ -135,6 +136,691 @@ fn acp_stdio_reports_the_version_the_cli_prints() {
     );
     peer.close();
     daemon.join().unwrap();
+}
+
+fn command_methods(wire: &mut Wire, names: &[&str]) {
+    let methods = wire.read("session.methods");
+    wire.reply(&methods, json!({"methods":names.iter().map(|name| json!({"name":name,"mutating":!name.ends_with(".get") && !name.ends_with(".list")})).collect::<Vec<_>>()}));
+}
+
+fn command_session(wire: &mut Wire, names: &[&str]) {
+    let attach = wire.read("session.attach");
+    wire.reply(&attach, json!({}));
+    let history = wire.read("session.history");
+    wire.reply(
+        &history,
+        json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+    );
+    command_methods(wire, names);
+}
+
+impl Peer {
+    fn command(&mut self, id: i64, session: &str, text: &str) -> String {
+        self.updates.clear();
+        self.send(
+            id,
+            "session/prompt",
+            json!({"sessionId":session,"prompt":[{"type":"text","text":text}]}),
+        );
+        let response = self.response(id);
+        assert_eq!(response["result"]["stopReason"], "end_turn", "{response}");
+        self.updates
+            .iter()
+            .filter(|frame| frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk")
+            .map(|frame| {
+                frame["params"]["update"]["content"]["text"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect()
+    }
+
+    fn commands(&self) -> Vec<String> {
+        let update = self
+            .updates
+            .iter()
+            .rev()
+            .find(|frame| frame["params"]["update"]["sessionUpdate"] == "available_commands_update")
+            .expect("commands are published on establishment and configuration changes");
+        let _: acp::SessionNotification = serde_json::from_value(update["params"].clone()).unwrap();
+        update["params"]["update"]["availableCommands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|command| command["name"].as_str().unwrap().to_owned())
+            .collect()
+    }
+}
+
+#[test]
+fn acp_cancelling_a_command_read_prevents_its_following_mutation() {
+    for (command, read_method, methods, result) in [
+        (
+            "/goal set Cancelled objective",
+            "session.goal.get",
+            vec![
+                "session.goal.get",
+                "session.goal.set",
+                "session.goal.edit",
+                "session.goal.pause",
+                "session.goal.resume",
+                "session.goal.clear",
+            ],
+            json!({"branchId":"main","through":8,"goal":null}),
+        ),
+        (
+            "/loop stop target",
+            "session.loop.list",
+            vec![
+                "session.loop.list",
+                "session.loop.start",
+                "session.loop.stop",
+            ],
+            json!({"loops":[{"loopId":"target","state":"running","round":1}]}),
+        ),
+    ] {
+        let home = Home::new();
+        let (accepted, waiting) = std::sync::mpsc::sync_channel(0);
+        let (release, delayed) = std::sync::mpsc::sync_channel(0);
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[METHODS, &["session.methods"]].concat());
+            wire.created();
+            command_session(wire, &methods);
+            let read = wire.read(read_method);
+            accepted.send(()).unwrap();
+            delayed.recv_timeout(PATIENCE).unwrap();
+            wire.reply(&read, result.clone());
+            let read = wire.read(read_method);
+            wire.reply(&read, result);
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        assert!(peer.response(2).get("error").is_none());
+        peer.send(
+            3,
+            "session/prompt",
+            json!({"sessionId":"session","prompt":[{"type":"text","text":command}]}),
+        );
+        waiting.recv_timeout(PATIENCE).unwrap();
+        writeln!(
+            peer.input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session"}})
+        )
+        .unwrap();
+        peer.input.flush().unwrap();
+        peer.send(
+            4,
+            "session/prompt",
+            json!({"sessionId":"session","prompt":[{"type":"text","text":"busy probe"}]}),
+        );
+        assert_eq!(peer.response(4)["error"]["data"]["code"], "session_busy");
+        release.send(()).unwrap();
+        assert_eq!(peer.response(3)["result"]["stopReason"], "cancelled");
+        let text = peer.command(5, "session", command.split_once(' ').unwrap().0);
+        assert!(
+            text.contains("No goal") || text.contains("target · running"),
+            "{text}"
+        );
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn acp_closing_a_session_settles_its_command_before_the_account_reply() {
+    for notice in [false, true] {
+        let home = Home::new();
+        let (accepted, waiting) = std::sync::mpsc::sync_channel(0);
+        let (release, delayed) = std::sync::mpsc::sync_channel(0);
+        let daemon = home.daemon(move |wire| {
+            wire.hello(
+                &[
+                    METHODS,
+                    &[
+                        "session.methods",
+                        "account.providers",
+                        "account.status",
+                        "account.usage",
+                    ],
+                ]
+                .concat(),
+            );
+            let providers = json!([{"providerId":"test","displayName":"Test","loginMethods":[]}]);
+            let discovery = wire.read("account.providers");
+            wire.reply(&discovery, providers.clone());
+            let status = wire.read("account.status");
+            wire.reply(&status, json!({"account":{}}));
+            wire.created();
+            let attach = wire.read("session.attach");
+            wire.reply(
+                &attach,
+                json!({"model":{"providerId":"test","modelId":"model"}}),
+            );
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            command_methods(wire, &[]);
+            let discovery = wire.read("account.providers");
+            wire.reply(&discovery, providers);
+            let status = wire.read("account.status");
+            wire.reply(&status, json!({"account":{}}));
+            let usage = wire.read("account.usage");
+            accepted.send(()).unwrap();
+            let close = wire.read("session.close");
+            if notice {
+                wire.notice("session.closed", json!({"sessionId":"session"}));
+            }
+            wire.reply(&close, json!({}));
+            delayed.recv_timeout(PATIENCE).unwrap();
+            wire.reply(
+                &usage,
+                json!({"plan":{"name":"late usage must not appear"}}),
+            );
+            let list = wire.read("session.list");
+            wire.reply(&list, json!([]));
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        assert!(peer.response(2).get("error").is_none());
+        peer.updates.clear();
+        peer.send(
+            3,
+            "session/prompt",
+            json!({"sessionId":"session","prompt":[{"type":"text","text":"/usage"}]}),
+        );
+        waiting.recv_timeout(PATIENCE).unwrap();
+        peer.send(4, "session/close", json!({"sessionId":"session"}));
+        assert_eq!(peer.response(3)["result"]["stopReason"], "cancelled");
+        assert!(peer.response(4).get("error").is_none());
+        release.send(()).unwrap();
+        peer.send(5, "session/list", json!({}));
+        assert!(peer.response(5).get("error").is_none());
+        assert!(
+            !peer
+                .updates
+                .iter()
+                .any(|frame| frame.to_string().contains("late usage"))
+        );
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn acp_goal_commands_read_the_owner_and_preserve_paused_shorthand_across_load() {
+    const GOAL_METHODS: &[&str] = &[
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.edit",
+        "session.goal.pause",
+        "session.goal.resume",
+        "session.goal.clear",
+    ];
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[METHODS, &["session.methods"]].concat());
+        wire.created();
+        command_session(wire, GOAL_METHODS);
+        let mut goal = Value::Null;
+        for (method, objective, status) in [
+            ("session.goal.set", Some("Ship safely"), Some("active")),
+            ("session.goal.pause", None, Some("paused")),
+            ("session.goal.edit", Some("Ship after review"), Some("paused")),
+            ("session.goal.resume", None, Some("active")),
+            ("session.goal.edit", Some("Explicit edit"), Some("active")),
+            ("session.goal.clear", None, None),
+        ] {
+            let read = wire.read("session.goal.get");
+            assert_eq!(read["params"], json!({"sessionId":"session","branchId":"main"}));
+            wire.reply(&read, json!({"branchId":"main","through":8,"goal":goal}));
+            let write = wire.read(method);
+            assert_eq!(write["params"]["branchId"], "main");
+            assert_eq!(write["params"]["sessionId"], "session");
+            assert_eq!(write["params"].get("objective"), objective.map(|text| json!(text)).as_ref());
+            goal = match status {
+                None => Value::Null,
+                Some(status) => json!({"objective":objective.map(str::to_owned).unwrap_or_else(|| goal["objective"].as_str().unwrap().to_owned()),"status":{"kind":status,"reason":"user"},"evaluator":false}),
+            };
+            if status != Some("paused") && !goal.is_null() {
+                goal["status"].as_object_mut().unwrap().remove("reason");
+            }
+            wire.reply(&write, json!({"sequence":8}));
+            let read = wire.read("session.goal.get");
+            wire.reply(&read, json!({"branchId":"main","through":8,"goal":goal}));
+            if method == "session.goal.resume" {
+                command_session(wire, GOAL_METHODS);
+                let read = wire.read("session.goal.get");
+                wire.reply(&read, json!({"branchId":"main","through":8,"goal":goal}));
+            }
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert!(peer.response(2).get("error").is_none());
+    assert_eq!(peer.commands(), ["goal"]);
+    assert!(peer.command(3, "session", "/goal set").contains("Usage:"));
+    assert!(
+        peer.command(4, "session", "/goal Ship safely")
+            .contains("active\nShip safely")
+    );
+    assert!(
+        peer.command(5, "session", "/goal pause")
+            .contains("paused (user)")
+    );
+    assert!(
+        peer.command(6, "session", "/goal Ship after review")
+            .contains("paused (user)\nShip after review")
+    );
+    assert!(
+        peer.command(7, "session", "/goal resume")
+            .contains("active\nShip after review")
+    );
+    peer.send(
+        8,
+        "session/load",
+        json!({"sessionId":"session","cwd":home.0,"mcpServers":[]}),
+    );
+    assert!(peer.response(8).get("error").is_none());
+    assert_eq!(peer.commands(), ["goal"]);
+    assert!(
+        peer.command(9, "session", "/goal")
+            .contains("Ship after review")
+    );
+    assert!(
+        peer.command(10, "session", "/goal edit Explicit edit")
+            .contains("Explicit edit")
+    );
+    assert!(
+        peer.command(11, "session", "/goal clear")
+            .contains("No goal on main")
+    );
+    assert!(peer.command(12, "session", "/loop").contains("unavailable"));
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_usage_commands_follow_the_selected_account_without_losing_units_or_zero() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&[METHODS, &["session.methods", "account.providers", "account.status", "account.usage"]].concat());
+        let providers = json!([
+            {"providerId":"first","displayName":"First","loginMethods":[]},
+            {"providerId":"second","displayName":"Second","loginMethods":[]}
+        ]);
+        let discovery = wire.read("account.providers");
+        wire.reply(&discovery, providers.clone());
+        for _ in 0..2 {
+            let status = wire.read("account.status");
+            wire.reply(&status, json!({"account":{}}));
+        }
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({"model":{"providerId":"first","modelId":"model"}}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        command_methods(wire, &[]);
+        let discovery = wire.read("account.providers");
+        wire.reply(&discovery, providers);
+        for (index, (provider, next, report)) in [
+            ("first", "second", json!({
+                "plan":{"name":"Pro","status":"active"},
+                "credits":{"usedUnits":37,"totalUnits":100,"remainingUnits":63,"resetsAt":"2026-12-01T00:00:00Z"},
+                "windows":[{"durationHours":5,"tokenUsed":0,"tokenCap":500,"expiresAt":"2026-11-16T02:00:00Z"},{"durationHours":168,"tokenUsed":200,"tokenCap":900,"expiresAt":"2026-11-20T00:00:00Z"}],
+                "features":[{"key":"search","used":0,"allowance":10,"remaining":10,"unit":"requests"}],
+                "subscriptionId":1234567
+            })),
+            ("second", "first", json!({"credits":{"usedUnits":0,"totalUnits":0,"remainingUnits":0,"unlimited":true},"features":[{"key":"images","used":3,"allowance":0,"unlimited":true,"unit":"images"}]})),
+            ("first", "first", json!({"plan":{"status":"expired"},"credits":{"remainingUnits":0},"features":[{"key":"audio","used":7,"unit":"minutes","periodEnd":"2026-12-01T00:00:00Z"}]})),
+            ("first", "second", json!({})),
+        ].into_iter().enumerate() {
+            let status = wire.read("account.status");
+            assert_eq!(status["params"]["providerId"], provider);
+            wire.reply(&status, json!({"account":{}}));
+            let usage = wire.read("account.usage");
+            assert_eq!(usage["params"], json!({"providerId":provider}));
+            wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":event(9+index as u64,"configured","context","configured",json!({"provider_id":next,"model_id":"model"}))}));
+            wire.reply(&usage, report);
+        }
+        let status = wire.read("account.status");
+        assert_eq!(status["params"]["providerId"], "second");
+        wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":event(13,"configured","context","configured",json!({"provider_id":"api-key","model_id":"model"}))}));
+        wire.reply(&status, json!({}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert!(peer.response(2).get("error").is_none());
+    assert_eq!(peer.commands(), ["usage"]);
+    assert!(
+        peer.command(3, "session", "/usage other")
+            .contains("Usage: /usage")
+    );
+    let report = peer.command(4, "session", "/usage");
+    for expected in [
+        "first",
+        "Pro · active",
+        "63 credits remaining",
+        "37/100 credits used",
+        "5 hour window: 0/500 tokens used",
+        "168 hour window: 200/900 tokens used",
+        "2026-11-16T02:00:00Z",
+        "2026-11-20T00:00:00Z",
+        "0/10 requests used",
+    ] {
+        assert!(report.contains(expected), "missing {expected}: {report}");
+    }
+    assert!(!report.contains("1234567"));
+    let report = peer.command(5, "session", "/usage");
+    assert!(
+        report.contains("second")
+            && report.contains("unlimited")
+            && report.contains("3 images used"),
+        "{report}"
+    );
+    assert!(!report.contains("0/0") && !report.contains("0 credits remaining"));
+    let report = peer.command(6, "session", "/usage");
+    assert!(
+        report.contains("expired")
+            && report.contains("0 credits remaining")
+            && report.contains("7 minutes used"),
+        "{report}"
+    );
+    assert!(
+        peer.command(7, "session", "/usage")
+            .contains("unavailable for first")
+    );
+    assert!(
+        peer.command(8, "session", "/usage")
+            .contains("Sign in to second")
+    );
+    assert!(peer.commands().is_empty());
+    assert!(peer.command(9, "session", "/usage").contains("unavailable"));
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_loop_commands_keep_native_ids_and_require_an_unambiguous_branch_target() {
+    let home = Home::new();
+    let (accepted, waiting) = std::sync::mpsc::sync_channel(0);
+    let (release, delayed) = std::sync::mpsc::sync_channel(0);
+    let daemon = home.daemon(move |wire| {
+        wire.hello(&[METHODS, &["session.methods"]].concat());
+        wire.created();
+        command_session(
+            wire,
+            &[
+                "session.loop.start",
+                "session.loop.list",
+                "session.loop.stop",
+            ],
+        );
+        let list = wire.read("session.loop.list");
+        wire.reply(&list, json!({"loops":[]}));
+        let mut records = Vec::new();
+        for (id, prompt, interval) in [
+            ("self-paced", "检查 deployment", None),
+            ("fixed", "check again", Some(300)),
+        ] {
+            let start = wire.read("session.loop.start");
+            assert_eq!(start["params"]["branchId"], "main");
+            assert_eq!(start["params"]["prompt"], prompt);
+            assert_eq!(
+                start["params"].get("everySeconds"),
+                interval.map(|value| json!(value)).as_ref()
+            );
+            let record = json!({"loopId":id,"branchId":"main","state":"running","round":1,"nextAt":null,"lastRoundAt":null,"expiresAt":"2026-11-18T00:00:00Z","stoppedReason":null,"settledAt":null});
+            records.push(record.clone());
+            if id == "fixed" {
+                accepted.send(()).unwrap();
+                delayed.recv_timeout(PATIENCE).unwrap();
+            }
+            wire.reply(&start, json!({"loop":record}));
+        }
+        for _ in 0..3 {
+            let list = wire.read("session.loop.list");
+            assert_eq!(
+                list["params"],
+                json!({"sessionId":"session","branchId":"main"})
+            );
+            wire.reply(&list, json!({"loops":records}));
+        }
+        let list = wire.read("session.loop.list");
+        wire.reply(&list, json!({"loops":records}));
+        let stop = wire.read("session.loop.stop");
+        assert_eq!(
+            stop["params"],
+            json!({"sessionId":"session","loopId":"fixed"})
+        );
+        wire.reply(&stop, json!({"loop":records[1],"settled":false}));
+        records[1]["state"] = json!("stopped");
+        let list = wire.read("session.loop.list");
+        wire.reply(&list, json!({"loops":records}));
+        let stop = wire.read("session.loop.stop");
+        assert_eq!(stop["params"]["loopId"], "self-paced");
+        records[0]["state"] = json!("stopped");
+        wire.reply(&stop, json!({"loop":records[0]}));
+        let list = wire.read("session.loop.list");
+        wire.reply(&list, json!({"loops":records}));
+        let list = wire.read("session.loop.list");
+        wire.reply(&list, json!({"loops":records}));
+        let stop = wire.read("session.loop.stop");
+        assert_eq!(stop["params"]["loopId"], "fixed");
+        wire.reply(&stop, json!({"loop":records[1],"settled":false}));
+        let start = wire.read("session.loop.start");
+        let mut expiring = json!({"loopId":"expiring","branchId":"main","state":"running","round":1,"nextAt":null});
+        wire.reply(&start, json!({"loop":expiring}));
+        let list = wire.read("session.loop.list");
+        records.push(expiring.clone());
+        wire.reply(&list, json!({"loops":records}));
+        let stop = wire.read("session.loop.stop");
+        assert_eq!(stop["params"]["loopId"], "expiring");
+        expiring["state"] = json!("expired");
+        wire.reply(&stop, json!({"loop":expiring,"settled":false}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert!(peer.response(2).get("error").is_none());
+    assert_eq!(peer.commands(), ["loop"]);
+    let empty = peer.command(30, "session", "/loop stop");
+    assert!(
+        peer.command(3, "session", "/loop 检查 deployment")
+            .contains("self-paced started")
+    );
+    peer.send(
+        4,
+        "session/prompt",
+        json!({"sessionId":"session","prompt":[{"type":"text","text":"/loop 5m check again"}]}),
+    );
+    waiting.recv_timeout(PATIENCE).unwrap();
+    writeln!(
+        peer.input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session"}})
+    )
+    .unwrap();
+    peer.input.flush().unwrap();
+    peer.send(
+        24,
+        "session/prompt",
+        json!({"sessionId":"session","prompt":[{"type":"text","text":"/loop"}]}),
+    );
+    assert_eq!(peer.response(24)["error"]["data"]["code"], "session_busy");
+    release.send(()).unwrap();
+    assert_eq!(peer.response(4)["result"]["stopReason"], "cancelled");
+    assert!(
+        peer.updates
+            .iter()
+            .any(|frame| frame["params"]["update"]["content"]["text"]
+                .as_str()
+                .is_some_and(
+                    |text| text.contains("fixed started") && text.contains("every 300 seconds")
+                )),
+        "cancellation drains the accepted command without pretending the loop was undone"
+    );
+    let ambiguous = peer.command(5, "session", "/loop stop");
+    assert!(ambiguous.contains("choose /loop stop ID"));
+    assert!(ambiguous.contains("self-paced") && ambiguous.contains("fixed"));
+    assert!(
+        peer.command(6, "session", "/loop stop other-branch-id")
+            .contains("not on main")
+    );
+    assert!(peer.command(7, "session", "/loop").contains("round 1"));
+    assert!(
+        peer.command(8, "session", "/loop stop fixed")
+            .contains("still settling")
+    );
+    assert!(
+        peer.command(9, "session", "/loop stop")
+            .contains("self-paced stopped")
+    );
+    let no_live = peer.command(10, "session", "/loop stop");
+    assert!(
+        peer.command(11, "session", "/loop stop two ids")
+            .contains("Usage:")
+    );
+    let stopped = peer.command(12, "session", "/loop stop fixed");
+    assert!(
+        peer.command(13, "session", "/loop expire soon")
+            .contains("expiring started")
+    );
+    let expired = peer.command(14, "session", "/loop stop expiring");
+    peer.close();
+    daemon.join().unwrap();
+    assert!(
+        empty.contains("No live loop")
+            && !empty.contains("choose")
+            && no_live.contains("No live loop")
+            && !no_live.contains("choose")
+            && stopped.contains("fixed stopped")
+            && !stopped.contains("still settling")
+            && expired.contains("expiring expired")
+            && !expired.contains("still settling"),
+        "empty: {empty}\nno live: {no_live}\nstopped: {stopped}\nexpired after listing: {expired}"
+    );
+}
+
+#[test]
+fn acp_compact_commands_report_each_native_outcome_once_and_cancel_without_submission() {
+    for outcome in ["completed", "skipped", "failed", "cancelled"] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[METHODS, &["session.methods"]].concat());
+            wire.created();
+            command_session(wire, &["session.context.compact"]);
+            let compact = wire.read("session.context.compact");
+            assert_eq!(compact["params"], json!({"sessionId":"session","branchId":"main"}));
+            wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":event(9,"start","context","compaction-start",json!({"through":8,"trigger":"manual","strategy":"summary"}))}));
+            if outcome == "cancelled" {
+                let stop = wire.read("session.stop");
+                assert_eq!(stop["params"], json!({"sessionId":"session","branchId":"main"}));
+                wire.reply(&stop, json!({}));
+            }
+            let terminal = match outcome {
+                "completed" => event(10,"finished","display","compaction",json!({"start":9,"strategy":"summary"})),
+                "skipped" => event(10,"finished","context","compaction",json!({"through":8,"start":9,"status":"skipped","reason":"insufficient history","diagnostics":{"reason":"manual","trigger":"manual","estimatedInputTokens":0.0,"entriesReplaced":0,"modelCallCount":0,"durationMs":0,"strategy":{"kind":"summary"}}})),
+                "failed" => event(10,"finished","context","compaction",json!({"through":8,"start":9,"status":"failed","error":"summary unavailable"})),
+                _ => event(10,"finished","context","compaction",json!({"through":8,"start":9,"status":"cancelled","reason":"Stopped by user"})),
+            };
+            for _ in 0..2 {
+                wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":terminal}));
+            }
+            if matches!(outcome, "completed" | "skipped") {
+                wire.reply(&compact, json!({"status":outcome,"reason":"insufficient history","sequence":10}));
+            } else {
+                wire.send(json!({"jsonrpc":"2.0","id":compact["id"],"error":{"code":-32000,"message":"Native outcome","data":{"appError":format!("compaction_{outcome}")}}}));
+            }
+            let submit = wire.read("session.submit");
+            assert_eq!(submit["params"]["sessionId"], "session");
+            assert_eq!(submit["params"]["user"]["content"][0]["text"], "继续工作");
+            wire.reply(&submit, json!({"event":event(11,"next","input","message",json!({"submission_id":submit["params"]["submissionId"],"user":submit["params"]["user"],"mode":"queue"}))}));
+            wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":event(12,"deleted","input","deleted",json!({"input_id":"next"}))}));
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        assert!(peer.response(2).get("error").is_none());
+        assert_eq!(peer.commands(), ["compact"]);
+        assert!(
+            peer.command(3, "session", "/compact please")
+                .contains("Usage:")
+        );
+        peer.updates.clear();
+        peer.send(
+            4,
+            "session/prompt",
+            json!({"sessionId":"session","prompt":[{"type":"text","text":"/compact"}]}),
+        );
+        if outcome == "cancelled" {
+            let started = peer.frame();
+            assert_eq!(
+                started["params"]["update"]["status"], "in_progress",
+                "{started}"
+            );
+            peer.updates.push(started);
+            writeln!(
+                peer.input,
+                "{}",
+                json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"session"}})
+            )
+            .unwrap();
+            peer.input.flush().unwrap();
+        }
+        let response = peer.response(4);
+        assert_eq!(
+            response["result"]["stopReason"],
+            if outcome == "cancelled" {
+                "cancelled"
+            } else {
+                "end_turn"
+            },
+            "{response}"
+        );
+        let terminal: Vec<_> = peer
+            .updates
+            .iter()
+            .map(|frame| &frame["params"]["update"])
+            .filter(|update| matches!(update["status"].as_str(), Some("completed" | "failed")))
+            .collect();
+        assert_eq!(
+            terminal.len(),
+            1,
+            "one terminal activity: {:?}",
+            peer.updates
+        );
+        assert_eq!(terminal[0]["toolCallId"], r#"["compaction",9]"#);
+        if outcome == "skipped" {
+            assert!(terminal[0].to_string().contains("insufficient history"));
+        }
+        assert!(
+            !peer
+                .updates
+                .iter()
+                .any(|frame| frame["params"]["update"]["sessionUpdate"] == "agent_message_chunk")
+        );
+        peer.send(
+            5,
+            "session/prompt",
+            json!({"sessionId":"session","prompt":[{"type":"text","text":"继续工作"}]}),
+        );
+        assert_eq!(peer.response(5)["result"]["stopReason"], "cancelled");
+        peer.close();
+        daemon.join().unwrap();
+    }
 }
 
 #[test]
@@ -298,7 +984,7 @@ fn acp_stdio_context_usage_deserializes_as_protocol_integers() {
 
 #[test]
 fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_observation() {
-    for restarted in [false, true] {
+    for (restarted, limited) in [(false, false), (true, false), (false, true)] {
         let home = Home::new();
         let cwd = fs::canonicalize(&home.0).unwrap();
         let endpoint = home.0.join("rust/daemon.sock");
@@ -343,12 +1029,11 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
                 submit["params"]["submissionId"]
             );
             wire.reply(&lookup, json!({"status":"accepted","event":input}));
-            let list = wire.read("session.list");
-            wire.reply(&list, json!([{"sessionId":"session","cwd":cwd}]));
             let attach = wire.read("session.attach");
+            assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
             wire.reply(&attach, json!({}));
             let history = wire.read("session.history");
-            let facts = vec![
+            let facts = [
                 delegation,
                 input,
                 event(10, "start", "turn", "start", json!({"turn_id":"owned"})),
@@ -375,14 +1060,12 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
                 ),
             ];
             let pending = json!({"eventId":"delegation","sequence":8,"startedAt":1,"request":facts[0]["data"],"delivery":null});
-            let after = history["params"]["after"].as_u64().unwrap();
-            let facts: Vec<_> = facts
-                .into_iter()
-                .filter(|fact| fact["sequence"].as_u64().unwrap() > after)
-                .collect();
+            assert_eq!(history["params"]["latestTurn"], true);
+            assert_eq!(history["params"]["limit"], 64);
+            assert!(history["params"].get("after").is_none());
             wire.reply(
                 &history,
-                json!({"events":facts,"through":13,"nextAfter":13,"done":true}),
+                json!({"events":[facts[4]],"through":13,"nextBefore":12,"nextAfter":12,"done":true}),
             );
             let methods = wire.read("session.methods");
             wire.reply(
@@ -393,6 +1076,22 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
             wire.reply(
                 &read,
                 json!({"branchId":"main","through":13,"requests":[pending],"next":null}),
+            );
+            let current = wire.read("session.turn.get");
+            assert!(current["params"].get("inputId").is_none());
+            wire.reply(
+                &current,
+                json!({"branchId":"main","through":13,"turn":null,"output":null}),
+            );
+            let turn = wire.read("session.turn.get");
+            assert_eq!(turn["params"]["inputId"], "accepted-input");
+            let mut boundary = json!({"turnId":"owned","sequence":13,"ended":true,"outcome":{"status":if restarted {"cancelled"} else {"completed"},"reason":if restarted {"server_restarted"} else {"end_turn"}}});
+            if limited {
+                boundary["outcome"] = json!({"status":"completed","reason":"output_limit"});
+            }
+            wire.reply(
+                &turn,
+                json!({"branchId":"main","through":13,"turn":boundary,"output":null}),
             );
             detached_eof(&mut wire);
         });
@@ -409,7 +1108,13 @@ fn acp_stdio_recovers_accepted_input_without_resubmitting_and_resets_subagent_ob
         let completed = peer.response(3);
         assert_eq!(
             completed["result"]["stopReason"],
-            if restarted { "cancelled" } else { "end_turn" },
+            if restarted {
+                "cancelled"
+            } else if limited {
+                "max_tokens"
+            } else {
+                "end_turn"
+            },
             "{completed}"
         );
         let text: String = peer
@@ -623,17 +1328,16 @@ fn acp_stdio_recovery_deadline_settles_cancel_without_claiming_native_stop() {
 #[test]
 fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
+        let attach = wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({}));
         let old = wire.read("session.history");
         wire.notice("session.closed",json!({"sessionId":"saved"}));
-        let list = wire.read("session.list");
+        let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["expectedCwd"],json!(cwd));
         wire.reply(&old,json!({"events":[event(8,"old","step","text",json!({"turn_id":"old","request_id":"old","delta":"must not leak"}))],"through":8,"nextAfter":8,"done":true}));
-        wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
+        wire.reply(&attach,json!({}));
         let fresh = wire.read("session.history");
         wire.reply(&fresh,json!({"events":[event(9,"fresh","step","text",json!({"turn_id":"fresh","request_id":"fresh","delta":"fresh runtime"}))],"through":9,"nextAfter":9,"done":true}));
         detached_eof(wire);
@@ -652,7 +1356,8 @@ fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
         json!({"sessionId":"saved","cwd":home.0,"mcpServers":[]}),
     );
     assert!(peer.response(3).get("error").is_none());
-    assert_eq!(peer.updates.len(), 1);
+    assert!(peer.commands().is_empty());
+    assert_eq!(peer.updates.len(), 2);
     assert_eq!(
         peer.updates[0]["params"]["update"]["content"]["text"],
         "fresh runtime"
@@ -664,13 +1369,12 @@ fn acp_stdio_a_closed_preparation_cannot_publish_over_a_later_load() {
 #[test]
 fn acp_stdio_cancelling_one_load_waiter_does_not_cancel_the_shared_preparation() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let (waiting, ready) = std::sync::mpsc::sync_channel(0);
     let (release, delayed) = std::sync::mpsc::sync_channel(0);
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({}));
+        let attach = wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({}));
         let history = wire.read("session.history"); waiting.send(()).unwrap(); delayed.recv_timeout(PATIENCE).unwrap();
         wire.reply(&history,json!({"events":[event(8,"answer","step","text",json!({"turn_id":"turn","request_id":"model","delta":"one replay"}))],"through":8,"nextAfter":8,"done":true}));
         detached_eof(wire);
@@ -698,7 +1402,8 @@ fn acp_stdio_cancelling_one_load_waiter_does_not_cancel_the_shared_preparation()
     assert_eq!(peer.response(2)["error"]["code"], -32800);
     release.send(()).unwrap();
     assert!(peer.response(3).get("error").is_none());
-    assert_eq!(peer.updates.len(), 1);
+    assert!(peer.commands().is_empty());
+    assert_eq!(peer.updates.len(), 2);
     assert_eq!(
         peer.updates[0]["params"]["update"]["content"]["text"],
         "one replay"
@@ -714,7 +1419,7 @@ fn acp_stdio_bounds_in_flight_reads_and_releases_completed_requests() {
     let (release, delayed) = std::sync::mpsc::sync_channel(0);
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let calls: Vec<_> = (0..128).map(|_| wire.read("session.list")).collect();
+        let calls: Vec<_> = Vec::from_fn(128, |_| wire.read("session.list"));
         waiting.send(()).unwrap();
         delayed.recv_timeout(PATIENCE).unwrap();
         for call in calls {
@@ -1027,7 +1732,13 @@ fn acp_stdio_routes_modes_permissions_and_question_forms_through_native_owners()
         let conflict = wire.read("session.permission.update"); assert_eq!(conflict["params"]["expectedVersion"],5);
         wire.send(json!({"jsonrpc":"2.0","id":conflict["id"],"error":{"code":-32000,"message":"Concurrent policy change","data":{"appError":"permission_conflict"}}}));
         let refresh = wire.read("session.permission.get"); wire.reply(&refresh,json!({"version":6,"policy":{"preset":"read-only","allowedTools":["fixture"],"disallowedTools":["danger"]}}));
+        let import = wire.read("attachment.import");
+        assert_eq!(std::fs::read(import["params"]["path"].as_str().unwrap()).unwrap(), b"image");
+        assert_eq!(import["params"]["image"], true);
+        wire.reply(&import, json!({"attachmentId":"image-id","path":"/files/image-id","bytes":5,"image":{"type":"file","mediaType":"image/png","fileId":"image-id"}}));
         let submit = wire.read("session.submit");
+        assert_eq!(submit["params"]["user"]["content"][0]["source"]["fileId"], "image-id");
+        assert!(submit["params"]["user"]["content"][0]["source"].get("data").is_none());
         assert_eq!(submit["params"]["user"]["content"][0]["source"]["mediaType"],"image/png");
         let input = event(9,"input","input","message",json!({"submission_id":submit["params"]["submissionId"],"user":submit["params"]["user"],"mode":"queue"}));
         wire.reply(&submit,json!({"event":input}));
@@ -1204,17 +1915,20 @@ fn acp_stdio_discovers_managed_auth_without_starting_an_existing_login() {
             json!({"auth":{"terminal":false},"_meta":{"terminal-auth":true}}),
             true,
         ),
+        (json!({"auth":{"terminal":false}}), false),
         (json!({}), false),
         (json!({"terminal":true}), false),
         (json!({"_meta":{"terminal-auth":"true"}}), false),
     ] {
         let home = Home::new();
-        let daemon = home.daemon(|wire| {
+        let daemon = home.daemon(move |wire| {
         let mut methods = METHODS.to_vec(); methods.push("account.providers"); wire.hello(&methods);
         let providers = wire.read("account.providers");
         wire.reply(&providers,json!([{"providerId":"managed-fixture","displayName":"Fixture","loginMethods":["browser","device"]}]));
         let status = wire.read("account.status"); wire.reply(&status,json!({"account":{"displayName":"fixture"}}));
-        let status = wire.read("account.status"); wire.reply(&status,json!({"account":{"displayName":"fixture"}}));
+        if !terminal_available {
+            let status = wire.read("account.status"); wire.reply(&status,json!({"account":{"displayName":"fixture"}}));
+        }
         detached_eof(wire);
     });
         let mut peer = Peer::start(&home);
@@ -1225,18 +1939,32 @@ fn acp_stdio_discovers_managed_auth_without_starting_an_existing_login() {
         );
         let initialized = peer.response(1);
         let methods = initialized["result"]["authMethods"].as_array().unwrap();
-        let agent = methods
-            .iter()
-            .find(|method| method.get("type").is_none())
-            .unwrap()["id"]
-            .clone();
-        let terminal = methods.iter().find(|method| method["type"] == "terminal");
-        assert_eq!(terminal.is_some(), terminal_available, "{initialized}");
-        peer.send(2, "authenticate", json!({"methodId":agent}));
-        assert!(peer.response(2).get("error").is_none());
-        if let Some(terminal) = terminal {
-            peer.send(3, "authenticate", json!({"methodId":terminal["id"]}));
-            assert_eq!(peer.response(3)["error"]["code"], -32602);
+        assert_eq!(methods.len(), 1, "{initialized}");
+        let method = &methods[0];
+        let (flow, handler) = if terminal_available {
+            ("device", "terminal")
+        } else {
+            ("browser", "agent")
+        };
+        let id: Value = serde_json::from_str(method["id"].as_str().unwrap()).unwrap();
+        assert_eq!(id, json!(["dim", "managed-fixture", flow, handler]));
+        if terminal_available {
+            assert_eq!(method["type"], "terminal");
+            let args = method["args"].as_array().unwrap();
+            assert_eq!(
+                &args[args.len() - 2..],
+                &[json!("--auth-setup"), method["id"].clone()]
+            );
+        } else {
+            assert!(method.get("type").is_none());
+            assert!(method.get("args").is_none());
+        }
+        peer.send(2, "authenticate", json!({"methodId":method["id"]}));
+        let response = peer.response(2);
+        if terminal_available {
+            assert_eq!(response["error"]["code"], -32602, "{response}");
+        } else {
+            assert_eq!(response["result"], json!({}), "{response}");
         }
         peer.close();
         daemon.join().unwrap();
@@ -1266,7 +1994,9 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             methods.extend([
                 "account.providers",
                 "provider.management",
+                "provider.management.list",
                 "account.login.begin",
+                "provider.refresh",
             ]);
             wire.hello(&methods);
             providers(&mut wire);
@@ -1277,7 +2007,7 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             let mut wire = accept_native(&listener);
             wire.hello(&methods);
             providers(&mut wire);
-            let listed = wire.read("provider.management");
+            let listed = wire.read("provider.management.list");
             wire.reply(
                 &listed,
                 json!({"providers":[{"providerId":"fixture","displayName":"Fixture","account":{"namespace":"account","loginMethods":["device"]}}]}),
@@ -1289,6 +2019,9 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
             let status = wire.read("account.login.status");
             assert_eq!(status["params"]["attemptId"], "terminal-attempt");
             wire.reply(&status, json!({"status":"completed"}));
+            let refresh = wire.read("provider.refresh");
+            assert_eq!(refresh["params"], json!({"providerId":"fixture"}));
+            wire.reply(&refresh, json!({"version":1,"models":[]}));
             detached_eof(&mut wire);
         });
         let mut command = home.command();
@@ -1348,6 +2081,150 @@ fn acp_terminal_auth_helper_rediscovers_the_method_and_uses_the_same_home() {
     }
 }
 
+/// The `effort` option of an ACP response.
+fn effort(value: &Value) -> &Value {
+    value["result"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap_or_else(|| panic!("no effort option: {value}"))
+}
+
+/// A `context/configured` fact carrying this flow's model, declaration and
+/// adopted preferences, as the public view gives them.
+fn configured(id: &str, sequence: u64, preferences: Value) -> Value {
+    let mut event = configured_event(sequence, "model", preferences);
+    event["id"] = json!(id);
+    event["data"]["capability_snapshot"] =
+        declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+    event
+}
+
+/// An adopted capability snapshot whose reasoning declaration is `reasoning`,
+/// or none when it is null.
+fn declaration(reasoning: Value) -> Value {
+    let mut capabilities = dim_agent_types::ModelCapabilities::with_limits(64_000, 2_048);
+    capabilities.reasoning = !reasoning.is_null();
+    let mut snapshot =
+        json!({"target":{"providerId":"test","modelId":"model"},"capabilities":capabilities});
+    if !reasoning.is_null() {
+        snapshot["reasoning"] = reasoning;
+    }
+    snapshot
+}
+
+#[test]
+fn acp_stdio_advertises_effort_from_the_adopted_configuration() {
+    // A model whose declaration names a default effort adopts it, a model with
+    // efforts but no adopted one says so, and a model without reasoning gets no
+    // option at all.
+    for (reasoning, preferences, expected) in [
+        (
+            json!({"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}),
+            json!({"reasoningEffort":"medium"}),
+            Some(("medium", 4)),
+        ),
+        // A declaration that names an effort its own options do not list, as
+        // 325 bundled entries do, so the adopted configuration carries none.
+        (
+            json!({"supported":true,"effort":"xhigh","effortOptions":["low","medium","high"]}),
+            json!({}),
+            Some(("provider-default", 4)),
+        ),
+        // The adopted configuration carries an effort its own declaration
+        // does not list, so the option shows it rather than denying it.
+        (
+            json!({"supported":true,"effortOptions":["low","medium","high"]}),
+            json!({"reasoningEffort":"minimal"}),
+            Some(("minimal", 5)),
+        ),
+        (json!(null), json!({}), None),
+    ] {
+        let home = Home::new();
+        let declaration = declaration(reasoning);
+        let daemon = home.daemon(move |wire| {
+            let mut methods = METHODS.to_vec();
+            methods.extend([
+                "session.methods",
+                "provider.catalog",
+                "session.model.update",
+            ]);
+            wire.hello(&methods);
+            wire.created();
+            let attach = wire.read("session.attach");
+            let mut record = attach_record(&attach);
+            record["capabilitySnapshot"] = declaration;
+            if !preferences
+                .as_object()
+                .is_some_and(|value| value.is_empty())
+            {
+                record["modelPreferences"] = preferences;
+            }
+            wire.reply(&attach, record);
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            let methods = wire.read("session.methods");
+            wire.reply(
+                &methods,
+                json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+            );
+            let list = wire.read("provider.list");
+            wire.reply(
+                &list,
+                json!({"providers":[{"providerId":"test","enabled":true}]}),
+            );
+            let catalog = wire.read("provider.catalog");
+            wire.reply(
+                &catalog,
+                json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+            );
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        let created = peer.response(2);
+        let option = created["result"]["configOptions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["id"] == "effort");
+        let Some((current, count)) = expected else {
+            assert!(option.is_none(), "{created}");
+            peer.close();
+            daemon.join().unwrap();
+            continue;
+        };
+        let option = option.unwrap_or_else(|| panic!("no effort option: {created}"));
+        assert_eq!(option["category"], "thought_level", "{option}");
+        assert_eq!(option["currentValue"], current, "{option}");
+        let values: Vec<&str> = option["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| choice["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values.len(), count, "{option}");
+        assert_eq!(values[0], "provider-default", "{option}");
+        if current == "minimal" {
+            assert!(values.contains(&"minimal"), "{option}");
+            peer.send(
+                3,
+                "session/set_config_option",
+                json!({"sessionId":"session","configId":"effort","value":"minimal"}),
+            );
+            let refused = peer.response(3);
+            assert_eq!(refused["error"]["code"], -32602, "{refused}");
+        }
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
 #[test]
 fn acp_stdio_model_choices_keep_the_catalog_provider_and_adopted_result() {
     let home = Home::new();
@@ -1394,6 +2271,346 @@ fn acp_stdio_model_choices_keep_the_catalog_provider_and_adopted_result() {
 }
 
 #[test]
+fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The App Server publishes the adopted fact before it replies, so the
+        // reply can only report a value the owner has already committed.
+        let update = wire.read("session.model.update");
+        assert_eq!(
+            update["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":"high"}})
+        );
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-9", 9, json!({"reasoningEffort":"high"}))}),
+        );
+        wire.reply(
+            &update,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        let cleared = wire.read("session.model.update");
+        assert_eq!(
+            cleared["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}})
+        );
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-10", 10, json!({}))}),
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"high"}),
+    );
+    let set = peer.response(3);
+    assert_eq!(effort(&set)["currentValue"], "high", "{set}");
+    peer.send(
+        4,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(4);
+    assert_eq!(
+        effort(&cleared)["currentValue"],
+        "provider-default",
+        "{cleared}"
+    );
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_keeps_the_adopted_effort_when_a_clear_changes_nothing() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] = declaration(
+            json!({"supported":true,"effort":"medium","effortOptions":["low","medium","high"]}),
+        );
+        record["modelPreferences"] = json!({"reasoningEffort":"medium"});
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The clear restores the declaration the Session already sends, so the
+        // owner reports `unchanged` and publishes no fact.
+        let cleared = wire.read("session.model.update");
+        assert_eq!(
+            cleared["params"],
+            json!({"sessionId":"session","branchId":"main",
+                "modelPreferences":{"reasoningEffort":{"action":"clear"}}})
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"unchanged","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(3);
+    assert_eq!(effort(&cleared)["currentValue"], "medium", "{cleared}");
+    // The reply precedes the update this write publishes.
+    let update = peer.frame();
+    assert_eq!(update["method"], "session/update", "{update}");
+    let option = update["params"]["update"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap();
+    assert_eq!(option["currentValue"], "medium", "{option}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_reports_an_adopted_clear_from_the_fact_that_precedes_the_reply() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend([
+            "session.methods",
+            "provider.catalog",
+            "session.model.update",
+        ]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","medium","high"]}));
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(
+            &catalog,
+            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+        );
+        // The clear changes the configuration, so the fact is published
+        // before the reply.
+        let cleared = wire.read("session.model.update");
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main",
+                "event":configured("configured-9", 9, json!({"reasoningEffort":"medium"}))}),
+        );
+        wire.reply(
+            &cleared,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"model"}}),
+        );
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"provider-default"}),
+    );
+    let cleared = peer.response(3);
+    assert_eq!(effort(&cleared)["currentValue"], "medium", "{cleared}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_model_switch_replaces_effort_choices_and_refuses_a_missing_value() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        let mut methods = METHODS.to_vec();
+        methods.extend(["session.methods", "provider.catalog", "session.model.update"]);
+        wire.hello(&methods);
+        wire.created();
+        let attach = wire.read("session.attach");
+        let mut record = attach_record(&attach);
+        record["capabilitySnapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["low","high"]}));
+        record["modelPreferences"] = json!({"reasoningEffort":"high"});
+        wire.reply(&attach, record);
+        let history = wire.read("session.history");
+        wire.reply(
+            &history,
+            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+        );
+        let methods = wire.read("session.methods");
+        wire.reply(
+            &methods,
+            json!({"methods":[{"name":"session.model.update","mutating":true}]}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(&catalog,json!({"catalog":{"models":[{"id":"model","name":"Model"},{"id":"other","name":"Other"}],"disabledModelIds":[]}}));
+        let update = wire.read("session.model.update");
+        assert_eq!(update["params"]["modelId"], "other");
+        wire.reply(
+            &update,
+            json!({"outcome":"adopted","model":{"providerId":"test","modelId":"other"}}),
+        );
+        let mut event = configured_event(9, "other", json!({}));
+        event["data"]["capability_snapshot"] =
+            declaration(json!({"supported":true,"effortOptions":["minimal","max"]}));
+        wire.notice(
+            "session.event",
+            json!({"sessionId":"session","branchId":"main","event":event}),
+        );
+        let list = wire.read("provider.list");
+        wire.reply(
+            &list,
+            json!({"providers":[{"providerId":"test","enabled":true}]}),
+        );
+        let catalog = wire.read("provider.catalog");
+        wire.reply(&catalog,json!({"catalog":{"models":[{"id":"model","name":"Model"},{"id":"other","name":"Other"}],"disabledModelIds":[]}}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    peer.response(2);
+    peer.send(
+        3,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"model","value":"other"}),
+    );
+    peer.response(3);
+    // The new model's declaration arrives as its own configuration event, and
+    // that update is where a client learns the new choices.
+    let update = peer
+        .updates
+        .iter()
+        .find(|frame| {
+            frame["params"]["update"]["configOptions"]
+                .as_array()
+                .is_some_and(|options| options.iter().any(|option| option["id"] == "effort"))
+        })
+        .unwrap_or_else(|| panic!("no effort option update: {}", peer.updates.len()));
+    let option = update["params"]["update"]["configOptions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["id"] == "effort")
+        .unwrap();
+    assert_eq!(option["currentValue"], "provider-default", "{option}");
+    let choices: Vec<&str> = option["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|choice| choice["value"].as_str().unwrap())
+        .collect();
+    assert_eq!(choices, ["provider-default", "minimal", "max"], "{option}");
+    peer.send(
+        4,
+        "session/set_config_option",
+        json!({"sessionId":"session","configId":"effort","value":"high"}),
+    );
+    let refused = peer.response(4);
+    assert_eq!(refused["error"]["code"], -32602, "{refused}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
 fn acp_stdio_lody_snapshots_background_lifecycle_and_terminal_fork_use_real_facts() {
     for version in [0, 2, 1] {
         lody_projection(version);
@@ -1421,11 +2638,14 @@ fn lody_projection(version: u32) {
             event(19,"background-ended","exec","ended",json!({"task_id":"background","status":"cancelled","result":{"content":"Native command was cancelled","isError":true}})),
         ];
         for fact in &facts { wire.notice("session.event",json!({"sessionId":"session","branchId":"main","event":fact})); }
-        let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"session","cwd":cwd}]));
-        let attach = wire.read("session.attach"); wire.reply(&attach,json!({"sequence":19}));
         let history = wire.read("session.history");
-        assert_eq!(history["params"]["after"],0);
-        wire.reply(&history,json!({"events":facts,"through":19,"nextAfter":19,"done":true}));
+        assert_eq!(history["params"]["latestTurn"],true);
+        assert_eq!(history["params"]["limit"],64);
+        assert!(history["params"].get("after").is_none());
+        wire.reply(&history,json!({"events":[facts[9],facts[10]],"through":19,"nextBefore":18,"nextAfter":19,"done":true}));
+        let earlier=wire.read("session.history");
+        assert_eq!(earlier["params"],json!({"sessionId":"session","branchId":"main","through":19,"before":18,"limit":2}));
+        wire.reply(&earlier,json!({"events":[facts[7],facts[8]],"through":19,"nextBefore":16,"nextAfter":17,"done":true}));
         let list = wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"session","cwd":cwd}]));
         let turn = wire.read("session.turn.get");
         assert_eq!(turn["params"]["turnId"],"turn");
@@ -1456,9 +2676,30 @@ fn lody_projection(version: u32) {
     peer.send(
         3,
         "_lody/session/history/read",
-        json!({"sessionId":"session"}),
+        json!({"sessionId":"session","version":1}),
     );
-    assert_eq!(peer.response(3)["result"], json!({}));
+    assert_eq!(
+        peer.response(3)["error"]["data"]["code"],
+        "unsupported_history_version"
+    );
+    peer.send(
+        30,
+        "_lody/session/history/read",
+        json!({"sessionId":"session","version":2}),
+    );
+    assert_eq!(
+        peer.response(30)["result"],
+        json!({"through":19,"before":18,"complete":false})
+    );
+    peer.send(
+        31,
+        "_lody/session/history/read",
+        json!({"sessionId":"session","version":2,"through":19,"before":18,"limit":2}),
+    );
+    assert_eq!(
+        peer.response(31)["result"],
+        json!({"through":19,"before":16,"complete":false})
+    );
     let snapshots: Vec<_> = peer
         .updates
         .iter()
@@ -1500,7 +2741,7 @@ fn lody_projection(version: u32) {
 }
 
 #[test]
-fn acp_stdio_lody_startup_model_is_selected_before_creation_without_shared_writes() {
+fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_writes() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         let mut methods = METHODS.to_vec();
@@ -1592,10 +2833,6 @@ fn acp_stdio_lody_startup_model_is_selected_before_creation_without_shared_write
     }
     peer.close();
     daemon.join().unwrap();
-}
-
-#[test]
-fn acp_stdio_lody_startup_mode_is_applied_before_creation_without_shared_writes() {
     for mode in ["read-only", "workspace-write", "full-access"] {
         let home = Home::new();
         let daemon = home.daemon(move |wire| {
@@ -1792,10 +3029,14 @@ fn acp_stdio_temporary_mcp_calls_tools_and_settles_the_child_on_eof() {
     }
     peer.close();
     model.join().unwrap();
-    assert!(
-        pid_file.with_extension("pid.cancelled").exists(),
-        "EOF must cancel the accepted MCP call before closing its server"
-    );
+    let deadline = Instant::now() + PATIENCE;
+    while !pid_file.with_extension("pid.cancelled").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "EOF must cancel the accepted MCP call before closing its server"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
     let pid: i32 = fs::read_to_string(&pid_file).unwrap().parse().unwrap();
     let deadline = Instant::now() + PATIENCE;
     while unsafe { libc::kill(pid, 0) } == 0 {
@@ -1934,6 +3175,23 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
     assert!(created.get("error").is_none(), "{created}");
     let default_mode = created["result"]["modes"]["currentModeId"].clone();
     let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    assert_eq!(peer.commands(), ["compact", "goal", "loop"]);
+    assert!(peer.command(40, &id, "/goal").contains("No goal on main"));
+    assert!(peer.command(41, &id, "/loop").contains("No loop on main"));
+    assert!(peer.command(42, &id, "/compact").is_empty());
+    assert_eq!(
+        peer.updates
+            .iter()
+            .filter(|frame| {
+                let update = &frame["params"]["update"];
+                update["_meta"]["lody"]["activity"]["kind"] == "context_compaction"
+                    && update["status"] == "completed"
+                    && update.to_string().contains("Skipped:")
+            })
+            .count(),
+        1,
+        "an empty conversation reports one native skipped compaction"
+    );
     peer.send(
         30,
         "session/prompt",
@@ -2027,7 +3285,55 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
         default_mode,
         "Startup mode must not change the shared default"
     );
+    let mut manager = Peer::spawn(&mut command);
+    manager.initialize();
+    manager.send(2, "session/delete", json!({"sessionId":id}));
+    let active = manager.response(2);
+    assert_eq!(
+        active["error"]["data"]["nativeAppError"], "session_active",
+        "another connection must not delete an attached Session: {active}"
+    );
+    manager.close();
     peer.close();
+    let mut manager = Peer::spawn(&mut command);
+    manager.send(
+        1,
+        "initialize",
+        json!({"protocolVersion":1,"clientCapabilities":{}}),
+    );
+    let initialized = manager.response(1);
+    assert!(
+        initialized["result"]["agentCapabilities"]["sessionCapabilities"]
+            .get("delete")
+            .is_some(),
+        "{initialized}"
+    );
+    manager.send(2, "session/list", json!({}));
+    let listed = manager.response(2);
+    assert!(
+        listed["result"]["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|session| session["sessionId"] == id),
+        "{listed}"
+    );
+    manager.send(3, "session/delete", json!({"sessionId":id}));
+    let deleted = manager.response(3);
+    assert_eq!(deleted["result"], json!({}), "{deleted}");
+    manager.send(4, "session/list", json!({}));
+    let listed = manager.response(4);
+    let sessions = listed["result"]["sessions"].as_array().unwrap();
+    assert!(sessions.iter().all(|session| session["sessionId"] != id));
+    assert!(
+        sessions
+            .iter()
+            .any(|session| session["sessionId"] == other_id)
+    );
+    manager.send(5, "session/delete", json!({"sessionId":id}));
+    let missing = manager.response(5);
+    assert_eq!(missing["error"]["code"], -32002, "{missing}");
+    manager.close();
     let limited = home
         .command()
         .env_remove("RUST_LOG")
@@ -2040,7 +3346,9 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
         ])
         .output()
         .unwrap();
-    assert_eq!(limited.status.code(), Some(2));
+    // An output-limit stop ends its turn Completed, so the run succeeded even
+    // though the failure line still reports the limit and what to do about it.
+    assert_eq!(limited.status.code(), Some(0));
     let stderr = String::from_utf8_lossy(&limited.stderr);
     assert!(
         stderr.contains("local/fixture-model stopped at max_tokens"),
@@ -2083,7 +3391,7 @@ fn acp_stdio_recognizes_max_tokens_before_a_late_submit_reply() {
         notice(wire, event(10,"start","turn","start",json!({"turn_id":"limited"})));
         notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"limited-input"})));
         notice(wire, event(12,"model-end","step","model-output-end",json!({"turn_id":"limited","request_id":"model","status":"failed","error":"opaque internal detail","presentation":{"source":"fixture","reason":"max_tokens","action":"Increase the output token limit and retry."}})));
-        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"failed","error":"opaque internal detail"})));
+        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"completed","reason":"output_limit"})));
         wire.reply(&submit, json!({"event":input}));
         detached_eof(wire);
     });
@@ -2118,7 +3426,7 @@ fn acp_stdio_reads_the_output_limit_from_the_failure_kind() {
         notice(wire, event(10,"start","turn","start",json!({"turn_id":"limited"})));
         notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"limited-input"})));
         notice(wire, event(12,"model-end","step","model-output-end",json!({"turn_id":"limited","request_id":"model","status":"failed","error":"opaque internal detail","failure":{"kind":"output_limit","attempts":1,"waitedMs":0}})));
-        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"failed","error":"opaque internal detail"})));
+        notice(wire, event(13,"end","turn","end",json!({"turn_id":"limited","status":"completed","reason":"output_limit"})));
         wire.reply(&submit, json!({"event":input}));
         detached_eof(wire);
     });
@@ -2133,6 +3441,42 @@ fn acp_stdio_reads_the_output_limit_from_the_failure_kind() {
     );
     let limited = peer.response(3);
     assert_eq!(limited["result"]["stopReason"], "max_tokens", "{limited}");
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_stdio_answers_end_turn_after_a_recovered_output_limit() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(METHODS);
+        wire.created();
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({}));
+        let history = wire.read("session.history");
+        wire.reply(&history, json!({"events":[],"through":8,"nextAfter":8,"done":true}));
+        let submit = wire.read("session.submit");
+        let input = event(9, "recovered-input", "input", "message", json!({"submission_id":submit["params"]["submissionId"],"user":{"content":[{"type":"text","text":"Hello"}]},"mode":"queue"}));
+        let notice = |wire: &mut Wire, value: Value| wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":value}));
+        notice(wire, event(10,"start","turn","start",json!({"turn_id":"recovered"})));
+        notice(wire, event(11,"consumed","input","consumed",json!({"input_id":"recovered-input"})));
+        notice(wire, event(12,"limited","step","model-output-end",json!({"turn_id":"recovered","request_id":"first","status":"failed","error":"opaque internal detail","failure":{"kind":"output_limit","attempts":1,"waitedMs":0}})));
+        notice(wire, event(13,"continued","step","model-output-end",json!({"turn_id":"recovered","request_id":"second","status":"completed","finish_reason":"end_turn"})));
+        notice(wire, event(14,"end","turn","end",json!({"turn_id":"recovered","status":"completed","reason":"end_turn"})));
+        wire.reply(&submit, json!({"event":input}));
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+    assert_eq!(peer.response(2)["result"]["sessionId"], "session");
+    peer.send(
+        3,
+        "session/prompt",
+        json!({"sessionId":"session","prompt":[{"type":"text","text":"Hello"}]}),
+    );
+    let recovered = peer.response(3);
+    assert_eq!(recovered["result"]["stopReason"], "end_turn", "{recovered}");
     peer.close();
     daemon.join().unwrap();
 }
@@ -2206,26 +3550,32 @@ fn acp_stdio_correlates_the_consumed_input_and_deduplicates_unicode_progress() {
 
 #[test]
 fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
-    let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
-    let daemon = home.daemon(move |wire| {
-        wire.hello(METHODS);
-        let list = wire.read("session.list");
-        wire.reply(
-            &list,
-            json!([{"sessionId":"saved","cwd":cwd,"title":"Saved title","titleRevision":2}]),
-        );
+    for display in [false, true] {
+        let home = Home::new();
+        let cwd = home.0.clone();
+        let daemon = home.daemon(move |wire| {
+        let mut methods = METHODS.to_vec();
+        if display { methods.extend(["session.history.display", "session.history.detail", "session.history.display.tail", "session.history.display.transcript"]); }
+        wire.hello(&methods);
+        let method = if display { "session.history.display" } else { "session.history" };
+        let field = if display { "items" } else { "events" };
         let attach = wire.read("session.attach");
-        wire.reply(&attach, json!({}));
-        let first = wire.read("session.history");
+        assert_eq!(attach["params"]["expectedCwd"],json!(cwd));
+        assert_eq!(attach["params"].get("display"), display.then_some(&json!(true)));
+        wire.reply(&attach, json!({"title":"Saved title","titleRevision":2}));
+        let first = wire.read(method);
+        assert_eq!(first["params"].get("tail"),display.then_some(&json!(true)));
+        assert_eq!(first["params"].get("transcript"), display.then_some(&json!(true)));
+        assert_eq!(first["params"]["limit"], if display { 32 } else { 64 });
         assert!(first["params"].get("through").is_none());
         wire.reply(
             &first,
-            json!({"events":[],"through":8,"nextBefore":4,"nextAfter":8,"done":false}),
+            json!({(field):[],"through":9,"nextBefore":9,"nextAfter":9,"done":false}),
         );
-        let second = wire.read("session.history");
-        assert_eq!(second["params"]["through"], 8);
-        assert_eq!(second["params"]["before"], 4);
+        let second = wire.read(method);
+        assert_eq!(second["params"]["limit"], 64);
+        assert_eq!(second["params"]["through"], 9);
+        assert_eq!(second["params"]["before"], 9);
         let text = event(
             3,
             "answer",
@@ -2237,49 +3587,103 @@ fn acp_stdio_load_coalesces_fixed_head_replay_and_rejects_unsupported_inputs() {
             "session.event",
             json!({"sessionId":"saved","branchId":"main","event":text}),
         );
+        if display {
+            wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"}))}));
+            wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"}))}));
+            wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(10,"compact-10","context","compaction-start",json!({"through":9,"trigger":"manual","strategy":"summary"}))}));
+            for _ in 0..2 {
+                wire.notice("session.display", json!({"sessionId":"saved","branchId":"main","item":event(11,"compact-11","display","compaction",json!({"start":10,"strategy":"summary"}))}));
+            }
+        }
         wire.reply(
             &second,
-            json!({"events":[text],"through":8,"nextBefore":1,"nextAfter":3,"done":true}),
+            json!({(field):if display { vec![text,
+                event(6,"compact-6","context","compaction-start",json!({"through":5,"trigger":"manual","strategy":"summary"})),
+                event(7,"compact-7","display","compaction",json!({"start":6,"strategy":"summary"})),
+                event(8,"compact-8","display","compaction",json!({"strategy":"summary"}))
+            ] } else { vec![text] },"through":9,"nextBefore":1,"nextAfter":8,"done":true}),
         );
         detached_eof(wire);
     });
-    let mut peer = Peer::start(&home);
-    peer.initialize();
-    peer.send(
-        2,
-        "session/new",
-        json!({"cwd":home.0,"mcpServers":[],"additionalDirectories":[home.0]}),
-    );
-    assert_eq!(
-        peer.response(2)["error"]["data"]["code"],
-        "unsupported_additional_directories"
-    );
-    peer.send(
+        let mut peer = Peer::start(&home);
+        peer.initialize();
+        peer.send(
+            2,
+            "session/new",
+            json!({"cwd":home.0,"mcpServers":[],"additionalDirectories":[home.0]}),
+        );
+        assert_eq!(
+            peer.response(2)["error"]["data"]["code"],
+            "unsupported_additional_directories"
+        );
+        peer.send(
         3,
         "session/load",
         json!({"sessionId":"saved","cwd":home.0,"mcpServers":[{"type":"http","name":"client","url":"http://127.0.0.1:9/mcp","headers":[]}]}),
     );
-    peer.send(
+        peer.send(
         4,
         "session/resume",
         json!({"sessionId":"saved","cwd":home.0,"mcpServers":[{"name":"client","command":"unused-client-mcp","args":[],"env":[]}]}),
     );
-    assert!(peer.response(3).get("error").is_none());
-    assert!(peer.response(4).get("error").is_none());
-    assert_eq!(
-        peer.updates.len(),
-        2,
-        "live copy of replayed fact must be suppressed"
-    );
-    assert_eq!(
-        peer.updates[0]["params"]["update"]["content"]["text"],
-        "saved answer"
-    );
-    assert_eq!(peer.updates[1]["params"]["update"]["title"], "Saved title");
-    peer.send(5, "session/prompt", json!({"sessionId":"saved","prompt":[{"type":"audio","data":"AA==","mimeType":"audio/wav"}]}));
-    assert!(peer.response(5).get("error").is_some());
-    peer.close();
-    daemon.join().unwrap();
+        assert!(peer.response(3).get("error").is_none());
+        assert!(peer.response(4).get("error").is_none());
+        peer.send(5, "session/prompt", json!({"sessionId":"saved","prompt":[{"type":"audio","data":"AA==","mimeType":"audio/wav"}]}));
+        assert!(peer.response(5).get("error").is_some());
+        assert!(peer.commands().is_empty());
+        assert_eq!(
+            peer.updates.len(),
+            if display { 8 } else { 3 },
+            "live copy of replayed fact must be suppressed"
+        );
+        assert_eq!(
+            peer.updates[0]["params"]["update"]["content"]["text"],
+            "saved answer"
+        );
+        assert!(
+            peer.updates
+                .iter()
+                .any(|update| update["params"]["update"]["title"] == "Saved title")
+        );
+        if display {
+            let activities: Vec<_> = peer
+                .updates
+                .iter()
+                .map(|update| &update["params"]["update"])
+                .filter(|update| {
+                    update["_meta"]["lody"]["activity"]["kind"] == "context_compaction"
+                })
+                .collect();
+            assert_eq!(
+                activities.len(),
+                5,
+                "replay/live duplicates do not repeat activities: {activities:?}"
+            );
+            for start in [6, 10] {
+                let id = json!(["compaction", start]).to_string();
+                let pair: Vec<_> = activities
+                    .iter()
+                    .filter(|update| update["toolCallId"] == id)
+                    .collect();
+                assert_eq!(pair.len(), 2, "{pair:?}");
+                assert_eq!(pair[0]["status"], "in_progress");
+                assert_eq!(pair[1]["status"], "completed");
+                assert_eq!(pair[1]["_meta"]["lody"]["activity"]["automatic"], false);
+                assert!(
+                    pair[1].get("rawOutput").is_none(),
+                    "summary has no full diagnostics"
+                );
+            }
+            assert!(
+                activities
+                    .iter()
+                    .any(|update| update["toolCallId"] == r#"["compaction",8]"#
+                        && update["status"] == "completed")
+            );
+        }
+        peer.close();
+        daemon.join().unwrap();
+    }
 }
 
 #[test]
@@ -2486,16 +3890,15 @@ fn acp_stdio_reports_a_blocked_prompt_as_refusal_with_the_reason() {
 #[test]
 fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon = home.daemon(move |wire| {
         wire.hello(METHODS);
-        let list = wire.read("session.list");
-        wire.reply(&list, json!([{"sessionId":"saved","cwd":cwd}]));
         let attach = wire.read("session.attach");
+        assert_eq!(attach["params"]["expectedCwd"],json!(cwd));
         wire.reply(&attach, json!({"sequence":1000}));
-        for page in 0..4_u64 {
+        for page in 0..1_u64 {
             let read = wire.read("session.history");
-            assert_eq!(read["params"]["limit"], 256);
+            assert_eq!(read["params"]["limit"], 64);
             if page == 0 {
                 assert_eq!(read["params"]["latestTurn"], true);
                 wire.notice("session.event", json!({"sessionId":"saved","branchId":"main","event":event(1001,"live","step","text",json!({"turn_id":"turn","request_id":"reply","delta":"live"}))}));
@@ -2519,7 +3922,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
     let loaded = peer.response(2);
     assert_eq!(
         loaded["result"]["_meta"]["dim/history"],
-        json!({"through":1000,"before":600,"complete":false}),
+        json!({"through":1000,"before":900,"complete":false}),
         "{loaded}"
     );
     let text: String = peer
@@ -2527,7 +3930,7 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
         .iter()
         .filter_map(|frame| frame["params"]["update"]["content"]["text"].as_str())
         .collect();
-    assert_eq!(text, "p3p2p1p0");
+    assert_eq!(text, "p0");
     let live = peer.frame();
     assert_eq!(live["params"]["update"]["content"]["text"], "live");
     peer.close();
@@ -2535,13 +3938,12 @@ fn acp_load_bounds_a_long_turn_and_marks_the_omitted_prefix() {
 }
 
 #[test]
-fn acp_load_resolves_an_orphan_result_by_request_and_call_without_extending_history() {
+fn acp_load_keeps_an_orphan_result_without_reading_original_arguments() {
     let home = Home::new();
-    let cwd = fs::canonicalize(&home.0).unwrap();
+    let cwd = home.0.clone();
     let daemon=home.daemon(move |wire| {
         let mut methods=METHODS.to_vec(); methods.push("session.methods"); wire.hello(&methods);
-        let list=wire.read("session.list"); wire.reply(&list,json!([{"sessionId":"saved","cwd":cwd}]));
-        let attach=wire.read("session.attach"); wire.reply(&attach,json!({"sequence":1000}));
+        let attach=wire.read("session.attach"); assert_eq!(attach["params"]["expectedCwd"],json!(cwd)); wire.reply(&attach,json!({"sequence":1000}));
         let history=wire.read("session.history"); assert_eq!(history["params"]["latestTurn"],true);
         let mut events:Vec<_>=(900..999).map(|sequence|event(sequence,&format!("text-{sequence}"),"step","text",json!({"turn_id":"turn","request_id":format!("r-{sequence}"),"delta":"text"}))).collect();
         events.push(event(999,"result","step","tool-result",json!({"turn_id":"turn","request_id":"old-request","results":[{"call_id":"old-call","result":{"content":"saved result"}}]})));
@@ -2549,9 +3951,6 @@ fn acp_load_resolves_an_orphan_result_by_request_and_call_without_extending_hist
         let methods=wire.read("session.methods");
         wire.reply(&methods,json!({"methods":[{"name":"session.tool.get","mutating":false}]}));
         wire.2=true;
-        let read=wire.read("session.tool.get");
-        assert_eq!(read["params"],json!({"sessionId":"saved","branchId":"main","requestId":"old-request","callId":"old-call","through":1000}));
-        wire.reply(&read,json!({"branchId":"main","through":1000,"call":{"turn_id":"turn","request_id":"old-request","call":{"id":"old-call","name":"echo","input":{"text":"original arguments"}}}}));
         detached_eof(wire);
     });
     let mut peer = Peer::start(&home);
@@ -2573,7 +3972,8 @@ fn acp_load_resolves_an_orphan_result_by_request_and_call_without_extending_hist
         .collect();
     assert_eq!(updates.len(), 2, "{updates:?}");
     assert_eq!(updates[0]["sessionUpdate"], "tool_call");
-    assert_eq!(updates[0]["rawInput"], json!({"text":"original arguments"}));
+    assert_eq!(updates[0]["rawInput"], Value::Null);
+    assert_eq!(updates[0]["title"], "old-call");
     assert_eq!(updates[1]["status"], "completed");
     peer.close();
     daemon.join().unwrap();
@@ -2615,6 +4015,97 @@ fn acp_stdio_does_not_offer_fork_without_the_native_turn_read() {
             .contains("session.turn.get"),
         "{refused}"
     );
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_load_and_resume_report_unavailable_sessions_without_listing_history() {
+    let home = Home::new();
+    let cwd = home.0.clone();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(METHODS);
+        for _ in 0..2 {
+            let attach = wire.read("session.attach");
+            assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
+            wire.send(json!({"jsonrpc":"2.0","id":attach["id"],"error":{"code":-32001,"message":"missing is closed","data":{"appError":"session_closed"}}}));
+            let detach = wire.read("session.detach");
+            wire.reply(&detach, json!({}));
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    for (id, method) in [(2, "session/load"), (3, "session/resume")] {
+        peer.send(
+            id,
+            method,
+            json!({"sessionId":"missing","cwd":home.0,"mcpServers":[]}),
+        );
+        let response = peer.response(id);
+        let expected =
+            serde_json::to_value(acp::Error::resource_not_found(Some("missing".into()))).unwrap();
+        assert_eq!(response["error"], expected);
+    }
+    peer.close();
+    daemon.join().unwrap();
+}
+
+#[test]
+fn acp_load_materializes_user_and_tool_file_images_in_order() {
+    let home = Home::new();
+    let daemon = home.daemon(move |wire| {
+        wire.hello(METHODS);
+        let attach = wire.read("session.attach");
+        wire.reply(&attach, json!({}));
+        let history = wire.read("session.history");
+        let source = |id| json!({"type":"file","mediaType":"image/png","fileId":id});
+        wire.reply(&history, json!({"events":[
+            event(1,"input","input","message",json!({"user":{"content":[{"type":"text","text":"before"},{"type":"image","source":source("user-image")},{"type":"text","text":"after"}]},"mode":"queue"})),
+            event(2,"start","turn","start",json!({"turn_id":"turn"})),
+            event(3,"consumed","input","consumed",json!({"input_id":"input"})),
+            event(4,"result","step","tool-result",json!({"turn_id":"turn","request_id":"request","results":[{"call_id":"call","result":{"content":[{"type":"text","text":"caption"},{"type":"image","source":source("tool-image")}]}}]}))
+        ],"through":4,"nextAfter":4,"done":true}));
+        for file in ["user-image", "tool-image"] {
+            for (offset, data) in [(0, "aW1hZ2U="), (5, "")] {
+                let read = wire.read("attachment.read");
+                assert_eq!(read["params"], json!({"sessionId":"saved","fileId":file,"offset":offset}));
+                wire.reply(&read, json!({"data":data,"eof":data.is_empty()}));
+            }
+        }
+        detached_eof(wire);
+    });
+    let mut peer = Peer::start(&home);
+    peer.initialize();
+    peer.send(
+        2,
+        "session/load",
+        json!({"sessionId":"saved","cwd":home.0,"mcpServers":[]}),
+    );
+    let loaded = peer.response(2);
+    assert!(loaded.get("error").is_none(), "{loaded}");
+    let updates: Vec<_> = peer
+        .updates
+        .iter()
+        .map(|frame| &frame["params"]["update"])
+        .collect();
+    let user: Vec<_> = updates
+        .iter()
+        .filter(|update| update["sessionUpdate"] == "user_message_chunk")
+        .collect();
+    assert_eq!(user.len(), 3);
+    assert_eq!(user[0]["content"]["text"], "before");
+    assert_eq!(
+        user[1]["content"],
+        json!({"type":"image","mimeType":"image/png","data":"aW1hZ2U="})
+    );
+    assert_eq!(user[2]["content"]["text"], "after");
+    let tool = updates
+        .iter()
+        .find(|update| update["sessionUpdate"] == "tool_call_update")
+        .unwrap();
+    assert_eq!(tool["content"][0]["content"]["text"], "caption");
+    assert_eq!(tool["content"][1]["content"], user[1]["content"]);
     peer.close();
     daemon.join().unwrap();
 }

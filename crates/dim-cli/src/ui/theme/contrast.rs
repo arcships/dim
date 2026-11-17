@@ -27,7 +27,7 @@ pub const NON_TEXT: Floor = Floor {
 pub type Rgb = [f64; 3];
 
 pub fn parse_hex(hex: &str) -> Option<Rgb> {
-    let value = hex.strip_prefix('#').unwrap_or(hex);
+    let value = hex.trim_prefix('#');
     if value.len() != 6 {
         return None;
     }

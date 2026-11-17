@@ -4,8 +4,8 @@
 
 use dim_agent_capabilities::{
     defaults,
-    environment_clients::{SessionClientsHost, SessionClientsSource},
-    execution_settings::{ExecutionSettings, ExecutionSettingsHost, ExecutionSettingsSource},
+    environment_clients::{SessionClientsHost, SessionPresences},
+    execution_settings::{ExecutionSettings, ExecutionSettingsHost},
     history::HistoryRenderer,
     host::*,
     host_platform::{
@@ -387,10 +387,21 @@ pub struct Options {
     /// catalog plugin registers them either way.
     pub require_without_install: bool,
     /// A client-presence source, provided at the root when present.
-    pub clients: Option<Arc<dyn SessionClientsSource>>,
-    /// The execution switches, provided to HostPlatform and the root when
-    /// present; the settings tool and snapshot parts are registered with it.
-    pub execution: Option<Arc<dyn ExecutionSettingsSource>>,
+    pub clients: Option<SessionPresences>,
+    /// The `executionSettingsHost` face, provided to HostPlatform and the root
+    /// when present; the settings tool and snapshot parts are registered with
+    /// it.
+    pub execution: Option<Arc<ExecutionSettingsHost>>,
+    /// The host's user override of `dim/base`, provided at the root when
+    /// present.
+    pub base_prompt: Option<Arc<dyn dim_agent_capabilities::prompt_sources::BasePromptSettings>>,
+    /// The host's user override of the Skills instructions, provided at the
+    /// root when present.
+    pub skills_instructions:
+        Option<Arc<dyn dim_agent_capabilities::skills::SkillsInstructionsSettings>>,
+    /// Register both prompt-settings names without providing a host: the
+    /// parts must fall back to the built-in text instead of waiting for one.
+    pub missing_settings_hosts: bool,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -405,6 +416,9 @@ impl Default for Options {
             require_without_install: false,
             clients: None,
             execution: None,
+            base_prompt: None,
+            skills_instructions: None,
+            missing_settings_hosts: false,
         }
     }
 }
@@ -449,7 +463,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     let mut host = platform(&dirs.home);
     host.timezone = Some(options.timezone.into());
     if let Some(execution) = options.execution.clone() {
-        host = host.with_execution_settings(ExecutionSettingsHost(execution));
+        host = host.with_execution_settings((*execution).clone());
     }
     let settings = options.settings.clone();
     let model = Arc::new(ScriptedModel::default());
@@ -457,6 +471,34 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     if let Some(store) = options.store {
         builder.timeline_store(store);
+    }
+    if options.missing_settings_hosts {
+        dim_agent_runtime::names::register::<
+            dim_agent_capabilities::prompt_sources::BasePromptSettingsHost,
+        >(builder.catalog_mut(), None);
+        dim_agent_runtime::names::register::<
+            dim_agent_capabilities::skills::SkillsInstructionsSettingsHost,
+        >(builder.catalog_mut(), None);
+    }
+    if let Some(base) = &options.base_prompt {
+        dim_agent_runtime::names::register::<
+            dim_agent_capabilities::prompt_sources::BasePromptSettingsHost,
+        >(builder.catalog_mut(), None);
+        let host: Arc<dyn dim_agent_capabilities::prompt_sources::BasePromptSettings> =
+            base.clone();
+        builder.process_value(Arc::new(
+            dim_agent_capabilities::prompt_sources::BasePromptSettingsHost(host),
+        ));
+    }
+    if let Some(instructions) = &options.skills_instructions {
+        dim_agent_runtime::names::register::<
+            dim_agent_capabilities::skills::SkillsInstructionsSettingsHost,
+        >(builder.catalog_mut(), None);
+        let host: Arc<dyn dim_agent_capabilities::skills::SkillsInstructionsSettings> =
+            instructions.clone();
+        builder.process_value(Arc::new(
+            dim_agent_capabilities::skills::SkillsInstructionsSettingsHost(host),
+        ));
     }
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
@@ -523,10 +565,10 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         root.provide_as::<HostPlatform>(Arc::new(host))?;
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))?;
         if let Some(clients) = clients {
-            root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost(clients)))?;
+            root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost::new(clients)))?;
         }
         if let Some(execution) = execution {
-            root.provide_as::<ExecutionSettingsHost>(Arc::new(ExecutionSettingsHost(execution)))?;
+            root.provide_as::<ExecutionSettingsHost>(execution)?;
         }
         Ok(())
     })

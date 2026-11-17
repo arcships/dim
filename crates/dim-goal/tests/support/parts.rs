@@ -1133,6 +1133,15 @@ impl Env {
         self.session.id()
     }
 
+    pub async fn restore_failure(&self, id: &str) -> dim_agent_runtime::AgentError {
+        self.host
+            .agent()
+            .restore_session(id.to_owned())
+            .await
+            .err()
+            .expect("invalid durable recovery state must fail the Session restore")
+    }
+
     /// Starts a second Session record `id` in the shared store, to be filled
     /// before anything loads it: the history a restore replays.
     pub async fn seed_new(&self, id: &str) -> Seed {
@@ -1593,6 +1602,7 @@ impl Env {
                 call_id: format!("call-{task_id}"),
                 task_id: task_id.to_owned(),
                 description: "background work".into(),
+                title: None,
                 output_path: "/dev/null".into(),
             }),
         )
@@ -1805,4 +1815,8 @@ fn home() -> PathBuf {
         std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
     home
+}
+
+pub fn goal_state(objective: Option<&str>, state: Value, evaluator: bool) -> EventKind {
+    EventKind::Extension(dim_agent_types::ExtensionEvent::new("goal", "state", serde_json::json!({"schema":"goal-state/v1", "operation":if objective.is_some(){"set"}else{"clear"}, "objective":objective, "state":state, "judge":if evaluator{"evaluator"}else{"model"}, "input_id":null})).unwrap())
 }

@@ -36,6 +36,13 @@ pub struct Frame {
     /// The live region, one string per row, already wrapped to the width.
     /// Styling escapes are allowed; control characters are not.
     pub live: Vec<String>,
+    /// Task ids by row in `live`, for fullscreen task-detail clicks.
+    pub task_rows: Vec<(usize, String)>,
+    /// Panel thought rows: live row, content/gutter columns excluding outer
+    /// borders and padding, opaque identity, and whether this is a body row.
+    pub thought_rows: Vec<(usize, std::ops::Range<usize>, String, bool)>,
+    /// Model label row and columns in `live`, for the fullscreen model picker.
+    pub model_label: Option<(usize, std::ops::Range<usize>)>,
     /// Cursor position inside the live region (row, column), `None` hides it.
     pub cursor: Option<(u16, u16)>,
     /// Index in `live` where the dock (queue, composer, panels, status)
@@ -169,13 +176,14 @@ impl Screen {
         let (mut layout, mut wanted) = self.layout(frame, size);
         let tail = visible_tail(&layout, wanted);
         let rows_changed = self.painted_differs(&layout, wanted);
+        let cursor = cursor_target(&layout, self.viewport_top(), wanted);
         let nothing = frame.commits.is_empty()
             && !resized
             && !rows_changed
             && wanted == self.viewport_height
             && tail == self.tail
-            && !self.cursor_needs_move(&layout, wanted)
-            && self.cursor_visible == frame.cursor.is_some();
+            && !self.cursor_needs_move(cursor)
+            && self.cursor_visible == cursor.is_some();
         if nothing {
             return out;
         }
@@ -264,13 +272,8 @@ impl Screen {
             .any(|(i, row)| self.painted.get(i).and_then(|p| p.as_deref()) != Some(row.as_str()))
     }
 
-    fn cursor_needs_move(&self, frame: &Frame, wanted: u16) -> bool {
-        match (frame.cursor, self.cursor_at) {
-            (None, _) => false,
-            (Some((row, col)), at) => {
-                at != Some((col, self.top.min(self.size.1.saturating_sub(wanted)) + row))
-            }
-        }
+    fn cursor_needs_move(&self, target: Option<(u16, u16)>) -> bool {
+        target.is_some_and(|target| self.cursor_at != Some(target))
     }
 
     fn commit(&mut self, text: &str, out: &mut Vec<u8>) {
@@ -283,7 +286,7 @@ impl Screen {
             viewport: Rect::new(0, self.viewport_top(), self.size.0, self.viewport_height),
             reset: false,
         };
-        let text = text.strip_suffix('\n').unwrap_or(text);
+        let text = text.trim_suffix('\n');
         let text = &scrub_keeping_newlines(text);
         let written = text.split('\n').count() as u16;
         let before = self.top;
@@ -308,7 +311,7 @@ impl Screen {
     /// once and wrapped by the terminal over the rows below it; only a row
     /// taller than the screen goes the erasing way.
     fn commit_in_place(&mut self, text: &str, out: &mut Vec<u8>) -> bool {
-        let text = text.strip_suffix('\n').unwrap_or(text);
+        let text = text.trim_suffix('\n');
         let text = scrub_keeping_newlines(text);
         let rows: Vec<&str> = text.split('\n').collect();
         let (cols, lines) = (self.size.0 as usize, self.size.1 as usize);
@@ -552,9 +555,8 @@ impl Screen {
     }
 
     fn place_cursor(&mut self, frame: &Frame, out: &mut Vec<u8>) {
-        match frame.cursor {
-            Some((row, col)) => {
-                let target = (col, self.viewport_top() + row);
+        match cursor_target(frame, self.viewport_top(), self.viewport_height) {
+            Some(target) => {
                 self.anchor = target.1;
                 if self.cursor_at != Some(target) {
                     push_move(out, target.0, target.1);
@@ -648,20 +650,36 @@ fn lay_out(row: &str, cols: usize) -> Option<Laid<'_>> {
 /// top rows are the ones cut.
 fn visible_tail(frame: &Frame, height: u16) -> u16 {
     let tail = frame.anchor.min(frame.live.len());
-    let cut = frame.live.len().saturating_sub(height.max(1) as usize);
-    tail.saturating_sub(cut) as u16
+    tail.saturating_sub(cut_rows(frame.live.len(), height as usize)) as u16
+}
+
+/// Live rows the viewport cuts off the region's top: the rows before its
+/// first on-screen row.
+fn cut_rows(len: usize, height: usize) -> usize {
+    len.saturating_sub(height.max(1))
 }
 
 /// The rows that fit: when the live region is taller than the viewport the
 /// bottom rows win (the composer lives there).
 fn visible_rows(live: &[String], height: u16) -> Vec<String> {
     let height = height.max(1) as usize;
-    let skip = live.len().saturating_sub(height);
-    let mut rows: Vec<String> = live[skip..].to_vec();
+    let mut rows: Vec<String> = live[cut_rows(live.len(), height)..].to_vec();
     while rows.len() < height {
         rows.push(String::new());
     }
     rows
+}
+
+/// Where the frame's cursor lands on screen when the viewport shows
+/// `height` rows of `frame.live` from `top`. The frame's row indexes the
+/// whole live region, so the rows cut from its top move the cursor up by
+/// that many; a row among the cut ones, or past the painted rows, is not on
+/// screen: `None`.
+fn cursor_target(frame: &Frame, top: u16, height: u16) -> Option<(u16, u16)> {
+    let height = height.max(1) as usize;
+    let (row, col) = frame.cursor?;
+    let row = (row as usize).checked_sub(cut_rows(frame.live.len(), height))?;
+    (row < height).then_some((col, top.saturating_add(row as u16)))
 }
 
 /// A character that may need scrubbing: a C0 or C1 control (ESC among
@@ -838,6 +856,9 @@ mod tests {
         Frame {
             commits: commits.iter().map(|s| s.to_string()).collect(),
             live: live.iter().map(|s| s.to_string()).collect(),
+            task_rows: Vec::new(),
+            thought_rows: Vec::new(),
+            model_label: None,
             cursor,
             dock: 0,
             anchor: 0,
@@ -902,26 +923,6 @@ mod tests {
         );
         let expected: Vec<String> = (1..=15).map(|n| format!("message {n}")).collect();
         assert_eq!(messages.into_iter().cloned().collect::<Vec<_>>(), expected);
-        let rows = emu.rows_text();
-        assert_eq!(&rows[10..], ["composer", "status"], "live region intact");
-    }
-
-    #[test]
-    fn a_commit_taller_than_the_screen_scrolls_through_without_overflow() {
-        let (mut screen, mut emu) = setup(true);
-        screen.set_origin(0);
-        let live = ["composer", "status"];
-        drive(&mut screen, &mut emu, &frame(&[], &live, None));
-        let tall: Vec<String> = (1..=40).map(|n| format!("thought {n}")).collect();
-        let commit = tall.join("\n");
-        drive(&mut screen, &mut emu, &frame(&[&commit], &live, None));
-        let transcript = emu.transcript();
-        let written: Vec<&String> = transcript
-            .iter()
-            .filter(|l| l.starts_with("thought"))
-            .collect();
-        assert_eq!(written.len(), 40, "{transcript:?}");
-        assert_eq!(written.last().map(|s| s.as_str()), Some("thought 40"));
         let rows = emu.rows_text();
         assert_eq!(&rows[10..], ["composer", "status"], "live region intact");
     }
@@ -1422,6 +1423,7 @@ mod tests {
         assert!(joined.contains(&wide), "{rows:?}");
     }
 
+    /// Every row of a commit taller than the screen appears, live region intact.
     #[test]
     fn long_commit_wraps_softly_and_appears_once() {
         let (mut screen, mut emu) = setup(true);
@@ -1435,7 +1437,25 @@ mod tests {
             .filter(|l| l.starts_with('x'))
             .cloned()
             .collect();
-        assert_eq!(joined.len(), 95);
+        assert_eq!(joined.len(), 95, "the row appears once, wrapped softly");
+
+        let (mut screen, mut emu) = setup(true);
+        screen.set_origin(0);
+        let live = ["composer", "status"];
+        drive(&mut screen, &mut emu, &frame(&[], &live, None));
+        let tall: Vec<String> = (1..=40).map(|n| format!("thought {n}")).collect();
+        let commit = tall.join("\n");
+        drive(&mut screen, &mut emu, &frame(&[&commit], &live, None));
+        let transcript = emu.transcript();
+        let written: Vec<&String> = transcript
+            .iter()
+            .filter(|l| l.starts_with("thought"))
+            .collect();
+        assert_eq!(written.len(), 40, "each row appears once");
+        assert_eq!(written.first().map(|s| s.as_str()), Some("thought 1"));
+        assert_eq!(written.last().map(|s| s.as_str()), Some("thought 40"));
+        let rows = emu.rows_text();
+        assert_eq!(&rows[10..], ["composer", "status"], "live region intact");
     }
 
     #[test]
@@ -1451,10 +1471,48 @@ mod tests {
         assert!(emu.cursor_visible, "cursor shown again after the paint");
     }
 
+    /// The frame's cursor row indexes the whole live region; the rows the
+    /// viewport cuts from its top are not on screen, so they must not push
+    /// the caret down off its row.
+    #[test]
+    fn caret_stays_on_its_row_when_the_live_region_is_cut_at_the_top() {
+        let size = (40, 5);
+        let mut screen = Screen::new(size, true);
+        let mut emu = Emu::new(size.0 as usize, size.1 as usize);
+        let live = [
+            "tail 1",
+            "tail 2",
+            "",
+            "╭────────────╮",
+            "│ › hi       │",
+            "╰────────────╯",
+            "AGENT ⏵⏵ Workspace write",
+        ];
+        emu.feed(&screen.render(&frame(&[], &live, Some((4, 2))), size));
+        let rows = emu.rows_text();
+        assert_eq!(rows[2], live[4], "{rows:?}");
+        assert_eq!((emu.cx, emu.cy), (2, 2), "{rows:?}");
+    }
+
+    /// A caret whose own row was cut away has nowhere on screen to go: it
+    /// waits hidden instead of dropping onto the rows below.
+    #[test]
+    fn caret_above_the_cut_rows_waits_hidden() {
+        let size = (40, 2);
+        let mut screen = Screen::new(size, true);
+        let mut emu = Emu::new(size.0 as usize, size.1 as usize);
+        let live = ["one", "two", "three", "composer", "status"];
+        emu.feed(&screen.render(&frame(&[], &live, Some((0, 1))), size));
+        assert_eq!(emu.rows_text(), ["composer", "status"]);
+        assert!(!emu.cursor_visible, "the caret's row is not on screen");
+        let again = screen.render(&frame(&[], &live, Some((0, 1))), size);
+        assert!(again.is_empty(), "hidden and still: {again:?}");
+    }
+
     #[test]
     fn oversized_live_region_keeps_the_bottom_rows_and_some_history() {
         let (mut screen, mut emu) = setup(true);
-        let live: Vec<String> = (0..20).map(|n| format!("row {n}")).collect();
+        let live: Vec<String> = Vec::from_fn(20, |n| format!("row {n}"));
         let refs: Vec<&str> = live.iter().map(String::as_str).collect();
         drive(&mut screen, &mut emu, &frame(&[], &refs, None));
         assert_eq!(screen.viewport_height(), SIZE.1 - MIN_HISTORY_ROWS);
@@ -1469,7 +1527,7 @@ mod tests {
         let link = crate::ui::render::osc8::hyperlink("https://example.com/a", "docs link");
         let text = format!("see {link} and then {}", "word ".repeat(12));
         let bytes = drive(&mut screen, &mut emu, &frame(&[&text], &live, None));
-        let sent = String::from_utf8_lossy(&bytes).into_owned();
+        let sent = String::from_utf8_lossy_owned(bytes);
         assert!(sent.contains("\x1b]8;;https://example.com/a\x1b\\docs link\x1b]8;;\x1b\\"));
         let joined = emu.transcript().join("\n");
         assert_eq!(joined.matches("docs link").count(), 1);
@@ -1507,6 +1565,8 @@ mod tests {
         tail: Vec<String>,
         /// Queued messages shown above the composer.
         queue: usize,
+        /// Background task rows shown above the composer.
+        tasks: usize,
         panel: usize,
         replaced: bool,
     }
@@ -1518,10 +1578,11 @@ mod tests {
         }
 
         /// The next frame: the tail grows, folds or is committed, a panel
-        /// opens, changes or closes, a question takes the composer's place.
+        /// opens, changes or closes, a question takes the composer's place,
+        /// or the background task row appears, changes and leaves.
         fn step(&mut self) -> Frame {
             let mut commits = Vec::new();
-            match self.rng.below(9) {
+            match self.rng.below(10) {
                 0 | 1 => {
                     for _ in 0..1 + self.rng.below(3) {
                         let row = self.label("t");
@@ -1554,6 +1615,7 @@ mod tests {
                 }
                 5 | 6 => self.panel = self.rng.below(7) as usize,
                 7 => self.replaced = !self.replaced,
+                8 => self.tasks = self.rng.below(3) as usize,
                 _ => self.queue = self.rng.below(3) as usize,
             }
             self.frame(commits)
@@ -1562,6 +1624,7 @@ mod tests {
         fn frame(&self, commits: Vec<String>) -> Frame {
             let mut live: Vec<String> = self.tail.clone();
             live.extend((0..self.queue).map(|n| format!("queued {n}")));
+            live.extend((0..self.tasks).map(|n| format!("◐ {} · cargo build {n}m", self.tasks)));
             let anchor = live.len();
             if self.replaced {
                 live.push("DOCK question".to_owned());
@@ -1612,6 +1675,7 @@ mod tests {
                 next: 0,
                 tail: Vec::new(),
                 queue: 0,
+                tasks: 0,
                 panel: 0,
                 replaced: false,
             };
@@ -1690,6 +1754,7 @@ mod tests {
                 next: 0,
                 tail: Vec::new(),
                 queue: 0,
+                tasks: 0,
                 panel: 0,
                 replaced: false,
             };

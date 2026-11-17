@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-modality", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
-exclude = ["vendor/aimux", "vendor/grok-build"]
+members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-event-hub", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-report", "crates/dim-codemode", "crates/dim-modality", "crates/dim-image-understanding", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
+exclude = ["vendor/grok-build"]
 
 [workspace.package]
-version = "0.1.0-alpha.18"
+version = "0.1.0-alpha.25"
 edition = "2024"
 license = "MIT"
-rust-version = "1.98"
+rust-version = "1.100"
 repository = "https://github.com/arcships/dim"
 
 [workspace.dependencies]
@@ -21,13 +21,17 @@ dim-agent-capabilities = { path = "crates/dim-agent-capabilities" }
 dim-agent-aimux = { path = "crates/dim-agent-aimux" }
 dim-agent-attachments = { path = "crates/dim-agent-attachments" }
 dim-agent-questions = { path = "crates/dim-agent-questions" }
-aimux-core = { path = "vendor/aimux/aimux-core" }
-aimux-provider-utils = { path = "vendor/aimux/aimux-provider-utils", features = ["ws"] }
-aimux-providers = { path = "vendor/aimux/aimux-providers", default-features = false }
+aimux-core = { version = "=0.6.1" }
+aimux-provider-utils = { version = "=0.6.1", features = ["ws"] }
+aimux-providers = { version = "=0.6.1", default-features = false }
 dim-app-server = { path = "crates/dim-app-server" }
 dim-session-title = { path = "crates/dim-session-title" }
+dim-event-hub = { path = "crates/dim-event-hub" }
 dim-goal = { path = "crates/dim-goal" }
+dim-report = { path = "crates/dim-report" }
+dim-codemode = { path = "crates/dim-codemode" }
 dim-modality = { path = "crates/dim-modality" }
+dim-image-understanding = { path = "crates/dim-image-understanding" }
 dim-ocr = { path = "crates/dim-ocr" }
 dim-modality-aimux = { path = "crates/dim-modality-aimux" }
 dim-client = { path = "crates/dim-client" }
@@ -40,6 +44,7 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 thiserror = "2.0.20"
 futures-util = { version = "0.3", features = ["sink"] }
 uuid = { version = "1", features = ["v4"] }
+rquickjs = { version = "0.14", features = ["futures", "parallel"] }
 axum = { version = "0.8", default-features = false, features = ["ws", "http1", "tokio"] }
 tokio-tungstenite = "0.29"
 tracing = "0.1"
@@ -49,6 +54,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 debug = "line-tables-only"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "debuginfo"

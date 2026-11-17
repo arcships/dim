@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::*;
-use crate::model::view::MemberConversationState;
+use crate::model::view::{Earlier, MemberConversationState};
 
 pub(super) enum Notice {
     Event(Event),
@@ -23,6 +23,16 @@ enum Pending {
     Tool(u64, String, String),
 }
 
+/// The earlier read the observation was asked for: none, a press taken while
+/// another request was in flight, or the read a press sent.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum EarlierRead {
+    #[default]
+    None,
+    Asked,
+    Reading,
+}
+
 struct Observation {
     /// The leader attachment it was made for; a replacement releases it.
     projection_id: u64,
@@ -35,7 +45,7 @@ struct Observation {
     pending: Option<Pending>,
     window: dim_client::window::Window,
     model_through: u64,
-    earlier: bool,
+    earlier: EarlierRead,
     goal_available: bool,
     tool_available: bool,
     goal_stale: bool,
@@ -46,25 +56,42 @@ struct Observation {
 impl Observation {
     fn apply(&mut self, notice: Notice) {
         match notice {
-            Notice::Event(event) => {
-                if let EventContent::Configuration(configuration) = &event.content
-                    && event.sequence > self.model_through
-                {
-                    self.model_through = event.sequence;
-                    self.model = Some(format!(
-                        "{} / {}",
-                        configuration.provider_id, configuration.model_id
-                    ));
-                }
-                if event.sequence > self.cursor {
-                    self.cursor = event.sequence;
-                    self.goal_stale |= crate::goal::changed(&event.content);
-                    self.projection.apply("main", &event);
-                }
-            }
+            Notice::Event(event) => self.event(event, false),
             Notice::Progress(progress) => self.projection.progress(&progress),
             Notice::State(running) => self.projection.set_running(running),
         }
+    }
+
+    /// Folds one event of the member's Session; `replayed` says a read of its
+    /// recorded history carried it, as every page of the conversation does.
+    fn event(&mut self, event: Event, replayed: bool) {
+        if let EventContent::Configuration(configuration) = &event.content
+            && event.sequence > self.model_through
+        {
+            self.model_through = event.sequence;
+            self.model = Some(format!(
+                "{} / {}",
+                configuration.provider_id, configuration.model_id
+            ));
+        }
+        if event.sequence > self.cursor {
+            self.cursor = event.sequence;
+            self.goal_stale |= crate::goal::changed(&event.content);
+            match replayed {
+                true => self.projection.replay("main", &event),
+                false => self.projection.apply("main", &event),
+            }
+        }
+    }
+
+    /// Releases display data while admitted requests finish attachment cleanup.
+    fn release(&mut self) {
+        self.closing = true;
+        self.projection = Projection::default();
+        self.model = None;
+        self.window = Default::default();
+        self.live = Vec::new();
+        self.earlier = EarlierRead::None;
     }
 }
 
@@ -72,7 +99,7 @@ impl Observation {
 pub(super) struct Members {
     observations: HashMap<String, Observation>,
     /// The detail's member: the attachment it was opened on and its Session.
-    selected: Option<(u64, String)>,
+    pub(super) selected: Option<(u64, String)>,
     /// Observations waiting for the history-page slot, oldest first.
     pages: VecDeque<String>,
     /// Members whose read failed or whose Session closed: an unfinished card
@@ -110,6 +137,16 @@ struct AgentSummary {
 }
 
 impl Worker {
+    pub(super) fn member_projection(&mut self, session_id: &str) -> Option<&mut Projection> {
+        self.members
+            .observations
+            .get_mut(session_id)
+            .filter(|observation| {
+                !observation.closing && observation.projection_id == self.projection_id
+            })
+            .map(|observation| &mut observation.projection)
+    }
+
     pub(super) fn watch_member(&mut self, member_id: Option<String>) {
         let selected = member_id.map(|id| (self.projection_id, id));
         if selected == self.members.selected {
@@ -127,6 +164,9 @@ impl Worker {
         self.members.selected = None;
         self.members.unavailable.clear();
         self.members.pages.clear();
+        for observation in self.members.observations.values_mut() {
+            observation.release();
+        }
     }
 
     pub(super) fn observes_member(&self, session_id: &str) -> bool {
@@ -134,6 +174,26 @@ impl Worker {
             .observations
             .get(session_id)
             .is_some_and(|observation| !observation.closing)
+    }
+
+    /// Whether the selected member's conversation has older history to read,
+    /// by the fields `earlier_member` tests.
+    pub(super) fn earlier_observation(&self) -> Earlier {
+        let Some((_, id)) = &self.members.selected else {
+            return Earlier::AtStart;
+        };
+        self.members
+            .observations
+            .get(id)
+            .map_or(Earlier::AtStart, |observation| {
+                if observation.earlier != EarlierRead::None {
+                    Earlier::Reading
+                } else if observation.window.before.is_some() {
+                    Earlier::Unread
+                } else {
+                    Earlier::AtStart
+                }
+            })
     }
 
     /// Unfinished delegations' members, once main's history says which are
@@ -161,9 +221,7 @@ impl Worker {
         let needed = self.needed_members();
         for (id, observation) in &mut self.members.observations {
             if !needed.contains(id) || observation.projection_id != self.projection_id {
-                observation.closing = true;
-                observation.window = Default::default();
-                observation.live.clear();
+                observation.release();
             }
         }
         for id in needed {
@@ -180,7 +238,7 @@ impl Worker {
                         pending: None,
                         window: Default::default(),
                         model_through: 0,
-                        earlier: false,
+                        earlier: EarlierRead::None,
                         goal_available: false,
                         tool_available: false,
                         goal_stale: false,
@@ -224,6 +282,13 @@ impl Worker {
                 continue;
             };
             let mut params = json!({"sessionId":id});
+            if method == "session.attach"
+                && self
+                    .client
+                    .supports(&["session.history.display", "session.history.detail"])
+            {
+                params["display"] = json!(true);
+            }
             if method == "session.goal.get" {
                 params["branchId"] = json!("main");
             }
@@ -258,6 +323,19 @@ impl Worker {
                 self.members.observations.get_mut(&id).unwrap().goal_stale = false;
             }
         }
+        let asked: Vec<String> = self
+            .members
+            .observations
+            .iter_mut()
+            .filter(|(_, observation)| {
+                observation.earlier == EarlierRead::Asked && observation.pending.is_none()
+            })
+            .map(|(id, observation)| {
+                observation.earlier = EarlierRead::Reading;
+                id.clone()
+            })
+            .collect();
+        self.members.pages.extend(asked);
         if self
             .members
             .observations
@@ -272,7 +350,8 @@ impl Worker {
             };
             if observation.closing
                 || observation.pending.is_some()
-                || (observation.state != MemberConversationState::Loading && !observation.earlier)
+                || (observation.state != MemberConversationState::Loading
+                    && observation.earlier == EarlierRead::None)
             {
                 continue;
             }
@@ -283,8 +362,21 @@ impl Worker {
                 );
                 continue;
             }
-            let params = observation.window.params(&id, "main");
-            let request = self.client.send("session.history", params).await?;
+            let params = observation.window.params_with_display(
+                &id,
+                "main",
+                self.client.offers("session.history.display.tail"),
+                self.client.offers("session.history.display.transcript"),
+            );
+            let method = if self
+                .client
+                .supports(&["session.history.display", "session.history.detail"])
+            {
+                "session.history.display"
+            } else {
+                "session.history"
+            };
+            let request = self.client.send(method, params).await?;
             self.members
                 .observations
                 .get_mut(&id)
@@ -295,7 +387,7 @@ impl Worker {
         Ok(())
     }
 
-    /// Names native Agents on the cards with one shared `agent.list`.
+    /// Names native Agents on tasks and cards with one shared `agent.list`.
     async fn poll_agents(&mut self) -> crate::Result<()> {
         if self.members.agents.is_some()
             || !self
@@ -348,6 +440,9 @@ impl Worker {
             .expect("matched observation");
         let pending = observation.pending.take().expect("matched member request");
         match pending {
+            Pending::Attach(_) if observation.closing => {
+                observation.attached = result.is_ok();
+            }
             Pending::Attach(_) => match result {
                 Ok(value) => {
                     let attached: Attached = match serde_json::from_value(value) {
@@ -362,12 +457,9 @@ impl Worker {
                         .model
                         .map(|model| format!("{} / {}", model.provider_id, model.model_id));
                     observation.attached = true;
-                    if !observation.closing {
-                        self.members.pages.push_back(id.clone());
-                    }
+                    self.members.pages.push_back(id.clone());
                 }
-                Err(error) if !observation.closing => self.fail_member(&id, error.to_string()),
-                Err(_) => {}
+                Err(error) => self.fail_member(&id, error.to_string()),
             },
             Pending::Detach(_) => {
                 self.members.observations.remove(&id);
@@ -466,8 +558,16 @@ impl Worker {
             }
             Pending::History(_) => {
                 let page = result.map_err(|error| error.to_string()).and_then(|value| {
-                    let page = serde_json::from_value(value)
-                        .map_err(|error| format!("Invalid history page: {error}"))?;
+                    let page = if self
+                        .client
+                        .supports(&["session.history.display", "session.history.detail"])
+                    {
+                        serde_json::from_value::<dim_client::wire::DisplayPage>(value)
+                            .map(Into::into)
+                    } else {
+                        serde_json::from_value(value)
+                    }
+                    .map_err(|error| format!("Invalid history page: {error}"))?;
                     observation
                         .window
                         .push(page)
@@ -477,16 +577,16 @@ impl Worker {
                     Err(error) => self.fail_member(&id, error),
                     Ok(done) => {
                         if done {
-                            if observation.earlier {
+                            if observation.earlier == EarlierRead::Reading {
                                 let mut older = Projection::default();
                                 for event in observation.window.take() {
-                                    older.apply("main", &event);
+                                    older.replay("main", &event);
                                 }
                                 observation.projection.prepend(older);
-                                observation.earlier = false;
+                                observation.earlier = EarlierRead::None;
                             } else {
                                 for event in observation.window.take() {
-                                    observation.apply(Notice::Event(event));
+                                    observation.event(event, true);
                                 }
                                 observation.cursor =
                                     observation.window.through.expect("window cutoff");
@@ -538,8 +638,7 @@ impl Worker {
         let Some(observation) = self.members.observations.get_mut(id) else {
             return true;
         };
-        if observation.pending.is_some()
-            || observation.earlier
+        if observation.earlier != EarlierRead::None
             || observation.state != MemberConversationState::Live
         {
             return true;
@@ -548,8 +647,14 @@ impl Worker {
             self.send(Update::Notice("Beginning of conversation".into()));
             return true;
         }
-        observation.earlier = true;
-        self.members.pages.push_back(id.clone());
+        observation.earlier = if observation.pending.is_some() {
+            EarlierRead::Asked
+        } else {
+            EarlierRead::Reading
+        };
+        if observation.earlier == EarlierRead::Reading {
+            self.members.pages.push_back(id.clone());
+        }
         true
     }
 
@@ -596,7 +701,7 @@ impl Worker {
             .observations
             .get_mut(session_id)
             .expect("ended observation")
-            .closing = true;
+            .release();
         self.members.unavailable.insert(session_id.to_owned());
     }
 
@@ -632,5 +737,345 @@ impl Worker {
                 model: observation.model.clone(),
             });
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::client::Message;
+
+    /// A window whose `before` names the older history left to read.
+    fn window(before: Option<u64>, through: u64) -> dim_client::window::Window {
+        let mut window = dim_client::window::Window::default();
+        window.before = before;
+        window.through = Some(through);
+        window
+    }
+
+    /// A live member observation holding a loaded window.
+    fn observation(before: Option<u64>, pending: Option<Pending>) -> Observation {
+        Observation {
+            projection_id: 0,
+            projection: Projection::default(),
+            state: MemberConversationState::Live,
+            model: None,
+            attached: true,
+            closing: false,
+            pending,
+            window: window(before, 9),
+            model_through: 0,
+            earlier: EarlierRead::None,
+            goal_available: false,
+            tool_available: false,
+            goal_stale: false,
+            cursor: 0,
+            live: Vec::new(),
+        }
+    }
+
+    /// Selects `observation` as the detail's member on a fresh worker.
+    fn select(worker: &mut Worker, observation: Observation) {
+        worker.session_id = "s1".into();
+        worker.members.selected = Some((worker.projection_id, "member".into()));
+        worker
+            .members
+            .observations
+            .insert("member".into(), observation);
+    }
+
+    /// A complete history is at its start whatever else the member runs.
+    /// `pending` covers every request the observation makes, and none of them
+    /// is an earlier read.
+    #[tokio::test]
+    async fn a_complete_member_history_is_at_start_while_another_request_is_in_flight() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(None, Some(Pending::Turn(1))));
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a complete history has nothing earlier to read, whatever else is in flight"
+        );
+    }
+
+    /// An earlier read asked for while another member request is in flight is
+    /// recorded, reports `Reading` from then, and goes out once that request
+    /// settles, so a press is never dropped.
+    #[tokio::test]
+    async fn a_page_up_during_another_member_request_reads_once_it_settles() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(Some(7), Some(Pending::Goal(1))));
+        worker.earlier_member();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the recorded earlier read is reported from the moment it is recorded"
+        );
+        worker
+            .message(Message::Response {
+                id: 1,
+                result: Ok(json!({"branchId":"member","through":9,"goal":null})),
+            })
+            .await
+            .unwrap();
+        assert!(
+            worker.members.observations["member"].pending.is_none(),
+            "the goal read settled"
+        );
+        worker.poll_member().await.unwrap();
+        assert!(
+            matches!(
+                worker.members.observations["member"].pending,
+                Some(Pending::History(_))
+            ),
+            "the recorded earlier read went out once nothing else was in flight"
+        );
+    }
+
+    /// A failed earlier read releases the observation, and a released member
+    /// has nothing to read: the detail shows the error and the member is
+    /// reattached to be read again.
+    #[tokio::test]
+    async fn a_failed_member_read_releases_the_observation_and_its_flag() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        let mut observation = observation(Some(7), None);
+        observation.earlier = EarlierRead::Reading;
+        select(&mut worker, observation);
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the earlier read is in flight"
+        );
+
+        worker.fail_member("member", "the daemon dropped the read".into());
+        assert!(worker.members.observations["member"].closing);
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a released observation reports its start, not a read in flight"
+        );
+    }
+
+    /// A projection change releases the observation the old attachment owned,
+    /// and a released observation has nothing left to read.
+    #[tokio::test]
+    async fn a_member_released_by_a_projection_change_reports_its_start() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(Some(7), None));
+        worker.earlier_member();
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Reading,
+            "the earlier read went out"
+        );
+
+        worker.projection_id += 1;
+        worker.poll_member().await.unwrap();
+
+        assert!(
+            worker.members.observations["member"].closing,
+            "the observation the previous attachment owned is released"
+        );
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a released observation reports its start, not the read it had in flight"
+        );
+    }
+
+    #[tokio::test]
+    async fn replacing_leaders_releases_member_display_before_admitted_requests_settle() {
+        let (mut worker, _receiver, sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        let text = json!({
+            "id":"old-text", "sequence":1, "create_at":2000,
+            "type":"step", "name":"text",
+            "data":{"turn_id":"t", "request_id":"r", "delta":"old member transcript"}
+        });
+        let mut expected_requests = 0;
+        for iteration in 0..12 {
+            worker.session_id = format!("leader-{iteration}");
+            worker.watch_member(Some("member".into()));
+            worker.poll_member().await.unwrap();
+            let Some(Pending::Attach(attach)) = worker.members.observations["member"].pending
+            else {
+                panic!("each selection starts a fresh member attachment");
+            };
+            expected_requests += 1;
+            let pending = if iteration % 2 == 0 {
+                attach
+            } else {
+                worker
+                    .message(Message::Response {
+                        id: attach,
+                        result: Ok(json!({"sequence":1})),
+                    })
+                    .await
+                    .unwrap();
+                worker.poll_member().await.unwrap();
+                expected_requests += 1;
+                let Some(Pending::History(history)) = worker.members.observations["member"].pending
+                else {
+                    panic!("the attached member starts its bounded history read");
+                };
+                let observation = worker.members.observations.get_mut("member").unwrap();
+                observation
+                    .projection
+                    .replay("main", &serde_json::from_value(text.clone()).unwrap());
+                observation.model = Some("observed model".into());
+                assert_eq!(observation.projection.rows().len(), 1);
+                history
+            };
+            worker.member_notice("member", Notice::State(true));
+            assert!(!worker.members.observations["member"].live.is_empty());
+
+            worker.invalidate_projection();
+            let observation = &worker.members.observations["member"];
+            assert!(observation.closing);
+            assert!(observation.projection.rows().is_empty());
+            assert!(observation.model.is_none());
+            assert_eq!(observation.live.capacity(), 0);
+            assert!(observation.window.through.is_none());
+            assert!(worker.members.pages.is_empty());
+            worker
+                .message(Message::Notice {
+                    method: "session.state".into(),
+                    params: json!({"sessionId":"member","branchId":"main","running":true}),
+                })
+                .await
+                .unwrap();
+            assert!(worker.members.observations["member"].live.is_empty());
+            worker.watch_member(Some("member".into()));
+            worker.poll_member().await.unwrap();
+            assert_eq!(worker.members.observations.len(), 1);
+            worker
+                .message(Message::Response {
+                    id: pending,
+                    result: Ok(json!({"sequence":1,"events":[text],"through":1,"nextBefore":1})),
+                })
+                .await
+                .unwrap();
+            assert!(
+                worker.members.observations["member"]
+                    .projection
+                    .rows()
+                    .is_empty()
+            );
+            assert!(worker.members.pages.is_empty());
+            worker.poll_member().await.unwrap();
+            let Some(Pending::Detach(detach)) = worker.members.observations["member"].pending
+            else {
+                panic!("the obsolete attachment is detached after its admitted request");
+            };
+            expected_requests += 1;
+            worker.invalidate_projection();
+            worker.watch_member(Some("member".into()));
+            worker.poll_member().await.unwrap();
+            assert!(matches!(
+                worker.members.observations["member"].pending,
+                Some(Pending::Detach(id)) if id == detach
+            ));
+            worker
+                .message(Message::Response {
+                    id: detach,
+                    result: Ok(json!({})),
+                })
+                .await
+                .unwrap();
+            assert!(worker.members.observations.is_empty());
+        }
+        worker.poll_member().await.unwrap();
+        for reply in [
+            json!({"sequence":1}),
+            json!({"events":[text],"through":1,"nextBefore":1,"nextAfter":1,"done":true}),
+            json!({"branchId":"main","through":1,"turn":null,"output":null}),
+            json!({"methods":[]}),
+        ] {
+            let id = match worker.members.observations["member"].pending {
+                Some(
+                    Pending::Attach(id)
+                    | Pending::History(id)
+                    | Pending::Turn(id)
+                    | Pending::Methods(id),
+                ) => id,
+                _ => panic!("the current member completes its normal opening flow"),
+            };
+            worker
+                .message(Message::Response {
+                    id,
+                    result: Ok(reply),
+                })
+                .await
+                .unwrap();
+            worker.poll_member().await.unwrap();
+            expected_requests += 1;
+        }
+        assert_eq!(
+            worker.members.observations["member"].state,
+            MemberConversationState::Live
+        );
+        assert_eq!(
+            worker.members.observations["member"].projection.rows()[0].text,
+            "old member transcript"
+        );
+        worker
+            .message(Message::Notice {
+                method: "session.state".into(),
+                params: json!({"sessionId":"member","branchId":"main","running":true}),
+            })
+            .await
+            .unwrap();
+        assert!(
+            worker.members.observations["member"]
+                .projection
+                .snapshot()
+                .running
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while sent.lock().unwrap().len() < expected_requests {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let requests = sent.lock().unwrap();
+        assert_eq!(requests.len(), expected_requests);
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "session.detach")
+                .count(),
+            12
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r["method"] == "session.history")
+                .count(),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closed_member_reports_its_start() {
+        let (mut worker, _receiver, _sent) =
+            crate::session_host::test_worker(&crate::session_host::TEST_FEATURES).await;
+        select(&mut worker, observation(Some(7), None));
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::Unread,
+            "a live member with older history is unread"
+        );
+
+        worker.member_closed("member");
+        assert_eq!(
+            worker.earlier_view(),
+            Earlier::AtStart,
+            "a closed member has no earlier history to read"
+        );
     }
 }

@@ -707,6 +707,101 @@ class DailyFlowTest(unittest.TestCase):
         self.assertEqual(run.unjudged, (head,))
         self.assertEqual(ledger_tools.audit(self.ledger), [])
 
+    def test_pr_subject_conventions_are_anchored(self) -> None:
+        for subject in (
+            "Merge pull request #1318 from arcships/eval-pipeline-test",
+            "docs: propose Watch and shared side-branch management (#1313)",
+            "feat: allow tool branches to suppress idle notices (#1329)",
+        ):
+            with self.subTest(subject=subject):
+                self.assertTrue(daily_batch.is_github_pr_subject(subject))
+        for subject in (
+            "chore: straight to main",
+            "fix: follow up #1318",
+            "docs: mention (#1313) in a title",
+            "Revert Merge pull request #1318 from arcships/eval-pipeline-test",
+            "Merge pull request #123 from ",
+            "fix: not a PR (#0)",
+        ):
+            with self.subTest(subject=subject):
+                self.assertFalse(daily_batch.is_github_pr_subject(subject))
+
+    def test_one_parent_prs_judged_invisible_skip_l2_and_close_the_window(self) -> None:
+        """Both PR subject forms get real verdicts despite having one parent."""
+        self.state.write_text(json.dumps({"last_l2_head": self.base}))
+        self._commit("one.txt", "one\n",
+                     "Merge pull request #1318 from arcships/eval-pipeline-test")
+        first = git(self.repo, "rev-parse", "HEAD")
+        self._commit("two.txt", "two\n", "feat: change two (#1329)")
+        head = git(self.repo, "rev-parse", "HEAD")
+        self.assertEqual(self._run(mode="invisible"), 0)
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.ran, [])
+        self.assertEqual(self._state_head(), head)
+        self.assertEqual([m["sha"] for m in self._manifest()["merges"]], [first, head])
+        self.assertEqual(self._manifest()["direct_pushes"], [])
+
+        import ledger_tools
+        ledger = ledger_tools.Ledger(self.ledger)
+        for sha in (first, head):
+            self.assertEqual(git(self.repo, "show", "-s", "--format=%P", sha).split(),
+                             [self.base if sha == first else first])
+            self.assertEqual(ledger.merge(sha).l1_verdict, "invisible")
+            self.assertEqual(ledger.merge(sha).l1_trigger, "agent")
+        self.assertEqual(ledger.runs(), [])  # No L2 measurement was needed.
+        self.assertEqual(ledger_tools.audit(self.ledger), [])
+
+    def test_mixed_landings_partition_prs_and_direct_pushes_in_the_ledger(self) -> None:
+        """Parent count and PR subjects must agree on coverage vs. unjudged."""
+        self.state.write_text(json.dumps({"last_l2_head": self.base}))
+        merged = self._merge("normal", "normal.txt", "normal\n")
+        self._commit("one.txt", "one\n",
+                     "Merge pull request #1318 from arcships/eval-pipeline-test")
+        one = git(self.repo, "rev-parse", "HEAD")
+        subject = "feat: one | two (#1329)"
+        self._commit("two.txt", "two\n", subject)
+        two = git(self.repo, "rev-parse", "HEAD")
+        self._commit("hotfix.txt", "hotfix\n", "chore: straight to main")
+        head = git(self.repo, "rev-parse", "HEAD")
+        self.assertEqual(self._run(mode="visible"), daily_run.EXIT_NOT_COMPARABLE)
+        self.assertEqual(self.built, [head])
+        self.assertEqual(self._state_head(), head)
+        manifest = self._manifest()
+        self.assertEqual([m["sha"] for m in manifest["merges"]], [merged, one, two])
+        self.assertEqual(manifest["merges"][-1]["subject"], subject)
+        self.assertEqual([c["sha"] for c in manifest["direct_pushes"]], [head])
+
+        import ledger_tools
+        ledger = ledger_tools.Ledger(self.ledger)
+        self.assertEqual({m.merge_sha for m in ledger.merges()}, {merged, one, two})
+        for sha, path in ((merged, "normal.txt"), (one, "one.txt"), (two, "two.txt")):
+            self.assertEqual(ledger.merge(sha).l1_verdict, "visible")
+            self.assertEqual(ledger.merge(sha).l1_trigger, "agent")
+            self.assertEqual(ledger.merge(sha).visible_files, (path,))
+        self.assertEqual(ledger.runs()[0].covers, (merged, one, two))
+        self.assertEqual(ledger.runs()[0].unjudged, (head,))
+        self.assertEqual(ledger_tools.audit(self.ledger), [])
+
+    def test_one_parent_pr_judge_outage_holds_the_window_with_fail_open_records(self) -> None:
+        self.state.write_text(json.dumps({"last_l2_head": self.base}))
+        self._commit("one.txt", "one\n",
+                     "Merge pull request #1318 from arcships/eval-pipeline-test")
+        one = git(self.repo, "rev-parse", "HEAD")
+        self._commit("two.txt", "two\n", "feat: change two (#1329)")
+        head = git(self.repo, "rev-parse", "HEAD")
+        self.assertEqual(self._run(mode="crash"), daily_run.EXIT_JUDGE_DOWN)
+        self.assertEqual(self._state_head(), self.base)
+        self.assertEqual(self.built, [])
+        self.assertEqual(self.ran, [])
+        self.assertEqual(self._manifest()["direct_pushes"], [])
+
+        import ledger_tools
+        ledger = ledger_tools.Ledger(self.ledger)
+        for sha in (one, head):
+            self.assertEqual(ledger.merge(sha).l1_trigger, "fail_open")
+        self.assertEqual(ledger.runs(), [])
+        self.assertEqual(ledger_tools.audit(self.ledger), [])
+
     def test_a_checkpoint_that_matches_its_baseline_is_observed_until_armed(self) -> None:
         """A clean comparison decides nothing while the gate is disarmed.
 

@@ -6,7 +6,9 @@ use super::{
 use crate::protocol::{Catalog, CatalogResult, SessionInfo, SessionSummary};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dim_agent_runtime::{AgentError, Result};
-use dim_agent_types::{ContentBlock, EventKind, InputMessageData, ModelId};
+use dim_agent_types::{
+    ContentBlock, EventKind, InputMessageData, ModelId, markup::runtime_context,
+};
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
 
@@ -153,8 +155,11 @@ pub(super) fn refresh(connection: &Connection, session: &str) -> Result<()> {
             let text = user
                 .content
                 .iter()
-                .filter_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                .enumerate()
+                .filter_map(|(index, block)| match block {
+                    ContentBlock::Text { text } if !runtime_context(index, text) => {
+                        Some(text.as_str())
+                    }
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -218,6 +223,8 @@ impl SessionStore {
                     request.with_preview,
                     request.with_internal,
                     request.with_acp_sessions,
+                    request.with_acp_history,
+                    request.with_automation_sessions,
                     request.include_closed,
                 ))
                 .map_err(error)?
@@ -238,7 +245,8 @@ impl SessionStore {
             })
             .transpose()?;
         self.timeline.db.run_read_cancellable(cancel, move |connection| {
-            let index = if request.with_preview { "session_catalog_with_preview" } else { "session_catalog_by_activity" };
+            let acp_history = request.with_acp_sessions && request.with_acp_history;
+            let index = if request.with_preview && !acp_history { "session_catalog_with_preview" } else { "session_catalog_by_activity" };
             let mut sql = format!(
                 "SELECT c.session_id AS session_id, c.cwd, s.created_at_ms, b.sequence, o.agent_id, \
                  m.revision, m.title, m.title_source, c.preview, c.updated_at_ms AS updated_at_ms, \
@@ -249,13 +257,17 @@ impl SessionStore {
                  CROSS JOIN session_owners o ON o.session_id=c.session_id \
                  CROSS JOIN timeline_branches b ON b.session_id=c.session_id AND b.branch_id='main' \
                  LEFT JOIN session_metadata m ON m.session_id=c.session_id \
-                 WHERE o.protocol_version=?1 AND o.agent_id IN (SELECT value FROM json_each(?2)) \
-                 AND c.session_id NOT IN (SELECT value FROM json_each(?3))"
+                 WHERE o.protocol_version<=?1 AND o.agent_id IN (SELECT value FROM json_each(?2)) \
+                 AND (c.session_id NOT IN (SELECT value FROM json_each(?3)){})",
+                if acp_history { " OR s.origin = 'acp'" } else { "" }
             );
             let mut values: Vec<rusqlite::types::Value> = vec![i64::from(version).into(), serde_json::to_string(&hosts).map_err(error)?.into(), serde_json::to_string(&closed).map_err(error)?.into()];
-            if request.with_preview { sql.push_str(" AND c.preview IS NOT NULL"); }
+            if request.with_preview {
+                sql.push_str(if acp_history { " AND (c.preview IS NOT NULL OR s.origin = 'acp')" } else { " AND c.preview IS NOT NULL" });
+            }
             if !request.with_internal { sql.push_str(" AND s.origin != 'internal'"); }
             if !request.with_acp_sessions { sql.push_str(" AND s.origin != 'acp'"); }
+            if !request.with_automation_sessions { sql.push_str(" AND s.origin != 'automation'"); }
             if let Some(agent) = agent { values.push(agent.into()); sql.push_str(&format!(" AND o.agent_id=?{}", values.len())); }
             if let Some(cwd) = request.cwd { values.push(serde_json::to_string(&cwd).map_err(error)?.into()); sql.push_str(&format!(" AND c.cwd IN (SELECT value FROM json_each(?{}))", values.len())); }
             if let Some(query) = request.query {
@@ -466,36 +478,34 @@ mod tests {
             let calls = Arc::new(AtomicUsize::new(0));
             let entered = Arc::new(std::sync::Mutex::new(Some(entered)));
             let blocked = Arc::new(std::sync::Mutex::new(blocked));
-            for reader in &database.readers.connections {
-                let (entered, blocked, observed) =
-                    (entered.clone(), blocked.clone(), calls.clone());
-                reader
-                    .lock()
-                    .unwrap()
-                    .as_ref()
-                    .unwrap()
-                    .create_scalar_function(
-                        "catalog_fold",
-                        1,
-                        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-                        move |ctx| {
-                            observed.fetch_add(1, Ordering::SeqCst);
-                            if let Some(entered) = entered.lock().unwrap().take() {
-                                let _ = entered.send(());
-                                blocked
-                                    .lock()
-                                    .unwrap()
-                                    .recv_timeout(Duration::from_secs(10))
-                                    .expect("the running SQL is released");
-                            }
-                            Ok(ctx
-                                .get::<Option<String>>(0)?
-                                .map(|text| text.to_lowercase()))
-                        },
-                    )
-                    .map_err(error)
-                    .unwrap();
-            }
+            let hook = (entered.clone(), blocked.clone(), calls.clone());
+            database
+                .run_read(move |connection| {
+                    let (entered, blocked, observed) = hook;
+                    connection
+                        .create_scalar_function(
+                            "catalog_fold",
+                            1,
+                            rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                            move |ctx| {
+                                observed.fetch_add(1, Ordering::SeqCst);
+                                if let Some(entered) = entered.lock().unwrap().take() {
+                                    let _ = entered.send(());
+                                    blocked
+                                        .lock()
+                                        .unwrap()
+                                        .recv_timeout(Duration::from_secs(10))
+                                        .expect("the running SQL is released");
+                                }
+                                Ok(ctx
+                                    .get::<Option<String>>(0)?
+                                    .map(|text| text.to_lowercase()))
+                            },
+                        )
+                        .map_err(error)
+                })
+                .await
+                .unwrap();
             let mut wire = connect(address).await;
             send(
                 &mut wire,

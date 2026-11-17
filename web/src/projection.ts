@@ -16,7 +16,7 @@ import type { Goal } from "./goal"
 import type { AskQuestion, ModelFailure, ModelId, ModelProgress, ProviderPresentation, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
-  | { kind: "user"; key: string; text: string; skills?: string[]; at: number; sequence: number; cut: number }
+  | { kind: "user"; key: string; text: string; images?: import("./rpc/protocol").ImageBlock[]; skills?: string[]; hooks?: number; at: number; sequence: number; cut: number }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "thinking"; key: string; text: string; streaming: boolean; elapsedMs?: number }
   | { kind: "tool"; key: string; callId: string; name: string; input: Record<string, unknown>; pending: boolean; result?: ToolResult }
@@ -25,6 +25,7 @@ export type TimelineRow =
   | { kind: "source-message"; key: string; from: string; steer: boolean; final: boolean; body: string }
   | { kind: "source-idle"; key: string; branch: string; status: string }
   | { kind: "source-ended"; key: string; branch: string }
+  | { kind: "hook-follow-up"; key: string; body: string; lines: number }
   | { kind: "error"; key: string; text: string; details?: ModelFailure }
   | { kind: "stopped"; key: string }
 
@@ -49,7 +50,8 @@ export class Projection {
   model: ModelId | undefined
   private answers = new Map<string, Stream>()
   private thoughts = new Map<string, Stream>()
-  private requestStarts = new Map<string, number>()
+  /** The block start of each open thought, its first durable `thinking` event. */
+  private thoughtStarts = new Map<string, number>()
   private tools = new Map<string, number>()
   private lines = new Map<string, number>()
   /** `ask_user` calls whose batch has no `step/tool-result` yet, oldest first. */
@@ -86,7 +88,7 @@ export class Projection {
     const content = event.content
     switch (content.kind) {
       case "input":
-        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, user: content.user })
+        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, hooks: content.hooks, content: content.content, user: content.user })
         break
       case "input-consumed":
       case "input-deleted": this.held.delete(content.inputId); break
@@ -116,11 +118,14 @@ export class Projection {
     switch (content.kind) {
       case "input":
         if (content.text !== undefined) {
+          const images = content.content.filter((block) => block.type === "image")
           this.push({
             kind: "user",
             key: `user-${event.sequence}`,
             text: content.text,
+            ...(images.length === 0 ? {} : { images }),
             skills: content.skills,
+            ...(content.hooks === undefined ? {} : { hooks: content.hooks }),
             at: event.createAt,
             sequence: event.sequence,
             cut: Math.max(0, event.sequence - 1),
@@ -165,19 +170,18 @@ export class Projection {
         break
       }
       case "model-start":
-        this.requestStarts.set(content.requestId, event.createAt)
         break
       case "thinking": {
         this.showedOutput.add(content.requestId)
+        if (!this.thoughts.has(content.requestId)) this.thoughtStarts.set(content.requestId, event.createAt)
         const thought = this.openThinking(content.requestId)
         commit(thought, content.delta)
-        const start = this.requestStarts.get(content.requestId)
-        this.update(thought.index, { text: shown(thought), ...(start === undefined ? {} : { elapsedMs: Math.max(0, event.createAt - start) }) })
+        this.update(thought.index, { text: shown(thought) })
         break
       }
       case "text": {
         this.showedOutput.add(content.requestId)
-        this.closeThinking(content.requestId)
+        this.closeThinking(content.requestId, event.createAt)
         const answer = this.openAnswer(content.requestId)
         commit(answer, content.delta)
         this.update(answer.index, { text: shown(answer) })
@@ -185,10 +189,12 @@ export class Projection {
       }
       case "tool-use":
         this.showedOutput.add(content.requestId)
-        this.closeThinking(content.requestId)
+        this.closeThinking(content.requestId, event.createAt)
         this.closeAnswer(content.requestId)
-        this.requestStarts.delete(content.requestId)
         this.tools.set(content.callId, this.push({ kind: "tool", key: `tool-${content.callId}`, callId: content.callId, name: content.name, input: content.input, pending: true }))
+        break
+      case "tool-use-start":
+        this.closeThinking(content.requestId, event.createAt)
         break
       case "tool-call":
         break
@@ -200,9 +206,8 @@ export class Projection {
         break
       case "model-end": {
         const incomplete = this.showedOutput.delete(content.requestId)
-        this.closeThinking(content.requestId)
+        this.closeThinking(content.requestId, event.createAt)
         this.closeAnswer(content.requestId)
-        this.requestStarts.delete(content.requestId)
         if (content.error !== undefined) {
           const failure = content.failure
           const text = content.presentation !== undefined
@@ -215,9 +220,8 @@ export class Projection {
       }
       case "turn-end": {
         this.lastTurnEnd = event.sequence
-        for (const requestId of [...this.thoughts.keys()]) this.closeThinking(requestId)
+        for (const requestId of [...this.thoughts.keys()]) this.closeThinking(requestId, event.createAt)
         for (const requestId of [...this.answers.keys()]) this.closeAnswer(requestId)
-        this.requestStarts.clear()
         // The marker belongs to this turn only, whatever the outcome.
         const shown = this.shownFailure
         this.shownFailure = undefined
@@ -244,6 +248,7 @@ export class Projection {
     if (progress.thinking !== "") {
       this.showedOutput.add(requestId)
       const thought = this.openThinking(requestId)
+      if (progress.thinkingStartedAt !== undefined && !this.thoughtStarts.has(requestId)) this.thoughtStarts.set(requestId, progress.thinkingStartedAt)
       thought.progress = { text: progress.thinking, offset: progress.thinkingOffset }
       this.update(thought.index, { text: shown(thought) })
     }
@@ -290,12 +295,14 @@ export class Projection {
     return answer
   }
 
-  /** A thought settles when the request moves on: progress never written (an interrupted thought) goes. */
-  private closeThinking(requestId: string): void {
+  /** A thought settles when the request moves on: progress never written (an interrupted thought) goes, and its duration spans its first event to `closedAt`. */
+  private closeThinking(requestId: string, closedAt: number): void {
     const thought = this.thoughts.get(requestId)
     if (thought === undefined) return
     this.thoughts.delete(requestId)
-    this.update(thought.index, { text: thought.written, streaming: false })
+    const start = this.thoughtStarts.get(requestId)
+    this.thoughtStarts.delete(requestId)
+    this.update(thought.index, { text: thought.written, streaming: false, ...(start === undefined ? {} : { elapsedMs: Math.max(0, closedAt - start) }) })
   }
 
   private closeAnswer(requestId: string): void {
@@ -317,6 +324,7 @@ type BranchNotice =
   | { kind: "source-message"; from: string; steer: boolean; final: boolean; body: string }
   | { kind: "source-idle"; branch: string; status: string }
   | { kind: "source-ended"; branch: string }
+  | { kind: "hook-follow-up"; body: string; lines: number }
 
 function branchNotice(text: string, mode: string | undefined): BranchNotice | undefined {
   if (text.startsWith("<dim-branch-message")) {
@@ -339,7 +347,28 @@ function branchNotice(text: string, mode: string | undefined): BranchNotice | un
     const branch = attr(text, "branch")
     return branch === undefined ? undefined : { kind: "source-ended", branch }
   }
+  // One follow-up input carries one block: Hooks writes it in `Branch::stop`
+  // (hooks/runner.rs), one Queue input per round. Taking the first match is
+  // safe while that holds, so a second writer has to keep the shape or change
+  // this reader.
+  if (opensElement(text, "dim-hooks") && hookKind(text) === "follow-up") {
+    const body = unescape(elementBody(text, "</dim-hooks>")).trim()
+    return { kind: "hook-follow-up", body, lines: Math.max(1, body.split("\n").length) }
+  }
   return undefined
+}
+
+/** Whether `text` opens the element `name` itself, and not a longer name that starts with it. */
+function opensElement(text: string, name: string): boolean {
+  if (!text.startsWith(`<${name}`)) return false
+  const after = text.charAt(name.length + 1)
+  return after === ">" || /\s/u.test(after)
+}
+
+/** The `kind` attribute of a `dim-hooks` block, read from its opening tag alone. */
+function hookKind(text: string): string | undefined {
+  const open = text.slice(0, text.indexOf(">") + 1)
+  return attr(open, "kind")
 }
 
 /** The provider's own wording, as the CLI words it: message unless absent, then the action. */

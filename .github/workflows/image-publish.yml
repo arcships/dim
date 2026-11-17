@@ -1,0 +1,217 @@
+name: Publish container image
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published alpha tag (vX.Y.Z-alpha.N)
+        required: true
+        type: string
+      publish:
+        description: Push the accepted image to ghcr.io
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: image-alpha
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/arcships/dim
+jobs:
+  build:
+    if: github.repository == 'arcships/dim'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    environment: image-release
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.image.outputs.digest }}
+      sha: ${{ steps.release.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: refs/tags/${{ inputs.release_tag }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Validate the release tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-alpha\.(0|[1-9][0-9]*)$ ]]
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "SOURCE_SHA=$sha" >> "$GITHUB_ENV"
+      - name: Require a published Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          if ! gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > staging/github-release.json; then
+            echo "Release $RELEASE_TAG is not visible; it must be published and non-draft." >&2
+            exit 1
+          fi
+          if ! jq -e --arg tag "$RELEASE_TAG" \
+            '.draft == false and .prerelease == true and .published_at != null and .tag_name == $tag' \
+            staging/github-release.json > /dev/null; then
+            echo "Release $RELEASE_TAG is not a published, non-draft prerelease." >&2
+            exit 1
+          fi
+      - name: Download the release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          gh release download "$RELEASE_TAG" --dir staging --clobber \
+            --pattern 'dimcode-linux-*.tar.gz' --pattern 'dimcode-web-*.tar.gz' --pattern SHA256SUMS
+      - name: Stage both image rootfs trees
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in linux-x64 linux-arm64; do
+            node scripts/stage-image.mjs \
+              --native "staging/dimcode-$platform-$VERSION.tar.gz" \
+              --web "staging/dimcode-web-$VERSION.tar.gz" \
+              --sums staging/SHA256SUMS \
+              --version "$VERSION" --source-commit "$SOURCE_SHA" \
+              --platform "$platform" --output staging/image
+          done
+      - if: ${{ inputs.publish }}
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
+      - name: Log in to GHCR
+        if: ${{ inputs.publish }}
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Refuse an existing version tag
+        if: ${{ inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if output=$(docker buildx imagetools inspect "$IMAGE:$VERSION" 2>&1); then
+            echo "Image tag $IMAGE:$VERSION already exists." >&2
+            exit 1
+          fi
+          grep -qiE 'manifest unknown|not found|no such manifest' <<<"$output" || {
+            printf '%s\n' "$output" >&2
+            echo "Cannot confirm that $IMAGE:$VERSION is absent; stopping." >&2
+            exit 1
+          }
+      - name: Build the local image
+        if: ${{ !inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64 --load \
+            --build-arg VERSION="$VERSION" --build-arg SOURCE_SHA="$SOURCE_SHA" \
+            --tag "dim-image:$VERSION" -f docker/Dockerfile staging/image
+      - name: Accept the local image
+        if: ${{ !inputs.publish }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm "dim-image:$VERSION" --version | tee version.txt
+          grep -Fx "dimcode $VERSION" version.txt
+          docker run --rm --entrypoint /bin/sh "dim-image:$VERSION" -c \
+            'test -x /opt/dim/bin/dimcode && test -x /usr/local/bin/dim && test -x /usr/local/bin/dimcode && test -f /opt/dim/default-plugins.json && test -f /opt/dim/web/index.html && test "$(id -u)" = 1000'
+      - name: Build and push the multi-platform image
+        if: ${{ inputs.publish }}
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/amd64,linux/arm64 --push \
+            --build-arg VERSION="$VERSION" --build-arg SOURCE_SHA="$SOURCE_SHA" \
+            --provenance=mode=max --sbom=true \
+            --metadata-file "$RUNNER_TEMP/image-metadata.json" \
+            --tag "$IMAGE:$VERSION" -f docker/Dockerfile staging/image
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Published $IMAGE@$digest"
+          docker buildx imagetools inspect "$IMAGE@$digest"
+  accept:
+    needs: build
+    if: ${{ inputs.publish && github.repository == 'arcships/dim' }}
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      ARCH: ${{ matrix.arch }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+      SOURCE_SHA: ${{ needs.build.outputs.sha }}
+    steps:
+      - name: Log in to GHCR
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Pull and run the published image
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${RELEASE_TAG#v}"
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker pull --platform "linux/$ARCH" "$IMAGE@$DIGEST"
+          # The digest is an index; resolve the platform image ID before reading its labels.
+          container=$(docker create --platform "linux/$ARCH" "$IMAGE@$DIGEST")
+          image_id=$(docker inspect --format '{{.Image}}' "$container")
+          docker rm "$container" >/dev/null
+          docker run --rm --platform "linux/$ARCH" "$IMAGE@$DIGEST" --version | tee version.txt
+          grep -Fx "dimcode $VERSION" version.txt
+          docker run --rm --platform "linux/$ARCH" --entrypoint /bin/sh "$IMAGE@$DIGEST" -c \
+            'test -x /opt/dim/bin/dimcode && test -x /usr/local/bin/dim && test -x /usr/local/bin/dimcode && test -f /opt/dim/default-plugins.json && test -f /opt/dim/web/index.html && test "$(id -u)" = 1000'
+          label() {
+            docker image inspect --format "{{ index .Config.Labels \"$1\" }}" "$image_id"
+          }
+          test "$(label org.opencontainers.image.version)" = "$VERSION"
+          test "$(label org.opencontainers.image.revision)" = "$SOURCE_SHA"
+          test "$(label org.opencontainers.image.source)" = "https://github.com/arcships/dim"
+  alpha:
+    needs: [build, accept]
+    if: ${{ inputs.publish && github.repository == 'arcships/dim' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    environment: image-release
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      DIGEST: ${{ needs.build.outputs.digest }}
+    steps:
+      - uses: docker/setup-buildx-action@f7ce87c1d6bead3e36075b2ce75da1f6cc28aaca # v3.9.0
+      - name: Log in to GHCR
+        shell: bash
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Move the accepted index to alpha
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          docker buildx imagetools create -t "$IMAGE:alpha" "$IMAGE@$DIGEST"
+          test "$(docker buildx imagetools inspect "$IMAGE:alpha" --format '{{.Manifest.Digest}}')" = "$DIGEST"
+          docker buildx imagetools inspect "$IMAGE:alpha"

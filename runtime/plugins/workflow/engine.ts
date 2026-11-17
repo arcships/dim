@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { setImmediate as immediate, setTimeout as delay } from 'node:timers/promises'
-import type { InputWrite, PermissionPolicy, SessionRef, Sessions } from '../../../npm/plugin.js'
+import type { InputWrite, PermissionPolicy, ProcessActivity, SessionRef, Sessions } from '../../../npm/plugin.js'
 import { Catalog, select } from './catalog.ts'
 import { parameters, payloadBytes, policy, render, stages, WorkflowError, type Source, type StageDefinition } from './definition.ts'
 import { StageHistory } from './history.ts'
@@ -28,6 +28,7 @@ export class Workflow {
   readonly catalog: Catalog
   readonly sessions: Sessions
   readonly store: RunStore
+  readonly activity: ProcessActivity
   readonly jobs = new Map<string | symbol, Promise<unknown>>()
   readonly abort = new AbortController()
   closing = false
@@ -39,11 +40,12 @@ export class Workflow {
   /// The report's guidance line, with `{run_id}` substituted.
   private readonly reportGuidance: string
 
-  constructor(catalog: Catalog, sessions: Sessions, store: RunStore,
+  constructor(catalog: Catalog, sessions: Sessions, store: RunStore, activity: ProcessActivity,
     reportGuidance = 'Use workflow status with run_id {run_id} for stored stage results.') {
     this.catalog = catalog
     this.sessions = sessions
     this.store = store
+    this.activity = activity
     this.reportGuidance = reportGuidance
   }
 
@@ -57,16 +59,25 @@ export class Workflow {
     console.error('Workflow', this.fault.message)
   }
 
+  private async admitted<T>(work: () => Promise<T>): Promise<T> {
+    const hold = await this.activity.hold()
+    if (hold === null) throw new WorkflowError('service_reloading')
+    try { return await work() }
+    finally { await this.activity.release(hold) }
+  }
+
   track<T>(work: () => Promise<T>): Promise<T> {
     this.available()
     const id = Symbol('call')
-    const task = Promise.resolve().then(work).finally(() => this.jobs.delete(id))
+    const task = this.admitted(work).finally(() => this.jobs.delete(id))
     this.jobs.set(id, task)
     return task
   }
 
-  private own(id: string | symbol, work: () => Promise<void>) {
-    const task = immediate().then(work).catch(error => this.fail(error)).finally(() => {
+  private async own(id: string | symbol, work: () => Promise<void>) {
+    const hold = await this.activity.hold()
+    if (hold === null) throw new WorkflowError('service_reloading')
+    const task = immediate().then(work).finally(() => this.activity.release(hold)).catch(error => this.fail(error)).finally(() => {
       this.jobs.delete(id)
       if (!this.closing) void this.retain().catch(error => console.error('Workflow', 'retention failed', error))
     })
@@ -88,8 +99,8 @@ export class Workflow {
       }
       return runs.filter(run => run.report.state === 'pending').map(run => run.run_id)
     })
-    this.own(Symbol('startup'), async () => {
-      for (const id of pending) this.own(id, () => this.report(id))
+    await this.own(Symbol('startup'), async () => {
+      for (const id of pending) await this.own(id, () => this.report(id))
     })
     this.maintenance = setInterval(() => {
       if (!this.closing) void this.retain().catch(error => console.error('Workflow', 'retention failed', error))
@@ -128,7 +139,7 @@ export class Workflow {
       runs.push(run)
       if (projectedBytes(runs) > payloadBytes) throw new WorkflowError('limit_exceeded')
     })
-    this.own(run.run_id, () => this.drive(run.run_id, configured.document.max_concurrent_stages))
+    await this.own(run.run_id, () => this.drive(run.run_id, configured.document.max_concurrent_stages))
     return run
   }
 
@@ -428,7 +439,7 @@ export class Workflow {
     if (this.pruning) {
       return reserve ? this.pruning.then(() => this.retain(reserve)) : this.pruning
     }
-    const task = this.prune(reserve).finally(() => {
+    const task = this.admitted(() => this.prune(reserve)).finally(() => {
       if (this.pruning === task) this.pruning = undefined
     })
     this.pruning = task

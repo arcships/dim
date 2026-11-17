@@ -2340,12 +2340,10 @@ async fn node_workflow_runs_only_when_enabled_and_its_settings_follow_it() {
     // the agent: never returned, never written through the tool.
     let read = json!({"source": "web", "scope": "user"});
     let current = call(&mut client, "settings.read", read.clone()).await;
-    assert_eq!(
-        current["result"]["document"]["proxyDns"], false,
-        "{current}"
-    );
+    assert_eq!(current["result"]["document"]["proxyDns"], true, "{current}");
     let secret = "dim-test-secret-key";
-    let document = json!({"allowPrivateHosts": [], "proxy": "http://user:pass@127.0.0.1:9", "proxyDns": false,
+    let document = json!({"allowPrivateHosts": [], "blockPrivateAddresses": false,
+        "proxy": "http://user:pass@127.0.0.1:9", "proxyDns": false,
         "searchService": {"kind": "brave", "apiKey": secret}});
     assert_ok(
         &call(
@@ -2582,8 +2580,8 @@ async def apply(ctx, config):
 /// through its link under `<home>/plugins/.python/`, the Python runtime's
 /// import path, registers its tool, and reload picks up an edit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
-async fn node_python_plugin_installs_and_reloads_through_its_link() {
+#[ignore = "requires DIM_TEST_NODE, DIM_TEST_JS_RUNTIME and DIM_TEST_PYTHON"]
+async fn python_plugin_installs_and_reloads_through_its_link() {
     let home = home();
     let mut config = config(&home);
     config.product_home = None;
@@ -2650,6 +2648,7 @@ pub(super) fn product_builder() -> AgentBuilder {
         &mut builder,
         dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
         dim_agent_capabilities::workspace_tools::WorkspaceToolsConfig {
+            boundary: None,
             output_root: std::env::temp_dir().join("dm-pm-outputs"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
@@ -4737,6 +4736,78 @@ async fn a_cancelled_re_acquisition_records_no_error() {
         old,
         "the old copy is still in use"
     );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+/// Hooks A.6.2: a `UserPromptSubmit` hook that fails with the default
+/// `onFailure` proceeds, and the reply names the hook and its reason while the
+/// input carries neither. This drives a real command through the product's
+/// Hooks installation and a real `session.submit`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_prompt_hook_proceeds_and_the_reply_names_it() {
+    let home = home();
+    let mut config = config(&home);
+    config.unix_path = Some(home.join("ipc/server.sock"));
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("hooks.json"),
+        json!({"hooks": {"UserPromptSubmit": [{"hooks": [{
+            "type": "command",
+            "command": "printf 'boom' >&2; exit 3",
+        }]}]}})
+        .to_string(),
+    )
+    .unwrap();
+    let server = serve(hooks_builder(&home), config).await.unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_fixture_model(&mut client).await;
+    let cwd = home.join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let session = session_in(&mut client, &cwd).await;
+
+    let submitted = client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "hello"}),
+        )
+        .await;
+    assert_ok(&submitted);
+    assert_eq!(
+        submitted["result"]["warnings"],
+        json!([{
+            "check": "hooks",
+            "message": "Hook user did not finish: exited with exit status: 3",
+        }]),
+        "the reply names the hook that did not run"
+    );
+    let runtime = server.agent().unwrap().get_session(&session).unwrap();
+    let input = chain_events(&runtime, "main", ..)
+        .await
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match &event.kind {
+            EventKind::InputMessage(data) if data.user.is_some() => Some(data.clone()),
+            _ => None,
+        })
+        .expect("the input was written");
+    assert_eq!(
+        input.user.expect("operator input").content,
+        vec![dim_agent_types::ContentBlock::Text {
+            text: "hello".into()
+        }],
+        "the failure is not model context"
+    );
+    assert!(input.blocks.is_empty(), "the input stays operator input");
+    let idle = client
+        .rpc(
+            "session.idle",
+            json!({"sessionId": session, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&idle);
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

@@ -1,5 +1,10 @@
 use dim_agent_types::MemberApprovalDescriptor;
 
+/// The line that names the member's action: the tool the approval covers.
+pub fn tool_line(descriptor: &MemberApprovalDescriptor) -> String {
+    format!("Tool: {}", descriptor.call.name)
+}
+
 pub fn lines(descriptor: &MemberApprovalDescriptor) -> Vec<String> {
     let member = &descriptor.member;
     let mut lines = vec![
@@ -8,7 +13,7 @@ pub fn lines(descriptor: &MemberApprovalDescriptor) -> Vec<String> {
             member.agent_id, member.session_id
         ),
         format!("Member branch: {}", member.branch_id),
-        format!("Tool: {}", descriptor.call.name),
+        tool_line(descriptor),
         format!("Member reason: {}", descriptor.reason),
     ];
     lines.extend(

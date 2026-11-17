@@ -47,7 +47,7 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
  +----------------------------------------------^-----------------+
                                                 | complete(model, request)
  Session 作用域                                 |
-   SessionTitle（Deps：AuxiliaryModelHost） ----'
+   SessionTitle（Deps：auxiliaryModel） ----'
      model = 其 Settings 来源 `session-title` 的 model，否则为 Session 的模型
 ```
 
@@ -67,7 +67,7 @@ Provider，model-config 配置为 ConfiguredModels）。
 
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
-| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, cost?, currency?}}` |
+| `complete` | async | `{model: {providerId, modelId}, request: {system?: string, messages: Message[], maxOutputTokens?: u32}}` | `{text, stopReason: "end_turn" \| "max_tokens" \| "stop_sequence", usage?: {promptTokens, completionTokens, totalTokens, cacheReadTokens?, cacheWriteTokens?, reasoningTokens?, cost?, currency?}}` |
 
 - `model` 必填。调用方从自己的配置中解析出它；Provider 不回退到其他模型。
 - `messages` 使用现有可序列化的 `Message` 类型（dim-agent-types），例如
@@ -95,18 +95,18 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
     fn complete(&self, model: ModelId, request: AuxiliaryRequest, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-pub struct AuxiliaryModelHost(pub Arc<dyn CompleteAuxiliary>);
+pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
 ```
 
-`auxiliary_model::provide` 把所有者的操作同时绑定为 `AuxiliaryModelHost` 和具名绑定。每个
-所有者的 `apply` 用各自的 `CompleteAuxiliary` 实现调用它；其 `Deps` 增加 `Arc<ModelHost>`。
+`auxiliary_model::provide` 在 Rust 类型键和 `host_key("auxiliaryModel")` 提供同一个
+`AuxiliaryModel`。每个所有者的 `apply` 用各自的 `CompleteAuxiliary` 实现调用它；其 `Deps` 增加 `Arc<ModelHost>`。
 
 ### 4.3 具名绑定
 
 所有者提供的同一个操作经上述共享的 `provide` 在 `host_key("auxiliaryModel")` 实现
 `HostDispatch`，进程 catalog 登记此共享名称。普通 C4 行注入 `auxiliaryModel`，调用
-`complete({model, request})`；Rust 的 SessionTitle 部分改为注入 `AuxiliaryModelHost`，两者
-到达同一个所有者操作。SDK 在
+`complete({model, request})`；Rust 的 SessionTitle 通过 `AuxiliaryModel` 绑定依赖同名的
+`auxiliaryModel` 服务，直接调用所有者操作，不经过序列化。SDK 在
 [`dimcode/plugin`](../../../../npm/plugin.d.ts) 中将其声明为 `AuxiliaryModel`。这是既有操作的绑定，
 不新增插件或另一套模型执行器。
 
@@ -174,7 +174,7 @@ Provider 通过 `ProviderService` 解析模型、通过 `ProductResolver` 解析
 | 部件 | 关系 |
 | --- | --- |
 | 默认选择（`provider.select`） | 不变。`complete` 不使用它 |
-| SessionTitle（P4） | Rust 部分（`dim-session-title`）要求 `AuxiliaryModelHost` 并调用 `complete`；`model` 取其 Settings 来源 `session-title` 中可选的 `model`，否则取前缀中最新 `context/configured` 的模型。没有提供该操作的所有者时，必需依赖让该部分保持 Pending；原生 Session 不依赖该行。具名 `auxiliaryModel` HostDispatch 绑定仍供 TypeScript Session 部分使用。SessionTitle 自身的 Ready 决策和实现仍单独处理 |
+| SessionTitle（P4） | Rust 部分（`dim-session-title`）要求 `AuxiliaryModel` 并调用 `complete`；`model` 取其 Settings 来源 `session-title` 中可选的 `model`，否则取前缀中最新 `context/configured` 的模型。没有提供该操作的所有者时，必需依赖让该部分保持 Pending；原生 Session 不依赖该行。具名 `auxiliaryModel` HostDispatch 绑定仍供 TypeScript Session 部分使用。SessionTitle 自身的 Ready 决策和实现仍单独处理 |
 | 压缩宿主（F1） | 不使用本服务。实现 `ResolveContextModel`；如何选模型、如何读上下文窗口由 F1 设计 |
 | Collaboration | S4 不带来变化。成员模型 = profile 的模型，否则为默认选择；如果以后需要单独的成员默认值，那是 Collaboration 自己的设置 |
 | Modality | 把每个类别的默认模型保存在自己的 Settings 来源 `modality` 中，并显式传入模型。非对话型连接解析是另一项 Provider 补充，不在 S4 内 |

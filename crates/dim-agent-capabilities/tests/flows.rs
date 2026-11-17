@@ -23,7 +23,7 @@ async fn echo_tools_and_observable_state_follow_the_public_flow() {
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|e| matches!(&e.kind, EventKind::Text(data) if data.delta == "Echo: hello")));
-        assert!(matches!(events.last().unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+        assert!(matches!(events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
         assert_eq!(session.get::<LoopSnapshot>("main").unwrap().unwrap().phase, LoopPhase::Idle);
         session.submit("tool:echo {\"text\":\"tool-result\"}".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
@@ -356,7 +356,9 @@ async fn a_refused_idle_release_reopens_the_branch_for_the_running_turn() {
             chain_events(&session, "main", ..)
                 .await
                 .unwrap()
-                .last()
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
                 .unwrap()
                 .kind,
             EventKind::TurnEnd(TurnEndData {

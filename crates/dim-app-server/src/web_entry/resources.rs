@@ -57,7 +57,9 @@ pub(super) async fn session_resource(
         Ok(index) => index,
         Err(_) => return missing(),
     };
-    if index.version_of(&session_id) != Some(crate::protocol::PROTOCOL_VERSION)
+    if index
+        .version_of(&session_id)
+        .is_none_or(|recorded| recorded > crate::protocol::PROTOCOL_VERSION)
         || index.unavailable_session(&session_id).is_some()
     {
         return missing();

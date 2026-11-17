@@ -110,8 +110,7 @@ impl Scan<'_> {
 /// Mirrors TS `getSkillId`.
 fn skill_id(skill_dir: &Path, root: &Path, kind: &RootKind) -> String {
     let rel = skill_dir
-        .strip_prefix(root)
-        .unwrap_or(skill_dir)
+        .trim_prefix(root)
         .components()
         .map(|part| part.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
@@ -154,6 +153,8 @@ fn parse_skill(
     };
     let name = field("name").ok_or_else(|| invalid("missing name"))?;
     let description = field("description").ok_or_else(|| invalid("missing description"))?;
+    let model_invocable = !flag(&data, "disable-model-invocation", &invalid)?.unwrap_or(false);
+    let user_invocable = flag(&data, "user-invocable", &invalid)?.unwrap_or(true);
     if body.is_empty() {
         return Err(invalid("empty body"));
     }
@@ -165,9 +166,32 @@ fn parse_skill(
         name,
         description,
         allowed_tools: normalize_allowed_tools(data.get("allowedTools")),
+        model_invocable,
+        user_invocable,
         file_path: manifest.to_owned(),
         body,
     })
+}
+
+/// A frontmatter flag as written, or `None` when it is absent or empty: `null`,
+/// `~`, a missing key and an empty value all mean the default. A number is not
+/// a flag, and neither is a string or a list: reading it as `false` would
+/// silently turn a mistyped restriction into its opposite, so the manifest is
+/// invalid, like one with no `name`. The frontmatter is the author's
+/// declaration and no default fills a misspelling.
+fn flag(
+    data: &BTreeMap<String, Yaml>,
+    key: &str,
+    invalid: &impl Fn(&str) -> SkillIssue,
+) -> Result<Option<bool>, SkillIssue> {
+    match data.get(key) {
+        None | Some(Yaml::Null) => Ok(None),
+        Some(Yaml::Bool(value)) => Ok(Some(*value)),
+        Some(Yaml::Str(value)) if value.trim().is_empty() => Ok(None),
+        Some(Yaml::Str(_) | Yaml::List(_) | Yaml::Number) => {
+            Err(invalid(&format!("{key} must be true or false")))
+        }
+    }
 }
 
 /// Mirrors TS `normalizeAllowedTools`; descriptive only.
@@ -207,7 +231,12 @@ fn normalize_allowed_tools(raw: Option<&Yaml>) -> Vec<String> {
 enum Yaml {
     Str(String),
     List(Vec<String>),
-    Other,
+    /// `true` or `false`, told apart from the other non-string scalars.
+    Bool(bool),
+    /// `null` or `~`: no value, which every field reads as the default.
+    Null,
+    /// A number, which no field reads as text or as a flag.
+    Number,
 }
 
 /// Mirrors TS `parseSkillFile` over `parseFrontmatter`: a closed, non-empty
@@ -332,15 +361,18 @@ fn collect_indented_block(lines: &[&str], start: usize) -> (Vec<String>, usize) 
 }
 
 fn parse_scalar(raw: &str) -> Yaml {
-    if matches!(raw, "true" | "false" | "null" | "~") {
-        return Yaml::Other;
+    match raw {
+        "true" => return Yaml::Bool(true),
+        "false" => return Yaml::Bool(false),
+        "null" | "~" => return Yaml::Null,
+        _ => {}
     }
     let unquoted = unquote(raw);
     if unquoted.len() != raw.len() {
         return Yaml::Str(unquoted.to_owned());
     }
     if raw.parse::<f64>().is_ok_and(|number| !number.is_nan()) {
-        return Yaml::Other;
+        return Yaml::Number;
     }
     Yaml::Str(raw.to_owned())
 }

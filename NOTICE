@@ -7,7 +7,7 @@ Third-party components retain their own copyright notices and licenses.
 Native distributions include:
 - Rust dependency licenses and copyright files:
   licenses/RUST-THIRD-PARTY-NOTICES.txt.
-- Aimux (MIT): licenses/aimux/LICENSE.
+- Aimux (MIT): licenses/aimux/LICENSE, the upstream license file.
 - Vendored xai-org/grok-build terminal libraries (Apache-2.0), including
   their Ratatui attribution: licenses/grok-build/LICENSE and NOTICE,
   licenses/grok-build/xai-ratatui-inline/NOTICE, and

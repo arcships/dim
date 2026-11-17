@@ -33,9 +33,6 @@ use tokio_util::sync::CancellationToken;
 pub const PROTOCOL: &str = "openai-realtime";
 /// How long the provider has to accept the socket and send its first event.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// The largest provider message the socket accepts; a larger one is refused
-/// by tungstenite while it is still being framed (D3).
-pub const MAX_PROVIDER_MESSAGE_BYTES: usize = 1024 * 1024;
 /// How long one `realtimeSend` may take before the session is abandoned
 /// rather than the socket reused.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
@@ -111,8 +108,6 @@ impl Relay {
                 first_chunk_ms: Some(CONNECT_TIMEOUT.as_millis() as u64),
                 ..Default::default()
             }),
-            // The provider's messages are bounded at the socket (D3).
-            max_message_bytes: Some(MAX_PROVIDER_MESSAGE_BYTES),
             connector: connector(http),
         };
         let socket = tokio::select! {

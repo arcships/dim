@@ -78,13 +78,41 @@ fn rank(command: &Command, query: &str) -> Option<u8> {
     })
 }
 
-/// A skill offered next to the commands (`$skill: name`).
+/// A skill offered next to the commands, as the `/skill:<name>` token.
 #[derive(Debug, Clone)]
 pub struct Skill {
     pub name: String,
     pub description: String,
     pub display_name: Option<String>,
     pub display_description: Option<String>,
+}
+
+/// What a query means for the menu: the part that matches commands, the part
+/// that matches Skill names, and whether the `skill:` namespace confines the
+/// menu to Skills.
+pub struct Query<'a> {
+    pub command: &'a str,
+    pub skill: &'a str,
+    pub skills_only: bool,
+}
+
+/// What `query` means for the menu, in the words of [`Query`]. `/skill:de`
+/// narrows the menu to the Skills whose names start with `de`; any other query
+/// matches commands and Skills as it always did.
+pub fn parse_query(query: &str) -> Query<'_> {
+    let trimmed = query.trim_start();
+    match trimmed.strip_prefix("skill:") {
+        Some(rest) => Query {
+            command: "\u{0}",
+            skill: rest,
+            skills_only: true,
+        },
+        None => Query {
+            command: trimmed,
+            skill: trimmed,
+            skills_only: false,
+        },
+    }
 }
 
 impl Skill {
@@ -98,6 +126,12 @@ impl Skill {
             Some(name) if description.is_empty() => name.clone(),
             Some(name) => format!("{name} · {description}"),
         }
+    }
+
+    /// The row's label: the token the row fills, so the menu reads in the same
+    /// words the draft and the transcript do.
+    fn label(&self) -> String {
+        format!("{}{}", dim_agent_types::skill_token::PREFIX, self.name)
     }
 }
 
@@ -135,11 +169,18 @@ fn filter_skills<'a>(skills: &'a [Skill], query: &str) -> Vec<&'a Skill> {
 }
 
 /// Palette rows for `query`: commands and skills share the list; skills lead
-/// when a skill name matches and no command name does. A command reads
-/// `/name` and its description.
+/// Palette rows for `query`: commands and skills share the list; skills lead
+/// when a skill name matches and no command name does, and the `skill:`
+/// namespace leaves the commands out. A command reads `/name` and its
+/// description, a Skill `/skill:<name>` and its own.
 pub fn rows_for(query: &str, context: Context, skills: &[Skill]) -> Vec<Row> {
-    let commands = filter_commands(query, context);
-    let matched_skills = filter_skills(skills, query);
+    let parsed = parse_query(query);
+    let commands = if parsed.skills_only {
+        Vec::new()
+    } else {
+        filter_commands(parsed.command, context)
+    };
+    let matched_skills = filter_skills(skills, parsed.skill);
     let command_rows: Vec<Row> = commands
         .iter()
         .map(|command| {
@@ -162,7 +203,7 @@ pub fn rows_for(query: &str, context: Context, skills: &[Skill]) -> Vec<Row> {
         .iter()
         .map(|skill| Row {
             kind: Kind::Skill(skill.name.clone()),
-            label: format!("${}", skill.name),
+            label: skill.label(),
             detail: skill.detail(),
             key: None,
             unavailable: false,
@@ -174,12 +215,7 @@ pub fn rows_for(query: &str, context: Context, skills: &[Skill]) -> Vec<Row> {
     if command_rows.is_empty() {
         return skill_rows;
     }
-    let normalized = query
-        .trim()
-        .to_lowercase()
-        .trim_start_matches('$')
-        .trim_start_matches('/')
-        .to_owned();
+    let normalized = parsed.skill.trim().to_lowercase();
     let skills_first = !normalized.is_empty()
         && matched_skills.iter().any(|s| {
             s.name.to_lowercase().starts_with(&normalized)
@@ -308,21 +344,36 @@ pub fn render_overlay(
 ) -> Overlay {
     let inner = width.saturating_sub(4).max(1);
     let padded = max_rows >= 6;
-    let query_rows = if padded { 3 } else { 1 };
+    let query_in_border = max_rows < 4;
+    let query_rows = if padded {
+        3
+    } else {
+        usize::from(!query_in_border)
+    };
     let page = max_rows.saturating_sub(2 + query_rows).clamp(1, 16);
-    let query = truncate_cells(&state.query, inner.saturating_sub(2));
+    let query = truncate_cells(
+        &state.query,
+        inner.saturating_sub(if query_in_border { 4 } else { 2 }),
+    );
+    let query_line = format!("> {query}");
     let mut content = Vec::new();
     if padded {
         content.push(String::new());
     }
-    content.push(format!("> {query}"));
+    if !query_in_border {
+        content.push(query_line.clone());
+    }
     if padded {
         content.push(String::new());
     }
     content.extend(list(state, rows, inner, page, p));
     content.resize(query_rows + page, String::new());
     let title = paint(
-        t("Command Palette"),
+        if query_in_border {
+            &query_line
+        } else {
+            t("Command Palette")
+        },
         Paint {
             fg: Some(&p.accent),
             bold: true,
@@ -332,8 +383,15 @@ pub fn render_overlay(
     Overlay {
         rows: bordered(&content, width, None, &p.border, Some(&title), None),
         cursor: Some((
-            if padded { 2 } else { 1 },
-            (4 + crate::ui::text::display_width(&query)).min(width.saturating_sub(2)) as u16,
+            if query_in_border {
+                0
+            } else if padded {
+                2
+            } else {
+                1
+            },
+            (4 + usize::from(query_in_border) + crate::ui::text::display_width(&query))
+                .min(width.saturating_sub(2)) as u16,
         )),
     }
 }
@@ -445,6 +503,7 @@ mod tests {
             "export",
             "earlier",
             "goal",
+            "loop",
             "tasks",
             "rename",
             "web",
@@ -464,6 +523,8 @@ mod tests {
             "theme",
             "language",
             "keys",
+            "update",
+            "report",
             "exit",
         ];
         for context in [
@@ -505,13 +566,13 @@ mod tests {
             names("/se", SCROLLBACK),
             [
                 "settings", "resume", "new", "models", "effort", "fast", "agent", "fork", "lines",
-                "rename", "mcp"
+                "rename", "mcp", "report"
             ]
         );
         assert_eq!(names("/stg", SCROLLBACK), ["settings"]);
         assert_eq!(
-            &names("/re", SCROLLBACK)[..4],
-            ["resume", "rename", "reload-skills", "effort"]
+            &names("/re", SCROLLBACK)[..5],
+            ["resume", "rename", "reload-skills", "report", "effort"]
         );
         assert!(names("/ss", SCROLLBACK).contains(&"resume"));
         assert!(names("/quit", SCROLLBACK).contains(&"exit"));
@@ -605,6 +666,7 @@ mod tests {
         ]
     }
 
+    /// A shared name is listed twice, the command first.
     #[test]
     fn skills_share_the_list_after_commands() {
         let skills = sample_skills();
@@ -624,20 +686,15 @@ mod tests {
         let panel = render(&state, &rows, 100, 18, &theme.palette);
         let text: Vec<String> = panel.iter().map(|r| strip(r)).collect();
         assert!(text.iter().any(|r| r.contains("2 / 3")), "{text:#?}");
-    }
 
-    /// A Skill and a command of the same name are both offered, the command
-    /// first.
-    #[test]
-    fn a_shared_name_offers_the_command_first() {
-        let skills = vec![Skill {
+        let shared = vec![Skill {
             name: "new".into(),
             description: "Start a fresh session".into(),
             display_name: None,
             display_description: None,
         }];
         for query in ["new", "ne"] {
-            let rows = rows_for(query, SCROLLBACK, &skills);
+            let rows = rows_for(query, SCROLLBACK, &shared);
             assert!(
                 matches!(rows[0].kind, Kind::Command(_)),
                 "{query}: {:?}",
@@ -645,7 +702,8 @@ mod tests {
             );
             assert!(
                 rows.iter()
-                    .any(|row| matches!(&row.kind, Kind::Skill(name) if name == "new"))
+                    .any(|row| matches!(&row.kind, Kind::Skill(name) if name == "new")),
+                "{query}: the skill is offered too"
             );
         }
     }

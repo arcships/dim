@@ -1,0 +1,44 @@
+{
+  "description": "A session already subscribed to CI notices, asked to stop following them",
+  "message": "Stop following CI notices in this session, then tell me which port config.py binds to.",
+  "sources": [
+    {
+      "name": "ci",
+      "guide": "CI notices from the pipeline. Each reports a failed build or test run.",
+      "types": [
+        {
+          "type": "ci.failure",
+          "description": "A CI job failed; the body carries the failing check and its output.",
+          "mode": "queue"
+        }
+      ],
+      "subscribe": {
+        "types": [
+          "ci.failure"
+        ]
+      }
+    }
+  ],
+  "budget": {
+    "turns": 10,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "unsubscribed",
+      "kind": "must_show",
+      "text": "the session's CI subscription is removed through the events tool's unsubscribe action"
+    },
+    {
+      "id": "no-new-subscription",
+      "kind": "must_not_show",
+      "text": "the run creates an event subscription"
+    },
+    {
+      "id": "no-file-changed",
+      "kind": "must_not_show",
+      "text": "the run writes or edits a file in the workspace"
+    }
+  ]
+}

@@ -1,6 +1,5 @@
 //! Integration tests for the persistent shell execution capability.
-//!
-//! Covers the acceptance scenarios from docs/design/appserver/persistent-shell.md §10.
+//! Recovery contract: docs/design/shell-exec-recovery.md.
 
 #![cfg(unix)]
 #[path = "local_support/compaction.rs"]
@@ -25,6 +24,7 @@ use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::*;
 use dim_agent_types::*;
 use process_support::{gone, pid_in};
+use rutis::host::CtxHost;
 use rutis::{Ctx, Plugin};
 use serde_json::{Value, json};
 use std::{
@@ -169,6 +169,7 @@ async fn platform(extra: &[(&str, &str)]) -> HostPlatform {
 struct Harness {
     agent: MinimalHost,
     model: Arc<Script>,
+    store: Arc<MemoryTimelineStore>,
     cwd: PathBuf,
     owned_dirs: Vec<PathBuf>,
     compacting: bool,
@@ -205,10 +206,11 @@ impl Harness {
         compacting: bool,
     ) -> Self {
         let model = Arc::new(Script::default());
+        let store = Arc::new(MemoryTimelineStore::default());
         let mut builder = AgentBuilder::new(AgentConfig::default());
         platform(&mut builder);
         builder
-            .timeline_store(Arc::new(MemoryTimelineStore::default()))
+            .timeline_store(store.clone())
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -259,6 +261,7 @@ impl Harness {
         Self {
             agent,
             model,
+            store,
             owned_dirs: vec![cwd.clone()],
             cwd,
             compacting,
@@ -307,6 +310,111 @@ async fn local_events(session: &Session) -> Vec<Arc<AgentEvent>> {
     branch_events(session, "main", ..).await.unwrap()
 }
 
+/// Ceiling on [`until_settled`] polls, twice the old 30 s bound.
+const MAX_SETTLE_POLLS: u32 = 3000;
+/// Consecutive polls without a single new output byte before
+/// [`until_settled`] gives up: 10 s of a shell that writes nothing.
+const SETTLE_IDLE_POLLS: u32 = 500;
+/// The seconds [`SETTLE_IDLE_POLLS`] and [`MAX_SETTLE_POLLS`] stand for, for
+/// the two failure messages: at 20 ms a poll they must stay in step with the
+/// poll counts above, because each message states what its exit observed.
+const SETTLE_IDLE_SECS: u32 = SETTLE_IDLE_POLLS / 50;
+const SETTLE_CEILING_SECS: u32 = MAX_SETTLE_POLLS / 50;
+
+/// Where [`SettleWait`]'s per-poll bookkeeping says the wait stands.
+#[derive(Debug, PartialEq, Eq)]
+enum SettleDecision {
+    KeepWaiting,
+    /// No new byte for [`SETTLE_IDLE_POLLS`] polls.
+    Idle,
+    /// [`MAX_SETTLE_POLLS`] polls without a settlement.
+    Ceiling,
+}
+
+/// What a wait observed, decided once per poll.
+///
+/// The two exits must not share a reading. Reaching the ceiling does not mean
+/// output was still arriving: a stall can begin inside the final idle window,
+/// leaving too few unchanged polls to reach [`SETTLE_IDLE_POLLS`]. So the
+/// bookkeeping keeps the poll of the last growth and reports it, rather than
+/// inferring anything from which exit fired.
+struct SettleWait {
+    /// The highest total observed so far.
+    seen: u64,
+    /// The one-based poll at which `seen` last grew; `None` if it never did.
+    grown_at: Option<u32>,
+    /// Polls completed, including the current one.
+    polls: u32,
+}
+
+impl SettleWait {
+    fn new() -> Self {
+        Self {
+            seen: 0,
+            grown_at: None,
+            polls: 0,
+        }
+    }
+
+    /// Records one observed total and says what the wait should do next.
+    ///
+    /// The two exits are checked in a fixed order on every poll, including one
+    /// that grew. The idle exit wins a tie: if a poll is both one idle window
+    /// after the last growth and the last poll allowed, the shell has been
+    /// silent for that window, which is what the idle exit reports.
+    fn observe(&mut self, written: u64) -> SettleDecision {
+        self.polls += 1;
+        if written > self.seen {
+            self.seen = written;
+            self.grown_at = Some(self.polls);
+        }
+        if self.since_growth() >= SETTLE_IDLE_POLLS {
+            return SettleDecision::Idle;
+        }
+        if self.polls >= MAX_SETTLE_POLLS {
+            return SettleDecision::Ceiling;
+        }
+        SettleDecision::KeepWaiting
+    }
+
+    /// Polls since the last growth, counting the current one; every poll when
+    /// nothing ever grew.
+    fn since_growth(&self) -> u32 {
+        self.polls - self.grown_at.unwrap_or(0)
+    }
+}
+
+fn settle_timeout(what: &str, decision: SettleDecision, wait: &SettleWait) -> String {
+    match decision {
+        SettleDecision::Idle => format!(
+            "timed out waiting for {what}: no new shell output for \
+             {SETTLE_IDLE_SECS} s"
+        ),
+        SettleDecision::Ceiling => {
+            let growth = match (wait.seen, wait.since_growth()) {
+                (0, _) => "nothing was ever written".to_owned(),
+                (_, 0) => "the last growth was this same poll".to_owned(),
+                (_, since) => format!(
+                    "the last growth {} polls ({} s) before it",
+                    since,
+                    seconds(since)
+                ),
+            };
+            format!(
+                "timed out waiting for {what}: settlement did not arrive by the \
+                 {SETTLE_CEILING_SECS} s ceiling; {} bytes written, {growth}",
+                wait.seen
+            )
+        }
+        SettleDecision::KeepWaiting => unreachable!("a wait does not time out while waiting"),
+    }
+}
+
+/// Polls as seconds at the wait's 20 ms poll, to two decimals.
+fn seconds(polls: u32) -> String {
+    format!("{}.{:02}", polls / 50, (polls % 50) * 2)
+}
+
 async fn until(
     session: &Session,
     what: &str,
@@ -323,6 +431,50 @@ async fn until(
         "timed out waiting for {what}: {:#?}",
         local_events(session).await
     );
+}
+
+/// Waits for `done` while the shell still consumes the burst it was given.
+///
+/// A burst produces no timeline events until it settles, so `until` alone
+/// cannot tell a slow consumer from a stuck one, and a runner that needs
+/// longer than its bound fails what a faster one passes. This budget runs
+/// down only while no task log grows: a consumer that has stopped reading
+/// writes nothing and exhausts it, while one that is merely slow keeps
+/// refreshing it. The bound is therefore about progress, not about how fast
+/// the machine reads 2.7 MB.
+///
+/// It gives up two ways, and [`settle_timeout`] says which one and what was
+/// observed. Reaching the ceiling is not evidence of ongoing output, so the
+/// ceiling text reports the bytes and the last growth instead.
+async fn until_settled(
+    session: &Session,
+    what: &str,
+    done: impl Fn(&[Arc<AgentEvent>]) -> bool,
+) -> Vec<Arc<AgentEvent>> {
+    let mut wait = SettleWait::new();
+    loop {
+        let events = local_events(session).await;
+        if done(&events) {
+            return events;
+        }
+        match wait.observe(exec_output_bytes(&events)) {
+            SettleDecision::KeepWaiting => {}
+            decision => panic!("{}: {:#?}", settle_timeout(what, decision, &wait), events),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Bytes written so far across every task log the branch started.
+fn exec_output_bytes(events: &[Arc<AgentEvent>]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) => Some(data.output_path.as_str()),
+            _ => None,
+        })
+        .map(|path| std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0))
+        .sum()
 }
 
 fn results(events: &[Arc<AgentEvent>]) -> Vec<ToolResult> {
@@ -970,6 +1122,151 @@ async fn occupying_task_settles_after_large_output() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn occupying_task_settles_when_the_output_bursts_past_the_retained_window() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": "seq 1 400000; sleep 1.2; seq 400001 400100",
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until_settled(&session, "exec wake", |events| {
+        !notifications(events).is_empty()
+    })
+    .await;
+    assert_eq!(ended(&events).len(), 1, "exactly one exec/ended");
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.status, ExecStatus::Completed);
+    let output_path = end.result.structured_content.as_ref().unwrap()["outputPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert!(
+        output.ends_with("400100\n"),
+        "{}",
+        &output[output.len() - 100..]
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A POSIX background job's completion marker is looked for on every chunk,
+/// so a burst must still leave the consumer able to settle the job and the
+/// occupying task that follows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_occupying_burst_settles_while_a_background_job_runs() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 3; echo done", "runInBackground": true}),
+            )],
+        )
+        .await;
+    let events = until(&session, "job start", |events| tool_results(events) == 1).await;
+    let job = task_of(&results(&events)[0]);
+
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({
+                    "command": "seq 1 400000; sleep 1.2; seq 400001 400100",
+                    "timeoutMs": 100
+                }),
+            )],
+        )
+        .await;
+    let events = until(&session, "burst start", |events| tool_results(events) == 2).await;
+    let occupying = task_of(&results(&events)[1]);
+    assert!(
+        text(&results(&events)[1]).contains("occupies the shell"),
+        "{}",
+        text(&results(&events)[1])
+    );
+
+    let events = until_settled(&session, "both ends", |events| ended(events).len() == 2).await;
+    let ends = ended(&events);
+    for (task, expected) in [(&job, "done"), (&occupying, "400100\n")] {
+        let (_, end) = ends
+            .iter()
+            .find(|(_, data)| &data.task_id == task)
+            .unwrap_or_else(|| panic!("task {task} never ended: {:#?}", ended(&events)));
+        assert_eq!(end.status, ExecStatus::Completed, "{}", end.task_id);
+        assert!(
+            text(&end.result).contains(expected),
+            "{}",
+            text(&end.result)
+        );
+    }
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_foreground_result_past_the_limit_keeps_the_earliest_bytes() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(&session, &[("execute", json!({"command": "seq 1 30000"}))])
+        .await;
+    let events = until(&session, "tool result", |events| tool_results(events) == 1).await;
+    let result = &results(&events)[0];
+    let text = text(result);
+    assert!(
+        text.starts_with("1\n2\n3\n"),
+        "{}",
+        &text[..100.min(text.len())]
+    );
+    assert!(
+        text.contains("[Output truncated: ") && text.contains(" bytes omitted]"),
+        "{}",
+        &text[text.len() - 200..]
+    );
+    assert!(!text.contains("__DIM_"), "{}", &text[..100]);
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_call_that_converts_before_its_output_writes_only_the_command_output() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "echo first; echo second", "timeoutMs": 0}),
+            )],
+        )
+        .await;
+    let events = until(&session, "exec ended", |events| ended(events).len() == 1).await;
+    let (_, end) = &ended(&events)[0];
+    assert_eq!(end.status, ExecStatus::Completed);
+    let output_path = end.result.structured_content.as_ref().unwrap()["outputPath"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let output = std::fs::read_to_string(output_path).unwrap();
+    assert_eq!(output, "first\nsecond\n");
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn shell_exit_kills_background_jobs() {
     let harness = Harness::new(platform(&[]).await).await;
     let session = harness.session().await;
@@ -1054,5 +1351,293 @@ async fn execute_declares_the_command_it_ran_in_the_digest() {
         "{rendered}"
     );
     session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// Drives [`SettleWait`] with synthetic totals: the poll at index `k`
+/// (zero-based) grows while `k <= grows_through`, and reports `k + 1` bytes;
+/// otherwise it reports zero, which never grows.
+fn drive(grows_through: Option<u32>) -> (SettleDecision, SettleWait) {
+    let mut wait = SettleWait::new();
+    loop {
+        let poll = wait.polls;
+        let grows = grows_through.is_some_and(|last| poll <= last);
+        let total = if grows { u64::from(poll) + 1 } else { 0 };
+        match wait.observe(total) {
+            SettleDecision::KeepWaiting => {}
+            decision => return (decision, wait),
+        }
+    }
+}
+
+/// A total that never grows exits idle exactly one idle window in.
+#[test]
+fn a_wait_with_no_output_at_all_exits_idle() {
+    let (decision, wait) = drive(None);
+    assert_eq!(decision, SettleDecision::Idle);
+    assert_eq!(wait.polls, SETTLE_IDLE_POLLS);
+}
+
+/// A log that grows on every poll never reaches the idle exit, because every
+/// poll grows, so the ceiling is the only way out. The final poll is exactly
+/// the poll that grew, so the bookkeeping reports zero polls since the last
+/// growth and the text names that same poll.
+#[test]
+fn a_continuously_growing_log_exits_at_the_ceiling() {
+    let (decision, wait) = drive(Some(MAX_SETTLE_POLLS + 1));
+    assert_eq!(decision, SettleDecision::Ceiling);
+    assert_eq!(wait.polls, MAX_SETTLE_POLLS);
+    assert_eq!(wait.since_growth(), 0);
+    let text = settle_timeout("exec wake", decision, &wait);
+    assert!(
+        text.contains("the last growth was this same poll"),
+        "{text}"
+    );
+    assert!(!text.contains("still writing"), "{text}");
+}
+
+/// A stall inside the last idle window: growth through zero-based poll 2501,
+/// then flat for good. Only 498 unchanged polls follow, short of the 500 the
+/// idle exit needs, so it reaches the ceiling — and the ceiling text must
+/// report the 9.96 s of silence rather than claim the shell was still writing.
+#[test]
+fn a_stall_inside_the_last_idle_window_still_exits_at_the_ceiling() {
+    let (decision, wait) = drive(Some(2501));
+    assert_eq!(decision, SettleDecision::Ceiling);
+    assert_eq!(wait.since_growth(), 498);
+    let text = settle_timeout("exec wake", decision, &wait);
+    assert!(text.contains("last growth 498 polls (9.96 s)"), "{text}");
+    assert!(!text.contains("still writing"), "{text}");
+}
+
+/// Growth through poll 2499, then flat: the 500th unchanged poll is poll 3000,
+/// which is also the ceiling. The idle exit is checked first, so a stall that
+/// begins exactly one idle window before the ceiling is named as a stall.
+#[test]
+fn a_stall_one_idle_window_before_the_ceiling_exits_idle() {
+    let (decision, wait) = drive(Some(2499));
+    assert_eq!(decision, SettleDecision::Idle);
+    assert_eq!(wait.polls, MAX_SETTLE_POLLS);
+    assert_eq!(wait.since_growth(), SETTLE_IDLE_POLLS);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restoring_shell_exec_prefixes_settles_orphans_and_reposts_only_missing_wakes() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    session.idle("main").await.unwrap();
+    assert!(session.unload_if_idle().await.unwrap());
+    let key = TimelineKey {
+        session_id: session.id().into(),
+        branch_id: "main".into(),
+    };
+    let output = harness.cwd.join("partial.log");
+    std::fs::write(&output, "partial output").unwrap();
+    let marker = harness.cwd.join("must-not-run");
+    let description = format!("touch {}", marker.display());
+    let started = |task: &str| {
+        EventKind::ExecStarted(ExecStartedData {
+            turn_id: "old-turn".into(),
+            request_id: "old-request".into(),
+            call_id: task.into(),
+            task_id: task.into(),
+            description: format!("{description} # {task}"),
+            title: None,
+            output_path: output.to_string_lossy().into_owned(),
+        })
+    };
+    let end = |task: &str, status| {
+        EventKind::ExecEnded(ExecEndedData {
+            task_id: task.into(),
+            status,
+            result: ToolResult::text("already finished"),
+        })
+    };
+    let drafts = vec![
+        EventDraft::from(started("exec-orphan")),
+        EventDraft::from(started("exec-lost")),
+        EventDraft::from(end("exec-lost", ExecStatus::Completed)),
+        EventDraft::from(started("exec-cancelled")),
+        EventDraft::from(end("exec-cancelled", ExecStatus::Cancelled)),
+    ];
+    let mut sequence = harness.store.head(&key).await.unwrap();
+    for draft in drafts {
+        sequence += 1;
+        let event = Arc::new(AgentEvent {
+            id: uuid::Uuid::new_v4().to_string(),
+            sequence,
+            create_at: 0,
+            tags: draft.tags,
+            parent_call_id: None,
+            kind: draft.kind,
+        });
+        let (sent, committed) = tokio::sync::oneshot::channel();
+        harness
+            .store
+            .append(
+                key.clone(),
+                vec![StoredEvent {
+                    event,
+                    trace: None,
+                    batch_end: sequence,
+                }],
+                Box::new(move |result| {
+                    let _ = sent.send(result);
+                }),
+            )
+            .unwrap();
+        committed.await.unwrap().unwrap();
+    }
+    let restored = harness
+        .agent
+        .restore_session(session.id().to_owned())
+        .await
+        .unwrap();
+    let events = until(
+        &restored,
+        "shell recovery terminals and notices",
+        |events| {
+            events
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::ExecEnded(_)))
+                .count()
+                == 3
+                && notifications(events).len() == 2
+        },
+    )
+    .await;
+    let ends = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::ExecEnded(data) => Some(data),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        ends.iter()
+            .find(|end| end.task_id == "exec-orphan")
+            .unwrap()
+            .status,
+        ExecStatus::Failed
+    );
+    assert_eq!(
+        ends.iter()
+            .find(|end| end.task_id == "exec-lost")
+            .unwrap()
+            .status,
+        ExecStatus::Completed
+    );
+    assert_eq!(
+        ends.iter()
+            .find(|end| end.task_id == "exec-cancelled")
+            .unwrap()
+            .status,
+        ExecStatus::Cancelled
+    );
+    assert!(
+        notifications(&events)
+            .iter()
+            .all(|(task, _)| task != "exec-cancelled")
+    );
+    for task in ["exec-orphan", "exec-lost"] {
+        let tag = format!("exec-wake-task:{task}");
+        let notice = events
+            .iter()
+            .find(|event| {
+                event.tags.iter().flatten().any(|value| value == &tag)
+                    && matches!(event.kind, EventKind::InputMessage(_))
+            })
+            .expect("each recovered task has a notice");
+        let EventKind::InputMessage(input) = &notice.kind else {
+            unreachable!();
+        };
+        let expected = format!("{description} # {task}");
+        assert!(
+            input.blocks.iter().any(|block| matches!(block,
+                InputBlock::Raw { text, .. } if text.contains(&expected)
+            )),
+            "the notice must contain its own stored command description: {task}"
+        );
+    }
+    assert!(
+        !marker.exists(),
+        "restoration must not execute a historical command"
+    );
+    assert_eq!(std::fs::read_to_string(&output).unwrap(), "partial output");
+    restored.idle("main").await.unwrap();
+    assert!(restored.unload_if_idle().await.unwrap());
+    let again = harness
+        .agent
+        .restore_session(session.id().to_owned())
+        .await
+        .unwrap();
+    again.idle("main").await.unwrap();
+    let again_events = local_events(&again).await;
+    assert_eq!(
+        notifications(&again_events),
+        notifications(&events),
+        "reported ends must not wake twice"
+    );
+    assert_eq!(
+        again_events
+            .iter()
+            .filter(|e| matches!(e.kind, EventKind::ExecEnded(_)))
+            .count(),
+        3
+    );
+    harness.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
+    let harness = Harness::new(platform(&[]).await).await;
+    let session = harness.session().await;
+    harness
+        .run(
+            &session,
+            &[(
+                "execute",
+                json!({"command": "sleep 60", "runInBackground": true}),
+            )],
+        )
+        .await;
+    let before = until(&session, "live shell admission", |events| {
+        count(events, "exec/started") == 1 && tool_results(events) == 1
+    })
+    .await;
+    assert!(ended(&before).is_empty());
+    session.idle("main").await.unwrap();
+    let plugins = session.branch_diagnostics("main").unwrap().plugins;
+    let recovery = plugins
+        .iter()
+        .find(|plugin| plugin.name == "BackgroundExec")
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        harness.agent.root().view(recovery.id).unwrap().restart(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let after = until(&session, "old shell settlement", |events| {
+        ended(events).len() == 1 && notifications(events).len() == 1
+    })
+    .await;
+    assert_eq!(count(&after, "exec/started"), 1);
+    assert!(
+        text(&ended(&after)[0].1.result).contains("shell was reset"),
+        "the live shell must settle before recovery inspects history"
+    );
+    harness
+        .run(
+            &session,
+            &[("execute", json!({"command": "printf new-generation"}))],
+        )
+        .await;
+    session.idle("main").await.unwrap();
+    let final_events = local_events(&session).await;
+    assert_eq!(ended(&final_events).len(), 1);
+    assert_eq!(notifications(&final_events), notifications(&after));
+    assert!(text(results(&final_events).last().unwrap()).contains("new-generation"));
     harness.shutdown().await;
 }

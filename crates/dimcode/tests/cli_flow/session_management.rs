@@ -30,7 +30,7 @@ fn the_product_profile_installs_native_titles_without_a_foreign_runtime() {
             }
         }
     };
-    let hello = call("hello", json!({"protocolVersion":3,"clientKind":"cli"}));
+    let hello = call("hello", json!({"protocolVersion":4,"clientKind":"cli"}));
     assert!(hello.get("result").is_some(), "{hello}");
     let settings = call(
         "settings.read",
@@ -482,6 +482,7 @@ fn tui_rename_without_a_session_sends_nothing() {
         } else {
             "--scrollback"
         });
+        sized(&mut command, 120, 24);
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
         terminal.write(b"/new\r");
@@ -713,7 +714,7 @@ fn session_delete_reads_a_reply_without_the_field_as_a_delete() {
 }
 
 #[test]
-fn session_delete_reports_a_daemon_without_the_method() {
+fn session_delete_and_cleanup_report_a_daemon_without_the_method() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         wire.hello(&["session.summaries"]);
@@ -731,6 +732,70 @@ fn session_delete_reports_a_daemon_without_the_method() {
             .contains("This daemon does not support deleting Sessions"),
         "{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.summaries"]);
+        wire.hold();
+    });
+    let output = home
+        .command()
+        .args(["session", "cleanup", "--keep", "1", "--yes"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("This daemon does not support cleaning up Sessions"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// #1421: a launched Session belongs to its plugin, so cleanup never selects
+/// an origin it does not know — `automation` included.
+#[test]
+fn session_cleanup_never_selects_a_launched_session() {
+    let home = Home::new();
+    let daemon = home.daemon(|wire| {
+        wire.hello(&["session.summaries", "session.delete"]);
+        let listed = wire.read("session.summaries");
+        let mut sessions = three_sessions();
+        for (index, class) in ["automation", "internal", "acp"].iter().enumerate() {
+            sessions.as_array_mut().unwrap().push(origin(
+                summary(
+                    &format!("{class}-{index}"),
+                    Some("Hidden"),
+                    4 * 24 * HOUR + HOUR,
+                ),
+                class,
+            ));
+        }
+        wire.reply(&listed, sessions);
+        // The conversation is the only row selected: a run that selected a
+        // launched class asks to delete one of those ids first.
+        let delete = wire.read("session.delete");
+        assert_eq!(delete["params"], require_inactive("a"));
+        wire.reply(&delete, json!({}));
+    });
+    let output = home
+        .command()
+        .args(["session", "cleanup", "--older-than", "2d", "--yes"])
+        .output()
+        .unwrap();
+    daemon.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["a\t-\t3d ago", "Deleted a"],
+        "only the conversation is selected and deleted, so the launched rows survive"
     );
 }
 
@@ -903,28 +968,6 @@ fn session_cleanup_asks_on_a_terminal() {
         assert!(terminal.wait().success(), "{}", terminal.transcript);
         daemon.join().unwrap();
     }
-}
-
-#[test]
-fn session_cleanup_reports_a_daemon_without_the_method() {
-    let home = Home::new();
-    let daemon = home.daemon(|wire| {
-        wire.hello(&["session.summaries"]);
-        wire.hold();
-    });
-    let output = home
-        .command()
-        .args(["session", "cleanup", "--keep", "1", "--yes"])
-        .output()
-        .unwrap();
-    daemon.join().unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("This daemon does not support cleaning up Sessions"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
 }
 
 #[test]

@@ -1,125 +1,135 @@
-//! Image blocks in a request the model cannot take become text, per request
-//! (Attachments A.1). The rule covers user content and tool results alike.
+//! Image blocks become content references per request (Attachments A.1).
+//! The rule covers user content and tool results alike.
 //! The adopted input and the history are never changed.
-use base64::Engine;
+use crate::host::{HostError, SessionFiles};
+use crate::images::image_reference;
 use dim_agent_types::*;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 const NO_IMAGE_INPUT: &str = "[Image omitted: the current model does not accept images.]";
 const UNSENDABLE: &str = "[Image omitted: the image cannot be sent to this model.]";
 
-/// Image formats every adapter accepts (feature list).
-const FORMATS: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-
-/// Returns the request to send: the same request when every image is sent as
-/// is, otherwise a copy whose unsendable images are text placeholders.
-pub(super) fn adapt(request: &Arc<ModelRequest>) -> Arc<ModelRequest> {
-    // Unknown capability: the image is sent and the provider decides (A4).
+/// Returns the request with image references or placeholders in place of
+/// image blocks, sharing messages that contain no images.
+pub(super) async fn adapt(
+    request: &Arc<ModelRequest>,
+    files: Option<&SessionFiles>,
+    cancel: &CancellationToken,
+) -> Result<Arc<ModelRequest>, HostError> {
     let vision = request
         .capability_snapshot
         .as_ref()
         .is_none_or(|snapshot| snapshot.capabilities.vision);
-    let replaced: Vec<_> = request
-        .messages
-        .iter()
-        .map(|message| replace_images(message, vision))
-        .collect();
-    if replaced.iter().all(Option::is_none) {
-        return request.clone();
+    let mut replacements = Vec::new();
+    for (index, message) in request.messages.iter().enumerate() {
+        if let Some(message) = replace_images(message, request, files, vision, cancel).await? {
+            replacements.push((index, Arc::new(message)));
+        }
     }
-    let mut adapted = (**request).clone();
-    adapted.messages = request
-        .messages
-        .iter()
-        .zip(replaced)
-        .map(|(message, replaced)| replaced.map_or_else(|| message.clone(), Arc::new))
-        .collect();
-    Arc::new(adapted)
+    if replacements.is_empty() {
+        return Ok(request.clone());
+    }
+    Ok(Arc::new(ModelRequest {
+        provider_id: request.provider_id.clone(),
+        model_id: request.model_id.clone(),
+        capability_snapshot: request.capability_snapshot.clone(),
+        messages: replace_selected(&request.messages, replacements),
+        tools: request.tools.clone(),
+        system: request.system.clone(),
+        config: request.config.clone(),
+        metadata: request.metadata.clone(),
+    }))
 }
 
-/// The message with its unsendable images replaced, or `None` if it has none.
-fn replace_images(message: &Message, vision: bool) -> Option<Message> {
+/// The message with its images replaced, or `None` if it has none.
+async fn replace_images(
+    message: &Message,
+    request: &ModelRequest,
+    files: Option<&SessionFiles>,
+    vision: bool,
+    cancel: &CancellationToken,
+) -> Result<Option<Message>, HostError> {
     let MessageContent::Parts(parts) = &message.content else {
-        return None;
+        return Ok(None);
     };
-    let mut changed = false;
-    let parts = parts
-        .iter()
-        .map(|part| match part {
-            MessagePart::Image { source } => {
-                let Some(text) = placeholder(source, vision) else {
-                    return part.clone();
-                };
-                changed = true;
-                MessagePart::Text {
-                    provider_metadata: None,
-                    text: text.into(),
-                    start_time: None,
-                    end_time: None,
-                }
-            }
+    let mut replacements = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        let replacement = match part {
+            MessagePart::Image { source } => Some(MessagePart::Text {
+                provider_metadata: None,
+                text: reference_or_placeholder(source, request, files, vision, cancel).await?,
+                start_time: None,
+                end_time: None,
+            }),
             MessagePart::ToolResult {
                 tool_use_id,
-                content,
+                content: ToolContent::Blocks(blocks),
                 structured_content,
                 is_error,
             } => {
-                let ToolContent::Blocks(blocks) = content else {
-                    return part.clone();
-                };
-                let mut replaced = false;
-                let blocks = blocks
-                    .iter()
-                    .map(|block| match block {
-                        ContentBlock::Image { source } => match placeholder(source, vision) {
-                            Some(text) => {
-                                replaced = true;
-                                ContentBlock::Text { text: text.into() }
-                            }
-                            None => block.clone(),
+                let mut replacements = Vec::new();
+                for (index, block) in blocks.iter().enumerate() {
+                    let ContentBlock::Image { source } = block else {
+                        continue;
+                    };
+                    replacements.push((
+                        index,
+                        ContentBlock::Text {
+                            text: reference_or_placeholder(source, request, files, vision, cancel)
+                                .await?,
                         },
-                        block => block.clone(),
-                    })
-                    .collect();
-                if !replaced {
-                    return part.clone();
+                    ));
                 }
-                changed = true;
-                MessagePart::ToolResult {
+                (!replacements.is_empty()).then(|| MessagePart::ToolResult {
                     tool_use_id: tool_use_id.clone(),
-                    content: ToolContent::Blocks(blocks),
+                    content: ToolContent::Blocks(replace_selected(blocks, replacements)),
                     structured_content: structured_content.clone(),
                     is_error: *is_error,
-                }
+                })
             }
-            _ => part.clone(),
-        })
-        .collect();
-    changed.then(|| Message {
-        role: message.role,
-        content: MessageContent::Parts(parts),
-    })
-}
-
-/// The placeholder an image becomes, or `None` when the image is sent as is.
-fn placeholder(source: &ImageSource, vision: bool) -> Option<&'static str> {
-    if !vision {
-        Some(NO_IMAGE_INPUT)
-    } else if !sendable(source) {
-        Some(UNSENDABLE)
-    } else {
-        None
+            _ => None,
+        };
+        if let Some(part) = replacement {
+            replacements.push((index, part));
+        }
     }
+    Ok((!replacements.is_empty()).then(|| Message {
+        role: message.role,
+        content: MessageContent::Parts(replace_selected(parts, replacements)),
+    }))
 }
 
-/// A URL source, undecodable data or a format adapters do not accept (A10).
-fn sendable(source: &ImageSource) -> bool {
-    source.source_type == ImageSourceType::Base64
-        && FORMATS.contains(&source.media_type.as_str())
-        && source.data.as_deref().is_some_and(|data| {
-            !data.is_empty()
-                && base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .is_ok()
+fn replace_selected<T: Clone>(values: &[T], replacements: Vec<(usize, T)>) -> Vec<T> {
+    let mut replacements = replacements.into_iter().peekable();
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            if replacements.peek().is_some_and(|(at, _)| *at == index) {
+                replacements.next().unwrap().1
+            } else {
+                value.clone()
+            }
         })
+        .collect()
+}
+
+async fn reference_or_placeholder(
+    source: &ImageSource,
+    request: &ModelRequest,
+    files: Option<&SessionFiles>,
+    vision: bool,
+    cancel: &CancellationToken,
+) -> Result<String, HostError> {
+    crate::context_policy::check_cancel(cancel)?;
+    let resolved;
+    let source = if source.source_type == ImageSourceType::File {
+        resolved = crate::session_files::resolve(request, files, source, cancel).await?;
+        &resolved
+    } else {
+        source
+    };
+    Ok(image_reference(source)
+        .unwrap_or_else(|| if vision { UNSENDABLE } else { NO_IMAGE_INPUT }.into()))
 }

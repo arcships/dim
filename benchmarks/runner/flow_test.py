@@ -11,6 +11,7 @@ Run: python3 -m unittest discover -s benchmarks/runner -p 'flow_test.py'
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import random
@@ -1065,6 +1066,36 @@ class JobConfigKeyVarTest(unittest.TestCase):
         # never be written into the recorded config.
         self.assertEqual(agent_env["MODEL_API_KEY"], "${MODEL_API_KEY}")
         self.assertEqual(agent_env["DIM_EVAL_MODEL_CONFIG_JSON"], settings.model_config)
+
+
+class ProviderSettingsProbeUrlTest(unittest.TestCase):
+    """Provider roots remain compatible with the model identity probe."""
+
+    def test_model_identity_requests_the_expected_endpoint(self) -> None:
+        cases = (
+            ("https://provider.invalid", "https://provider.invalid/v1"),
+            ("https://provider.invalid/", "https://provider.invalid/v1"),
+            ("https://provider.invalid/v1", "https://provider.invalid/v1"),
+            ("https://provider.invalid/v1/", "https://provider.invalid/v1"),
+            ("https://provider.invalid/api/v3", "https://provider.invalid/api/v3"),
+            ("https://provider.invalid/api/v3/", "https://provider.invalid/api/v3"),
+            ("http://v3/", "http://v3/v1"),
+        )
+        for base_url, expected_root in cases:
+            with self.subTest(base_url=base_url):
+                settings = run_l2.ProviderSettings(
+                    provider="test", model="m", base_url=base_url,
+                    api_key_env="MODEL_API_KEY", model_config="{}",
+                )
+                with mock.patch.dict(os.environ, {"MODEL_API_KEY": "test-key"}), \
+                        mock.patch("urllib.request.urlopen", return_value=io.BytesIO(
+                            b'{"model": "m"}'
+                        )) as endpoint, mock.patch("sys.stdout", new=io.StringIO()):
+                    identity = run_l2.check_model_identity(settings, None)
+                request = endpoint.call_args.args[0]
+                self.assertEqual(request.full_url, expected_root + "/chat/completions")
+                self.assertEqual(identity.base_url, expected_root)
+                self.assertEqual(identity.model_reported, "m")
 
 
 if __name__ == "__main__":

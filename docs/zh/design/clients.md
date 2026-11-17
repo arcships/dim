@@ -6,7 +6,7 @@
 
 ## 1. 客户端
 
-每个客户端都是 App Server daemon 的协议 v3 客户端。daemon 无界面、共享：每个产品 home 一个，一个执行者、多个查看者（[Tui §3.6](../../design/plugins/Tui.md#36-ui-registry-and-ui-leaves)）。客户端负责展示、协议适配和本地交互；执行、宿主配置和持久化的 Session 归 App Server（[功能清单](../../feature-list.md)）。
+每个客户端都是 App Server daemon 的协议 v4 客户端。daemon 无界面、共享：每个产品 home 一个，一个执行者、多个查看者（[Tui §3.6](../../design/plugins/Tui.md#36-ui-registry-and-ui-leaves)）。客户端负责展示、协议适配和本地交互；执行、宿主配置和持久化的 Session 归 App Server（[功能清单](../../feature-list.md)）。
 
 ```mermaid
 flowchart TB
@@ -48,7 +48,7 @@ flowchart TB
 
 | 契约 | 负责文档 |
 | --- | --- |
-| 线路协议 v3：分帧、`hello` 与功能声明、通知 | `crates/dim-app-server/src/protocol.rs`（没有文字版参考，见 §4 第 4 条）；[App Server README](../../../crates/dim-app-server/README.md) |
+| 线路协议 v4：分帧、`hello` 与功能声明、通知 | `crates/dim-app-server/src/protocol.rs`（没有文字版参考，见 §4 第 4 条）；[App Server README](../../../crates/dim-app-server/README.md) |
 | Session 方法与管理方法之分，以及每种入口提供哪些方法 | [Session 边界](contracts/session-boundary.md)（A.3 入口）、[管理方法](../../design/appserver/management-methods.md) |
 | 读取 Session：先 `session.attach`，再按固定的头部读 `session.history`，然后接收实时的 `session.event`、`session.state`、`session.model.progress`；由客户端自己折叠。attach 的回复携带该 Session 的 `SessionInfo`，其中 `model` 取自该 Session 最近采纳的配置，而 `session.summaries` 的条目在 [#795](https://github.com/arcships/dim/issues/795) 完成前仍报告创建时的模型，因此打开已知 Session 的客户端从它取模型，不读目录；重载期间标题字段缺失、`running` 为 false，随后的通知将其更正 | [Session 访问](contracts/session-access.md)、[CLI 命令](cli-commands.md)；[#276](https://github.com/arcships/dim/issues/276) 的处理结论 |
 | 不属于 Timeline 事实的广播通知（`session.notice`，例如标题） | [Session 广播通知](appserver/session-notices.md) |
@@ -56,7 +56,7 @@ flowchart TB
 | 查看 Session 的界面：UI 登记处，终端界面作为 UI 叶子（`ui.open`、`ui.attach`、`ui.status`） | [Tui §3.6](../../design/plugins/Tui.md#36-ui-registry-and-ui-leaves) |
 | 供所有客户端使用的 Provider 管理 | [Provider 管理](appserver/provider-management.md) |
 
-CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能；web 客户端及其静态资源要求协议版本完全一致（[Web 工作区 §2.4](../../design/web-workspace.md)）。
+CLI 要求协议 v4，以及 `session.create` 和 `session.history` 两项功能。CLI 按自身版本握手：只有在替换本可执行文件自己的 daemon 或停止 home 的 daemon 时，才接受 daemon 允许的最高版本（下限 v3），并且绝不在低于自身版本的连接上运行 Session。web 客户端及其静态资源要求协议版本完全一致（[Web 工作区 §2.4](../../design/web-workspace.md)）。
 
 ## 3. 能力覆盖
 
@@ -67,10 +67,10 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 | 能力 | CLI | Web | 来源 |
 | --- | --- | --- | --- |
 | 登录、登出（OAuth，守护进程描述的每个提供方） | 已实现 | — | [提供方账号](cli-commands.md#提供方账号) |
-| API-key Provider 的添加/编辑/测试/启用/禁用/切换 | 已实现；删除：CLI 中无（服务端已支持）；模型列表编辑：`/models` → `Edit models` 与 `dimcode models PROVIDER` | 已实现，含模型列表与偏好写入（`provider.models.*`、`provider.preferences.update`） | [Provider 管理](appserver/provider-management.md) |
+| API-key Provider 的添加/编辑/测试/启用/禁用/切换 | 已实现；删除：CLI 中无（服务端已支持）；模型列表编辑：`/models` → `Manage models` 与 `dimcode models PROVIDER` | 已实现，含模型列表与偏好写入（`provider.models.*`、`provider.preferences.update`） | [Provider 管理](appserver/provider-management.md) |
 | 切换模型 | 已实现 | 已实现 | `session.model.update` |
 | 推理强度、快速模式 | 已实现（`/effort`、`/fast`，以及 `/models` 中用 ←/→ 调整） | — | [模型配置](../../design/model-configuration.md) |
-| 子 agent 模型策略 | 已完成（`/models` → Subagent models） | — | [子 agent 模型策略](../../design/subagent-model-policy.md)、[#263](https://github.com/arcships/dim/issues/263) |
+| 子 agent 模型策略 | 已完成（`/models` → `Subagent models` 分区） | — | [子 agent 模型策略](../../design/subagent-model-policy.md)、[#263](https://github.com/arcships/dim/issues/263) |
 | 辅助模型 | 服务端已按所有者设计（例如 SessionTitle）；没有客户端界面 | — | [AuxiliaryModel](appserver/auxiliary-model.md) |
 
 ### 3.2 Session 管理
@@ -82,7 +82,7 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 | `/timeline` 与消息操作 | TUI 已实现；它同时取代了 `/history` 的翻页 | — | [Timeline UI §4.6](timeline-ui.md#46-timeline跳到某条消息) |
 | 标题 | 自动生成：已实现（可选的 SessionTitle 包）；手动重命名：已设计 | — | [SessionTitle](plugins/SessionTitle.md) |
 | Fork | CLI 中已设计（服务端 `session.fork` 已实现） | 后续阶段 | [Session 删除与 fork](appserver/session-deletion-and-fork.md) |
-| 删除与清理 | CLI 中已设计（服务端 `session.delete` 已实现） | 后续阶段 | 同上 |
+| 删除与清理 | 已实现：`dimcode session delete`/`cleanup`，以及 `/resume` 中一次一行的删除 | 后续阶段 | [Session 删除与 fork](appserver/session-deletion-and-fork.md) |
 | 文件回滚、文件与对话一起回滚 | 不做 | 不做 | [总体设计](overview.md)附录 A |
 | 请求快照导出 | 已实现（`dimcode export`）；过滤条件：已设计 | — | [Timeline 导出](appserver/timeline-export.md) |
 
@@ -90,12 +90,12 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 
 | 能力 | CLI | Web | 来源 |
 | --- | --- | --- | --- |
-| 发送、排队（运行中按 `Enter`）、自动发送、引导（`Ctrl+S`，或草稿为空时按 `Enter`）、中断 | 已实现 | 发送和停止：已实现；排队：后续阶段 | InputQueue（S1） |
+| 发送、引导（运行中按 `Enter`，缺省）、排队（`Ctrl+S`）、自动发送、引导空草稿（`Enter`）、中断、中断并立即发送（`Ctrl+Enter`） | 已实现 | 已实现：Web 输入框提供同样的两种模式，缺省值由浏览器保存；中断并立即发送为 `Ctrl+Enter`（macOS 为 `⌘+Enter`）（[Web 工作区](../../design/web-workspace.md#45-sending-during-a-run)） | InputQueue（S1） |
 | 线：树、切换、新建、发送、停止、审批、结束 | 已实现 | 已实现（右侧 Lines 面板） | [Timeline 线](../../design/timeline-branches.md) §14、[Web 工作区](../../design/web-workspace.md#41-lines-and-branch) |
 | `/queue` 面板与删除排队消息 | 无 | — | 服务端契约已实现（S1） |
 | 取回排队消息重新编辑 | 已实现；带附件的消息会丢失附件（§4 第 3 条） | — | |
 | 多行、粘贴、大段粘贴、图片、混合附件、`@` 文件、`!` / `!!` | 已实现 | 附件：后续阶段 | [CLI 附件输入](../../design/cli-attachment-input.md)、[ShellInput](plugins/ShellInput.md) |
-| Skill 引用：`/` 选单列出 Skill，`$skill: <name>` 让它在随消息提交时加载 | 已实现 | 无 | [Skills](../../design/plugins/Skills.md#9-references-load-with-the-operators-input) |
+| Skill 引用：`/` 选单列出 Skill，`/skill:<name>` token 让它在随消息提交时加载 | 已实现 | 无 | [Skills](../../design/plugins/Skills.md#9-references-load-with-the-operators-input) |
 | 剪贴板文本、图片、文件；选区复制；OSC 52 | 已实现 | 浏览器自带 | |
 | 通过消息操作复制消息 | 无 | — | |
 | 打开链接、工具分组、`/tools` | 已实现 | 已实现（渲染） | |
@@ -113,7 +113,7 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 | 能力 | CLI | Web | 来源 |
 | --- | --- | --- | --- |
 | `/settings`：主题、语言、启动形态、鼠标、通知、审批 | 已实现 | 后续阶段（需要先决定管理方法，§6） | 模型选择使用 `/model`（`/models`），不在 `/settings` 中。 |
-| `/settings`：子 agent 模型、辅助模型、默认多模态模型、执行 Shell、沙箱、提示词语言 | 已在别处设计，没有客户端界面 | — | 总体设计 B.1、[Modality](plugins/Modality.md) |
+| `/settings`：子 agent 模型、辅助模型、默认多模态模型、执行 Shell、沙箱、提示词语言 | 已在别处设计，没有客户端界面；回复语言是 Session 设置（`session.language.get/update`），不是 `/settings` 项 | — | 总体设计 B.1、[Modality](plugins/Modality.md)、[PromptSources §3](plugins/PromptSources.md#3-agent-prompt-language-状态来源) |
 | `/settings`：VS Code 聚焦、资源监控、套餐用量显示 | 无 | — | |
 | `/settings`：ACP Session 显示 | 不支持：没有原生持久化 client-origin 字段 | — | [AcpGateway](plugins/AcpGateway.md#a5-client-label) |
 | `/usage` | 上下文用量；当前模型使用 Dim OAuth 时也显示账号用量 | — | [CLI 用量报告](cli-commands.md#用量报告) |
@@ -130,7 +130,7 @@ CLI 要求协议 v3，以及 `session.create` 和 `session.history` 两项功能
 1. 复制消息（`/timeline` 及其他消息操作见 [Timeline UI §4.6](timeline-ui.md#46-timeline跳到某条消息)）。
 2. `/queue` 面板与删除排队消息（服务端契约已有）。
 3. 取回带附件的排队消息：`QueuedInput` 只保存文本，附件会丢失。要么像功能清单写的那样由客户端拒绝取回，要么让队列保留附件。
-4. 协议 v3 的文字版参考：线路格式只在 `protocol.rs` 里定义，相关说明分散在 App Server README 和各功能设计中。
+4. 协议 v4 的文字版参考：线路格式只在 `protocol.rs` 里定义，相关说明分散在 App Server README 和各功能设计中。
 5. Web 工作区里的提问：它处理审批，但不处理 `ask_user`，而 Web 工作区 §4 也没有把它列为推迟项。
 6. Session 列表按项目/全部切换、`/debug`、其余 `/settings` 项、终端界面内导出、`dimcode upgrade`。
 
@@ -179,6 +179,6 @@ flowchart LR
 1. **全屏终端界面。** 代码已经交付了它，总体设计却说不在范围内。要么接受它在范围内（更新总体设计和 CLI 命令文档，并决定回滚和 `/stats` 是否仍不做），要么冻结它。
 2. **Web 第二阶段的范围**，包括回环 web 入口能否为设置页面提供管理方法（Web 工作区 Q2），以及 Web 工作区是否必须支持提问。
 3. **§4 中哪些缺口要做设计**，归哪个里程碑：`/timeline` 与消息操作、`/queue`、排队消息的附件。
-4. **协议 v3 参考文档**（§4 第 4 条）：写一份，还是继续以代码为准。
+4. **协议 v4 参考文档**（§4 第 4 条）：写一份，还是继续以代码为准。
 5. **开放的客户端 issue 归哪个里程碑**：[#263](https://github.com/arcships/dim/issues/263)（成员 transcript 卡片、子 agent 模型策略的运行时）、[#264](https://github.com/arcships/dim/issues/264)（Workflow 视图）、[#386](https://github.com/arcships/dim/issues/386)（UI 事件传给 agent）。
 6. **路线图中客户端负责线的负责人。**

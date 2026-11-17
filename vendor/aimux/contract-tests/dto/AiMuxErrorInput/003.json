@@ -1,7 +1,0 @@
-{
-  "name": "AI_APICallError",
-  "message": "recoverable mock error",
-  "url": "https://mock.invalid",
-  "requestBodyValues": {},
-  "isRetryable": false
-}

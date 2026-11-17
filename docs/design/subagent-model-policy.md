@@ -6,13 +6,7 @@ Business owner: Collaboration.
 Scope: the model-policy part of [#263](https://github.com/arcships/dim/issues/263)
 and [the feature list](../feature-list.md#providers-and-models).
 
-The confirmed scope applies inherit/fixed policy to **every newly created native
-Collaboration member Session**, including a named Agent such as `reviewer`. Workflow
-stages and Scheduler runs keep their `sessions.launch` model precedence; leader
-`/agent` profile adoption is unchanged. Collaboration members cannot delegate, so
-there is no nested-member policy. Existing member Sessions retain their
-configuration. The configuration and interfaces below were approved in
-[#352](https://github.com/arcships/dim/pull/352).
+The confirmed scope applies inherit/fixed policy to **every newly created native Collaboration member Session**, including a named Agent such as `reviewer`. Workflow stages keep their `sessions.launch` model precedence; a Scheduler launch names an Agent profile and runs that profile's model; leader `/agent` profile adoption is unchanged. Collaboration members cannot delegate, so there is no nested-member policy. Existing member Sessions retain their configuration. The configuration and interfaces below were approved in [#352](https://github.com/arcships/dim/pull/352).
 
 ## 1. Behavior
 
@@ -75,7 +69,9 @@ No leader tool table or prompt content is copied.
 Inheritance preserves existing model options and metadata, including any Provider
 route stamp or its absence. It does not resolve a different default model or read
 Provider's saved client preferences. Fixed/agent selection also retains its current
-profile-resolution semantics; saved client preferences are not implicitly applied.
+profile-resolution semantics: it resolves at the model's declared defaults, because
+a consumer model never applies the preferences a person saved for their own
+Sessions.
 Actual execution still checks availability through the existing model owner.
 Inheritance performs no creation-time resolution: a disabled/deleted model or a
 mismatched present route stamp therefore fails the member's first request and
@@ -194,33 +190,48 @@ Read-only detail/cards display that observed model, not a guess from current pol
 
 ## 5. Native CLI interaction
 
-Add one action to the existing `/models` picker. It edits policy, not the leader's
-current model. The fixed option reuses the model picker with a policy-selection
-purpose; choosing it sends neither `session.model.update` nor `provider.select`.
-It writes only `collaboration.set_model_policy`, preserving both the leader's
-adopted model and Provider's scoped default.
+Add one action to the existing `/models` dialog, in its `Subagent models`
+section ([CLI commands](cli-commands.md#the-models-area)). It edits policy, not
+the leader's current model, and the section shows the policy as it stands. The
+fixed option reuses the model picker with a policy-selection purpose; choosing
+it sends neither `session.model.update` nor `provider.select`. It writes only
+`collaboration.set_model_policy`, preserving both the leader's adopted model
+and Provider's scoped default.
 
 ```text
-Select a model                  Subagent models
-  Current provider / model        Agent choice (default)
-  Other provider / model          Inherit requesting branch
-  Edit models                     Fixed model > select from existing picker
-  Subagent models: Agent choice
+Models
+  Conversation model
+  > Search models
+  › Current provider / model           high  current
+  Selected: Current provider / model
+  Subagent models
+  › Agent choice                                            Enter
+  Model management
+  › Manage models                                   3 providers
+
+Subagent models
+  Agent choice (default)
+  Inherit requesting branch
+  Fixed model > the model candidates again
 
 Applies to new members, including named Agents.
 Existing members keep their models.
 ```
 
-Read the source revision on opening and after a successful own write. On conflict,
-keep the selection visible and require reread before another save. Cancel performs
-no write. A failed/empty fixed-model listing leaves the existing policy intact.
-Hosts without the advertised management methods omit this action; no legacy or
+The section is outside the scrolling candidate list, so a long catalog never
+hides it; Tab / Shift+Tab reaches it, and Enter opens the flow. Read the source
+revision on opening and after a successful own write. On conflict, keep the
+selection visible and require reread before another save. Cancel performs no
+write. A failed/empty fixed-model listing leaves the existing policy intact.
+Hosts that do not advertise the policy methods omit this section; no legacy or
 in-memory write fallback is added. No independent settings screen or second
 command route is required for this TUI scope.
 
-The picker's `Edit models` row opens the models management area for the Provider
-its row names, and is absent from a daemon that does not advertise
-`provider.management` ([CLI commands](cli-commands.md#the-models-area)).
+The `Manage models` entry opens the Provider list whose rows name each Provider
+and its state, and choosing one opens the models management area for that
+Provider ([CLI commands](cli-commands.md#the-models-area)). It is absent from a
+daemon that does not advertise `provider.management`, whose diagnostics stay
+read-only there.
 
 ## 6. Implementation and acceptance
 

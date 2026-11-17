@@ -88,7 +88,7 @@ async fn streaming_reads_pin_files_and_end_with_storage() {
     let directory = Directory::new();
     let authorized = directory.0.join("authorized");
     let source = authorized.join("media.bin");
-    let bytes: Vec<_> = (0..200_000).map(|i| (i % 251) as u8).collect();
+    let bytes = Vec::from_fn(200_000, |i| (i % 251) as u8);
     fs::write(&source, &bytes).unwrap();
     let (root, _, storage) = mount(authorized.clone()).await;
     let cancel = CancellationToken::new();
@@ -737,7 +737,7 @@ async fn streaming_replacement_and_nested_directories_stay_inside_the_authorized
     assert_eq!(fs::read(root_path.join("media/plain")).unwrap(), b"plain");
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
 
-    let bytes: Vec<u8> = (0..200_003u32).map(|i| (i % 251) as u8).collect();
+    let bytes: Vec<u8> = Vec::from_fn(200_003, |i| (i % 251) as u8);
     let target = path("media/one/blob.bin");
     let mut lease = storage.lock(&target, &cancel).await.unwrap();
     lease

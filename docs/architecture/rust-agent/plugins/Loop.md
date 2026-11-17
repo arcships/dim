@@ -8,6 +8,7 @@ exposes loop state without itself executing model or tool effects.
 
 | Service | Purpose |
 | --- | --- |
+| `B:ContextPreparation` | Transfer the request-local projection without another history read. |
 | `S:HistoryRenderer` | Render supported context history for requests. |
 | `S:ContextModelHost` | Window facts; with the strategy, context recovery and manual compaction are available. |
 | `S:CompactionStrategyHost` | The compaction strategy its manual step calls through ContextPolicy. |
@@ -22,16 +23,16 @@ exposes loop state without itself executing model or tool effects.
 
 Consumes `input/applied`, `input/consumed`, the `input/message` and
 `input/deleted` of handover inputs, `stop/interrupt`, turn boundaries,
-`step/model-start`, tool-use start/use, model-output-end, `step/disposition`,
+`step/model-start`, tool-use start/use, model-output-end,
 tool-start/completed/result, `context/compact` and `context/compaction`.
 Produces turn start/end, input consumption, model-start, `context/prepare`,
-`step/disposition`, tool-call and recovery terminal facts. `AgentLoop::compact` writes
+tool-call and recovery terminal facts. `AgentLoop::compact` writes
 `context/compact`; the Loop serves it as a compaction step at its next step
 boundary, or at once with no turn, and starts no request or turn while the step
 runs (ContextCompaction §5.4). An interrupt cancels a running step and settles a
 pending command; reload settles both as `cancelled`. Preparation work is tracked; handlers
 schedule it without waiting for host I/O. Cleanup cancels and joins work.
-Recovery queries applied inputs without consumption, unsettled manual compaction
+Recovery queries current ordinary/handover input members, then applied facts for only those IDs, unsettled manual compaction
 commands/starts, the last interrupt and the last turn boundary at one committed
 cut. Only an open turn needs a paged read of its request control fields. Input
 selection keeps the entire branch range, including applications before that
@@ -47,128 +48,110 @@ that opens and closes turns it checks that the named turn is the open one and
 not already ending, commits the `stop/interrupt` only then, and writes nothing
 for any other id.
 
-## A failed model step and its disposer
+## Failure handling boundaries
 
-The Loop owns one port, the disposer of a failed model step. The port is a
-Rust-only operation, like the Permission advice precedent. Any Rust branch
-part may register one disposer under a name, as an effect of that part,
-following the
-[Permission advice](Permission.md#tool-advice) precedent: the registration lasts
-while the part runs, unloading withdraws it, a withdrawal while the Loop waits
-counts as no answer, and cancelling drops the pending answer. At most one
-disposer is registered on a branch, and a second registration fails. The port
-has one operation, `dispose(handover, cancel)`: `handover` is `{turn_id,
-request_id, failure_sequence}`, where `failure_sequence` is the sequence of the
-failed `step/model-output-end`; the answer is `continue {input_id}` or
-`finish`. The disposer answers promptly and observes `cancel`: it reads
-committed facts, writes at most one handover input, and does no other waiting.
-One that blocks keeps the handover open until stop, steer or branch close, each
-of which always ends it. The port names no plugin and no provider category, and
-the Loop never interprets the failure.
+Request-local retries belong to [ModelProvider](ModelProvider.md), under the
+[retry policy](../../../design/model-failures.md#4-retry). Loop handles the
+settled failure: context-budget recovery when applicable, the bounded
+continuation below, output-limit completion, or turn failure. These paths do
+not require a registered recovery plugin.
 
-### Opening a handover
+Plugin-decided continuation after partial output is a separate
+[ModelRecovery proposal](../../../design/plugins/ModelRecovery.md), not a Loop
+service or event available to callers.
 
-The Loop considers a handover when it consumes `step/model-output-end` with
-`status: failed`. All of these must hold; otherwise the step settles without a
-handover: budget recovery when it applies, `turn/end` Failed otherwise.
+## A failed step whose calls were announced and never executed
 
-- the terminal carries a structured `failure`; a context-preparation failure
-  has none;
-- the Loop's own budget recovery does not apply;
-- the turn is open, not interrupted, not ending and not a turn the rebuild
-  failed;
-- no driving input (steer or queue) is pending;
-- every tool batch of the turn is settled;
-- a disposer is registered.
+The Loop checks the failed output for calls it announced
+and never ran. A failed output executes nothing: a top-level tool batch is
+written only from a `ModelOutputOutcome::Completed` output, and ToolExecutor
+consumes `step/tool-call` alone, so `step/tool-use-start` without a batch is the
+whole evidence. ModelProvider has already closed every such call with an error
+result in the same batch as the terminal.
 
-Opening writes no fact. The Loop keeps the handover in its turn state and runs
-one disposition task, tracked like its other step tasks.
+When the request announced at least one such call, no driving input is pending,
+the turn is not interrupted, the turn's continuation is unspent, and the failure
+is one a new request can settle, the Loop releases the failed request's tool
+binding and starts one new request in the same turn. The order is fixed:
 
-### The disposition task
+1. the context-budget fact applies: budget recovery runs, exactly as before,
+   and it neither reads nor spends the turn's continuation;
+2. a call was announced, the continuation is unspent, the provider did not veto
+   retrying the failure, and its kind is one a new request can settle: one
+   continuation;
+3. the failure is an output-limit stop: `turn/end` Completed with reason
+   `output_limit`, whether or not the slot is spent;
+4. otherwise `turn/end` Failed.
 
-The task waits for the first of four outcomes:
+A kind a new request can settle is `network`, `rate_limited`, `server_error`,
+`malformed_response`, `output_limit` or `unknown`. The kinds that need the user
+or another owner to act first never continue: `auth_rejected`,
+`quota_exhausted`, `not_found`, `invalid_request`, `content_filtered` and
+`context_too_long`. The same context fails the same way, an unrecoverable
+rejection is not repeated behind the user's back, and a context that is too
+long is budget recovery's case when its fact applies. The provider's veto is
+`ModelFailure.retryForbidden`, written by ModelProvider's failure policy; the
+model-failures contract says the prohibition covers a continuation
+([model-failures](../../../design/model-failures.md)). A failed terminal with no
+structured failure does not continue. The gate matches
+`ModelFailureKind` exhaustively, so a new kind forces a decision here.
 
-- the disposer answers; the task appends `step/disposition` with that answer;
-- the disposer errors; it appends `finish`;
-- the disposer is withdrawn; it appends `finish`;
-- stop, steer or branch close cancels it; it appends nothing.
+The continuation is a plain request with tools, as after a settled batch, so
+the model can re-issue the call it withdrew. It reads the committed error
+results and carries no injected instruction. Its `context/prepare` carries the
+failed request's `failure_chain`, its attempts and waited time, so both
+requests spend one 8-call, 300 s budget instead of the continuation taking a
+second one. A compaction step that runs at the boundary before the
+continuation keeps the chain across the step and passes it to the request the
+step's resumption starts. The turn accepts this automatic continuation at most
+once. An output-limit stop is not a failure of the turn:
+it ends Completed, and its `step/model-output-end` stays for diagnostics.
 
-The task never ends the turn itself, so stop and steer are ordered against the
-decision by Timeline sequence.
+### The continuation's tool boundary
 
-`step/disposition {turn_id, request_id, failure_sequence}` is a new core kind in
-the `step` domain. Its `decision` is `continue {input_id}` with `input_id`
-required, or `finish` without one; a record of any other shape fails to decode.
-The Loop's disposition task is its only writer, and its only reader is the
-Loop's in-sequence consumption: it orders the disposer's answer against stop
-and steer, which is why it is a Timeline fact (§4.9).
+This continuation declares tools because the failed request ran none of the
+calls it announced:
 
-### Consuming `step/disposition`
+- only a Completed output produces `step/tool-call`
+  ([agent_loop.rs](../../../../crates/dim-agent-capabilities/src/agent_loop.rs));
+- the batch's handler claims are made immediately before that append and held
+  with the request's tool snapshot, so a call that is never dispatched — here,
+  because the turn ends before the batch — releases whatever it claimed when the
+  snapshot is dropped (ToolExecution, [Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact));
+- ToolExecutor consumes `step/tool-call` and nothing else
+  ([tool_executor.rs](../../../../crates/dim-agent-capabilities/src/tool_executor.rs)),
+  so no call of a failed output reaches a tool;
+- ModelProvider closes the failed output's started calls as error results in
+  the terminal's batch
+  ([model_provider.rs](../../../../crates/dim-agent-capabilities/src/model_provider.rs)).
 
-- **Stale.** The turn is closed, the handover was dropped, or the identity does
-  not match the open handover; the Loop ignores it.
-- **`finish`.** The Loop writes `turn/end` Failed with the original failure's
-  error.
-- **`continue`.** The named input must be a handover input of this handover
-  ([InputQueue](InputQueue.md#handover-inputs)) that is neither deleted nor
-  consumed; otherwise the Loop treats the answer as `finish`. Then one batch,
-  in this order:
-  - `input/consumed` for every pending Append input;
-  - `input/consumed` for the handover input, so its text is the last model
-    message;
-  - `step/model-start` for a new request id in the same turn.
-
-The continuation request is prepared fresh from committed history, so the
-committed partial output and the real tool results are context. It does not
-reuse the failed request's prepared source, as budget recovery does. It
-declares no tools and carries `failure_chain`; a call it emits is refused at
-the stream boundary and by the executor (ToolExecution).
-
-### While a handover is open
-
-- **Stop.** `stop/interrupt` cancels the task, and the Loop ends the turn
-  Cancelled itself; it does not leave a turn with no request for the next
-  `next_model`.
-- **Steer.** A steer drops the handover and cancels the task. The steer is
-  consumed by a normal request in the same turn, with tools, under the
-  existing steer contract.
-- **Append.** Append inputs wait for the next request.
-- **Queue.** Queue inputs are held to turn end.
-- **Manual compaction.** An open handover is not a step boundary, and starting
-  the continuation is not one. A `context/compact` consumed while a handover is
-  open waits for the next boundary after the continuation request ends, which
-  for a text-only continuation is the turn's end; on `finish` it runs once the
-  turn has ended, as with no turn. A compaction before the continuation could
-  summarize away the committed partial output the continuation must continue
-  from. The `ContextCompact` handler starts a step
-  only when the turn has no request, no handover is open and no continuation
-  batch is being written; the continuation batch order is unchanged.
-- **Reload.** The rebuild fails the open turn
-  ([agent_loop.rs](../../../../crates/dim-agent-capabilities/src/agent_loop.rs)),
-  and a late `step/disposition` is stale.
-- **Fork and replay.** No model or tool effect is replayed. A fork's rebuild
-  fails an open turn, and its late decisions are stale.
-
-### The bound
-
-The wait ends on the disposer's answer, its withdrawal, which unloading always
-causes, stop, steer or branch close. There is no wall-clock timer: a
-disposition does no waiting of its own, and any backoff belongs to
-ModelProvider inside the continuation request.
+No eager or streaming path bypasses these boundaries, so the continuation stands
+where a normal step stands after a settled batch of error results. A call it
+makes is a new attempt under the same approval, permission and non-idempotence
+rules, not a replay of an executed operation.
 
 ## Tests
 
+[host_flows.rs](../../../../crates/dim-agent-capabilities/tests/host_flows.rs),
 [flows.rs](../../../../crates/dim-agent-capabilities/tests/flows.rs),
 [interrupt_flow.rs](../../../../crates/dim-agent-capabilities/tests/interrupt_flow.rs),
 [context_flow.rs](../../../../crates/dim-agent-capabilities/tests/context_flow.rs)
-cover turn progression, interruption, pending-input restore and the manual
-compaction step.
+cover the failed-step settlements this page states, the continuation for calls
+that were never executed, the retry chain it shares, turn progression,
+interruption, pending-input restore and the manual compaction step.
 
 <!-- generated:plugin Loop — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost` |
+| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost` |
 | 提供 | `B:AgentLoop`、`B:StateCell<LoopSnapshot>`、`B:dyn LoopState` |
 | 被注入于 | — |
 <!-- /generated -->
+
+## Request Session identity
+
+When Loop constructs `ContextPrepareData.request`, it writes the owning Timeline's
+Session ID into request metadata. This identity is fixed before context preparation
+and persisted with the model call. Final model execution uses it for Session-scoped
+file reads; model configuration cannot select another Session's files.

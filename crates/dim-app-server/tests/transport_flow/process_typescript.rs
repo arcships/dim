@@ -1177,3 +1177,200 @@ async fn node_workflow_files_enforces_project_and_original_row_package_authority
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_reads_the_five_host_ports_through_the_product_owners() {
+    use dim_agent_capabilities::{
+        execution_settings::ExecutionSettingsHost,
+        host::{ModelSelectionHost, ModelSelectionRequest, SelectableModelsHost},
+        prompt_suggestion::PromptSuggestionSettingsHost,
+        toolchain::ToolchainSourceHost,
+    };
+    let home = home();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"host-port-reads",
+        "name":parts.anchor.parent().unwrap().join("fixtures/host-port-reads.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    let model = dim_agent_types::ModelId {
+        provider_id: "018ec73f-0000-7000-8000-000000000007".into(),
+        model_id: "fixture".into(),
+    };
+    let mut reply = files_available(&mut client, "hostports.read", json!({"model":model})).await;
+    let cancel = CancellationToken::new();
+    let models = server.service::<SelectableModelsHost>().unwrap();
+    let selection: dim_agent_types::ModelSelection =
+        serde_json::from_value(reply.as_object_mut().unwrap().remove("selection").unwrap())
+            .unwrap();
+    assert_eq!(
+        selection,
+        server
+            .service::<ModelSelectionHost>()
+            .unwrap()
+            .resolve(
+                ModelSelectionRequest::at(Some(model), None).unwrap(),
+                cancel.clone()
+            )
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        reply,
+        json!({
+            "execution": server.service::<ExecutionSettingsHost>().unwrap().read(cancel.clone()).await.unwrap(),
+            "toolchains": server.service::<ToolchainSourceHost>().unwrap().list().unwrap(),
+            "suggestions": server.service::<PromptSuggestionSettingsHost>().unwrap().read(cancel.clone()).await.unwrap(),
+            "models": models.selectable_models(cancel.clone()).await.unwrap(),
+            "modalities": models.selectable_for_modality(cancel).await.unwrap()
+        })
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_session_files_reuses_native_storage_and_ownership() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use dim_agent_capabilities::host::{SessionFiles, StoredSessionFile};
+    let home = std::fs::canonicalize("/tmp")
+        .unwrap()
+        .join(format!("dsf-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let source = home.join("source.bin");
+    let bytes = vec![0x5a; 16 * 1024 * 1024];
+    std::fs::write(&source, &bytes).unwrap();
+    let output = home.join("output.txt");
+    std::fs::write(&output, b"owned output").unwrap();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"session-files", "name":parts.anchor.parent().unwrap().join("fixtures/session-files.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    let owner = client
+        .rpc("session.create", json!({"cwd":home,"tools":[]}))
+        .await;
+    assert_ok(&owner);
+    let owner = owner["result"]["sessionId"].as_str().unwrap();
+    let other = client
+        .rpc("session.create", json!({"cwd":home,"tools":[]}))
+        .await;
+    assert_ok(&other);
+    let other = other["result"]["sessionId"].as_str().unwrap();
+    let reply = files_available(
+        &mut client,
+        "sessionfilesprobe.exercise",
+        json!({
+            "sessionId":owner, "otherSessionId":other, "source":source, "output":output
+        }),
+    )
+    .await;
+    let put: StoredSessionFile = serde_json::from_value(reply["put"].clone()).unwrap();
+    let imported: StoredSessionFile = serde_json::from_value(reply["imported"].clone()).unwrap();
+    assert_eq!(std::fs::read(&put.path).unwrap(), b"wire text");
+    assert_eq!(imported.bytes, bytes.len() as u64);
+    assert_eq!(std::fs::read(&imported.path).unwrap(), bytes);
+    let files = server.service::<SessionFiles>().unwrap();
+    let chunk = files
+        .0
+        .read(
+            owner.into(),
+            imported.file_id.clone(),
+            0,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(chunk, bytes[..64 * 1024]);
+    assert_eq!(
+        reply["first"],
+        json!({"data":STANDARD.encode(chunk),"eof":false})
+    );
+    assert_eq!(reply["end"], json!({"data":"","eof":true}));
+    assert_eq!(reply["owned"], json!({"owned":true}));
+    assert!(files.0.owns(owner.into(), output.clone()).await.unwrap());
+    let native_paths = files.0.owned_paths(owner.into()).await.unwrap();
+    assert_eq!(reply["paths"], json!({"paths":native_paths}));
+    assert_eq!(reply["foreignError"], "not_found");
+    let denied = files
+        .0
+        .read(other.into(), imported.file_id, 0, CancellationToken::new())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        denied.code,
+        dim_agent_capabilities::host::SessionFileErrorCode::NotFound
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_reads_prompt_overrides_from_the_same_owner_as_native_consumers() {
+    use dim_agent_capabilities::{
+        prompt_sources::BasePromptSettingsHost, skills::SkillsInstructionsSettingsHost,
+        summary_strategy::SummaryPromptSettingsHost,
+    };
+    let home = home();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"prompt-settings",
+        "name":parts.anchor.parent().unwrap().join("fixtures/prompt-settings.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "promptsettingsprobe.read", json!({})).await,
+        json!({"base":null,"skills":null,"summary":null})
+    );
+    for document in [json!({"base":"B","skills":"K","summary":"S"}), json!({})] {
+        let current = client
+            .rpc("settings.read", json!({"source":"prompts","scope":"user"}))
+            .await;
+        assert_ok(&current);
+        assert_ok(
+            &client
+                .rpc(
+                    "settings.update",
+                    json!({
+                        "source":"prompts", "scope":"user",
+                        "expectedRevision":current["result"]["revision"], "document":document
+                    }),
+                )
+                .await,
+        );
+        let read = files_available(&mut client, "promptsettingsprobe.read", json!({})).await;
+        let base = server.service::<BasePromptSettingsHost>().unwrap();
+        let skills = server.service::<SkillsInstructionsSettingsHost>().unwrap();
+        let summary = server.service::<SummaryPromptSettingsHost>().unwrap();
+        assert_eq!(
+            read,
+            json!({
+                "base":base.0.base(CancellationToken::new()).await.unwrap(),
+                "skills":skills.0.instructions(CancellationToken::new()).await.unwrap(),
+                "summary":summary.0.system_prompt(CancellationToken::new()).await.unwrap()
+            })
+        );
+        assert_eq!(
+            read,
+            json!({"base":document["base"],"skills":document["skills"],"summary":document["summary"]})
+        );
+    }
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

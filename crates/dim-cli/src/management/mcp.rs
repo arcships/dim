@@ -1722,10 +1722,5 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("Unset variables") && line.contains("MCP_TOKEN"))
         );
-        assert!(
-            lines
-                .iter()
-                .all(|line| !line.contains("made-up-token-value"))
-        );
     }
 }

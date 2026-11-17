@@ -31,9 +31,9 @@ use dim_agent_types::ModelId;
 use dim_app_server::plugin_files::PluginFileTransactions;
 use dim_app_server::settings::SettingsService;
 use rutis::Ctx;
+use rutis::host::{CtxHost, Key};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::{Digest as _, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::io::Read;
@@ -70,8 +70,7 @@ pub const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
 /// `fiber.rs:1193`), leaving room for the cancel's own write and the rest of
 /// an unload; past it a stuck adapter holds up neither.
 pub const SUBMIT_CANCEL_GRACE: Duration = Duration::from_secs(3);
-/// The name this build records for its single process adapter; the per-task
-/// lookup (#861) will record the resolved adapter's name instead.
+/// The persisted executor name for the family adapter copy (A.4).
 pub const ADAPTER_NAME: &str = "modalityAdapter";
 /// The time one OCR helper call may take (decision 7): a 500-page PDF at
 /// 200 dpi is the slowest input the contract accepts.
@@ -434,6 +433,13 @@ pub struct TaskResultQuery {
     pub length: u64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskExport {
+    pub task_id: String,
+    pub name: String,
+}
+
 /// `{ task }` (A.3).
 #[derive(Debug, Serialize)]
 pub struct TaskReply {
@@ -678,6 +684,27 @@ impl Shared {
             .await;
     }
 
+    /// Settles a task this generation cannot continue observing: the adapter
+    /// copy that issued its handle is gone, so no one can report the outcome.
+    async fn interrupt(&self, slot: &Arc<Slot>, message: impl Into<String>) {
+        let current = self.record(slot);
+        if current.state.is_terminal() {
+            return;
+        }
+        let error = TaskError {
+            code: "interrupted".into(),
+            message: message.into(),
+        };
+        let finished = self.now_text();
+        let _ = self
+            .finish(slot, current.revision, |record| {
+                record.state = TaskState::Interrupted;
+                record.error = Some(error.clone());
+                record.finished_at = Some(finished.clone());
+            })
+            .await;
+    }
+
     /// Records whether the helper ran confined, on the task's host executor
     /// (A.4, A14), before the terminal write.
     async fn record_confined(&self, slot: &Arc<Slot>, confined: bool) {
@@ -760,6 +787,10 @@ struct Slot {
     /// is written (or `submit` ended without one), so a cancel can wait for
     /// the handle an accepted job produces (A.6).
     submit_ended: watch::Sender<bool>,
+    /// The adapter copy this drive submitted through, fixed at submit: a
+    /// provider copy may be removed or reloading while its job still runs, and
+    /// a handle is only meaningful to the copy that issued it (A.2).
+    adapter: Mutex<Option<Arc<ModalityAdapterService>>>,
 }
 
 impl Slot {
@@ -776,6 +807,7 @@ impl Slot {
             cancel: CancellationToken::new(),
             cancel_requested: AtomicBool::new(false),
             submit_ended: watch::channel(true).0,
+            adapter: Mutex::new(None),
         })
     }
 
@@ -787,6 +819,12 @@ impl Slot {
     }
     fn end_submit(&self) {
         self.submit_ended.send_replace(true);
+    }
+    fn pin_adapter(&self, adapter: &Arc<ModalityAdapterService>) {
+        *self.adapter.lock().unwrap() = Some(adapter.clone());
+    }
+    fn pinned_adapter(&self) -> Option<Arc<ModalityAdapterService>> {
+        self.adapter.lock().unwrap().clone()
     }
 }
 
@@ -1016,19 +1054,19 @@ impl ModalityTasks {
                     inputs.push(ResolvedInput {
                         name: file.name.clone(),
                         media_type: file.media_type.clone(),
-                        data: Some(bytes),
-                        node_path: None,
+                        bytes: bytes.len() as u64,
+                        source: Box::new(std::io::Cursor::new(bytes)),
                     });
                 }
                 (None, Some(path)) => {
                     let remaining = MAX_SUBMISSION_BYTES.saturating_sub(total_bytes);
-                    let (bytes, sha256, canonical) = node_path_meta(path, remaining).await?;
+                    let (source, bytes) = open_input(path, remaining).await?;
                     total_bytes += bytes;
                     inputs.push(ResolvedInput {
                         name: file.name.clone(),
                         media_type: file.media_type.clone(),
-                        data: None,
-                        node_path: Some((canonical, bytes, sha256)),
+                        bytes,
+                        source: Box::new(source),
                     });
                 }
             }
@@ -1051,22 +1089,8 @@ impl ModalityTasks {
         }
         let task_id = format!("mt_{}", uuid::Uuid::new_v4());
         let created = shared.now_text();
-        let mut record_params = params.params.clone();
-        let metadata: Vec<InputFile> = inputs
-            .iter()
-            .map(|input| InputFile {
-                name: input.name.clone(),
-                media_type: input.media_type.clone(),
-                bytes: input.bytes(),
-                sha256: input.sha256(),
-                node_path: input.node_path_path().map(|path| path.to_owned()),
-            })
-            .collect();
-        // The record's `params.files` is always the validated metadata, an
-        // empty array when the submission has no files (A.4).
-        record_params["files"] =
-            serde_json::to_value(&metadata).expect("input metadata is serializable");
-        let record = TaskRecord {
+        let record_params = params.params.clone();
+        let mut record = TaskRecord {
             version: task::FORMAT_VERSION,
             task_id: task_id.clone(),
             client_task_id: params.client_task_id.clone(),
@@ -1083,8 +1107,12 @@ impl ModalityTasks {
                     confined: None,
                 },
                 None => Executor::Provider {
+                    adapter: self
+                        .shared
+                        .adapter_choice(&model.provider_id)
+                        .map(|(name, _)| name)
+                        .unwrap_or_else(|| ADAPTER_NAME.to_owned()),
                     provider: model,
-                    adapter: ADAPTER_NAME.to_owned(),
                 },
             },
             params: record_params,
@@ -1098,9 +1126,6 @@ impl ModalityTasks {
             updated_at: created,
             finished_at: None,
         };
-        // The inputs and the record are written before the method returns.
-        // The task directory exists first: a submission without inline files
-        // has no input directory to create it as a side effect.
         if let Err(error) = shared.files.directory(&task::task_dir(&task_id)).await {
             return Err(storage_error(error.to_string()));
         }
@@ -1110,15 +1135,34 @@ impl ModalityTasks {
                 .directory(&task::input_dir_name(&task_id))
                 .await;
         }
-        for input in &inputs {
-            if let Some(data) = &input.data
-                && let Err(error) =
-                    task::write_input(&shared.files, &task_id, &input.name, data.clone()).await
-            {
+        let mut metadata = Vec::new();
+        for input in inputs {
+            let digest = task::Digest::default();
+            let result = shared
+                .files
+                .write_stream(
+                    &task::input_name(&task_id, &input.name),
+                    digest.reader(input.source.take(input.bytes + 1)),
+                )
+                .await;
+            if let Err(error) = result {
                 let _ = task::remove_task(&shared.files, &task_id).await;
                 return Err(storage_error(error.to_string()));
             }
+            if digest.bytes() != input.bytes {
+                let _ = task::remove_task(&shared.files, &task_id).await;
+                return Err(invalid_input("Input file changed size during import"));
+            }
+            metadata.push(InputFile {
+                name: input.name,
+                media_type: input.media_type,
+                bytes: digest.bytes(),
+                sha256: digest.sha256(),
+                node_path: None,
+            });
         }
+        record.params["files"] =
+            serde_json::to_value(metadata).expect("input metadata is serializable");
         let record = match task::create(&shared.files, record).await {
             Ok(record) => record,
             Err(error) => {
@@ -1300,7 +1344,9 @@ impl ModalityTasks {
         let mut remote = None;
         if let Some(handle) = &record.remote_handle
             && let Ok(connection) = self.shared.connection(&record, cancel).await
-            && let Some(adapter) = self.shared.ctx.get::<ModalityAdapterService>()
+            && let Some(adapter) = slot
+                .pinned_adapter()
+                .or_else(|| self.shared.adapter_for(&record))
         {
             // A hung provider must not keep the client or an unload waiting.
             remote = tokio::select! {
@@ -1314,6 +1360,36 @@ impl ModalityTasks {
             .await;
         Ok(TaskReply {
             task: self.shared.record(&slot),
+        })
+    }
+
+    pub async fn export(
+        &self,
+        params: TaskExport,
+    ) -> Result<dim_agent_types::TaskFileSource, RpcError> {
+        let slot = self
+            .shared
+            .slot(&params.task_id)
+            .ok_or_else(|| not_found("Unknown task"))?;
+        let record = self.shared.record(&slot);
+        let file = record
+            .result
+            .as_ref()
+            .and_then(|result| result.files.iter().find(|file| file.name == params.name))
+            .ok_or_else(|| not_found("Unknown task result file"))?;
+        let directory = self
+            .shared
+            .files
+            .directory(&task::result_dir_name(&params.task_id))
+            .await
+            .map_err(|error| storage_error(error.to_string()))?;
+        Ok(dim_agent_types::TaskFileSource {
+            path: directory
+                .join(&file.name)
+                .to_str()
+                .ok_or_else(|| storage_error("Task path is not UTF-8"))?
+                .into(),
+            image: file.media_type.starts_with("image/"),
         })
     }
 
@@ -1394,31 +1470,11 @@ impl ModalityTasks {
     }
 }
 
-/// One validated input of a submission.
 struct ResolvedInput {
     name: String,
     media_type: String,
-    data: Option<Vec<u8>>,
-    node_path: Option<(String, u64, String)>,
-}
-impl ResolvedInput {
-    fn bytes(&self) -> u64 {
-        match (&self.data, &self.node_path) {
-            (Some(data), None) => data.len() as u64,
-            (None, Some((_, bytes, _))) => *bytes,
-            _ => 0,
-        }
-    }
-    fn sha256(&self) -> String {
-        match (&self.data, &self.node_path) {
-            (Some(data), None) => task::sha256(data),
-            (None, Some((_, _, sha256))) => sha256.clone(),
-            _ => String::new(),
-        }
-    }
-    fn node_path_path(&self) -> Option<&str> {
-        self.node_path.as_ref().map(|(path, _, _)| path.as_str())
-    }
+    bytes: u64,
+    source: Box<dyn Read + Send>,
 }
 
 /// The last component of a listed task directory name.
@@ -1478,72 +1534,25 @@ fn valid_file_name(name: &str) -> bool {
         && !name.contains('\0')
 }
 
-/// The `bytes`, `sha256` and canonical path of a caller's `node_path`
-/// (decision 1). The path is absolute, points at an existing regular file and
-/// its last component is not a link; its length is compared with what is
-/// left of the submission budget before anything is read, and the file is
-/// opened without following a link so a last component swapped after the
-/// check is refused. Modality never copies it.
-async fn node_path_meta(path: &str, remaining: u64) -> Result<(u64, String, String), RpcError> {
+async fn open_input(path: &str, remaining: u64) -> Result<(std::fs::File, u64), RpcError> {
     let path = PathBuf::from(path);
     if !path.is_absolute() {
         return Err(invalid_input("node_path must be absolute"));
     }
-    let probe = path.clone();
-    let (canonical, length) = tokio::task::spawn_blocking(move || {
-        let metadata = std::fs::symlink_metadata(&probe)?;
-        if metadata.file_type().is_symlink() {
+    tokio::task::spawn_blocking(move || {
+        let file = open_without_following(&path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > remaining {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "the last component is a link",
+                "node_path must be a regular file within the submission budget",
             ));
         }
-        if !metadata.file_type().is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "not a regular file",
-            ));
-        }
-        Ok::<_, std::io::Error>((std::fs::canonicalize(&probe)?, metadata.len()))
+        Ok((file, metadata.len()))
     })
     .await
     .map_err(|error| invalid_input(format!("node_path could not be read: {error}")))?
-    .map_err(|error| invalid_input(format!("node_path could not be read: {error}")))?;
-    if length > remaining {
-        return Err(invalid_input(format!(
-            "node_path is {length} bytes, over the {remaining} bytes left of the submission budget"
-        )));
-    }
-    let canonical_text = canonical
-        .to_str()
-        .ok_or_else(|| invalid_input("node_path is not valid UTF-8"))?
-        .to_owned();
-    let read = canonical.clone();
-    let (bytes, sha256) = tokio::task::spawn_blocking(move || {
-        let mut file = open_without_following(&read)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = [0u8; 64 * 1024];
-        let mut bytes = 0u64;
-        loop {
-            let count = file.read(&mut buffer)?;
-            if count == 0 {
-                break;
-            }
-            bytes += count as u64;
-            if bytes > length {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "the file grew while it was read",
-                ));
-            }
-            hasher.update(&buffer[..count]);
-        }
-        Ok::<_, std::io::Error>((bytes, task::hex(&hasher.finalize())))
-    })
-    .await
-    .map_err(|error| invalid_input(format!("node_path could not be read: {error}")))?
-    .map_err(|error| invalid_input(format!("node_path could not be read: {error}")))?;
-    Ok((bytes, sha256, canonical_text))
+    .map_err(|error| invalid_input(format!("node_path could not be read: {error}")))
 }
 
 /// Opens `path` for reading without following a link in its last component;
@@ -1555,7 +1564,7 @@ fn open_without_following(path: &std::path::Path) -> std::io::Result<std::fs::Fi
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new()
             .read(true)
-            .custom_flags(libc::O_NOFOLLOW)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)
     }
     #[cfg(not(unix))]
@@ -1593,6 +1602,7 @@ impl Shared {
                 return;
             }
         };
+        dim_agent_runtime::opening_advanced(&self.ctx);
         let mut records = Vec::new();
         for entry in entries {
             if entry.kind != EntryKind::Directory {
@@ -1608,6 +1618,7 @@ impl Shared {
                     tracing::warn!(%error, task = %task_id, "task record could not be read")
                 }
             }
+            dim_agent_runtime::opening_advanced(&self.ctx);
         }
         // Slots are ordered by creation, so `list` stays newest first.
         records.sort_by(|left, right| {
@@ -1620,6 +1631,7 @@ impl Shared {
         let mut settled = Vec::with_capacity(records.len());
         for record in records {
             settled.push(self.startup_settle(record).await);
+            dim_agent_runtime::opening_advanced(&self.ctx);
         }
         let expired: BTreeSet<String> = retention_expired(
             settled
@@ -1633,6 +1645,7 @@ impl Shared {
         .collect();
         for task_id in &expired {
             let _ = task::remove_task(&self.files, task_id).await;
+            dim_agent_runtime::opening_advanced(&self.ctx);
         }
         settled.retain(|record| !expired.contains(&record.task_id));
         let mut slots = Vec::new();
@@ -1673,10 +1686,7 @@ impl Shared {
             return record;
         }
         if record.state == TaskState::Running {
-            if let Executor::Provider { provider, .. } = &record.executor
-                && record.remote_handle.is_some()
-                && self.adapter_serves(provider, &record.category, &record.operation)
-            {
+            if record.remote_handle.is_some() && self.record_serves(&record) {
                 return record;
             }
             return self
@@ -1686,17 +1696,49 @@ impl Shared {
         self.write_interrupted(record, None).await
     }
 
-    /// Whether the process adapter is available and serves the operation.
-    fn adapter_serves(&self, provider: &ModelId, category: &str, operation: &str) -> bool {
-        let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
+    /// The adapter that serves one provider: its own copy, else the family
+    /// copy (A.2), with the name the task record keeps.
+    fn adapter_choice(&self, provider_id: &str) -> Option<(String, Arc<ModalityAdapterService>)> {
+        if let Some(adapter) = self.ctx.get_at(&crate::adapter_key(provider_id)) {
+            return Some((provider_id.to_owned(), adapter));
+        }
+        self.ctx
+            .get_at(&Key::<ModalityAdapterService>::of())
+            .map(|adapter| (ADAPTER_NAME.to_owned(), adapter))
+    }
+
+    /// The copy a task recorded, without falling back to another one: a
+    /// handle is only meaningful to the copy that issued it.
+    fn adapter_named(&self, name: &str) -> Option<Arc<ModalityAdapterService>> {
+        if name == ADAPTER_NAME {
+            self.ctx.get_at(&Key::<ModalityAdapterService>::of())
+        } else {
+            self.ctx.get_at(&crate::adapter_key(name))
+        }
+    }
+
+    /// The adapter that runs `record`.
+    fn adapter_for(&self, record: &TaskRecord) -> Option<Arc<ModalityAdapterService>> {
+        let Executor::Provider { adapter, .. } = &record.executor else {
+            return None;
+        };
+        self.adapter_named(adapter)
+    }
+
+    /// Whether the adapter this task recorded is available and serves its
+    /// operation. Recovery asks the recorded copy, never a newly preferred
+    /// one: a handle is only meaningful to the copy that issued it (A.2).
+    fn record_serves(&self, record: &TaskRecord) -> bool {
+        let Executor::Provider { provider, .. } = &record.executor else {
+            return false;
+        };
+        let Some(adapter) = self.adapter_for(record) else {
             return false;
         };
         adapter.0.available()
-            && adapter
-                .0
-                .operations(provider)
-                .iter()
-                .any(|served| served.category == category && served.operation == operation)
+            && adapter.0.operations(provider).iter().any(|served| {
+                served.category == record.category && served.operation == record.operation
+            })
     }
 
     /// Writes `interrupted` over a record loaded at startup.
@@ -1899,13 +1941,14 @@ impl Shared {
             self.run_host(slot, record).await;
             return None;
         }
-        let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
+        let Some(adapter) = self.adapter_for(record) else {
             if !slot.cancel_requested() {
                 self.fail(slot, "unavailable", "No adapter in this build")
                     .await;
             }
             return None;
         };
+        slot.pin_adapter(&adapter);
         if !adapter.0.available() {
             if !slot.cancel_requested() {
                 self.fail(slot, "unavailable", "The adapter is unavailable")
@@ -2023,12 +2066,22 @@ impl Shared {
         record: TaskRecord,
         handle: Option<String>,
     ) {
-        let Some(adapter) = self.ctx.get::<ModalityAdapterService>() else {
-            if !slot.cancel_requested() {
-                self.fail(slot, "unavailable", "No adapter in this build")
-                    .await;
+        let adapter = match slot.pinned_adapter().or_else(|| self.adapter_for(&record)) {
+            Some(adapter) => adapter,
+            None if handle.is_some() => {
+                if !slot.cancel_requested() {
+                    self.interrupt(slot, "The adapter that issued this task's handle is gone")
+                        .await;
+                }
+                return;
             }
-            return;
+            None => {
+                if !slot.cancel_requested() {
+                    self.fail(slot, "unavailable", "No adapter in this build")
+                        .await;
+                }
+                return;
+            }
         };
         if !adapter.0.available() {
             if !slot.cancel_requested() {

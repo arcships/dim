@@ -96,6 +96,7 @@ async fn browser_flow(cancel: bool, eof: bool) {
         profile: Some(DaemonProfile::Product),
         client_kind: "other",
         client_name: "AcpGateway",
+        protocol_version: 3,
     })
     .await
     .unwrap();

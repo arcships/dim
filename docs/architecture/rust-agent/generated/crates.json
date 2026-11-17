@@ -61,6 +61,10 @@
   },
   {
     "from": "dim-agent-attachments",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-agent-attachments",
     "to": "rutis"
   },
   {
@@ -102,6 +106,10 @@
   {
     "from": "dim-agent-scheduler",
     "to": "rutis"
+  },
+  {
+    "from": "dim-agent-scheduler",
+    "to": "dim-agent-scheduler"
   },
   {
     "from": "dim-agent-scheduler",
@@ -133,6 +141,10 @@
   },
   {
     "from": "dim-app-server",
+    "to": "dim-codemode"
+  },
+  {
+    "from": "dim-app-server",
     "to": "rutis"
   },
   {
@@ -150,6 +162,30 @@
   {
     "from": "dim-app-server",
     "to": "dim-modality"
+  },
+  {
+    "from": "dim-codemode",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-codemode",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-codemode",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-codemode",
+    "to": "rutis"
+  },
+  {
+    "from": "dim-codemode",
+    "to": "dim-agent-questions"
+  },
+  {
+    "from": "dim-codemode",
+    "to": "dim-agent-runtime"
   },
   {
     "from": "dim-modality",
@@ -178,6 +214,34 @@
   {
     "from": "dim-client",
     "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "dim-app-server"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "rutis"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-event-hub",
+    "to": "dim-client"
   },
   {
     "from": "dim-acp",
@@ -320,6 +384,10 @@
     "to": "dim-client"
   },
   {
+    "from": "dim-session-title",
+    "to": "dim-goal"
+  },
+  {
     "from": "dim-goal",
     "to": "dim-agent-capabilities"
   },
@@ -356,6 +424,62 @@
     "to": "dim-client"
   },
   {
+    "from": "dim-report",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-report",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-report",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-report",
+    "to": "dim-app-server"
+  },
+  {
+    "from": "dim-report",
+    "to": "rutis"
+  },
+  {
+    "from": "dim-report",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-report",
+    "to": "dim-client"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "dim-agent-types"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "dim-modality"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "rutis"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "dim-agent-runtime"
+  },
+  {
+    "from": "dim-image-understanding",
+    "to": "dim-app-server"
+  },
+  {
     "from": "dim-modality-aimux",
     "to": "dim-agent-aimux"
   },
@@ -385,6 +509,10 @@
   },
   {
     "from": "dimcode",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dimcode",
     "to": "dim-agent-runtime"
   },
   {
@@ -401,7 +529,15 @@
   },
   {
     "from": "dimcode",
+    "to": "dim-event-hub"
+  },
+  {
+    "from": "dimcode",
     "to": "dim-goal"
+  },
+  {
+    "from": "dimcode",
+    "to": "dim-image-understanding"
   },
   {
     "from": "dimcode",
@@ -421,11 +557,19 @@
   },
   {
     "from": "dimcode",
+    "to": "dim-report"
+  },
+  {
+    "from": "dimcode",
     "to": "dim-session-title"
   },
   {
     "from": "dimcode",
     "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dimcode",
+    "to": "dim-agent-runtime"
   },
   {
     "from": "dimcode",
@@ -457,6 +601,10 @@
   },
   {
     "from": "xtask",
+    "to": "dim-agent-scheduler"
+  },
+  {
+    "from": "xtask",
     "to": "dim-agent-types"
   },
   {
@@ -469,11 +617,23 @@
   },
   {
     "from": "xtask",
+    "to": "dim-event-hub"
+  },
+  {
+    "from": "xtask",
     "to": "dim-goal"
   },
   {
     "from": "xtask",
+    "to": "dim-image-understanding"
+  },
+  {
+    "from": "xtask",
     "to": "dim-modality"
+  },
+  {
+    "from": "xtask",
+    "to": "dim-report"
   },
   {
     "from": "xtask",

@@ -24,6 +24,27 @@ use std::{
 use tokio::sync::watch;
 use uuid::Uuid;
 
+tokio::task_local! {
+    /// The child tool call whose task is producing events. `Timeline::append`
+    /// stamps an event without an explicit parent from this scope.
+    static PARENT_CALL_ID: String;
+}
+
+/// Runs `future` with `parent_call_id` as the implicit parent of events it
+/// appends. A child batch or result that names its own parent keeps it.
+pub async fn with_parent_call_id<F>(parent_call_id: String, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    PARENT_CALL_ID.scope(parent_call_id, future).await
+}
+
+/// The child call whose task is running, for a background task that must
+/// carry the same parent after it leaves the current task.
+pub fn current_parent_call_id() -> Option<String> {
+    PARENT_CALL_ID.try_with(Clone::clone).ok()
+}
+
 /// One draft offered to the branch's `before` middleware. Each wrapper records
 /// the step it applied, so steps follow the order the transforms took effect.
 /// The steps stay local: the event is dispatched only by its own branch's
@@ -140,9 +161,12 @@ impl Timeline {
             FaultReporter::default(),
         )
     }
-    /// Constructs a Timeline over validated, previously committed storage;
-    /// like [`Self::new`], only for tests.
-    #[cfg(feature = "testing")]
+    /// Constructs a Timeline over validated, previously committed storage,
+    /// for a caller that holds the store exclusively: an offline tool, which
+    /// opens it with no daemon running. A live branch's Timeline comes from
+    /// its owner ([`TimelineFactory::build`](crate::TimelineFactory)), never
+    /// from here. Not exported to other languages.
+    #[service(skip)]
     pub async fn restore(
         ctx: Ctx,
         key: TimelineKey,
@@ -205,6 +229,21 @@ impl Timeline {
     pub fn append(&self, original: EventDraft) -> std::result::Result<Arc<AgentEvent>, AgentError> {
         self.append_registered(original, |_| Ok(()))
     }
+    /// Appends one event stamped with the producer's `create_at`: the fact it
+    /// records began before the producer could commit it, as a thinking block
+    /// does with its first delta.
+    #[service(skip)]
+    pub fn append_with_create_at(
+        &self,
+        original: EventDraft,
+        create_at: u64,
+    ) -> std::result::Result<Arc<AgentEvent>, AgentError> {
+        let mut events =
+            self.append_batch_registered_with_create_at(vec![original], Some(create_at), |_| {
+                Ok(())
+            })?;
+        Ok(events.pop().expect("single-event batch returned one event"))
+    }
     /// Registers producer state before queueing; publication follows store commit.
     #[service(skip)]
     pub fn append_registered(
@@ -222,9 +261,24 @@ impl Timeline {
         originals: Vec<EventDraft>,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()>,
     ) -> Result<Vec<Arc<AgentEvent>>> {
+        self.append_batch_registered_with_create_at(originals, None, register)
+    }
+    fn append_batch_registered_with_create_at(
+        &self,
+        mut originals: Vec<EventDraft>,
+        create_at: Option<u64>,
+        register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()>,
+    ) -> Result<Vec<Arc<AgentEvent>>> {
+        if let Ok(parent) = PARENT_CALL_ID.try_with(Clone::clone) {
+            for draft in &mut originals {
+                if draft.parent_call_id.is_none() {
+                    draft.parent_call_id = Some(parent.clone());
+                }
+            }
+        }
         let _append = AppendGuard::enter()?;
         let _commit = self.0.commit.lock().unwrap();
-        self.commit(originals, register)
+        self.commit(originals, create_at, register)
     }
     /// Appends an input once per submission id, including accepted inputs
     /// awaiting publication. Concurrent attempts return the same input.
@@ -248,7 +302,8 @@ impl Timeline {
                 return Ok(Appended::Existing(input.sequence));
             }
             admit()?;
-            let mut events = self.commit(vec![EventKind::InputMessage(data).into()], |_| Ok(()))?;
+            let mut events =
+                self.commit(vec![EventKind::InputMessage(data).into()], None, |_| Ok(()))?;
             return Ok(Appended::Written(
                 events.pop().expect("single-event batch returned one event"),
             ));
@@ -305,6 +360,7 @@ impl Timeline {
                     .into_iter()
                     .map(|input| EventKind::InputMessage(input).into())
                     .collect(),
+                None,
                 |_| Ok(()),
             )?;
             return Ok(AppendedBatch::Written(events));
@@ -393,6 +449,7 @@ impl Timeline {
     fn commit(
         &self,
         originals: Vec<EventDraft>,
+        create_at: Option<u64>,
         register: impl FnOnce(&[Arc<AgentEvent>]) -> Result<()>,
     ) -> Result<Vec<Arc<AgentEvent>>> {
         if let Some(error @ AgentError::Storage(_)) = self.0.faults.failure() {
@@ -432,8 +489,9 @@ impl Timeline {
             let event = Arc::new(AgentEvent {
                 id: event_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
                 sequence: first_sequence + events.len() as u64,
-                create_at: unix_millis(),
+                create_at: create_at.unwrap_or_else(unix_millis),
                 tags: draft.tags,
+                parent_call_id: draft.parent_call_id,
                 kind: draft.kind,
             });
             let trace = (!steps.is_empty()).then(|| TimelineTrace {
@@ -1072,9 +1130,10 @@ impl TailLock<'_> {
     }
 }
 
-/// Closes a Timeline a test built directly with `Timeline::new`. A free
-/// function rather than a method, so the bridge generator never exports it.
-#[cfg(feature = "testing")]
+/// Closes a Timeline built directly with [`Timeline::restore`] or
+/// `Timeline::new`: the owner of a Timeline is what closes it, and a caller
+/// that constructed one itself is that owner. A free function rather than a
+/// method, so the bridge generator never exports it.
 pub fn close_timeline(timeline: &Timeline) -> BoxFuture<'static, Result<()>> {
     timeline.close()
 }

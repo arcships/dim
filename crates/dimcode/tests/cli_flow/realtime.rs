@@ -170,7 +170,7 @@ fn a_realtime_session_relays_frames_and_events_through_the_product() {
     let mut client = Attach::open(&socket);
     let hello = client.request(
         "hello",
-        json!({"protocolVersion": 3, "clientKind": "other"}),
+        json!({"protocolVersion": 4, "clientKind": "other"}),
     );
     assert!(hello.get("error").is_none(), "{hello}");
     let list = client.request("provider.list", json!({}));

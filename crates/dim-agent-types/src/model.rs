@@ -207,6 +207,20 @@ pub struct ModelReasoning {
     pub off: Option<ReasoningOff>,
 }
 
+impl ModelReasoning {
+    /// The efforts this declaration offers: its `effortOptions`, plus `none`
+    /// when it carries a reasoning-off mapping and does not already list that
+    /// value. A caller that also requires reasoning to be supported reads
+    /// [`Self::supported`] beside it.
+    pub fn offered_efforts(&self) -> Vec<String> {
+        let mut efforts = self.effort_options.clone().unwrap_or_default();
+        if self.off.is_some() && !efforts.iter().any(|effort| effort == "none") {
+            efforts.push("none".into());
+        }
+        efforts
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ReasoningBudget {
     pub min: Option<f64>,
@@ -405,6 +419,17 @@ pub struct Usage {
     )]
     #[serde(serialize_with = "crate::finite_number::serialize_optional")]
     pub cache_write_tokens: Option<f64>,
+    /// The part of `completion_tokens` spent thinking, already inside the
+    /// completion and the total. It is the count the protocol adapter gives:
+    /// absent when the adapter gives none, and zero when Gemini or a Responses
+    /// adapter reads a missing field as zero, as it does for the cached count.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    #[serde(serialize_with = "crate::finite_number::serialize_optional")]
+    pub reasoning_tokens: Option<f64>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -1042,4 +1067,33 @@ pub struct CompactionStrategyRecord {
     pub kind: String,
     #[serde(flatten)]
     pub details: JsonObject,
+}
+
+/// The completed compaction's folded display; its body is read separately.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionSummary {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::optional_safe_integer"
+    )]
+    pub start: Option<u64>,
+    pub strategy: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub insufficient_space: Option<InsufficientSpace>,
+}
+
+/// One completed compaction's complete detail response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionDetail {
+    pub event_id: String,
+    #[serde(with = "crate::safe_integer")]
+    pub sequence: u64,
+    pub data: ContextCompactionData,
 }

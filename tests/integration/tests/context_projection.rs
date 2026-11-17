@@ -11,6 +11,7 @@ fn event(sequence: u64, kind: EventKind) -> Arc<AgentEvent> {
         sequence,
         create_at: sequence,
         tags: None,
+        parent_call_id: None,
         kind,
     })
 }
@@ -155,6 +156,7 @@ fn prompt_changes_and_scope_ends_are_not_projected() {
                         order: 0,
                     },
                 }],
+                inputs: Vec::new(),
             }),
         ),
         event(

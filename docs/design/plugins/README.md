@@ -13,21 +13,28 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Questions](Questions.md) | — | `ask_user` tool, `session.question.respond`, waiters of running `ask_user` calls; no events | — | M2; #262 |
 | [ShellInput](ShellInput.md) | — | `shell.*` methods, command runs | — | P1 |
 | [Attachments](Attachments.md) | — | `attachment.put`, Session files | — | P1 |
+| [Report](Report.md) | error-only `report.*` and its connection-bound drafts | `session.report.*` and its connection-bound drafts | — | [#1319](https://github.com/arcships/dim/issues/1319) |
 | [SessionTitle](SessionTitle.md) | — | observes adoption of the first user input, `session.rename` | — | P1 |
 | [PromptSuggestion](PromptSuggestion.md) | `PromptSuggestionSettings` in App Server: the `prompt-suggestion` Settings source | observes the completed turn's events, `session.suggestion.request` and `session.suggestion.respond`, the offer in flight and the shown offer; no events | — | P1; [#943](https://github.com/arcships/dim/issues/943) |
 | [Goal](Goal.md) | — | `goal_update` tool, `session.goal.*` | goal state folded from `goal:objective` and `goal:status` blocks, continuation | P2 |
 | [Pursuit](Pursuit.md) (evaluator judge mode of Goal) | — | `judge` on `session.goal.set` | completion requests decided by evaluator branches; conclusion inputs and Goal's outcomes | M2; #422 |
-| [ModelRecovery](ModelRecovery.md) | — | — | the disposer registered with the Loop's port; the handover input it writes | [#1210](https://github.com/arcships/dim/issues/1210) |
+| [ModelRecovery (proposal)](ModelRecovery.md) | — | — | proposed disposer registration (Loop port not implemented); the handover input it writes | [#1210](https://github.com/arcships/dim/issues/1210) |
 | [Web](Web.md) | — | `web_search`, `web_fetch` tools | — | P2; optional package |
-| [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
+| [ContextCompaction](ContextCompaction.md) (supplements to Loop and ContextPreparation; [ContextUsage proposal](ContextUsage.md)) | — | `ContextModelHost`, summary `CompactionStrategyHost`, `session.context.*` | `context/compact` command and compaction step in Loop; K-turn cut and usage query in ContextPreparation | P2 |
 | [Prompt](Prompt.md) | — | `guideEntries`: the input guide's frame, the entries in force and their composition | `Prompt`: the System its publisher adopts carries the composition over the entries in force, and a host-prepared request carries the same composition, placed by Loop | #548 |
 | [PromptSources](PromptSources.md) | — | the named sources, their policy texts at the factory configuration, and the state and rule entries | — | #548 |
+| [EnvironmentClients](EnvironmentClients.md) | App Server read-only `sessionClientsHost` presence (Connection and UiHost) | — | presence snapshots as `<dim-state>` inputs at branch open and on `ClientsChanged` | #1019 |
+| [EnvironmentSettings](EnvironmentSettings.md) | — (reads each setting module's read port) | — | settings snapshots as `<dim-state>` inputs at branch open and on a Settings change | #1020 |
+| [ClientView](ClientView.md) | per-connection viewed-line record in App Server | — | — | #1021, deferred for model state |
+| [AgentSettings](AgentSettings.md) | — | one `settings` tool: `list`, `get` | — | #1022 |
 | [Recall](Recall.md) | — | `recall` tool (tells the model its branch's history: turns, a turn, one thing in full, search) | — | M2; #129 |
+| [ImageUnderstanding](ImageUnderstanding.md) | — | `image_understand` tool; resolves an image reference in the calling branch and answers through Modality's `modality.image.understand` target | — | — |
+| [EventHub](EventHub.md) | the catalog of declared sources and event types, the subscriptions, publish and delivery, the `eventHub` service and the `eventhub` methods | the `events` tool, and the guide entry for `dim-event` and `dim-event-guide` | — | — |
 | [Hooks](Hooks.md) | `HooksSettings` in App Server: sources `hooks` (user), `hooks-projects` and `hooks-plugins`, the project file `.dimcode/hooks.json` read through FileStorage, `hooks.*` methods and plugin registration | hook catalog, runner, a submit check registered with `submitChecks` for the user-input entries (`UserPromptSubmit`) | tool advice, permission requests, post-tool (`PostToolUse`, `PostToolUseFailure`), Stop and Session-start hooks | M1; #755, #756, #757, #758 |
 | [Notifications](Notifications.md) | — | Session observer, `notify` tool | — | Withdrawn |
 | [Scheduler](Scheduler.md) | triggers, run history (jobs in Settings) | `schedule` tool | — | P2 |
 | [Workflow](Workflow.md) | runs (definitions in Settings or project files) | `workflow` tool | — | P2 |
-| [Code Mode](CodeMode.md) | `CodeModeSettings`: user `codemode` source and execution caps (when optional package is enabled) | `codemode` tool and runtime factory | one-shot program execution and programmatic tool-result correlation | Draft P3; planned `runtime/plugins/codemode/` package, not yet present; [#1276](https://github.com/arcships/dim/issues/1276) |
+| [Code Mode](CodeMode.md) | `CodeMode`: structural bounds, the branch runner map, the program semaphore and part registrations (when installed) | `codemode` tool (v4 clients only) | one-shot QuickJS program execution, child call batches, effects and cancellation; client boundary in [child tool batches](../appserver/child-tool-batches.md) | Draft P3; native crate `crates/dim-codemode/`; [#1276](https://github.com/arcships/dim/issues/1276) |
 | [Collaboration](Collaboration.md) | member relations and temporary agents | `agent` tool, including the `models` action that lists the models a new member can run; reports and messages; the two markers' guide entries | the delegation's facts, wake inputs and settlement | #551 |
 | [ExternalAgent](ExternalAgent.md) | external conversations, Collaboration member kind `external-agent`; bridge row per node | — (delegation and decisions are Collaboration's) | — | P3 |
 | [AcpGateway](AcpGateway.md) | client-host plugin: ACP/RPC connections, requests and cleanup; outside the daemon | — | — | #436; PR #441; [acceptance](../acp-gateway-acceptance.md) |
@@ -44,6 +51,6 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeModeSettings` when the optional Code Mode package is enabled, light-ocr in the daemon; AcpGateway in its client host process |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, PromptSuggestion, Goal, Web, Recall, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled |
-| Branch parts | Goal (with Pursuit), ModelRecovery, Hooks, Prompt, Code Mode when enabled |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |

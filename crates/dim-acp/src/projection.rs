@@ -2,6 +2,7 @@
 
 use dim_agent_types::{
     CompactionTrigger, ContentBlock, ContextCompactionResult, ExecStatus, ToolContent, UserInput,
+    markup,
 };
 use dim_client::wire::{Event, EventContent, Progress};
 use serde_json::{Value, json};
@@ -76,8 +77,29 @@ fn chunk(kind: &str, text: String, updates: &mut Vec<Value>) {
 /// text: the gateway shows that block as one line, as every client does.
 const SKILL_BLOCK: &str = "<dim-skill name=\"";
 
+/// `text`, a chunk of the operator's own words, with each `/skill:<name>`
+/// token delimited so an editor draws it as one unit rather than as prose.
+/// The text itself is unchanged: the gateway repeats what the operator sent.
+fn with_tokens(text: &str) -> String {
+    let tokens: Vec<_> = dim_agent_types::skill_token::tokens(text).collect();
+    if tokens.is_empty() {
+        return text.to_owned();
+    }
+    let mut out = String::new();
+    let mut at = 0;
+    for token in tokens {
+        out.push_str(&text[at..token.start]);
+        out.push('`');
+        out.push_str(&text[token.start..token.end]);
+        out.push('`');
+        at = token.end;
+    }
+    out.push_str(&text[at..]);
+    out
+}
+
 fn loaded_skill(index: usize, text: &str) -> Option<String> {
-    if index == 0 {
+    if markup::runtime_element(index, text) != Some("dim-skill") {
         return None;
     }
     let rest = text.strip_prefix(SKILL_BLOCK)?;
@@ -88,6 +110,34 @@ fn loaded_skill(index: usize, text: &str) -> Option<String> {
             .replace("&quot;", "\"")
             .replace("&amp;", "&")
     })
+}
+
+fn tool_content(content: &ToolContent) -> Vec<Value> {
+    match content {
+        ToolContent::Text(_) => {
+            vec![json!({"type":"content","content":{"type":"text","text":preview(content)}})]
+        }
+        ToolContent::Blocks(blocks) => blocks
+            .iter()
+            .filter_map(|block| {
+                let content = match block {
+                    ContentBlock::Text { text } => {
+                        json!({"type":"text","text":preview(&ToolContent::Text(text.clone()))})
+                    }
+                    ContentBlock::Image { source } => {
+                        if let Some(file_id) = &source.file_id {
+                            json!({"type":"image","mimeType":source.media_type,"fileId":file_id})
+                        } else if let Some(data) = &source.data {
+                            json!({"type":"image","mimeType":source.media_type,"data":data})
+                        } else {
+                            return None;
+                        }
+                    }
+                };
+                Some(json!({"type":"content","content":content}))
+            })
+            .collect(),
+    }
 }
 
 fn preview(content: &ToolContent) -> String {
@@ -163,18 +213,6 @@ impl Projection {
         }
     }
 
-    pub(crate) fn tool_origin(&mut self, data: &dim_agent_types::ToolUseData) -> Vec<Value> {
-        let mut updates = Vec::new();
-        self.tool(
-            tool_id("main", &data.request_id, &data.call.id),
-            &data.call.name,
-            json!(data.call.input),
-            "pending",
-            &mut updates,
-        );
-        updates
-    }
-
     pub(crate) fn event(&mut self, event: &Event) -> Vec<Value> {
         let mut updates = Vec::new();
         let turn = match &event.content {
@@ -203,16 +241,22 @@ impl Projection {
                 if !silent && let Some(user) = user {
                     for (index, content) in user.content.into_iter().enumerate() {
                         match content {
+                            // The operator's words, and a loaded Skill as one line
+                            // naming it. Context a hook appended is the model's, not
+                            // theirs, so the editor's message does not carry it.
                             ContentBlock::Text { text } => match loaded_skill(index, &text) {
                                 Some(name) => chunk(
                                     "user_message_chunk",
                                     format!("\nSkill loaded: {name}"),
                                     &mut updates,
                                 ),
-                                None => chunk("user_message_chunk", text, &mut updates),
+                                None if markup::runtime_context(index, &text) => {}
+                                None => chunk("user_message_chunk", with_tokens(&text), &mut updates),
                             },
                             ContentBlock::Image { source } => {
-                                if let Some(data) = source.data {
+                                if let Some(file_id) = source.file_id {
+                                    updates.push(json!({"sessionUpdate":"user_message_chunk","content":{"type":"image","mimeType":source.media_type,"fileId":file_id}}));
+                                } else if let Some(data) = source.data {
                                     updates.push(json!({"sessionUpdate":"user_message_chunk","content":{"type":"image","mimeType":source.media_type,"data":data}}));
                                 }
                             }
@@ -236,10 +280,10 @@ impl Projection {
                 for call in &data.results {
                     let id=tool_id("main",&data.request_id,&call.call_id);
                     if !self.tools.contains(&id) { self.tool(id,&call.call_id,Value::Null,"pending",&mut updates); }
-                    updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &call.call_id),"status":if call.result.is_error == Some(true) {"failed"} else {"completed"},"content":[{"type":"content","content":{"type":"text","text":preview(&call.result.content)}}]}));
+                    updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &call.call_id),"status":if call.result.is_error == Some(true) {"failed"} else {"completed"},"content":tool_content(&call.result.content)}));
                 }
             }
-            EventContent::ToolCompleted(data) => updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &data.call_id),"status":"in_progress","content":[{"type":"content","content":{"type":"text","text":preview(&data.result.content)}}]})),
+            EventContent::ToolCompleted(data) => updates.push(json!({"sessionUpdate":"tool_call_update","toolCallId":tool_id("main", &data.request_id, &data.call_id),"status":"in_progress","content":tool_content(&data.result.content)})),
             EventContent::ExecStarted(data) => {
                 let id = json!(["background",data.task_id]).to_string();
                 self.tool(id.clone(),&data.description,Value::Null,"in_progress",&mut updates);
@@ -260,6 +304,15 @@ impl Projection {
                 self.compactions.insert(event.sequence,automatic);
                 self.tool(json!(["compaction",event.sequence]).to_string(),"Context compaction",Value::Null,"in_progress",&mut updates);
                 if let Some(update) = updates.last_mut() { update["_meta"] = json!({"lody":{"activity":{"version":1,"kind":"context_compaction","automatic":automatic}}}); }
+            }
+            EventContent::CompactionSummary(data) => {
+                let automatic = data.start.and_then(|start|self.compactions.remove(&start));
+                self.tool(json!(["compaction",data.start.unwrap_or(event.sequence)]).to_string(),"Context compaction",Value::Null,"completed",&mut updates);
+                if let Some(update) = updates.last_mut() {
+                    let mut activity = json!({"version":1,"kind":"context_compaction"});
+                    if let Some(automatic) = automatic { activity["automatic"] = json!(automatic); }
+                    update["_meta"] = json!({"lody":{"activity":activity}});
+                }
             }
             EventContent::Compaction(data) => {
                 let automatic = data.start.and_then(|start|self.compactions.remove(&start));
@@ -365,6 +418,50 @@ mod tests {
             .map(|update| update["content"]["text"].as_str().unwrap())
             .collect();
         assert_eq!(texts, ["Explain the change", "\nSkill loaded: commit"]);
+    }
+
+    /// A `/skill:<name>` token reaches the editor as one delimited unit, its
+    /// text unchanged, so a client draws it as one piece rather than as prose.
+    #[test]
+    fn a_skill_token_replays_as_one_unit() {
+        let updates = replay(json!([
+            {"type":"text","text":"please /skill:commit it"},
+        ]));
+        let texts: Vec<&str> = updates
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts, ["please `/skill:commit` it"]);
+
+        let untouched = replay(json!([
+            {"type":"text","text":"a/skill:x stays prose"},
+        ]));
+        let texts: Vec<&str> = untouched
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            ["a/skill:x stays prose"],
+            "a slash inside a word is not a token"
+        );
+    }
+
+    #[test]
+    fn a_prompt_hooks_context_replays_as_no_chunk() {
+        let updates = replay(json!([
+            {"type":"text","text":"Explain the change"},
+            {"type":"text","text":"<dim-hooks kind=\"prompt-submit\">\nread src/parser.rs\n</dim-hooks>"},
+        ]));
+        let texts: Vec<&str> = updates
+            .iter()
+            .map(|update| update["content"]["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            texts,
+            ["Explain the change"],
+            "context a hook appended is the model's, not the operator's words"
+        );
     }
 
     #[test]

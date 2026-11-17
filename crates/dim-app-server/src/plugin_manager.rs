@@ -125,7 +125,7 @@ fn module(id: &str, dir: &Path, code: &record::Code) -> String {
     if code.entry.extension().and_then(|e| e.to_str()) != Some("py") {
         return code.entry.to_string_lossy().into_owned();
     }
-    let relative = code.entry.strip_prefix(dir).unwrap_or(&code.entry);
+    let relative = code.entry.trim_prefix(dir);
     let module: Vec<_> = relative
         .with_extension("")
         .components()
@@ -2319,10 +2319,15 @@ fn status_value(loader: &Loader, entry: &EntryInfo) -> Value {
     }
 }
 
-/// PluginManager's process row (§1): registers the `plugin` namespace and
-/// the `PluginTools` Session part. It is locked.
+/// PluginManager's process row (§1): registers the `plugin` namespace and,
+/// unless the host turned `plugin_tools` off, the `PluginTools` Session part
+/// that gives a Session the `plugin` tool. It is locked.
 pub(crate) struct PluginManagerPlugin {
     state: Arc<State>,
+    /// Whether the `PluginTools` part is registered, which is what gives a
+    /// Session the `plugin` tool. `false` serves the process's plugins and
+    /// the `plugin.*` methods without that tool.
+    plugin_tools: bool,
     loader: Key<Loader>,
     methods: Key<ManagementMethods>,
     parts: Key<PartRegistry>,
@@ -2335,9 +2340,10 @@ pub(crate) struct PluginManagerPlugin {
 }
 
 impl PluginManagerPlugin {
-    pub fn new(names: &Names<'_>, state: Arc<State>) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, state: Arc<State>, plugin_tools: bool) -> rutis::Result<Self> {
         Ok(Self {
             state,
+            plugin_tools,
             loader: names.key()?,
             methods: names.key()?,
             parts: names.key()?,
@@ -2404,13 +2410,15 @@ impl DynPlugin for PluginManagerPlugin {
                 }),
             )?;
             let background = manager.clone();
-            let parts = ctx.require_at(&self.parts)?;
-            parts.register(ctx, PartScope::Session, "PluginTools", move |mount| {
-                Ok(Some(Box::new(tools::PluginTools::new(
-                    mount.names,
-                    manager.clone(),
-                )?)))
-            })?;
+            if self.plugin_tools {
+                let parts = ctx.require_at(&self.parts)?;
+                parts.register(ctx, PartScope::Session, "PluginTools", move |mount| {
+                    Ok(Some(Box::new(tools::PluginTools::new(
+                        mount.names,
+                        manager.clone(),
+                    )?)))
+                })?;
+            }
             // §3.1 step 4: the one background re-acquisition of this
             // process. It waits for startup content, and the row's
             // generation owns it: an unload cancels it, which also cancels

@@ -1,6 +1,6 @@
 # dim-client
 
-The public RPC v3 transport shared by native Dim clients. It owns a protected
+The public RPC transport shared by native Dim clients; a connection negotiates v4 by default, and the ACP gateway stays on v3. It owns a protected
 socket or authenticated Windows pipe bridge, JSON framing, request identities,
 interleaved responses and notices, and hello/profile validation.
 

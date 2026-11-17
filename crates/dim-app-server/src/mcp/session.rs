@@ -7,8 +7,8 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dim_agent_capabilities::{
     host::{HostError, HostFuture, ToolExecutionContext},
     tool_registry::{
-        ToolContribution, ToolHandler, ToolProvider, ToolProviderChanged, ToolRegistry,
-        ToolSourceSet, tool_provider_changes,
+        ToolConcurrency, ToolContribution, ToolHandler, ToolProvider, ToolProviderChanged,
+        ToolRegistry, ToolSourceSet, tool_provider_changes,
     },
 };
 use dim_agent_runtime::{
@@ -44,7 +44,8 @@ pub fn install(builder: &mut AgentBuilder) {
         .require_part("TemporaryMcp");
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "camelCase")]
 pub enum McpSourceState {
     Disabled,
     Connecting,
@@ -91,7 +92,8 @@ impl McpSourceState {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct McpSessionState {
     pub servers: BTreeMap<String, McpSourceState>,
     pub catalog_error: Option<String>,
@@ -183,6 +185,8 @@ fn usable(state: McpServerState) -> bool {
 
 /// Management view, without credentials, transport handles or registry access.
 pub struct McpSession {
+    files: Option<Arc<dim_agent_capabilities::host::SessionFiles>>,
+    session_id: String,
     connections: super::McpOwner,
     entries: Mutex<BTreeMap<String, Published>>,
     names: Mutex<BTreeMap<String, PublishedTool>>,
@@ -214,10 +218,15 @@ struct PublishedTool {
     name: String,
 }
 impl PublicService for McpSession {}
+#[rutis::service]
 impl McpSession {
+    /// This Session's entries and their states: what the `mcpSession`
+    /// face's `state` reads.
     pub fn state(&self) -> McpSessionState {
         self.state.get()
     }
+    /// The state watch Rust callers read beside the face's snapshot.
+    #[service(skip)]
     pub fn subscribe(&self) -> watch::Receiver<McpSessionState> {
         self.state.subscribe()
     }
@@ -282,19 +291,23 @@ impl McpSession {
 
     /// The widget a published tool declares (MCP Apps D4): its entry, the
     /// server's own tool name, the document that entry's connection serves,
-    /// and the tool definition a host applies to the view.
+    /// and the tool definition a host applies to the view. What the
+    /// `mcpSession` face's `widget` answers; a dropped call cancels the
+    /// document read.
     pub async fn widget(
         &self,
-        published: &str,
+        published: String,
     ) -> std::result::Result<McpWidgetResult, McpAppError> {
         if self.stopped.is_cancelled() {
             return Err(McpAppError::Unavailable);
         }
+        let cancel = self.stopped.child_token();
+        let _dropped = cancel.clone().drop_guard();
         let resolved = self
             .names
             .lock()
             .unwrap()
-            .get(published)
+            .get(&published)
             .cloned()
             .ok_or(McpAppError::Absent)?;
         let server = resolved.server;
@@ -323,7 +336,7 @@ impl McpSession {
             return Err(McpAppError::Unsupported);
         }
         let document = connection
-            .resource(uri.clone(), &self.stopped.child_token())
+            .resource(uri.clone(), &cancel)
             .await
             .map_err(McpAppError::from)?;
         let mime_type = document.mime_type.ok_or(McpAppError::Unsupported)?;
@@ -355,23 +368,27 @@ impl McpSession {
 
     /// One tool call on one entry of this Session, on that entry's own
     /// connection (MCP Apps D5). It is the user's action on an enabled entry,
-    /// not an agent decision: no branch admits it and it writes no fact.
+    /// not an agent decision: no branch admits it and it writes no fact. What
+    /// the `mcpSession` face's `call` answers; a dropped call cancels the
+    /// server request.
     pub async fn call(
         &self,
-        server: &str,
-        tool: &str,
+        server: String,
+        tool: String,
         arguments: dim_agent_types::JsonObject,
     ) -> std::result::Result<McpAppCallResult, McpAppError> {
         if self.stopped.is_cancelled() {
             return Err(McpAppError::Unavailable);
         }
-        if !self.state.get().servers.contains_key(server) {
+        let cancel = self.stopped.child_token();
+        let _dropped = cancel.clone().drop_guard();
+        if !self.state.get().servers.contains_key(&server) {
             return Err(McpAppError::UnknownServer);
         }
         let connection = {
             let entries = self.entries.lock().unwrap();
             entries
-                .get(server)
+                .get(&server)
                 .map(|entry| entry.connection.clone())
                 .ok_or(McpAppError::Unavailable)?
         };
@@ -387,7 +404,7 @@ impl McpSession {
             return Err(McpAppError::NotCallable);
         }
         let answer = connection
-            .call_result(tool.name.clone(), arguments, &self.stopped.child_token())
+            .call_result(tool.name.clone(), arguments, &cancel)
             .await
             .map_err(McpAppError::from)?;
         Ok(McpAppCallResult {
@@ -412,6 +429,8 @@ impl ToolProvider for Sources {
 }
 
 pub struct McpSessionPlugin {
+    files: Key<dim_agent_capabilities::host::SessionFiles>,
+    identity: Key<dim_agent_runtime::SessionIdentity>,
     session: InstanceId,
     mcp: Key<McpSession>,
     directory: Key<McpService>,
@@ -423,6 +442,8 @@ pub struct McpSessionPlugin {
 impl McpSessionPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
+            files: names.key()?,
+            identity: names.key()?,
             session: names.instance(SESSION_GROUP)?,
             mcp: names.key()?,
             directory: names.key()?,
@@ -440,6 +461,7 @@ impl DynPlugin for McpSessionPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.directory.erase(),
+            self.identity.erase(),
             self.config.erase(),
             self.loader.erase(),
             self.lifecycle.erase(),
@@ -458,6 +480,8 @@ impl DynPlugin for McpSessionPlugin {
             let applied = directory.publication.applied();
             let stopped = ctx.cancellation_token();
             let owner = Arc::new(McpSession {
+                files: ctx.get_at(&self.files),
+                session_id: ctx.require_at(&self.identity)?.session_id.clone(),
                 connections: super::McpOwner::in_session(
                     ctx.clone(),
                     loader,
@@ -517,6 +541,58 @@ struct Changes {
     refresh: watch::Receiver<()>,
 }
 
+/// One entry of the Session's selection that its reconcile keeps active.
+struct Active {
+    entry: McpServerEntry,
+    cancel: CancellationToken,
+    /// The generation this entry's discovery acquired, kept for as long as the
+    /// entry stays selected: a refresh replaces the discovery without leaving
+    /// the generation with no lease, which would retire it (ADR 004) and with
+    /// it the start backoff the generation recorded.
+    lease: Arc<Lease>,
+}
+
+/// The generation an entry's discovery holds. `reconcile` keeps one per active
+/// entry; the discovering task keeps the connection in it.
+#[derive(Default)]
+struct Lease(Mutex<Option<Arc<McpConnection>>>);
+impl Lease {
+    fn hold(&self, connection: &Arc<McpConnection>) {
+        *self.0.lock().unwrap() = Some(connection.clone());
+    }
+    /// Drops the hold: a discovery that ended on its own error leaves nothing
+    /// using the generation, so it retires (ADR 004).
+    fn release(&self) {
+        *self.0.lock().unwrap() = None;
+    }
+}
+
+/// Publishes the entry as `Connecting` and runs one discovery for it with
+/// `cancel` and `lease`.
+fn start_discovery(
+    directory: &Arc<McpService>,
+    owner: &Arc<McpSession>,
+    project: Option<usize>,
+    id: &str,
+    cancel: &CancellationToken,
+    lease: &Arc<Lease>,
+    tasks: &TaskTracker,
+) {
+    owner.state.update(|state| {
+        state
+            .servers
+            .insert(id.to_owned(), McpSourceState::Connecting);
+    });
+    tasks.spawn(discover(
+        directory.clone(),
+        owner.clone(),
+        project,
+        id.to_owned(),
+        cancel.clone(),
+        lease.clone(),
+    ));
+}
+
 async fn reconcile(
     directory: Arc<McpService>,
     owner: Arc<McpSession>,
@@ -525,7 +601,7 @@ async fn reconcile(
     mut changes: Changes,
     tasks: TaskTracker,
 ) {
-    let mut active: BTreeMap<String, (McpServerEntry, CancellationToken)> = BTreeMap::new();
+    let mut active: BTreeMap<String, Active> = BTreeMap::new();
     let mut force = false;
     let closing = session.closing();
     tokio::pin!(closing);
@@ -542,40 +618,56 @@ async fn reconcile(
             Ok(catalog) => {
                 owner.state.update(|state| state.catalog_error = None);
                 let entries = catalog.servers;
-                active.retain(|id, (entry, cancel)| {
-                    let keep = !force
-                        && !cancel.is_cancelled()
+                active.retain(|id, active| {
+                    let keep = !active.cancel.is_cancelled()
                         && entries.get(id).is_some_and(|next| {
-                            next.source == entry.source && next.configuration == entry.configuration
+                            next.source == active.entry.source
+                                && next.configuration == active.entry.configuration
                         });
                     if !keep {
-                        cancel.cancel();
+                        active.cancel.cancel();
                         if !entries.get(id).is_some_and(McpServerEntry::enabled) {
                             owner.remove(id);
                         }
                     }
                     keep
                 });
+                if force {
+                    for (id, active) in active.iter_mut() {
+                        active.cancel.cancel();
+                        active.cancel = owner.stopped.child_token();
+                        if active.entry.enabled() {
+                            start_discovery(
+                                &directory,
+                                &owner,
+                                project,
+                                id,
+                                &active.cancel,
+                                &active.lease,
+                                &tasks,
+                            );
+                        }
+                    }
+                }
                 for (id, entry) in entries {
                     if active.contains_key(&id) {
                         continue;
                     }
                     let cancel = owner.stopped.child_token();
+                    let lease = Arc::new(Lease::default());
                     if entry.enabled() {
-                        owner.state.update(|state| {
-                            state.servers.insert(id.clone(), McpSourceState::Connecting);
-                        });
-                        tasks.spawn(discover(
-                            directory.clone(),
-                            owner.clone(),
-                            project,
-                            id.clone(),
-                            cancel.clone(),
-                        ));
+                        start_discovery(&directory, &owner, project, &id, &cancel, &lease, &tasks);
                     } else {
                         owner.publish(&id, None, McpSourceState::Disabled, &cancel);
                     }
-                    active.insert(id, (entry, cancel));
+                    active.insert(
+                        id,
+                        Active {
+                            entry,
+                            cancel,
+                            lease,
+                        },
+                    );
                 }
             }
             Err(error) => {
@@ -593,8 +685,8 @@ async fn reconcile(
             result = changes.applied.changed() => { if result.is_err() { break; } false },
         };
     }
-    for (_, (_, cancel)) in active {
-        cancel.cancel();
+    for (_, active) in active {
+        active.cancel.cancel();
     }
 }
 
@@ -604,11 +696,13 @@ async fn discover(
     project: Option<usize>,
     id: String,
     cancel: CancellationToken,
+    lease: Arc<Lease>,
 ) {
-    let mut lease = None;
+    let mut held = None;
     let result = async {
         let connection = directory.server(owner.connections.clone(), project, id.clone(), &cancel).await?;
-        lease = Some(connection.clone());
+        lease.hold(&connection);
+        held = Some(connection.clone());
         let mut changed = connection.tool_changes();
         let mut state = connection.subscribe();
         let mut credential = connection.credential_changes();
@@ -695,7 +789,7 @@ async fn discover(
                         let version = uuid::Uuid::new_v4().to_string();
                         let set = Arc::new(ToolSourceSet {
                             key: format!("mcp:{id}"), version: version.clone(),
-                            tools: tools.iter().filter(|tool| model_visible(tool)).map(|tool| contribution(&id, tool, connection.clone(), owner.stopped.clone())).collect(),
+                            tools: tools.iter().filter(|tool| model_visible(tool)).map(|tool| contribution(&id, tool, connection.clone(), owner.stopped.clone(), owner.files.clone(), owner.session_id.clone())).collect(),
                         });
                         owner.publish(&id, Some((set.clone(), connection.clone())), McpSourceState::Ready { version }, &cancel);
                         published = Some(set);
@@ -767,7 +861,12 @@ async fn discover(
             }
         }
     }.await;
-    let withdrawn = lease.take().is_some_and(|lease| lease.withdrawn());
+    let withdrawn = held.take().is_some_and(|held| held.withdrawn());
+    // The replacement owns the slot once this discovery is cancelled; only a
+    // discovery that ended on its own error releases the generation.
+    if result.is_err() && !cancel.is_cancelled() {
+        lease.release();
+    }
     match result {
         Ok(()) => {}
         Err(error) if withdrawn || matches!(error, McpError::Disabled) => {
@@ -862,6 +961,8 @@ pub(super) fn contribution(
     tool: &McpTool,
     connection: Arc<McpConnection>,
     stopped: CancellationToken,
+    files: Option<Arc<dim_agent_capabilities::host::SessionFiles>>,
+    session_id: String,
 ) -> Arc<ToolContribution> {
     let mut hash = Sha256::new();
     hash.update((id.len() as u64).to_be_bytes());
@@ -888,21 +989,36 @@ pub(super) fn contribution(
             }),
         },
         handler: Arc::new(McpToolHandler {
+            files,
+            session_id,
             server: id.to_owned(),
             connection,
             original: tool.name.clone(),
+            read_only: tool.read_only,
             stopped,
         }),
     })
 }
 
 struct McpToolHandler {
+    files: Option<Arc<dim_agent_capabilities::host::SessionFiles>>,
+    session_id: String,
     server: String,
     connection: Arc<McpConnection>,
     original: String,
+    /// The server's own `annotations.readOnlyHint`. It is a hint, so it orders
+    /// this handler's calls and never relaxes the call's risk.
+    read_only: bool,
     stopped: CancellationToken,
 }
 impl ToolHandler for McpToolHandler {
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        if self.read_only {
+            ToolConcurrency::Concurrent
+        } else {
+            ToolConcurrency::Exclusive
+        }
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -947,7 +1063,18 @@ impl ToolHandler for McpToolHandler {
                     Err(HostError::Cancelled(error.to_string()))
                 }
                 Err(other) => Err(HostError::failed(other.to_string())),
-                Ok(result) => Ok(result),
+                Ok(mut result) => {
+                    if let Some(files) = &self.files {
+                        dim_agent_capabilities::session_files::store_result(
+                            files,
+                            &self.session_id,
+                            &mut result,
+                            &cancel,
+                        )
+                        .await?;
+                    }
+                    Ok(result)
+                }
             }
         })
     }

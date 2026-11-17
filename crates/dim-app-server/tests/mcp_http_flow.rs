@@ -1935,6 +1935,68 @@ async fn legacy_sse_accepts_default_message_events() {
 }
 
 #[tokio::test]
+async fn the_mcp_client_declares_the_build_the_process_reports() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let stop = CancellationToken::new();
+    let client_info: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let seen = client_info.clone();
+    let app = Router::new().route(
+        "/mcp",
+        post(move |Json(message): Json<Value>| {
+            let seen = seen.clone();
+            async move {
+                let result = match message["method"].as_str().unwrap() {
+                    "initialize" => {
+                        seen.lock().unwrap().push(message["params"]["clientInfo"].clone());
+                        json!({"protocolVersion":message["params"]["protocolVersion"],"capabilities":{"tools":{}},"serverInfo":{"name":"identity-fixture","version":"1"}})
+                    }
+                    "notifications/initialized" => return StatusCode::ACCEPTED.into_response(),
+                    "tools/list" => json!({"tools":[]}),
+                    _ => return StatusCode::BAD_REQUEST.into_response(),
+                };
+                Json(json!({"jsonrpc":"2.0","id":message["id"],"result":result})).into_response()
+            }
+        }),
+    );
+    let server = tokio::spawn(
+        axum::serve(listener, app)
+            .with_graceful_shutdown(stop.clone().cancelled_owned())
+            .into_future(),
+    );
+    let fixture = Fixture::new(&url, "fixture-only").await;
+    let cancel = CancellationToken::new();
+    let connection = fixture
+        .mcp
+        .server(None, "docs".into(), &cancel)
+        .await
+        .unwrap();
+    assert!(connection.tools(&cancel).await.unwrap().is_empty());
+    let received = client_info.lock().unwrap().clone();
+    assert_eq!(received.len(), 1, "the connection initialized once");
+    assert_eq!(
+        received[0]["version"],
+        json!(dim_agent_capabilities::build::current()),
+        "the MCP client declares the label its own process reports"
+    );
+    if !dim_agent_capabilities::build::RELEASE {
+        assert_ne!(
+            received[0]["version"],
+            json!(env!("CARGO_PKG_VERSION")),
+            "a build the release flow did not stamp does not declare the bare version"
+        );
+    }
+    assert_eq!(
+        received[0]["name"],
+        json!("dim-app-server"),
+        "the declared name stays the package name"
+    );
+    fixture.close().await;
+    stop.cancel();
+    server.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn legacy_sse_rejects_cross_origin_endpoints_and_redirects_without_leaking_headers() {
     use axum::routing::get;
     let hits = Arc::new(AtomicUsize::new(0));

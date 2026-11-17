@@ -527,7 +527,7 @@ async fn launch_held_team(
     dim_app_server::collaboration::install(&mut builder);
     let server = serve(builder, config).await.unwrap();
     let agent = server.agent().unwrap();
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -578,7 +578,7 @@ impl rutis::host::DynPlugin for CaptureMemberConfig {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_collaboration_adopts_profile_and_default_capabilities() {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let home = std::env::temp_dir().join(format!("dim-team-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&home).unwrap();
         let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -593,7 +593,7 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
                 move |names| Ok(Box::new(CaptureMemberConfig::new(names, observed.clone())?)),
             ));
         }).await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let capabilities = dim_agent_types::CatalogCapabilities::with_limits(32000, 128);
         let models = ["alpha", "beta"].map(|id| json!({"modelId":id,"displayName":id,"status":"active",
             "capabilities":capabilities}));
@@ -624,7 +624,7 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
         for method in ["collaboration.model_policy", "collaboration.set_model_policy"] {
             assert!(client.features.as_array().unwrap().contains(&json!(method)));
         }
-        let mut remote = Client::new_version(&server, true, 3).await;
+        let mut remote = Client::new_version(&server, true, 4).await;
         assert_eq!(remote.rpc("collaboration.model_policy", json!({})).await["error"]["data"]["appError"], "local_transport_required");
         let read = client.rpc("collaboration.model_policy", json!({})).await;
         assert_eq!(read["result"]["policy"], json!({"mode":"agent"}));
@@ -646,7 +646,7 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
             reply["result"]["revision"].as_str().unwrap().to_owned()
         };
         let fixed = set(&mut client, &initial, json!({"mode":"fixed","model":model("alpha")})).await;
-        let mut other = Client::new_version(&server, false, 3).await;
+        let mut other = Client::new_version(&server, false, 4).await;
         let stale = other.rpc("collaboration.set_model_policy", json!({"expectedRevision":initial,"policy":{"mode":"inherit"}})).await;
         assert_eq!(stale["error"]["data"]["appError"], "collaboration_model_policy_conflict", "{stale}");
         let reread = other.rpc("collaboration.model_policy", json!({})).await;
@@ -852,7 +852,7 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
         .await
         .unwrap();
         let agent = server.agent().unwrap();
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let lead = leader(&mut client, allowed()).await;
         let session = agent.get_session(&lead).unwrap();
         let agent_id = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
@@ -1047,6 +1047,102 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
     })
     .await
     .unwrap();
+}
+
+/// `ServerConfig::plugin_tools` off leaves the `PluginTools` part
+/// unregistered, so no Session the process serves declares `plugin`, a
+/// collaboration member whose profile names it included; the default still
+/// offers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plugin_tools_off_removes_the_plugin_tool_from_every_session() {
+    fn declares(tools: &[dim_agent_types::ToolDefinition], name: &str) -> bool {
+        tools.iter().any(|tool| tool.name == name)
+    }
+    for plugin_tools in [true, false] {
+        tokio::time::timeout(Duration::from_secs(60), async {
+            let home =
+                std::env::temp_dir().join(format!("dim-plugin-tools-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&home).unwrap();
+            let mut config = ServerConfig {
+                // A target home is a plugin home (lib.rs), so the process
+                // runs PluginManager; without a product home it keeps the
+                // mock model the other Collaboration tests use.
+                target_home: Some(home.clone()),
+                plugin_tools,
+                ..Default::default()
+            };
+            // The default profile, which a `default` Agent's members adopt,
+            // names `plugin`: the member's own tools list is the profile's.
+            config.session_defaults.tools = Some(
+                ["plugin", "echo", "wait", "agent"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+            let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
+            let mut client = Client::new_version(&server, false, 3).await;
+            let created = client
+                .rpc(
+                    "session.create",
+                    json!({"cwd": std::env::temp_dir(),
+                        "tools": ["echo", "wait", "agent", "plugin"],
+                        "permissionPolicy": {"allowedTools": ["echo", "wait", "agent"]}}),
+                )
+                .await;
+            assert_ok(&created);
+            let lead = created["result"]["sessionId"].as_str().unwrap().to_owned();
+            let lead_session = agent.get_session(&lead).unwrap();
+            let model_tools = async |session: &Session| {
+                poll("model call", async || {
+                    events(session)
+                        .await
+                        .iter()
+                        .find_map(|event| match &event.kind {
+                            EventKind::ModelCall(data) => Some(data.request.tools.clone()),
+                            _ => None,
+                        })
+                })
+                .await
+                .unwrap_or_default()
+            };
+            let default_agent = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            say(
+                &mut client,
+                &lead,
+                tool(json!({"action": "request", "agentId": default_agent, "prompt": "hello"})),
+                "queue",
+            )
+            .await;
+            let lead_tools = model_tools(&lead_session).await;
+            assert_eq!(
+                declares(&lead_tools, "plugin"),
+                plugin_tools,
+                "leader tools with plugin_tools={plugin_tools}: {lead_tools:?}"
+            );
+            returned(&mut client, &lead, &lead_session, 1).await;
+            let member = next_member(&lead_session, 0).await;
+            let member_session = poll("member session", async || agent.get_session(&member)).await;
+            let member_tools = model_tools(&member_session).await;
+            assert!(
+                declares(&member_tools, "echo"),
+                "member keeps the tools it can declare: {member_tools:?}"
+            );
+            assert_eq!(
+                declares(&member_tools, "plugin"),
+                plugin_tools,
+                "member tools with plugin_tools={plugin_tools}: {member_tools:?}"
+            );
+            drop(client);
+            server.shutdown();
+            server.join().await.unwrap();
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("collaboration flow timed out with plugin_tools={plugin_tools}")
+        });
+    }
 }
 
 /// A leader Session of the default Agent; members inherit its policy.
@@ -1308,7 +1404,7 @@ fn result_of(events: &[Arc<AgentEvent>], member: &str) -> Vec<CollaborationOutco
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn leader_delegates_and_team_members_communicate() {
     let (server, agent) = launch_team().await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     assert!(
         !client
             .features
@@ -1347,12 +1443,21 @@ async fn leader_delegates_and_team_members_communicate() {
     say(
         &mut client,
         &lead,
-        tool(json!({"action": "request", "agentId": default_agent, "prompt": "hello"})),
+        tool(json!({"action": "request", "agentId": default_agent, "prompt": "hello", "title": "Review greeting"})),
         "queue",
     )
     .await;
     returned(&mut client, &lead, &lead_session, 1).await;
     let timeline = events(&lead_session).await;
+    let request = timeline
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::CollaborationRequest(data) => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(request.title.as_deref(), Some("Review greeting"));
+    assert_eq!(request.prompt, "hello");
     let (_, first) = results(&timeline)[0].clone();
     let first: Value = serde_json::from_str(&first).unwrap();
     assert_eq!(first["status"], "running");
@@ -1439,11 +1544,27 @@ async fn leader_delegates_and_team_members_communicate() {
         &lead,
         tool(
             json!({"action": "request", "agentId": default_agent, "sessionId": member,
-            "prompt": "tool:wait {\"millis\":60000}"}),
+            "prompt": "tool:wait {\"millis\":60000}", "title": "Wait for review"}),
         ),
         "queue",
     )
     .await;
+    idle(&mut client, &lead).await;
+    let pending = client
+        .rpc(
+            "session.collaboration.pending",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&pending);
+    assert_eq!(
+        pending["result"]["requests"][0]["request"]["title"],
+        "Wait for review"
+    );
+    assert_eq!(
+        pending["result"]["requests"][0]["request"]["prompt"],
+        "tool:wait {\"millis\":60000}"
+    );
     say(
         &mut client,
         &lead,
@@ -1752,7 +1873,7 @@ async fn leader_delegates_and_team_members_communicate() {
     )
     .unwrap();
     for (action, required) in [
-        ("request", json!(["action", "prompt", "agentId"])),
+        ("request", json!(["action", "prompt", "title", "agentId"])),
         ("cancel", json!(["action", "agentId", "sessionId"])),
         ("close", json!(["action", "agentId", "sessionId"])),
         (
@@ -1783,14 +1904,23 @@ async fn leader_delegates_and_team_members_communicate() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|variant| variant["required"] == json!(["action", "prompt", "profile"]))
+            .any(|variant| variant["required"] == json!(["action", "prompt", "title", "profile"]))
     );
+    for variant in schema["anyOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|variant| variant["properties"]["action"]["enum"][0] == "request")
+    {
+        assert_eq!(variant["properties"]["title"]["minLength"], 1);
+        assert!(variant["properties"]["title"].get("pattern").is_none());
+    }
     let validator = jsonschema::validator_for(&schema).unwrap();
     assert!(!validator.is_valid(&json!({"action":"cancel","agentId":"exec-unknown"})));
     assert!(!validator.is_valid(&json!({"action":"list","agentId":"unexpected"})));
     assert!(!validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent,"profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
     assert!(validator.is_valid(
-        &json!({"action":"request","prompt":"work","agentId":default_agent,"sessionId":member})
+        &json!({"action":"request","prompt":"work","title":"Review change","agentId":default_agent,"sessionId":member})
     ));
     assert!(validator.is_valid(
         &json!({"action":"read","agentId":default_agent,"sessionId":member,"after":1,"limit":2})
@@ -1798,7 +1928,35 @@ async fn leader_delegates_and_team_members_communicate() {
     assert!(
         validator.is_valid(&json!({"action":"cancel","agentId":default_agent,"sessionId":member}))
     );
-    assert!(validator.is_valid(&json!({"action":"request","prompt":"work","profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
+    assert!(validator.is_valid(&json!({"action":"request","prompt":"work","title":"Review change","profile":{"name":"worker","description":"","systemPrompt":"work","tools":[]}})));
+    assert!(
+        !validator.is_valid(&json!({"action":"request","prompt":"work","agentId":default_agent}))
+    );
+    for (title, schema_valid) in [
+        (json!(""), false),
+        (json!("  "), true),
+        (json!("two\nlines"), true),
+        (json!("trailing\n"), true),
+        (json!("two\rlines"), true),
+        (json!("two\u{0085}lines"), true),
+        (json!("two\u{2028}lines"), true),
+        (json!("two\u{2029}lines"), true),
+        (json!(null), false),
+        (json!(7), false),
+    ] {
+        let input =
+            json!({"action":"request","prompt":"work","title":title,"agentId":default_agent});
+        assert_eq!(validator.is_valid(&input), schema_valid, "{input}");
+        let before = facts(&lead_session).await;
+        say(&mut client, &lead, tool(input), "queue").await;
+        idle(&mut client, &lead).await;
+        assert!(last_error(&events(&lead_session).await).starts_with("invalid_input"));
+        assert_eq!(
+            facts(&lead_session).await,
+            before,
+            "invalid title must not create a request"
+        );
+    }
     let before = facts(&lead_session).await;
     say(
         &mut client,
@@ -1824,7 +1982,7 @@ async fn leader_delegates_and_team_members_communicate() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn temporary_agents_stay_private_during_concurrent_create_and_close() {
     let (server, agent) = launch_team().await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     let lead_session = agent.get_session(&lead).unwrap();
     let foreign = leader(&mut client, allowed()).await;
@@ -1889,7 +2047,7 @@ async fn temporary_agents_stay_private_during_concurrent_create_and_close() {
 async fn a_member_is_an_internal_child_of_its_leader() {
     let store = Store::new();
     let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     let lead_session = agent.get_session(&lead).unwrap();
     say(
@@ -1957,7 +2115,7 @@ async fn a_member_is_an_internal_child_of_its_leader() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn members_cancel_close_and_leave_the_team() {
     let (server, agent) = launch_team().await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     let lead_session = agent.get_session(&lead).unwrap();
     let default_agent = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
@@ -2324,12 +2482,118 @@ async fn members_cancel_close_and_leave_the_team() {
     server.join().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn finished_delegations_exclude_failed_non_request_deliveries_before_the_limit() {
+    let (server, agent) = launch_team().await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let lead = leader(&mut client, allowed()).await;
+    let lead_session = agent.get_session(&lead).unwrap();
+    let default_agent = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": default_agent, "prompt": "done"})),
+        "queue",
+    )
+    .await;
+    returned(&mut client, &lead, &lead_session, 1).await;
+    for index in 0..49 {
+        say(
+            &mut client,
+            &lead,
+            tool(json!({"action": "request", "agentId": "no-such-agent",
+                "prompt": format!("failed delegation {index}")})),
+            "queue",
+        )
+        .await;
+        idle(&mut client, &lead).await;
+    }
+    let before = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&before);
+    let expected = before["result"]["requests"].as_array().unwrap();
+    assert_eq!(expected.len(), 50);
+    assert!(
+        expected[..49]
+            .iter()
+            .all(|item| item["result"].is_null() && item["start"]["delivery"]["status"] == "error")
+    );
+    assert_eq!(expected[49]["result"]["status"], "completed");
+    for index in 0..51 {
+        let action = ["message", "cancel", "close"][index % 3];
+        let mut input = json!({"action": action, "agentId": default_agent,
+            "sessionId": "no-such-member"});
+        if action == "message" {
+            input["content"] = json!("not a delegation");
+        }
+        say(&mut client, &lead, tool(input), "queue").await;
+        idle(&mut client, &lead).await;
+        assert!(last_error(&events(&lead_session).await).starts_with("team_member_not_found"));
+    }
+    let timeline = events(&lead_session).await;
+    assert_eq!(
+        timeline
+            .iter()
+            .filter(
+                |event| matches!(&event.kind, EventKind::CollaborationDelivered(data)
+                if matches!(&data.delivery, CollaborationDelivery::Error { .. }))
+            )
+            .count(),
+        100,
+        "49 refused delegations and 51 refused message/cancel/close operations were delivered"
+    );
+    let after = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&after);
+    assert_eq!(after["result"]["requests"], before["result"]["requests"]);
+    say(
+        &mut client,
+        &lead,
+        tool(json!({"action": "request", "agentId": "no-such-agent", "prompt": "newest failure"})),
+        "queue",
+    )
+    .await;
+    idle(&mut client, &lead).await;
+    let newest = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main"}),
+        )
+        .await;
+    assert_ok(&newest);
+    let newest = newest["result"]["requests"].as_array().unwrap();
+    assert_eq!(newest.len(), 50);
+    assert_eq!(newest[0]["start"]["request"]["prompt"], "newest failure");
+    assert_eq!(&newest[1..], &expected[..49]);
+    let cutoff = client
+        .rpc(
+            "session.collaboration.finished",
+            json!({"sessionId": lead, "branchId": "main", "through": before["result"]["through"]}),
+        )
+        .await;
+    assert_ok(&cutoff);
+    assert_eq!(cutoff["result"], before["result"]);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A leader stop covers only requests of its active turn and returns no
 /// result input for them; closing the leader settles its requests.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn leader_stop_and_close_settle_requests() {
     let (server, agent) = launch_team().await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"preset": "workspace-write", "allowedTools": ["echo", "wait"]}),
@@ -2580,7 +2844,7 @@ async fn member_work(mut config: ServerConfig) {
         .get_or_insert_default()
         .push("hold".into());
     let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -2928,6 +3192,7 @@ async fn a_member_stop_reports_cancellation_and_a_later_steer_does_not_reopen_th
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: home.0.join("command-output"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
@@ -2957,7 +3222,7 @@ async fn a_member_stop_reports_cancellation_and_a_later_steer_does_not_reopen_th
     .await
     .unwrap();
     let agent = server.agent().unwrap();
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     process_typescript::select_model(&mut client).await;
     let created = client
         .rpc(
@@ -3147,7 +3412,7 @@ async fn a_client_cancel_stops_a_running_member_and_writes_nothing_when_idle() {
         .get_or_insert_default()
         .push("hold".into());
     let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -3307,7 +3572,7 @@ async fn a_client_cancel_from_another_branch_leaves_the_owning_branch_turn_runni
         |_| {},
     )
     .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let created = client
         .rpc(
             "session.create",
@@ -3404,6 +3669,7 @@ async fn a_client_cancel_from_another_branch_leaves_the_owning_branch_turn_runni
                         session_id: member.clone(),
                     },
                     prompt: "later".into(),
+                    title: None,
                 })
                 .into(),
                 EventKind::Extension(
@@ -3793,7 +4059,7 @@ async fn a_client_cancel_after_the_member_input_is_applied_stops_the_turn_it_sta
     let cancelling = {
         let lead = lead.clone();
         let member = member.clone();
-        let mut other = Client::new_version(&server, false, 3).await;
+        let mut other = Client::new_version(&server, false, 4).await;
         tokio::spawn(async move {
             other
                 .rpc(
@@ -3883,7 +4149,7 @@ async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() 
     let cancelling = {
         let lead = lead.clone();
         let member = member.clone();
-        let mut other = Client::new_version(&server, false, 3).await;
+        let mut other = Client::new_version(&server, false, 4).await;
         tokio::spawn(async move {
             other
                 .rpc(
@@ -3948,25 +4214,41 @@ async fn a_client_cancel_refuses_a_new_request_to_the_member_until_it_returns() 
         }
     );
 
-    // Once the held read returns, the wait ends one way or another — with the
-    // stop, or from the request's own ending when its turn got there first —
-    // and the mark clears, so the member takes new work.
+    // Releasing the read wakes the carry-out task, which drops the stopping
+    // mark only at its next check, so a request can still be answered `busy`.
     release_read.release();
-    let accepted = count(&lead_session, false).await;
-    say(
-        &mut client,
-        &lead,
-        tool(
-            json!({"action": "request", "agentId": holder, "sessionId": member,
-            "prompt": "tool:echo {\"text\":\"after\"}"}),
-        ),
-        "queue",
-    )
-    .await;
-    poll("the request after the cancel is accepted", async || {
-        (count(&lead_session, false).await > accepted).then_some(())
+    let asked = async |client: &mut Client| {
+        let before = deliveries(&lead_session).await.len();
+        say(
+            client,
+            &lead,
+            tool(
+                json!({"action": "request", "agentId": holder, "sessionId": member,
+                "prompt": "tool:echo {\"text\":\"after\"}"}),
+            ),
+            "queue",
+        )
+        .await;
+        poll("the request after the cancel is decided", async || {
+            let seen = deliveries(&lead_session).await;
+            (seen.len() > before).then(|| seen.last().cloned().expect("a new delivery"))
+        })
+        .await
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match asked(&mut client).await {
+                CollaborationDelivery::Ok { .. } => return,
+                CollaborationDelivery::Error { error } => assert_eq!(
+                    error,
+                    dim_agent_types::CollaborationErrorCode::Busy,
+                    "the request after the cancel is accepted"
+                ),
+            }
+        }
     })
-    .await;
+    .await
+    .unwrap_or_else(|_| panic!("deadline: the request after the cancel is accepted"));
 
     server.shutdown();
     server.join().await.unwrap();
@@ -4006,7 +4288,7 @@ async fn a_client_cancel_stops_the_turn_it_named_not_the_one_that_replaced_it() 
     let cancelling = {
         let lead = lead.clone();
         let member = member.clone();
-        let mut other = Client::new_version(&server, false, 3).await;
+        let mut other = Client::new_version(&server, false, 4).await;
         tokio::spawn(async move {
             other
                 .rpc(
@@ -4125,7 +4407,7 @@ async fn a_detached_cancel_wait_stops_the_turn_it_named_not_the_one_that_replace
     let cancelling = {
         let lead = lead.clone();
         let member = member.clone();
-        let mut other = Client::new_version(&server, false, 3).await;
+        let mut other = Client::new_version(&server, false, 4).await;
         tokio::spawn(async move {
             other
                 .rpc(
@@ -4704,7 +4986,7 @@ async fn a_leader_branch_close_after_a_client_cancel_keeps_one_carry_out() {
         let cancelling = {
             let lead = lead.clone();
             let member = member.clone();
-            let mut other = Client::new_version(&server, false, 3).await;
+            let mut other = Client::new_version(&server, false, 4).await;
             tokio::spawn(async move {
                 other
                     .rpc(
@@ -4993,7 +5275,7 @@ async fn a_client_cancel_refuses_another_teams_member_an_unknown_id_and_a_member
         .get_or_insert_default()
         .push("hold".into());
     let (server, agent) = launch_with_agent(Arc::new(GateTools(gate.clone())), config).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -5183,7 +5465,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
     dim_app_server::collaboration::install(&mut builder);
     let server = serve(builder, config).await.unwrap();
     let agent = server.agent().unwrap();
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent"]}),
@@ -5402,7 +5684,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_page_carries_the_effects_its_tool_results_declared() {
     let (server, agent) = launch_with_agent(Arc::new(EffectTools), ServerConfig::default()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "touch"]}),
@@ -5497,7 +5779,7 @@ async fn a_member_page_carries_the_effects_its_tool_results_declared() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn collaboration_facts_publish_to_tree_protocols_only() {
     let (server, agent) = launch_team().await;
-    let mut tree = Client::new_version(&server, false, 3).await;
+    let mut tree = Client::new_version(&server, false, 4).await;
     let default_agent = tree.rpc("agent.list", json!({})).await["result"][0]["agentId"]
         .as_str()
         .unwrap()
@@ -5574,7 +5856,7 @@ async fn stored_member_read_acquires_it_and_it_can_unload_and_work_again() {
         },
     )
     .await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let lead = leader(&mut client, allowed()).await;
     assert_ok(
         &client
@@ -5989,7 +6271,7 @@ async fn a_stop_before_delivered_covers_the_request_however_late_it_is_handled()
         }
     })
     .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     gate.leader.set(lead.clone()).unwrap();
     hold.leader.set(lead.clone()).unwrap();
@@ -6086,7 +6368,7 @@ async fn a_cancel_before_the_result_reports_cancelled_however_late_it_is_deliver
         })
     }));
     let (server, agent) = launch_gated(gate.clone(), ServerConfig::default()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     gate.leader.set(lead.clone()).unwrap();
     let lead_session = agent.get_session(&lead).unwrap();
@@ -6157,7 +6439,7 @@ async fn an_operation_of_a_turn_interrupted_before_a_reload_is_refused() {
         },
     )
     .await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let lead = leader(&mut client, allowed()).await;
     gate.leader.set(lead.clone()).unwrap();
     assert_ok(
@@ -6222,6 +6504,7 @@ async fn an_operation_of_a_turn_interrupted_before_a_reload_is_refused() {
                 call_id: "late".into(),
                 target: dim_agent_types::CollaborationTarget::Agent { agent_id },
                 prompt: "hello".into(),
+                title: None,
             })
             .into(),
         )
@@ -6268,7 +6551,7 @@ async fn a_request_covered_before_its_member_input_is_refused() {
         }
     })
     .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     gate.leader.set(lead.clone()).unwrap();
     hold.leader.set(lead.clone()).unwrap();
@@ -6361,7 +6644,7 @@ async fn held(session: &Session) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn open_requests_hold_their_leader_until_the_last_result() {
     let (server, agent, gate, directory) = launch_holding_team().await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -6446,7 +6729,7 @@ async fn the_idle_unload_pass_keeps_a_leader_with_an_open_request() {
     let (server, agent, gate, directory) =
         launch_holding_team_unloading(Duration::from_millis(200), |builder| loads.install(builder))
             .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -6617,7 +6900,7 @@ async fn deleting_the_last_two_members_together_ends_their_agent() {
         ..Default::default()
     };
     let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let lead = leader(&mut client, allowed()).await;
     let lead_session = agent.get_session(&lead).unwrap();
     assert_ok(
@@ -6651,7 +6934,7 @@ async fn deleting_the_last_two_members_together_ends_their_agent() {
     returned(&mut client, &lead, &lead_session, 2).await;
     let second = next_member(&lead_session, 1).await;
 
-    let mut other = Client::new_version(&server, true, 3).await;
+    let mut other = Client::new_version(&server, true, 4).await;
     let (deleted, _) = tokio::join!(
         client.rpc("session.delete", json!({"sessionId": first})),
         other.rpc("session.delete", json!({"sessionId": second})),
@@ -6705,7 +6988,7 @@ async fn deleting_the_last_two_members_together_ends_their_agent() {
 async fn a_leader_whose_member_is_in_use_is_not_deleted_when_inactive_is_required() {
     let store = super::deletion::Store::new();
     let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let lead = leader(&mut client, allowed()).await;
     let lead_session = agent.get_session(&lead).unwrap();
     let holder = client.rpc("agent.list", json!({})).await["result"][0]["agentId"]
@@ -6723,7 +7006,7 @@ async fn a_leader_whose_member_is_in_use_is_not_deleted_when_inactive_is_require
     let member = next_member(&lead_session, 0).await;
     // An attached client keeps the member in use; the leader itself is idle
     // once its request completed.
-    let mut watcher = Client::new_version(&server, true, 3).await;
+    let mut watcher = Client::new_version(&server, true, 4).await;
     assert_ok(
         &watcher
             .rpc("session.attach", json!({"sessionId":member}))
@@ -6821,7 +7104,7 @@ async fn startup_removes_an_incomplete_and_an_orphaned_delegation() {
         ..Default::default()
     };
     let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let listed = client.rpc("agent.list", json!({})).await;
     assert_eq!(
         listed["result"].as_array().unwrap().len(),
@@ -6879,7 +7162,7 @@ async fn listed(client: &mut Client, lead: &str, lead_session: &Session, id: &st
 async fn closing_a_member_keeps_a_temporary_agent_with_an_unloaded_member() {
     let (server, agent, _gate, directory) =
         launch_holding_team_unloading(Duration::from_millis(200), |_| {}).await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let (lead, lead_session, temporary, first, second) =
         unloaded_temporary_members(&mut client, &agent).await;
 
@@ -6957,7 +7240,7 @@ async fn deleting_unloaded_members_ends_their_relations_and_the_temporary_agent(
     let (server, agent, _gate, directory) =
         launch_holding_team_unloading(Duration::from_millis(200), |builder| loads.install(builder))
             .await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let (lead, lead_session, temporary, first, second) =
         unloaded_temporary_members(&mut client, &agent).await;
 
@@ -7014,7 +7297,7 @@ async fn unloaded_members_deleted_across_a_reload_end_with_their_temporary_agent
             sessions.install(builder);
         })
         .await;
-    let mut client = Client::new_version(&server, true, 3).await;
+    let mut client = Client::new_version(&server, true, 4).await;
     let (lead, lead_session, temporary, first, second) =
         unloaded_temporary_members(&mut client, &agent).await;
 
@@ -7057,7 +7340,7 @@ async fn unloaded_members_deleted_across_a_reload_end_with_their_temporary_agent
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_settlement_of_a_request_releases_its_leader() {
     let (server, agent, _gate, directory) = launch_holding_team().await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(
         &mut client,
         json!({"allowedTools": ["echo", "wait", "agent", "hold"]}),
@@ -7173,7 +7456,7 @@ async fn a_closing_leader_gives_no_hold_and_refuses_the_request() {
         }
     })
     .await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     gate.leader.set(lead.clone()).unwrap();
     hold.leader.set(lead.clone()).unwrap();
@@ -7478,7 +7761,7 @@ async fn configured_agent_descriptions_replace_the_builtin_text() {
         let (server, agent) =
             launch_with_collaboration(Arc::new(MockTools), ServerConfig::default(), collaboration)
                 .await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let lead = leader(&mut client, allowed()).await;
         let lead_session = agent.get_session(&lead).unwrap();
         say(&mut client, &lead, "hello".into(), "queue").await;
@@ -7541,7 +7824,7 @@ async fn parts_required_without_install_keep_the_builtin_descriptions() {
     .await
     .unwrap();
     let agent = server.agent().unwrap();
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = tokio::time::timeout(Duration::from_secs(20), leader(&mut client, allowed()))
         .await
         .expect("the Session is created within the wait");
@@ -7569,7 +7852,7 @@ async fn a_restart_restores_a_delegation_and_keeps_it_private() {
         ..Default::default()
     };
     let (server, agent) = launch_with_agent(Arc::new(MockTools), config.clone()).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     let lead = leader(&mut client, allowed()).await;
     let lead_session = agent.get_session(&lead).unwrap();
     say(
@@ -7612,7 +7895,7 @@ async fn a_restart_restores_a_delegation_and_keeps_it_private() {
     server.join().await.unwrap();
 
     let (server, agent) = launch_with_agent(Arc::new(MockTools), config).await;
-    let mut client = Client::new_version(&server, false, 3).await;
+    let mut client = Client::new_version(&server, false, 4).await;
     assert_eq!(
         client.rpc("agent.list", json!({})).await["result"]
             .as_array()
@@ -7669,7 +7952,7 @@ async fn member_tool_approval_reviews_the_original_action_and_settles_cancelled_
     tokio::time::timeout(Duration::from_secs(30), async {
         let runs = Arc::new(AtomicUsize::new(0));
         let (server, agent) = approval_team(runs.clone()).await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let created = client.rpc("session.create", json!({"cwd":std::env::temp_dir(),"tools":["agent","echo","danger","member_approval_allow","member_approval_reject"],"permissionPolicy":{"preset":"workspace-write","allowedTools":["agent"]}})).await;
         assert_ok(&created);
         let lead = created["result"]["sessionId"].as_str().unwrap();
@@ -7805,7 +8088,7 @@ async fn member_tool_approval_reviews_the_original_action_and_settles_cancelled_
 async fn new_members_sample_requesting_branch_policy_and_reused_members_keep_theirs() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let (server, agent) = launch_team().await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let lead = leader(&mut client, allowed()).await;
         let lead_session = agent.get_session(&lead).unwrap();
         let policy = json!({"preset":"workspace-write","allowedTools":["agent","echo","wait"],"disallowedTools":["forbidden"]});
@@ -7842,7 +8125,7 @@ async fn member_approval_cancellation_and_policy_tightening_never_execute_a_late
     tokio::time::timeout(Duration::from_secs(30), async {
         let runs = Arc::new(AtomicUsize::new(0));
         let (server, agent) = approval_team(runs.clone()).await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let created = client.rpc("session.create", json!({"cwd":std::env::temp_dir(),"tools":["agent","echo","member_approval_allow","member_approval_reject"],"permissionPolicy":{"preset":"workspace-write","allowedTools":["agent"]}})).await;
         assert_ok(&created);
         let lead = created["result"]["sessionId"].as_str().unwrap();
@@ -7927,7 +8210,7 @@ async fn a_stopped_turn_keeps_a_delivered_members_later_approval_reachable() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let runs = Arc::new(AtomicUsize::new(0));
         let (server, agent) = approval_team(runs.clone()).await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let created = client.rpc("session.create", json!({"cwd":std::env::temp_dir(),"tools":["agent","echo","wait","danger","member_approval_allow","member_approval_reject"],"permissionPolicy":{"preset":"workspace-write","allowedTools":["agent","wait"]}})).await;
         assert_ok(&created);
         let lead = created["result"]["sessionId"].as_str().unwrap();
@@ -7977,7 +8260,7 @@ async fn missing_permission_state_refuses_a_committed_member_request_without_cre
         });
         let gate = DispatchGate::new(hold);
         let (server, agent) = launch_gated(gate.clone(), ServerConfig::default()).await;
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let lead = leader(&mut client, allowed()).await;
         gate.leader.set(lead.clone()).unwrap();
         let session = agent.get_session(&lead).unwrap();
@@ -7990,6 +8273,7 @@ async fn missing_permission_state_refuses_a_committed_member_request_without_cre
         let request = timeline.append(EventKind::CollaborationRequest(dim_agent_types::CollaborationRequestData {
             turn_id: "sampling-failure".into(), request_id: "sampling-failure".into(), call_id: "sampling-failure".into(),
             target: dim_agent_types::CollaborationTarget::Agent { agent_id }, prompt: "hello".into(),
+            title: None,
         }).into()).unwrap();
         let plugins = ctx.diagnostics().plugins;
         let parent = plugins.iter().find(|plugin| plugin.instance == ctx.instance()).unwrap().parent;
@@ -8051,7 +8335,7 @@ async fn member_routes_are_authorized_only_after_the_owning_branch_consumes_the_
             ..Default::default()
         }).await.unwrap();
         let agent = server.agent().unwrap();
-        let mut client = Client::new_version(&server, false, 3).await;
+        let mut client = Client::new_version(&server, false, 4).await;
         let created = client.rpc("session.create", json!({"cwd":std::env::temp_dir(),"tools":["agent","echo","member_approval_allow","member_approval_reject"],"permissionPolicy":{"preset":"workspace-write","allowedTools":["agent"]}})).await;
         assert_ok(&created);
         let lead = created["result"]["sessionId"].as_str().unwrap();

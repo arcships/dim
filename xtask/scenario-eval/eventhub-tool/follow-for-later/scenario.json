@@ -1,0 +1,39 @@
+{
+  "description": "Subscribe to deploy notices for later, then make a small rename",
+  "message": "Subscribe this session to deploy notices from now on, then rename MAX_RETRIES to MAX_ATTEMPTS in config.py and retry.py, and make sure `python3 -m unittest discover -s tests` still passes.",
+  "sources": [
+    {
+      "name": "deploys",
+      "guide": "Deploy notices from the deploys pipeline.",
+      "types": [
+        {
+          "type": "deploys.notice",
+          "description": "A deploy started or finished, successfully or not.",
+          "mode": "queue"
+        }
+      ]
+    }
+  ],
+  "budget": {
+    "turns": 10,
+    "seconds": 600,
+    "window": 131072
+  },
+  "probes": [
+    {
+      "id": "subscribed-to-deploys",
+      "kind": "must_show",
+      "text": "the session is subscribed to deploy notices"
+    },
+    {
+      "id": "edit-done",
+      "kind": "must_show",
+      "text": "MAX_RETRIES is renamed to MAX_ATTEMPTS in config.py and retry.py, and the workspace tests pass"
+    },
+    {
+      "id": "no-wait-for-a-notice",
+      "kind": "must_not_show",
+      "text": "the model waits for a deploy notice before finishing"
+    }
+  ]
+}

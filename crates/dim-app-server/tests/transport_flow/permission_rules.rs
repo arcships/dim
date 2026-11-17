@@ -33,6 +33,7 @@ async fn command_rules_written_by_the_client_apply_to_the_next_call() {
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: native.join("outputs"),
         },
         dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),

@@ -38,8 +38,9 @@ Not vendored (reference only, never copied): `xai-grok-pager-render`,
 
 ## Layout deviations from upstream
 
-- This directory is its own Cargo workspace (`Cargo.toml`), like `vendor/aimux`.
-  Upstream's workspace-level `[workspace.dependencies]`, `edition` and lints are
-  reproduced there with the same versions, so member manifests are unchanged.
+- This directory is its own Cargo workspace (`Cargo.toml`), so the root
+  workspace excludes it. Upstream's workspace-level `[workspace.dependencies]`,
+  `edition` and lints are reproduced there with the same versions, so member
+  manifests are unchanged.
 - `xai-grok-markdown/fuzz/` is not vendored (separate cargo-fuzz workspace).
 - Local changes are listed in `PATCHES.md`.

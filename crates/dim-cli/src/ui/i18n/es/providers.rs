@@ -1,5 +1,11 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "Actualizar lista de modelos",
+        "Model list refreshed" => "Lista de modelos actualizada",
+        "Model list refresh failed: {reason}" => {
+            "No se pudo actualizar la lista de modelos: {reason}"
+        }
+        "Refreshing model list… · esc close" => "Actualizando la lista de modelos… · Esc cierra",
         // providers_panel.rs
         "Providers" => "Proveedores",
         "Enter open · Esc clear/close" => "Enter abrir · Esc borrar/cerrar",
@@ -77,6 +83,25 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ mover · enter activar · esc volver",
         "↑↓ move · enter activate · esc close" => "↑↓ mover · enter activar · esc cerrar",
+        "Model id prefix" => "Prefijo de id de modelo",
+        "(none)" => "(ninguno)",
+        "identified: {model} at {provider}" => "identificado: {model} en {provider}",
+        "inferred from several rows: {model} at {provider}" => {
+            "inferido de varias filas: {model} en {provider}"
+        }
+        "ambiguous: {candidates}" => "ambiguo: {candidates}",
+        "unidentified" => "sin identificar",
+        "Identified {rule}" => "Identificado {rule}",
+        "from the Provider's own list" => "de la lista propia del proveedor",
+        "from the whole qualified id" => "del id cualificado completo",
+        "by its tokens" => "por sus tokens",
+        "by its canonical id or display name" => "por su id canónico o nombre visible",
+        "from the custom-provider list" => "de la lista de custom-provider",
+        "by merging the rows that name it" => "combinando las filas que lo nombran",
+        "ambiguous" => "ambiguo",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} aportado por {provider}/{model}"
+        }
         "(paste here)" => "(pega aquí)",
         _ => return None,
     })

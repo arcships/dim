@@ -1,0 +1,21 @@
+name: Maintenance / Other · 维护及其他事项
+description: Track CI, releases, or other repository work. 跟踪 CI、发布或其他仓库维护工作。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search [existing issues](https://github.com/arcships/dim/issues?q=is%3Aissue) before filing. For usage or setup questions, use [Discussions Q&A](https://github.com/arcships/dim/discussions/categories/q-a).
+
+        提交前请[搜索已有 issue](https://github.com/arcships/dim/issues?q=is%3Aissue)。使用或配置问题请到 [Discussions Q&A](https://github.com/arcships/dim/discussions/categories/q-a) 提问。
+  - type: textarea
+    id: work
+    attributes:
+      label: What needs tracking? · 需要跟踪什么事项？
+      description: Describe the work and why it matters. 说明要处理的事项及其影响。
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: References or acceptance criteria · 相关资料或验收条件
+      description: Share related issues, pull requests, CI runs, or how to verify completion. 可以附上相关 issue、PR、CI 运行记录，或说明如何验收。

@@ -1,6 +1,6 @@
 //! One model call outside any Session for a consumer that cannot hold
 //! credentials. The caller owns the choice of model; no event is written.
-use super::{ModelPreferences, ProductResolver, ProviderService};
+use super::{ProductResolver, ProviderService};
 use dim_agent_capabilities::auxiliary_model::{self, AuxiliaryTarget};
 use dim_agent_capabilities::host::*;
 use dim_agent_types::ModelId;
@@ -55,19 +55,14 @@ async fn run(
     cancel: CancellationToken,
 ) -> Result<AuxiliaryReply, AuxiliaryError> {
     let selectable = owner
-        .catalog_for(model.provider_id.clone(), &cancel)
+        .catalog_target(model.provider_id.clone(), model.model_id.clone(), &cancel)
         .await?
         .is_some_and(|catalog| catalog.selectable(&model.model_id).is_some());
     if !selectable {
         return Err(unavailable());
     }
     let selection = owner
-        .configuration(
-            Some(model.clone()),
-            None,
-            ModelPreferences::default(),
-            &cancel,
-        )
+        .configuration_at_defaults(Some(model.clone()), None, &cancel)
         .await?;
     let snapshot = selection
         .capability_snapshot

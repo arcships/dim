@@ -381,6 +381,16 @@ impl TimelineContext {
     /// input whose submission id the branch already holds writes nothing and
     /// returns the committed input.
     pub(crate) async fn input(&self, data: InputMessageData) -> Result<Arc<AgentEvent>> {
+        self.input_commit(data).await.map(|(event, _)| event)
+    }
+    /// [`Self::input`], also saying whether this call wrote the input. The
+    /// answer comes from the append that decides the duplicate under the
+    /// commit lock, so of two concurrent duplicates exactly one is
+    /// [`InputCommit::Written`].
+    pub(crate) async fn input_commit(
+        &self,
+        data: InputMessageData,
+    ) -> Result<(Arc<AgentEvent>, InputCommit)> {
         if let Some(error) = self.dispatcher.failure() {
             return Err(error);
         }
@@ -399,8 +409,10 @@ impl TimelineContext {
             })
             .await?;
         match result {
-            crate::core::Appended::Written(event) => Ok(event),
-            crate::core::Appended::Existing(sequence) => self.committed_input(sequence).await,
+            crate::core::Appended::Written(event) => Ok((event, InputCommit::Written)),
+            crate::core::Appended::Existing(sequence) => {
+                Ok((self.committed_input(sequence).await?, InputCommit::Existing))
+            }
         }
     }
     /// Validates a batch of input from outside the branch and appends it as
@@ -673,13 +685,18 @@ impl TimelineContext {
     }
     /// Loop's state channel. A reloading Loop is a restart of Loop: its
     /// successor takes over from the committed history, the interrupt
-    /// included, so this waits for it. Closed once the branch closes and
-    /// Loop is gone for good.
+    /// included, so this waits for it. When the branch is closing and Loop
+    /// is gone, returns the recorded Dispatcher fault, or Closed if none exists.
     async fn loop_watch(&self) -> Result<watch::Receiver<LoopSnapshot>> {
         loop {
             match self.loop_state() {
                 Ok(state) => return Ok(state.watch()),
-                Err(_) if self.close.started() => return Err(AgentError::Closed(self.id().into())),
+                Err(_) if self.close.started() => {
+                    return Err(self
+                        .dispatcher
+                        .failure()
+                        .unwrap_or_else(|| AgentError::Closed(self.id().into())));
+                }
                 Err(AgentError::Reloading(_)) => {}
                 Err(error) => return Err(error),
             }

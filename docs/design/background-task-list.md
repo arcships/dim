@@ -128,6 +128,25 @@ memory limit for a stalled read.
 This is a client loading state, not a Session/assembly gate. No Pending provider
 is skipped and no runtime readiness rule changes.
 
+A transcript window can hold a terminal fact without the start it settles.
+The current-state reads after a branch's window therefore include each task
+owner's settled tasks at the window's cutoff, read before its unfinished ones:
+
+| Method | Owner | Reply |
+| --- | --- | --- |
+| `session.exec.finished {sessionId, branchId, through?}` | WorkspaceTools | `branchId`, fixed `through`, `tasks`: up to 50 `FinishedExec` items `{start, endedAt, end}`, newest end first. `start` is the item `session.exec.pending` returns; `end` is the `exec/ended` data |
+| `session.collaboration.finished {sessionId, branchId, through?}` | CollaborationSession | `branchId`, fixed `through`, `requests`: up to 50 `FinishedDelegation` items `{start, endedAt, result}`, newest end first. `start` is the item `session.collaboration.pending` returns, with its latest delivery; `result` is the `collaboration/result` data, or null when a failed delivery ended it |
+
+Both are nonmutating and unpaged: 50 matches the task list's finished-row
+retention, not a complete history. Older results remain in the Timeline and
+their original conversation; the inventory does not restore every past task.
+They read only
+the terminal facts and the starts those facts name. The client folds a reported
+task once, by branch and start event, whether or not the window also held it;
+a task already finished in the projection is kept as folded. Each is its own method entry in the owner's Session method table and is
+gated like the others: a daemon that does not list it is skipped. No new event, ledger or retention state is
+added.
+
 The result covers discovered branch histories and later facts. Neither the
 attach reply nor finishing main's history establishes that every branch has
 arrived. A delayed initial state can reveal existing work after stop-all admission,
@@ -155,14 +174,27 @@ Proposed first-release presentation:
 
 - Keep every unfinished row and the **50 most recently finished rows** of the
   current Session. This fixed view limit has no setting, timer or persistent
-  retention effect. Rebuild it from history on resume. The Timeline and original
-  conversation retain their facts/results.
-- Put unfinished rows first; show finished rows newest first, ordered by the
+  retention effect. "Most recently finished" is ordered by the
   enclosing terminal `AgentEvent.create_at` (Unix milliseconds), then branch ID
-  and start/request event ID to break ties. Use the `exec/ended`,
+  and start/request event ID. Use the `exec/ended`,
   `collaboration/result` or failed `collaboration/delivered` event's timestamp;
   the delivery error is itself a Timeline fact. Transport, history and stop RPC
   errors are notices, not finished rows, and get no fallback terminal timestamp.
+  The Timeline and original conversation retain their facts/results.
+- Rebuild the retained rows on resume from the transcript window and the
+  owners' inventory reads. A settled task whose start lies before the window
+  comes from `session.exec.finished` or `session.collaboration.finished`
+  (§2); a daemon that lists neither restores only the tasks the window holds.
+- Order rows by dispatch, and never reorder them when a task finishes. Commands and
+  delegations group by the model request that issued them; a request takes
+  the time of its earliest retained task, and requests are ordered by that time, then branch ID
+  and request ID. Within one request, tasks follow their call's position in the
+  model response (`step/tool-call` `calls`) when that response was read or
+  the owner supplies its position in inventory,
+  then their start/request event's sequence: the requests of one parallel
+  batch commit in no fixed order. Workflow runs follow every command and
+  delegation, by creation time. The order is the same live, on reopening the
+  panel and after resume.
   Timestamps and elapsed time are display data only; they never determine task completion,
   cancellation or storage cleanup.
 - Show kind, label, observed state, elapsed time and command exit code when its
@@ -171,6 +203,76 @@ Proposed first-release presentation:
 - Only `exec/ended`, a delivery error or `collaboration/result` supplies the
   corresponding terminal outcome. A stop reply, read error, idle member or
   vanished live capture cannot fabricate it.
+
+### Task titles and composer rows
+
+A task title identifies this command or delegation, not an Agent's profile
+description, its detailed instructions or its member conversation title. The
+title is supplied by the owner fact and retained by the pending inventory:
+[Collaboration](plugins/Collaboration.md) owns delegation titles, and
+[WorkspaceTools](../architecture/rust-agent/plugins/WorkspaceTools.md) owns
+command titles. The CLI uses the title when present. For historical tasks without
+one, retain the existing command/description or first prompt line as the label;
+do not invent or persist a replacement title.
+
+Command details retain the original command independently of the title and show
+it before the output in the scrollable body, including silent, finished and
+restored commands from another branch. Use the matching tool input when available,
+otherwise the owner fact or pending inventory's description.
+
+```text
++-- Wait for build ---------------------------------------------+
+| Tail preview - last 2,000 lines / 50 KiB                        |
+| sleep 60                                                      |
+|                                                               |
+| No output yet                                                 |
++----------------------------- x stop command · Esc back --------+
+```
+
+Member tasks carry their Agent name independently of the title. A temporary
+profile supplies its name immediately; an existing Agent uses its id until
+`agent.list` supplies its name. The task list, member card and composer rows
+use the same projected task title and Agent identity, including after resume
+and when the originating branch is not the displayed line.
+
+Above the composer, each task occupies its own row; never concatenate several
+task labels horizontally. Show the task's status mark, title, member Agent name
+where applicable, and elapsed time. Truncate the title and then the Agent name
+to fit a narrow terminal, preserving the elapsed time when it fits. Running
+rows use an activity mark; terminal rows retain their actual outcome mark for
+five seconds and then disappear. With no visible task there is no task strip.
+
+Render every visible task as its own row, without a fixed row cap or a
+hidden-task count replacing task rows. The existing terminal viewport still
+preserves the composer when the rows exceed the available screen height.
+The existing empty-composer Enter shortcut opens `/tasks` while the strip
+shows, subject to the earlier shell/queue actions in
+[CLI run keys](cli-commands.md#run-keys-and-queue).
+
+In fullscreen mode, clicking a task row opens that task's existing detail
+directly; Esc returns to the composer with its draft preserved. Command rows
+open command output, and member rows use the existing
+[member conversation contract](member-conversation.md). A click requires press
+and release on the same cell with the same task identity still at that row.
+Dragging, resizing or replacing the task at that row cancels the click;
+resize cancellation is immediate even while transcript reflow is debounced.
+Elapsed-time updates do not cancel a click. Rows clipped out of the viewport
+are not clickable, and an open prompt or overlay blocks task-row clicks.
+Scrollback mode retains its keyboard-only entry points.
+
+```text
+  ◐ Fix esbuild bundling · Builder                         27m57s
+  ◐ Review the runtime · Reviewer                          25m27s
+  ◐ Extend integration coverage · Test Explorer             13m01s
+  ◐ Check generated types · Type Checker                     8m42s
+  ◐ Audit cancellation · Safety Reviewer                     3m18s
+
+  ╭────────────────────────────────────────────────────────────╮
+  │ › Ask anything...                                          │
+  ╰────────────────────────────────────────────────────────────╯
+
+  Fullscreen: task row --click--> task detail --Esc--> kept draft
+```
 
 ```text
 +-- Background tasks --------------------------------------------+

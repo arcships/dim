@@ -3,12 +3,26 @@ pub use dim_client::wire::*;
 
 use dim_agent_types::ToolResult;
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Created {
     pub session_id: String,
     pub model: dim_agent_types::ModelId,
+    /// The managed worktree this creation made, when the request asked for
+    /// one (#1451); a daemon without `session.create.worktree` sends none.
+    #[serde(default)]
+    pub worktree: Option<CreatedWorktree>,
+}
+
+/// The managed worktree a creation made: the task id and its directory
+/// under the product home, from the `worktree` member of the reply.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedWorktree {
+    pub task_id: String,
+    pub root: String,
 }
 
 #[derive(Deserialize)]
@@ -38,11 +52,52 @@ pub struct CatalogModel {
     pub metadata: Option<CatalogPreferences>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CatalogPreferences {
     pub reasoning: Option<dim_agent_types::ModelReasoning>,
     pub service_tier: Option<dim_agent_types::ModelServiceTier>,
+    /// How the catalog identified this entry's id.
+    #[serde(default)]
+    pub identification: Option<Identification>,
+    /// The row the projected entry is copied from.
+    #[serde(default)]
+    pub matched_provider_id: Option<String>,
+    #[serde(default)]
+    pub matched_model_id: Option<String>,
+}
+
+/// What identification made of one id, as the catalog and the management view
+/// carry it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identification {
+    /// The step's own word: `provider-exact`, `qualified`, `token`,
+    /// `canonical`, `custom-provider`, `merge` or `ambiguous`.
+    pub rule: String,
+    #[serde(default)]
+    pub candidates: Vec<Candidate>,
+    /// One entry per limit the row did not declare, naming what supplied it.
+    #[serde(default)]
+    pub filled: Vec<Filled>,
+}
+
+/// One limit the row did not declare, and the entry that supplied it.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Filled {
+    pub field: String,
+    pub value: u64,
+    pub provider_id: String,
+    pub model_id: String,
+}
+
+/// One row an ambiguity refused.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Candidate {
+    pub provider_id: String,
+    pub model_id: String,
 }
 
 /// A Workflow run as `workflow.status` and `workflow.stop` return it: the
@@ -209,6 +264,15 @@ pub fn workflow_report(text: &str) -> Option<(String, WorkflowState)> {
     let (status, _) = rest.strip_prefix(r#" status=""#)?.split_once('"')?;
     let status = serde_json::from_value(serde_json::Value::String(status.to_owned())).ok()?;
     Some((unescape(run), status))
+}
+
+/// The warnings a reply carries: the submit checks' work that did not happen
+/// (Hooks A.6.2). An absent list is no warning.
+pub fn warnings(reply: &Value) -> Vec<dim_agent_types::SubmitWarning> {
+    reply
+        .get("warnings")
+        .and_then(|warnings| serde_json::from_value(warnings.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// Reverses the marker's attribute escaping.

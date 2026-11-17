@@ -34,8 +34,8 @@ async function refresh(): Promise<void> {
 }
 watch([() => props.sessionId, () => connection.phase, () => extensions.directory?.revision], refresh, { immediate: true })
 onBeforeUnmount(() => { request++ })
-function select(event: Event): void {
-  const value = (event.target as HTMLSelectElement).value
+function select(value: unknown): void {
+  if (typeof value !== "string" || value === "") return
   const entry = panels.value.find(entry => JSON.stringify([entry.extension.pluginName, entry.panel.id]) === value)
   if (entry === undefined || entry.reason) return
   ui.extension = { pluginName: entry.extension.pluginName, panelId: entry.panel.id }
@@ -43,21 +43,41 @@ function select(event: Event): void {
   ui.detailOpen = true
   ui.detailFocused = true
 }
+const selectedValue = computed(() => ui.extension && ui.detailOpen ? JSON.stringify([ui.extension.pluginName, ui.extension.panelId]) : undefined)
+const menuItems = computed(() => [
+  ...panels.value.map(({ extension, panel, reason }) => ({
+    label: `${panelTitle(panel, locale.value)} · ${extension.pluginName}${reason ? ` — ${reason}` : ""}`,
+    value: JSON.stringify([extension.pluginName, panel.id]),
+    disabled: Boolean(reason),
+  })),
+  ...(extensions.directory?.errors ?? []).map(err => ({
+    label: `${err.pluginName}: ${err.message}`,
+    value: `__error__:${err.pluginName}`,
+    disabled: true,
+  })),
+])
 </script>
 
 <template>
-  <label class="extension-picker">
-    <span class="sr-only">{{ t("extensions") }}</span>
-    <select data-extension-trigger :aria-label="t('extensions')" :title="sessionId ? t('choose') : t('session')" :disabled="!sessionId" :value="ui.extension && ui.detailOpen ? JSON.stringify([ui.extension.pluginName, ui.extension.panelId]) : ''" @focus="refresh" @change="select">
-      <option value="">{{ panels.length ? t("choose") : t("empty") }}</option>
-      <option v-for="{ extension, panel, reason } in panels" :key="JSON.stringify([extension.pluginName, panel.id])" :value="JSON.stringify([extension.pluginName, panel.id])" :disabled="Boolean(reason)">{{ panelTitle(panel, locale) }} · {{ extension.pluginName }}{{ reason ? ` — ${reason}` : '' }}</option>
-      <option v-for="error in extensions.directory?.errors" :key="error.pluginName" disabled>{{ error.pluginName }}: {{ error.message }}</option>
-    </select>
+  <div class="extension-picker">
+    <USelect
+      data-extension-trigger
+      size="sm"
+      class="extension-select"
+      :model-value="selectedValue"
+      :items="menuItems"
+      :placeholder="panels.length ? t('choose') : t('empty')"
+      :aria-label="t('extensions')"
+      :title="sessionId ? t('choose') : t('session')"
+      :disabled="!sessionId || !menuItems.length"
+      @update:open="$event && refresh()"
+      @update:model-value="select"
+    />
     <span v-if="extensions.error" role="status">{{ extensions.error }}</span>
-  </label>
+  </div>
 </template>
 
 <style scoped>
 .extension-picker { min-width: 0; flex: 0 1 auto; }
-.extension-picker select { width: clamp(8rem, 18vw, 16rem); max-width: 100%; text-overflow: ellipsis; }
+.extension-select { width: clamp(8rem, 18vw, 16rem); max-width: 100%; }
 </style>

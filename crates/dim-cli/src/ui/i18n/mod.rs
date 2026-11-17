@@ -104,6 +104,51 @@ pub fn tf_in(locale: Locale, english: &'static str, args: &[(&str, &str)]) -> St
 mod tests {
     use super::*;
 
+    /// The send-mode strings: the queue strip's hint, the two submit-mode
+    /// notices and the two send-now notices, in every locale with their
+    /// placeholders kept.
+    #[test]
+    fn every_locale_translates_the_send_mode_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [
+                "/queue · Shift+← edit last · empty: {key} steer · Ctrl+Enter send now",
+                "Message queued",
+                "Ctrl+Enter interrupt and send now: the draft and every held message, as one message",
+                "Send now failed: {error}; the draft was kept",
+                "Send now cancelled; the draft was kept",
+                "Send now is still stopping the run; the draft was kept",
+                "Send now is stopping the run; paste again when the draft is sent",
+                "Send now is waiting for the insertion before sending",
+            ] {
+                let translated = table(locale, key);
+                assert!(translated.is_some(), "{code} lacks {key:?}");
+                assert_ne!(translated.unwrap(), key, "{code} copies {key:?}");
+            }
+            set(locale);
+            assert!(
+                tf(
+                    "Send now failed: {error}; the draft was kept",
+                    &[("error", "fixture-error")]
+                )
+                .contains("fixture-error"),
+                "{code} drops the error"
+            );
+            assert!(
+                tf(
+                    "/queue · Shift+← edit last · empty: {key} steer · Ctrl+Enter send now",
+                    &[("key", "Ctrl+S")]
+                )
+                .contains("Ctrl+S"),
+                "{code} drops the key"
+            );
+        }
+        set(previous);
+    }
+
     #[test]
     fn every_locale_translates_the_prompt_suggestion_strings() {
         let previous = active();
@@ -116,6 +161,13 @@ mod tests {
                 "Prompt suggestion",
                 "Prompt suggestion: {error}",
                 "Suggestions are paused in this session because offers went unused. Turn them off and on in /settings to resume.",
+                "Enter select + default · ←/→ effort · Tab section · Esc clear/close",
+                "Default for new sessions in {folder}: {model}",
+                "Default for new sessions: {model}",
+                "Hook context · {count} line",
+                "Hook context · {count} lines",
+                "Stop hook follow-up · {count} line",
+                "Stop hook follow-up · {count} lines",
             ] {
                 assert_ne!(t(key), key, "{code} lacks {key:?}");
             }
@@ -124,6 +176,56 @@ mod tests {
                     .contains("fixture-error"),
                 "{code} drops the error"
             );
+            for (key, args) in [
+                (
+                    "Default for new sessions in {folder}: {model}",
+                    vec![("folder", "fixture-folder"), ("model", "fixture-model")],
+                ),
+                (
+                    "Default for new sessions: {model}",
+                    vec![("model", "fixture-model")],
+                ),
+            ] {
+                let text = tf(key, &args);
+                for (_, value) in args {
+                    assert!(text.contains(value), "{code} drops {value} from {key:?}");
+                }
+            }
+        }
+        set(previous);
+    }
+
+    /// The two `edit` preview keys and the two keys the scrolling panel adds,
+    /// translated in every locale with the tool name literal and every
+    /// argument kept.
+    #[test]
+    fn every_locale_translates_the_edit_preview_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            set(locale);
+            for (key, count) in [
+                ("edit {count} replacement in {path}", "1"),
+                ("edit {count} replacements in {path}", "2"),
+            ] {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+                let text = tf(key, &[("count", count), ("path", "fixture-path")]);
+                assert!(text.contains("fixture-path"), "{code} drops the path");
+                assert!(text.contains(count), "{code} drops the count");
+                assert!(text.contains("edit"), "{code} translates the tool name");
+            }
+            for key in ["↑↓ scroll", "replacements {from}-{to} of {count}"] {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+            }
+            let text = tf(
+                "replacements {from}-{to} of {count}",
+                &[("from", "2"), ("to", "9"), ("count", "30")],
+            );
+            for value in ["2", "9", "30"] {
+                assert!(text.contains(value), "{code} drops {value} from the window");
+            }
         }
         set(previous);
     }
@@ -144,6 +246,125 @@ mod tests {
             Locale::PtPt => pt_pt::lookup,
         };
         lookup(english)
+    }
+
+    /// The identification and prefix strings, translated in every locale with
+    /// their arguments kept.
+    #[test]
+    fn every_locale_translates_the_identification_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [
+                "Model id prefix",
+                "(none)",
+                "identified: {model} at {provider}",
+                "inferred from several rows: {model} at {provider}",
+                "ambiguous: {candidates}",
+                "unidentified",
+                "Identified {rule}",
+                "from the Provider's own list",
+                "from the whole qualified id",
+                "by its tokens",
+                "by its canonical id or display name",
+                "from the custom-provider list",
+                "by merging the rows that name it",
+                "ambiguous",
+                "{field} {value} supplied by {provider}/{model}",
+            ] {
+                assert!(table(locale, key).is_some(), "{code} lacks {key:?}");
+            }
+            set(locale);
+            for (key, args) in [
+                (
+                    "identified: {model} at {provider}",
+                    vec![("model", "fixture-model"), ("provider", "fixture-provider")],
+                ),
+                (
+                    "inferred from several rows: {model} at {provider}",
+                    vec![("model", "fixture-model"), ("provider", "fixture-provider")],
+                ),
+                (
+                    "ambiguous: {candidates}",
+                    vec![("candidates", "fixture-candidate")],
+                ),
+                ("Identified {rule}", vec![("rule", "fixture-rule")]),
+                (
+                    "{field} {value} supplied by {provider}/{model}",
+                    vec![
+                        ("field", "fixture-field"),
+                        ("value", "fixture-value"),
+                        ("provider", "fixture-provider"),
+                        ("model", "fixture-model"),
+                    ],
+                ),
+            ] {
+                let text = tf(key, &args);
+                for (_, value) in args {
+                    assert!(text.contains(value), "{code} drops {value} from {key:?}");
+                }
+            }
+        }
+        set(previous);
+    }
+
+    /// The `/models` sections: their titles, the management rows and the
+    /// focus-specific hints, with the counts kept.
+    #[test]
+    fn every_locale_translates_the_models_section_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [
+                "Conversation model",
+                "Selected: {model}",
+                "Model management",
+                "Manage models",
+                "1 provider",
+                "{count} providers",
+                "ready",
+                "no models",
+                "catalog unreadable",
+                "{count} with missing limits",
+                "{count} unavailable",
+                "{count} disabled",
+                "{count} without models",
+                "{count} unreadable",
+                "{unavailable} unavailable, {disabled} disabled",
+                "Enter select + default · ←/→ effort · Tab section · Esc clear/close",
+                "Enter change · Tab section · Esc clear/close",
+                "Enter manage · Tab section · Esc clear/close",
+                "Enter manage · Esc back",
+            ] {
+                let translated = table(locale, key);
+                assert!(translated.is_some(), "{code} lacks {key:?}");
+                assert_ne!(translated.unwrap(), key, "{code} copies {key:?}");
+            }
+            set(locale);
+            for (key, args) in [
+                ("Selected: {model}", vec![("model", "fixture-model")]),
+                ("{count} providers", vec![("count", "2")]),
+                ("{count} with missing limits", vec![("count", "2")]),
+                ("{count} unavailable", vec![("count", "2")]),
+                ("{count} disabled", vec![("count", "2")]),
+                ("{count} without models", vec![("count", "2")]),
+                ("{count} unreadable", vec![("count", "2")]),
+                (
+                    "{unavailable} unavailable, {disabled} disabled",
+                    vec![("unavailable", "2"), ("disabled", "3")],
+                ),
+            ] {
+                let text = tf(key, &args);
+                for (_, value) in args {
+                    assert!(text.contains(value), "{code} drops {value} from {key:?}");
+                }
+            }
+        }
+        set(previous);
     }
 
     #[test]
@@ -227,19 +448,65 @@ mod tests {
         set(previous);
     }
 
+    /// The two strings `/update` prints, translated in every locale with the
+    /// command's placeholder kept.
+    #[test]
+    fn every_locale_translates_the_update_entry_strings() {
+        let previous = active();
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [
+                "show the command that updates this installation",
+                "To update, exit every client and stop the server, then run {command}",
+            ] {
+                let translated = table(locale, key);
+                assert!(translated.is_some(), "{code} lacks {key:?}");
+                assert_ne!(translated.unwrap(), key, "{code} copies {key:?}");
+            }
+            set(locale);
+            let text = tf(
+                "To update, exit every client and stop the server, then run {command}",
+                &[("command", "fixture-command")],
+            );
+            assert!(text.contains("fixture-command"), "{code} drops the command");
+        }
+        set(previous);
+    }
+
     #[test]
     fn every_locale_translates_the_daemon_notice_strings() {
         // The strings the notice prints, so a changed text cannot pass here
         // while every locale silently falls back to English.
         const PLAIN: &str = crate::DAEMON_BUSY;
         const COUNTS: &str = crate::DAEMON_BUSY_COUNTS;
+        const TOO_OLD: &str = crate::DAEMON_TOO_OLD;
+        const TOO_OLD_COUNTS: &str = crate::DAEMON_TOO_OLD_COUNTS;
         const UPGRADING: &str = crate::DAEMON_UPGRADING;
+        const UPGRADING_PROGRESS: &str = crate::DAEMON_UPGRADING_PROGRESS;
         let previous = active();
         for (locale, code, _) in LOCALES {
             if locale == Locale::En {
                 continue;
             }
-            for key in [PLAIN, COUNTS, UPGRADING] {
+            for key in [
+                PLAIN,
+                COUNTS,
+                TOO_OLD,
+                TOO_OLD_COUNTS,
+                UPGRADING,
+                UPGRADING_PROGRESS,
+                crate::UPGRADE_STAGE_LINES[0],
+                crate::UPGRADE_STAGE_LINES[1],
+                crate::UPGRADE_STAGE_LINES[2],
+                crate::ui::sessions_panel::HINT,
+                "Delete \"{name}\"?",
+                "Deleted {name}.",
+                "Nothing was removed: no stored Session {name}.",
+                "Delete failed",
+                crate::session_command::DELETE_UNSUPPORTED,
+            ] {
                 let translated = table(locale, key);
                 assert!(translated.is_some(), "{code} lacks {key:?}");
                 assert_ne!(translated.unwrap(), key, "{code} copies {key:?}");
@@ -260,7 +527,36 @@ mod tests {
                         ("running", "1"),
                     ],
                 ),
+                (
+                    TOO_OLD,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
+                    ],
+                ),
+                (
+                    TOO_OLD_COUNTS,
+                    vec![
+                        ("server", "9.9.9-old"),
+                        ("client", "9.9.9-new"),
+                        ("protocol", "3"),
+                        ("connections", "2"),
+                        ("attached", "1"),
+                        ("running", "1"),
+                    ],
+                ),
                 (UPGRADING, vec![("from", "33"), ("to", "34")]),
+                (
+                    UPGRADING_PROGRESS,
+                    vec![("seconds", "12"), ("stage", "fixture-stage")],
+                ),
+                ("Delete \"{name}\"?", vec![("name", "fixture-name")]),
+                ("Deleted {name}.", vec![("name", "fixture-name")]),
+                (
+                    "Nothing was removed: no stored Session {name}.",
+                    vec![("name", "fixture-name")],
+                ),
             ] {
                 let text = tf(key, &args);
                 for (_, value) in args {

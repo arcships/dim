@@ -55,6 +55,33 @@ the checks again. This guarantee is specific to `session.submit`, not a retry
 policy for other methods or an assertion that a rejected request will succeed
 unchanged.
 
+### Submit check warnings
+
+A reply field, not an error. `session.submit` and `session.branch_create` carry an
+optional `warnings: [{check, message}]`, and `session.input.withdraw` carries the
+same list beside `status` and `steer`. Each element names the submit check that
+raised it (`check`, the registration name) and the sentence a client shows
+(`message`), for work the check did not do while the input was written: a
+`UserPromptSubmit` hook that failed with `onFailure: continue`, or a run the
+Hooks unload terminated (Hooks A.6.2).
+
+The field is an **additive interface change**: it is absent when empty, so a
+reply without one is byte-identical to the one before this field existed, and no
+protocol version is added. A built-in served to a frozen encoding fills none:
+`session.submit` on protocol v1 and v2, and `session.branch_create` on v2, which
+`validate_call` admits from v2 on; `session.input.withdraw` is a Session method,
+served from v3 on. The withdraw reply carries the list only beside the `steer`
+receipt of the replacement this call wrote; a withdrawal that wrote no
+replacement carries neither. The list is never model context: it enters no
+`user` content, and a client that does not know the field ignores it. A block
+discards it — the `input_blocked` error already names the hook that stopped the
+input.
+This repository's clients: the native CLI draws one warning row per element
+(`Update::Report { warning: true }` in the terminal UI, `Display::record` in the
+line client, stderr in `exec`); the ACP gateway and the Web workspace ignore it;
+Desktop receives the field in the published client types and shows it once it
+renders `warnings`, which is Desktop's remaining UI work.
+
 After commit, failure to confirm publication remains uncertain even on a live
 connection: `submission_unknown`, an opaque `-32603` publication/storage error,
 and every error outside the guaranteed set do not prove rejection. Transport
@@ -84,10 +111,15 @@ loader configuration and package installation remain separate work. See
 
 ### Provider management
 
-Local protocol-v3 clients read `provider.management {providerId?}` for one safe
+Local protocol-v3 clients read `provider.management {providerId, modelId?}` for one safe
 editing snapshot containing the record version, connection fields, full model
 descriptors, available actions and saved preferences. Credentials, secret
 references, header values and proxy authentication are never returned.
+The no-argument aggregate read is removed: a client that needs every Provider's
+version, connection and models pages `provider.management.list` for the overview
+and `provider.models.query` for the models it displays or edits (the
+[Provider contract](../../docs/design/appserver/provider-management.md) owns the
+migration mapping).
 `provider.list`, `provider.catalog` and `provider.selection` retain their read shapes;
 `provider.list` additionally reports `remoteModelList` per provider, whether
 `provider.refresh` can list that provider's models.
@@ -305,7 +337,11 @@ request takes a bearer; tokens are refreshed 30 s before expiry and once after a
 refresh per key across Sessions and daemons sharing the home. `mcp.catalog` entries gain
 `auth: {status: "required" | "authorized" | "expired", missingScopes?}`, and `session.mcp`
 reports `auth_required` until the key's credential changes, when the Session reconnects by
-itself. Tokens, codes and secrets never reach replies, errors, tool results or logs.
+itself. Tokens, codes and secrets never reach replies, errors, tool results or logs. The OAuth
+HTTP client is built by the first operation that contacts an authorization server; a process
+whose entries never sign in or refresh holds none. A build failure surfaces from that operation
+as `mcp_auth_unavailable`, not from plugin assembly. Only successful builds are retained;
+later operations retry a failed build.
 
 Native MCP settings use lazy source-local import and durable source CAS. Their
 v13 document bytes remain valid in the current store format. Unsupported databases, including
@@ -432,9 +468,19 @@ Unix endpoint directories must be private (0700), sockets use 0600, and cleanup 
 
 For authorized transports, v3 `hello.features` includes `daemon.shutdown.completed` and `daemon.shutdown.ifIdle`. A successful `daemon.shutdown` response with `force: false` (the default) certifies that Agent work, connections and the Rutis process tree have settled, including storage and plugin disposal. Cleanup failure returns `shutdown_failed` without exposing disposer error details. EOF alone is not success. `force: true` retains its early acknowledgement and does not promise cleanup.
 
-`daemon.shutdown {ifIdle: true}` stops the daemon only while it is idle: no other client connection is open, no Session has an attached client, and no turn is running; the requesting connection is not counted in the connection total. The decision is atomic with hello and Session attach admission: a concurrent client is either counted before the decision or refused as shutting down, so none joins a daemon the call is closing. A daemon in use answers the app error `daemon_busy` carrying the `connections`, `attachedSessions` and `running` counts and changes nothing. Without `ifIdle` the method behaves as above; the CLI uses it to replace a daemon of another build only when replacing it disturbs no one.
+`daemon.shutdown {ifIdle: true}` stops the daemon only while it is idle: no other client connection is open, no Session has an attached client, and no Session reports accepted work on any branch or a runtime activity hold; the requesting connection is not counted in the connection total. Detached background execution counts as work even after its main turn ends and its client leaves. The decision excludes hello/attach admission, process activity admission and branch writes together. An admitted operation refuses shutdown; a successful decision prevents new admission until cleanup completes. A failed Session pause releases earlier pauses and restores process admission without cancelling work.
+
+A daemon in use answers `daemon_busy`. Connection and Session refusals carry `connections`, `attachedSessions` and `running`; `running` counts Sessions with accepted work or an activity hold. Process-work and concurrent Session-pause refusals carry an explanation without counts. A refusal changes nothing. Without `ifIdle` the method behaves as above. This is a cooperative process contract, not an installation-wide barrier: it does not prove that another home or a legacy/nonparticipating consumer is idle.
 
 The requesting connection hands only its final-response writer to the existing process coordinator before leaving the plugin graph. The coordinator sends successful completion after `root.shutdown()`; no graph-owned RPC task waits on its own disposal. Shutdown first stops RPC admission and joins admitted shutdown handlers, including force acknowledgement writes. If an admitted force request wins, the coordinator joins connection handoffs and returns `shutdown_failed` to pending graceful callers without waiting for business cleanup. Reply writes are bounded by the transport write deadline. Client disconnect does not cancel accepted cleanup. Clients must check the feature before relying on this completion contract from an older daemon.
+
+### Process activity
+
+`processActivity` is the App Server's process-scoped data service. Its shared catalog name and generated host dispatcher expose `hold() → id | null` and `release(id) → boolean`; the generated declarations are in `npm/branch-services.d.ts`. The owner releases a hold explicitly after settlement, including during its normal cleanup. A lost owner or failed release leaves the process busy until an explicit shutdown: row unload or runtime death does not prove that all accepted native effects settled. The native binding also offers an RAII hold; native handles do not cross the data face.
+
+An owner acquires a hold **before accepting work**, including before a durable acceptance record or an asynchronous handoff, and retains it through the last owned effect. The hold vetoes idle shutdown, not explicit shutdown, and neither cancels nor owns the operation. `null` means idle shutdown has closed admission; the owner must not accept the operation. A successful idle shutdown permanently closes this service's admission. Future timer deadlines alone need no hold: a due pass acquires one before doing work, and a temporarily refused pass remains eligible after a rolled-back idle decision.
+
+RPC requests other than shutdown hold admission through their owned response work. Agents retains it through Session acquisition/creation and transfers it into detached launch/input tasks. A process producer also holds its own acceptance-to-settlement interval; per-call `sessions` holds cannot cover gaps between its calls. This service records no business state and adds no Timeline facts. It does not certify plugins that do not follow this contract.
 
 ### Process logs
 
@@ -465,9 +511,9 @@ dim_app_server::cli::process_entry(
 )
 ```
 
-`ManagedProviderRow` registers the plugin's process row given the product root's FileStorage index and returns the row name; `ServerConfig.managed_provider` carries it for embedders. It is installed only with a product home, beside `ManagedProviderBinding`, which hands the provider to `ManagedProviders`. The plugin owns its account schema, authentication, token refresh and catalog normalization; the host does not interpret supplier-specific responses. Files it keeps under the product root go through FileStorage; `auth.json` is plain JSON shared with the native subscription providers, each owning its own root fields.
+`ManagedProviderRow` registers the plugin's process row given the product root's FileStorage index and returns the row name; `ServerConfig.managed_provider` carries it for embedders. It is installed only with a product home, beside `ManagedProviderBinding`, which hands the provider to the managed provider implementation. The plugin owns its account schema, authentication, token refresh and catalog normalization; the host does not interpret supplier-specific responses. Files it keeps under the product root go through FileStorage; `auth.json` is plain JSON shared with the native subscription providers, each owning its own root fields.
 
-`process_entry` is the process entry: on Unix it closes every descriptor above standard error that the process inherited, then calls `run_with`, so a process `main` calls it before it opens anything. Linux closes the range in one `close_range` call; where that call is unavailable, and on the other Unix systems, the daemon lists `/proc/self/fd` (Linux) or `/dev/fd` and closes every number the listing names; when no listing can be read it closes 3 up to the process's descriptor limit, which is the soft limit, else the hard limit, else `sysconf(_SC_OPEN_MAX)`, else 65,536, so no inherited descriptor stays open. `run_with` and `run` do not touch the descriptors the process has open and are the entries for an embedder that keeps its own. `process_entry` and `run_with` take a native-profile installer, `fn(&mut AgentBuilder)`, called when the product-home or model-config execution profile is assembled. It contributes host-selected plugins through the existing builder API. `run` and the standalone server choose no additional native plugins; `dimcode` installs its product plugins from their own crates (`dim_session_title::install`, `dim_agent_scheduler::install`, `dim_goal::install` and `dim_modality::install`) for both profiles. The Scheduler and the Goal are among those plugins and are no longer default TypeScript plugins, so a host that wants `schedule.*` and the `schedule` tool calls `dim_agent_scheduler::install` from its installer, one that wants `goal_update`, `session.goal.*` and continuation calls `dim_goal::install`, one that wants `modality.*` calls `dim_modality::install`, and the plain `dim-app-server` binary serves none of them.
+`process_entry` is the process entry: on Unix it closes every descriptor above standard error that the process inherited, then calls `run_with`, so a process `main` calls it before it opens anything. Linux closes the range in one `close_range` call; where that call is unavailable, and on the other Unix systems, the daemon lists `/proc/self/fd` (Linux) or `/dev/fd` and closes every number the listing names; when no listing can be read it closes 3 up to the process's descriptor limit, which is the soft limit, else the hard limit, else `sysconf(_SC_OPEN_MAX)`, else 65,536, so no inherited descriptor stays open. `run_with` and `run` do not touch the descriptors the process has open and are the entries for an embedder that keeps its own. `process_entry` and `run_with` take a native-profile installer, `fn(&mut AgentBuilder)`, called when the product-home or model-config execution profile is assembled. It contributes host-selected plugins through the existing builder API. `run` and the standalone server choose no additional native plugins; `dimcode` installs its product plugins from their own crates (`dim_session_title::install`, `dim_agent_scheduler::install`, `dim_goal::install`, `dim_report::install` and `dim_modality::install`) for both profiles. The Scheduler and the Goal are among those plugins and are no longer default TypeScript plugins, so a host that wants `schedule.*` and the `schedule` tool calls `dim_agent_scheduler::install` from its installer, one that wants `goal_update`, `session.goal.*` and continuation calls `dim_goal::install`, one that wants `modality.*` calls `dim_modality::install`, and the plain `dim-app-server` binary serves none of them.
 
 The Dim account (`dimcode-api-oauth`) is such a plugin, in [`crates/dim-oauth`](../dim-oauth/README.md); `dimcode` built with the account's client IDs is the account build. See the [development contract](../../docs/architecture/development.md#managed-provider-boundary) and [release packaging](../../docs/release/README.md#local-packaging).
 
@@ -575,7 +621,12 @@ unchanged transaction/backup/lifecycle behavior.
 
 ## Managed provider contract
 
-`ManagedProvider` ([`src/managed_provider.rs`](src/managed_provider.rs)) is the typed service a managed provider plugin publishes. `ManagedProviderBinding` hands it to the process-owned `ManagedProviders`, which the account RPC, the provider service and `webSearch` (exported via `#[rutis::service]` for the `Web` plugin) use. `ManagedProviders` is assembled on every server; `ManagedProviderMethods`, also a process row, registers the `account` namespace with `managementMethods` and is assembled with a product home. Without a binding the process lists no managed providers and `webSearch` fails with `unavailable`.
+Catalog reads accept caller cancellation. Concurrent reads may share the account
+owner's in-flight request; cancellation removes that caller, while remaining
+callers retain their request. `account_cancelled` reports a cancelled catalog wait.
+The owner removes a completed flight and retains no directory-result cache.
+
+`ManagedProvider` ([`src/managed_provider.rs`](src/managed_provider.rs)) is the typed port a managed provider plugin publishes, and `ManagedProviderBinding` hands it to the implementation `ManagedProviders`. That implementation is no service: its only service face is the process data face `managedSearch` (`search`), the account RPC uses it through the `account` method namespace the same plugin registers, and the model provider reads it through a process-internal key. `ManagedProviders` and its key are assembled on every server; the `account` namespace is assembled with a product home. Without a binding the process lists no managed providers and `managedSearch.search` fails with `unavailable`.
 
 | Method | Input | Value |
 | --- | --- | --- |
@@ -635,13 +686,25 @@ type ResetApplied = {
 }
 ```
 
-Account and login operations are exposed as `account.providers`, `account.status`, `account.recover`, `account.logout`, `account.usage`, `account.login.begin`, `account.login.browser.begin`, `account.login.browser.complete`, `account.login.status` and `account.login.cancel`; a failed attempt reports only `Login failed`. Existing `account.codex.*` and `account.grok.*` retain their native contracts. Attempt secrets are memory-only and cleared on completion, cancellation or expiry; a terminal attempt stays queryable until its deadline.
+Account and login operations are exposed as `account.providers`, `account.status`, `account.recover`, `account.logout`, `account.usage`, `account.login.begin`, `account.login.browser.begin`, `account.login.browser.complete`, `account.login.status` and `account.login.cancel`; a failed attempt reports only `Login failed`. Existing `account.codex.*` and `account.grok.*` retain their native contracts. The shared Codex/Grok service builds its HTTP client on the first token operation (login exchange, device request or refresh); a process with no such request holds none, and a build failure surfaces from that operation as `account_unavailable` instead of failing the plugin row. Only successful builds are retained; later operations retry a failed build. Attempt secrets are memory-only and cleared on completion, cancellation or expiry; a terminal attempt stays queryable until its deadline.
 
 `account.referral` and `account.reset_batches` take `{providerId}`. `account.apply_reset` takes the typed `apply_reset` input above: the client confirms an action and generates one nonblank idempotency key (at most 128 bytes), retaining it for retries after an uncertain reply. The subscription ID is a positive safe integer from `account.usage`; the account service authorizes it. Batch selection and consumption order belong to the account service, not the client. These three methods are optional provider operations; the trait defaults reject them with `account_invalid_input` for providers without this account functionality. The Dim provider implements all three. The issuer, tokens, request headers and refresh retry stay in the provider; none is a client parameter. Account-service error bodies are never returned to clients.
 
 `defaultDirectory` is non-secret login metadata for a signed-out client, not an OAuth client ID. The Dim provider selects it from the host entry (`DIMCODE_NPM_PACKAGE`, otherwise the executable stem): `dimagent` selects `https://dimagent.com`, other entries select `https://dimagent.cn`. An enterprise email still goes through the provider's directory discovery. Subscription, pricing and referral URLs derive from the authenticated grant's issuer.
 
 `ManagedModel` is `{entry: ModelEntry, protocol, unavailableReason, zdr}`. `ModelEntry`, capabilities and metadata are defined in [`model_catalog.rs`](src/model_catalog.rs) and `dim-agent-types`. A provider supplies final public model descriptions; `BundledCatalog::fallback` offers the provider service's bundled metadata (refreshed before each release) for what its source omits. An unavailable model keeps a reason and is unselectable.
+
+The process data face `managedSearch` exposes `search({query, count})` and returns
+`{results: [{title, url, snippet, publishedAt?}]}`. It delegates to the current managed
+provider, keeping account state and credentials local. Errors are `unavailable` or
+`search_failed`, carried as `{code, message}`. Cancelling or abandoning a search cancels
+that request's child token without cancelling the caller's parent token. Calls admitted
+after owner shutdown or without a provider fail as `unavailable`; accepted work retains
+the provider's existing quiesce lifecycle.
+
+Rust's `ManagedSearch::search` calls the typed operation directly. The named dispatcher
+invokes that same operation, with serialization only at the foreign-language boundary.
+Web maps the search errors to its existing tool errors and keeps its cancellation mapping.
 
 `CredentialLease` carries the account snapshot, protocol, final protocol base URL (the model adapter adds its endpoint), request headers and bearer. It has no `Debug` or serialization; credential methods are internal to the model resolver and never appear in terminal RPC, history, Timeline, configuration replies or logs. Refresh tokens stay inside the provider. A lease is released when its last holder drops it, including a result whose caller went away. Leases are bound to the provider instance, account and grant revision, expire after 30 minutes and are capped at 1024. `ManagedProviders` stamps each lease with the binding that issued it: recovery and final rejection of a lease whose binding was replaced fail with `service_reloading` before any provider sees them, even when the replacement reports an equal account and reuses its lease IDs. `recover_rejected` performs one controlled recovery: it adopts a newer persisted grant or performs one serialized refresh. `finish_rejected` signs out only if the rejected grant still owns the account. Host recovery is limited to HTTP 401; unrelated failures retain the account.
 
@@ -667,21 +730,34 @@ Public API-key, provider, native subscription, managed provider and transport fl
 cargo test --locked -p dim-app-server --test provider_flow --test managed_oauth_flow --test managed_provider_flow --test model_catalog_flow --test transport_flow
 ```
 
-The separately enabled Node flows load public SDK fixtures: plugins through the actual rutis runtime, and MCP servers built on the official MCP SDK. They cover C4 Session tool/method binding, isolation, restore, cancellation and invalid boundaries; Python rows and an unmodified Cordis 4 plugin in their groups; and stdio and legacy SSE MCP discovery, calls, cancellation and cleanup. They do not require a private account package. The Python rows need Python 3.12 or later with the pinned `rutis` package:
+The separately enabled Node flows load plugins through the actual rutis runtime and MCP servers built on the official MCP SDK. They cover C4 Session tool and method binding, isolation, restore, cancellation, an unmodified Cordis 4 branch plugin, and stdio and legacy SSE MCP flows.
 
 ```sh
 npm ci --prefix runtime --ignore-scripts
-python3 -m venv runtime/.venv
-runtime/.venv/bin/python -m pip install --require-hashes --no-deps -r runtime/python-requirements.txt
-DIM_TEST_NODE="$(command -v node)" \
-DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime" \
-DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs" \
-DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python" \
-  cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow \
+export DIM_TEST_NODE="$(command -v node)"
+export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
+export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
+cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow \
   node_ -- --ignored
 ```
 
-CI selects these flows by the `node_` prefix, so a `node_*` flow may depend only on Node, Python and the public npm and PyPI packages the repository pins, never on credentials or remote services. `context7_live_through_rust_plugins` calls the hosted Context7 MCP server with `CONTEXT7_API_KEY`, so it is a manual live check that CI does not run:
+The separate Python flows cover plugin installation, reload and scoped parts. In the same shell, use Python 3.12 or later with the pinned `rutis` package.
+
+```sh
+python3 -m venv runtime/.venv
+runtime/.venv/bin/python -m pip install --require-hashes --no-deps -r runtime/python-requirements.txt
+DIM_TEST_PYTHON="$PWD/runtime/.venv/bin/python" \
+  cargo test --locked -p dim-app-server --test transport_flow python_plugin_ -- --ignored
+```
+
+The `node_` and `python_plugin_` flows use pinned public packages and local fixtures. The switch to the official Node archive runs separately. See the [CI workflow checks](../../docs/release/README.md#github-workflows) for when these run.
+
+```sh
+cargo test --locked -p dim-app-server --test transport_flow \
+  runtime_manager::runtime_switches_from_system_to_downloaded_node -- --ignored --exact
+```
+
+Run the live Context7 check manually with `CONTEXT7_API_KEY`.
 
 ```sh
 cargo test --locked -p dim-app-server --test mcp_http_flow \

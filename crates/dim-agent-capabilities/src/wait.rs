@@ -7,9 +7,9 @@
 //! input that opened the turn comes before `turn/start`, so it never ends a
 //! wait, as TS only commits inputs of a running turn).
 use crate::{
-    host::{HostError, HostFuture, ToolExecutionContext},
+    host::{CancelledFn, HostError, HostFuture, ToolExecutionContext, call_until_cancelled},
     timeline_tree::TreeCommands,
-    tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
+    tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
     workspace_tools::background::{WAKE_TASK_TAG, tagged},
 };
 use dim_agent_runtime::{
@@ -28,7 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::Notify;
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const WAIT_TOOL: &str = "wait";
 const DEFAULT_TIMEOUT_MS: u64 = 300_000;
@@ -53,7 +53,12 @@ enum Arrival {
     Steer,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(
+    tag = "reason",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum WaitResult {
     Notification {
         task_ids: Vec<String>,
@@ -70,9 +75,14 @@ pub enum WaitResult {
     },
 }
 
-/// Another `wait` is running on this branch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AlreadyWaiting;
+/// Why a wait call cannot complete on this service generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum WaitCallError {
+    #[error("wait is already running in this session.")]
+    AlreadyWaiting,
+    #[error("capability reloading")]
+    Reloading,
+}
 
 #[derive(Default)]
 struct State {
@@ -85,9 +95,41 @@ struct State {
 pub struct Wait {
     state: Mutex<State>,
     arrived: Notify,
+    generation: CancellationToken,
+    calls: TaskTracker,
 }
 
+#[rutis::service]
 impl Wait {
+    /// Waits for the next matching arrival, the timeout or the caller's
+    /// cancellation, as the `wait` tool's call does.
+    ///
+    /// The caller cancels the call with `cancelled`; the wait then ends as
+    /// [`WaitResult::Interrupted`] and that answer stands. A caller that
+    /// drops the native Rust future releases the single-wait slot. A bridge
+    /// caller must signal `cancelled` before abandoning its reply. An ended
+    /// service generation refuses new calls and ends active calls with
+    /// [`WaitCallError::Reloading`].
+    pub async fn wait(
+        &self,
+        task_id: Option<String>,
+        timeout_ms: u64,
+        cancelled: CancelledFn,
+    ) -> Result<WaitResult, WaitCallError> {
+        let cancel = CancellationToken::new();
+        let _dropped = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.arrival(
+                task_id.as_deref(),
+                Duration::from_millis(timeout_ms),
+                cancel,
+            ),
+        )
+        .await
+    }
+
     /// The last `turn/start` or `turn/end` of this branch decides whether a
     /// turn is open.
     async fn rebuild(&self, timeline: &Timeline) -> dim_agent_runtime::Result<u64> {
@@ -154,8 +196,11 @@ impl Wait {
     }
 
     /// TS `takeMatchingInput`: any steer first, then a matching task.
-    fn take(&self, task_id: Option<&str>) -> Option<Arrival> {
+    fn take(&self, task_id: Option<&str>) -> Result<Option<Arrival>, WaitCallError> {
         let mut state = self.state.lock().unwrap();
+        if self.generation.is_cancelled() {
+            return Err(WaitCallError::Reloading);
+        }
         let index = state
             .pending
             .iter()
@@ -165,31 +210,31 @@ impl Wait {
                     Arrival::BackgroundTask(id) => task_id.is_none_or(|task_id| task_id == id),
                     Arrival::Steer => false,
                 })
-            })?;
-        state.pending.remove(index)
+            });
+        Ok(index.and_then(|index| state.pending.remove(index)))
     }
 
     /// Waits for the next matching arrival, the timeout or `cancel`.
-    pub async fn wait(
+    async fn arrival(
         &self,
         task_id: Option<&str>,
         timeout: Duration,
         cancel: CancellationToken,
-    ) -> Result<WaitResult, AlreadyWaiting> {
-        {
+    ) -> Result<WaitResult, WaitCallError> {
+        let _call = {
             let mut state = self.state.lock().unwrap();
+            if self.generation.is_cancelled() {
+                return Err(WaitCallError::Reloading);
+            }
             if state.waiting {
-                return Err(AlreadyWaiting);
+                return Err(WaitCallError::AlreadyWaiting);
             }
             state.waiting = true;
-        }
-        struct Release<'a>(&'a Mutex<State>);
-        impl Drop for Release<'_> {
-            fn drop(&mut self) {
-                self.0.lock().unwrap().waiting = false;
-            }
-        }
-        let _release = Release(&self.state);
+            self.calls.token()
+        };
+        let _release = std::mem::DropGuard::new(&self.state, |state: &Mutex<State>| {
+            state.lock().unwrap().waiting = false;
+        });
         let started = Instant::now();
         let waited = || started.elapsed().as_millis() as u64;
         if cancel.is_cancelled() {
@@ -203,7 +248,7 @@ impl Wait {
             let arrived = self.arrived.notified();
             tokio::pin!(arrived);
             arrived.as_mut().enable();
-            if let Some(arrival) = self.take(task_id) {
+            if let Some(arrival) = self.take(task_id)? {
                 return Ok(match arrival {
                     Arrival::Steer => WaitResult::UserSteer {
                         waited_ms: waited(),
@@ -214,13 +259,17 @@ impl Wait {
                     },
                 });
             }
-            tokio::select! {
-                _ = &mut arrived => {}
-                _ = &mut deadline => return Ok(WaitResult::Timeout { waited_ms: waited() }),
-                _ = cancel.cancelled() => {
-                    return Ok(WaitResult::Interrupted { waited_ms: waited() });
-                }
-            }
+            let result = tokio::select! {
+                _ = self.generation.cancelled() => return Err(WaitCallError::Reloading),
+                _ = &mut arrived => continue,
+                _ = &mut deadline => WaitResult::Timeout { waited_ms: waited() },
+                _ = cancel.cancelled() => WaitResult::Interrupted { waited_ms: waited() },
+            };
+            return if self.generation.is_cancelled() {
+                Err(WaitCallError::Reloading)
+            } else {
+                Ok(result)
+            };
         }
     }
 }
@@ -290,41 +339,34 @@ impl WaitTool {
                 AgentError::Reloading(_) => HostError::Cancelled(CAPABILITY_RELOADING.into()),
                 error => HostError::failed(error.to_string()),
             })?;
-        let Ok(result) = wait
-            .wait(
+        let result = match wait
+            .arrival(
                 task_id.as_deref(),
                 Duration::from_millis(timeout_ms),
                 cancel,
             )
             .await
+        {
+            Ok(result) => result,
+            Err(WaitCallError::AlreadyWaiting) => {
+                return Ok(ToolResult::error(WaitCallError::AlreadyWaiting.to_string()));
+            }
+            Err(WaitCallError::Reloading) => {
+                return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
+            }
+        };
+        let content = match &result {
+            WaitResult::Notification { task_ids, .. } => {
+                format!("wait ended: notification ({})", task_ids.join(", "))
+            }
+            WaitResult::UserSteer { .. } => "wait ended: steer".into(),
+            WaitResult::Interrupted { .. } => "wait ended: interrupted".into(),
+            WaitResult::Timeout { .. } => "wait ended: timeout".into(),
+        };
+        let Value::Object(structured) =
+            serde_json::to_value(&result).expect("a wait result is an object")
         else {
-            return Ok(ToolResult::error(
-                "wait is already running in this session.",
-            ));
-        };
-        let (content, structured) = match &result {
-            WaitResult::Notification {
-                task_ids,
-                waited_ms,
-            } => (
-                format!("wait ended: notification ({})", task_ids.join(", ")),
-                json!({"reason": "notification", "taskIds": task_ids, "waitedMs": waited_ms}),
-            ),
-            WaitResult::UserSteer { waited_ms } => (
-                "wait ended: steer".into(),
-                json!({"reason": "user_steer", "waitedMs": waited_ms}),
-            ),
-            WaitResult::Interrupted { waited_ms } => (
-                "wait ended: interrupted".into(),
-                json!({"reason": "interrupted", "waitedMs": waited_ms}),
-            ),
-            WaitResult::Timeout { waited_ms } => (
-                "wait ended: timeout".into(),
-                json!({"reason": "timeout", "waitedMs": waited_ms}),
-            ),
-        };
-        let Value::Object(structured) = structured else {
-            unreachable!("literal object")
+            unreachable!("a wait result is an object")
         };
         Ok(ToolResult {
             structured_content: Some(structured),
@@ -333,6 +375,11 @@ impl WaitTool {
     }
 }
 impl ToolHandler for WaitTool {
+    /// Waiting changes nothing another call of the batch can observe, and it
+    /// runs for as long as the timeout allows.
+    fn concurrency(&self, _: &ToolCall) -> ToolConcurrency {
+        ToolConcurrency::Concurrent
+    }
     fn execute(
         &self,
         call: ToolCall,
@@ -405,7 +452,19 @@ impl DynPlugin for WaitBranchPlugin {
             let wait = Arc::new(Wait {
                 state: Mutex::new(State::default()),
                 arrived: Notify::new(),
+                generation: ctx.cancellation_token(),
+                calls: TaskTracker::new(),
             });
+            let closing = wait.clone();
+            ctx.effect(move || async move {
+                {
+                    let _state = closing.state.lock().unwrap();
+                    closing.generation.cancel();
+                    closing.calls.close();
+                }
+                closing.calls.wait().await;
+                Ok(())
+            })?;
             let rebuild = wait.clone();
             let consumer = wait.clone();
             dispatcher

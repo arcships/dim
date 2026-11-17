@@ -23,7 +23,7 @@ External protocols include v1/v2/v3; see [dim-app-server](../../../crates/dim-ap
 
 每个进程一个 rutis root。进程级服务、Session 与分支都是这棵树上的 Plugin；所有有状态服务、监听器和长期任务都由 Plugin 提供，依赖全部经 `TypedPlugin::Deps` 声明。`main` 只解析启动参数、建立 Tokio runtime、调用 `serve`、处理进程信号；纯协议解析、序列化与无状态转换是普通函数。
 
-可选的 managed provider 是 Rust 进程级 Plugin（Dim 账号在 `crates/dim-oauth`，client ID 在编译期从密钥注入）：账号版的 `dimcode` 通过 `cli::run_with` 注册它的行，它以类型化服务 `ManagedProvider` 提供，`ManagedProviderBinding` 把它绑定到进程服务 `ManagedProviders`。公开宿主只暴露通用的 provider/账号操作与请求内凭据租约，不实现具体账号体系、token 交换或刷新策略；没有它时 managed provider 请求明确失败，API-key 与原生订阅 provider 不受影响（合同见 [dim-app-server](../../../crates/dim-app-server/README.md#managed-provider-plugins)）。
+可选的 managed provider 是 Rust 进程级 Plugin（Dim 账号在 `crates/dim-oauth`，client ID 在编译期从密钥注入）：账号版的 `dimcode` 通过 `cli::run_with` 注册它的行，它以类型化服务 `ManagedProvider` 提供，`ManagedProviderBinding` 把它绑定到进程内实现 `ManagedProviders`。公开宿主只暴露通用的 provider/账号操作与请求内凭据租约，不实现具体账号体系、token 交换或刷新策略；没有它时 managed provider 请求明确失败，API-key 与原生订阅 provider 不受影响（合同见 [dim-app-server](../../../crates/dim-app-server/README.md#managed-provider-plugins)）。
 
 MCP connection generations are nested `McpConnections` group instances owned by
 each Session in the same loader. `McpPublication` serializes source selection
@@ -50,8 +50,7 @@ rutis root
     ├─ Aimux ──► ModelHost / request 对象                   （--model-config PATH 或产品配置）
     ├─ ConfiguredModels ──► 开发目录与 resolver              （--model-config PATH）
     ├─ SqliteStorage ──► SessionStore                       （--database PATH 或 --home PATH）
-    ├─ ManagedProviders（每个 server）
-    ├─ ManagedProviderMethods ──► account 命名空间（--product-home PATH）
+    ├─ ManagedProviders ──► managedSearch（每个 server）、account 命名空间（--product-home PATH）
     ├─ OpenAICodexOAuth、GrokOAuth ──► Provider（--product-home PATH）
     ├─ ManagedProviderBinding、JS runtime 与账号插件行       （可选，单独提供的插件）
     ├─ Settings                                             （--product-home 或本地执行 Session）
@@ -140,11 +139,10 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `SessionStore`、`TimelineStore` 持久化端口 | `SqliteStorage` |
 | `SettingsPlugin` | Generic BusinessDocument sources and per-source CAS; no domain interpretation, approvals, connections or discovery | `SettingsService` | `FileStorage`, `When<SqliteStorage>` |
 | `OpenAICodexOAuthPlugin` / `GrokOAuthPlugin` | 各自账号字段、登录、刷新与终态 | `OpenAICodexOAuthService` / `GrokOAuthService` | `FileStorage` |
-| `ManagedProvidersPlugin` | managed provider 的当前绑定代次与在途操作；无绑定时请求明确失败；每个 server 装配 | `ManagedProviders` | —；`ManagedProviderBinding` 另注入 `ManagedProviders` 与 JS 宿主分发 |
-| `ManagedProviderMethodsPlugin` | `account` 管理命名空间（`account.providers/status/recover/logout`、`account.login.*`、`account.usage`）；随产品 home 装配 | 向 `ManagementMethods` 注册 `account` | `ManagedProviders`、`ManagementMethods` |
-| `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、`ManagedProviders`、Codex/Grok 账号服务；可选秘密宿主 |
+| `ManagedProvidersPlugin` | managed provider 的当前绑定代次与在途操作；无绑定时请求明确失败；每个 server 装配 | `managedSearch`；有 product home 时注册 `account` | 有 product home 时依赖 `ManagementMethods`；owner 保留在私有 key |
+| `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、managed provider 私有 owner key、Codex/Grok 账号服务；可选秘密宿主 |
 | `AimuxPlugin`（进程级） | 共享 HTTP 资源、请求/流转换及取消桥接 | `ModelHost`：接收最终请求、已解析连接与取消信号的 request 对象 | 无业务服务依赖；不注入 Provider、ToolRegistry 或 Session |
-| `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录、resolver 与 `auxiliaryModel` 操作 | 开发目录与 resolver、`AuxiliaryModelHost` 与具名 `auxiliaryModel` 绑定 | `ModelHost` |
+| `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录、resolver 与 `auxiliaryModel` 操作 | 开发目录与 resolver、`AuxiliaryModel` 与具名 `auxiliaryModel` 绑定 | `ModelHost` |
 | `McpPublication` | Source selection, including project enablement from the user's record, and retirement across Session-owned instances; no root reconciliation | `Publication` | `SettingsService`、`CredentialVariablesHost` |
 | `McpPlugin` | MCP 目录、连接租约与项目条目的用户启用记录；不拥有已配置行 | `McpService` | `SettingsService`、`Publication`、`CredentialVariablesHost` |
 | `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FileStorage>` |
@@ -197,6 +195,8 @@ Session 与分支能力不向进程服务登记自己：RPC 经 `Session::servic
 | 宿主值 | `AgentBuilder::session_value(Arc<T>)` 由每个 SessionScope 在 `apply` 中以 Session 名字的键提供；`AgentBuilder::process_value(Arc<T>)` 由 Agent 分组行以进程名字提供，每个 Agent 实例一份 |
 
 成对能力（TimelineTree/TreeTimeline 等）的分支半边经 `Deps` 取得 Session 服务。
+
+分支作用域的装配状态只保留到 `TimelineContext` 接管或装配失败回滚。已装配的行与部件句柄由 `TimelineContext` 持有，分支装配对象不持有指回自身的作用域句柄。
 
 Session 与 Timeline 在结构图中分别由 `SessionScopePlugin` 和 `BranchScopePlugin` 表示；Timeline 是后者提供并管理的服务，不另建 `TimelinePlugin`。`TimelineTreePlugin` 管分支目录和创建，创建关系不等于 BranchScope 注入 TimelineTree。
 
@@ -348,7 +348,7 @@ Dispatcher 与 before 的精确名称、`*`、`领域/*` 只过滤同一分支�
 | 传播 | 上游重载时，rutis 沿 `Deps` 依赖驱逐并重新装载下游，可跨进程、Session、分支作用域 |
 | 能力 | 随上游重载的能力按[能力重载协议](#能力重载协议)卸载与装载 |
 | 核心状态 | Timeline、TimelineTree、Dispatcher、AgentIndex 内的 Agent 句柄不注入可重载的上游 |
-| 门面 | `Branch` 经 TimelineContext 每次调用按分支键查找 `LoopState` 与公开服务，不持有能力实例；状态查询在 Loop 重载期间返回可重试错误。写入输入不查找任何能力端口，InputQueue 重载期间的输入由新一代从 Timeline 接收；stop、idle 只等待 `LoopState`，不拼装其他能力的状态：Loop 重载期间等新一代接手（重载即重启，见[总纲](time-bus.md)第 5 条），分支关闭后 Loop 不在时返回 `Closed`；关闭开始时 Loop 正在重载，则中断已提交、不再等待，不算关闭失败，未完成的 turn 按重载结算。分支仍存活时，`approval.respond` 因审批服务换代失败返回 `service_reloading`。`Session` 持有的 TimelineTree 不注入可重载的上游 |
+| 门面 | `Branch` 经 TimelineContext 每次调用按分支键查找 `LoopState` 与公开服务，不持有能力实例；状态查询在 Loop 重载期间返回可重试错误。写入输入不查找任何能力端口，InputQueue 重载期间的输入由新一代从 Timeline 接收；stop、idle 只等待 `LoopState`，不拼装其他能力的状态：Loop 重载期间等新一代接手（重载即重启，见[总纲](time-bus.md)第 5 条），分支正在关闭且 Loop 不在时，优先返回已记录的 Dispatcher 故障，否则返回 `Closed`（新 stop 的关闭准入见[中断 §3](interrupt.md#3-完成与并发)）；关闭开始时 Loop 正在重载，则中断已提交、不再等待，不算关闭失败，未完成的 turn 按重载结算。分支仍存活时，`approval.respond` 因审批服务换代失败返回 `service_reloading`。`Session` 持有的 TimelineTree 不注入可重载的上游 |
 | 拥有 | 作用域 Plugin 卸载即关闭该实例 |
 | 代次结算 | 移除一代服务前先停止新工作、排空已受理工作并写完必需终态（AGENTS 规则 8）；连接断开不等于关闭 Session，运行时句柄不是持久身份。依赖丢失回到 Pending 时的业务结算语义仍为 Proposed（issue #6，见 ADR 001） |
 | 触发 | 需要替换服务实现的配置变化、显式 restart、`check()` 变化；普通配置值更新由服务内部通知，不重载。故障不触发重载。各 Plugin 的设计列出自身触发来源 |

@@ -4,7 +4,7 @@ use crate::http::{Body, MAX_SAFE_INTEGER, text};
 use dim_agent_capabilities::host::ModelProtocol;
 use dim_app_server::{
     managed_provider::{ManagedError, ManagedModel},
-    model_catalog::BundledCatalog,
+    model_catalog::{BundledCatalog, ProviderProjection, kind_of},
 };
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -59,7 +59,7 @@ fn variants(id: &str) -> Vec<String> {
     static SEPARATORS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[_:\s]+").unwrap());
     let lower = id.trim().to_lowercase();
     let normalized = SEPARATORS
-        .replace_all(lower.strip_prefix("models/").unwrap_or(&lower), "-")
+        .replace_all(lower.trim_prefix("models/"), "-")
         .into_owned();
     let last = normalized.rsplit('/').next().unwrap_or_default().to_owned();
     if last == normalized {
@@ -345,8 +345,21 @@ fn project(
     let declared = object(input.get("capabilities"));
     let limit = object(input.get("limit"));
     let raw_metadata = object(input.get("raw"));
+    // The relay list is read before the account's record exists, so nothing
+    // here states a prefix or an alias: the record's own statements apply
+    // when it serves the models, through the provider's one derivation.
+    // The kind is read before the lookup, so the lookup and the published
+    // `type` both answer from the values that `type` is read from.
+    let listed = label(input.get("type")).or(label(raw_metadata.get("type")));
+    let image_override = input.get("imageGeneration") == Some(&json!(true))
+        && !input.contains_key("modalityCapabilities");
+    let lookup_kind = if image_override {
+        Some("image-generation".to_owned())
+    } else {
+        listed.as_deref().and_then(kind_of)
+    };
     let found = bundled
-        .fallback(id)
+        .fallback(&ProviderProjection::default(), id, lookup_kind.as_deref())
         .map(|entry| serde_json::to_value(entry).expect("model entries serialize"));
     let found_metadata = object(found.as_ref().and_then(|f| f.get("metadata")));
     let mut r = reasoning(
@@ -461,9 +474,7 @@ fn project(
         _ => None,
     };
     let found_raw = object(found_metadata.get("raw"));
-    let kind = label(input.get("type"))
-        .or(label(raw_metadata.get("type")))
-        .or(label(found_raw.get("type")));
+    let kind = listed.or(label(found_raw.get("type")));
     let status = input
         .get("status")
         .and_then(Value::as_str)
@@ -512,9 +523,7 @@ fn project(
             json!(actions.contains(&json!("image.generate"))),
         );
     }
-    if input.get("imageGeneration") == Some(&json!(true))
-        && !input.contains_key("modalityCapabilities")
-    {
+    if image_override {
         model_raw.insert("type".into(), json!("image-generation"));
     }
     // Missing or empty output metadata is unspecified; text may coexist with other outputs.

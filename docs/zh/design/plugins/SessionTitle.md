@@ -2,7 +2,7 @@
 
 总体设计：[overview](../overview.md)（SessionTitle）。作用域：[ADR 002](../../adr/002-plugin-scope.md)（Session）。
 
-SessionTitle 是一个 Session 插件，为交互式 leader Session 提供经 SessionStore 元数据保存的标题。它通过既有的 Session 广播观察自己的 Session；当 `main` 上的第一条操作者输入被采用时（`input/applied`），它仅凭该输入的文本，按 §3.3 的分流策略生成标题。标题是 SessionStore 的状态：SessionTitle 只通过 SessionStore 的类型化操作 `setTitle` 写入，SessionStore 在每次变更后发出一条 Session 广播通知，由客户端消费（已交付的 C6 通知记录见 [§9](#9-向机制所有者提出的需求)；SessionStore 标题元数据和 Rpc 转发是补充，见[总体设计附录 B.2](../overview.md#b2-app-server-进程插件)）。它把命名空间 `session.rename` 注册到本 Session 的 `sessionMethods`，以此提供 `session.rename`（[方法与工具贡献](../contracts/session-boundary.md)）。它不写任何 Timeline 事件，也没有模型可见的效果。契约以语言中立形式给出（[ADR 002 D5](../../adr/002-plugin-scope.md)）；Rust 绑定见附录 G。
+SessionTitle 是一个 Session 插件，为交互式 leader Session 提供经 SessionStore 元数据保存的标题。它通过既有的 Session 广播观察自己的 Session；当 `main` 上第一条符合条件的输入被采用时 (`input/applied`) —— 带 `user` 内容的操作者输入，或 Goal 已采用的 objective (A10) —— 它仅凭该输入的文本，按 §3.3 的分流策略生成标题。标题是 SessionStore 的状态：SessionTitle 只通过 SessionStore 的类型化操作 `setTitle` 写入，SessionStore 在每次变更后发出一条 Session 广播通知，由客户端消费（已交付的 C6 通知记录见 [§9](#9-向机制所有者提出的需求)；SessionStore 标题元数据和 Rpc 转发是补充，见[总体设计附录 B.2](../overview.md#b2-app-server-进程插件)）。它把命名空间 `session.rename` 注册到本 Session 的 `sessionMethods`，以此提供 `session.rename`（[方法与工具贡献](../contracts/session-boundary.md)）。它不写任何 Timeline 事件，也没有模型可见的效果。契约以语言中立形式给出（[ADR 002 D5](../../adr/002-plugin-scope.md)）；Rust 绑定见附录 G。
 
 ## 0. 实施边界
 
@@ -20,7 +20,9 @@ Node/Python 安装或语言运行时获取。辅助调用和标题元数据仍�
 App Server 测试不依赖 SessionTitle，仅覆盖通用宿主行为。验证使用无需语言运行时的原生
 [native_flow.rs](../../../../crates/dim-session-title/tests/native_flow.rs) 流程，
 覆盖固定前缀历史、Settings 校验、RPC、HTTP 辅助调用、Unicode 上限、并发采纳、标题通知、
-手工与自动标题冲突、恢复、fork 和关闭结算。依赖 Node 的
+手工与自动标题冲突、恢复、fork 和关闭结算。
+[appended_context_flow.rs](../../../../crates/dim-session-title/tests/appended_context_flow.rs)
+覆盖追加在操作者文本之后的上下文（Hooks A.6.2、Skills §9）不参与标题。依赖 Node 的
 [scheduler_flow.rs](../../../../crates/dim-session-title/tests/scheduler_flow.rs)
 覆盖调度报告的输入来源，确保报告不会提供标题文本。诊断仅记录结果与时长。
 
@@ -30,7 +32,7 @@ App Server 测试不依赖 SessionTitle，仅覆盖通用宿主行为。验证�
 | 历史 | 使用已实现的进程 sessions.history，不读取私有 TimelineTree，也不使用分支（C5）绑定。 |
 | 配置 | 沿用具名 Settings 和原行来源声明，仅用户作用域（A.3/A12）。每次决定读取 settings.read({source:"session-title",scope:"user"})，直接使用已校验并补默认值的文档。 |
 | 元数据/通知 | S5b #60/#96 定义进程服务 `sessionMetadata`（`read` 与 `setTitle`，都是异步）、它的错误 `conflict`/`not_found`/`storage`、交接点，以及 v3 列表字段 `title`/`titleSource`/`titleRevision`（[标题元数据](../appserver/session-title-metadata.md)）；A.2 复述该合同。每次提交后 SessionStore 调用 `session_broadcast::notify`，Rpc 把记录以 `session.notice {sessionId, source, kind, data}` 转发给已附加的 v3 客户端（C6 #49/#85，[Session 广播通知](../appserver/session-notices.md)）。名称、模式、交接和错误遵循 S5b。 |
-| 辅助请求 | 该配置中模型选择的所有者已实现 AuxiliaryModelHost 及具名 `auxiliaryModel.complete` HostDispatch/catalog 绑定：产品配置里是 Provider，model-config 配置里是 ConfiguredModels。通过普通 C4 依赖注入；凭据仍归该所有者（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。 |
+| 辅助请求 | 该配置中模型选择的所有者已实现 AuxiliaryModel 及具名 `auxiliaryModel.complete` HostDispatch/catalog 绑定：产品配置里是 Provider，model-config 配置里是 ConfiguredModels。通过普通 C4 依赖注入；凭据仍归该所有者（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。 |
 | 策略 | A1–A12 定义首版实现。附录 D 要求公开流程验收；文档 CI 不表示运行时验收。 |
 
 C7 #50 已确认无需新增机制（#86）。S4 自行持有凭据/连接解析。所需提供者缺失沿用既有 Pending 规则，包括 rename 在内整个 Session 部分
@@ -54,7 +56,7 @@ atLeast 与 through，直接使用原生 HistoryPage/AgentEvent。S2 稳定目�
 产品装配独立于外语插件行安装原生插件。
 必需服务的提供者缺失时，依照既有依赖规则仅影响 SessionTitle 的可用性，不影响 Session 的执行能力。
 
-固定快照止于返回的 T，不承诺恰好止于 N。第一条被采用的操作者输入提供文本；model=null
+固定快照止于返回的 T，不承诺恰好止于 N。第一条被采用且符合条件的输入提供文本；model=null
 时，从该快照最新 ContextConfiguredData.settings 读取 providerId/modelId。没有被采用的
 模型时使用 §3.3 的文本兜底，不改用该配置当前默认模型。
 
@@ -103,13 +105,13 @@ flowchart LR
 ```mermaid
 flowchart TB
   subgraph TLM["main 分支 Timeline"]
-    FUI["第一条被采用的操作者输入（input/message、input/applied）"]
+    FUI["第一条被采用且符合条件的输入 (input/message, input/applied)"]
     CC["context/configured（被采用的模型）"]
   end
   subgraph STORE["SessionStore 元数据（持久）"]
     MD["revision、标题文本、来源 auto 或 manual"]
   end
-  CONF["SessionConfig：interactive、collaborationRole"]
+  CONF["SessionConfig：interactive、collaborationRole、initialTitle"]
   CFG["session-title：enabled、maxLength、model"]
   MEM["在途生成、失败次数（内存）"]:::new
   FUI -->|"仅文本"| MEM
@@ -124,7 +126,7 @@ flowchart TB
 
 ## 3. 流程
 
-### 3.1 由第一条用户输入自动生成标题
+### 3.1 由第一条符合条件的输入自动生成标题
 
 ```mermaid
 sequenceDiagram
@@ -140,14 +142,14 @@ sequenceDiagram
   Note over ST: 交互式 leader，无在途生成
   ST->>Settings: 读取 session-title；禁用时跳过
   ST->>Meta: metadata：无标题，revision r
-  ST->>Sessions: history(main, atLeast N)，按固定 T 分页：第一条采用的操作者文本
+  ST->>Sessions: history(main, atLeast N)，按固定 T 分页：第一条采用且符合条件的文本
   ST->>Aux: complete(model, text)
   Aux-->>ST: 标题文本
   ST->>Meta: setTitle(expected r, auto)
   Meta-->>SB: 标题通知
 ```
 
-生成在输入被采用时开始，而非 turn 结束后。只发送 `main` 上第一条被采用的操作者输入的文本；被删除的输入从未被采用，因此不会产生标题，其文本也不会发给辅助模型。
+生成在输入被采用时开始，而非 turn 结束后。只发送 `main` 上第一条被采用且符合条件的输入的文本 —— 操作者消息的文本，或 Goal 已采用的 objective (A10)；被删除的输入从未被采用，因此不会产生标题，其文本也不会发给辅助模型。
 main turn 不等待标题完成，标题任务遵循自己的预算。
 
 ### 3.2 手动重命名
@@ -190,6 +192,15 @@ DimOAuth 自己判断 providerId 是否适用，并拥有专用接口、账号�
 SessionTitle 不接触凭据或 issuer，DimOAuth 不写 Session 元数据、不决定降级。
 模型选择所有者、AuxiliaryModel、模型执行、Timeline 和 Dispatcher 不增加标题分流策略，也没有额外接线插件。
 
+### 3.4 创建时请求的标题
+
+`sessions.launch` 可以携带 `title`，即调用方已经知道的那个标签（[sessions 服务 §6.1](../appserver/sessions-service.md#61-launch)）。Agents 把它存进新 Session 的固定配置 `initialTitle`；标题的唯一写入者仍是 SessionTitle，因此调用方写下的标题从不直接到达存储。
+
+- **只写一次。** 只有在存储的 revision 为 0 时才写。之后的重命名或清空不会在重载时被撤销：配置里一直保留 `initialTitle`，而一旦已有标题，这一部分就跳过写入。`setTitle` 返回 `conflict` 表示别的写入者先给了标题，那个标题胜出。
+- **文本规则。** 就是 `session.rename` 的规则：去掉首尾空白；为空、含控制字符或行分隔符时什么都不写。长度按兜底标题的方式截到操作者的 `maxLength`，标点保留：`title_text` 去掉标点是因为它处理模型输出，而这段文本是调用方的。
+- **时机。** 写入在 `apply` 之后、Session 发布之后，在部件自己的任务里进行，因此启动回复可能先到。标题通知发出后行上就有标题，与重命名走的是同一条路径。
+- **对所有 Session。** 交互与非交互都一样：初始标题不需要模型，也不受生成资格的约束。生成保持原有门槛（[§4](#4-时序与冲突)）；已有标题的 Session 本来就会被生成跳过。
+
 ## 4. 时序与冲突
 
 ```mermaid
@@ -210,8 +221,9 @@ revision 检查就是复检：手动标题总是胜出。
 | 场景 | 顺序 | 结果 | 负责方 |
 | --- | --- | --- | --- |
 | 成员 Session（`collaborationRole`），或非交互 Session | `SessionConfig` | 从不生成；允许重命名 | SessionTitle |
+| 创建时请求了标题的 Session（`initialTitle`） | `SessionConfig`、revision 0 | 按重命名的文本规则与 `maxLength` 写入一次 manual 标题；之后的重命名或清空在重载后仍然胜出（§3.4） | SessionTitle |
 | 生成完成前出现第二条输入 | — | 跳过（在途） | SessionTitle |
-| 第一条输入已删除 | input < `input/deleted` | 从未被采用：不用它生成标题；下一条被采用的操作者输入触发（A9） | SessionTitle |
+| 第一条输入已删除 | input < `input/deleted` | 从未被采用：不用它生成标题；下一条被采用且符合条件的输入触发 (A9) | SessionTitle |
 | 生成路径失败 | — | 输入文本兜底（§3.3）；存储失败且仍无标题时可以重试（A5） | SessionTitle |
 | 生成中途重载或 Session 卸载 | — | 存储交接前取消，下一条采用的 main 输入可触发；已接纳的修改由 SessionStore 结算 | Lifecycle / SessionStore |
 
@@ -224,7 +236,7 @@ revision 检查就是复检：手动标题总是胜出。
 | 部分 | 内容 |
 | --- | --- |
 | System | `Write a short title for this conversation: at most 8 words, in the language of the user's message, no quotes, no trailing punctuation. Reply with the title only.`（A2） |
-| User 消息 | `main` 上第一条被采用（有 `input/applied`）的操作者 `input/message` 的文本块，以换行连接，截断到 2000 个字符（A2） |
+| User 消息 | `main` 上第一条被采用 (有 `input/applied`) 的操作者 `input/message` 中承载操作者本人话语的文本块，以换行连接，或 Goal 第一条被采用的 `goal:state` 记录中的 `<objective>` 元素，截断到 2000 个字符 (A2, A10) |
 
 从不发送：图片、raw 输入块、被删除的输入、后续输入、助手输出、系统提示词、工具调用与结果、子分支事件。诊断只记录结果与耗时。
 
@@ -239,7 +251,7 @@ revision 检查就是复检：手动标题总是胜出。
 
 ## 7. 安全
 
-第一条输入的文本只发送给 §3.3 选定的路径：显式模型，或可选服务与已采纳模型。标题可能包含用户内容，并返回给每个能列出 Session 的客户端。请求中不包含凭据、宿主设置或工具输出。重命名输入由 SessionTitle 的方法校验（A.1）。
+第一条符合条件的输入的文本只发送给 §3.3 选定的路径：显式模型，或可选服务与已采纳模型。标题可能包含用户内容，并返回给每个能列出 Session 的客户端。请求中不包含凭据、宿主设置或工具输出。重命名输入由 SessionTitle 的方法校验（A.1）。
 
 ## 8. 规则检查
 
@@ -278,7 +290,7 @@ SessionTitle 使用这些已交付合同。
 
 **#4：无。** 观察沿用 Session 服务和 Session 通道；历史、Settings、`sessionMetadata` 和辅助模型均为进程服务。SessionTitle 不注入分支服务。
 
-**模型选择所有者（S4）：具名 `auxiliaryModel` 绑定。** Provider（产品）与 ConfiguredModels（model-config）将既有的 `AuxiliaryModelHost` 操作绑定为可供 C4 注入的服务（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。配置中没有这样的所有者时，普通的必需依赖让 SessionTitle 行保持 Pending。不需要 core 新机制。
+**模型选择所有者（S4）：具名 `auxiliaryModel` 绑定。** Provider（产品）与 ConfiguredModels（model-config）将既有的 `AuxiliaryModel` 操作绑定为可供 C4 注入的服务（[S4 §4.3](../appserver/auxiliary-model.md#43-具名绑定)）。配置中没有这样的所有者时，普通的必需依赖让 SessionTitle 行保持 Pending。不需要 core 新机制。
 
 **DimOAuth：**实现 §3.3 定义的可选生成服务；账号请求和结算由其运行时契约定义，不需要修改 Provider 或 Core 机制。
 
@@ -322,10 +334,10 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 | 步骤 | 路径 |
 | --- | --- |
 | 监听 | 该部分在每个 Session 的副本于 `apply` 中监听自身 Session 的 `session/{sessionId}`，筛选 main input/applied，登记自持任务后返回；`sessionLifecycle.closing()` 或副本清理结束自持工作 |
-| 资格 | C4 创建快照：`interactive !== false && collaborationRole === "leader"`；原生省略值表示 true |
+| 资格 | C4 创建快照：`interactive !== false && collaborationRole === "leader"`（用于生成）；原生省略值表示 true。创建时请求的初始标题（`initialTitle`，§3.4）对交互与非交互 Session 都写入：它不需要模型，文本属于调用方 |
 | 触发 | 收到位于 `N` 的 `input/applied` 时：若不具资格、已禁用、有在途生成或失败次数 ≥ 3（A5）则跳过；否则启动一个归属插件生命周期的生成任务 |
 | 检查 | `sessionMetadata.read({sessionId})`：已有任何标题则跳过；记下 revision `r` |
-| 读取 | 既有 sessions.history 以 atLeast=N 固定已发布 T >= N，再按 through=T 分页（S2 A.5）。选取第一条有 user 内容且 input/applied 的操作者输入；没有该输入/文本则不生成（A8/A10） |
+| 读取 | 既有 sessions.history 以 atLeast=N 固定已发布 T >= N，再按 through=T 分页 (S2 A.5)。选取第一条有 user 内容、或是 Goal 的 `goal:state` 记录 (含 objective)，且 input/applied 的输入；没有该输入/文本则不生成 (A8/A10) |
 | 生成 | 按 §3.3 分流，在共享 30 秒预算内生成或兜底；取第一行、去除引号与末尾标点、折叠空白并按 maxLength 截断 |
 | 写入 | `setTitle({sessionId, expectedRevision: r, title: {text, source: "auto"}})`；`conflict` 或 `not_found` 时丢弃 |
 | Timeline | 不写入，不登记 Dispatcher，无 `StateCell` |
@@ -336,8 +348,9 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 | 场景 | 序号顺序 | 结果 | 负责方 |
 | --- | --- | --- | --- |
 | 第一条输入的 turn 被中断或失败 | input < `stop/interrupt` | 生成继续 | SessionTitle |
-| 不含 `user` 内容的输入（Goal 块、来源标记） | — | 从不触发，从不使用 | SessionTitle |
-| 第一条输入在被应用前被撤回（`session.input.withdraw`） | input < withdraw < `input/deleted` | 从未被应用：不生成，文本从不发送；第一条被应用的操作者输入触发 | SessionTitle |
+| Goal 已采用、带 objective 的 `goal:state` 记录 | — | 符合条件：用 `<objective>` 为 Session 命名 (A10)；之后的用户 turn 不再改名 | SessionTitle |
+| 其他不含 `user` 内容的输入 (Goal 的 trigger 与 continuation、来源标记) | — | 从不触发，从不使用 | SessionTitle |
+| 第一条输入在被应用前被撤回（`session.input.withdraw`） | input < withdraw < `input/deleted` | 从未被应用：不生成，文本从不发送；第一条被应用的符合条件的输入触发 | SessionTitle |
 | 第一条用户输入只含图片 | — | 无自动标题（A8） | SessionTitle |
 | 检查之前重命名 | rename < check | 已有标题：跳过 | SessionTitle |
 | 生成期间重命名 | check (r) < rename (r+1) < write | `conflict`：自动标题被丢弃 | SessionStore revision |
@@ -348,7 +361,7 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 | 子分支输入 | 分支过滤 | 从不触发 | SessionTitle |
 | 成员、阶段或定时 Session | `SessionConfig` | 从不生成 | SessionTitle |
 | 生成期间关闭 Session | — | 存储交接前取消；已接纳修改仍由 SessionStore 持有 | Lifecycle / SessionStore |
-| Session fork | 不复制元数据（A7） | fork 无标题；`main` 上下一条被采用的操作者输入触发生成，取其前缀中第一条被采用的操作者输入 | SessionTitle |
+| Session fork | 不复制元数据（A7） | fork 无标题；`main` 上下一条被采用且符合条件的输入触发生成，取其前缀中第一条被采用且符合条件的输入 | SessionTitle |
 | SessionTitle、模型选择所有者、SessionStore 或 Settings 重载 | — | 交接前取消生成，已接纳存储修改遵循 S5b 结算（D3） | Lifecycle / SessionStore |
 | 模型或策略不可用 | — | 输入文本兜底（§3.3） | SessionTitle |
 | 资源节点离线 | — | 无影响 | — |
@@ -385,6 +398,8 @@ Settings 来源 `session-title`，一个文档：`enabled: bool` 默认 `true`�
 
 12. 可选服务缺失或卸载后仍能生成和改名；服务成功不重复调用模型，显式模型跳过服务；不可用或失败转普通模型，模型失败或超时转文本；关闭等待原调用取消结算，不降级、不写标题。
 
+13. Goal 创建的 Session 在没有任何操作者输入时由已采用的 objective 命名：请求只带 `<objective>` 文本，到达一条标题通知。之后的用户 turn 不重新命名；先有用户 turn 的 Session 在之后设置 goal 时保留该 turn 的标题；非交互 Session 即使有 goal 也不命名，但 `session.rename` 可用；辅助调用失败时回退到 objective 摘录。
+
 ## 附录 E. 假设
 
 A1–A12 是首版实现采用的策略。
@@ -400,7 +415,7 @@ A1–A12 是首版实现采用的策略。
 | A7 | Session fork 不复制标题 | 判断 | fork 显示源标题 |
 | A8 | 不含文本的第一条用户输入不产生自动标题 | 决定：标题取自第一条用户输入 | 使用后续输入或占位符 |
 | A9 | 生成等待输入被采用（`input/applied`）；被删除的输入从不产生标题 | 维护者决定 | 被删除的文本可能发给辅助模型 |
-| A10 | “用户输入”指操作者输入：在交互式 leader Session 中，即带 `user` 内容的输入，因为 Collaboration、Goal 和 ShellInput 只写 raw 块（Scheduler 与 Workflow 的输入带 `user` 内容，但运行在非交互 Session 中，SessionTitle 不为其命名） | 判断 | 来源写入的输入可能为 Session 命名 |
+| A10 | “用户输入”指带 `user` 内容的操作者输入，或 Goal 已采用的 `goal:state` 记录，后者陈述 objective。该记录的格式归 Goal ([Goal A.5](Goal.md#a5-模型可见文本))：SessionTitle 只解码它，不拥有第二份契约，格式变更由 Goal 负责并在同一次变更中更新本读取方。Collaboration 与 ShellInput 只写 raw 块；Scheduler 与 Workflow 的输入带 `user` 内容，但运行在非交互 Session 中，SessionTitle 不为其命名。Goal 优先的 Session 用其 objective 命名，之后的用户 turn 不重新命名。历史早于该记录的 Goal 优先 Session (只有旧的 `goal:objective`/`goal:status` 键) 保持既有行为：在其第一条操作者输入前不命名，或等到之后某次 Goal 变更写出记录；Goal 在加载时不补写记录 ([Goal A.3](Goal.md#a3-读取目标))。 | 判断 | Goal 创建的 Session 一直无标题，客户端需要第二个标题来源 |
 | A11 | SessionStore 用 Session 广播通知宣布标题变更；未订阅的客户端在下一次 `session.summaries` 时看到变更 | 原则 §4 第 9 条 | 客户端轮询 `session.summaries` |
 | A12 | 仅用户作用域文件 session-title.json，不合并项目来源；原生 Settings 记录 user/session-title | 既有 S8b 原行来源机制，A.3 | 不同来源/作用域须明确确认 |
 
@@ -416,7 +431,7 @@ A1–A12 是首版实现采用的策略。
 | 注册到 `sessionMethods` 的命名空间 `session.rename` | Session 部分在 `Key<SessionMethods>` 依赖上调用 `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` |
 | 已发布历史 | 稳定目录绑定上的 既有具名 `sessions.history` HostDispatch（在插件边界解析外部回复） |
 | 标题元数据 | `SessionStore::metadata` 与 `SessionStore::set_title` |
-| 辅助调用 | 既有 `AuxiliaryModelHost.0.complete` 与取消 token |
+| 辅助调用 | 既有 `AuxiliaryModel.0.complete` 与取消 token |
 | Session 广播监听器 | `session_channel(session_id)` 上针对 `Event` 记录的监听器，由 `ctx.effect` 移除 |
 | 生成任务 | 在 `ctx.effect` 下派生 |
 

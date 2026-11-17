@@ -1,5 +1,6 @@
 //! File tool flows: text preservation, branch-scoped read bindings, write
-//! serialization, and glob/grep parity with the TS grep-glob acceptance test.
+//! serialization, glob/grep parity with the TS grep-glob acceptance test, and
+//! the file-root boundary.
 
 use dim_agent_capabilities::{
     host::HostError,
@@ -86,6 +87,10 @@ impl Workspace {
             json!({ "path": name, "oldText": old, "newText": new }),
         )
         .await
+    }
+    async fn edits(&self, reads: &FileReads, name: &str, edits: Value) -> ToolResult {
+        self.call(reads, "edit", json!({ "path": name, "edits": edits }))
+            .await
     }
 }
 impl Drop for Workspace {
@@ -212,12 +217,14 @@ async fn coordinated_sessions_reject_stale_mutations() {
         workspace.root.clone(),
         workspace.root.join("outputs"),
         coordinator.clone(),
+        None,
     );
     let other = FileTools::with_coordinator(
         workspace.root.clone(),
         workspace.root.clone(),
         workspace.root.join("outputs"),
         coordinator,
+        None,
     );
     workspace.put("shared", b"before\r\n");
     let (a, b) = (branch(), branch());
@@ -317,21 +324,116 @@ fn definitions_match_the_ts_tool_contracts() {
 }
 
 #[tokio::test]
+async fn write_comparisons_stay_bounded_without_limiting_the_mutation() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put(
+        "large.txt",
+        format!("{}\n", "a".repeat(17 * 1024 * 1024)).as_bytes(),
+    );
+    ok(&workspace
+        .call(&reads, "read", json!({ "path": "large.txt", "limit": 1 }))
+        .await);
+    let result = workspace
+        .call(
+            &reads,
+            "write",
+            json!({ "path": "large.txt", "content": "small\n" }),
+        )
+        .await;
+    ok(&result);
+    assert_eq!(workspace.bytes("large.txt"), b"small\n");
+    assert!(
+        structured(&result)["diff"].is_null(),
+        "Oversized comparisons must not enter durable results"
+    );
+    assert!(text(&result).contains("comparison omitted"));
+    assert!(serde_json::to_vec(&result).unwrap().len() < 1024);
+    assert_eq!(structured(&result)["bytesWritten"], 6);
+    assert!(structured(&result)["revision"].is_string());
+
+    let prefix = "--- /dev/null\n+++ new.txt\n@@ -0,0 +1,1 @@\n+";
+    for (length, recorded) in [
+        (64 * 1024 - prefix.len(), true),
+        (64 * 1024 - prefix.len() + 1, false),
+        (64 * 1024 + 1, false),
+    ] {
+        let content = "é".repeat(length / 2) + if length % 2 == 1 { "a" } else { "" };
+        let result = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "new.txt", "content": content }),
+            )
+            .await;
+        ok(&result);
+        assert_eq!(workspace.bytes("new.txt"), content.as_bytes());
+        if recorded {
+            assert_eq!(structured(&result)["diff"], format!("{prefix}{content}"));
+        } else {
+            assert!(structured(&result)["diff"].is_null());
+            assert!(text(&result).contains("comparison omitted"));
+        }
+        assert!(serde_json::to_vec(&result).unwrap().len() < 512 * 1024);
+        fs::remove_file(workspace.path("new.txt")).unwrap();
+    }
+}
+
+#[tokio::test]
 async fn edits_and_writes_preserve_bom_and_line_endings() {
     let workspace = Workspace::new();
     let reads = branch();
+
+    for (content, hunks) in [("", ""), ("héllo\r\n", "@@ -0,0 +1,1 @@\n+héllo")] {
+        let created = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "new.txt", "content": content }),
+            )
+            .await;
+        ok(&created);
+        assert_eq!(
+            structured(&created)["diff"],
+            format!("--- /dev/null\n+++ new.txt\n{hunks}")
+        );
+        assert_eq!(workspace.bytes("new.txt"), content.as_bytes());
+        fs::remove_file(workspace.path("new.txt")).unwrap();
+    }
+
+    workspace.put("empty.txt", b"");
+    ok(&workspace.read(&reads, "empty.txt").await);
+    for (content, hunks) in [("", ""), ("added\n", "@@ -0,0 +1,1 @@\n+added")] {
+        let overwritten = workspace
+            .call(
+                &reads,
+                "write",
+                json!({ "path": "empty.txt", "content": content }),
+            )
+            .await;
+        ok(&overwritten);
+        assert_eq!(
+            structured(&overwritten)["diff"],
+            format!("--- empty.txt\n+++ empty.txt\n{hunks}")
+        );
+    }
 
     workspace.put("crlf.txt", b"one\r\ntwo\r\nthree\r\n");
     ok(&workspace.read(&reads, "crlf.txt").await);
     ok(&workspace.edit(&reads, "crlf.txt", "two", "2a\n2b").await);
     assert_eq!(workspace.bytes("crlf.txt"), b"one\r\n2a\r\n2b\r\nthree\r\n");
-    ok(&workspace
+    let written = workspace
         .call(
             &reads,
             "write",
             json!({ "path": "crlf.txt", "content": "x\ny\n" }),
         )
-        .await);
+        .await;
+    ok(&written);
+    assert_eq!(
+        structured(&written)["diff"],
+        "--- crlf.txt\n+++ crlf.txt\n@@ -1,4 +1,2 @@\n-one\n-2a\n-2b\n-three\n+x\n+y"
+    );
     assert_eq!(workspace.bytes("crlf.txt"), b"x\r\ny\r\n");
 
     workspace.put("bom.txt", b"\xef\xbb\xbfalpha\nbeta\n");
@@ -340,13 +442,18 @@ async fn edits_and_writes_preserve_bom_and_line_endings() {
     assert_eq!(structured(&read)["bom"], "utf8");
     ok(&workspace.edit(&reads, "bom.txt", "beta", "gamma").await);
     assert_eq!(workspace.bytes("bom.txt"), b"\xef\xbb\xbfalpha\ngamma\n");
-    ok(&workspace
+    let written = workspace
         .call(
             &reads,
             "write",
             json!({ "path": "bom.txt", "content": "delta\n" }),
         )
-        .await);
+        .await;
+    ok(&written);
+    assert_eq!(
+        structured(&written)["diff"],
+        "--- bom.txt\n+++ bom.txt\n@@ -1,2 +1,1 @@\n-alpha\n-gamma\n+delta"
+    );
     assert_eq!(workspace.bytes("bom.txt"), b"\xef\xbb\xbfdelta\n");
 
     let mut utf16 = vec![0xff, 0xfe];
@@ -358,6 +465,21 @@ async fn edits_and_writes_preserve_bom_and_line_endings() {
     ok(&workspace.edit(&reads, "utf16.txt", "wörld", "wörld!").await);
     let mut expected = vec![0xff, 0xfe];
     expected.extend(utf16le("héllo\r\nwörld!\r\n"));
+    assert_eq!(workspace.bytes("utf16.txt"), expected);
+    let written = workspace
+        .call(
+            &reads,
+            "write",
+            json!({ "path": "utf16.txt", "content": "héllo\nmöön\n" }),
+        )
+        .await;
+    ok(&written);
+    assert_eq!(
+        structured(&written)["diff"],
+        "--- utf16.txt\n+++ utf16.txt\n@@ -1,2 +1,2 @@\n héllo\n-wörld!\n+möön"
+    );
+    let mut expected = vec![0xff, 0xfe];
+    expected.extend(utf16le("héllo\r\nmöön\r\n"));
     assert_eq!(workspace.bytes("utf16.txt"), expected);
 
     workspace.put("mixed.txt", b"a\r\nb\nc\r\nd\n");
@@ -559,7 +681,7 @@ async fn read_pages_long_files() {
         .await;
     assert_eq!(
         ok(&page),
-        "2\tb\n3\tc\n\nFile is larger than the safe read budget for one response. Showing lines 2-3 of 4. Continue with read({ path: \"lines.txt\", offset: 4 })."
+        "2\tb\n3\tc\n\nThe requested limit was reached; a larger limit returns more. Showing lines 2-3 of 4. Continue with read({ path: \"lines.txt\", offset: 4 })."
     );
     let beyond = workspace
         .call(&reads, "read", json!({ "path": "lines.txt", "offset": 9 }))
@@ -760,6 +882,180 @@ async fn edit_inserts_new_text_literally() {
     ok(&workspace.read(&reads, "run.sh").await);
     ok(&workspace.edit(&reads, "run.sh", "PID", "$$ $& $' $`").await);
     assert_eq!(workspace.bytes("run.sh"), b"echo $$ $& $' $`\n");
+}
+
+#[tokio::test]
+async fn edit_applies_every_replacement_in_order_in_one_call() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("code.rs", b"fn one() {}\nfn two() {}\n");
+    ok(&workspace.read(&reads, "code.rs").await);
+
+    let both = workspace
+        .edits(
+            &reads,
+            "code.rs",
+            json!([
+                { "oldText": "one", "newText": "first" },
+                { "oldText": "two", "newText": "second" },
+            ]),
+        )
+        .await;
+    ok(&both);
+    assert_eq!(structured(&both)["replacementCount"], 2);
+    assert_eq!(
+        workspace.bytes("code.rs"),
+        b"fn first() {}\nfn second() {}\n"
+    );
+}
+
+#[tokio::test]
+async fn a_later_replacement_matches_the_text_the_previous_one_produced() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("steps.txt", b"a\nb\nc\n");
+    ok(&workspace.read(&reads, "steps.txt").await);
+
+    let chained = workspace
+        .edits(
+            &reads,
+            "steps.txt",
+            json!([
+                { "oldText": "a\nb", "newText": "x\ny" },
+                { "oldText": "y\nc", "newText": "Y\nC" },
+            ]),
+        )
+        .await;
+    ok(&chained);
+    assert_eq!(workspace.bytes("steps.txt"), b"x\nY\nC\n");
+}
+
+#[tokio::test]
+async fn a_failed_replacement_writes_nothing_and_names_its_index() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let original = b"alpha\nbeta\n";
+    workspace.put("pair.txt", original);
+    ok(&workspace.read(&reads, "pair.txt").await);
+
+    let failed = workspace
+        .edits(
+            &reads,
+            "pair.txt",
+            json!([
+                { "oldText": "alpha", "newText": "A" },
+                { "oldText": "missing", "newText": "B" },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&failed), "oldtext_not_found");
+    assert_eq!(structured(&failed)["index"], 1);
+    assert!(text(&failed).starts_with("edits[1]: "), "{}", text(&failed));
+    assert_eq!(workspace.bytes("pair.txt"), original);
+}
+
+#[tokio::test]
+async fn a_replacement_that_does_not_parse_names_its_index() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("parse.txt", b"alpha\nbeta\n");
+    ok(&workspace.read(&reads, "parse.txt").await);
+
+    let failed = workspace
+        .edits(
+            &reads,
+            "parse.txt",
+            json!([
+                { "oldText": "alpha", "newText": "A" },
+                { "oldText": "beta" },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&failed), "invalid_input");
+    assert_eq!(structured(&failed)["index"], 1);
+    assert!(text(&failed).starts_with("edits[1]: "), "{}", text(&failed));
+    assert_eq!(workspace.bytes("parse.txt"), b"alpha\nbeta\n");
+}
+
+#[tokio::test]
+async fn edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("legacy.txt", b"before\n");
+    ok(&workspace.read(&reads, "legacy.txt").await);
+    ok(&workspace
+        .edit(&reads, "legacy.txt", "before", "after")
+        .await);
+    assert_eq!(workspace.bytes("legacy.txt"), b"after\n");
+
+    for input in [
+        json!({
+            "path": "legacy.txt",
+            "oldText": "after",
+            "newText": "again",
+            "edits": [{ "oldText": "after", "newText": "again" }],
+        }),
+        json!({ "path": "legacy.txt", "edits": [] }),
+    ] {
+        let refused = workspace.call(&reads, "edit", input.clone()).await;
+        assert_eq!(code(&refused), "invalid_input", "{input}");
+        assert!(
+            text(&refused).contains("edits"),
+            "{input}: {}",
+            text(&refused)
+        );
+    }
+    assert_eq!(workspace.bytes("legacy.txt"), b"after\n");
+}
+
+#[tokio::test]
+async fn the_replacement_list_is_bounded_by_one_total() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    workspace.put("long.txt", b"value\n");
+    ok(&workspace.read(&reads, "long.txt").await);
+
+    let half = "x".repeat(6_000);
+    let too_large = workspace
+        .edits(
+            &reads,
+            "long.txt",
+            json!([
+                { "oldText": "never", "newText": half },
+                { "oldText": "value", "newText": half },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&too_large), "input_too_large");
+    assert_eq!(workspace.bytes("long.txt"), b"value\n");
+}
+
+#[tokio::test]
+async fn an_entry_that_would_grow_the_text_past_the_limit_fails_before_it_is_built() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let original = format!("marker\n{}", "x".repeat(1_048_569));
+    assert_eq!(original.len(), 1_048_576);
+    workspace.put("grow.txt", original.as_bytes());
+    ok(&workspace.read(&reads, "grow.txt").await);
+
+    // The first entry applies in memory and keeps the length; the second
+    // writes each of 1,048,569 bytes as 513 bytes: 537,915,897 bytes, past the
+    // 536,870,888 limit, from 524 input chars in total.
+    let grown = workspace
+        .edits(
+            &reads,
+            "grow.txt",
+            json!([
+                { "oldText": "marker", "newText": "bucket" },
+                { "oldText": "x", "newText": "z".repeat(513), "replaceAll": true },
+            ]),
+        )
+        .await;
+    assert_eq!(code(&grown), "edit_target_file_too_large");
+    assert_eq!(structured(&grown)["index"], 1);
+    assert!(text(&grown).starts_with("edits[1]: "), "{}", text(&grown));
+    assert_eq!(workspace.bytes("grow.txt"), original.as_bytes());
 }
 
 #[tokio::test]
@@ -1890,4 +2186,940 @@ fn the_mention_index_drops_roots_whose_walk_is_past_its_ttl() {
 
     let _ = fs::remove_dir_all(&first);
     let _ = fs::remove_dir_all(&second);
+}
+
+/// The root boundary tests: each refusal carries an ablation — the same call
+/// with no boundary at all must not refuse, so reverting the boundary code
+/// fails the test.
+#[cfg(unix)]
+mod boundary {
+    use super::*;
+    use dim_agent_capabilities::workspace_tools::files::FileToolBoundary;
+
+    /// One branch with its own empty Timeline; one per test, so read
+    /// bindings survive between the calls of a test.
+    fn boundary_reads() -> FileReads {
+        FileReads::new(Arc::new(Timeline::new(
+            rutis::Ctx::root().unwrap(),
+            TimelineKey {
+                session_id: "boundary".into(),
+                branch_id: "main".into(),
+            },
+            Vec::new(),
+            Arc::new(MemoryTimelineStore::default()),
+        )))
+    }
+
+    async fn call(
+        tools: &FileTools,
+        reads: &FileReads,
+        name: &str,
+        input: Value,
+    ) -> Result<ToolResult, HostError> {
+        tools
+            .execute(
+                &ToolCall {
+                    id: "boundary".into(),
+                    name: name.into(),
+                    input: input.as_object().unwrap().clone(),
+                },
+                reads,
+                CancellationToken::new(),
+            )
+            .await
+    }
+
+    /// A canonical temp tree with a workspace, the configured home (with a
+    /// `sub/` directory under it), a read-only root, an outside directory
+    /// and a separate platform home the no-boundary `~` resolves against.
+    struct Boundary {
+        workspace: PathBuf,
+        platform_home: PathBuf,
+        home: PathBuf,
+        /// A sibling directory no root covers.
+        outside: PathBuf,
+        read_only: PathBuf,
+        boundary: FileToolBoundary,
+    }
+
+    fn fixture() -> Boundary {
+        let root = std::env::temp_dir().join(format!("dim-boundary-{}", uuid::Uuid::new_v4()));
+        for dir in [
+            "workspace",
+            "home/sub",
+            "platform-home",
+            "read-only",
+            "outside",
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("workspace/notes.txt"), "workspace-notes").unwrap();
+        std::fs::write(root.join("home/marker.txt"), "home-marker").unwrap();
+        std::fs::write(root.join("home/sub/marker.txt"), "home-sub-marker").unwrap();
+        std::fs::write(root.join("platform-home/marker.txt"), "platform-marker").unwrap();
+        std::fs::write(root.join("read-only/facts.txt"), "read-only-facts").unwrap();
+        std::fs::write(root.join("outside/secret.txt"), "secret").unwrap();
+        let root = root.canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        let boundary = FileToolBoundary {
+            workspace: workspace.clone(),
+            home: root.join("home"),
+            read_only_roots: vec![root.join("read-only")],
+        };
+        Boundary {
+            workspace,
+            platform_home: root.join("platform-home"),
+            home: root.join("home"),
+            outside: root.join("outside"),
+            read_only: root.join("read-only"),
+            boundary,
+        }
+    }
+
+    /// The trees' tools with the boundary, and the same tree's tools without
+    /// one (today's unbounded behaviour).
+    fn tools(fixture: &Boundary) -> (FileTools, FileTools) {
+        let output = fixture.workspace.join("out");
+        (
+            FileTools::with_boundary(
+                fixture.workspace.clone(),
+                output.clone(),
+                fixture.boundary.clone(),
+            ),
+            FileTools::new(
+                fixture.workspace.clone(),
+                fixture.platform_home.clone(),
+                output,
+            ),
+        )
+    }
+
+    /// The refusal a call must produce: an error whose structured code is
+    /// the outside-roots code.
+    fn assert_refused(result: &ToolResult) {
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["code"],
+            "outside_file_roots",
+            "{result:?}"
+        );
+    }
+
+    fn text(result: &ToolResult) -> String {
+        match &result.content {
+            dim_agent_types::ToolContent::Text(text) => text.clone(),
+            other => panic!("expected a text result, got {other:?}"),
+        }
+    }
+
+    fn remove(fixture: &Boundary) {
+        std::fs::remove_dir_all(fixture.boundary.workspace.parent().unwrap()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_is_allowed_inside_the_roots() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, _) = tools(&fixture);
+        let result = call(&tools, &reads, "read", json!({"path": "notes.txt"}))
+            .await
+            .unwrap();
+        assert!(text(&result).contains("workspace-notes"), "{result:?}");
+        let home_read = call(&tools, &reads, "read", json!({"path": "~/marker.txt"}))
+            .await
+            .unwrap();
+        assert!(text(&home_read).contains("home-marker"), "{home_read:?}");
+        let root_read = call(
+            &tools,
+            &reads,
+            "read",
+            json!({"path": fixture.read_only.join("facts.txt")}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            text(&root_read).contains("read-only-facts"),
+            "{root_read:?}"
+        );
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn read_outside_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "read",
+            json!({"path": "../outside/secret.txt"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation: without the boundary the same read is today's behaviour.
+        let result = call(
+            &plain,
+            &reads,
+            "read",
+            json!({"path": "../outside/secret.txt"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("secret"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn read_through_a_symlink_out_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        std::os::unix::fs::symlink(&fixture.outside, fixture.workspace.join("link")).unwrap();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(&tools, &reads, "read", json!({"path": "link/secret.txt"}))
+            .await
+            .unwrap();
+        assert_refused(&result);
+        // Ablation: canonicalization is what refuses the symlink; without
+        // the boundary the same read follows it.
+        let result = call(&plain, &reads, "read", json!({"path": "link/secret.txt"}))
+            .await
+            .unwrap();
+        assert!(text(&result).contains("secret"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn read_tilde_resolves_to_the_configured_home() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(&tools, &reads, "read", json!({"path": "~/marker.txt"}))
+            .await
+            .unwrap();
+        assert!(text(&result).contains("home-marker"), "{result:?}");
+        // Ablation: without the boundary, `~` is the platform home, which
+        // holds a different marker, so the assertion above would fail.
+        let result = call(&plain, &reads, "read", json!({"path": "~/marker.txt"}))
+            .await
+            .unwrap();
+        assert!(text(&result).contains("platform-marker"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn write_is_allowed_inside_the_workspace() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, _) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "write",
+            json!({"path": "made.txt", "content": "made\n"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(
+            std::fs::read_to_string(fixture.workspace.join("made.txt")).unwrap(),
+            "made\n"
+        );
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn write_outside_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        for input in [
+            json!({"path": "../outside/one.txt", "content": "made\n"}),
+            json!({"path": fixture.outside.join("two.txt"), "content": "made\n"}),
+        ] {
+            let result = call(&tools, &reads, "write", input.clone()).await.unwrap();
+            assert_refused(&result);
+            // Ablation.
+            let result = call(&plain, &reads, "write", input).await.unwrap();
+            assert_ne!(result.is_error, Some(true), "{result:?}");
+        }
+        for name in ["one.txt", "two.txt"] {
+            assert_eq!(
+                std::fs::read_to_string(fixture.outside.join(name)).unwrap(),
+                "made\n"
+            );
+        }
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn write_through_a_symlink_out_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        std::os::unix::fs::symlink(&fixture.outside, fixture.workspace.join("link")).unwrap();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "write",
+            json!({"path": "link/made.txt", "content": "made\n"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation.
+        let result = call(
+            &plain,
+            &reads,
+            "write",
+            json!({"path": "link/made.txt", "content": "made\n"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn write_tilde_resolves_to_the_configured_home_and_is_refused_there() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "write",
+            json!({"path": "~/made.txt", "content": "x\n"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // The refusal names the resolved path: the configured home, not the
+        // platform home.
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["path"],
+            fixture.home.join("made.txt").to_string_lossy().as_ref(),
+            "{result:?}"
+        );
+        // Ablation: without the boundary the same write succeeds at the
+        // platform home, so the refusal assertion above would fail.
+        let result = call(
+            &plain,
+            &reads,
+            "write",
+            json!({"path": "~/made.txt", "content": "x\n"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(
+            std::fs::read_to_string(fixture.platform_home.join("made.txt")).unwrap(),
+            "x\n"
+        );
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn write_to_a_read_only_root_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let target = fixture.read_only.join("made.txt");
+        let result = call(
+            &tools,
+            &reads,
+            "write",
+            json!({"path": target, "content": "x\n"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation.
+        let result = call(
+            &plain,
+            &reads,
+            "write",
+            json!({"path": target, "content": "x\n"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn edit_is_allowed_inside_the_workspace() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, _) = tools(&fixture);
+        let read = call(&tools, &reads, "read", json!({"path": "notes.txt"}))
+            .await
+            .unwrap();
+        assert!(text(&read).contains("workspace-notes"), "{read:?}");
+        let result = call(
+            &tools,
+            &reads,
+            "edit",
+            json!({"path": "notes.txt", "oldText": "workspace-notes", "newText": "edited"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn edit_outside_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let outside = fixture.outside.join("secret.txt");
+        let result = call(
+            &tools,
+            &reads,
+            "edit",
+            json!({"path": outside, "oldText": "secret", "newText": "changed"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation: read the target first, as the tool requires, then edit.
+        call(
+            &plain,
+            &reads,
+            "read",
+            json!({"path": "../outside/secret.txt"}),
+        )
+        .await
+        .unwrap();
+        let result = call(
+            &plain,
+            &reads,
+            "edit",
+            json!({"path": outside, "oldText": "secret", "newText": "changed"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn edit_through_a_symlink_out_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        std::os::unix::fs::symlink(&fixture.outside, fixture.workspace.join("link")).unwrap();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "edit",
+            json!({"path": "link/secret.txt", "oldText": "secret", "newText": "changed"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation: read then edit, as the tool requires.
+        call(&plain, &reads, "read", json!({"path": "link/secret.txt"}))
+            .await
+            .unwrap();
+        let result = call(
+            &plain,
+            &reads,
+            "edit",
+            json!({"path": "link/secret.txt", "oldText": "secret", "newText": "changed"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn edit_tilde_resolves_to_the_configured_home_and_is_refused_there() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "edit",
+            json!({"path": "~/marker.txt", "oldText": "home-marker", "newText": "edited"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        assert_eq!(
+            result.structured_content.as_ref().unwrap()["path"],
+            fixture.home.join("marker.txt").to_string_lossy().as_ref(),
+            "{result:?}"
+        );
+        // Ablation: without the boundary the same edit resolves to the
+        // platform home and succeeds there, not an outside-roots refusal.
+        call(&plain, &reads, "read", json!({"path": "~/marker.txt"}))
+            .await
+            .unwrap();
+        let result = call(
+            &plain,
+            &reads,
+            "edit",
+            json!({"path": "~/marker.txt", "oldText": "platform-marker", "newText": "edited"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn edit_a_read_only_root_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let target = fixture.read_only.join("facts.txt");
+        let result = call(
+            &tools,
+            &reads,
+            "edit",
+            json!({"path": target, "oldText": "read-only-facts", "newText": "edited"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation: read then edit, as the tool requires.
+        call(
+            &plain,
+            &reads,
+            "read",
+            json!({"path": "../read-only/facts.txt"}),
+        )
+        .await
+        .unwrap();
+        let result = call(
+            &plain,
+            &reads,
+            "edit",
+            json!({"path": target, "oldText": "read-only-facts", "newText": "edited"}),
+        )
+        .await
+        .unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        remove(&fixture);
+    }
+
+    /// Glob and grep share the search scope resolution.
+    #[tokio::test]
+    async fn glob_is_allowed_inside_the_roots() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, _) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "."}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("notes.txt"), "{result:?}");
+        let result = call(
+            &tools,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "~/sub"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("marker.txt"), "{result:?}");
+        let result = call(
+            &tools,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": fixture.read_only}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("facts.txt"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn glob_outside_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "../outside"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation.
+        let result = call(
+            &plain,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "../outside"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("secret.txt"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn glob_through_a_symlink_out_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        std::os::unix::fs::symlink(&fixture.outside, fixture.workspace.join("link")).unwrap();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "link"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation.
+        let result = call(
+            &plain,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "link"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("secret.txt"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn glob_tilde_resolves_to_the_configured_home() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "~/sub"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("marker.txt"), "{result:?}");
+        // Ablation: without the boundary `~/sub` joins the workspace as a
+        // literal directory and the search fails as an input error, never
+        // as an outside-roots refusal.
+        let result = call(
+            &plain,
+            &reads,
+            "glob",
+            json!({"pattern": "*.txt", "path": "~/sub"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .and_then(|it| it["code"].as_str()),
+            Some("invalid_input"),
+            "{result:?}"
+        );
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn grep_is_allowed_inside_the_roots() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, _) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "grep",
+            json!({"pattern": "workspace-notes", "path": "."}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("notes.txt"), "{result:?}");
+        let result = call(
+            &tools,
+            &reads,
+            "grep",
+            json!({"pattern": "home-marker", "path": "~/marker.txt"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("marker.txt"), "{result:?}");
+        let result = call(
+            &tools,
+            &reads,
+            "grep",
+            json!({"pattern": "read-only-facts", "path": fixture.read_only}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("facts.txt"), "{result:?}");
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn grep_outside_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        for input in [
+            json!({"pattern": "secret", "path": "../outside"}),
+            json!({"pattern": "secret", "path": fixture.outside}),
+        ] {
+            let result = call(&tools, &reads, "grep", input.clone()).await.unwrap();
+            assert_refused(&result);
+            // Ablation.
+            let result = call(&plain, &reads, "grep", input).await.unwrap();
+            assert!(text(&result).contains("secret"), "{result:?}");
+        }
+        remove(&fixture);
+    }
+
+    #[tokio::test]
+    async fn grep_through_a_symlink_out_is_refused_and_allowed_without_a_boundary() {
+        let fixture = fixture();
+        std::os::unix::fs::symlink(&fixture.outside, fixture.workspace.join("link")).unwrap();
+        let reads = boundary_reads();
+        let (tools, plain) = tools(&fixture);
+        let result = call(
+            &tools,
+            &reads,
+            "grep",
+            json!({"pattern": "secret", "path": "link"}),
+        )
+        .await
+        .unwrap();
+        assert_refused(&result);
+        // Ablation.
+        let result = call(
+            &plain,
+            &reads,
+            "grep",
+            json!({"pattern": "secret", "path": "link"}),
+        )
+        .await
+        .unwrap();
+        assert!(text(&result).contains("secret"), "{result:?}");
+        remove(&fixture);
+    }
+}
+
+/// The effective home through the real path: a host's platform home is the
+/// workspace, the boundary's home is a separate read-only sibling, and
+/// `write {path: "~/made.txt"}` is refused with nothing created in the
+/// workspace — the ToolExecutor's pre-admission resolution and the executed
+/// tool agree on the boundary home.
+#[cfg(unix)]
+mod toolhost {
+    use super::*;
+    use dim_agent_capabilities::{
+        defaults,
+        execution_settings::ExecutionSettingsHost,
+        host_platform::{
+            ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        },
+        workspace_tools::{self, FileToolBoundary, WorkspaceToolsConfig},
+    };
+    use dim_agent_runtime::testing::{MinimalHost, chain_events};
+    use dim_agent_runtime::*;
+    use dim_agent_types::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bounded_write_resolves_tilde_against_the_configured_home() {
+        let root = std::env::temp_dir().join(format!("dim-toolhost-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("workspace")).unwrap();
+        std::fs::create_dir_all(root.join("home")).unwrap();
+        let root = root.canonicalize().unwrap();
+        let workspace = root.join("workspace");
+        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+            executable_path: "/bin/sh".into(),
+            edition: ShellEdition::Sh,
+            source: ShellSource::Fallback,
+            output_encoding: OutputEncoding::Utf8,
+        }))
+        .unwrap()
+        .with_execution_settings(ExecutionSettingsHost::fixed(Default::default()));
+        platform.home = workspace.clone();
+        let mut builder = AgentBuilder::new(AgentConfig::default());
+        defaults::mock_model_hosts(&mut builder);
+        defaults::install(&mut builder);
+        workspace_tools::install(
+            &mut builder,
+            WorkspaceToolsConfig {
+                boundary: Some(FileToolBoundary {
+                    workspace: workspace.clone(),
+                    home: root.join("home"),
+                    read_only_roots: Vec::new(),
+                }),
+                output_root: root.join("out"),
+            },
+        );
+        let agent = MinimalHost::start_with(&builder, |root, _| {
+            root.provide_as::<HostPlatform>(Arc::new(platform))?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        let session = agent
+            .create_session(SessionConfig {
+                cwd: workspace.to_string_lossy().into_owned(),
+                tools: Some(vec!["write".into()]),
+                permission_policy: PermissionPolicy {
+                    preset: PermissionPreset::FullAccess,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        session
+            .submit(
+                "tool:write {\"path\":\"~/made.txt\",\"content\":\"wrong-home\"}".into(),
+                InputMode::Queue,
+                "main",
+            )
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+        let events = chain_events(&session, "main", ..).await.unwrap();
+        let results: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::ToolResult(data) => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "one tool call settles once");
+        let result = &results[0].results[0].result;
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        let structured = result.structured_content.as_ref().unwrap();
+        assert_eq!(structured["code"], "outside_file_roots", "{result:?}");
+        assert_eq!(
+            structured["path"],
+            root.join("home/made.txt").to_string_lossy().as_ref(),
+            "{result:?}"
+        );
+        assert!(
+            !workspace.join("made.txt").exists(),
+            "nothing is created in the workspace"
+        );
+        assert!(
+            !root.join("home/made.txt").exists(),
+            "the configured home is read-only"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn read_names_what_ended_the_window() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let body: String = (0..2500).map(|i| format!("line {i}\n")).collect();
+    workspace.put("big.txt", body.as_bytes());
+    let requested = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "big.txt", "offset": 1, "limit": 120 }),
+        )
+        .await;
+    assert!(
+        ok(&requested).ends_with(
+            "120\tline 119\n\nThe requested limit was reached; a larger limit returns more. Showing lines 1-120 of 2500. Continue with read({ path: \"big.txt\", offset: 121 })."
+        ),
+        "{}",
+        ok(&requested)
+    );
+    let defaulted = workspace.read(&reads, "big.txt").await;
+    assert!(
+        ok(&defaulted).ends_with(
+            "2000\tline 1999\n\nThe 2000-line default window was reached; a larger limit returns more. Showing lines 1-2000 of 2500. Continue with read({ path: \"big.txt\", offset: 2001 })."
+        ),
+        "{}",
+        ok(&defaulted)
+    );
+    // Offloaded, so the sentence is read from the output file.
+    let wide: String = (0..2000)
+        .map(|i| format!("line {i} {}\n", "x".repeat(190)))
+        .collect();
+    workspace.put("wide.txt", wide.as_bytes());
+    let budgeted = workspace.read(&reads, "wide.txt").await;
+    assert_eq!(structured(&budgeted)["offloaded"], true);
+    let full = fs::read_to_string(structured(&budgeted)["outputPath"].as_str().unwrap()).unwrap();
+    assert!(
+        full.contains(
+            "\n\nFile is larger than the safe read budget for one response. Showing lines 1-"
+        ),
+        "the budget sentence names the span it showed"
+    );
+    assert!(
+        full.contains("of 2000. Continue with read({ path: \"wide.txt\", offset: "),
+        "the budget case keeps the continuation hint"
+    );
+    let ordered = workspace
+        .call(&reads, "read", json!({ "path": "wide.txt", "limit": 2000 }))
+        .await;
+    let full = fs::read_to_string(structured(&ordered)["outputPath"].as_str().unwrap()).unwrap();
+    assert!(
+        full.contains("\n\nFile is larger than the safe read budget for one response."),
+        "the budget sentence wins over the caller's limit"
+    );
+    assert!(
+        !full.contains("requested limit"),
+        "the budget ended the window, not the limit"
+    );
+    let complete = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "big.txt", "offset": 1, "limit": 2500 }),
+        )
+        .await;
+    assert!(
+        !ok(&complete).contains("Continue with read"),
+        "{}",
+        ok(&complete)
+    );
+    assert!(!ok(&complete).contains("budget"), "{}", ok(&complete));
+}
+
+#[tokio::test]
+async fn read_names_the_maximum_limit() {
+    let workspace = Workspace::new();
+    let reads = branch();
+    let body: String = (1..=10_001).map(|i| format!("line {i}\n")).collect();
+    workspace.put("max.txt", body.as_bytes());
+    let result = workspace
+        .call(
+            &reads,
+            "read",
+            json!({ "path": "max.txt", "limit": 10_000 }),
+        )
+        .await;
+    assert_eq!(structured(&result)["offloaded"], true);
+    let full = fs::read_to_string(structured(&result)["outputPath"].as_str().unwrap()).unwrap();
+    let tail: String = full
+        .chars()
+        .skip(full.chars().count().saturating_sub(240))
+        .collect();
+    assert!(
+        full.ends_with(
+            "\n\nThe maximum limit of 10000 lines was reached. Showing lines 1-10000 of 10001. Continue with read({ path: \"max.txt\", offset: 10001 })."
+        ),
+        "{tail}"
+    );
 }

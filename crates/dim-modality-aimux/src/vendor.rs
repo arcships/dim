@@ -168,7 +168,7 @@ const fn generate_only(image: bool, video: bool, speech: bool, transcription: bo
 /// Every bundled catalog provider whose media models an aimux package serves.
 ///
 /// Built from `crates/dim-app-server/resources/default-catalog.json` and the
-/// `Provider` implementation of each package under `vendor/aimux/aimux-providers`.
+/// `Provider` implementation of each package in `aimux-providers`.
 pub static VENDORS: &[Vendor] = &[
     // OpenAI's own paths are `/images/generations`, `/images/edits`,
     // `/audio/speech` and `/audio/transcriptions` on the catalog's `/v1` base.

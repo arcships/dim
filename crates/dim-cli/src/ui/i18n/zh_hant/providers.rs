@@ -1,5 +1,9 @@
 pub fn lookup(english: &str) -> Option<&'static str> {
     Some(match english {
+        "Refresh model list" => "重新整理模型清單",
+        "Model list refreshed" => "模型清單已重新整理",
+        "Model list refresh failed: {reason}" => "無法重新整理模型清單：{reason}",
+        "Refreshing model list… · esc close" => "正在重新整理模型清單… · Esc 關閉",
         // providers_panel.rs
         "Providers" => "模型供應商",
         "Enter open · Esc clear/close" => "Enter 開啟 · Esc 清除/關閉",
@@ -73,6 +77,23 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "↑↓ move · enter activate · esc back" => "↑↓ 移動 · enter 執行 · esc 返回",
         "↑↓ move · enter activate · esc close" => "↑↓ 移動 · enter 執行 · esc 關閉",
+        "Model id prefix" => "模型 ID 前綴",
+        "(none)" => "（無）",
+        "identified: {model} at {provider}" => "已識別：{provider} 的 {model}",
+        "inferred from several rows: {model} at {provider}" => "由多行推斷：{provider} 的 {model}",
+        "ambiguous: {candidates}" => "存在歧義：{candidates}",
+        "unidentified" => "未識別",
+        "Identified {rule}" => "識別方式：{rule}",
+        "from the Provider's own list" => "來自該 Provider 自身的清單",
+        "from the whole qualified id" => "來自完整限定 id",
+        "by its tokens" => "按 token 比對",
+        "by its canonical id or display name" => "按規範 id 或顯示名比對",
+        "from the custom-provider list" => "來自 custom-provider 清單",
+        "by merging the rows that name it" => "合併命名它的各行",
+        "ambiguous" => "歧義",
+        "{field} {value} supplied by {provider}/{model}" => {
+            "{field} {value} 由 {provider}/{model} 提供"
+        }
         "(paste here)" => "（貼在這裡）",
         _ => return None,
     })

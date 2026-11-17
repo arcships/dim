@@ -216,18 +216,53 @@ pub(crate) struct Assembly {
     /// name in the group it registers.
     pub catalog: Arc<rutis_loader::ServiceCatalog>,
 }
+/// The closed set of reasons a service face is internal (#1289).
+pub const FACE_REASONS: [&str; 8] = [
+    "object",
+    "hot-path",
+    "lock-callback",
+    "secret",
+    "owner-api",
+    "control",
+    "host-resource",
+    "legacy-no-consumer",
+];
+
+/// Why a service face is internal, by its catalog name.
+#[derive(Clone, Debug, Default)]
+pub struct Faces {
+    reasons: HashMap<String, &'static str>,
+}
+
+impl Faces {
+    /// The reason `name` cannot cross, if it was marked internal.
+    pub fn reason(&self, name: &str) -> Option<&'static str> {
+        self.reasons.get(name).copied()
+    }
+
+    /// Every internal name and its reason.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &'static str)> {
+        self.reasons
+            .iter()
+            .map(|(name, reason)| (name.as_str(), *reason))
+    }
+}
+
 #[derive(Clone)]
 pub struct AgentBuilder {
     assembly: Assembly,
     custom_store: bool,
     /// The assembly's service names and their groups ([`names`](crate::names)).
     catalog: rutis_loader::ServiceCatalog,
+    /// Reasons for names that stay internal (service faces, #1289).
+    faces: Faces,
 }
 impl AgentBuilder {
     pub fn new(config: AgentConfig) -> Self {
         Self {
             custom_store: false,
             catalog: crate::names::catalog(),
+            faces: Faces::default(),
             assembly: Assembly {
                 config,
                 startup_timeout: Duration::from_secs(10),
@@ -267,6 +302,28 @@ impl AgentBuilder {
     }
     pub fn catalog_mut(&mut self) -> &mut rutis_loader::ServiceCatalog {
         &mut self.catalog
+    }
+    /// Marks the name of `T` internal with `reason`.
+    pub fn internal<T: ?Sized + 'static>(&mut self, reason: &'static str) {
+        assert!(
+            FACE_REASONS.contains(&reason),
+            "unknown internal reason {reason}"
+        );
+        self.faces
+            .reasons
+            .insert(crate::names::name_of::<T>(), reason);
+    }
+    /// Marks a hand-written dispatcher name internal with `reason`.
+    pub fn internal_name(&mut self, name: &str, reason: &'static str) {
+        assert!(
+            FACE_REASONS.contains(&reason),
+            "unknown internal reason {reason}"
+        );
+        self.faces.reasons.insert(name.to_owned(), reason);
+    }
+    /// The internal names and their reasons.
+    pub fn faces(&self) -> &Faces {
+        &self.faces
     }
     /// The registry where plugins register Session and branch parts
     /// ([`PartRegistry::register`](crate::PartRegistry::register)) in the
@@ -1302,32 +1359,12 @@ impl TimelineFactory {
             let handed = std::mem::take(&mut *owner.handed.lock().unwrap());
             let result = AssertUnwindSafe(async {
                 let created = started.as_ref().map_err(|(error, _)| error.clone())?;
-                let branch = {
-                    let mut loaded = owner.loaded.lock().unwrap();
-                    let current = loaded
-                        .as_ref()
-                        .ok_or_else(|| AgentError::Build("branch scope did not load".into()))?;
-                    let branch = Arc::new(LoadedBranch {
-                        scope: Loaded {
-                            ctx: current.scope.ctx.clone(),
-                            scope: current.scope.scope,
-                            children: created.children.clone(),
-                            required: current.scope.required.clone(),
-                            awaited: handed
-                                .required
-                                .iter()
-                                .chain(&mounted.required)
-                                .cloned()
-                                .collect(),
-                        },
-                        timeline: current.timeline.clone(),
-                        dispatcher: current.dispatcher.clone(),
-                        lifecycle: current.lifecycle.clone(),
-                        opening: current.opening.clone(),
-                    });
-                    *loaded = Some(branch.clone());
-                    branch
-                };
+                let branch = owner
+                    .loaded
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or_else(|| AgentError::Build("branch scope did not load".into()))?;
                 if parent.closing.is_cancelled() {
                     return Err(AgentError::Closed(parent.id.clone()));
                 }
@@ -1338,9 +1375,14 @@ impl TimelineFactory {
                     id,
                     ctx.clone(),
                     created.view.clone(),
-                    branch.scope.children.clone(),
+                    created.children.clone(),
                     branch.scope.required.clone(),
-                    branch.scope.awaited.clone(),
+                    handed
+                        .required
+                        .iter()
+                        .chain(&mounted.required)
+                        .cloned()
+                        .collect(),
                     owner.copies.clone(),
                     scope,
                     branch.timeline.clone(),
@@ -1355,7 +1397,10 @@ impl TimelineFactory {
             .await
             .unwrap_or_else(|_| Err(AgentError::Build("timeline assembly panicked".into())));
             match result {
-                Ok(value) => Ok(value),
+                Ok(value) => {
+                    owner.loaded.lock().unwrap().take();
+                    Ok(value)
+                }
                 Err(error) => {
                     let branch = owner.loaded.lock().unwrap().take();
                     if let Some(branch) = &branch {

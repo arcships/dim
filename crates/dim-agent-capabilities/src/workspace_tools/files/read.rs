@@ -3,8 +3,9 @@
 use super::super::file_reads::{FileReads, TextEncoding, TextFileBinding};
 use super::codec::{self, CodecError};
 use super::{
-    Cancelled, FileTools, NotRegular, blocking, cancelled, failed, field, hex, invalid_input,
-    js_len, not_regular, object, open_regular, resolve_path, succeeded,
+    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, cancelled,
+    failed, field, hex, invalid_input, js_len, not_regular, object, refused, resolve_path,
+    succeeded,
 };
 use crate::host::HostError;
 use crate::images::{self, ImageKind, ImageRefusal, ImageSize, ScaledImage, Sniffed};
@@ -22,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Maximum lines per read request (policy limit).
 const READ_LIMIT_MAX: u64 = 10_000;
+/// Lines returned when the caller gives no `limit`.
+const DEFAULT_READ_LIMIT: u64 = 2000;
 /// Maximum UTF-16 units in a single read result content.
 const READ_RESULT_MAX_CHARS: usize = 256 * 1024;
 /// Maximum UTF-16 units kept inline before the result is written to a file.
@@ -49,7 +52,7 @@ pub(super) fn definition() -> Value {
             "properties": {
                 "path": { "type": "string", "description": "File path to read." },
                 "offset": { "type": "number", "description": "Starting line number (1-indexed). Default: 1." },
-                "limit": { "type": "number", "description": "Maximum number of lines to return. Default: 2000." },
+                "limit": { "type": "number", "description": format!("Maximum number of lines to return. Default: {DEFAULT_READ_LIMIT}.") },
                 "encoding": { "type": "string" },
             },
             "required": ["path"],
@@ -64,7 +67,11 @@ struct Input {
     offset: u64,
     limit: u64,
     encoding: Option<String>,
-    /// Whether the caller gave `offset` or `limit`, which images ignore.
+    /// The caller's `limit`, or `None` when the default window applied.
+    requested_limit: Option<u64>,
+    /// Whether the caller gave `offset` or `limit`, which the image result
+    /// says do not apply. `requested_limit` covers a limit alone, so this
+    /// carries the offset-only case.
     window_given: bool,
 }
 
@@ -78,16 +85,19 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         Some(value) => positive_integer(value)
             .ok_or_else(|| invalid_input("read offset must be a positive integer (>= 1)."))?,
     };
-    let limit = match field(input, "limit") {
-        None => 2000,
-        Some(value) => positive_integer(value)
-            .ok_or_else(|| invalid_input("read limit must be a positive integer (>= 1)."))?,
+    let requested_limit = match field(input, "limit") {
+        None => None,
+        Some(value) => Some(
+            positive_integer(value)
+                .ok_or_else(|| invalid_input("read limit must be a positive integer (>= 1)."))?,
+        ),
     };
-    if limit > READ_LIMIT_MAX {
+    if requested_limit.is_some_and(|limit| limit > READ_LIMIT_MAX) {
         return Err(invalid_input(format!(
             "read limit must not exceed {READ_LIMIT_MAX}."
         )));
     }
+    let limit = requested_limit.unwrap_or(DEFAULT_READ_LIMIT);
     let encoding = match field(input, "encoding") {
         None => None,
         Some(Value::String(name)) if !name.trim().is_empty() => Some(name.clone()),
@@ -102,6 +112,7 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         offset,
         limit,
         encoding,
+        requested_limit,
         window_given: field(input, "offset").is_some() || field(input, "limit").is_some(),
     })
 }
@@ -128,13 +139,25 @@ pub(super) async fn run(
         Err(result) => return Ok(result),
     };
     let established = reads.established();
-    let (cwd, home) = (tools.cwd.clone(), tools.home.clone());
+    let (cwd, home, boundary) = (
+        tools.cwd.clone(),
+        tools.home.clone(),
+        tools.boundary.clone(),
+    );
     let outcome = blocking(move || {
-        let path = match resolve_path(&cwd, &home, &input.path) {
+        let path = match resolve_path(&cwd, &home, boundary.as_ref(), Access::Read, &input.path) {
             Ok(path) => path,
-            Err(message) => return Ok((invalid_input(message), None)),
+            Err(PathError::Refused(path)) => return Ok((refused(&path), None)),
+            Err(PathError::Message(message)) => return Ok((invalid_input(message), None)),
         };
-        read_text(&input, path, &cancel)
+        let target = match Target::for_read(&path, boundary.is_some()) {
+            Ok(target) => target,
+            Err(TargetError::Refused) => return Ok((refused(&path), None)),
+            Err(TargetError::Io(error)) => {
+                return Ok((stat_failure(&error, &path, &input.path), None));
+            }
+        };
+        read_text(&input, &target, &cancel)
     })
     .await?
     .map_err(|Cancelled| cancelled())?;
@@ -227,26 +250,36 @@ type Outcome = (ToolResult, Option<(PathBuf, TextFileBinding)>);
 
 fn read_text(
     input: &Input,
-    path: PathBuf,
+    target: &Target,
     cancel: &CancellationToken,
 ) -> Result<Outcome, Cancelled> {
     let done = |result| Ok((result, None));
     let display = &input.path;
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) => return done(stat_failure(&error, &path, display)),
+    let path = target.path().to_owned();
+    let stat = match target.stat() {
+        Ok(Some(stat)) => stat,
+        Ok(None) => {
+            return done(stat_failure(
+                &std::io::Error::from(ErrorKind::NotFound),
+                &path,
+                display,
+            ));
+        }
+        Err(TargetError::Refused) => return done(refused(&path)),
+        Err(TargetError::Io(error)) => return done(stat_failure(&error, &path, display)),
     };
     Cancelled::check(cancel)?;
-    if metadata.is_dir() {
+    if stat.directory {
         return done(failed(
             format!("Cannot read directory: {display}"),
             json!({ "code": "is_directory" }),
         ));
     }
-    let mut file = match open_regular(&path) {
+    let mut file = match target.open_regular() {
         Ok(Ok(file)) => file,
         Ok(Err(NotRegular)) => return done(not_regular(display)),
-        Err(error) => return done(open_failure(&error, display)),
+        Err(TargetError::Refused) => return done(refused(&path)),
+        Err(TargetError::Io(error)) => return done(open_failure(&error, display)),
     };
     let mut head = Vec::with_capacity(DETECT_BYTES);
     if let Err(error) = (&mut file).take(DETECT_BYTES as u64).read_to_end(&mut head) {
@@ -256,7 +289,7 @@ fn read_text(
     if let Some(sniffed) = images::sniff(&head) {
         return match sniffed {
             Sniffed::Image(_) => Ok((
-                read_image(&mut file, display, metadata.len(), input, cancel)?,
+                read_image(&mut file, display, stat.len, input, cancel)?,
                 None,
             )),
             Sniffed::Unsupported(name) => done(unsupported_image(display, name)),
@@ -303,7 +336,7 @@ fn read_text(
     };
     let mut structured = json!({
         "path": display,
-        "size": metadata.len(),
+        "size": stat.len,
         "revision": hex(&binding.raw_revision),
         "encoding": codec::encoding_json(&binding.encoding),
         "encodingSource": codec::source_str(binding.encoding_source),
@@ -500,16 +533,31 @@ fn render_window(window: &[String], input: &Input, total_lines: u64) -> String {
             break;
         }
     }
-    let truncated = (shown as u64) < end - start + 1;
+    let budget_cut = (shown as u64) < end - start + 1;
     let mut content = records[..shown].join("\n");
-    if end < total_lines || truncated {
-        let actual_end = if truncated {
+    if end < total_lines || budget_cut {
+        let actual_end = if budget_cut {
             start + shown as u64 - 1
         } else {
             end
         };
+        let cause = if budget_cut {
+            "File is larger than the safe read budget for one response.".to_owned()
+        } else {
+            match input.requested_limit {
+                None => format!(
+                    "The {DEFAULT_READ_LIMIT}-line default window was reached; a larger limit returns more."
+                ),
+                Some(READ_LIMIT_MAX) => {
+                    format!("The maximum limit of {READ_LIMIT_MAX} lines was reached.")
+                }
+                Some(_) => {
+                    "The requested limit was reached; a larger limit returns more.".to_owned()
+                }
+            }
+        };
         content.push_str(&format!(
-            "\n\nFile is larger than the safe read budget for one response. Showing lines {start}-{actual_end} of {total_lines}. Continue with read({{ path: \"{}\", offset: {} }}).",
+            "\n\n{cause} Showing lines {start}-{actual_end} of {total_lines}. Continue with read({{ path: \"{}\", offset: {} }}).",
             input.path,
             actual_end + 1
         ));
@@ -583,6 +631,7 @@ fn image_result(display: &str, size: u64, input: &Input, image: ScaledImage) -> 
         structured["animated"] = json!(true);
     }
     let source = ImageSource {
+        file_id: None,
         source_type: ImageSourceType::Base64,
         media_type: image.media_type.to_string(),
         data: Some(STANDARD.encode(&image.bytes)),

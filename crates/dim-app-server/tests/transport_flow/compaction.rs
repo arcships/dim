@@ -220,6 +220,13 @@ async fn product_compaction_runs_automatically_on_request_and_settles_after_a_cr
         assert_ok(&created);
         let sid = created["result"]["sessionId"].clone();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
+        let unavailable = client
+            .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
+            .await;
+        assert_eq!(unavailable["error"]["data"]["appError"], "context_usage_unavailable");
+        assert_eq!(unavailable["error"]["message"], "Context usage will be available after the next model request");
+        assert!(provider.requests.lock().unwrap().is_empty());
+        turn(&mut client, &sid, "initialize usage").await;
         let usage = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
@@ -498,6 +505,7 @@ async fn configured_compaction_uses_the_window_declared_in_the_model_file() {
         let sid = created["result"]["sessionId"].clone();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
 
+        turn(&mut client, &sid, "initialize usage").await;
         let usage = client
             .rpc(
                 "session.context.usage",
@@ -557,14 +565,26 @@ async fn configured_compaction_uses_the_window_declared_in_the_model_file() {
                 .rpc("session.attach", json!({"sessionId":image_sid}))
                 .await,
         );
+        use base64::Engine;
+        let image_path = directory.join("image.png");
+        std::fs::write(&image_path, base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEElEQVR42mP4zwAE/xkgFAAb8gP9PpddpAAAAABJRU5ErkJggg==").unwrap()).unwrap();
+        let imported = images.rpc("attachment.import", json!({"sessionId":image_sid,"path":image_path,"image":true})).await;
+        assert_ok(&imported);
+        let accepted = images.rpc("attachment.read", json!({"sessionId":image_sid,"fileId":imported["result"]["attachmentId"],"offset":0})).await;
+        assert_ok(&accepted);
+        use sha2::{Digest, Sha256};
+        let accepted_bytes = base64::engine::general_purpose::STANDARD
+            .decode(accepted["result"]["data"].as_str().unwrap())
+            .unwrap();
+        let digest = format!("{:x}", Sha256::digest(&accepted_bytes));
+        let reference = format!("img:{}", &digest[..16]);
         assert_ok(
             &images
                 .rpc(
                     "session.submit",
                     json!({"sessionId":image_sid,"branchId":"main","user":{"content":[
                         {"type": "text", "text": "look"},
-                        {"type": "image", "source": {"type": "base64", "mediaType": "image/png",
-                            "data": "aGVsbG8="}}
+                        {"type": "image", "source": imported["result"]["image"]}
                     ]}}),
                 )
                 .await,
@@ -586,7 +606,11 @@ async fn configured_compaction_uses_the_window_declared_in_the_model_file() {
             .find(|body| !body.to_string().contains(SUMMARIZER))
             .cloned()
             .unwrap();
-        assert!(request.to_string().contains("aGVsbG8="), "{request}");
+        assert!(request.to_string().contains(&reference), "{request}");
+        assert!(!request.to_string().contains(accepted["result"]["data"].as_str().unwrap()), "{request}");
+        assert!(history(&mut images, &image_sid).await.iter().any(|event| {
+            event.to_string().contains(imported["result"]["attachmentId"].as_str().unwrap())
+        }), "History preserves the image source");
 
         server.child.kill().await.unwrap();
         http.abort();
@@ -641,6 +665,7 @@ async fn summary_reasoning_comes_from_factory_configuration() {
                 )
                 .await,
         );
+        turn(&mut client, &sid, "initialize usage").await;
         let usage = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
@@ -758,6 +783,7 @@ async fn an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_repla
         assert_ok(&created);
         let sid = created["result"]["sessionId"].clone();
         assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
+        turn(&mut client, &sid, "first").await;
         let usage = client
             .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
             .await;
@@ -775,7 +801,6 @@ async fn an_automatic_compaction_skips_a_cut_that_removes_no_more_than_its_repla
             "the fixed request alone crosses the threshold: {overhead}"
         );
 
-        turn(&mut client, &sid, "first").await;
         let events = history(&mut client, &sid).await;
         let results: Vec<_> = events
             .iter()

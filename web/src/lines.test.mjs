@@ -33,7 +33,7 @@ function create(sequence, branchId, at, prompt = branchId) {
 }
 
 function user(sequence) {
-  return event(sequence, { kind: "input", text: `message ${sequence}` })
+  return event(sequence, { kind: "input", text: `message ${sequence}`, content: [{ type: "text", text: `message ${sequence}` }] })
 }
 
 test("lines use owner details for inherited message counts and keep tree order", () => {

@@ -116,14 +116,16 @@ The current Session's existing projection owns the derived rows and stage/log
 details. Use kind plus `run_id` as the Workflow row identity; do not use name,
 stage Session or tool-call identity. Merge associated runs into the same task
 collection, preserving command/member keys. Retain every observed unfinished
-item and the latest 50 actual terminal outcomes across kinds, ordered by the
-owner's end timestamp with the existing stable identity tie-break. Workflow's
-own 100-run persistence retention is unchanged.
+item and select the latest 50 actual terminal outcomes across kinds by the
+owner's end timestamp with the existing stable identity tie-break. Display order
+follows the [task-list contract](background-task-list.md), independently of that
+selection. Workflow's own 100-run persistence retention is unchanged.
 
 | Owner data | View meaning |
 | --- | --- |
 | `name`, `source`, `run_id` | Label, source and exact control/detail identity |
-| `created_at`, `ended_at` | Elapsed time and actual terminal ordering; not RPC receipt time |
+| `created_at` | Elapsed time and Workflow creation order; not RPC receipt time |
+| `ended_at` | Elapsed time and latest-50 terminal selection; not display order |
 | `state: running / stopping` | Unfinished work; keep both in the background count |
 | `state: completed / failed / stopped / interrupted` | Show the actual terminal state; no invented exit code |
 | `stages[]` | Ordered stage IDs, step indexes, states, optional Session IDs and stored results/reasons |

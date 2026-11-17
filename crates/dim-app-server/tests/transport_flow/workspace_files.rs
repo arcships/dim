@@ -73,6 +73,7 @@ async fn launch_server(home: &Path, web_assets: Option<PathBuf>) -> RunningServe
         &mut builder,
         ModelProviderPlugin::new,
         WorkspaceToolsConfig {
+            boundary: None,
             output_root: home.join("outputs"),
         },
         BranchToolConfig::default(),

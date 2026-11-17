@@ -2,11 +2,11 @@
 
 进程级 `AimuxPlugin` 提供 `ModelHost`，支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages、Gemini GenerateContent 和 Chat 兼容端点。调用传入最终请求、一次性 `HttpModelConnection` 与取消信号；连接不序列化到 Timeline。请求、工具名与返回结果的转换约定见 [架构约定](../../docs/architecture/README.md)。
 
-`ConfiguredModelsPlugin` 管理开发配置的共享 `AimuxModels` 和 `ProviderConnectionResolver`，每次请求读取凭据环境变量；它依赖 `ModelHost`，并用共享运行提供 `auxiliaryModel` 操作（`AuxiliaryModelHost` 与具名 `auxiliaryModel` 绑定）。它还用配置里的条目提供 `SelectableModelsHost`（`selectableModels` 读取），因此这个配置下 `agent` 工具的 `models` 动作列出的是模型文件声明的模型与两个上限；文件不声明其它能力，条目按文本与工具调用能力给出。同一个端口的 `selectableForModality` 读取由该配置回答为空：模型文件不声明任何 `<category>.<operation>`，所以这个配置下所有 modality 操作都没有候选模型，`modality.configure` 拒绝任何模型，`modality.capabilities` 的选项为空。Modality 要工作需要用 Provider 的账号目录。Session 的 `ConfiguredModelPlugin` 依赖模型表、SessionConfig、SessionIdentity、ToolRegistry，提供 `PrepareModelHost`。`defaults::install_with_process_model` 将分支 ModelProvider 接到进程模型服务；模型调用仍使用原有任务。
+`ConfiguredModelsPlugin` 管理开发配置的共享 `AimuxModels` 和 `ProviderConnectionResolver`，每次请求读取凭据环境变量；它依赖 `ModelHost`，并用共享运行提供 `auxiliaryModel` 操作（`AuxiliaryModel` 与具名 `auxiliaryModel` 绑定）。它还用配置里的条目提供 `SelectableModelsHost`（`selectableModels` 读取），因此这个配置下 `agent` 工具的 `models` 动作列出的是模型文件声明的模型与两个上限；文件不声明其它能力，条目按文本与工具调用能力给出。同一个端口的 `selectableForModality` 读取由该配置回答为空：模型文件不声明任何 `<category>.<operation>`，所以这个配置下所有 modality 操作都没有候选模型，`modality.configure` 拒绝任何模型，`modality.capabilities` 的选项为空。Modality 要工作需要用 Provider 的账号目录。Session 的 `ConfiguredModelPlugin` 依赖模型表、SessionConfig、SessionIdentity、ToolRegistry，提供 `PrepareModelHost`。`defaults::install_with_process_model` 将分支 ModelProvider 接到进程模型服务；模型调用仍使用原有任务。
 
 ## 工具结果中的图像
 
-工具结果里的图像按请求的 `ModelProtocol` 决定落点，由转换器能否在工具结果内携带图像决定，不改变历史或存储的工具结果。标记与说明文字在 `src/request.rs` 中各定义一个常量；下表路径相对 `vendor/aimux/aimux-providers/src/`。
+工具结果里的图像按请求的 `ModelProtocol` 决定落点，由转换器能否在工具结果内携带图像决定，不改变历史或存储的工具结果。标记与说明文字在 `src/request.rs` 中各定义一个常量；下表路径相对 `aimux-providers` 包的 `src/`。
 
 | ModelProtocol | 形式 | 决定的转换器 |
 | --- | --- | --- |
@@ -71,4 +71,4 @@ cargo run --release --locked -p xtask -- measure --model-config crates/dim-agent
 
 ## 依赖与验证
 
-固定上游源码和必要补丁位于 [vendor/aimux](../../vendor/aimux/SOURCE.md)。`cargo test -p dim-agent-aimux` 同时运行请求映射、结果转换、真实 HTTP/SSE Agent 流程和上游补丁回归。
+协议实现来自 crates.io 的 `aimux-core`、`aimux-provider-utils`、`aimux-providers` 与 `aimux-stream`，在根 `Cargo.toml` 中按 `=0.6.1` 固定。`cargo test -p dim-agent-aimux` 同时运行请求映射、结果转换、真实 HTTP/SSE Agent 流程和上游契约回归。

@@ -84,6 +84,14 @@ impl Shell {
     }
 }
 
+/// An Enter that opens a new line in the draft rather than submitting it:
+/// `Shift+Enter` and `Alt+Enter`. Every other Enter goes on to submit, however
+/// else it is modified.
+fn newline_key(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Enter
+        && (key.mods.contains(Modifiers::SHIFT) || key.mods.contains(Modifiers::ALT))
+}
+
 /// What a key did.
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
@@ -120,6 +128,9 @@ pub struct Composer {
     accepts_images: bool,
     /// The files `@` searches, once the working directory is known.
     mentions: Option<mentions::Mentions>,
+    /// Whether the picker names its root in the title, for a screen that
+    /// shows no other directory the files come from.
+    names_root: bool,
     picker: mentions::Picker,
 }
 
@@ -139,6 +150,7 @@ impl Composer {
             skills: Vec::new(),
             accepts_images: true,
             mentions: None,
+            names_root: false,
             picker: mentions::Picker::default(),
         }
     }
@@ -148,6 +160,13 @@ impl Composer {
         if self.mentions.as_ref().is_none_or(|m| m.root() != root) {
             self.mentions = Some(mentions::Mentions::new(root));
         }
+    }
+
+    /// Whether the picker's title names the directory it lists. A screen
+    /// whose border already names that directory leaves it off; one whose
+    /// border names another workspace says which files the draft reads.
+    pub fn name_root(&mut self, named: bool) {
+        self.names_root = named;
     }
 
     /// Whether the current model takes image input: an image file the
@@ -173,8 +192,9 @@ impl Composer {
         self.area.set_cursor(text.len());
     }
 
-    /// Appends withdrawn operator content, excluding appended runtime blocks.
-    /// Adjacent text blocks are separated by newlines; images stay atomic.
+    /// Appends withdrawn operator content, excluding appended runtime blocks
+    /// (`dim_agent_types::markup::runtime_context`). Adjacent text blocks are
+    /// separated by newlines; images stay atomic.
     pub fn restore(&mut self, input: dim_agent_types::UserInput) {
         self.shell = None;
         self.area.set_cursor(self.area.text().len());
@@ -185,7 +205,7 @@ impl Composer {
         for (index, block) in input.content.into_iter().enumerate() {
             match block {
                 dim_agent_types::ContentBlock::Text { text } => {
-                    if index > 0 && text.starts_with("<dim-") {
+                    if dim_agent_types::markup::runtime_context(index, &text) {
                         continue;
                     }
                     if previous_text {
@@ -215,6 +235,124 @@ impl Composer {
         self.renumber();
     }
 
+    pub fn restore_draft(&mut self, parts: Vec<DraftPart>) {
+        self.shell = None;
+        self.area.set_cursor(self.area.text().len());
+        if !self.area.text().is_empty() {
+            self.area.insert_str("\n");
+        }
+        for part in parts {
+            let (buffer, content, block) = match part {
+                DraftPart::Text(text) => {
+                    self.area.insert_str(&text);
+                    continue;
+                }
+                DraftPart::Paste(text) => (
+                    tf(
+                        "[... {count} lines]",
+                        &[("count", &text.split('\n').count().to_string())],
+                    ),
+                    text,
+                    None,
+                ),
+                DraftPart::Block(block) => ("[Image]".to_owned(), String::new(), Some(block)),
+            };
+            let id = self
+                .area
+                .insert_element(&buffer, TOKEN_KIND, Some(token_line(&buffer)));
+            self.tokens.push(Token {
+                id,
+                label: buffer.clone(),
+                buffer,
+                content,
+                block,
+                file: None,
+                details: String::new(),
+            });
+        }
+        self.renumber();
+    }
+
+    /// Inserts withdrawn operator content at byte `at`, in front of the draft
+    /// from there on, and returns the offset just past what it inserted.
+    ///
+    /// The blocks inside the message are laid out exactly as [`Self::restore`]
+    /// lays them out: a newline only between two adjacent text blocks, and an
+    /// image inline where it stands. The separators sit around the message as a
+    /// whole, so one message never splits into lines of its own parts: a
+    /// newline before it when the draft holds text at `at` that does not end a
+    /// line, and the newline before the typed draft after it. Runtime blocks
+    /// are left out as [`Self::restore`] leaves them, so a message of only
+    /// those inserts nothing and adds no separator.
+    pub fn restore_at(&mut self, at: usize, input: dim_agent_types::UserInput) -> usize {
+        self.shell = None;
+        let mut at = at.min(self.area.text().len());
+        let followed = at < self.area.text().len();
+        let mut inserted = false;
+        let mut previous_text = false;
+        for (index, block) in input.content.into_iter().enumerate() {
+            match block {
+                dim_agent_types::ContentBlock::Text { text } => {
+                    if dim_agent_types::markup::runtime_context(index, &text) {
+                        continue;
+                    }
+                    at = self.open_message(at, &mut inserted);
+                    if previous_text {
+                        self.area.insert_str_at(at, "\n");
+                        at += 1;
+                    }
+                    self.area.insert_str_at(at, &text);
+                    at += text.len();
+                    previous_text = true;
+                }
+                block @ dim_agent_types::ContentBlock::Image { .. } => {
+                    at = self.open_message(at, &mut inserted);
+                    previous_text = false;
+                    let buffer = "[Image]".to_owned();
+                    let id = self.area.replace_range_with_element(
+                        at..at,
+                        &buffer,
+                        TOKEN_KIND,
+                        Some(token_line(&buffer)),
+                    );
+                    at += buffer.len();
+                    self.tokens.push(Token {
+                        id,
+                        label: buffer.clone(),
+                        buffer,
+                        content: String::new(),
+                        block: Some(block),
+                        file: None,
+                        details: String::new(),
+                    });
+                }
+            }
+        }
+        if inserted && followed {
+            self.area.insert_str_at(at, "\n");
+            at += 1;
+        }
+        self.area.set_cursor(self.area.text().len());
+        self.renumber();
+        at
+    }
+
+    /// The offset the message's first row goes in at: one newline before the
+    /// message when the draft already holds text at `at` that does not end a
+    /// line. `inserted` records that the message put something there, so one
+    /// made of only runtime blocks separates nothing.
+    fn open_message(&mut self, at: usize, inserted: &mut bool) -> usize {
+        if *inserted {
+            return at;
+        }
+        *inserted = true;
+        if at == 0 || self.area.text()[..at].ends_with('\n') {
+            return at;
+        }
+        self.area.insert_str_at(at, "\n");
+        at + 1
+    }
+
     /// Appends `text` to the draft as a Markdown quote and a blank line,
     /// keeping what is already there; the cursor goes to the end. The
     /// format is the one the Web composer writes (member-conversation
@@ -223,7 +361,7 @@ impl Composer {
     /// Returns whether the draft changed.
     pub fn quote(&mut self, text: &str) -> bool {
         let text = text.replace("\r\n", "\n");
-        let text = text.strip_suffix('\n').unwrap_or(&text);
+        let text = text.trim_suffix('\n');
         if self.shell.is_some() || text.is_empty() {
             return false;
         }
@@ -248,7 +386,7 @@ impl Composer {
         true
     }
 
-    /// Skills the palette offers as `$skill:` mentions.
+    /// Skills the palette offers as `/skill:<name>` tokens.
     pub fn set_skills(&mut self, skills: Vec<palette::Skill>) {
         self.skills = skills;
     }
@@ -305,7 +443,7 @@ impl Composer {
         self.command_query().is_some()
     }
 
-    fn palette_rows(&self) -> Vec<crate::ui::rows::Row> {
+    pub(crate) fn palette_rows(&self) -> Vec<crate::ui::rows::Row> {
         palette::rows_for(
             self.command_query().unwrap_or(""),
             self.context,
@@ -345,9 +483,7 @@ impl Composer {
             }
         }
         match key.code {
-            KeyCode::Enter
-                if key.mods.contains(Modifiers::SHIFT) || key.mods.contains(Modifiers::ALT) =>
-            {
+            KeyCode::Enter if newline_key(&key) => {
                 self.insert_newline();
                 return Outcome::Handled;
             }
@@ -381,13 +517,7 @@ impl Composer {
 
     fn palette_key(&mut self, key: KeyEvent) -> Option<Outcome> {
         let query = self.command_query()?.to_owned();
-        if key.code == KeyCode::Enter
-            && crate::ui::commands::COMMANDS.iter().any(|command| {
-                command.slash
-                    && !command.listed(self.context)
-                    && (command.name == query || command.aliases.contains(&query.as_str()))
-            })
-        {
+        if key.code == KeyCode::Enter && self.exact_hidden(&query) {
             return Some(self.submit());
         }
         self.palette.set_query(&query);
@@ -413,26 +543,8 @@ impl Composer {
             }
             KeyCode::Enter => {
                 let row = rows.get(self.palette.current(&rows))?;
-                if !row.selectable() {
-                    return Some(Outcome::Handled);
-                }
-                match &row.kind {
-                    crate::ui::rows::Kind::Command(command)
-                        if command.requires_exact_name
-                            && query != command.name
-                            && !command.aliases.contains(&query.as_str()) =>
-                    {
-                        Some(self.complete_row(row))
-                    }
-                    crate::ui::rows::Kind::Command(command)
-                        if command.argument.is_some() || command.name == "goal" =>
-                    {
-                        let filled = format!("/{} ", command.name);
-                        self.clear();
-                        self.area.insert_str(&filled);
-                        Some(Outcome::Handled)
-                    }
-                    crate::ui::rows::Kind::Command(command) => {
+                match Self::row_command(row, &query) {
+                    Some(command) => {
                         let name = command.name.to_owned();
                         self.clear();
                         Some(Outcome::Command {
@@ -440,10 +552,7 @@ impl Composer {
                             args: String::new(),
                         })
                     }
-                    crate::ui::rows::Kind::Skill(_) => Some(self.complete_row(row)),
-                    crate::ui::rows::Kind::Heading | crate::ui::rows::Kind::Item => {
-                        Some(Outcome::Handled)
-                    }
+                    None => Some(self.complete_row(row)),
                 }
             }
             KeyCode::Tab => {
@@ -457,9 +566,38 @@ impl Composer {
         }
     }
 
+    /// Whether the draft names a hidden command exactly, which Enter runs
+    /// without the menu listing it.
+    fn exact_hidden(&self, query: &str) -> bool {
+        crate::ui::commands::COMMANDS.iter().any(|command| {
+            command.slash
+                && !command.listed(self.context)
+                && (command.name == query || command.aliases.contains(&query))
+        })
+    }
+
+    /// The command a palette row's Enter runs, clearing the draft as the draft
+    /// it names would; `None` for the rows Enter fills into the draft instead.
+    fn row_command(
+        row: &crate::ui::rows::Row,
+        query: &str,
+    ) -> Option<&'static crate::ui::commands::Command> {
+        let crate::ui::rows::Kind::Command(command) = &row.kind else {
+            return None;
+        };
+        if command.requires_exact_name && query != command.name && !command.aliases.contains(&query)
+        {
+            return None;
+        }
+        if command.argument.is_some() || command.name == "goal" {
+            return None;
+        }
+        Some(command)
+    }
+
     /// Fills the draft with the selected row: a command's name, its name and a
-    /// space when it takes an argument, or a Skill's marker. It never runs the
-    /// row; Tab uses it for every kind.
+    /// space when it takes an argument, or a Skill's reference. It never runs
+    /// the row; Tab uses it for every kind.
     fn complete_row(&mut self, row: &crate::ui::rows::Row) -> Outcome {
         let filled = match &row.kind {
             crate::ui::rows::Kind::Command(command)
@@ -468,7 +606,10 @@ impl Composer {
                 format!("/{} ", command.name)
             }
             crate::ui::rows::Kind::Command(command) => format!("/{}", command.name),
-            crate::ui::rows::Kind::Skill(name) => format!("$skill: {name} "),
+            crate::ui::rows::Kind::Skill(name) => {
+                self.fill_skill(name);
+                return Outcome::Handled;
+            }
             crate::ui::rows::Kind::Heading | crate::ui::rows::Kind::Item => {
                 return Outcome::Handled;
             }
@@ -476,6 +617,19 @@ impl Composer {
         self.clear();
         self.area.insert_str(&filled);
         Outcome::Handled
+    }
+
+    /// Fills a Skill's reference as one element: the draft holds
+    /// `/skill:<name> ` and draws the Skill's name, so the operator reads the
+    /// reference they chose rather than the parser's namespace. The element is
+    /// what keeps the two apart: its buffer text is submitted, its
+    /// display line is painted, and cursor, wrap and delete stay atomic over it.
+    fn fill_skill(&mut self, name: &str) {
+        self.clear();
+        let token = format!("{}{name}", dim_agent_types::skill_token::PREFIX);
+        self.area
+            .insert_element(&token, TOKEN_KIND, Some(token_line(&skill_label(name))));
+        self.area.insert_str(" ");
     }
 
     /// The `@` mention being typed, unless Esc closed it.
@@ -495,6 +649,12 @@ impl Composer {
     /// True when the picker needs a frame: more files were found.
     pub fn mention_tick(&mut self) -> bool {
         self.mention_open() && self.mentions.as_mut().is_some_and(|m| m.changed())
+    }
+
+    /// Whether the `@` index still owes a walk: true before the first draft
+    /// starts one, while it runs, and false once one has finished.
+    pub fn mention_searching(&self) -> bool {
+        self.mentions.as_ref().is_some_and(|m| m.searching())
     }
 
     fn mention_candidates(&mut self, query: &str) -> Vec<mentions::Candidate> {
@@ -575,14 +735,63 @@ impl Composer {
     pub fn mention_panel(&mut self, width: usize, p: &Palette) -> Option<Vec<String>> {
         let trigger = self.mention()?;
         let candidates = self.mention_candidates(&trigger.query);
-        let searching = self.mentions.as_ref().is_some_and(|m| m.searching());
+        let searching = self.mention_searching();
+        let root = self
+            .mentions
+            .as_ref()
+            .filter(|_| self.names_root)
+            .map(|m| crate::ui::tilde(&m.root().to_string_lossy()));
         Some(mentions::render(
             &self.picker,
             &candidates,
             searching,
+            root.as_deref(),
             width,
             p,
         ))
+    }
+
+    /// Whether `handle_key` here ends in `submit()`. The palette's Enter does,
+    /// since the draft is then the command it runs: the command the draft names
+    /// exactly, the selected command row, or the draft itself when no row is
+    /// selected. The file picker's Enter does once no file matches; with a
+    /// match it inserts the file instead. Any other Enter submits unless it is
+    /// a newline.
+    /// Whether Enter here acts on the draft as a submit does: it sends the
+    /// draft, or runs the command the draft names, clearing the draft either
+    /// way. The palette decides by the same helpers `handle_key` uses: the
+    /// command the draft names exactly, then the selected row, then the draft
+    /// itself when no row is selected. The file picker's Enter fills the file
+    /// in while one matches, and otherwise submits the draft. Every other Enter
+    /// submits unless it opens a new line. The interface asks this before it
+    /// lets a key reach the composer, so a key that would cost the draft is the
+    /// one it refuses.
+    pub fn submits(&mut self, key: &KeyEvent) -> bool {
+        if key.code != KeyCode::Enter {
+            return false;
+        }
+        if self.palette_open() {
+            let query = self.command_query().unwrap_or_default().to_owned();
+            if self.exact_hidden(&query) {
+                return true;
+            }
+            self.palette.set_query(&query);
+            let rows = self.palette_rows();
+            return match rows.get(self.palette.current(&rows)) {
+                // No row matches, so `palette_key`'s `?` leaves the draft to the
+                // editor, which submits it or opens a new line.
+                None => !newline_key(key),
+                Some(row) => Self::row_command(row, &query).is_some(),
+            };
+        }
+        if self.mention_open()
+            && key.mods.0 == 0
+            && let Some(trigger) = self.mention()
+            && !self.mention_candidates(&trigger.query).is_empty()
+        {
+            return false;
+        }
+        !newline_key(key)
     }
 
     /// What Enter makes of the draft; the invocation's first message
@@ -615,6 +824,7 @@ impl Composer {
             {
                 if let Some(argument) = command.argument
                     && args.is_empty()
+                    && !command.argument_optional
                 {
                     return Outcome::Rejected(tf(
                         "/{name} needs {argument}",
@@ -1038,6 +1248,7 @@ impl Composer {
         let area = Rect::new(0, 0, width, height);
         let mut buffer = Buffer::empty(area);
         (&self.area).render_ref(area, &mut buffer, &mut self.state);
+        self.highlight_tokens(area, &mut buffer);
         let cursor = self
             .area
             .cursor_pos_with_state(area, self.state)
@@ -1080,6 +1291,25 @@ impl Composer {
             ));
         }
         (rows, cursor)
+    }
+
+    /// Makes every `/skill:<name>` token in the draft one highlighted unit, as
+    /// the transcript draws it: the textarea maps each token's bytes onto the
+    /// cells it paints, so a wrapped, scrolled or tabbed draft keeps them on
+    /// the right characters.
+    fn highlight_tokens(&self, area: Rect, buffer: &mut Buffer) {
+        for token in dim_agent_types::skill_token::tokens(self.area.text()) {
+            for span in self
+                .area
+                .screen_spans_of_range(token.start..token.end, area, self.state)
+            {
+                for x in span.x..span.x.saturating_add(span.width) {
+                    if let Some(cell) = buffer.cell_mut((x, span.y)) {
+                        cell.modifier.insert(Modifier::BOLD);
+                    }
+                }
+            }
+        }
     }
 
     /// The argument still to type after a command that takes one, as
@@ -1213,6 +1443,23 @@ fn image_details(image: &crate::images::Attached) -> String {
     details
 }
 
+/// What the draft draws for the Skill reference the operator filled: the name
+/// alone, so the input reads `/status` and not the parser's `/skill:status`.
+///
+/// A name that is also a command the input dispatches keeps the canonical
+/// token, because `/status` would read as that command while the draft is
+/// still a message (Skills §9, `submit`).
+fn skill_label(name: &str) -> String {
+    let clashes = crate::ui::commands::COMMANDS
+        .iter()
+        .any(|command| command.slash && (command.name == name || command.aliases.contains(&name)));
+    if clashes {
+        format!("{}{name}", dim_agent_types::skill_token::PREFIX)
+    } else {
+        format!("/{name}")
+    }
+}
+
 /// A token's text as the draft draws it: the accent the input uses for what
 /// is not typed text.
 fn token_line(text: &str) -> Line<'static> {
@@ -1270,6 +1517,71 @@ mod tests {
                 .unwrap();
         }
         gif
+    }
+
+    /// One message's parts stay on one line the way `restore` lays them out:
+    /// a newline only between two adjacent text blocks, and an image inline
+    /// where it stands. The two paths cannot drift: a send-now recall and an
+    /// Esc recall of the same message must read the same.
+    #[test]
+    fn restore_at_lays_out_a_message_as_restore_does() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("shot.png");
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(&image, png.into_inner()).unwrap();
+
+        let mut source = Composer::new(Vec::new());
+        typed(&mut source, "see");
+        attach(&mut source, &[image]).unwrap();
+        typed(&mut source, " here");
+        let Outcome::SubmitDraft { parts, .. } = source.handle_key(key(KeyCode::Enter)) else {
+            panic!("expected a draft");
+        };
+        let message = || dim_agent_types::UserInput {
+            content: parts
+                .iter()
+                .map(|part| match part {
+                    DraftPart::Text(text) => {
+                        dim_agent_types::ContentBlock::Text { text: text.clone() }
+                    }
+                    DraftPart::Block(block) => block.clone(),
+                    DraftPart::Paste(text) => {
+                        dim_agent_types::ContentBlock::Text { text: text.clone() }
+                    }
+                })
+                .collect(),
+        };
+
+        let mut appended = Composer::new(Vec::new());
+        appended.restore(message());
+        let mut inserted = Composer::new(Vec::new());
+        inserted.restore_at(0, message());
+
+        assert_eq!(
+            inserted.text(),
+            "see [Image] here",
+            "the image stays inline, as restore keeps it"
+        );
+        assert_eq!(
+            inserted.text(),
+            appended.text(),
+            "a send-now recall reads as an Esc recall does"
+        );
+        let of = |c: &Composer| {
+            c.tokens
+                .iter()
+                .map(|t| (t.label.clone(), t.block.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            of(&inserted),
+            of(&appended),
+            "both paths give the same image tokens"
+        );
+        assert!(!of(&inserted).is_empty(), "the image is a token");
     }
 
     /// The transcript row a message made of these parts shows.
@@ -1896,8 +2208,7 @@ mod tests {
                 .into_iter()
                 .map(|candidate| candidate.text)
                 .collect();
-            let searching = c.mentions.as_ref().is_some_and(|m| m.searching());
-            if !searching || started.elapsed() > std::time::Duration::from_secs(10) {
+            if !c.mention_searching() || started.elapsed() > std::time::Duration::from_secs(10) {
                 return found;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -2095,7 +2406,7 @@ mod tests {
         }]);
         typed(&mut c, "/comm");
         assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
-        assert_eq!(c.text(), "$skill: commit ");
+        assert_eq!(c.text(), "/skill:commit ");
         assert!(!c.palette_open());
 
         let mut c = Composer::new(Vec::new());
@@ -2130,8 +2441,8 @@ mod tests {
         assert!(c.is_empty());
     }
 
-    /// Enter on a Skill row fills its marker and sends nothing; Tab fills
-    /// the same marker.
+    /// Enter on a Skill row fills its `/skill:<name>` token and sends nothing;
+    /// Tab fills the same token.
     #[test]
     fn a_skill_row_fills_the_marker_without_sending() {
         for code in [KeyCode::Enter, KeyCode::Tab] {
@@ -2144,7 +2455,7 @@ mod tests {
             }]);
             typed(&mut c, "/comm");
             assert_eq!(c.handle_key(key(code)), Outcome::Handled);
-            assert_eq!(c.text(), "$skill: commit ", "{code:?}");
+            assert_eq!(c.text(), "/skill:commit ", "{code:?}");
             assert!(!c.palette_open());
         }
     }
@@ -2239,5 +2550,164 @@ mod tests {
         let (rows, cursor) = c.render_rows(40, MAX_INPUT_ROWS, &theme.palette);
         assert_eq!(rows.len(), MAX_INPUT_ROWS);
         assert!((cursor.1 as usize) < rows.len());
+    }
+
+    /// A Skill the palette filled draws its name, and the draft still submits
+    /// and keeps `/skill:<name> `: the display is a projection over one element,
+    /// not a change to the text.
+    #[test]
+    fn a_filled_skill_draws_its_name_and_submits_its_token() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let palette = theme.palette;
+
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "status".into(),
+            description: "Show the status".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        typed(&mut c, "/stat");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+
+        let (rows, cursor) = c.render_rows(60, MAX_INPUT_ROWS, &palette);
+        let (drawn, bold) = drawn_token(&rows);
+        assert_eq!(drawn.trim_end(), "/status", "{rows:?}");
+        assert_eq!(bold, "/status", "the whole reference is one unit: {rows:?}");
+        assert_eq!(cursor, (8, 0), "the cursor sits after the drawn name");
+
+        assert_eq!(
+            c.text(),
+            "/skill:status ",
+            "the draft's text is still the canonical token"
+        );
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Submit("/skill:status ".into()),
+            "the message carries the token, not the drawn name"
+        );
+    }
+
+    /// Typing the prefix by hand still draws what was typed: only a reference
+    /// the palette filled is a named unit, so no character the operator typed
+    /// is ever drawn as something else.
+    #[test]
+    fn a_typed_token_draws_as_typed() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut c = Composer::new(Vec::new());
+        typed(&mut c, "/skill:status and /skill:commit");
+        let (rows, _) = c.render_rows(60, MAX_INPUT_ROWS, &theme.palette);
+        let (drawn, bold) = drawn_token(&rows);
+        assert_eq!(drawn.trim_end(), "/skill:status and /skill:commit");
+        assert_eq!(bold, "/skill:status/skill:commit");
+    }
+
+    /// A Skill whose name is also a command keeps the canonical token, so the
+    /// draft never reads as the command the operator did not run.
+    #[test]
+    fn a_skill_named_like_a_command_keeps_its_token() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "models".into(),
+            description: "List the models".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        // A Skill sharing a command's name is reached through the `skill:`
+        // namespace, which narrows the menu to Skills; the row the command also
+        // matches comes first and would fill the command instead.
+        typed(&mut c, "/skill:mode");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        let (rows, _) = c.render_rows(60, MAX_INPUT_ROWS, &theme.palette);
+        let (drawn, _) = drawn_token(&rows);
+        assert_eq!(
+            drawn.trim_end(),
+            "/skill:models",
+            "the plain name would read as the command, so the token stays"
+        );
+        assert_eq!(c.text(), "/skill:models ");
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Submit("/skill:models ".into()),
+            "a message, never the `/models` command"
+        );
+    }
+
+    #[test]
+    fn a_filled_skill_deletes_as_one_token() {
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "status".into(),
+            description: "Show the status".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        typed(&mut c, "/stat");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        typed(&mut c, "hi");
+        assert_eq!(c.text(), "/skill:status hi");
+
+        // Backspace erases the typed characters one at a time, then crosses the
+        // reference as one unit rather than a character at a time.
+        c.handle_key(key(KeyCode::Backspace));
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.text(), "/skill:status ");
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.text(), "/skill:status", "the space after the token goes");
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.text(), "", "the reference goes as one unit");
+    }
+
+    /// A filled reference wraps as its drawn name does, so a narrow input holds
+    /// the name and never the prefix.
+    #[test]
+    fn a_filled_skill_wraps_by_its_drawn_name() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "status".into(),
+            description: "Show the status".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        typed(&mut c, "/stat");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        let (rows, _) = c.render_rows(8, MAX_INPUT_ROWS, &theme.palette);
+        let (drawn, bold) = drawn_token(&rows);
+        assert!(
+            drawn.starts_with("/status"),
+            "the name is drawn, not the prefix: {rows:?}"
+        );
+        assert_eq!(bold, "/status", "{rows:?}");
+    }
+
+    /// The characters the input rows draw, and the ones among them drawn bold.
+    fn drawn_token(rows: &[String]) -> (String, String) {
+        let mut visible = String::new();
+        let mut bold = String::new();
+        for row in rows {
+            let mut marked = false;
+            let mut chars = row.chars();
+            while let Some(c) = chars.next() {
+                if c == '\x1b' {
+                    let mut codes = String::new();
+                    for c in chars.by_ref() {
+                        if c == 'm' {
+                            break;
+                        }
+                        codes.push(c);
+                    }
+                    marked = codes.split(['[', ';']).any(|code| code == "1");
+                    continue;
+                }
+                visible.push(c);
+                if marked {
+                    bold.push(c);
+                }
+            }
+            visible.push('\n');
+        }
+        (visible, bold)
     }
 }

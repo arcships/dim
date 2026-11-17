@@ -31,9 +31,15 @@ pub struct Draft {
 impl Draft {
     /// Writes `text` to a new draft file of `area` under `home`.
     pub fn open(home: &Path, area: Area, text: &str) -> Result<Self, String> {
+        Self::open_text(home, area.name(), "json", text)
+    }
+
+    /// As [`Draft::open`] for a name and extension that are not a management
+    /// area's, such as one prompt field's Markdown.
+    pub fn open_text(home: &Path, name: &str, extension: &str, text: &str) -> Result<Self, String> {
         let directory = home.join(DIRECTORY);
         create_private(&directory)?;
-        let path = create_private_file(&directory, area.name(), text)?;
+        let path = create_private_file(&directory, name, extension, text)?;
         Ok(Self { path })
     }
 
@@ -98,7 +104,12 @@ pub fn exited(status: std::process::ExitStatus) -> String {
 /// A file that did not exist before, readable only by the user. It never
 /// follows a file or link that is already there: `create_new` refuses one,
 /// and a name that collides is simply not used.
-fn create_private_file(directory: &Path, area: &str, text: &str) -> Result<PathBuf, String> {
+fn create_private_file(
+    directory: &Path,
+    area: &str,
+    extension: &str,
+    text: &str,
+) -> Result<PathBuf, String> {
     for _ in 0..32 {
         let unique = NEXT.fetch_add(1, Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
@@ -106,7 +117,7 @@ fn create_private_file(directory: &Path, area: &str, text: &str) -> Result<PathB
             .map(|elapsed| elapsed.as_nanos())
             .unwrap_or(0);
         let path = directory.join(format!(
-            "{area}-{}-{nanos}-{unique}.json",
+            "{area}-{}-{nanos}-{unique}.{extension}",
             std::process::id()
         ));
         let mut file = std::fs::OpenOptions::new();

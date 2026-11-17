@@ -81,6 +81,20 @@ pub enum FinishReason {
 pub struct UserInput {
     pub content: Vec<ContentBlock>,
 }
+impl UserInput {
+    /// Whether the content carries anything the operator supplied: a block
+    /// that is not an empty text. Only such content is worth appending a
+    /// context after, and only such content makes an input valid.
+    ///
+    /// The content is what the operator sent, so a marker the operator wrote
+    /// counts as their words. That matches `crate::markup::runtime_context`,
+    /// which never takes the first block for runtime content.
+    pub fn has_operator_content(&self) -> bool {
+        self.content
+            .iter()
+            .any(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()))
+    }
+}
 
 /// Runtime content a capability places in the model context. The renderer
 /// puts `text` verbatim as one user message where the input is consumed.
@@ -120,6 +134,8 @@ pub struct ExecStartedData {
     pub call_id: String,
     pub task_id: String,
     pub description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub output_path: String,
 }
 
@@ -187,14 +203,14 @@ impl InputMessageData {
         })
     }
 
-    /// Checks input arriving from outside: user content, if present, is not
-    /// all empty text, and the input carries user content or blocks.
+    /// Checks input arriving from outside: user content, if present, carries
+    /// operator content, and the input carries user content or blocks.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.user.as_ref().is_some_and(|user| {
-            user.content
-                .iter()
-                .all(|block| matches!(block, ContentBlock::Text { text } if text.is_empty()))
-        }) {
+        if self
+            .user
+            .as_ref()
+            .is_some_and(|user| !user.has_operator_content())
+        {
             return Err("user input content must not be empty");
         }
         if self.user.is_none() && self.blocks.is_empty() {
@@ -217,6 +233,13 @@ pub struct InputWithdrawData {
         deserialize_with = "crate::optional_non_null"
     )]
     pub reason: Option<String>,
+    /// Checked replacement content, adopted only if withdrawal is accepted.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub steer: Option<InputMessageData>,
 }
 impl InputWithdrawData {
     pub const MAX_REASON_BYTES: usize = 2048;
@@ -231,6 +254,12 @@ impl InputWithdrawData {
             .is_some_and(|reason| reason.len() > Self::MAX_REASON_BYTES)
         {
             return Err("reason exceeds 2 KiB");
+        }
+        if let Some(candidate) = &self.steer {
+            if candidate.mode != Some(InputMode::Steer) {
+                return Err("a replacement input must be Steer");
+            }
+            candidate.validate()?;
         }
         Ok(())
     }
@@ -676,7 +705,7 @@ impl ModelFailureKind {
         let reason = reason
             .map(str::trim)
             .filter(|reason| !reason.is_empty())
-            .map(|reason| reason.strip_suffix('.').unwrap_or(reason));
+            .map(|reason| reason.trim_suffix('.'));
         match reason {
             Some(reason) => format!("{}: {reason}. {}", self.meaning(), self.action()),
             None => format!("{}. {}", self.meaning(), self.action()),
@@ -1070,6 +1099,8 @@ pub struct CollaborationRequestData {
     pub call_id: String,
     pub target: CollaborationTarget,
     pub prompt: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// Payload of `collaboration/cancel` and `collaboration/close`.
@@ -1194,6 +1225,14 @@ pub struct EventDraft {
         deserialize_with = "crate::optional_non_null"
     )]
     pub tags: Option<Vec<String>>,
+    /// The tool call that produced this event, when the event belongs to a
+    /// child invocation. Absent for a top-level model batch.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub parent_call_id: Option<String>,
     #[serde(flatten)]
     pub kind: EventKind,
 }
@@ -1203,12 +1242,18 @@ impl EventDraft {
         Self {
             id: None,
             tags: None,
+            parent_call_id: None,
             kind,
         }
     }
 
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    pub fn with_parent_call_id(mut self, parent_call_id: impl Into<String>) -> Self {
+        self.parent_call_id = Some(parent_call_id.into());
         self
     }
 }
@@ -1231,8 +1276,25 @@ pub struct AgentEvent {
         deserialize_with = "crate::optional_non_null"
     )]
     pub tags: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::optional_non_null"
+    )]
+    pub parent_call_id: Option<String>,
     #[serde(flatten)]
     pub kind: EventKind,
+}
+
+impl AgentEvent {
+    /// Child events are execution facts, never context input.
+    pub fn context_flags(&self) -> (bool, bool) {
+        if self.parent_call_id.is_some() {
+            (false, false)
+        } else {
+            self.kind.context_flags()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,21 +94,42 @@ def git(repo: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+_GITHUB_PR_SUBJECT = re.compile(
+    r"^Merge pull request #[1-9][0-9]* from \S+| \(#[1-9][0-9]*\)$"
+)
+
+
+def is_github_pr_subject(subject: str) -> bool:
+    """Recognise the PR landing subjects used by this repository, offline.
+
+    These are message conventions, not verified GitHub provenance. Rebase or
+    custom-message landings without either marker remain unjudged and force L2,
+    like direct pushes, rather than silently escaping evaluation.
+    """
+    return _GITHUB_PR_SUBJECT.search(subject) is not None
+
+
 def merges_in_range(repo: Path, base: str, head: str) -> list[tuple[str, str, str]]:
-    """Merge commits that landed on main in (base, head], oldest first.
+    """PR landings identified on main in ``(base, head]``, oldest first.
+
+    Include all multi-parent merges and one-parent commits with this repository's
+    PR subject conventions: ``Merge pull request #N from ...`` or a trailing
+    ``(#N)``. A PR landing need not have two parents. Unmarked one-parent commits
+    go through ``daily_run.direct_pushes`` and still force L2.
 
     First parent only: a PR branch that merged main into itself leaves a merge
     commit inside the range that is not a PR. Its diff against its first parent
     is everything main gained since the branch forked, already judged once.
     """
-    raw = git(repo, "log", "--merges", "--first-parent", "--reverse",
-              "--format=%H|%cI|%s", f"{base}..{head}")
+    raw = git(repo, "log", "--first-parent", "--reverse",
+              "--format=%H|%P|%cI|%s", f"{base}..{head}")
     out = []
     for line in raw.splitlines():
         if not line.strip():
             continue
-        sha, when, subject = line.split("|", 2)
-        out.append((sha, when, subject))
+        sha, parents, when, subject = line.split("|", 3)
+        if len(parents.split()) >= 2 or is_github_pr_subject(subject):
+            out.append((sha, when, subject))
     return out
 
 

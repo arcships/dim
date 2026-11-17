@@ -35,6 +35,8 @@ pub struct Service {
     /// `expires_in` of the next issued token only; absent means one hour.
     pub expires_in: Mutex<Option<Value>>,
     pub models: Mutex<Option<Value>>,
+    pub models_wait: AtomicBool,
+    pub models_release: tokio::sync::Notify,
     pub reset_keys: Mutex<Vec<String>>,
     pub reset_forbidden: AtomicBool,
     pub title_requests: Mutex<Vec<(String, Value)>>,
@@ -189,6 +191,7 @@ pub async fn start() -> Fixture {
             "/v1/models",
             get(|State(s): State<Arc<Service>>, headers: HeaderMap| async move {
                 s.record("GET /v1/models".into());
+                if s.models_wait.load(Ordering::SeqCst) { s.models_release.notified().await; }
                 if s.rejects(&headers) {
                     return unauthorized();
                 }

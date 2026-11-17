@@ -1,4 +1,4 @@
-//! Public RPC v3 transport shared by native Dim clients.
+//! Public RPC transport shared by native Dim clients; each connection negotiates its version.
 
 pub mod callback;
 pub mod question;
@@ -9,10 +9,11 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Result<T> = std::result::Result<T, Error>;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
-use std::{collections::VecDeque, io, path::PathBuf, time::Duration};
+#[cfg(windows)]
+use std::time::Duration;
+use std::{collections::VecDeque, io, path::PathBuf};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 
-const PROTOCOL_VERSION: u32 = 3;
 const FRAME_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Deserialize)]
@@ -96,6 +97,9 @@ pub struct ConnectionConfig {
     pub profile: Option<DaemonProfile>,
     pub client_kind: &'static str,
     pub client_name: &'static str,
+    /// The protocol this connection negotiates. The ACP gateway stays on 3
+    /// until its projection can group child batches; other clients use 4.
+    pub protocol_version: u32,
 }
 
 pub struct Client {
@@ -239,10 +243,16 @@ impl Client {
                 break;
             }
         }
+        fn response_result<'de, D: serde::Deserializer<'de>>(
+            deserializer: D,
+        ) -> std::result::Result<Option<Value>, D::Error> {
+            Value::deserialize(deserializer).map(Some)
+        }
         #[derive(Deserialize)]
         struct Envelope {
             jsonrpc: String,
             id: Option<u64>,
+            #[serde(default, deserialize_with = "response_result")]
             result: Option<Value>,
             error: Option<RpcError>,
             method: Option<String>,
@@ -326,10 +336,39 @@ impl Client {
         serde_json::from_value(value).map_err(|_| format!("Invalid {method} response").into())
     }
 
-    /// Negotiates RPC v3, checks the host's explicit model profile and returns the server version.
+    /// Negotiates the configured RPC version, checks the host's explicit model
+    /// profile and returns the server version.
+    ///
+    /// The reply carries no bound of its own: a server that is bound but not yet
+    /// open answers nothing until its startup finishes, and how long that may
+    /// take is the caller's startup contract, not this transport's. A caller
+    /// without one bounds this call itself, as a reconnect inside its own
+    /// deadline does.
     pub async fn hello(&mut self) -> Result<String> {
-        let hello: Hello = tokio::time::timeout(Duration::from_secs(5), self.typed("hello", json!({"protocolVersion":PROTOCOL_VERSION,"clientKind":self.config.client_kind,"clientName":self.config.client_name}))).await??;
-        if hello.protocol_version != PROTOCOL_VERSION
+        let id = self.greet().await?;
+        let reply = self.response(id).await?;
+        self.complete_hello(reply)
+    }
+
+    /// Sends `hello` and returns the request identity, so a caller with a wait
+    /// of its own takes the reply through [`Client::response`] and checks it
+    /// with [`Client::complete_hello`].
+    pub async fn greet(&mut self) -> Result<u64> {
+        let version = self.config.protocol_version;
+        self.send(
+            "hello",
+            json!({"protocolVersion":version,"clientKind":self.config.client_kind,"clientName":self.config.client_name}),
+        )
+        .await
+    }
+
+    /// Checks a `hello` reply taken after [`Client::greet`] and records what it
+    /// negotiates.
+    pub fn complete_hello(&mut self, value: Value) -> Result<String> {
+        let version = self.config.protocol_version;
+        let hello: Hello =
+            serde_json::from_value(value).map_err(|_| "Invalid hello response".to_owned())?;
+        if hello.protocol_version != version
             || hello.instance_id.is_empty()
             || hello.server_version.is_empty()
             || !hello

@@ -30,11 +30,11 @@ flowchart LR
 | 部件 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
 | `web` | 进程，当 home 存在时 | `settings`、`partRegistry` | 登记 Settings 来源 `web` 与 Session 部件 `Web` |
-| `Web` | Session | `settings`、`toolRegistry`、`managedProviders` | 把 `web_search` 与 `web_fetch` 注册到 `toolRegistry`；持有本 Session 的抓取缓存；不提供任何名称 |
+| `Web` | Session | `settings`、`toolRegistry`、`managedSearch` | 把 `web_search` 与 `web_fetch` 注册到 `toolRegistry`；持有本 Session 的抓取缓存；不提供任何名称 |
 
 **依赖的契约：** 已实现的 [C4 工具绑定](../../../design/session-typescript.md)、[Settings 具名服务与 row 来源声明](../appserver/settings-service.md)、[托管 Provider 契约](../../../../crates/dim-app-server/README.md#managed-provider-contract)及 Permission 既有的 `network` 风险。#150 提供工具，#166/#175 提供 Settings，#177 提供 Settings 事件。Web 不消费 Session 广播，不等待 #168。**本文定义的契约：** 两个工具、结果格式和 `web` 业务文档。
 
-Web 是 App Server 的内置进程 row。该 row 登记 Settings 来源 `web` 与 Session 部件，不增加 Web 专属注册表或宿主端口。当 `searchService` 缺省（默认）或为 `{"kind": "dim-oauth"}` 时，`web_search` 通过 `managedProviders` 发起带认证的 relay 查询，使 OAuth 令牌留在 Rust 托管 Provider 内；当 `searchService` 显式配置为 `brave` 等适配器时，Web 直接请求该适配器。工具按调用读取 Settings，已有事件无需为此再建订阅或缓存失效协议。非致命配置诊断放入既有 `ToolResult.structuredContent`。
+Web 是 App Server 的内置进程 row。该 row 登记 Settings 来源 `web` 与 Session 部件，不增加 Web 专属注册表或宿主端口。当 `searchService` 缺省（默认）或为 `{"kind": "dim-oauth"}` 时，`web_search` 通过 `managedSearch` 发起带认证的 relay 查询，使 OAuth 令牌留在 Rust 托管 Provider 内；当 `searchService` 显式配置为 `brave` 等适配器时，Web 直接请求该适配器。工具按调用读取 Settings，已有事件无需为此再建订阅或缓存失效协议。非致命配置诊断放入既有 `ToolResult.structuredContent`。
 
 搜索 API 密钥是 `searchService.apiKey`，Web Settings 来源中的仅用户字段（[settings-service §1.2](../appserver/settings-service.md#12-决定密钥归其所有者)）。Unix 上的文件存储 profile 以 0600 权限写用户文档。原生 profile 将其作为 `user/web` 存入 SQLite；权限边界是产品 home，Unix 新建目录使用 0700，Windows 继承父目录 DACL；已有目录权限保持不变，数据库没有独立的 0600 保证。`userOnly` 限制写入，不屏蔽本地读取：该字段只经客户端方法 `settings.update` 写入，Web 从不写；本地客户端可经 `settings.read` 读回，远程与配对客户端不能。Web 每次调用随文档读取密钥，从不保留，也不把它放入声明、结果、`structuredContent`、诊断、错误或日志。
 
@@ -98,12 +98,12 @@ sequenceDiagram
   participant X as ToolExecutor
   participant W as Web handler
   participant S as Settings
-  participant M as ManagedProviders
+  participant M as managedSearch
   participant Q as 搜索服务
   X->>W: execute(ToolCall：query、filters)
   W->>S: 读取 searchService
   alt 缺省（默认）或 dim-oauth
-    W->>M: webSearch(query, count)
+    W->>M: search({query, count})
     alt 已登录且可用
       M->>Q: 带认证 POST /web-search
       Q-->>M: 命中结果
@@ -122,7 +122,7 @@ sequenceDiagram
   end
 ```
 
-Web 启用时 `web_search` 始终被声明；默认（`searchService` 缺省或为 `{"kind": "dim-oauth"}`）经 `managedProviders` 使用已登录的 Dim 账号搜索，在有可用账号或配置可用服务之前以 `search_unavailable` 失败（A3）。更换服务或账号登录状态变化在下一次调用生效。
+Web 启用时 `web_search` 始终被声明；默认（`searchService` 缺省或为 `{"kind": "dim-oauth"}`）经 `managedSearch` 使用已登录的 Dim 账号搜索，在有可用账号或配置可用服务之前以 `search_unavailable` 失败（A3）。更换服务或账号登录状态变化在下一次调用生效。
 
 ## 4. 时序与冲突
 
@@ -188,9 +188,9 @@ Web 不写标记、不贡献 guide 条目；它的声明没有 policy 文本。
 
 ### 6.1 注册与来源
 
-home 存在时，App Server 登记进程 row `web`。其 apply 向 `partRegistry` 登记 Settings 来源 `web`（用户文件 `web.json`，无项目文件）和 Session 部件 `Web`。每个 Session 挂载该部件。部件注入 `settings`、`toolRegistry` 与 `managedProviders`。其 apply 只登记资源清理和两个工具，在调用发生前不做 I/O。Rust 形式见附录 G。
+home 存在时，App Server 登记进程 row `web`。其 apply 向 `partRegistry` 登记 Settings 来源 `web`（用户文件 `web.json`，无项目文件）和 Session 部件 `Web`。每个 Session 挂载该部件。部件注入 `settings`、`toolRegistry` 与 `managedSearch`。其 apply 只登记资源清理和两个工具，在调用发生前不做 I/O。Rust 形式见附录 G。
 
-该 row 登记的来源 schema，`userOnly` 路径为 `/searchService`、`/allowPrivateHosts` 与 `/proxyDns`：
+该 row 登记的来源 schema，`userOnly` 路径为 `/searchService`、`/allowPrivateHosts`、`/blockPrivateAddresses` 与 `/proxyDns`（`proxy` 是 `writeOnly`，不是仅用户）：
 
 ```json
 {
@@ -212,26 +212,27 @@ home 存在时，App Server 登记进程 row `web`。其 apply 向 `partRegistry
       "items": { "type": "string" },
       "default": []
     },
+    "blockPrivateAddresses": { "type": "boolean", "default": false },
     "proxy": { "type": "string", "format": "uri", "writeOnly": true },
-    "proxyDns": { "type": "boolean", "default": false }
+    "proxyDns": { "type": "boolean", "default": true }
   }
 }
 ```
 
-执行沿工具 handler，并带上该调用的取消令牌。每次调用读取 user scope 的 `web` 来源。读取失败，或已存文档无法反序列化为 web 文档时，调用以 `settings_unavailable` 失败，不建立连接。Web 不用默认值顶替该文档。配置了 API 密钥适配器时，密钥是 `searchService.apiKey`。当 `searchService` 缺省或为 `{"kind":"dim-oauth"}` 时，`web_search` 调用 `managedProviders`，不读取 OAuth 令牌。
+执行沿工具 handler，并带上该调用的取消令牌。每次调用读取 user scope 的 `web` 来源。读取失败，或已存文档无法反序列化为 web 文档时，调用以 `settings_unavailable` 失败，不建立连接。Web 不用默认值顶替该文档。配置了 API 密钥适配器时，密钥是 `searchService.apiKey`。当 `searchService` 缺省或为 `{"kind":"dim-oauth"}` 时，`web_search` 调用 `managedSearch`，不读取 OAuth 令牌。
 
-Settings 将 `format: "uri"` 作为注解。Web 在构造 HTTP 请求时解析 `searchService.endpoint` 和 `proxy`，不重新校验 Settings 文档。端点无法解析时，`web_search` 返回 `search_unavailable`；`proxy` 配置值无法解析，或 `proxyDns: true` 却未配置代理时，`web_search` 返回 `search_unavailable`，`web_fetch` 返回 `connect_failed`。均不建立连接、不回退为直连，诊断不包含配置值。Web 的代理配置作用于抓取与直接配置的搜索适配器；账号搜索遵循托管 Provider 契约。
+Settings 将 `format: "uri"` 作为注解。Web 在构造 HTTP 请求时解析 `searchService.endpoint` 和 `proxy`，不重新校验 Settings 文档。端点无法解析时，`web_search` 返回 `search_unavailable`；`proxy` 配置值无法解析时，`web_search` 返回 `search_unavailable`，`web_fetch` 返回 `connect_failed`。均不建立连接、不回退为直连，诊断不包含配置值。未配置 `proxy` 时，Web 使用会话自带的代理（环境变量或桌面设置，A.4），并把它用于抓取与直接配置的搜索适配器；账号搜索遵循托管 Provider 契约。
 
 初始来源是用户文件 `web.json`，按 user scope 读取，不声明 projectFile，也没有隐式用户/项目合并（A16）。私有主机例外由客户端写入；Web 没有写配置工具。App Server 在存在产品 home 时注册内置 Web row；Web 无需安装包。[PluginManager 验收项 5](PluginManager.md#附录-c-验收m1) 规定其启停状态：`plugin.disable {"name":"web"}` 从已打开 Session 的下一轮起撤回其工具；`plugin.enable {"name":"web"}` 在该 Session 及新 Session 中恢复工具。该状态在重启后保留。显式 `plugin.reload` 返回 `not_reloadable`。
 
 ## 7. 安全
 
 - 准入：两个工具都声明 `network`；每次调用都经过 Approval 与 Permission（read-only 拒绝，workspace-write 询问，FullAccess 允许）。
-- SSRF：默认由 Web 自行解析名称，按封禁范围检查每个地址，只连接已检查的地址，有无 `proxy` 都一样。仅限用户的 `proxyDns` 将主机名解析与解析后地址的访问策略交由已配置代理负责（A.4）。跨主机重定向需要一次新调用与新的准入（A10）。
+- SSRF：它是一项显式开关。`blockPrivateAddresses` 关闭时（默认），Web 连接主机能路由到的任何地址，包括本机代理、TUN 与 Fake-IP 答案；开启后在请求之前解析一次并按封禁范围检查每个地址，直连时还会固定第一个允许的地址。有代理时两种 `proxyDns` 模式都由代理解析目标（A.4）。跨主机重定向需要一次新调用与新的准入（A10）。
 - 无环境权限：仅 `GET`；不带 cookie、已存站点凭据或客户端证书；除模型写出的 URL 外不携带 Session 中的任何内容（A8）。
 - API 密钥：每次调用随文档读取；从不出现在声明、结果、`structuredContent`、诊断或错误中。
 - 经 URL 外泄是 `network` 类别的固有风险，由准入控制。
-- 使用 `proxy` 时，`CONNECT` 目标遵循 A.4；两种 DNS 模式下，TLS 证书校验、SNI 和 `Host` 头均使用原 URL 的主机。
+- 使用 `proxy` 时，目标形式遵循 A.4（`https` 用 `CONNECT`，`http` 用 absolute-form）；证书校验、SNI 和 `Host` 头均使用原 URL 的主机。
 
 ## 8. 规则检查
 
@@ -243,8 +244,8 @@ Settings 将 `format: "uri"` 作为注解。Web 在构造 HTTP 请求时解析 `
 | 原则 §4 第 4 条（核心不带业务含义） | 不改核心；工具使用通用的工具注册合同。 |
 | 原则 §4 第 5 条（批次） | 不适用：Web 依据调用参数和配置做决定，不依据事件。 |
 | 原则 §4 第 6 条（上下文只含交接后的事件） | 结果只以 ToolExecutor 写入的 `step/tool-result` 事实进入模型。 |
-| 原则 §4 第 7 条（只用公开事件和服务） | Web 只使用 `toolRegistry`、`managedProviders` 和 Settings 业务来源。 |
-| 原则 §4 第 8 条（向机制所有者提需求） | 复用已实现的 C4、`managedProviders` 与 Settings 绑定；适配器 API 密钥是 Web 自己的仅用户字段，账号 OAuth 令牌留在 Rust 托管 Provider 内。 |
+| 原则 §4 第 7 条（只用公开事件和服务） | Web 只使用 `toolRegistry`、`managedSearch` 和 Settings 业务来源。 |
+| 原则 §4 第 8 条（向机制所有者提需求） | 复用已实现的 C4、`managedSearch` 与 Settings 绑定；适配器 API 密钥是 Web 自己的仅用户字段，账号 OAuth 令牌留在 Rust 托管 Provider 内。 |
 | 原则 §4 第 9 条（只有后续决定要用的事实才进 Timeline） | Web 不写事件；抓取缓存只在内存中。 |
 | 原则 §1（Capability 与 App Server 边界） | Web 是内置 Session Capability。代码是 App Server 进程 row `web` 与 Session 部件 `Web`。不增加 Web 专属宿主端口。 |
 | ADR 002 D1（作用域跟随状态） | Session 作用域：Web 不持有跨 Session 共享的状态。 |
@@ -333,24 +334,27 @@ Characters: <start>-<end> of <total>
 
 | 规则 | 内容 |
 | --- | --- |
-| 解析 | `proxyDns: false`（默认）时，Web 解析主机名，校验每个解析出的地址，按 DNS 顺序尝试已校验地址，直到连接成功或达到共享连接时限（固定），直连或经 `proxy` 都一样，因此检查与连接之间不可能发生 DNS 重绑定 |
-| 默认封禁 | Web 默认封禁以下地址，适用于 Web 自行解析主机名时（`proxyDns: false`）和两种模式下的字面 IP。回环（`127.0.0.0/8`、`::1`）、未指定地址、RFC 1918、链路本地（`169.254.0.0/16`、`fe80::/10`，含云元数据）、CGNAT `100.64.0.0/10`、唯一本地 `fc00::/7`、组播、广播、保留范围，以及这些地址的 IPv4 映射与 IPv4 兼容 IPv6 形式 |
-| 字面 IP | 仅当按相同规则为公网地址或被 `allowPrivateHosts` 覆盖时允许，`proxyDns: true` 时亦如此；字面 IP 从不委托解析 |
-| 端口 | 公网地址上的任意端口（A12） |
+| 解析 | `blockPrivateAddresses: true` 时，Web 在请求之前解析一次主机名并检查每个解析结果。没有代理时还会把第一个允许的地址固定给本次请求；有代理时由代理解析目标，这项检查不约束实际连接。关闭时什么都不解析 |
+| 策略默认 | 关闭：`web_fetch` 能到达主机能路由的任何地址，本地代理、TUN 设备或 Fake-IP 答案都不需要例外。`blockPrivateAddresses: true` 才恢复下表的封禁 |
+| `blockPrivateAddresses: true` 时封禁 | 回环（`127.0.0.0/8`、`::1`）、未指定地址、RFC 1918、链路本地（`169.254.0.0/16`、`fe80::/10`，含云元数据）、CGNAT `100.64.0.0/10`、唯一本地 `fc00::/7`、组播、广播、包含基准测试段 `198.18.0.0/15` 的保留范围，以及这些地址的 IPv4 映射与 IPv4 兼容 IPv6 形式 |
+| 字面 IP | 仅在策略开启时按相同规则检查；字面 IP 按原样使用 |
+| 端口 | 任意端口（A12） |
 | 例外 | `allowPrivateHosts`：精确主机名或 CIDR；默认为空。这是仅限用户的字段：经客户端方法 `settings.update` 写入，从不由 Web 写入（S8b）。Settings 只检查它是字符串数组；Web 在使用时解析每一项，忽略既不是主机名也不是 CIDR 的项并作为诊断报告 |
-| 代理 | `proxyDns: false` 时，Web 照上面解析并校验，再向代理发 HTTP `CONNECT <已校验 IP>:<端口>`，`http` 和 `https` 都如此。`proxyDns: true` 时，主机名 URL 改用 `CONNECT <主机名>:<端口>`，不在本机解析目标 DNS。字面 IP 仍检查地址并使用 IP 目标。两种模式共享现有连接时限与取消机制；代理拒绝隧道时以 `connect_failed` 失败（A15），不回退直连 |
-| 代理 DNS 信任 | `proxyDns` 必须显式配置 `proxy`，默认关闭。启用后，由代理解析目标主机名，解析所得地址只受代理的访问策略约束。如果代理允许，主机名可能到达私网或元数据地址。两种模式下 Web 都拒绝 `localhost` 和 `*.localhost`，除非按主机名显式放行。CIDR 例外只作用于 Web 检查的地址 |
+| 代理 | 依次选取：配置的 `proxy`；否则环境变量 `HTTPS_PROXY`、`ALL_PROXY`、`HTTP_PROXY` 中的会话代理；否则桌面设置（GNOME `org.gnome.system.proxy` 的 `manual` 模式）。`DIM_WEB_SYSTEM_PROXY=off` 可关闭后两级回退。`https` 目标用 `CONNECT <主机>:<端口>`，`http` 目标以 absolute-form 交给代理，因此代理能看到完整 URL |
+| 代理 DNS | 代理收到的始终是主机名：`https` 用 `CONNECT <主机>:<端口>`，`http` 用 absolute-form 请求行。`proxyDns: true`（默认）时这就是唯一的解析；`false` 时 Web 先解析并检查，再把同一个主机名发出去。代理拒绝隧道时以 `connect_failed` 失败（A15）；代理直接作答时按其状态码报告。没有任何代理时该开关不起作用 |
+| 代理 DNS 信任 | 启用 `proxyDns` 时由代理解析目标主机名，如果代理允许，主机名可能到达私网或元数据地址。策略开启时 Web 仍拒绝 `localhost` 和 `*.localhost`，除非按主机名显式放行。CIDR 例外只作用于 Web 检查的地址 |
 
-Fake-IP DNS 答案仍受默认地址策略约束，不会自动信任保留地址范围。`proxyDns: true` 时，Web 完全不使用本机目标 DNS 答案，因此不需要为 Fake-IP 网段添加特殊分支或逐站点例外。未启用时，请配置真实地址 DNS 答案，或在 `allowPrivateHosts` 中显式添加可信主机例外。搜索端点或单独的 `proxy` 都不会启用代理 DNS。
+Fake-IP DNS 答案就是普通地址。经代理且 `proxyDns: true` 时它根本不会到达 Web，因为由代理解析；策略开启且无代理时，它和其他保留范围一样被拒绝。
 
 ### A.5 业务配置（Settings 来源 `web`）
 
 | 字段 | 类型 | 默认值 |
 | --- | --- | --- |
-| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` 或缺省；仅用户 | 缺省（已登录时经 `managedProviders` 使用 `dim-oauth`；否则 `web_search` 返回 `search_unavailable`） |
-| `allowPrivateHosts` | string[] | `[]` |
-| `proxy` | string（URL） | 缺省 |
-| `proxyDns` | boolean；仅用户；启用时必须配置 `proxy` | `false` |
+| `searchService` | `{ kind: "<built-in adapter id>", endpoint?: string, apiKey?: string }` 或缺省；仅用户 | 缺省（已登录时经 `managedSearch` 使用 `dim-oauth`；否则 `web_search` 返回 `search_unavailable`） |
+| `allowPrivateHosts` | string[]；仅用户 | `[]` |
+| `blockPrivateAddresses` | boolean；仅用户 | `false` |
+| `proxy` | string（URL）；`writeOnly`；缺省表示使用会话自带的代理（A.4） | 缺省 |
+| `proxyDns` | boolean；仅用户 | `true` |
 
 每次调用时读取，按交付的样子使用：Settings 在写入和读取持久化文件时按 Web 声明的 schema 校验文档并应用默认值，Web 不再校验。Web 没有写配置的工具，因此文档只经客户端方法写入（S8b）。变更是带通知的数据更新，从不触发重载。row 的结构性启停状态归 PluginManager 所有（§6）。内置适配器 id 是实现选择（A13）。API 密钥是 `searchService.apiKey`（§1）。
 
@@ -397,12 +401,12 @@ Fake-IP DNS 答案仍受默认地址策略约束，不会自动信任保留地�
 | --- | --- |
 | `invalid_input` | 参数违反附录 A |
 | `blocked_address` | Web 按 A.4 拒绝请求或重定向的目标。消息只指明规则 |
-| `dns_failed`、`connect_failed`、`tls_failed` | 网络错误；`connect_failed` 包括 `proxy` 配置值无法解析、`proxyDns: true` 却未配置代理，或代理拒绝 `CONNECT` |
+| `dns_failed`、`connect_failed` | 网络错误；`connect_failed` 包括 `proxy` 配置值无法解析、隧道被拒绝，或 TLS 失败 |
 | `timeout` | 达到连接或整个调用的时限 |
 | `http_status` | 最终状态非 2xx |
 | `too_many_redirects` | 同主机跳转超过 5 次 |
 | `unsupported_content_type` | 类型不在 A.3 中 |
-| `search_unavailable` | 无可用服务或已登录账号、端点或 `proxy` 配置值无法解析、直接适配器启用代理 DNS 却未配置代理、适配器不可用或缺少所需的 API 密钥 |
+| `search_unavailable` | 无可用服务或已登录账号、端点或 `proxy` 配置值无法解析、适配器不可用或缺少所需的 API 密钥 |
 | `search_failed` | 服务错误或数据无效；消息经缩短并去除秘密 |
 | `settings_unavailable` | `web` 来源无法读取，或已存文档与 web 文档不符 |
 | `cancelled` | 调用被取消 |
@@ -413,18 +417,18 @@ Fake-IP DNS 答案仍受默认地址策略约束，不会自动信任保留地�
 
 经公开接口的流程测试：测试 Session 中的工具调用、一个只能通过测试用 `allowPrivateHosts` 条目访问的本地 HTTP 服务器、一个伪造的搜索适配器。
 
-1. 无服务时 `web_search` 返回 `search_unavailable`；配置一个服务后下一次调用无需重载即成功；移除后下一次调用失败。对 schema 合法但无法解析的端点或代理，以及启用代理 DNS 却未配置代理的情况，按 §6.1 返回错误，不建立连接或回退为直连。
+1. 无服务时 `web_search` 返回 `search_unavailable`；配置一个服务后下一次调用无需重载即成功；移除后下一次调用失败。对 schema 合法但无法解析的端点或代理，按 §6.1 返回错误，不建立连接或回退为直连。
 2. `web_search` 格式、域名过滤、零结果、服务错误。
 3. `web_fetch` 的 HTML 头部与 Markdown；`start_char` 分页至结尾；`max_chars`；下载上限提示。
 4. 纯文本、JSON、不支持的类型、404、空页面。
 5. 同主机重定向至多 5 次；第六次失败；跨主机重定向返回提示。
-6. 关闭代理 DNS 时，回环、私有、链路本地、IPv4 映射 IPv6、`localhost` 以及解析到私有地址的主机名均被封禁；DNS 重绑定测试未建立连接，直连和使用 `proxy` 都要测（测试代理只收到 `CONNECT <已校验 IP>:<端口>`，SNI 和 `Host` 为主机名）。
+6. `blockPrivateAddresses: true` 时，回环、私有、链路本地、IPv4 映射 IPv6、`localhost` 以及解析到私有地址的主机名都以 `blocked_address` 失败且不建立连接，直连和使用 `proxy` 都要测；策略关闭时同样的目标可以连接。
 7. Permission：read-only 拒绝，workspace-write 询问，FullAccess 允许。
 8. 派发前、审批期间与慢响应期间中断（socket 关闭，一个结果）。
 9. 重启结算不重复任何请求。
 10. 非交互 Session 声明两个工具。
 11. 诊断与结果从不包含 API 密钥。
-12. 经 `settings.update` 启用代理 DNS 后，下一次未命中缓存的抓取与直接搜索适配器请求无需重载即使用 `CONNECT <主机名>:<端口>`，不查询本机目标 DNS，即使该名称返回 Fake-IP 或在本机无法解析。URL 主机仍为 HTTP `Host` 与 HTTPS 证书/SNI 身份。在没有 `allowPrivateHosts` 例外的情况下，抓取测试代理解析到回环测试服务器的主机名。代理收到 `CONNECT <主机名>:<端口>`，Web 返回测试服务器的响应。关闭代理 DNS 后恢复本机校验。没有适用例外时，字面私有 IP、基准测试 IP、IPv4 映射 IP 与 localhost 名称均仍被拦截；代理拒绝与取消均结算，不直连重试。这些测试使用临时 home 与测试代理，不修改系统 DNS 或代理配置。
+12. 经 `settings.update` 启用代理 DNS 后，下一次未命中缓存的抓取与直接搜索适配器请求由代理解析：`https` 用 `CONNECT <主机名>:<端口>`，`http` 用 absolute-form 请求行，不查询本机目标 DNS，即使该名称返回 Fake-IP 或在本机无法解析，且无需重载。URL 主机仍为 HTTP `Host` 与证书/SNI 身份。在没有 `allowPrivateHosts` 例外的情况下，抓取测试代理能解析到回环测试服务器的主机名并返回其响应。关闭代理 DNS 后恢复请求前的本机检查；目标仍由代理解析。代理拒绝与取消均结算，不直连重试。这些测试使用临时 home 与测试代理，不修改系统 DNS 或代理配置。
 
 ## 附录 E. 假设
 
@@ -444,18 +448,19 @@ Fake-IP DNS 答案仍受默认地址策略约束，不会自动信任保留地�
 | A12 | 公网地址上任意端口 | 判断 | 限制为 80/443 |
 | A13 | 内置适配器列表是实现选择 | overview 未指定服务 | 由 overview 固定某个服务 |
 | A14 | 抓取内容周围不加框定文本 | 判断 | 需要定义模型可见的框定 |
-| A15 | 配置的代理支持对 A.4 选定形式的目标做 HTTP `CONNECT`，`http` 和 `https` 都支持 | 默认的 IP 固定保证由维护者确认。[#1161](https://github.com/arcships/dim/issues/1161) 提议通过 `proxyDns` 使用主机名 `CONNECT` | 代理拒绝选定的目标形式时无法使用 |
+| A15 | 配置的代理接受目标的两种形式：`https` 用 `CONNECT <主机>:<端口>`，`http` 用 absolute-form 请求 | [ADR 024](../../adr/024-web-fetch-transport.md) | 只接受一种形式的代理无法同时服务两种 scheme |
 | A16 | 初始来源只声明用户文件 `web.json`，按 user scope 读取；无隐式项目合并 | 维护者决定 | 先定义项目来源与合并业务语义，再配置既有 projectFile |
 
 ## 附录 F. 实施边界
 
 | 问题 | 当前边界 |
 | --- | --- |
-| 初始范围 | 工具参数、默认网络策略、内容策略、A1–A14、A15 的默认 IP 固定保证与 A16 均已由维护者确认。Web 是内置进程 row `web` 及其 Session 部件。可选包的产品安装仍属于 PluginManager。 |
+| 初始范围 | 工具参数、默认网络策略、内容策略、A1–A14、A15 的代理目标形式与 A16 均已由维护者确认。Web 是内置进程 row `web` 及其 Session 部件。可选包的产品安装仍属于 PluginManager。 |
 | 配置诊断 | 非致命且仅供 UI/持久化的配置诊断放入 ToolResult.structuredContent；模型需要采取动作的信息仍必须放在 content，不新增通道 |
 | HTML 转文本 | 扫描器，不是浏览器。后面出现 `>` 的 `<` 即开始一个标签，正文里单独的 `<` 也算。script、style 与导航在这次扫描之前用正则去掉。 |
 | 内容编码 | 解码 `gzip`、`deflate` 与 `identity`。`br` 与其他编码以 `connect_failed` 失败。不完整的 gzip、带 zlib 封装的 deflate 或原始 deflate 流均以 `connect_failed` 失败；若已经达到下载上限，则返回截断后的正文并带 `download_limited`。服务器省略 zlib 封装时回退为原始 deflate。 |
 | User-Agent | `dim-web/` 加上 `dim-app-server` 的包版本 |
+| 传输 | `reqwest`，仅 HTTP/1，关闭重定向，10 秒连接时限，手工 gzip/deflate 解码与 5 MiB 上限。地址策略在请求之前执行，开启时固定第一个允许的地址（[ADR 024](../../adr/024-web-fetch-transport.md)） |
 
 ## 附录 G. Rust 绑定
 

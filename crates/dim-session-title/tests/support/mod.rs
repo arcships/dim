@@ -39,6 +39,7 @@ pub async fn client(server: &RunningServer) -> Client {
         profile: None,
         client_kind: "other",
         client_name: "SessionTitle flow",
+        protocol_version: 4,
     })
     .await
     .unwrap()
@@ -103,4 +104,17 @@ pub async fn configure(client: &mut Client, document: Value) {
         )
         .await
         .unwrap();
+}
+
+pub async fn import_image(client: &mut Client, session: &str, home: &std::path::Path) -> Value {
+    let path = home.join("image.png");
+    std::fs::write(&path, b"\x89\x50\x4e\x47\x0d\x0a\x1a\x0a\x00\x00\x00\x0d\x49\x48\x44\x52\x00\x00\x00\x02\x00\x00\x00\x02\x08\x02\x00\x00\x00\xfd\xd4\x9a\x73\x00\x00\x00\x10\x49\x44\x41\x54\x78\xda\x63\xf8\xcf\x00\x04\xff\x19\x20\x14\x00\x1b\xf2\x03\xfd\x3e\x97\x5d\xa4\x00\x00\x00\x00\x49\x45\x4e\x44\xae\x42\x60\x82").unwrap();
+    client
+        .rpc(
+            "attachment.import",
+            json!({"sessionId":session,"path":path,"image":true}),
+        )
+        .await
+        .unwrap()["image"]
+        .clone()
 }

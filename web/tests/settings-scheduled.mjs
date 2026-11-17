@@ -5,11 +5,12 @@ import { registerHooks, stripTypeScriptTypes } from "node:module"
 import test from "node:test"
 import { compileScript, parse } from "vue/compiler-sfc"
 import { createRenderer, nextTick, reactive, ref } from "vue"
+import { nuxtUiTestPlugin } from "./helpers/nuxt-ui.mjs"
 
 globalThis.Document = class {}
 globalThis.ShadowRoot = class {}
 globalThis.window = { innerWidth: 1280, innerHeight: 900, addEventListener() {}, removeEventListener() {} }
-const components = /\/(ScheduledSettings|SchedulePlan|SelectField|ConfirmDialog)\.vue$/
+const components = /\/(ScheduledSettings|SchedulePlan|ConfirmDialog)\.vue$/
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier.startsWith("../../stores/")) {
@@ -58,14 +59,17 @@ async function select(root, label, option) {
   await flush()
 }
 async function change(element, value, event = "onChange") {
-  element.props["onUpdate:modelValue"](value)
-  if (element.props[event]) await element.props[event]({ target: { value } })
+  if (event === "onInput") await element.props.onInput({ target: { value } })
+  else {
+    element.props["onUpdate:modelValue"](value)
+    if (element.props[event]) await element.props[event]({ target: { value } })
+  }
   await flush()
 }
 const submit = root => all(root).find(el => el.type === "form").props.onSubmit({ preventDefault() {} })
 const policy = { preset: "read-only", allowedTools: [], disallowedTools: [] }
-const job = (extra = {}) => ({ id: "job-1", name: "Audit", prompt: "Review changes", cwd: "/old-project", schedule: { cron: "7 */3 * * 1-5" }, mode: "reuse", session_id: "bound", policy_cap: policy, enabled: true, max_run_minutes: 23, revision: 9, created_by: "user", next_window: null, last_run: null, ...extra })
-const saved = job => ({ job, transition: { from: null, to: { origin: "user", cap: policy, effective_policy: policy, report_to: null } } })
+const job = (extra = {}) => ({ id: "job-1", name: "Audit", prompt: "Review changes", schedule: { cron: "7 */3 * * 1-5" }, target: { kind: "launch", cwd: "/old-project", max_run_minutes: 23 }, enabled: true, revision: 9, created_by: "user", next_window: null, last_run: null, ...extra })
+const saved = job => ({ job })
 function mount(t, route, call, supports = () => true) {
   globalThis.scheduleRoute = { name: "settings-scheduled-edit", params: { jobId: "job-1" }, query: {}, ...route }
   globalThis.scheduleNavigations = []
@@ -76,26 +80,28 @@ function mount(t, route, call, supports = () => true) {
     toast: { push() {} },
   }
   const root = node("root"), app = renderer.createApp(ScheduledSettings)
+  app.use(nuxtUiTestPlugin)
   app.provide(settingsDirtyKey, ref(false))
   app.mount(root)
   t.after(() => app.unmount())
   return root
 }
 
-test("editing changes only the requested fields and preserves a complex plan and session binding", async t => {
+test("editing changes only the requested fields and sends a changed target whole", async t => {
   const writes = []
+  const stored = () => job({ target: { kind: "launch", cwd: "/old-project", agent_id: "saved-agent", max_run_minutes: 23 } })
   const root = mount(t, {}, async (method, params) => {
-    if (method === "schedule.list") return { jobs: [job({ model: { providerId: "missing", modelId: "saved" } })] }
+    if (method === "schedule.list") return { jobs: [stored()] }
     writes.push(params)
-    return saved(job({ ...params.job, revision: 10 }))
+    return saved({ ...stored(), ...params.job, revision: 10 })
   })
   await flush()
   assert.equal(button(root, "Save changes").props.disabled, true)
   assert.match(text(root), /Custom Cron/)
-  await select(root, "Model", "missing / saved (unavailable)")
   await change(field(root, "Name"), "Renamed", "onInput")
+  await change(field(root, "Agent profile ID (optional)"), "", "onInput")
   await submit(root)
-  assert.deepEqual(writes, [{ job: { id: "job-1", name: "Renamed" }, revision: 9 }])
+  assert.deepEqual(writes, [{ job: { id: "job-1", name: "Renamed", target: { kind: "launch", cwd: "/old-project", max_run_minutes: 23 } }, revision: 9 }])
   assert.equal(globalThis.scheduleNavigations[0].name, "settings-scheduled-detail")
 })
 
@@ -104,7 +110,7 @@ test("new tasks use the current workspace and compile selected weekdays and minu
   const root = mount(t, { name: "settings-scheduled-new", params: {} }, async (method, params) => {
     if (method === "schedule.list") return { jobs: [job()] }
     writes.push(params)
-    return saved(job({ ...params.job, mode: "create", session_id: undefined }))
+    return saved(job(params.job))
   })
   await flush()
   assert.equal(text(dropdown(root, "CLI host workspace")), "/current-project")
@@ -112,12 +118,15 @@ test("new tasks use the current workspace and compile selected weekdays and minu
   await change(field(root, "Name"), "Weekly", "onInput")
   await select(root, "CLI host workspace", "/other-project")
   await select(root, "Frequency", "Every week")
-  const checkbox = all(root).find(el => el.type === "input" && el.props.type === "checkbox" && el.props.value === 2)
-  await change(checkbox, [2, 6])
+  for (const day of [1, 3, 4, 5]) {
+    const box = all(root).find(el => el.type === "input" && el.props.type === "checkbox" && el.props.value === day)
+    await change(box, false)
+  }
+  await change(all(root).find(el => el.type === "input" && el.props.type === "checkbox" && el.props.value === 6), true)
   await change(field(root, "Run time"), "17:43", "onInput")
   await submit(root)
   assert.equal(writes.length, 1)
-  assert.deepEqual(writes[0], { job: { name: "Weekly", prompt: "", cwd: "/other-project", schedule: { cron: "43 17 * * 2,6", tz: Intl.DateTimeFormat().resolvedOptions().timeZone }, mode: "create", max_run_minutes: 60, enabled: true } })
+  assert.deepEqual(writes[0], { job: { name: "Weekly", prompt: "", schedule: { cron: "43 17 * * 2,6", tz: Intl.DateTimeFormat().resolvedOptions().timeZone }, target: { kind: "launch", cwd: "/other-project", max_run_minutes: 60 }, enabled: true } })
 })
 
 test("one-off and interval editors submit only the selected plan with minute precision", async t => {
@@ -149,7 +158,7 @@ test("run, pause and delete use their own management actions without authorizing
   const root = mount(t, { name: "settings-scheduled-detail" }, async (method, params) => {
     if (method === "schedule.list") return { jobs: [current] }
     calls.push([method, params])
-    if (method === "schedule.run_now") return { run_id: "accepted", job_id: current.id, state: "launching", created_at: "2026-11-05T05:27:00Z", detail: "" }
+    if (method === "schedule.run_now") return { run_id: "accepted", job_id: current.id, state: "delivering", created_at: "2026-11-05T05:27:00Z", detail: "" }
     if (method === "schedule.set_enabled") { current = { ...current, enabled: params.enabled }; return { job: current } }
     if (method === "schedule.delete") return { job_id: current.id }
     assert.fail(`Unexpected management action ${method}`)
@@ -160,7 +169,7 @@ test("run, pause and delete use their own management actions without authorizing
   button(root, "confirm").props.onClick()
   await running
   await flush()
-  assert.match(text(root), /Launching/)
+  assert.match(text(root), /Delivering/)
   await button(root, "Pause").props.onClick()
   await flush()
   const deleting = button(root, "Delete task").props.onClick()
@@ -196,31 +205,19 @@ test("missing Web admission never falls back to Settings or file reads", async t
   assert.equal(button(root, "New task"), undefined)
 })
 
-test("reopening a searched model preserves the selected model on Enter", async t => {
+test("a new task can deliver into an existing Session branch", async t => {
   let written
   const root = mount(t, { name: "settings-scheduled-new", params: {} }, async (method, params) => {
-    if (method === "schedule.list") return { jobs: [job()] }
+    if (method === "schedule.list") return { jobs: [] }
     written = params.job
     return saved(job(params.job))
   })
-  globalThis.scheduleStores.models.providers = [{ providerId: "p", name: "Provider", models: [{ id: "a", name: "Alpha" }, { id: "b", name: "Beta" }] }]
   await flush()
-  await select(root, "Model", "Provider / Beta")
-  const trigger = dropdown(root, "Model")
-  await trigger.props.onClick()
-  await flush()
-  const search = all(trigger.parent).find(el => el.type === "input" && el.props.type === "search")
-  await change(search, "Alpha", "onInput")
-  const key = key => trigger.props.onKeydown({ key, preventDefault() {}, stopPropagation() {} })
-  await key("Escape")
-  await trigger.props.onClick()
-  await flush()
-  await key("Enter")
-  await flush()
-  assert.equal(text(trigger), "Provider / Beta")
-  await change(field(root, "Name"), "Keep model", "onInput")
+  await change(field(root, "Name"), "Deliver", "onInput")
+  await select(root, "Target", "Deliver to an existing Session branch")
+  await change(field(root, "Session ID"), "session-9", "onInput")
   await submit(root)
-  assert.deepEqual(written.model, { providerId: "p", modelId: "b" })
+  assert.deepEqual(written.target, { kind: "session", session_id: "session-9", branch_id: "main", input_mode: "queue" })
 })
 
 test("one-off DST gaps and repeated minutes are explicit and do not leak into repeat plans", async t => {
@@ -266,13 +263,13 @@ test("history reads render owner outcomes and session links and retain entries a
     assert.equal(method, "schedule.history")
     reads.push(params)
     if (fail) throw new Error("History temporarily unavailable")
-    return { runs: [{ run_id: "run-2", job_id: "job-1", state: "skipped", created_at: "2026-11-05T05:27:00Z", detail: "disabled" }, { run_id: "run-1", job_id: "job-1", state: "completed", created_at: "2026-11-04T05:27:00Z", ended_at: "2026-11-04T05:28:00Z", detail: "Finished audit", session_id: "result-session", policy }] }
+    return { runs: [{ run_id: "run-2", job_id: "job-1", state: "missed", created_at: "2026-11-05T05:27:00Z", ended_at: "2026-11-05T05:27:00Z", detail: "previous_delivery_unsettled" }, { run_id: "run-1", job_id: "job-1", state: "delivered", created_at: "2026-11-04T05:27:00Z", ended_at: "2026-11-04T05:28:00Z", detail: "Finished audit", session_id: "result-session", policy }] }
   })
   await flush()
   await button(root, "Run history").props.onClick()
   await flush()
   assert.deepEqual(reads, [{ job_id: "job-1", limit: 20 }])
-  assert.match(text(root), /Skipped.*disabled.*Completed.*Finished audit/s)
+  assert.match(text(root), /Missed.*previous_delivery_unsettled.*Delivered.*Finished audit/s)
   assert.deepEqual(all(root).find(el => el.props.to?.name === "chat-session").props.to, { name: "chat-session", params: { sessionId: "result-session" } })
   fail = true
   await button(root, "Read latest 50 runs").props.onClick()
@@ -284,4 +281,26 @@ test("history reads render owner outcomes and session links and retain entries a
   await flush()
   assert.equal(text(root).includes("History temporarily unavailable"), false)
   assert.deepEqual(reads.slice(1), [{ job_id: "job-1", limit: 50 }, { job_id: "job-1", limit: 50 }])
+})
+
+test("the last schedule input is compiled before saving without another control change", async t => {
+  for (const scenario of [
+    { plan: undefined, label: "Run time", value: "14:35", expected: { cron: "35 14 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } },
+    { plan: "Custom Cron", label: "Cron", value: "35 14 * * 1", expected: { cron: "35 14 * * 1", tz: Intl.DateTimeFormat().resolvedOptions().timeZone } },
+    { plan: "Every N minutes", label: "Interval in minutes", value: "73", expected: { every_minutes: 73 } },
+  ]) {
+    let written
+    const root = mount(t, { name: "settings-scheduled-new", params: {} }, async (method, params) => {
+      if (method === "schedule.list") return { jobs: [] }
+      assert.equal(method, "schedule.save")
+      written = params.job
+      return saved(job(params.job))
+    })
+    await flush()
+    await change(field(root, "Name"), "Latest input", "onInput")
+    if (scenario.plan) await select(root, "Plan", scenario.plan)
+    await change(field(root, scenario.label), scenario.value, "onInput")
+    await submit(root)
+    assert.deepEqual(written.schedule, scenario.expected)
+  }
 })

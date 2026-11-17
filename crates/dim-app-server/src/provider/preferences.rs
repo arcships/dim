@@ -1,23 +1,13 @@
 use dim_agent_capabilities::host::{ModelProtocol, adopted_preferences, reasoning_config};
 use dim_agent_types::*;
 
-/// The base configuration an adoption starts from: the model's declared
-/// configuration with the catalog's own defaults applied.
+/// The base configuration an adoption starts from: `base` with the model's
+/// declared default reasoning effort and service tier applied.
 ///
-/// `docs/design/appserver/provider-management.md` §3.3 says omitted
-/// preferences "still start at catalog defaults", and
-/// `docs/design/model-configuration.md` says a cleared field carries "the
-/// value an explicit adoption of the same model with no preference for that
-/// field would carry". The declared reasoning effort and service tier are
-/// therefore part of that base, applied through the same mapping an explicit
-/// preference uses, so the adopted configuration, every read and every
-/// request agree on the value.
-///
-/// A declared default applies only when the model declares the control: the
-/// effort is one of the picker's `effortOptions` (or `none` beside a
-/// reasoning-off declaration), the tier is supported and listed, and the
-/// protocol can express the value. Otherwise the base comes back unchanged.
-/// Unlike an explicit preference, a default never makes an adoption fail.
+/// A declared default applies only when the model declares the control and the
+/// protocol can express it; otherwise `base` comes back unchanged. Unlike an
+/// explicit preference, a default never fails an adoption. Which declarations
+/// configure a request is in `docs/design/model-configuration.md`.
 pub(super) fn catalog_defaults(
     base: &ModelConfig,
     snapshot: &ModelCapabilitySnapshot,
@@ -49,18 +39,103 @@ pub(super) fn catalog_defaults(
     config
 }
 
+/// The preferences one adoption sends: the client's stated values, and for
+/// every field the client left unstated the model's saved value.
+///
+/// Per field, so a client that states an effort keeps the saved tier.
+pub(super) fn merge(stated: &ModelPreferences, saved: &ModelPreferences) -> ModelPreferences {
+    ModelPreferences {
+        reasoning_effort: stated
+            .reasoning_effort
+            .clone()
+            .or_else(|| saved.reasoning_effort.clone()),
+        service_tier: stated
+            .service_tier
+            .clone()
+            .or_else(|| saved.service_tier.clone()),
+    }
+}
+
+/// The configuration one adoption sends: `configure` over the client's stated
+/// preferences and, for each field it left unstated, the model's saved value.
+///
+/// A stated value the model refuses fails the adoption, exactly as a stated
+/// value does today. A saved value it no longer accepts is dropped for that
+/// field alone, so a catalog change cannot fail every create that states
+/// nothing, and the declared default stands there instead; one warning names
+/// the Provider, the model and the field. The saved record is never rewritten
+/// here: the write side stays its only writer.
+pub(super) fn effective(
+    stated: &ModelPreferences,
+    saved: &ModelPreferences,
+    snapshot: &ModelCapabilitySnapshot,
+    protocol: ModelProtocol,
+    base: &ModelConfig,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<ModelConfig, &'static str> {
+    let merged = merge(stated, saved);
+    if let Ok(config) = configure(&merged, snapshot, protocol, base) {
+        return Ok(config);
+    }
+    let accepts =
+        |preferences: &ModelPreferences| configure(preferences, snapshot, protocol, base).is_ok();
+    let mut kept = stated.clone();
+    if kept.reasoning_effort.is_none()
+        && let Some(effort) = &saved.reasoning_effort
+    {
+        let single = ModelPreferences {
+            reasoning_effort: Some(effort.clone()),
+            service_tier: None,
+        };
+        if accepts(&single) {
+            kept.reasoning_effort = Some(effort.clone());
+        } else {
+            tracing::warn!(
+                provider_id,
+                model_id,
+                field = "reasoningEffort",
+                "Saved model preference is not accepted by the model; using the declared default"
+            );
+        }
+    }
+    if kept.service_tier.is_none()
+        && let Some(tier) = &saved.service_tier
+    {
+        let single = ModelPreferences {
+            reasoning_effort: None,
+            service_tier: Some(tier.clone()),
+        };
+        if accepts(&single) {
+            kept.service_tier = Some(tier.clone());
+        } else {
+            tracing::warn!(
+                provider_id,
+                model_id,
+                field = "serviceTier",
+                "Saved model preference is not accepted by the model; using the declared default"
+            );
+        }
+    }
+    configure(&kept, snapshot, protocol, base)
+}
+
 /// The model's declared default effort, when the picker would offer it.
+///
+/// A declaration that states reasoning is off by default (#1376) names only a
+/// strength the model does not use, so it offers the declaration's own `off`
+/// mapping instead of the `effort` beside it.
 fn declared_effort(snapshot: &ModelCapabilitySnapshot) -> Option<String> {
     let reasoning = snapshot.reasoning.as_ref()?;
     if !reasoning.supported || !snapshot.capabilities.reasoning {
         return None;
     }
-    let effort = reasoning.effort.as_ref()?;
-    let mut options = reasoning.effort_options.clone().unwrap_or_default();
-    if reasoning.off.is_some() && !options.iter().any(|option| option == "none") {
-        options.push("none".into());
+    if reasoning.default_enabled == Some(false) {
+        return reasoning.off.as_ref().map(|_| "none".to_owned());
     }
-    options
+    let effort = reasoning.effort.as_ref()?;
+    reasoning
+        .offered_efforts()
         .iter()
         .any(|option| option == effort)
         .then(|| effort.clone())
@@ -74,8 +149,86 @@ fn declared_service_tier(snapshot: &ModelCapabilitySnapshot) -> Option<String> {
         .then(|| default.clone())
 }
 
+/// Sets the summary style the configuration sends, as the last step of
+/// [`configure`] so that it follows the effort the result carries.
+///
+/// On a model that declares `summaries`, on the OpenAI Responses protocol,
+/// `provider_options.openai.summary` is `Detailed` when the effort is present and
+/// not `none`, and absent otherwise, and `reasoning.summary` is cleared so the
+/// two cannot disagree. A style other than `Detailed` in either field is the
+/// configuration's own and is left as set. Every other model and protocol is left
+/// untouched.
+///
+/// The xAI Responses exclusion is deliberate: the request builder accepts
+/// `reasoning.summary` there and writes `reasoningSummary`, but the xAI adapter
+/// drops that deprecated field and sends no `reasoning` key, so a style applied
+/// there would change no bytes.
+fn declared_summary(
+    config: &mut ModelConfig,
+    snapshot: &ModelCapabilitySnapshot,
+    protocol: ModelProtocol,
+) {
+    let declares = protocol == ModelProtocol::OpenaiResponses
+        && snapshot.capabilities.reasoning
+        && snapshot
+            .reasoning
+            .as_ref()
+            .is_some_and(|reasoning| reasoning.supported && reasoning.summaries == Some(true));
+    if !declares {
+        return;
+    }
+    let configured = config
+        .provider_options
+        .as_ref()
+        .and_then(|options| options.openai.as_ref())
+        .and_then(|options| options.summary)
+        .or_else(|| {
+            config
+                .reasoning
+                .as_ref()
+                .and_then(|reasoning| reasoning.summary)
+        });
+    if configured.is_some_and(|style| style != SummaryStyle::Detailed) {
+        return;
+    }
+    // A `Detailed` in either field cannot be told apart from the derived value,
+    // so it follows the effort and the provider option is what the body carries.
+    let derived = adopted_preferences(config, protocol)
+        .and_then(|preferences| preferences.reasoning_effort)
+        .is_some_and(|effort| effort != "none")
+        .then_some(SummaryStyle::Detailed);
+    if let Some(reasoning) = config.reasoning.as_mut() {
+        reasoning.summary = None;
+        if *reasoning == ProviderReasoningConfig::default() {
+            config.reasoning = None;
+        }
+    }
+    match derived {
+        Some(style) => {
+            config
+                .provider_options
+                .get_or_insert_default()
+                .openai
+                .get_or_insert_default()
+                .summary = Some(style);
+        }
+        None => {
+            if let Some(options) = config
+                .provider_options
+                .as_mut()
+                .and_then(|options| options.openai.as_mut())
+            {
+                options.summary = None;
+            }
+        }
+    }
+}
+
 /// Applies preferences to a copy of `base`, validating them against the
 /// model's declared capabilities.
+///
+/// The result also carries the model's declared reasoning summary, derived from
+/// the effort it sends; see [`declared_summary`].
 pub(super) fn configure(
     preferences: &ModelPreferences,
     snapshot: &ModelCapabilitySnapshot,
@@ -111,6 +264,7 @@ pub(super) fn configure(
             _ => return Err("Service tier is not supported by this protocol"),
         }
     }
+    declared_summary(&mut config, snapshot, protocol);
     Ok(config)
 }
 

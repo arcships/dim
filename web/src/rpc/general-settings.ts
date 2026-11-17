@@ -1,5 +1,5 @@
-import { ProtocolError, readSummaries } from "./read"
-import type { ModelId, SessionSummary } from "./protocol"
+import { ProtocolError } from "./read"
+import type { ModelId } from "./protocol"
 
 type ObjectValue = Record<string, unknown>
 
@@ -76,14 +76,14 @@ export function readRules(value: unknown): RulesView {
 }
 export function readRevision(value: unknown): string { return string(object(value).revision) }
 
-export type SkillEntry = { id: string; name: string; description: string; filePath: string; allowedTools: string[]; enabled: boolean; shadowedBy: string | undefined }
+export type SkillEntry = { id: string; name: string; description: string; filePath: string; allowedTools: string[]; enabled: boolean; shadowedBy: string | undefined; userInvocable: boolean }
 export type SkillIssue = { path: string; message: string }
 export type SkillsView = { version: number; entries: SkillEntry[]; issues: SkillIssue[] }
 export function readSkills(value: unknown): SkillsView {
   const source = object(value)
   return { version: number(source.version), entries: array(source.entries, (item) => {
     const skill = object(item)
-    return { id: string(skill.id), name: string(skill.name), description: string(skill.description), filePath: string(skill.filePath), allowedTools: array(skill.allowedTools, string), enabled: boolean(skill.enabled), shadowedBy: optionalString(skill.shadowedBy) }
+    return { id: string(skill.id), name: string(skill.name), description: string(skill.description), filePath: string(skill.filePath), allowedTools: array(skill.allowedTools, string), enabled: boolean(skill.enabled), shadowedBy: optionalString(skill.shadowedBy), userInvocable: skill.userInvocable === undefined ? true : boolean(skill.userInvocable) }
   }), issues: array(source.issues, (item) => {
     const issue = object(item)
     return { path: string(issue.path), message: string(issue.message) }
@@ -278,11 +278,6 @@ export type McpImportResolution = { id: string; action: McpImportAction; newId?:
 /** The apply's reply: the source revision the import wrote. */
 export function readMcpImportApplied(value: unknown): string { return string(object(value).revision) }
 
-export type SavedSessions = { sessions: SessionSummary[]; nextCursor: string | undefined }
-export function readSavedSessions(value: unknown): SavedSessions {
-  const source = object(value)
-  return { sessions: readSummaries(source.sessions), nextCursor: optionalString(source.nextCursor) }
-}
 export function readPing(value: unknown): { sessions: number; connections: number; serverVersion: string } {
   const source = object(value)
   return { sessions: number(source.sessions), connections: number(source.connections), serverVersion: string(source.serverVersion) }

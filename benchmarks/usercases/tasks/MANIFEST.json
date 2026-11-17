@@ -1,0 +1,35 @@
+{
+  "source": {
+    "corpus": "dim-badcase-usercases",
+    "data_branch": "eval-badcase",
+    "notes": "P0 2026-11-16: 2 primary tasks + 2 paired controls from public GitHub issues; uc-003 instruction states the required git worktree side effects (per the review on PR #1702)",
+    "upstream": "arcships/dim issues"
+  },
+  "tasks": {
+    "uc-001-compaction-constraint-retention": {
+      "digest": "e1e2fe5f42d8c54d5b15de7301fd38d4b3f9288f75e185067b5483326d55a391",
+      "kind": "primary",
+      "source_issue": "arcships/dim#169",
+      "upstream": "dim-issues"
+    },
+    "uc-002-compaction-constraint-control": {
+      "digest": "dc0b05806b8a24f4bb1872773bdc0cee5f8e9e90a573ad2c20f564535d4800eb",
+      "kind": "control",
+      "source_issue": "arcships/dim#169",
+      "upstream": "dim-issues"
+    },
+    "uc-003-worktree-outside-workspace": {
+      "digest": "f68c9e1bba42f8dc3f2faf6a93d8e6beae5edf283fde41aa7766ea9fde93b829",
+      "kind": "primary",
+      "source_issue": "arcships/dim#911",
+      "upstream": "dim-issues"
+    },
+    "uc-004-worktree-in-workspace-control": {
+      "digest": "be828b901db059a06a2d821da19078f2ba59bcd5395e76306d7cd1e2538b34a0",
+      "kind": "control",
+      "source_issue": "arcships/dim#911",
+      "upstream": "dim-issues"
+    }
+  },
+  "tree_digest": "29b2402c5e9e75f10a3a1cceb191f6a0064c0f98f7693260d69033b977aef30a"
+}

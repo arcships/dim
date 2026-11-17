@@ -1,22 +1,21 @@
+use super::reclaim::Reclaimed;
 use dim_agent_runtime::{AgentError, Result, panic_message};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags};
 use rutis::host::ErrorKind;
 use rutis::{Ctx, Plugin};
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, MutexGuard, PoisonError, TryLockError,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Condvar, Mutex, PoisonError},
     time::Duration,
 };
 
 /// The native store format this daemon creates and opens.
-pub const FORMAT: u32 = 36;
+pub const FORMAT: u32 = 52;
 /// The oldest schema the startup transaction upgrades: the first step of
 /// `UPGRADES`, which is ordered oldest first.
 const MIN_FORMAT: u32 = UPGRADES[0].0;
@@ -26,10 +25,9 @@ const MIN_FORMAT: u32 = UPGRADES[0].0;
 const CHECKPOINT_BYTES: u64 = 4 * 1024 * 1024;
 /// The WAL file is truncated to this size when a checkpoint restarts it.
 const WAL_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
-/// The process connection's page cache in KiB. A measurement over a 650 MB
-/// store with 2,300 Sessions put their hot tail pages (about 20 MB) in cache
-/// from 32 MiB on; larger caches read no fewer bytes.
-const PAGE_CACHE_KIB: i64 = 32 * 1024;
+// #1673
+const WRITER_CACHE_KIB: i64 = 512;
+const READER_CACHE_KIB: i64 = 256;
 /// Indexes a format range had and the current schema no longer creates, with
 /// the first and last format that had them.
 const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
@@ -52,10 +50,48 @@ const LEGACY_INDEXES: &[(&str, &str, u32, u32)] = &[
         31,
     ),
 ];
+const PROVIDER_V51: &[(&str, &str)] = &[
+    (
+        "provider_bundle",
+        "CREATE TABLE provider_bundle (provider_id TEXT PRIMARY KEY, fingerprint TEXT, definition_fingerprint TEXT, pending INTEGER NOT NULL CHECK(pending IN (0,1)))",
+    ),
+    (
+        "provider_catalog_revision",
+        "CREATE TABLE provider_catalog_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision TEXT NOT NULL)",
+    ),
+    (
+        "provider_query_records",
+        "CREATE TABLE provider_query_records (provider_id TEXT PRIMARY KEY REFERENCES providers(provider_id) ON DELETE CASCADE, enabled INTEGER NOT NULL, kind TEXT, credential_configured INTEGER NOT NULL, record TEXT NOT NULL)",
+    ),
+    (
+        "provider_query_records_by_state",
+        "CREATE INDEX provider_query_records_by_state ON provider_query_records(enabled,credential_configured,provider_id)",
+    ),
+    (
+        "provider_query_records_by_kind",
+        "CREATE INDEX provider_query_records_by_kind ON provider_query_records(kind,provider_id)",
+    ),
+    (
+        "provider_models",
+        "CREATE TABLE provider_models (provider_id TEXT NOT NULL REFERENCES providers(provider_id) ON DELETE CASCADE, model_id TEXT NOT NULL, source TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY(provider_id,model_id,source))",
+    ),
+    (
+        "provider_models_by_model",
+        "CREATE INDEX provider_models_by_model ON provider_models(model_id,provider_id)",
+    ),
+    (
+        "provider_models_insert",
+        "CREATE TRIGGER provider_models_insert AFTER INSERT ON providers BEGIN DELETE FROM provider_query_records WHERE provider_id=NEW.provider_id; INSERT INTO provider_query_records SELECT NEW.provider_id,coalesce(json_extract(record,'$.enabled'),0),json_extract(record,'$.kind'),coalesce(json_extract(record,'$.credential') IS NOT NULL OR json_extract(record,'$.auth.type')='anonymous' OR coalesce(json_extract(record,'$.credentialAuthority'),'static')!='static',0),json_remove(record,'$.models','$.userModels','$.modelConfigOverrides') FROM (SELECT CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END AS record); DELETE FROM provider_models WHERE provider_id=NEW.provider_id; INSERT OR IGNORE INTO provider_models SELECT NEW.provider_id,coalesce(json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.entry.modelId')),'default',value FROM json_each(CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END,'$.models') WHERE coalesce(json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.entry.modelId')) IS NOT NULL; INSERT OR IGNORE INTO provider_models SELECT NEW.provider_id,json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),'user',value FROM json_each(CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END,'$.userModels') WHERE json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId') IS NOT NULL; INSERT OR IGNORE INTO provider_models SELECT NEW.provider_id,json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),'override',value FROM json_each(CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END,'$.modelConfigOverrides') WHERE json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId') IS NOT NULL; END",
+    ),
+    (
+        "provider_models_update",
+        "CREATE TRIGGER provider_models_update AFTER UPDATE ON providers BEGIN DELETE FROM provider_query_records WHERE provider_id=NEW.provider_id; INSERT INTO provider_query_records SELECT NEW.provider_id,coalesce(json_extract(record,'$.enabled'),0),json_extract(record,'$.kind'),coalesce(json_extract(record,'$.credential') IS NOT NULL OR json_extract(record,'$.auth.type')='anonymous' OR coalesce(json_extract(record,'$.credentialAuthority'),'static')!='static',0),json_remove(record,'$.models','$.userModels','$.modelConfigOverrides') FROM (SELECT CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END AS record); DELETE FROM provider_models WHERE provider_id=NEW.provider_id; INSERT OR IGNORE INTO provider_models SELECT NEW.provider_id,coalesce(json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.entry.modelId')),'default',value FROM json_each(CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END,'$.models') WHERE coalesce(json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.entry.modelId')) IS NOT NULL; INSERT OR IGNORE INTO provider_models SELECT NEW.provider_id,json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),'user',value FROM json_each(CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END,'$.userModels') WHERE json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId') IS NOT NULL; INSERT OR IGNORE INTO provider_models SELECT NEW.provider_id,json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId'),'override',value FROM json_each(CASE WHEN json_valid(NEW.record) THEN NEW.record ELSE '{}' END,'$.modelConfigOverrides') WHERE json_extract(CASE WHEN type='object' THEN value ELSE '{}' END,'$.modelId') IS NOT NULL; END",
+    ),
+];
 pub(super) const SCHEMA: &[(&str, &str)] = &[
     (
         "agent_store_format",
-        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 36))",
+        "CREATE TABLE agent_store_format (version INTEGER NOT NULL PRIMARY KEY CHECK (version = 52))",
     ),
     (
         "settings_documents",
@@ -70,12 +106,52 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
         "CREATE TABLE providers (provider_id TEXT NOT NULL PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0), record TEXT NOT NULL)",
     ),
     (
+        "provider_bundle",
+        "CREATE TABLE provider_bundle (provider_id TEXT PRIMARY KEY, fingerprint TEXT, definition_fingerprint TEXT, pending INTEGER NOT NULL CHECK(pending IN (0,1)), attempted INTEGER NOT NULL, naming_revision TEXT NOT NULL)",
+    ),
+    (
+        "provider_catalog_revision",
+        "CREATE TABLE provider_catalog_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision TEXT NOT NULL, activation INTEGER NOT NULL)",
+    ),
+    (
+        "provider_sources",
+        "CREATE TABLE provider_sources (revision TEXT NOT NULL UNIQUE, image BLOB NOT NULL)",
+    ),
+    (
+        "provider_bases",
+        "CREATE TABLE provider_bases (provider_id TEXT PRIMARY KEY REFERENCES providers(provider_id) ON DELETE CASCADE, revision TEXT NOT NULL REFERENCES provider_sources(revision))",
+    ),
+    (
+        "provider_models",
+        "CREATE TABLE provider_models (provider_id TEXT NOT NULL REFERENCES providers(provider_id) ON DELETE CASCADE, model_id TEXT NOT NULL, source TEXT NOT NULL, position INTEGER NOT NULL, entry TEXT NOT NULL, PRIMARY KEY(provider_id,model_id,source))",
+    ),
+    (
+        "provider_models_by_model",
+        "CREATE INDEX provider_models_by_model ON provider_models(model_id,provider_id)",
+    ),
+    (
+        "provider_models_by_position",
+        "CREATE INDEX provider_models_by_position ON provider_models(provider_id,source,position)",
+    ),
+    (
+        "provider_names",
+        "CREATE TABLE provider_names (provider_id TEXT NOT NULL REFERENCES providers(provider_id) ON DELETE CASCADE, model_id TEXT NOT NULL, display_name TEXT NOT NULL, label TEXT, zdr INTEGER NOT NULL, PRIMARY KEY(provider_id,model_id))",
+    ),
+    (
+        "provider_model_state",
+        "CREATE TABLE provider_model_state (provider_id TEXT NOT NULL REFERENCES providers(provider_id) ON DELETE CASCADE, model_id TEXT NOT NULL, field TEXT NOT NULL, position INTEGER NOT NULL, value TEXT NOT NULL, PRIMARY KEY(provider_id,model_id,field))",
+    ),
+    (
+        "provider_name_keys",
+        "CREATE TABLE provider_name_keys (provider_id TEXT NOT NULL, key TEXT NOT NULL, model_id TEXT NOT NULL, PRIMARY KEY(provider_id,key,model_id), FOREIGN KEY(provider_id,model_id) REFERENCES provider_names(provider_id,model_id) ON DELETE CASCADE)",
+    ),
+    (
         "provider_selections",
         "CREATE TABLE provider_selections (scope TEXT NOT NULL PRIMARY KEY, version INTEGER NOT NULL CHECK(version > 0), provider_id TEXT NOT NULL, model_id TEXT NOT NULL)",
     ),
     (
         "agent_sessions",
-        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))",
+        "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown', 'automation')))",
     ),
     (
         "agent_sessions_by_leader",
@@ -95,7 +171,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "session_owners",
-        "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)))",
+        "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3, 4)))",
     ),
     (
         "timeline_branches",
@@ -122,20 +198,36 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
         "CREATE INDEX timeline_events_by_id ON timeline_events(session_id, event_id) WHERE event_id IS NOT NULL",
     ),
     (
+        "timeline_events_branch_interrupts",
+        "CREATE INDEX timeline_events_branch_interrupts ON timeline_events(session_id, branch_id, sequence) WHERE kind = 'stop/interrupt' AND json_extract(body, '$.record.event.data.scope') = 'branch'",
+    ),
+    (
         "timeline_events_requests",
-        "CREATE INDEX timeline_events_requests ON timeline_events(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence)",
+        "CREATE INDEX timeline_events_requests ON timeline_events(session_id, branch_id, kind, coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')), sequence) WHERE coalesce(json_extract(body,'$.record.event.data.request_id'),json_extract(body,'$.request_id')) IS NOT NULL",
     ),
     (
         "timeline_events_inputs",
-        "CREATE INDEX timeline_events_inputs ON timeline_events(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence)",
+        "CREATE INDEX timeline_events_inputs ON timeline_events(session_id, branch_id, kind, json_extract(body,'$.record.event.data.input_id'), sequence) WHERE json_extract(body,'$.record.event.data.input_id') IS NOT NULL",
     ),
     (
         "timeline_events_users",
-        "CREATE INDEX timeline_events_users ON timeline_events(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence)",
+        "CREATE INDEX timeline_events_users ON timeline_events(session_id, branch_id, kind, json_type(body,'$.record.event.data.user'), sequence) WHERE json_type(body,'$.record.event.data.user') IS NOT NULL",
     ),
     (
         "timeline_input_submissions",
         "CREATE INDEX timeline_input_submissions ON timeline_events(session_id, branch_id, json_extract(body, '$.record.event.data.submission_id'), sequence) WHERE kind = 'input/message'",
+    ),
+    (
+        "timeline_events_turns",
+        "CREATE INDEX timeline_events_turns ON timeline_events(session_id,branch_id,kind,coalesce(json_extract(body,'$.record.event.data.turn_id'),json_extract(body,'$.turn_id')),sequence) WHERE coalesce(json_extract(body,'$.record.event.data.turn_id'),json_extract(body,'$.turn_id')) IS NOT NULL",
+    ),
+    (
+        "timeline_events_scopes",
+        "CREATE INDEX timeline_events_scopes ON timeline_events(session_id,branch_id,kind,json_extract(body,'$.record.event.data.scope.kind'),json_extract(body,'$.record.event.data.scope.timeline'),json_extract(body,'$.record.event.data.scope.id'),json_extract(body,'$.record.event.data.status'),sequence) WHERE kind='context/scope'",
+    ),
+    (
+        "timeline_events_source_positions",
+        "CREATE INDEX timeline_events_source_positions ON timeline_events(session_id,branch_id,kind,json_extract(body,'$.record.event.data.epoch'),json_extract(body,'$.record.event.data.current.at.branch'),json_extract(body,'$.record.event.data.current.at.sequence'),sequence) WHERE kind='context-usage/recovered'",
     ),
     (
         "timeline_events_context",
@@ -175,7 +267,7 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
     ),
     (
         "worktree_directories",
-        "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))",
+        "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, last_used_at_ms INTEGER, PRIMARY KEY (repository, root))",
     ),
     (
         "session_worktrees",
@@ -206,9 +298,31 @@ pub(super) const SCHEMA: &[(&str, &str)] = &[
 /// to recognize a store older than v27.
 const AGENT_SESSIONS_BEFORE_V27: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0))";
 const AGENTS_BEFORE_V27: &str = "CREATE TABLE agents(agent_id TEXT PRIMARY KEY, profile TEXT NOT NULL, is_default INTEGER NOT NULL CHECK(is_default IN (0, 1)))";
+const SESSION_OWNERS_BEFORE_V38: &str = "CREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3)))";
+const V38_SESSION_OWNERS: &str = "DROP INDEX session_owners_by_agent;\nALTER TABLE session_owners RENAME TO session_owners_v37;\nCREATE TABLE session_owners(session_id TEXT PRIMARY KEY REFERENCES agent_sessions(session_id), agent_id TEXT NOT NULL REFERENCES agents(agent_id), protocol_version INTEGER NOT NULL CHECK(protocol_version IN (1, 2, 3, 4)));\nINSERT INTO session_owners SELECT session_id, agent_id, protocol_version FROM session_owners_v37;\nDROP TABLE session_owners_v37;\nCREATE INDEX session_owners_by_agent ON session_owners(agent_id, protocol_version, session_id);";
 /// The text of `agent_sessions` from v27 through v29; `schema_of` uses it to
 /// recognize a store older than v30.
 const AGENT_SESSIONS_BEFORE_V30: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id))";
+/// The text of `agent_sessions` from v30 through v41; `schema_of` uses it to
+/// recognize a store older than v42.
+const AGENT_SESSIONS_BEFORE_V42: &str = "CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown')))";
+/// v42 rebuilds `agent_sessions` so its `CHECK` accepts `automation`, the
+/// origin of a Session a saved configuration launched (#1421). A `CHECK` set
+/// cannot be widened in place, so the table is recreated, with the one index
+/// `SCHEMA` places on it. Unlike v38's rebuild of `session_owners`, other
+/// tables reference `agent_sessions`, and a rename rewrites those references
+/// unless the connection runs with `legacy_alter_table` on and foreign keys
+/// off; the startup transaction does both. Creating the table under its final
+/// name, rather than renaming it in, keeps its statement free of the quotes a
+/// rename adds.
+const V42_AGENT_SESSIONS: &str = "DROP INDEX agent_sessions_by_leader;
+PRAGMA legacy_alter_table=ON;
+ALTER TABLE agent_sessions RENAME TO agent_sessions_v41;
+CREATE TABLE agent_sessions (session_id TEXT NOT NULL PRIMARY KEY, config TEXT NOT NULL, created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0), leader_session_id TEXT REFERENCES agent_sessions(session_id), origin TEXT NOT NULL DEFAULT 'unknown' CHECK (origin IN ('client', 'acp', 'internal', 'unknown', 'automation')));
+INSERT INTO agent_sessions SELECT session_id, config, created_at_ms, leader_session_id, origin FROM agent_sessions_v41;
+DROP TABLE agent_sessions_v41;
+CREATE INDEX agent_sessions_by_leader ON agent_sessions(leader_session_id);
+PRAGMA legacy_alter_table=OFF;";
 /// The text of `timeline_events` before v31 adds the two reading switches.
 const TIMELINE_EVENTS_BEFORE_V31: &str = "CREATE TABLE timeline_events (session_id TEXT NOT NULL, branch_id TEXT NOT NULL, sequence INTEGER NOT NULL CHECK (sequence > 0), last_sequence INTEGER NOT NULL CHECK (last_sequence >= sequence), kind TEXT NOT NULL, body TEXT NOT NULL, event_id TEXT, PRIMARY KEY (session_id, branch_id, sequence), FOREIGN KEY (session_id, branch_id) REFERENCES timeline_branches(session_id, branch_id))";
 /// v27 adds a column to two tables, which `SCHEMA` cannot express as a new
@@ -226,10 +340,17 @@ UPDATE agent_sessions SET origin='internal' WHERE leader_session_id IS NOT NULL;
 const V31_COLUMNS: &str =
     "ALTER TABLE timeline_events ADD COLUMN context_render INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE timeline_events ADD COLUMN context_state INTEGER NOT NULL DEFAULT 0;";
+/// The text of `worktree_directories` before v45 adds the last-used time;
+/// `schema_of` uses it to recognize a store older than v45.
+const WORKTREE_DIRECTORIES_BEFORE_V45: &str = "CREATE TABLE worktree_directories (repository TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (repository, root))";
+/// v45 adds the directory's last-used time, written by the association's
+/// write and removal: an upgrade cannot fill the rows it never recorded, so
+/// the column is nullable and a `NULL` time is unknown.
+const V45_COLUMNS: &str = "ALTER TABLE worktree_directories ADD COLUMN last_used_at_ms INTEGER";
 /// The one-way upgrade steps, oldest first: the format a step starts from
 /// and the `SCHEMA` entries it adds, which are created in `SCHEMA` order,
 /// tables before their indexes. An upgrade also replaces the marker table.
-const UPGRADES: [(u32, &[&str]); 22] = [
+const UPGRADES: [(u32, &[&str]); 38] = [
     (
         13,
         &[
@@ -314,6 +435,75 @@ const UPGRADES: [(u32, &[&str]); 22] = [
             "timeline_text_tails",
         ],
     ),
+    (
+        36,
+        &[
+            "timeline_member_nodes",
+            "timeline_member_roots",
+            "timeline_member_origins",
+            "timeline_member_terminals",
+        ],
+    ),
+    (37, &[]),
+    (38, &["timeline_array_elements"]),
+    (
+        39,
+        &[
+            "timeline_output_ids",
+            "timeline_output_ids_by_position",
+            "timeline_events_turns",
+            "timeline_events_scopes",
+            "timeline_events_source_positions",
+        ],
+    ),
+    (40, &[]),
+    (41, &[]),
+    // #1413: checked withdrawal candidates, unreadable by v42.
+    (42, &[]),
+    // v44: one optional field on one event kind (`prompt/changed` names its
+    // delivery inputs); the marker only. A daemon from before this format does
+    // not decode stored events at startup, so it would accept a store holding
+    // the field and fail on the first `prompt/changed` it decodes; the marker
+    // makes it refuse the store at open instead.
+    (43, &[]),
+    // #1451: the managed worktree's last-used time; the column only, and a
+    // store this daemon rewrites keeps `NULL` for rows it never recorded.
+    (44, &[]),
+    // #1477: one optional field on one event (`model/usage` counts its
+    // reasoning tokens); the marker only. `Usage` denies unknown fields and
+    // startup does not decode stored events, so a daemon from before this
+    // format would accept a store holding the field and fail on the first
+    // `model/usage` it decodes; the marker makes it refuse the store at open
+    // instead.
+    (45, &[]),
+    (46, &["timeline_events_branch_interrupts"]),
+    // #1496: task titles in strict exec/started and collaboration/request payloads.
+    (47, &[]),
+    (48, &[]),
+    (49, &[]),
+    (
+        50,
+        &[
+            "provider_query_records",
+            "provider_query_records_by_state",
+            "provider_query_records_by_kind",
+            "provider_bundle",
+            "provider_catalog_revision",
+            "provider_models",
+            "provider_models_by_model",
+        ],
+    ),
+    (
+        51,
+        &[
+            "provider_model_state",
+            "provider_sources",
+            "provider_bases",
+            "provider_names",
+            "provider_name_keys",
+            "provider_models_by_position",
+        ],
+    ),
 ];
 
 fn format_table(version: u32) -> String {
@@ -326,7 +516,13 @@ fn format_table(version: u32) -> String {
 fn schema_of(version: u32) -> Vec<(&'static str, String)> {
     SCHEMA
         .iter()
+        .chain(PROVIDER_V51.iter().filter(|(name, _)| {
+            version == 51 && !SCHEMA.iter().any(|(current, _)| current == name)
+        }))
         .chain(super::text::SCHEMA)
+        .chain(super::members::SCHEMA)
+        .chain(super::arrays::SCHEMA)
+        .chain(super::identities::SCHEMA)
         .copied()
         .chain(
             LEGACY_INDEXES
@@ -344,9 +540,66 @@ fn schema_of(version: u32) -> Vec<(&'static str, String)> {
                 "agent_store_format" => format_table(version),
                 "agent_sessions" if version < 27 => AGENT_SESSIONS_BEFORE_V27.to_owned(),
                 "agent_sessions" if version < 30 => AGENT_SESSIONS_BEFORE_V30.to_owned(),
+                "agent_sessions" if version < 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
+                "worktree_directories" if version < 45 => {
+                    WORKTREE_DIRECTORIES_BEFORE_V45.to_owned()
+                }
+                "session_owners" if version < 41 => SESSION_OWNERS_BEFORE_V38.to_owned(),
                 "agents" if version < 27 => AGENTS_BEFORE_V27.to_owned(),
                 "timeline_events" if version < 31 => TIMELINE_EVENTS_BEFORE_V31.to_owned(),
+                "timeline_events_requests" | "timeline_events_inputs" | "timeline_events_users"
+                    if version < 38 =>
+                {
+                    sql.split(" WHERE ")
+                        .next()
+                        .expect("index definition")
+                        .to_owned()
+                }
+                _ if version == 51 && name.starts_with("provider_") => PROVIDER_V51
+                    .iter()
+                    .find(|(n, _)| *n == name)
+                    .map_or(sql, |(_, sql)| *sql)
+                    .to_owned(),
                 _ => sql.to_owned(),
+            };
+            (name, sql)
+        })
+        .collect()
+}
+
+fn main_schema(version: u32) -> Vec<(&'static str, String)> {
+    schema_of(36)
+        .into_iter()
+        .map(|(name, sql)| {
+            let sql = match name {
+                "agent_store_format" => format_table(version),
+                "session_owners" if version == 38 => SCHEMA
+                    .iter()
+                    .find(|(name, _)| *name == "session_owners")
+                    .expect("owner schema")
+                    .1
+                    .to_owned(),
+                _ => sql,
+            };
+            (name, sql)
+        })
+        .collect()
+}
+
+fn resume_schema(version: u32) -> Vec<(&'static str, String)> {
+    schema_of(44)
+        .into_iter()
+        .chain(
+            SCHEMA
+                .iter()
+                .filter(|(name, _)| *name == "timeline_events_branch_interrupts")
+                .map(|(name, sql)| (*name, (*sql).to_owned())),
+        )
+        .map(|(name, sql)| {
+            let sql = match name {
+                "agent_store_format" => format_table(version),
+                "agent_sessions" if version == 42 => AGENT_SESSIONS_BEFORE_V42.to_owned(),
+                _ => sql,
             };
             (name, sql)
         })
@@ -415,10 +668,31 @@ fn schema(connection: &Connection) -> Result<Vec<(String, String)>> {
 }
 /// The format whose exact schema `actual` is: the current format, or one an
 /// upgrade step starts from.
-fn known_format(actual: &[(String, String)]) -> Option<u32> {
+fn known_format(actual: &[(String, String)], marker: Option<i64>) -> Option<u32> {
+    let matches = |version: u32| same_schema(actual, schema_of(version));
+    // A marker-only step shares the schema of the step before it (v42 and
+    // v43 differ only in the event encoding). The marker decides the version
+    // the schema cannot.
+    if let Some(marker) = marker
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value <= FORMAT)
+        && matches(marker)
+    {
+        return Some(marker);
+    }
     std::iter::once(FORMAT)
         .chain(UPGRADES.iter().map(|(from, _)| *from))
-        .find(|version| same_schema(actual, schema_of(*version)))
+        .find(|version| matches(*version))
+        .or_else(|| {
+            [42, 43, 44]
+                .into_iter()
+                .find(|version| same_schema(actual, resume_schema(*version)))
+        })
+        .or_else(|| {
+            [37, 38]
+                .into_iter()
+                .find(|version| same_schema(actual, main_schema(*version)))
+        })
 }
 /// The rows of the format marker table.
 fn markers(connection: &Connection) -> Result<Vec<i64>> {
@@ -435,11 +709,63 @@ fn storage(error: impl std::fmt::Display) -> AgentError {
     AgentError::Storage(error.to_string())
 }
 
+/// The rows `PRAGMA foreign_key_check` reports, counted by `(table, parent)`.
+/// It returns one row per offending row, so the count needs no ordering and no
+/// second pass: the reference counts are what an upgrade compares.
+fn violations(connection: &Connection) -> Result<BTreeMap<(String, String), i64>> {
+    let mut counts = BTreeMap::new();
+    let mut check = connection
+        .prepare("SELECT * FROM pragma_foreign_key_check")
+        .map_err(storage)?;
+    let mut rows = check.query([]).map_err(storage)?;
+    while let Some(row) = rows.next().map_err(storage)? {
+        let table: String = row.get(0).map_err(storage)?;
+        let parent: String = row.get(2).map_err(storage)?;
+        *counts.entry((table, parent)).or_insert(0) += 1;
+    }
+    Ok(counts)
+}
+
+/// The first `(table, parent)` pair an upgrade left with more violations than
+/// it found, with both counts. A pair that is unchanged or smaller is a state
+/// the store already documented, which a retry converges.
+fn grew(
+    after: BTreeMap<(String, String), i64>,
+    before: &BTreeMap<(String, String), i64>,
+) -> Option<(String, String, i64, i64)> {
+    after.into_iter().find_map(|(pair, count)| {
+        let found = before.get(&pair).copied().unwrap_or(0);
+        (count > found).then_some((pair.0, pair.1, found, count))
+    })
+}
+
+/// The store upgrade a running daemon reports beside the store, when the note
+/// there is that kind: the process to wait for and the formats it moves
+/// between.
+struct UpgradeNote {
+    pid: u32,
+    from: u32,
+    to: u32,
+}
+
 enum StartupFailure {
-    Newer { marker: i64 },
-    Mismatched { schema: u32, marker: Option<i64> },
-    Unrecognized { marker: Option<i64> },
-    TooOld { marker: i64 },
+    Newer {
+        marker: i64,
+    },
+    Mismatched {
+        schema: u32,
+        marker: Option<i64>,
+    },
+    Unrecognized {
+        marker: Option<i64>,
+    },
+    TooOld {
+        marker: i64,
+    },
+    /// Another process holds the store's admission lease.
+    Owned {
+        upgrade: Option<UpgradeNote>,
+    },
 }
 impl StartupFailure {
     /// The note a CLI-started daemon leaves for its client; the first line
@@ -471,11 +797,25 @@ impl StartupFailure {
             Self::TooOld { marker } => format!(
                 "Cannot open native store {path}.\n  Store format: v{marker} (no longer read by this daemon)\n  Daemon format: v{FORMAT}\n  This daemon cannot read the store. Existing data was preserved.\n  Use a build that reads v{marker}, or use --home PATH for a separate environment."
             ),
+            Self::Owned {
+                upgrade: Some(upgrade),
+            } => format!(
+                "Cannot open native store {path}.\n  Another dimcode-server (pid {}) is upgrading it from format v{} to v{}.\n  The store stays with that process until the upgrade finishes; wait for it, then run the command again.",
+                upgrade.pid, upgrade.from, upgrade.to
+            ),
+            Self::Owned { upgrade: None } => format!(
+                "Cannot open native store {path}.\n  Another dimcode-server is using the store.\n  Wait for it to finish, then run the command again."
+            ),
         };
-        format!(
+        let mut note = format!(
             "dimcode-startup-failure v1 pid={}\n{body}",
             std::process::id()
-        )
+        );
+        if let Self::Newer { marker } = self {
+            use std::fmt::Write as _;
+            let _ = write!(note, "\nstore-newer found={marker} supported={FORMAT}");
+        }
+        note
     }
 }
 
@@ -490,7 +830,8 @@ fn single_marker(markers: &[i64]) -> Option<i64> {
 }
 
 /// The note's body is written beside it and renamed over it, so a reader sees
-/// one complete note. Best effort: the caller's error does not depend on it.
+/// one complete note, or none while Windows replaces it. Best effort: the
+/// caller's error does not depend on it.
 fn write_note(target: &Path, note: &str) {
     let temp = target.with_file_name(format!(
         "{}.{}.tmp",
@@ -510,6 +851,11 @@ fn write_note(target: &Path, note: &str) {
     let written = options.open(&temp).and_then(|mut file| {
         file.write_all(note.as_bytes())?;
         drop(file);
+        // Unix replaces the target in the rename itself, so a reader never
+        // sees the note missing. Windows removes it first, as this writer
+        // always has, so the replace does not depend on how another process
+        // opened the note.
+        #[cfg(windows)]
         let _ = std::fs::remove_file(target);
         std::fs::rename(&temp, target)
     });
@@ -523,17 +869,96 @@ fn write_startup_failure(path: &std::path::Path, failure: StartupFailure) {
     write_note(&startup_note_path(path), &failure.note(path));
 }
 
+/// The stage of a store format upgrade a progress note reports, so a waiting
+/// client shows what is running and not only that something is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum UpgradeStage {
+    /// Converting retained inline images into Session files.
+    Images,
+    /// Deriving the text index of the rows the conversion rewrote.
+    Index,
+    /// Checking the upgraded store's references and committing.
+    Verify,
+}
+impl UpgradeStage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Images => "images",
+            Self::Index => "index",
+            Self::Verify => "verify",
+        }
+    }
+}
+
 /// The note a running store upgrade leaves for the CLI waiting on its daemon:
-/// the phase, the formats, and a counter that rises with each rewrite. The
-/// first line binds it to the process that wrote it, like the failure note.
-fn write_startup_progress(path: &std::path::Path, from: u32, to: u32, counter: u64) {
+/// the phase, the formats, a counter that rises with each rewrite, and the
+/// stage the upgrade is in. The first line binds it to the process that wrote
+/// it, like the failure note.
+fn write_startup_progress(
+    path: &std::path::Path,
+    from: u32,
+    to: u32,
+    counter: u64,
+    stage: UpgradeStage,
+) {
     write_note(
         &startup_note_path(path),
         &format!(
-            "dimcode-startup-progress v1 pid={}\nstore-upgrade from={from} to={to} progress={counter}\n",
-            std::process::id()
+            "dimcode-startup-progress v1 pid={}\nstore-upgrade from={from} to={to} progress={counter} stage={}\n",
+            std::process::id(),
+            stage.as_str()
         ),
     );
+}
+
+/// The text of a note written as this program writes it: a regular file of a
+/// bounded size, owned by the current user and private on Unix, like the CLI
+/// reads it (`crates/dim-cli/src/client.rs`).
+fn read_note(path: &std::path::Path) -> Option<String> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > 16 * 1024 {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.mode() & 0o077 != 0 || metadata.uid() != unsafe { libc::geteuid() } {
+            return None;
+        }
+    }
+    String::from_utf8(std::fs::read(path).ok()?).ok()
+}
+
+/// The upgrade a running daemon reports beside `path`, when the note there is
+/// a progress note: the process that owns the store and the formats it moves
+/// between. That note is the only channel that names a live owner (#1335); a
+/// body that does not parse is no note.
+fn upgrade_note(path: &std::path::Path) -> Option<UpgradeNote> {
+    let text = read_note(&startup_note_path(path))?;
+    let (header, body) = text.split_once('\n')?;
+    let pid = header
+        .strip_prefix("dimcode-startup-progress v1 pid=")?
+        .parse()
+        .ok()?;
+    let mut fields = body.lines().next()?.split_whitespace();
+    if fields.next()? != "store-upgrade" {
+        return None;
+    }
+    let (mut from, mut to) = (None, None);
+    for field in fields {
+        let (name, value) = field.split_once('=')?;
+        match name {
+            "from" => from = Some(value.parse().ok()?),
+            "to" => to = Some(value.parse().ok()?),
+            // `progress` and any field a later kind adds do not matter here.
+            _ => {}
+        }
+    }
+    Some(UpgradeNote {
+        pid,
+        from: from?,
+        to: to?,
+    })
 }
 
 /// How often the SQLite progress handler reports a running store upgrade: it
@@ -547,7 +972,7 @@ const UPGRADE_PROGRESS_OPS: std::ffi::c_int = 1000;
 /// Reports one store format upgrade while its transaction runs. Only an
 /// upgrade registers it: a fresh store and a store at the current format run
 /// no progress callback at all.
-struct UpgradeProgress {
+pub(super) struct UpgradeProgress {
     ctx: Ctx,
     database: PathBuf,
     /// The format this upgrade started from.
@@ -557,6 +982,7 @@ struct UpgradeProgress {
 struct UpgradeState {
     counter: u64,
     last: Option<std::time::Instant>,
+    stage: UpgradeStage,
 }
 impl UpgradeProgress {
     fn new(ctx: &Ctx, database: &Path, from: u32) -> Self {
@@ -567,7 +993,21 @@ impl UpgradeProgress {
             state: Mutex::new(UpgradeState {
                 counter: 0,
                 last: None,
+                stage: UpgradeStage::Images,
             }),
+        }
+    }
+    /// Reports the stage this upgrade entered, at once: a stage boundary is
+    /// news even when the last report was a moment ago.
+    pub(super) fn enter(&self, stage: UpgradeStage) {
+        let changed = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            let changed = state.stage != stage;
+            state.stage = stage;
+            changed
+        };
+        if changed {
+            self.report(true);
         }
     }
     /// Reports real progress when a second passed since the last report or
@@ -585,14 +1025,14 @@ impl UpgradeProgress {
             }
             state.counter += 1;
             state.last = Some(now);
-            state.counter
+            (state.counter, state.stage)
         };
         #[cfg(feature = "testing")]
         slow_upgrade_report();
         // Reporting is best effort; the opening's own outcome does not
         // depend on it.
         dim_agent_runtime::opening_advanced(&self.ctx);
-        write_startup_progress(&self.database, self.from, FORMAT, counter);
+        write_startup_progress(&self.database, self.from, FORMAT, counter.0, counter.1);
     }
 }
 
@@ -629,46 +1069,147 @@ pub struct SqliteStorage {
     idle: tokio::sync::Notify,
     pub(super) path: PathBuf,
     upgraded_from: Option<u32>,
+    /// What the v50 image conversion measured about its own work, kept for a
+    /// flow test that bounds it; feature `testing` only.
+    #[cfg(feature = "testing")]
+    converted: Option<super::image_upgrade::Converted>,
 }
 /// The read-only connections that serve reads while the writer keeps its own
-/// (#599). Four let the catalog scan, a history page and the settings,
-/// provider and Session-file reads run together; reads are short calls, and a
-/// fifth connection adds a page cache without a measured gain.
+/// (#599). Up to four let a catalog scan, a history page and the settings,
+/// provider and Session-file reads run together. A reader is opened by the read
+/// that needs it, never at open, and idle holds at most one (#1673).
 const READ_CONNECTIONS: usize = 4;
 pub(super) struct Readers {
-    pub(super) connections: Vec<Mutex<Option<Connection>>>,
-    next: AtomicUsize,
+    state: Mutex<ReaderState>,
+    available: Condvar,
+    demand: bool,
+}
+struct ReaderState {
+    idle: Vec<Connection>,
+    open: usize,
+    running: usize,
+}
+struct ReaderLease<'a> {
+    readers: &'a Readers,
+    connection: Option<Connection>,
+}
+impl Drop for ReaderLease<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .readers
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.running -= 1;
+        if let Some(connection) = self.connection.take() {
+            state.idle.push(connection);
+        }
+        if state.running == 0 {
+            while state.idle.len() > 1 {
+                close_reader(state.idle.pop().unwrap());
+                state.open -= 1;
+            }
+        }
+        self.readers.available.notify_one();
+    }
 }
 impl Readers {
-    /// Opens `READ_CONNECTIONS` read-only connections beside the writer.
-    fn open(path: &Path) -> Result<Self> {
-        let mut connections = Vec::with_capacity(READ_CONNECTIONS);
-        for _ in 0..READ_CONNECTIONS {
-            let connection = Connection::open_with_flags(
-                path,
-                OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .map_err(storage)?;
-            connection
-                .busy_timeout(Duration::from_secs(5))
-                .map_err(storage)?;
-            connection
-                .pragma_update(None, "cache_size", -PAGE_CACHE_KIB)
-                .map_err(storage)?;
-            functions(&connection)?;
-            connections.push(Mutex::new(Some(connection)));
+    /// Readers for the daemon store, created on demand.
+    fn demand() -> Self {
+        Self {
+            state: Mutex::new(ReaderState {
+                idle: Vec::new(),
+                open: 0,
+                running: 0,
+            }),
+            available: Condvar::new(),
+            demand: true,
         }
-        Ok(Self {
-            connections,
-            next: AtomicUsize::new(0),
-        })
     }
     /// The read-only export opens one connection that serves its reads.
     fn none() -> Self {
         Self {
-            connections: Vec::new(),
-            next: AtomicUsize::new(0),
+            state: Mutex::new(ReaderState {
+                idle: Vec::new(),
+                open: 0,
+                running: 0,
+            }),
+            available: Condvar::new(),
+            demand: false,
         }
+    }
+    /// Runs `operation` on a reader.
+    fn run<T>(
+        &self,
+        path: &Path,
+        operation: impl FnOnce(&mut Connection) -> Result<T>,
+    ) -> Result<T> {
+        let mut lease = ReaderLease {
+            readers: self,
+            connection: None,
+        };
+        lease.connection = Some(self.acquire(path)?);
+        operation(
+            lease
+                .connection
+                .as_mut()
+                .expect("a reader was acquired above"),
+        )
+    }
+    /// An idle reader, a new one while below `READ_CONNECTIONS`, or a sleeping
+    /// wait for one to return.
+    fn acquire(&self, path: &Path) -> Result<Connection> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.running += 1;
+        loop {
+            if let Some(connection) = state.idle.pop() {
+                return Ok(connection);
+            }
+            if state.open < READ_CONNECTIONS {
+                state.open += 1;
+                drop(state);
+                return match reader_connection(path) {
+                    Ok(connection) => Ok(connection),
+                    Err(error) => {
+                        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+                        state.open -= 1;
+                        Err(error)
+                    }
+                };
+            }
+            state = self
+                .available
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+    /// Read-only connections currently open. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    fn live(&self) -> usize {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.open
+    }
+}
+/// Opens one read-only reader (#599). It sets only the read path's pragmas and
+/// the query functions, not the writer's journal, sync or WAL settings.
+fn reader_connection(path: &Path) -> Result<Connection> {
+    let connection = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(storage)?;
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(storage)?;
+    connection
+        .pragma_update(None, "cache_size", -READER_CACHE_KIB)
+        .map_err(storage)?;
+    functions(&connection)?;
+    Ok(connection)
+}
+fn close_reader(connection: Connection) {
+    if let Err((_, failure)) = connection.close() {
+        tracing::error!(phase = "reader", %failure, "storage.transaction");
     }
 }
 /// SQLite's busy handler for the writer and a copy connection (#599): retry
@@ -748,20 +1289,43 @@ impl SqliteStorage {
             .open(lock_path)
             .map_err(storage)?;
         admission.try_lock().map_err(|error| match error {
-            std::fs::TryLockError::WouldBlock => storage(format!(
-                "another process owns the SQLite database: {}",
-                path.display()
-            )),
+            std::fs::TryLockError::WouldBlock => {
+                // The store belongs to a process that is serving it or is
+                // starting it; either way this launch cannot have it. Its
+                // progress note names the owner while an upgrade runs, and
+                // the note is the client's only report of what to wait for
+                // (#1335).
+                write_startup_failure(
+                    &path,
+                    StartupFailure::Owned {
+                        upgrade: upgrade_note(&path),
+                    },
+                );
+                storage(format!(
+                    "another process owns the SQLite database: {}",
+                    path.display()
+                ))
+            }
             std::fs::TryLockError::Error(error) => storage(error),
         })?;
         let admission = DatabaseLease(admission);
         let mut connection = Connection::open(&path).map_err(storage)?;
         functions(&connection)?;
         connection.busy_handler(Some(busy)).map_err(storage)?;
-        let tx = connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        // The bundled SQLite enables foreign keys on a new connection, and the
+        // pragma cannot change inside a transaction. The upgrade step that
+        // rebuilds `agent_sessions` (#1421) renames a table other tables
+        // reference, and an enforced rename makes SQLite rewrite their stored
+        // SQL to the temporary name. The transaction therefore runs unenforced
+        // and the commit checks every reference instead.
+        connection
+            .pragma_update(None, "foreign_keys", false)
             .map_err(storage)?;
-        let actual = schema(&tx)?;
+        // This opening owns the connection, so dropping it before COMMIT rolls back the transaction.
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(storage)?;
+        let actual = schema(&connection)?;
         let unsupported_version = || {
             storage(format!(
                 "unsupported Timeline storage format version at {}; the database was preserved. Use a compatible daemon to access it, or choose a new database path for a fresh start.",
@@ -769,14 +1333,31 @@ impl SqliteStorage {
             ))
         };
         let mut upgraded_from = None;
+        // What the v50 image conversion measured about its own work, which a
+        // flow test bounds; feature `testing` only.
+        #[cfg(feature = "testing")]
+        let mut converted = None;
+        // What the store left dangling before any upgrade step ran, by
+        // `(table, parent)`; read only on the upgrade path.
+        let mut violations_before: BTreeMap<(String, String), i64> = BTreeMap::new();
         if actual.is_empty() {
-            for (_, sql) in SCHEMA.iter().chain(super::text::SCHEMA) {
-                tx.execute_batch(sql).map_err(storage)?;
+            for (_, sql) in SCHEMA
+                .iter()
+                .chain(super::text::SCHEMA)
+                .chain(super::members::SCHEMA)
+                .chain(super::arrays::SCHEMA)
+                .chain(super::identities::SCHEMA)
+            {
+                connection.execute_batch(sql).map_err(storage)?;
             }
-            tx.execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
+            connection
+                .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                 .map_err(storage)?;
-        } else if let Some(version) = known_format(&actual) {
-            let markers = markers(&tx)?;
+        } else if let Some(version) = {
+            let markers = markers(&connection).unwrap_or_default();
+            known_format(&actual, single_marker(&markers))
+        } {
+            let markers = markers(&connection).unwrap_or_default();
             if markers != [i64::from(version)] {
                 write_startup_failure(
                     &path,
@@ -788,53 +1369,93 @@ impl SqliteStorage {
                 return Err(unsupported_version());
             }
             if version != FORMAT {
-                tx.execute_batch("DROP TABLE agent_store_format")
+                connection
+                    .execute_batch("DROP TABLE agent_store_format")
                     .map_err(storage)?;
-                tx.execute_batch(&format_table(FORMAT)).map_err(storage)?;
+                connection
+                    .execute_batch(&format_table(FORMAT))
+                    .map_err(storage)?;
                 // Only an upgrade registers the report, and it clears it
                 // again after the commit: an ordinary open runs no progress
                 // callback.
                 let progress = ctx.map(|ctx| Arc::new(UpgradeProgress::new(ctx, &path, version)));
                 if let Some(progress) = &progress {
                     let reports = Arc::clone(progress);
-                    tx.progress_handler(
-                        UPGRADE_PROGRESS_OPS,
-                        Some(move || {
-                            reports.report(false);
-                            false
-                        }),
-                    )
-                    .map_err(storage)?;
+                    connection
+                        .progress_handler(
+                            UPGRADE_PROGRESS_OPS,
+                            Some(move || {
+                                reports.report(false);
+                                false
+                            }),
+                        )
+                        .map_err(storage)?;
                     progress.report(true);
                 }
-                for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= version) {
+                let resume =
+                    matches!(version, 42..=44) && same_schema(&actual, resume_schema(version));
+                let upgrade_from = if version >= 37
+                    && !actual
+                        .iter()
+                        .any(|(name, _)| name == "timeline_member_nodes")
+                {
+                    36
+                } else {
+                    version
+                };
+                // What the store already leaves dangling, before any step runs:
+                // an interrupted `drop_session` or `copy_fork_rows` is a state
+                // the store documents, not damage.
+                violations_before = violations(&connection).map_err(storage)?;
+                for (from, added) in UPGRADES.iter().filter(|(from, _)| *from >= upgrade_from) {
+                    if *from == 49 {
+                        let stage = progress.as_deref();
+                        #[cfg(feature = "testing")]
+                        {
+                            converted =
+                                Some(super::image_upgrade::upgrade(&connection, &path, stage)?);
+                        }
+                        #[cfg(not(feature = "testing"))]
+                        {
+                            super::image_upgrade::upgrade(&connection, &path, stage)?;
+                        }
+                    }
                     if *from == 26 {
-                        tx.execute_batch(V27_COLUMNS).map_err(storage)?;
+                        connection.execute_batch(V27_COLUMNS).map_err(storage)?;
                     }
                     if *from == 29 {
-                        tx.execute_batch(V30_COLUMNS).map_err(storage)?;
+                        connection.execute_batch(V30_COLUMNS).map_err(storage)?;
+                    }
+                    if *from == 44
+                        && actual.iter().any(|(name, sql)| {
+                            name == "worktree_directories" && sql == WORKTREE_DIRECTORIES_BEFORE_V45
+                        })
+                    {
+                        connection.execute_batch(V45_COLUMNS).map_err(storage)?;
                     }
                     if *from == 30 {
-                        tx.execute_batch(V31_COLUMNS).map_err(storage)?;
+                        connection.execute_batch(V31_COLUMNS).map_err(storage)?;
                         let keys = |list: &[&str]| {
                             list.iter()
                                 .map(|key| format!("'{key}'"))
                                 .collect::<Vec<_>>()
                                 .join(",")
                         };
-                        tx.execute_batch(&format!(
-                            "UPDATE timeline_events SET context_render=1 WHERE kind IN ({});",
-                            keys(dim_agent_types::CONTEXT_RENDER_KEYS)
-                        ))
-                        .map_err(storage)?;
-                        tx.execute_batch(&format!(
-                            "UPDATE timeline_events SET context_state=1 WHERE kind IN ({});",
-                            keys(dim_agent_types::CONTEXT_STATE_KEYS)
-                        ))
-                        .map_err(storage)?;
+                        connection
+                            .execute_batch(&format!(
+                                "UPDATE timeline_events SET context_render=1 WHERE kind IN ({});",
+                                keys(dim_agent_types::CONTEXT_RENDER_KEYS)
+                            ))
+                            .map_err(storage)?;
+                        connection
+                            .execute_batch(&format!(
+                                "UPDATE timeline_events SET context_state=1 WHERE kind IN ({});",
+                                keys(dim_agent_types::CONTEXT_STATE_KEYS)
+                            ))
+                            .map_err(storage)?;
                     }
                     if *from == 31 && version == 31 {
-                        tx.execute_batch(
+                        connection.execute_batch(
                             "DROP INDEX timeline_events_render; DROP INDEX timeline_events_state",
                         )
                         .map_err(storage)?;
@@ -842,42 +1463,136 @@ impl SqliteStorage {
                     for (_, sql) in SCHEMA
                         .iter()
                         .chain(super::text::SCHEMA)
+                        .chain(super::members::SCHEMA)
+                        .chain(super::arrays::SCHEMA)
+                        .chain(super::identities::SCHEMA)
                         .filter(|(name, _)| added.contains(name))
+                        .filter(|(name, _)| {
+                            !(*from == 51 && *name == "provider_models_by_position")
+                        })
+                        .filter(|(name, _)| {
+                            !(resume && *name == "timeline_events_branch_interrupts")
+                        })
                     {
-                        tx.execute_batch(sql).map_err(storage)?;
+                        connection.execute_batch(sql).map_err(storage)?;
                     }
                     if *from == 22 {
-                        super::catalog::backfill(&tx)?;
+                        super::catalog::backfill(&connection)?;
                     }
                     if *from == 35 {
-                        super::text::backfill(&tx)?;
+                        super::text::backfill(&connection)?;
+                    }
+                    if *from == 40
+                        && actual.iter().any(|(name, sql)| {
+                            name == "session_owners" && sql == SESSION_OWNERS_BEFORE_V38
+                        })
+                    {
+                        connection
+                            .execute_batch(V38_SESSION_OWNERS)
+                            .map_err(storage)?;
+                    }
+                    if *from == 36 {
+                        super::members::backfill(&connection)?;
+                    }
+                    if *from == 37 && upgrade_from >= 36 {
+                        super::text::restrict_coverage(&connection)?;
+                        for (name, sql) in SCHEMA.iter().filter(|(name, _)| {
+                            matches!(
+                                *name,
+                                "timeline_events_requests"
+                                    | "timeline_events_inputs"
+                                    | "timeline_events_users"
+                            )
+                        }) {
+                            connection
+                                .execute_batch(&format!("DROP INDEX {name}; {sql}"))
+                                .map_err(storage)?;
+                        }
+                    }
+                    if *from == 39 {
+                        super::identities::backfill(&connection)?;
+                        if upgrade_from >= 37 {
+                            super::members::backfill_v40(&connection)?;
+                        }
+                    }
+                    if *from == 46 && !resume {
+                        for (_, sql) in DERIVED_INDEXES {
+                            connection.execute_batch(sql).map_err(storage)?;
+                        }
+                        super::members::backfill_v42(&connection)?;
+                    }
+                    if *from == 51 {
+                        if upgrade_from == 51 {
+                            connection.execute_batch("DROP TRIGGER provider_models_insert; DROP TRIGGER provider_models_update; DROP TABLE provider_query_records; DROP TABLE provider_models; ALTER TABLE provider_bundle ADD COLUMN attempted INTEGER NOT NULL DEFAULT 0; ALTER TABLE provider_bundle ADD COLUMN naming_revision TEXT NOT NULL DEFAULT '';  ALTER TABLE provider_catalog_revision ADD COLUMN activation INTEGER NOT NULL DEFAULT 0;").map_err(storage)?;
+                            for (_, sql) in SCHEMA.iter().filter(|(name, _)| {
+                                matches!(*name, "provider_models" | "provider_models_by_model")
+                            }) {
+                                connection.execute_batch(sql).map_err(storage)?;
+                            }
+                            for table in ["provider_bundle", "provider_catalog_revision"] {
+                                connection
+                                    .execute_batch(&format!(
+                                        "ALTER TABLE {table} RENAME TO {table}_old"
+                                    ))
+                                    .map_err(storage)?;
+                                connection
+                                    .execute_batch(
+                                        SCHEMA.iter().find(|(name, _)| *name == table).unwrap().1,
+                                    )
+                                    .map_err(storage)?;
+                                connection.execute_batch(&format!("INSERT INTO {table} SELECT * FROM {table}_old; DROP TABLE {table}_old")).map_err(storage)?;
+                            }
+                        }
+                        connection
+                            .execute_batch(
+                                SCHEMA
+                                    .iter()
+                                    .find(|(name, _)| *name == "provider_models_by_position")
+                                    .unwrap()
+                                    .1,
+                            )
+                            .map_err(storage)?;
+                        crate::provider::persistence::migrate(&connection)?;
+                    }
+                    if *from == 38 {
+                        super::arrays::backfill(&connection)?;
+                    }
+                    if *from == 41 || *from == 42 && version == 42 && resume {
+                        connection
+                            .execute_batch(V42_AGENT_SESSIONS)
+                            .map_err(storage)?;
                     }
                     if *from == 24 {
-                        tx.execute_batch("DROP INDEX timeline_events_by_end")
+                        connection
+                            .execute_batch("DROP INDEX timeline_events_by_end")
                             .map_err(storage)?;
                     }
                     if *from == 25 {
-                        crate::provider::rewrite_stored_limits(&tx)?;
+                        crate::provider::rewrite_stored_limits(&connection)?;
                     }
                     // #1099: only the derived `updated_at_ms` column is
                     // rewritten, by the same backfill the catalog's own
                     // upgrade used.
                     if *from == 33 {
-                        super::catalog::backfill(&tx)?;
+                        super::catalog::backfill(&connection)?;
                     }
                     if let Some(progress) = &progress {
                         progress.report(true);
                     }
                 }
-                tx.execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
+                if let Some(progress) = &progress {
+                    progress.enter(UpgradeStage::Verify);
+                }
+                connection
+                    .execute("INSERT INTO agent_store_format VALUES (?1)", [FORMAT])
                     .map_err(storage)?;
-                if known_format(&schema(&tx)?) != Some(FORMAT) {
+                if known_format(&schema(&connection)?, Some(i64::from(FORMAT))) != Some(FORMAT) {
                     return Err(storage("upgraded native store has an unexpected schema"));
                 }
                 upgraded_from = Some(version);
             }
         } else {
-            let marker = markers(&tx)
+            let marker = markers(&connection)
                 .ok()
                 .and_then(|markers| single_marker(&markers));
             let failure = match marker {
@@ -897,9 +1612,29 @@ impl SqliteStorage {
             )));
         }
         for (_, sql) in DERIVED_INDEXES {
-            tx.execute_batch(sql).map_err(storage)?;
+            connection.execute_batch(sql).map_err(storage)?;
         }
-        tx.commit().map_err(storage)?;
+        // The transaction ran with foreign keys off (see its opening), so an
+        // upgrade compares the violations it found with the ones it leaves: a
+        // pair whose count grew refuses the store, and one that is unchanged or
+        // shrank passes. The upgrade must not hide a violation it created, not
+        // repair one — `drop_session` and `copy_fork_rows` leave deliberate
+        // interrupted states that a retry converges, and they name pairs such as
+        // `timeline_events → timeline_branches` that no rebuild of
+        // `agent_sessions` can change. An ordinary open writes nothing, so it
+        // needs no pass.
+        if upgraded_from.is_some()
+            && let Some((table, parent, before, after)) = grew(
+                violations(&connection).map_err(storage)?,
+                &violations_before,
+            )
+        {
+            return Err(storage(format!(
+                "the upgraded store at {} holds {after} rows of {table} that name no {parent}, against {before} before the upgrade; the database was preserved",
+                path.display()
+            )));
+        }
+        connection.execute_batch("COMMIT").map_err(storage)?;
         if upgraded_from.is_some() {
             connection
                 .progress_handler(0, None::<fn() -> bool>)
@@ -918,7 +1653,7 @@ impl SqliteStorage {
             .pragma_update(None, "journal_size_limit", WAL_LIMIT_BYTES)
             .map_err(storage)?;
         connection
-            .pragma_update(None, "cache_size", -PAGE_CACHE_KIB)
+            .pragma_update(None, "cache_size", -WRITER_CACHE_KIB)
             .map_err(storage)?;
         connection
             .pragma_update(None, "foreign_keys", true)
@@ -928,7 +1663,7 @@ impl SqliteStorage {
             .pragma_update(None, "fullfsync", true)
             .map_err(storage)?;
         let _ = std::fs::remove_file(startup_note_path(&path));
-        let readers = Readers::open(&path)?;
+        let readers = Readers::demand();
         Ok(Arc::new(Self {
             connection: Mutex::new(Some(connection)),
             readers,
@@ -940,6 +1675,8 @@ impl SqliteStorage {
             idle: tokio::sync::Notify::new(),
             path,
             upgraded_from,
+            #[cfg(feature = "testing")]
+            converted,
         }))
     }
     /// Opens an existing database for one read pass of the Timeline export
@@ -969,8 +1706,10 @@ impl SqliteStorage {
                 path.display()
             ))
         };
-        let format = known_format(&schema(&connection)?).ok_or_else(unsupported)?;
-        if markers(&connection)? != [i64::from(format)] {
+        let stored_markers = markers(&connection).unwrap_or_default();
+        let format = known_format(&schema(&connection)?, single_marker(&stored_markers))
+            .ok_or_else(unsupported)?;
+        if stored_markers != [i64::from(format)] {
             return Err(unsupported());
         }
         Ok((
@@ -985,6 +1724,8 @@ impl SqliteStorage {
                 idle: tokio::sync::Notify::new(),
                 path,
                 upgraded_from: None,
+                #[cfg(feature = "testing")]
+                converted: None,
             }),
             format,
         ))
@@ -993,6 +1734,13 @@ impl SqliteStorage {
     /// committed; `None` when the store was created or already current.
     pub fn upgraded_from(&self) -> Option<u32> {
         self.upgraded_from
+    }
+    /// How many rows the image conversion derived text candidates for while
+    /// this store opened, `None` when this open ran no conversion; feature
+    /// `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn converted_indexed(&self) -> Option<usize> {
+        self.converted.as_ref().map(|converted| converted.indexed)
     }
     /// Runs `operation` on the writer's connection. Only writes, checkpoints
     /// and reads that must follow them run here; business reads use
@@ -1011,48 +1759,45 @@ impl SqliteStorage {
             let connection = guard
                 .as_mut()
                 .ok_or_else(|| storage("SQLite storage is closed"))?;
-            let result = catch_unwind(AssertUnwindSafe(|| operation(connection)));
-            outcome(connection, result)
+            guarded(connection, operation)
         })
         .await
         .map_err(storage)?
     }
-    /// Runs a read on one of the read-only connections (#599). A read sees the
-    /// last commit when its statement starts and does not wait for the
-    /// writer's transaction or fsync. An available reader is reused before
-    /// waiting for a busy reader; sequential reads reuse its page cache.
-    /// The read-only export store's one connection serves both.
+    /// Runs a read on a read-only connection (#599), opening a reader when the
+    /// read needs one. A read sees the last commit when its statement starts
+    /// and does not wait for the writer's transaction or fsync. An available
+    /// reader is reused before waiting for a busy reader; sequential reads
+    /// reuse its page cache. The read-only export store reads on its one
+    /// connection.
     pub(crate) async fn run_read<T: Send + 'static>(
         self: &Arc<Self>,
-        operation: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let admitted = self.admit()?;
         tokio::task::spawn_blocking(move || {
-            let reader = admitted.0.reader();
-            match reader {
-                Some(guard) => {
-                    let connection = guard
-                        .as_ref()
-                        .ok_or_else(|| storage("SQLite storage is closed"))?;
-                    let result = catch_unwind(AssertUnwindSafe(|| operation(connection)));
-                    outcome(connection, result)
-                }
-                None => {
-                    let mut guard = admitted
-                        .0
-                        .connection
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner);
-                    let connection = guard
-                        .as_mut()
-                        .ok_or_else(|| storage("SQLite storage is closed"))?;
-                    let result = catch_unwind(AssertUnwindSafe(|| operation(connection)));
-                    outcome(connection, result)
-                }
+            if admitted.0.readers.demand {
+                return admitted.0.readers.run(&admitted.0.path, |connection| {
+                    guarded(connection, operation)
+                });
             }
+            let mut guard = admitted
+                .0
+                .connection
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let connection = guard
+                .as_mut()
+                .ok_or_else(|| storage("SQLite storage is closed"))?;
+            guarded(connection, operation)
         })
         .await
         .map_err(storage)?
+    }
+    /// Read-only connections currently open. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn reader_connections(&self) -> usize {
+        self.readers.live()
     }
     fn admit(self: &Arc<Self>) -> Result<Operation> {
         let mut admission = self.admission.lock().unwrap();
@@ -1085,7 +1830,7 @@ impl SqliteStorage {
                 .pragma_update(None, "journal_size_limit", WAL_LIMIT_BYTES)
                 .map_err(storage)?;
             connection
-                .pragma_update(None, "cache_size", -PAGE_CACHE_KIB)
+                .pragma_update(None, "cache_size", -WRITER_CACHE_KIB)
                 .map_err(storage)?;
             connection
                 .pragma_update(None, "foreign_keys", false)
@@ -1100,29 +1845,10 @@ impl SqliteStorage {
         .await
         .map_err(storage)?
     }
-    fn reader(&self) -> Option<MutexGuard<'_, Option<Connection>>> {
-        let readers = &self.readers;
-        if readers.connections.is_empty() {
-            return None;
-        }
-        for connection in &readers.connections {
-            match connection.try_lock() {
-                Ok(guard) => return Some(guard),
-                Err(TryLockError::Poisoned(error)) => return Some(error.into_inner()),
-                Err(TryLockError::WouldBlock) => {}
-            }
-        }
-        let index = readers.next.fetch_add(1, Ordering::Relaxed) % readers.connections.len();
-        Some(
-            readers.connections[index]
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner),
-        )
-    }
     pub(crate) async fn run_read_cancellable<T: Send + 'static>(
         self: &Arc<Self>,
         cancel: tokio_util::sync::CancellationToken,
-        operation: impl FnOnce(&Connection) -> Result<T> + Send + 'static,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         self.run_read(move |connection| {
             if cancel.is_cancelled() {
@@ -1206,15 +1932,19 @@ impl SqliteStorage {
                 idle.await;
             }
             tokio::task::spawn_blocking(move || {
-                for reader in &db.readers.connections {
-                    let mut slot = reader.lock().unwrap_or_else(PoisonError::into_inner);
-                    if let Some(connection) = slot.take()
-                        && let Err((connection, failure)) = connection.close()
-                    {
-                        *slot = Some(connection);
+                let mut readers = db
+                    .readers
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                while let Some(connection) = readers.idle.pop() {
+                    if let Err((connection, failure)) = connection.close() {
+                        readers.idle.push(connection);
                         return Err(storage(failure));
                     }
+                    readers.open -= 1;
                 }
+                drop(readers);
                 let mut guard = db
                     .connection
                     .lock()
@@ -1246,6 +1976,15 @@ impl SqliteStorage {
     }
 }
 
+/// Runs `operation` on a connection and rolls back a panic so the connection
+/// returns to the writer or the reader pool usable.
+fn guarded<T>(
+    connection: &mut Connection,
+    operation: impl FnOnce(&mut Connection) -> Result<T>,
+) -> Result<T> {
+    let result = catch_unwind(AssertUnwindSafe(|| operation(connection)));
+    outcome(connection, result)
+}
 /// The result of a connection call, with a panic rolled back so the
 /// connection stays usable.
 fn outcome<T>(connection: &Connection, result: std::thread::Result<Result<T>>) -> Result<T> {
@@ -1266,10 +2005,131 @@ fn outcome<T>(connection: &Connection, result: std::thread::Result<Result<T>>) -
     }
 }
 
-/// What `vacuum_store` reclaimed, as bytes on disk before and after.
+#[cfg(test)]
+#[tokio::test]
+async fn saturated_reads_drain_errors_panics_and_cancellation_before_close() {
+    use std::{future::Future, task::Poll};
+
+    let directory = std::env::temp_dir().join(format!("dim-reader-close-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let db = SqliteStorage::open(directory.join("dimcode.sqlite")).unwrap();
+    db.run(|connection| {
+        connection
+            .execute(
+                "INSERT INTO settings_documents (source, version, document, imported_revision) \
+                 VALUES ('user/test', 1, 'committed', 'revision')",
+                [],
+            )
+            .map_err(storage)?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+
+    let (entered, mut ready) = tokio::sync::mpsc::unbounded_channel();
+    let mut releases = Vec::new();
+    let mut holders = Vec::new();
+    for index in 0..READ_CONNECTIONS {
+        let db = db.clone();
+        let entered = entered.clone();
+        let (release, blocked) = std::sync::mpsc::channel();
+        releases.push(release);
+        holders.push(tokio::spawn(async move {
+            db.run_read(move |connection| {
+                entered.send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(10)).unwrap();
+                match index {
+                    0 => {
+                        connection.execute_batch("BEGIN").map_err(storage)?;
+                        panic!("reader flow panic")
+                    }
+                    1 => Err(storage("reader flow error")),
+                    _ => Ok(()),
+                }
+            })
+            .await
+        }));
+    }
+    for _ in 0..READ_CONNECTIONS {
+        ready.recv().await.unwrap();
+    }
+    let mut reads = Vec::new();
+    for _ in 0..24 {
+        let db = db.clone();
+        reads.push(tokio::spawn(async move {
+            db.run_read(|connection| {
+                assert!(
+                    connection.is_autocommit(),
+                    "a panic must roll back its read transaction"
+                );
+                connection
+                    .query_row(
+                        "SELECT document FROM settings_documents WHERE source='user/test'",
+                        [],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .map_err(storage)
+            })
+            .await
+        }));
+    }
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancelled = {
+        let db = db.clone();
+        let cancel = cancel.clone();
+        tokio::spawn(async move {
+            db.run_read_cancellable(cancel, |_| -> Result<()> {
+                panic!("cancelled queued reads must not start SQL")
+            })
+            .await
+        })
+    };
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if db.readers.state.lock().unwrap().running == READ_CONNECTIONS + 25 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the reader pool must saturate before shutdown");
+    assert_eq!(db.reader_connections(), READ_CONNECTIONS);
+    cancel.cancel();
+    let mut close = Box::pin(db.close());
+    assert!(std::future::poll_fn(|cx| Poll::Ready(close.as_mut().poll(cx).is_pending())).await);
+    assert!(db.run_read(|_| Ok(())).await.is_err());
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for (index, holder) in holders.into_iter().enumerate() {
+            assert_eq!(holder.await.unwrap().is_err(), index < 2);
+        }
+        for read in reads {
+            assert_eq!(read.await.unwrap().unwrap(), "committed");
+        }
+        assert!(matches!(
+            cancelled.await.unwrap(),
+            Err(AgentError::Cancelled(_))
+        ));
+        close.await.unwrap();
+    })
+    .await
+    .expect("every accepted read and shutdown must finish after the pool is released");
+    assert_eq!(db.reader_connections(), 0);
+    let reopened = SqliteStorage::open(directory.join("dimcode.sqlite")).unwrap();
+    reopened.close().await.unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+/// What `vacuum_store` reclaimed, as bytes on disk before and after, and the
+/// obsolete content rows it removed before rewriting.
+#[derive(Debug)]
 pub struct Vacuumed {
     pub before: u64,
     pub after: u64,
+    pub reclaimed: Reclaimed,
 }
 
 /// What `storage.report` answers (`native-storage-format.md`): the store's own
@@ -1282,11 +2142,35 @@ pub struct StorageReport {
     pub reclaimable_bytes: u64,
 }
 
+pub(super) fn validate_backup_schema(connection: &Connection) -> Result<()> {
+    if known_format(&schema(connection)?, Some(i64::from(FORMAT))) != Some(FORMAT)
+        || markers(connection)? != [i64::from(FORMAT)]
+    {
+        return Err(storage("Backup requires the current native storage schema"));
+    }
+    Ok(())
+}
+
+/// Whether `connection`'s database is exactly the current [`FORMAT`]'s schema
+/// with its marker: what an offline tool requires before it touches a store it
+/// did not create.
+pub(super) fn is_current_format(connection: &Connection) -> Result<bool> {
+    Ok(
+        known_format(&schema(connection)?, Some(i64::from(FORMAT))) == Some(FORMAT)
+            && markers(connection)? == [i64::from(FORMAT)],
+    )
+}
+
 /// Reclaims free pages in an existing store by rewriting it with `VACUUM`
-/// (#600). It takes the same lease as `open`, so a running daemon makes it
-/// fail, and it requires the current format's exact schema: it never creates
-/// a store, upgrades one or touches an unsupported format. `VACUUM` rewrites
-/// the whole database, so it needs free space about the store's size.
+/// (#600), after removing the content rows no reference reaches (#1697). Those
+/// rows are what an already-upgraded store still holds: the v50 conversion
+/// removes them in its own transaction from now on, but a store that committed
+/// it earlier keeps the base64 payload of every image it externalized, and only
+/// `VACUUM` returns the pages the removal frees. It takes the same lease as
+/// `open`, so a running daemon makes it fail, and it requires the current
+/// format's exact schema: it never creates a store, upgrades one or touches an
+/// unsupported format. `VACUUM` rewrites the whole database, so it needs free
+/// space about the store's size.
 pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
     if !path.is_file() {
         return Err(storage(format!(
@@ -1312,7 +2196,7 @@ pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
         std::fs::TryLockError::Error(error) => storage(error),
     })?;
     let _lease = DatabaseLease(admission);
-    let connection = Connection::open(&path).map_err(storage)?;
+    let mut connection = Connection::open(&path).map_err(storage)?;
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(storage)?;
@@ -1322,7 +2206,7 @@ pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
             path.display()
         ))
     };
-    if known_format(&schema(&connection)?) != Some(FORMAT)
+    if known_format(&schema(&connection)?, Some(i64::from(FORMAT))) != Some(FORMAT)
         || markers(&connection)? != [i64::from(FORMAT)]
     {
         return Err(unsupported());
@@ -1331,6 +2215,7 @@ pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
     connection
         .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
         .map_err(storage)?;
+    let reclaimed = super::reclaim::obsolete_content(&mut connection)?;
     connection.execute_batch("VACUUM").map_err(storage)?;
     connection
         .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -1341,6 +2226,7 @@ pub fn vacuum_store(path: PathBuf) -> Result<Vacuumed> {
     Ok(Vacuumed {
         before,
         after: store_bytes(&path),
+        reclaimed,
     })
 }
 

@@ -1146,15 +1146,30 @@ async fn invalid_or_conflicting_registrations_fail_the_owner() {
     invalid_default.schema["properties"]["maxResults"]["default"] = json!(0);
     let mut escaping = declaration("example");
     escaping.user_file = "../example.json".into();
-    let cases: Vec<Vec<SourceDeclaration>> = vec![
-        vec![declaration("mcp")],
-        vec![declaration("example"), declaration("example")],
-        vec![unreachable],
-        vec![invalid_default],
-        vec![escaping],
+    let cases: Vec<(Vec<SourceDeclaration>, &str)> = vec![
+        (
+            vec![declaration("mcp")],
+            "settings source mcp: its name or file is registered already",
+        ),
+        (
+            vec![declaration("example"), declaration("example")],
+            "settings source example: its name or file is registered already",
+        ),
+        (
+            vec![unreachable],
+            "settings source example: user-only pointer /searchService/missing does not name a declared member",
+        ),
+        (
+            vec![invalid_default],
+            "settings source example: default document is invalid",
+        ),
+        (
+            vec![escaping],
+            "settings source example: invalid settings: invalid document filename",
+        ),
     ];
     let home = home();
-    for (index, declarations) in cases.into_iter().enumerate() {
+    for (index, (declarations, reason)) in cases.into_iter().enumerate() {
         let root = Ctx::root().unwrap();
         let views = vec![
             root.plugin(FileStoragePlugin::new(vec![home.clone()])),
@@ -1178,7 +1193,7 @@ async fn invalid_or_conflicting_registrations_fail_the_owner() {
         .await
         .unwrap_err()
         .to_string();
-        assert!(error.contains("settings source"), "{error}");
+        assert!(error.contains(reason), "{error}");
         root.shutdown().await.unwrap();
     }
     fs::remove_dir_all(home).unwrap();

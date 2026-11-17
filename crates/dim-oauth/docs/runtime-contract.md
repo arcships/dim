@@ -44,3 +44,18 @@ The provider implements the host's usage, referral, reset-batch and reset-apply 
 Usage projects the subscription ID, plan terms, credit bucket, rolling windows, feature meters and reset-credit summary. Referral projects the campaign and eligibility flags, invite code, counts, reward and rebate basis points; its invite URL is built with an encoded `aff` query under the grant's issuer. Subscription and pricing links use that issuer's `/console/subscription` and `/console/pricing` paths. Missing optional server fields stay absent. Invalid required referral, batch or apply fields fail the operation rather than manufacturing balances.
 
 Reset apply sends `subscription_id`, `reset_type` and the caller's stable `idempotency_key` to the account service. It never selects a grant batch: the service owns consumption order and replay detection. The provider owns an accepted operation until it settles, even if the calling connection goes away. Retrying after an uncertain outcome uses the same key; a new confirmed action uses a new key. The typed result includes refreshed credits, windows, reset counts, the replay flag and apply time. The host contract describes these DTOs and the login directory metadata.
+
+## On-demand model directory
+
+Each catalog read resolves the current account and fetches its relay directory.
+The plugin retains no completed directory result. Concurrent callers for the same
+account generation join one in-flight request; the owner removes that flight when
+it settles. A later read starts a new request. Credential resolution reads the
+requested model from that on-demand directory and keeps only its request lease.
+
+Cancellation ends the caller's wait. A shared relay request ends when its last
+waiter leaves. Logout, account replacement, recovery and plugin quiesce cancel the
+old flight; account identity and generation are checked before a result is handed
+back. Network I/O is cancellable. An already started token rotation settles through
+the Store before cancellation returns from the owned operation, so a rotated grant
+is not lost. Refresh errors are shared by that flight and are not cached.

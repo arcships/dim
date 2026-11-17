@@ -4,9 +4,9 @@
 //! Shell resolution copies ADR 020 and TS `packages/agent/src/exec-shell.ts`.
 //! Process facts are captured at apply; exec shell preferences are read at use
 //! time. Shell problems are returned as data, never raised during assembly.
-use crate::execution_settings::{ExecutionSettingsHost, ExecutionSettingsSource};
+use crate::execution_settings::ExecutionSettingsHost;
 use crate::file_storage::{FileStorage, FileStorageError};
-use crate::toolchain::{InstalledToolchain, ToolchainSource, ToolchainSourceHost};
+use crate::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
@@ -152,8 +152,10 @@ pub enum ShellStatus {
 
 /// ADR 014 D1's fixed system roots: the sandbox builder mounts them read-only
 /// and file access treats them as read-only facts. macOS names `/private/etc`
-/// and its `/etc` alias; Windows has no sandbox backend and no roots.
-const PLATFORM_ROOTS: &[&str] = {
+/// and its `/etc` alias; Windows has no sandbox backend and no roots. A host
+/// that builds its own file-tool boundary reads this one list rather than
+/// restating it.
+pub const PLATFORM_ROOTS: &[&str] = {
     if cfg!(target_os = "macos") {
         &[
             "/System",
@@ -229,10 +231,10 @@ pub struct HostPlatform {
     pub platform_roots: Vec<PathBuf>,
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
-    pub(crate) execution: Option<Arc<dyn ExecutionSettingsSource>>,
+    pub(crate) execution: Option<Arc<ExecutionSettingsHost>>,
     /// The installed runtimes a started process finds at the end of its
     /// `PATH`; `None` is a host that installs none.
-    pub(crate) toolchain: Option<Arc<dyn ToolchainSource>>,
+    pub(crate) toolchain: Option<Arc<ToolchainSourceHost>>,
 }
 
 struct ResolvedShell {
@@ -366,14 +368,14 @@ impl HostPlatform {
     /// HostPlatform plugin wires it; a platform without switches fails
     /// preparation instead of running unsandboxed (ADR 011 D1).
     pub fn with_execution_settings(mut self, host: ExecutionSettingsHost) -> Self {
-        self.execution = Some(host.0);
+        self.execution = Some(Arc::new(host));
         self
     }
     /// Uses `host` for the installed runtimes at each process start. The
     /// HostPlatform plugin wires it; a platform without it starts processes
     /// with the PATH they would have without any runtime.
     pub fn with_toolchain_source(mut self, host: ToolchainSourceHost) -> Self {
-        self.toolchain = Some(host.0);
+        self.toolchain = Some(Arc::new(host));
         self
     }
     /// Reads the configured exec shell for this invocation without reloading
@@ -397,8 +399,7 @@ impl HostPlatform {
         }
         resolved.status.clone()
     }
-    /// The command for `spec`: its own tree, a cleared environment and piped
-    /// stdout and stderr. `stdin` is the caller's choice.
+    /// The command for `spec` with a cleared environment; `stdin` is the caller's choice.
     fn command(spec: &ProcessSpec, stdin: Stdio) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&spec.executable);
         command
@@ -406,20 +407,18 @@ impl HostPlatform {
             .current_dir(&spec.cwd)
             .env_clear()
             .envs(spec.env.iter().map(|(key, value)| (key, value)))
-            .stdin(stdin)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(stdin);
         command
     }
     /// Starts `spec` as the root of its own process tree.
     pub fn spawn(&self, spec: ProcessSpec) -> io::Result<ProcessTree> {
-        native::spawn(Self::command(&spec, Stdio::null()))
+        ProcessTree::spawn(Self::command(&spec, Stdio::null()))
     }
     /// [`Self::spawn`] with `stdin` written to the child's standard input,
     /// which then closes. A child that exits before reading it does not fail
     /// the start.
     pub fn spawn_with_stdin(&self, spec: ProcessSpec, stdin: Vec<u8>) -> io::Result<ProcessTree> {
-        let mut tree = native::spawn(Self::command(&spec, Stdio::piped()))?;
+        let mut tree = ProcessTree::spawn(Self::command(&spec, Stdio::piped()))?;
         if let Some(mut pipe) = tree.child.stdin.take() {
             tokio::spawn(async move {
                 let _ = pipe.write_all(&stdin).await;
@@ -509,11 +508,23 @@ impl HostPlatform {
     /// archive directory is skipped: the sandbox grant is the root, so the two
     /// must nest.
     pub fn installed_toolchains(&self) -> Vec<InstalledToolchain> {
-        self.toolchain
-            .as_ref()
-            .map(|source| source.toolchains())
-            .unwrap_or_default()
+        let Some(source) = self.toolchain.as_ref() else {
+            return Vec::new();
+        };
+        let reply = match source.list() {
+            Ok(reply) => reply,
+            Err(error) => {
+                tracing::warn!(%error, "the installed runtimes cannot cross as data");
+                return Vec::new();
+            }
+        };
+        reply
+            .toolchains
             .into_iter()
+            .map(|toolchain| InstalledToolchain {
+                bin: toolchain.bin.into(),
+                root: toolchain.root.into(),
+            })
             .filter(|toolchain| toolchain.bin.starts_with(&toolchain.root))
             .collect()
     }
@@ -913,6 +924,13 @@ pub struct ProcessTree {
     temporary: Option<TemporaryDirectory>,
 }
 impl ProcessTree {
+    /// Starts a command in its own process tree with piped stdout and stderr.
+    /// The caller controls stdin, arguments, environment and working directory.
+    pub fn spawn(mut command: tokio::process::Command) -> io::Result<Self> {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        native::spawn(command)
+    }
+
     /// Keeps the tree's isolated TMPDIR until this handle is dropped.
     pub(crate) fn hold(&mut self, temporary: Option<TemporaryDirectory>) {
         self.temporary = temporary;
@@ -1043,9 +1061,9 @@ impl DynPlugin for HostPlatformPlugin {
             }
             platform.shell_file = shell_file;
             let execution = ctx.require_at(&self.execution)?;
-            platform.execution = Some(execution.0.clone());
+            platform.execution = Some(execution.clone());
             let toolchain = ctx.require_at(&self.toolchain)?;
-            platform.toolchain = Some(toolchain.0.clone());
+            platform.toolchain = Some(toolchain.clone());
             platform.shell.lock().await.config = config;
             ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
             Ok(Effect::Done)

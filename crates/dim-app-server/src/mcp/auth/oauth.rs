@@ -10,11 +10,12 @@ use reqwest_mcp::{Client as Http, StatusCode, Url};
 use rmcp::transport::auth::{
     AuthError, AuthorizationManager, AuthorizationMetadata, AuthorizationMetadataSource,
     OAuthClientConfig, OAuthHttpClient, OAuthHttpClientFuture, OAuthHttpRequest, StateStore,
-    StoredAuthorizationState,
+    StoredAuthorizationState, WWWAuthenticateParams,
 };
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -30,12 +31,44 @@ const REVOCATION_TIMEOUT: Duration = Duration::from_secs(10);
 /// also uses.
 pub(super) fn http() -> Result<Http, McpAuthError> {
     Http::builder()
+        .no_proxy()
+        .dns_resolver(OAuthDns)
         .redirect(reqwest_mcp::redirect::Policy::none())
         .retry(reqwest_mcp::retry::never())
         .connect_timeout(Duration::from_secs(15))
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|_| McpAuthError::Unavailable)
+}
+
+struct OAuthDns;
+
+impl reqwest_mcp::dns::Resolve for OAuthDns {
+    fn resolve(&self, name: reqwest_mcp::dns::Name) -> reqwest_mcp::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            let addresses = tokio::net::lookup_host((host, 0)).await?;
+            let allowed: Vec<_> = addresses
+                .filter(|address| allowed_dns_address(host, *address))
+                .collect();
+            if allowed.is_empty() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "OAuth host resolved to no allowed addresses",
+                )
+                .into());
+            }
+            Ok(Box::new(allowed.into_iter()) as reqwest_mcp::dns::Addrs)
+        })
+    }
+}
+
+fn allowed_dns_address(host: &str, address: SocketAddr) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        address.ip().is_loopback()
+    } else {
+        !restricted_ip(address.ip())
+    }
 }
 
 pub(super) fn now() -> u64 {
@@ -67,6 +100,13 @@ fn trusted(url: &Url, local: bool) -> bool {
         }
 }
 
+pub(super) fn stored_endpoint(endpoint: &str, resource: &str) -> Option<Url> {
+    let resource = Url::parse(resource).ok()?;
+    Url::parse(endpoint)
+        .ok()
+        .filter(|url| trusted(url, loopback(&resource)))
+}
+
 fn restricted(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(host)) => {
@@ -78,23 +118,37 @@ fn restricted(url: &Url) -> bool {
                     "metadata" | "metadata.google.internal" | "metadata.azure.internal"
                 )
         }
-        Some(url::Host::Ipv4(ip)) => restricted_v4(ip),
-        Some(url::Host::Ipv6(ip)) => match ip.to_ipv4_mapped() {
-            Some(ip) => restricted_v4(ip),
-            None => {
-                let first = ip.segments()[0];
-                ip.is_loopback()
-                    || ip.is_unspecified()
-                    || ip.is_multicast()
-                    || first & 0xffc0 == 0xfe80
-                    || first & 0xfe00 == 0xfc00
-            }
-        },
+        Some(url::Host::Ipv4(ip)) => restricted_ip(ip.into()),
+        Some(url::Host::Ipv6(ip)) => restricted_ip(ip.into()),
         None => true,
     }
 }
 
-fn restricted_v4(ip: std::net::Ipv4Addr) -> bool {
+fn restricted_ip(ip: IpAddr) -> bool {
+    let ip = match ip {
+        IpAddr::V4(ip) => return restricted_v4(ip),
+        IpAddr::V6(ip) => ip,
+    };
+    let [a, b, c, d, e, f, g, h] = ip.segments();
+    let embedded = match [a, b, c, d, e, f] {
+        [0, 0, 0, 0, 0, 0xffff] | [0x64, 0xff9b, 0, 0, 0, 0] => Some([g, h]),
+        [0, 0, 0, 0, 0, 0] if !ip.is_loopback() && !ip.is_unspecified() => Some([g, h]),
+        [0x2002, ..] => Some([b, c]),
+        _ => None,
+    };
+    if let Some([high, low]) = embedded {
+        return restricted_v4(Ipv4Addr::from((u32::from(high) << 16) | u32::from(low)));
+    }
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || a & 0xffc0 == 0xfe80
+        || a & 0xfe00 == 0xfc00
+        || [a, b] == [0x2001, 0]
+        || [a, b, c] == [0x64, 0xff9b, 1]
+}
+
+fn restricted_v4(ip: Ipv4Addr) -> bool {
     let [a, b, ..] = ip.octets();
     ip.is_private()
         || ip.is_loopback()
@@ -105,6 +159,38 @@ fn restricted_v4(ip: std::net::Ipv4Addr) -> bool {
         || a == 0
         || (a == 100 && (64..=127).contains(&b))
         || (a == 198 && matches!(b, 18 | 19))
+}
+
+#[cfg(test)]
+#[test]
+fn oauth_dns_does_not_dial_internal_addresses_returned_for_public_hosts() {
+    for address in [
+        "127.0.0.1:0",
+        "10.0.0.1:0",
+        "169.254.169.254:0",
+        "[::1]:0",
+        "[::ffff:127.0.0.1]:0",
+        "[64:ff9b::a00:1]:0",
+        "[2002:7f00:1::]:0",
+    ] {
+        assert!(
+            !allowed_dns_address("oauth.example.test", address.parse().unwrap()),
+            "{address}"
+        );
+    }
+    assert!(allowed_dns_address(
+        "oauth.example.test",
+        "8.8.8.8:0".parse().unwrap()
+    ));
+    assert!(allowed_dns_address("localhost", "[::1]:0".parse().unwrap()));
+    assert!(!allowed_dns_address(
+        "localhost",
+        "10.0.0.1:0".parse().unwrap()
+    ));
+    assert!(
+        stored_endpoint("https://[64:ff9b::a00:1]/token", "https://mcp.example.test").is_none()
+    );
+    assert!(stored_endpoint("http://127.0.0.1:9000/token", "http://localhost:9001").is_some());
 }
 
 /// rmcp's HTTP port for one discovery, through Mcp's client and URL policy.
@@ -226,6 +312,16 @@ pub(super) async fn authorize(
     http: &Http,
     request: Request<'_>,
 ) -> Result<Authorization, McpAuthError> {
+    let challenge = request
+        .challenge
+        .map(|header| WWWAuthenticateParams::parse(header, request.server));
+    if challenge
+        .as_ref()
+        .and_then(|params| params.resource_metadata_url.as_ref())
+        .is_some_and(|url| url.origin() != request.server.origin())
+    {
+        return Err(McpAuthError::DiscoveryFailed);
+    }
     let local = loopback(request.server);
     let port = Arc::new(Port {
         http: http.clone(),
@@ -256,11 +352,8 @@ pub(super) async fn authorize(
         .previous
         .filter(|previous| previous.issuer == checked.issuer);
     let challenged = union(
-        &request
-            .challenge
-            .and_then(|header| {
-                rmcp::transport::auth::WWWAuthenticateParams::parse(header, request.server).scope
-            })
+        &challenge
+            .and_then(|params| params.scope)
             .map(|scope| split(&scope))
             .unwrap_or_default(),
         request.missing_scopes,
@@ -603,6 +696,7 @@ pub(super) async fn token(
     grant: Grant<'_>,
     requested: &[String],
 ) -> Result<Tokens, TokenError> {
+    let endpoint = stored_endpoint(endpoint, resource).ok_or(TokenError::Unavailable)?;
     let mut form: Vec<(&str, &str)> = match &grant {
         Grant::Code { code, verifier } => vec![
             ("grant_type", "authorization_code"),
@@ -683,13 +777,13 @@ pub(super) async fn token(
 /// authorization server confirmed it.
 pub(super) async fn revoke(
     http: &Http,
-    endpoint: &str,
+    endpoint: &Url,
     client: &Client,
     token: &str,
     hint: &str,
 ) -> bool {
     let mut form = vec![("token", token), ("token_type_hint", hint)];
-    let request = authenticate(http.post(endpoint), &mut form, client);
+    let request = authenticate(http.post(endpoint.clone()), &mut form, client);
     form_body(request, &form)
         .timeout(REVOCATION_TIMEOUT)
         .send()

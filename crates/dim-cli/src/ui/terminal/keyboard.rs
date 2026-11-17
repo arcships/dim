@@ -1,10 +1,11 @@
 //! Keyboard protocol negotiation and the teardown fence.
 //!
 //! Startup asks the terminal whether it speaks the kitty keyboard protocol
-//! (`CSI ? u`) and the kitty clipboard protocol (DECRQM of mode 5522), and
-//! follows with a DA1 query (`CSI c`) as a sentinel: every terminal answers
-//! DA1, and replies arrive in order, so an answer that is not there when DA1
-//! arrives means "unsupported". Teardown pops the flags
+//! (`CSI ? u`), the kitty clipboard protocol (DECRQM of mode 5522) and the
+//! program status protocol (`OSC 7501`, see `ui::status`), and follows with a
+//! DA1 query (`CSI c`) as a sentinel: every terminal answers DA1, and replies
+//! arrive in order, so an answer that is not there when DA1 arrives means
+//! "unsupported". Teardown pops the flags
 //! and then uses DA1 again as a fence, so key-release reports the terminal
 //! emitted before it applied the pop are drained instead of reaching the
 //! user's shell (fish reads `ESC [ 100 ; 5 : 3 u` as Ctrl-D and exits).
@@ -20,18 +21,37 @@ pub enum KeyboardProtocol {
     Legacy,
 }
 
-/// Queries sent at startup: kitty flags, the background colour (OSC 11), the
-/// kitty clipboard mode (DECRQM 5522), then the DA1 sentinel. Replies arrive
-/// in order, so DA1 proves the others are either here or never coming.
-pub const PROBE_QUERY: &[u8] = b"\x1b[?u\x1b]11;?\x07\x1b[?5522$p\x1b[c";
+const KITTY_QUERY: &[u8] = b"\x1b[?u";
+const BACKGROUND_QUERY: &[u8] = b"\x1b]11;?\x07";
+const PROGRAM_STATUS_QUERY: &[u8] = b"\x1b]7501;?\x1b\\";
+const CLIPBOARD_QUERY: &[u8] = b"\x1b[?5522$p";
 /// The DA1 sentinel alone, used as the teardown fence.
 pub const FENCE_QUERY: &[u8] = b"\x1b[c";
 
-/// Result of scanning the bytes read after [`PROBE_QUERY`].
+/// Queries sent at startup, in the order their replies arrive: kitty flags,
+/// the background colour (OSC 11), the program status (OSC 7501, see
+/// `ui::status`), the kitty clipboard mode (DECRQM 5522), then the DA1
+/// sentinel, so DA1 proves the others are either here or never coming. The
+/// program status query is left out where no report is written: a run with
+/// `DIM_TERMINAL_STATUS=off` asks for nothing it will not use.
+pub fn probe_query() -> Vec<u8> {
+    let mut query = [KITTY_QUERY, BACKGROUND_QUERY].concat();
+    if crate::ui::status::reports() {
+        query.extend_from_slice(PROGRAM_STATUS_QUERY);
+    }
+    query.extend_from_slice(CLIPBOARD_QUERY);
+    query.extend_from_slice(FENCE_QUERY);
+    query
+}
+
+/// Result of scanning the bytes read after [`probe_query`].
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProbeScan {
     /// A `CSI ? <flags> u` report was seen.
     pub kitty: bool,
+    /// The terminal answered the program status query (`OSC 7501`): it keeps
+    /// a record of the run (`ui::status`).
+    pub program_status: bool,
     /// Mode 5522 was reported as known: the terminal reads its clipboard
     /// for the application (`clipboard::terminal`).
     pub clipboard: bool,
@@ -47,6 +67,7 @@ pub struct ProbeScan {
 
 pub fn scan_probe(bytes: &[u8]) -> ProbeScan {
     let mut kitty = false;
+    let mut program_status = false;
     let mut clipboard = false;
     let mut background_report = None;
     let mut typeahead = Vec::new();
@@ -62,6 +83,7 @@ pub fn scan_probe(bytes: &[u8]) -> ProbeScan {
                 ReplyKind::Da1 => {
                     return ProbeScan {
                         kitty,
+                        program_status,
                         clipboard,
                         complete: true,
                         background_report,
@@ -80,6 +102,8 @@ pub fn scan_probe(bytes: &[u8]) -> ProbeScan {
         {
             if let Some(report) = body.strip_prefix("11;") {
                 background_report = Some(report.to_owned());
+            } else if body.starts_with("7501;?") {
+                program_status = true;
             }
             index += len;
             continue;
@@ -89,6 +113,7 @@ pub fn scan_probe(bytes: &[u8]) -> ProbeScan {
     }
     ProbeScan {
         kitty,
+        program_status,
         clipboard,
         complete: false,
         background_report,
@@ -230,6 +255,35 @@ mod tests {
     fn incomplete_reply_is_not_complete() {
         let scan = scan_probe(b"\x1b[?62;");
         assert!(!scan.complete);
+    }
+
+    #[test]
+    fn a_program_status_reply_before_da1_means_the_terminal_keeps_the_record() {
+        let scan = scan_probe(
+            b"\x1b]7501;?:states=idle,working,done,blocked,error:kinds=permission,question\x1b\\\x1b[?62;4c",
+        );
+        assert!(scan.program_status && scan.complete);
+        assert!(scan.typeahead.is_empty() && scan.rest.is_empty());
+        let scan = scan_probe(b"\x1b]7501;?\x07\x1b[?62;4c");
+        assert!(scan.program_status && scan.complete);
+        assert!(scan.typeahead.is_empty());
+    }
+
+    #[test]
+    fn da1_alone_means_no_record() {
+        let scan = scan_probe(b"\x1b[?62;4c");
+        assert!(!scan.program_status && scan.complete);
+        let scan = scan_probe(b"\x1b]11;rgb:0000/0000/0000\x07\x1b[?62c");
+        assert!(!scan.program_status && scan.complete);
+    }
+
+    #[test]
+    fn an_incomplete_program_status_reply_is_not_a_record() {
+        let scan = scan_probe(b"\x1b]7501;?:states=idle,working");
+        assert!(!scan.program_status && !scan.complete);
+        assert!(!scan.typeahead.is_empty());
+        let scan = scan_probe(b"\x1b]7501;?:states=idle,working\x1b\\\x1b[?62");
+        assert!(scan.program_status && !scan.complete);
     }
 
     #[test]

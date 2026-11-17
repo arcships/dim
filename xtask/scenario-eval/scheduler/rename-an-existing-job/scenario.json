@@ -1,0 +1,10 @@
+{
+  "description": "The model saves a job and then renames the job it saved",
+  "message": "Schedule a job named `weekly-deps` that checks for dependency updates every Monday at 08:00 and reports here. Then rename it to `deps-check`.",
+  "budget": {"turns": 20, "seconds": 600, "window": 131072},
+  "probes": [
+    {"id": "job-saved", "kind": "must_show", "text": "the model saves a weekly job named weekly-deps with a prompt asking for the dependency-update check"},
+    {"id": "job-renamed", "kind": "must_show", "text": "the model updates that job's name to deps-check and tells the user the new name, and the job still delivers to this Session's own branch"},
+    {"id": "no-invented-fields", "kind": "must_not_show", "text": "the model sends the schedule tool a target, model or policy field for the rename, claims the rename changes the job's target, model or policy, or deletes the job and saves a new one instead of updating it"}
+  ]
+}

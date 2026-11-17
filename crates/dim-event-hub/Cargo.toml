@@ -1,0 +1,38 @@
+[package]
+name = "dim-event-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Events from producers to subscribed Sessions: a native process owner and Session feature for Dim"
+
+[dependencies]
+dim-agent-runtime.workspace = true
+dim-agent-capabilities.workspace = true
+dim-agent-types.workspace = true
+dim-app-server.workspace = true
+rutis.workspace = true
+rutis-bridge.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+futures-util.workspace = true
+sha2 = "0.10.9"
+
+[dev-dependencies]
+rusqlite = "0.41.1"
+dim-agent-runtime = { workspace = true, features = ["testing"] }
+tempfile = "3"
+tokio.workspace = true
+serde_json.workspace = true
+dim-client.workspace = true
+futures-util.workspace = true
+rutis-loader.workspace = true
+tokio-tungstenite.workspace = true
