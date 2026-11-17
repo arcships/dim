@@ -24020,13 +24020,6 @@
     },
     {
       "from": "dim_app_server",
-      "to": "dim_app_server::settings::declared",
-      "references": [
-        "path settings::Settings"
-      ]
-    },
-    {
-      "from": "dim_app_server",
       "to": "dim_app_server::settings_methods",
       "references": [
         "mod settings_methods",

@@ -6,7 +6,7 @@ use rutis_bridge::session::{Error, HostDispatch, Reply, Value as RpcValue, host_
 use serde_json::{Value, json};
 
 /// A JSON Schema source an owner registers (§3.1).
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SourceDeclaration {
     pub source: String,

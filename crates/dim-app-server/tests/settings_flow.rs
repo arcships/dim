@@ -1094,6 +1094,23 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
         );
         let fourth = kept.revision;
         saw(&mut changes, change(SettingsScope::User, &fourth)).await;
+        let stored = json!({"maxResults": 6, "searchService": service});
+        let kept = owner_call(&owner, "update", update(&fourth, stored.clone())).await;
+        assert_eq!(kept["ok"], true);
+        assert_eq!(kept["value"]["document"], stored);
+        let fifth = kept["value"]["revision"].as_str().unwrap().to_owned();
+        assert_ne!(fifth, fourth);
+        assert_eq!(
+            serde_json::to_value(
+                binding
+                    .read("example", SettingsScope::User, &cancel)
+                    .await
+                    .unwrap()
+            )
+            .unwrap(),
+            kept["value"]
+        );
+        saw(&mut changes, change(SettingsScope::User, &fifth)).await;
         let announced: Vec<_> = changes
             .borrow()
             .iter()
@@ -1101,7 +1118,7 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
             .collect();
         assert_eq!(
             announced,
-            [&second, &third, &fourth].map(
+            [&second, &third, &fourth, &fifth].map(
                 |revision| json!({"source": "example", "scope": "user", "revision": revision})
             )
         );

@@ -271,13 +271,14 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 
 ### 4.5 Rust 绑定
 
-声明式来源的消费者使用公共 `settings` 数据面的 `Settings` 绑定，提供
+`Settings` 绑定公开公共 `settings` 数据面的 owner 操作，提供
 `register(ctx, declaration)`、`read(source, scope, cancel)`、
 `update(source, scope, expected, document, cancel)` 和 `projects()`。
 Dispatcher 调用这些相同操作；原生消费者直接调用，无需 JSON 转换。登记仍绑定调用者生命周期，
 更新仍是不能修改 user-only 字段的 owner 写入。来源注册、校验和持久化仍由同一个 Settings owner 承担。
 
-`SettingsService` 保留下述原生 `BusinessDocument` 和客户端管理路径。此绑定不使声明式操作可见
+`SettingsService` 保留下述原生 `BusinessDocument` 和客户端管理路径。
+PluginManager 的声明式来源工具也通过它读取并进行 owner 写入。此绑定不使声明式操作可见
 原生来源，也不改变 §4.3 和 §7 的本地客户端边界。
 
 在 `dim-app-server::settings` 中（S8a 的类型，只在注明处改动）：
