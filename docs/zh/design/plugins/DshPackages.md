@@ -64,23 +64,23 @@ DSH 包不是 Dim 插件：它不带 `dim-plugin.json`，其 `package.json` 是�
 
 识别这样的包并写出它的入口归 PluginManager（[§10.8](#108-pluginmanager识别-dsh-包并写受管入口)）。本设计固定入口的位置与内容：位于插件文件根下 `.dsh/<插件 id>/entry.mjs`，三行，从运行时的单一副本导入桥接，再导出 `dshPackageRow(<包的真实入口>)`。包目录全程只读，包括从本地路径安装的情况，所以升级 Dim 只换桥接，不动任何包。
 
-入口的模块 URL 携带包入口的修改时间与大小，这是运行时已有的行模块规则，因此重载该行时导入的是变化后的入口，而不是缓存中的模块（[PluginManager §3.4](PluginManager.md#34-重新加载)：宿主不监听文件，重载调用才是信号）。入口属于 PluginManager 对该插件的记录，每次解析行时重写；它不持有状态，除运行时外无人读取。
+运行时给行模块 URL 打上文件的修改时间与大小，所以重载变化的行导入的是文件而不是缓存中的模块。这条规则属于运行时包，不属于本仓库：它在 `rutis-runtime` 包中，版本见 [`runtime/package.json`](../../../../runtime/package.json)，而入口与其他任何行模块无异（[PluginManager §3.4](PluginManager.md#34-重新加载)：宿主不监听文件，重载调用才是信号）。入口属于 PluginManager 对该插件的记录，每次解析行时重写；它不持有状态，除运行时外无人读取。
 
 ### 2.2 宿主 API
 
 桥接在该行自己的隔离作用域内提供下列对象，两个包互相看不到。每一项就是包眼中的整个 Dim。
 
-| API | 包用它做什么 | Dim 收到什么 |
+| 包调用的东西 | 包用它做什么 | Dim 收到什么 |
 | --- | --- | --- |
-| `tools.register(definition, execute, options?)` | 用 schema、渲染与并发类声明一个工具 | 在 Session 的 `toolRegistry` 登记一个工具，处理器是包的函数 |
-| `systemPrompt.section`、`.context`、`.variable`、`.suppressRuntimeContext` | 贡献系统文字、每次请求的状态块、插值变量 | 每个 Session 一个提示词来源，其取值由分支采纳（[§3.5](#35-请求准入顺序)） |
-| `commands.register(name, handler)` | 登记带描述与参数提示的斜杠命令 | Session 的 `pluginCommands` 中的一项（[§6](#6-终端-ui)） |
-| `subagents.startContinuable`、`.startActivation` | 创建带父 Session、策略与首条消息的子 Session | 带父的 `sessions.launch`，随后 `sessions.input`，再返回子 Session 的 id |
-| `./typert` 动作（读自包的清单） | 把本地配置动作暴露给客户端 | 以包自己的命名空间登记到 `managementMethods` |
-| `ctx.on('agent/created' \| 'agent/disposed')`、`agent.getHistory` 作用域、`agent.ctx` | 每个 Session 的建立与拆除 | 桥接自己的门面事件（[§2.4](#24-agent-门面)） |
+| `tools.register(tool)`，一个对象携带 `parameters`、`output` 与 `execute` | 声明一个工具、它的输入 schema、渲染后的输出与执行 | 在 Session 的 `toolRegistry` 登记一项，处理器就是包的 `execute`（[附录 A](#附录-a-桥接的宿主-api)） |
+| `systemPrompt.section({name, order, text})`、`.context({name, order, text, required?})` | 贡献系统文字，以及每次请求的状态文字（可以是装配上下文的函数） | 每个贡献一个提示词来源，`delivery` 为 `system` 或 `state`，每一步之前重新读取（[§3.5](#35-请求准入顺序)、[§10.1](#101-prompt-与-loop一步之前重读动态来源并等它们被准入)） |
+| `commands.register({name, description, input?, handler})` | 登记斜杠命令，其 handler 收到 `{commandId, agent, rawInput, attachments, signal}` 并返回 `{kind, text}` | `pluginCommands` 中的一项；handler 的回复就是这次运行的回复（[§6](#6-终端-ui)、[§10.3](#103-插件命令session-命令表与固定方法命名空间)） |
+| `subagents.startContinuable({provider, label, request: {parent, prompt}, signal})` | 在调用方 agent 下创建子 Session 并读其 id | 带父的 `sessions.launch`，随后 `sessions.input`（[§3.7](#37-命令与子-session)、[§10.4](#104-agentssessionslaunch-接受父-session)） |
+| `./typert` 动作（读自包的 `exports`） | 把本地配置动作暴露给客户端 | `dsh_typert.<package>` 下的 `managementMethods`（[§6](#6-终端-ui)、[§10.6](#106-客户端stop-提示以及插件命令与动作所需的界面)） |
+| `ctx.on('agent/created' \| 'agent/disposed')` | 每个 Session 的建立与拆除 | 桥接自己的门面事件（[§2.4](#24-agent-门面)） |
 | `ctx.provide(name, service)` | 向伙伴包提供服务 | Dim 不参与：它留在共享的 Node 进程里，由运行时解析 |
 
-包注入的、本表未覆盖的任何名字，以及 harness 有而本设计不提供的任何拦截点（步前钩子、工具执行前守卫、请求错误处理器、HTTP 路由、同步全量历史读取），都会让该行在装载时失败并写明缺失项（[§3.4](#34-失败)）。包永远不会在宿主 API 缺一块的状态下被装载。
+附录 A 给出每个形状在 harness 中的定义及其映射。包调用的任何其他东西，以及它注入的、本表未覆盖的任何名字，都会让该行在装载时失败并写明缺失项（[§3.4](#34-失败)）：harness 有而 Dim 不提供的拦截点（步前钩子、工具执行前守卫、请求错误处理器、HTTP 路由、同步全量历史读取）同样失败，`systemPrompt.variable`、`systemPrompt.suppressRuntimeContext`、`agent.getHistory`、`agent.ctx` 以及 harness 后来的 `subagents.startActivation` 也如此（[§11](#11-本设计之外)）。包不会在宿主 API 缺一块的状态下被装载。
 
 ### 2.3 贡献账本
 
@@ -139,7 +139,7 @@ agent/created             session.close / Session 删除          daemon 重启
 
 ```mermaid
 flowchart TD
-  A["package.json 声明 Cordis 或 DSH 依赖"] --> B["PluginManager 写入 .dsh/id/entry.mjs"]
+  A["package.json 带 dsh 成员"] --> B["PluginManager 写入 .dsh/id/entry.mjs"]
   B --> C["行启动"]
   C --> D["入口导入桥接与包"]
   D --> E{"宿主 API 与注入名都受支持？"}
@@ -388,7 +388,7 @@ flowchart TD
 ## 8. 安全
 
 - **包是受信任的宿主代码。** 已装载的行以用户权限运行在运行时进程内，与其他 Node 行相同，[ADR 006 第 11 条](../../adr/006-plugin-contract.md) 适用，本设计不对它做沙箱。包的工具调用仍受该 Session 策略下的 Approval 与 Permission 约束，与 Dim 自带的工具相同。
-- **风险类来自包，且必须给出。** 工具声明写明风险类；Permission 把未知风险类视为未分类，预设可拒绝、询问或允许（[Permission](../../../architecture/rust-agent/plugins/Permission.md)）。缺少风险类的声明被桥接拒绝，而不是填一个宽松默认值。
+- **每个 DSH 工具的风险类由桥接给出，且取最窄的。** Dim 拒收不带风险声明外语工具（`crates/dim-agent-capabilities/src/tool_registry.rs:685-698`），而 harness 没有可供包声明的风险类，所以桥接为每个 DSH 工具填 `network`：这类工具用自己的方式访问 Dim 文件树之外的系统，Dim 无法划分得更窄。预设按网络工具对待它（[Permission](../../../architecture/rust-agent/plugins/Permission.md)；`crates/dim-agent-capabilities/src/permission.rs:678-750`）：完全访问下允许，工作区写入下询问，只读下拒绝。信任某个具名工具的操作者把它加入 `allowedTools`。桥接绝不会为了让包装载而挑一个更宽的分类。
 - **硬依赖不受支持的名字即拒绝装载，而非降级。** 需要 HTTP 路由或步前钩子的包在装载时失败，因此模型不会运行在一个自以为有守卫、其实没有的包之下。
 - **秘密留在包里。** Dim 没有 secret store（[Settings 服务 §1.2](../appserver/settings-service.md)），本设计也不新增：持久化凭据的包自己管文件，动作回复也由它自己决定。到达客户端的只是包返回的内容；返回密码是包自身的缺陷，面板照原样显示它返回的文档。
 - **管理动作仅限本地。** `managementMethods` 只对受保护的本地连接提供，从不提供给配对设备，因此包的配置动作属于宿主管理员面。
@@ -495,6 +495,7 @@ flowchart TD
 
 - **需要 harness 自己的 HTTP 路由、同步全量历史读取或拦截点的包。** `dsh-memory-recall` 注入 harness 的 web server 并同步读取全量历史；`dsh-trellis` 拦截模型请求前的步与工具执行前的调用；`dsh-auto-retry` 处理模型请求错误，会成为重试的第二个所有者。三者都在装载时失败并指明缺失的契约。装载其中一部分比拒绝更糟：一个被静默省略的工作流守卫，是模型自以为存在的守卫。
 - **同步历史读取与单次请求上下文视图。** 两者都是通用能力，放到二期与另一套 harness 的扩展面一起设计。那项工作不承诺支持上面三个包，它们各自还需要一项自己的机制。
+- **首期不提供的 harness 面与需要它的包。** 五个名字在装载时被拒，属于二期，各自附上它需要的契约：`systemPrompt.variable` 是跨包共享的文字路径，对“两个包读的变量由谁设”没有归属规则；`systemPrompt.suppressRuntimeContext` 会让包移除 Dim 自己的运行时上下文，需要一条它可压制的规则；`subagents.startActivation` 是 harness 当前的子会话启动形状，返回带 `result` 与 `dispose` 的 activation，需要 Dim 为它拥有回滚或调用方交付的契约（[附录 A](#附录-a-桥接的宿主-api)）；`agent.getHistory` 是同步全量历史读取，即上一条；`agent.ctx` 是 harness 的每 agent Cordis 上下文，会让包直接登记进别的所有者的表，而不是经 [§7](#7-接口) 的服务面。
 - **对包进程内遇到的依赖显示 Pending。** 当一个包注入另一个包在同一运行时提供的服务时，等待由运行时自己的上下文持有，Dim 的 loader 此时把消费者行显示为 `Active`。桥接可以把它观测到的等待报告出来，本设计用它做诊断。loader 侧的这类名字显示是上游改进，这里不需要，也不是首期任何内容的前置条件。
 - **在其他运行时中运行包。** 只有 Node 运行时携带桥接；为其他语言运行时编写的包不在范围内。
 - **按包划分 Session 或第二套 Session 存储。** 子 Session 就是带父的普通 Session。
@@ -503,26 +504,26 @@ flowchart TD
 
 ## 附录 A. 桥接的宿主 API
 
-字段名为 camelCase，与 Dim 服务声明一致。桥接自身的声明与它们一起生成。
+这套 API 不是本设计的发明，它就是 harness 自己的 API，按每个首期包所调用的形状：`dsh-mysql` 0.3.3（`lib/index.js:302-700`，commit `b200ed5`）登记四个工具、一个动态上下文与七个动作；`dsh-side-session` 0.1.0（`src/index.ts:34-70`，commit `39443eb`）注入 `commands` 与 `subagents` 并登记一个命令。两者都只读，不改动。
 
-```text
-tools.register({name, description, inputSchema, risk, metadata?}, execute, {concurrency?})
-  -> () => void                       // disposer；只会被撤回一次
-execute({arguments, signal, sessionId, callId, config}) -> {content, structuredContent?, isError?}
+有一个形状需要说明版本。`39163dd30f` 的 harness 没有 `subagents.startContinuable`：那里叫 `startActivation`（`packages/subagent/subagent/src/index.ts:252-267`），是个不同的形状，返回带 `result` 与 `dispose` 的 activation。旁会话包调用的 `startContinuable` 是 harness 在该重命名之前的定义（tag `dsh-v0.2.1-alpha.1`：`packages/subagent/subagent/src/index.ts:262`、`packages/subagent/subagent/src/types.ts:32-58`），所以首期提供的是那个名字，而 `startActivation` 在装载时被拒并列入二期（[§11](#11-本设计之外)）。
 
-systemPrompt.section({name, order, text}) -> () => void
-systemPrompt.context({name, order, text, required?}) -> () => void   // 每次请求的动态文字
-systemPrompt.variable({name, value}) -> () => void                   // 跨包共享
+| harness 形状与定义位置 | 包传入什么 | 桥接如何映射 |
+| --- | --- | --- |
+| `tools.register(definition, options?) -> () => void`（`packages/core/tools/src/index.ts:128-153`） | 一个对象：`name`、`description`、`parameters`（JSON Schema 对象，`packages/llm/llm/src/types.ts:517-528`）、`output`（`{schema, render}`，`packages/core/tools/src/contracts.ts:17-24`）、`timeoutMs?`、`execute(args, exec)` | 用 `{name, description, inputSchema: parameters}` 调 `toolRegistry.register`，处理器就是包的 `execute`。`output.schema` 留在桥接：返回值不满足它时变成指名该声明的工具错误。`output.render(args, value)` 生成结果文字，规范值本身是 `structuredContent`（`crates/dim-agent-types/src/tool.rs:483-496`） |
+| `execute(args, exec)`，`exec` 为 `ToolRunContext`（`contracts.ts:245-262`） | `exec.agent`（本次调用所属 agent，`:188`）、`exec.signal`、`exec.callId`、`exec.arguments` | `exec.agent` 是这个 Session 的门面（[§2.4](#24-agent-门面)）；`exec.signal` 是桥接的 `AbortSignal`；其余是调用自己的值。不向包要 `risk`：由桥接给出（[§8](#8-安全)） |
+| `timeoutMs?: number`（`contracts.ts:63-70`） | 一个协作式截止时间：工具转发 `exec.signal`，并在中止后能达到静止 | 桥接在同一 signal 上到点中止。Dim 仍等调用结算，与 stop 一样（[§3.6](#36-工具调用与-stop)）；超时不是第二条取消路径 |
+| `systemPrompt.section(section) -> () => void`（`packages/core/system-prompt/src/index.ts:485-492`） | `{name, order, text, interpolate?, complete?}`，`text` 是字符串或 `(assemble) => string`（`:53-76`） | 一个提示词来源，`delivery: system`，每一步之前重读文字 |
+| `systemPrompt.context(context) -> () => void`（`:520-527`） | `{name, order, text, interpolate?, required?}`，`text` 是字符串或 `AssembleContext` 的函数（`:79-90`） | 一个提示词来源，`delivery: state`：每个取值一个 `<dim-state>` 块（[§5](#5-上下文映射)） |
+| `AssembleContext`（`:42-50`，另由 `packages/core/agent/src/runtime-types.ts:19-25` 合入 `agent?` 与 `modelSelection?`） | `assemble.agent` 是正在装配该步的 agent；另有 `scope` 与 `signal` | `assemble.agent` 是门面，所以函数式文字读的是它自己 Session 的状态；`scope` 与 `signal` 是分支自己的 |
+| `commands.register(definition) -> () => void`（`packages/interaction/commands/src/index.ts:285-291`） | `{name, description, input?, recordInput?, handler}`（`:61-78`） | 一项 `pluginCommands`。`name` 为 `[a-z][a-z0-9_-]*`（`:32`），所以 `/side-chat` 合法 |
+| `handler(invocation)`（`:41-58`） | `{commandId, agent, rawInput, attachments, signal}`，回答 `{kind: 'success', text?}` 或 `{kind: 'error', text}`（`types.ts:34-41`） | `agent` 是门面，`rawInput` 是命令名之后的文字，`attachments` 是输入的块，`signal` 是该次运行的取消。回复的 `{kind, text}` 就是 `session.command.run` 的回复（[§10.3](#103-插件命令session-命令表与固定方法命名空间)） |
+| `subagents.startContinuable(spec)`（tag `dsh-v0.2.1-alpha.1`：`packages/subagent/subagent/src/index.ts:262`、`types.ts:32-58`） | `{provider, label, request: {parent, prompt, cwd?, agentOptions?, ...}, signal}`，回答 `{childId, messageId}` | 以门面为父、`label` 为 `title` 调 `sessions.launch`，再用 `sessions.input` 投递 `prompt`：`childId` 即启动的 Session，`messageId` 是它的输入 id。`provider` 在 harness 里指定后端，而 Dim 只有一个，所以接受 `spawn` 与 `fork`，其他名字在启动前被拒（[§3.7](#37-命令与子-session)） |
+| `ctx.provide(name, service)` | 向伙伴包提供服务 | 运行时自己的共享上下文；Dim 不参与 |
+| `ctx.on('agent/created')` 与 `ctx.on('agent/disposed')`（`packages/core/agent/src/runtime-types.ts:291-300`） | `{agent, source, signal?}` 与 `{agent}` | 桥接的门面事件，`source` 由 `sessionIdentity.restored` 映射（[§2.4](#24-agent-门面)） |
+| `exports["./typert"]` 带 `TYPERT` 清单（`packages/typert/loader/src/index.ts:39-145`；`dsh-mysql` `lib/typert.host.js:40-114`） | `package`、`face: 'host'`、`invocations[{id, service, namespace, method, invocation, parameters, result}]`、`model.services[].members[]` | 一个 `managementMethods` 命名空间 `dsh_typert.<package>`，其中 `-` 写作 `_`，因为 Dim 命名空间的每一段是 `[a-z][a-z0-9_]*`（`crates/dim-agent-capabilities/src/methods.rs:203-213`）。每个 invocation 对应一个 `MethodDecl`：`mutating` 取自 member，`interruption` 为 `Drain`，`progress` 为 false（`crates/dim-agent-capabilities/src/methods.rs:566-599`） |
 
-commands.register({name, description, argumentHint?}, handle) -> () => void
-handle({branchId, args, signal}) -> {kind: "success" | "error", text}
-
-subagents.startContinuable({provider, label, request: {parent, prompt}, signal})
-  -> {childId, messageId}
-subagents.startActivation(…) -> {result, dispose}
-```
-
-三者共同成立。`signal` 是 `AbortSignal`，在调用取消触发时中止；派发前就被取消的调用不会传给包（`crates/dim-agent-capabilities/src/tool_executor.rs:408-415`、`:447-456`）。disposer 幂等。拒绝以携带所有者错误码的类型化错误抛出，绝不用字符串。
+这些形状共同遵循四条规则。登记返回 harness 自己的 disposer，调两次是空操作。`signal` 是 `AbortSignal`，在调用取消触发时中止；派发前就被取消的调用不会传给包（`crates/dim-agent-capabilities/src/tool_executor.rs:408-415`、`:447-456`）。拒绝以携带所有者错误码的类型化错误抛出，绝不用字符串。本表未列出的字段不予提供，需要它的包在装载时失败。
 
 ## 附录 B. 错误与恢复
 

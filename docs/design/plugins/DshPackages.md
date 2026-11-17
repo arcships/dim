@@ -64,23 +64,23 @@ A DSH package is not a Dim plugin: it carries no `dim-plugin.json`, and its `pac
 
 Recognising such a package and writing its entry belong to PluginManager ([§10.8](#108-pluginmanager-recognising-a-dsh-package-and-writing-its-managed-entry)). The design fixes the entry's path under the plugin files root, `.dsh/<plugin id>/entry.mjs`, and its content: three lines that import the bridge from the runtime's single copy and re-export `dshPackageRow(<the package's real entry>)`. The package's directory is read-only throughout, including when it is installed from a path rather than a registry, so an upgrade of Dim changes the bridge and leaves every package untouched.
 
-The entry's module URL carries the package entry's modification time and size, which is the runtime's existing rule for a row's module, so a reload of the row imports the changed entry rather than the module it cached ([PluginManager §3.4](PluginManager.md#34-reload): the host watches no files, the reload call is the signal). The entry belongs to PluginManager's record of the plugin and is written again whenever the row is resolved; it holds no state and nothing reads it but the runtime.
+The runtime stamps a row's module URL with the file's modification time and size, so a reload of a changed row imports the file rather than the module it cached. That rule is the runtime package's, not this repository's: it lives in the `rutis-runtime` package, the version [`runtime/package.json`](../../../runtime/package.json) pins, and the entry is a row's module like any other ([PluginManager §3.4](PluginManager.md#34-reload): the host watches no files, the reload call is the signal). The entry belongs to PluginManager's record of the plugin and is written again whenever the row is resolved; it holds no state and nothing reads it but the runtime.
 
 ### 2.2 The host API
 
 The bridge supplies these objects to the row, in the row's own isolated scope so two packages never see each other's. Each is the package's whole view of Dim.
 
-| API | What the package does with it | What Dim receives |
+| What the package calls | What it does with it | What Dim receives |
 | --- | --- | --- |
-| `tools.register(definition, execute, options?)` | Declares a tool with its schema, its rendering and its concurrency | A tool registered with the Session's `toolRegistry`, whose handler is the package's function |
-| `systemPrompt.section`, `.context`, `.variable`, `.suppressRuntimeContext` | Contributes system text, a per-request state block, an interpolation variable | One prompt source per Session, whose value the branch adopts ([§3.5](#35-the-request-admission-order)) |
-| `commands.register(name, handler)` | Registers a slash command with a description and an argument hint | An entry in the Session's `pluginCommands` ([§6](#6-terminal-ui)) |
-| `subagents.startContinuable`, `.startActivation` | Starts a child Session with a parent, a policy and an initial message | `sessions.launch` with the parent, then `sessions.input`, then the child's id |
-| `./typert` actions, read from the package's manifest | Exposes local configuration actions to the client | `managementMethods` under the package's own namespace |
-| `ctx.on('agent/created' \| 'agent/disposed')`, `agent.getHistory` scopes, `agent.ctx` | Per-Session setup and teardown | The bridge's own facade events ([§2.4](#24-the-agent-facade)) |
+| `tools.register(tool)`, one object carrying `parameters`, `output` and `execute` | Declares a tool, its input schema, its rendered output and its execution | A `toolRegistry` registration for the Session, whose handler is the package's `execute` ([Appendix A](#appendix-a-the-bridges-host-api)) |
+| `systemPrompt.section({name, order, text})`, `.context({name, order, text, required?})` | Contributes system text, and per-request state text that may be a function of the assembly | One prompt source per contribution, `delivery: system` or `state`, read again before each step ([§3.5](#35-the-request-admission-order), [§10.1](#101-prompt-and-loop-a-step-re-reads-its-dynamic-sources-and-waits-for-their-admission)) |
+| `commands.register({name, description, input?, handler})` | Registers a slash command whose handler receives `{commandId, agent, rawInput, attachments, signal}` and returns `{kind, text}` | One `pluginCommands` entry; the handler's reply is the run's reply ([§6](#6-terminal-ui), [§10.3](#103-plugin-commands-a-session-command-table-and-a-fixed-method-namespace)) |
+| `subagents.startContinuable({provider, label, request: {parent, prompt}, signal})` | Starts a child Session under the calling agent and reads its id | `sessions.launch` with the parent, then `sessions.input` ([§3.7](#37-a-command-and-its-child-session), [§10.4](#104-agents-sessionslaunch-takes-a-parent-session)) |
+| `./typert` actions, read from the package's `exports` | Exposes local configuration actions to the client | `managementMethods` under `dsh_typert.<package>` ([§6](#6-terminal-ui), [§10.6](#106-client-the-stop-hint-and-the-surfaces-plugin-commands-and-actions-need)) |
+| `ctx.on('agent/created' \| 'agent/disposed')` | Per-Session setup and teardown | The bridge's own facade events ([§2.4](#24-the-agent-facade)) |
 | `ctx.provide(name, service)` | Offers a service to peer packages | Nothing in Dim: it stays in the shared Node process, resolved by the runtime |
 
-Anything the package injects that this table does not cover, and any interception point the harness has that this table does not name (a step-before hook, a tool pre-execute guard, a request-error handler, an HTTP route, a synchronous whole-history read), makes the row fail at load with the missing name in its failure ([§3.4](#34-failure)). A package is never loaded with part of its host API absent.
+Appendix A gives each shape's harness definition and its mapping. Anything else a package calls, and anything it injects that this table does not cover, makes the row fail at load with the missing name in its failure ([§3.4](#34-failure)): an interception point the harness has and Dim does not serve (a step-before hook, a tool pre-execute guard, a request-error handler, an HTTP route, a synchronous whole-history read) fails the same way, and so do `systemPrompt.variable`, `systemPrompt.suppressRuntimeContext`, `agent.getHistory`, `agent.ctx` and the harness's later `subagents.startActivation` ([§11](#11-not-in-this-design)). A package is never loaded with part of its host API absent.
 
 ### 2.3 The contribution ledger
 
@@ -139,7 +139,7 @@ No queue of contributions, no retry, no timer and no second registry. The concre
 
 ```mermaid
 flowchart TD
-  A["package.json names Cordis or DSH"] --> B["PluginManager writes .dsh/id/entry.mjs"]
+  A["package.json carries a dsh member"] --> B["PluginManager writes .dsh/id/entry.mjs"]
   B --> C["row plugin:package starts"]
   C --> D["entry imports the bridge and the package"]
   D --> E{"host API and injected names supported?"}
@@ -388,7 +388,7 @@ The bridge's own host API is a contract with package authors and lives in the ge
 ## 8. Security
 
 - **The package is trusted host code.** A loaded row runs in the runtime's process with the user's own privileges, as every Node row does; [ADR 006 rule 11](../../adr/006-plugin-contract.md) applies and nothing here sandboxes it. A package's tool calls are still admitted by Approval and Permission under the Session's policy, exactly like a tool Dim ships.
-- **Risk comes from the package and is checked.** A tool declaration states its risk category; Permission treats an unknown category as unclassified, which the presets deny, ask about or allow ([Permission](../../architecture/rust-agent/plugins/Permission.md)). The bridge refuses a declaration with no risk instead of filling in a permissive default.
+- **The bridge declares every DSH tool's risk, and it is the narrow one.** Dim refuses a foreign tool whose declaration carries no risk (`crates/dim-agent-capabilities/src/tool_registry.rs:685-698`), and the harness has no risk category for a package to declare, so the bridge supplies `network` for every DSH tool: such a tool reaches systems outside Dim's own file tree by its own means, and Dim cannot classify it more narrowly. The presets then treat it as they treat any network tool ([Permission](../../architecture/rust-agent/plugins/Permission.md); `crates/dim-agent-capabilities/src/permission.rs:678-750`): allowed under full access, asked under workspace-write, refused under read-only. An operator who trusts a named tool adds it to `allowedTools`. The bridge never picks a broader category to make a package load.
 - **A hard dependency on an unsupported name is a refusal, not a degraded load.** A package that needs an HTTP route or a step-before hook fails at load, so the model never runs under a package that believes a guard is in place and is not.
 - **Secrets stay with the package.** Dim has no secret store ([settings service §1.2](../appserver/settings-service.md)), and this design adds none: a package that persists a credential does so in its own files, and its action replies are its own. What reaches a client is what the package returns; a package that returns a password is the package's defect, and the panel shows the document it returns.
 - **Management actions are local.** `managementMethods` is served to protected local connections only, never to a paired device, so a package's configuration actions are a host-administrator surface.
@@ -495,6 +495,7 @@ Nothing else is asked of another owner: the managed entry's path and content, th
 
 - **Packages that need the harness's own HTTP routes, a synchronous read of the whole history, or an interception point.** `dsh-memory-recall` injects the harness's web server and reads the whole history synchronously; `dsh-trellis` intercepts the step before a model request and the tool call before it executes; `dsh-auto-retry` handles model request errors and would become a second owner of retry. Each fails at load naming the contract that is missing. Loading part of such a package would be worse than refusing it: a workflow guard that is silently absent is a guard the model believes in.
 - **Synchronous history reads and a per-request view of the context.** Both are general capabilities, to be designed in phase 2 together with the extension surface of the other harness. That work does not promise support for the three packages above, which each need one more mechanism of their own.
+- **The harness surface phase 1 does not serve, and the packages that need it.** Five names are refused at load and belong to phase 2, each with the contract it would need: `systemPrompt.variable`, a text path shared across packages with no ownership rule for who sets a variable two packages read; `systemPrompt.suppressRuntimeContext`, which would let a package remove Dim's own runtime context and needs a rule for what it may suppress; `subagents.startActivation`, the harness's current child-start shape, which returns an activation with `result` and `dispose` and needs Dim to own a rollout-back or caller-delivery contract for it ([Appendix A](#appendix-a-the-bridges-host-api)); `agent.getHistory`, a synchronous whole-history read, which is the item above; and `agent.ctx`, the harness's per-agent Cordis context, which would let a package register into another owner's tables directly instead of through the faces in [§7](#7-interfaces).
 - **A `Pending` display for a dependency met inside a package's own process.** When one package injects a service another provides in the same runtime, the runtime's own context holds the wait, and Dim's loader shows the consumer row `Active` meanwhile. The bridge can report the wait it observes, and this design uses that for diagnostics. A loader-side display for those names is an upstream improvement that is not required here, and it is not a prerequisite for anything in phase 1.
 - **Running packages from another runtime.** Only the Node runtime carries the bridge; a package written for another language runtime is out of scope.
 - **Per-package Sessions or a second Session store.** A child Session is an ordinary Session with a parent.
@@ -503,37 +504,37 @@ Nothing else is asked of another owner: the managed entry's path and content, th
 
 ## Appendix A. The bridge's host API
 
-Field names are camelCase, as the Dim service declarations are. The bridge's declarations are generated beside them.
+The API is not this design's invention: it is the harness's own, at the shape each phase 1 package calls. The consumers are `dsh-mysql` 0.3.3 (`lib/index.js:302-700`, commit `b200ed5`), which registers four tools, one dynamic context and seven actions, and `dsh-side-session` 0.1.0 (`src/index.ts:34-70`, commit `39443eb`), which injects `commands` and `subagents` and registers one command. Each is read, never edited.
 
-```text
-tools.register({name, description, inputSchema, risk, metadata?}, execute, {concurrency?})
-  -> () => void                       // the disposer; withdrawn exactly once
-execute({arguments, signal, sessionId, callId, config}) -> {content, structuredContent?, isError?}
+One shape needs its revision stated. The harness at `39163dd30f` has no `subagents.startContinuable`: it is `startActivation` there (`packages/subagent/subagent/src/index.ts:252-267`), a different shape that returns an activation with `result` and `dispose`. The side-session package calls `startContinuable` as the harness defined it before that rename (tag `dsh-v0.2.1-alpha.1`: `packages/subagent/subagent/src/index.ts:262`, `packages/subagent/subagent/src/types.ts:32-58`), so phase 1 serves that name, and `startActivation` is refused at load and listed for phase 2 ([§11](#11-not-in-this-design)).
 
-systemPrompt.section({name, order, text}) -> () => void
-systemPrompt.context({name, order, text, required?}) -> () => void   // per-request dynamic text
-systemPrompt.variable({name, value}) -> () => void                   // shared across packages
+| Harness shape, and where it is defined | What the package passes | How the bridge maps it |
+| --- | --- | --- |
+| `tools.register(definition, options?) -> () => void` (`packages/core/tools/src/index.ts:128-153`) | One object: `name`, `description`, `parameters` (a JSON Schema object, `packages/llm/llm/src/types.ts:517-528`), `output` (`{schema, render}`, `packages/core/tools/src/contracts.ts:17-24`), `timeoutMs?`, `execute(args, exec)` | `toolRegistry.register` with `{name, description, inputSchema: parameters}` and the package's `execute` as the handler. `output.schema` stays in the bridge: a returned value that fails it becomes a tool error naming the declaration. `output.render(args, value)` builds the result text, and the canonical value is the `structuredContent` (`crates/dim-agent-types/src/tool.rs:483-496`) |
+| `execute(args, exec)` with `exec: ToolRunContext` (`contracts.ts:245-262`) | `exec.agent` (the agent on whose behalf the call runs, `:188`), `exec.signal`, `exec.callId`, `exec.arguments` | `exec.agent` is the Session's facade ([§2.4](#24-the-agent-facade)); `exec.signal` the bridge's `AbortSignal`; the rest the call's own values. No `risk` is asked of the package: the bridge supplies it ([§8](#8-security)) |
+| `timeoutMs?: number` (`contracts.ts:63-70`) | A cooperative deadline: the tool forwards `exec.signal` and reaches quiescence when it aborts | The bridge aborts that same signal at the deadline. Dim keeps waiting for the call to settle, as it does for a stop ([§3.6](#36-a-tool-call-and-a-stop)); the timeout is not a second cancellation path |
+| `systemPrompt.section(section) -> () => void` (`packages/core/system-prompt/src/index.ts:485-492`) | `{name, order, text, interpolate?, complete?}`, `text` a string or `(assemble) => string` (`:53-76`) | One prompt source, `delivery: system`, its text read again before each step |
+| `systemPrompt.context(context) -> () => void` (`:520-527`) | `{name, order, text, interpolate?, required?}`, `text` a string or a function of `AssembleContext` (`:79-90`) | One prompt source, `delivery: state`: one `<dim-state>` block per value ([§5](#5-context-mapping)) |
+| `AssembleContext` (`:42-50`, with `agent?` and `modelSelection?` merged in at `packages/core/agent/src/runtime-types.ts:19-25`) | `assemble.agent` is the agent whose step assembles; also `scope` and `signal` | `assemble.agent` is the facade, so a function-valued text reads its own Session's state; `scope` and `signal` are the branch's own |
+| `commands.register(definition) -> () => void` (`packages/interaction/commands/src/index.ts:285-291`) | `{name, description, input?, recordInput?, handler}` (`:61-78`) | One `pluginCommands` entry. `name` is `[a-z][a-z0-9_-]*` (`:32`), so `/side-chat` is legal |
+| `handler(invocation)` (`:41-58`) | `{commandId, agent, rawInput, attachments, signal}`, answering `{kind: 'success', text?}` or `{kind: 'error', text}` (`types.ts:34-41`) | `agent` is the facade, `rawInput` the text after the command name, `attachments` the input's blocks, `signal` the run's cancellation. The reply's `{kind, text}` is `session.command.run`'s reply ([§10.3](#103-plugin-commands-a-session-command-table-and-a-fixed-method-namespace)) |
+| `subagents.startContinuable(spec)` (tag `dsh-v0.2.1-alpha.1`: `packages/subagent/subagent/src/index.ts:262`, `types.ts:32-58`) | `{provider, label, request: {parent, prompt, cwd?, agentOptions?, ...}, signal}`, answering `{childId, messageId}` | `sessions.launch` with `parentSessionId` from the facade and `title` from `label`, then `sessions.input` of `prompt`: `childId` is the launched Session and `messageId` its input id. `provider` names a backend in the harness and Dim has one, so `spawn` and `fork` are accepted and any other name is refused before the launch ([§3.7](#37-a-command-and-its-child-session)) |
+| `ctx.provide(name, service)` | A service for peer packages | The runtime's own shared context; Dim adds nothing |
+| `ctx.on('agent/created')` and `ctx.on('agent/disposed')` (`packages/core/agent/src/runtime-types.ts:291-300`) | `{agent, source, signal?}` and `{agent}` | The bridge's facade events, with `source` mapped from `sessionIdentity.restored` ([§2.4](#24-the-agent-facade)) |
+| `exports["./typert"]` with a `TYPERT` manifest (`packages/typert/loader/src/index.ts:39-145`; `dsh-mysql` `lib/typert.host.js:40-114`) | `package`, `face: 'host'`, `invocations[{id, service, namespace, method, invocation, parameters, result}]`, `model.services[].members[]` | One `managementMethods` namespace `dsh_typert.<package>`, with `-` written as `_` because a Dim namespace segment is `[a-z][a-z0-9_]*` (`crates/dim-agent-capabilities/src/methods.rs:203-213`). Each invocation is a `MethodDecl`: `mutating` from the member, `interruption` `Drain`, `progress` false (`crates/dim-agent-capabilities/src/methods.rs:566-599`) |
 
-commands.register({name, description, argumentHint?}, handle) -> () => void
-handle({branchId, args, signal}) -> {kind: "success" | "error", text}
-
-subagents.startContinuable({provider, label, request: {parent, prompt}, signal})
-  -> {childId, messageId}
-subagents.startActivation(…) -> {result, dispose}
-```
-
-Three rules hold for all of them. `signal` is an `AbortSignal` that aborts when the call's cancellation fires, and a call cancelled before it was dispatched is never passed to the package (`crates/dim-agent-capabilities/src/tool_executor.rs:408-415`, `:447-456`). A disposer is idempotent. A refusal is thrown as a typed error carrying the owner's code, never as a string.
+Four rules hold for all of them. A registration returns the harness's own disposer, and calling it twice is a no-op. `signal` is an `AbortSignal` that aborts when the call's cancellation fires, and a call cancelled before it was dispatched is never passed to the package (`crates/dim-agent-capabilities/src/tool_executor.rs:408-415`, `:447-456`). A refusal is thrown as a typed error carrying the owner's code, never as a string. A field this table does not name is not served, and a package that needs one fails at load.
 
 ## Appendix B. Errors and recovery
 
 | Code | Where | Meaning |
 | --- | --- | --- |
-| `unsupported_host_api` | Row load | The package injects a name or registers an interception this design does not serve; the message names it |
+| `unsupported_host_api` | Row load | The package injects a name or registers an interception this design does not serve; the message names it. The names removed from phase 1 (`systemPrompt.variable`, `systemPrompt.suppressRuntimeContext`, `subagents.startActivation`, `agent.getHistory`, `agent.ctx`) are refused here |
 | `package_loading` | Row load | The entry could not be read or the module threw; the message is the module's |
-| `cordis_duplicate` | Row load | The package resolved its own Cordis copy |
+| `cordis_duplicate` | Row load | The package resolved its own Cordis copy; the runtime already refuses this (the `rutis-runtime` package, the check beside `cordisOf` in `runner.mjs`), and the bridge reports it under this code |
 | `cordis_range` | Row load | The package's `peerDependencies` range for Cordis excludes the runtime's 4.0.4; the message names the range |
-| `invalid_tool` | `tools.register` | A field outside its bound, a name already taken, or a missing risk |
-| `invalid_command` | `commands.register` | A name outside `[a-z][a-z0-9_-]*`, an empty description, or a built-in command's name |
+| `invalid_tool` | `tools.register` | A field outside its bound, a name already taken, or a value the tool's own `output.schema` refuses |
+| `invalid_command` | `commands.register` | A name outside `[a-z][a-z0-9_-]*`, an empty description, or a name this Session's table already holds |
 | `duplicate_name` | `tools.register`, `commands.register`, `systemPrompt.*` | Another contribution of this Session holds the name |
 | `session_closed` | Any registration, `subagents.*` | The Session is closing or gone; nothing was registered |
 | `reloading` | Any registration | The owner is reloading; the copy fails and is mounted again with its row |
