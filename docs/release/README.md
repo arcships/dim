@@ -174,8 +174,8 @@ The protocol matrix reports unsupported optional methods separately; its process
 
 ### Rust dependency checks
 
-The `dependencies` job installs the fixed `cargo-deny` version declared in
-[`ci.yml`](../../.github/workflows/ci.yml) and runs:
+The `dependencies` job uses the `cargo-deny` version pinned in
+[`ci.yml`](../../.github/workflows/ci.yml) on a self-hosted Windows x64 runner.
 
 ```sh
 cargo deny --locked check advisories licenses
