@@ -156,9 +156,7 @@ jobs:
       cancel-in-progress: true
     # PR runners must be isolated from release credentials and private networks.
     runs-on: >-
-      ${{ fromJSON(matrix.platform == 'macos' && '["self-hosted","macOS","ARM64"]' ||
-        vars.DIM_CI_USE_SELF_HOSTED_LINUX == 'true' && '["self-hosted","linux","x64","dim-verify-linux"]' ||
-        '["ubuntu-22.04"]') }}
+      ${{ fromJSON(matrix.platform == 'macos' && '["self-hosted","macOS","ARM64"]' || '["ubuntu-22.04"]') }}
     timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "4"
@@ -175,11 +173,9 @@ jobs:
           package-manager-cache: false
       - name: Prepare Linux sandbox tests
         if: runner.os == 'Linux' && needs.changes.outputs.rust == 'true'
-        env:
-          DIM_CI_USE_SELF_HOSTED_LINUX: ${{ vars.DIM_CI_USE_SELF_HOSTED_LINUX }}
         shell: bash
         run: |
-          if ! command -v bwrap >/dev/null && [[ "$DIM_CI_USE_SELF_HOSTED_LINUX" != true ]]; then
+          if ! command -v bwrap >/dev/null; then
             sudo apt-get update
             sudo apt-get install -y bubblewrap
           fi
@@ -310,7 +306,7 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41581a48a89fd1d8 # v6.1.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0

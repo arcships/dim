@@ -138,7 +138,7 @@ their peak memory requirements.
 
 The Ubuntu preflight generates the Rust distribution notices once with cargo-about 0.9.3 using the versioned checkout. All six targets download that artifact. Linux builds on each native host with GNU tools in a digest-pinned manylinux_2_28 container. The executable also runs in that glibc 2.28 environment. Windows uses native MSVC, clang-cl on ARM64, NASM on x64, and the Windows system tar to create ZIP archives. Actions installs Node from `.node-version` and Rust uses `rust-toolchain.toml`. Web and Release assembly run on hosted Ubuntu.
 
-The separate PR workflow uses GitHub-hosted Ubuntu 22.04 x64 and self-hosted runners. Register self-hosted runners with the [OS and architecture labels](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow). To route full Linux verification to a self-hosted pool, install `bubblewrap` and the Rust build prerequisites on an isolated Linux x64 runner, label it `dim-verify-linux`, and set the repository Actions variable `DIM_CI_USE_SELF_HOSTED_LINUX` to `true`. Keep PR runner credentials and private networks isolated as required by the [CI trust model](#ci-trust-model).
+The separate PR workflow uses GitHub-hosted Ubuntu 22.04 x64 and self-hosted runners. Register self-hosted runners with the [OS and architecture labels](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow). Keep PR runner credentials and private networks isolated as required by the [CI trust model](#ci-trust-model).
 
 The platform-independent `changes` and `ci-ok` jobs can run on any eligible self-hosted runner.
 
