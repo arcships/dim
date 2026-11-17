@@ -15,6 +15,7 @@ dim-agent 的能力评测 pipeline。回答的问题是：**这次改动会不�
 | `build/` | 批次识别（`daily_batch.py`）与被测镜像构建投递（`build_image.py`） | 实现代码 |
 | `tasks/` | 30 个 L2 任务的 `MANIFEST.json` + [上游 pin](tasks/UPSTREAM.md)；任务树在私有仓库 [arcships/dim-eval-data](https://github.com/arcships/dim-eval-data) | 升级 pin 的 PR |
 | `officeqa/` | OfficeQA Pro：任务生成器、模板、语料镜像；生成的 133 个任务在 dim-eval-data，本仓库只留 `officeqa/tasks/MANIFEST.json`，见 [officeqa/README.md](officeqa/README.md) | 升级 pin 的 MR |
+| `usercases/` | Badcase 自建评测集：公开 issue 的真实失败转成的任务；任务树在 dim-eval-data 的 `eval-badcase` 分支，本仓库只 pin `usercases/tasks/MANIFEST.json`，见 [usercases/README.md](usercases/README.md) | 升级 pin 的 PR |
 | `runner/` | 运行器：任务编排、dim adapter、结果解析（`results.py`）、baseline 与配对比较（`baseline.py`） | 实现代码 |
 | `ledger_tools/` | ledger 的 schema、append-only store、审计与健康指标 | 实现代码 |
 | `baselines/<pin-sha>.json` | 每任务 k 次的通过分数与成本，按任务 pin 分文件 | baseline 采集 |

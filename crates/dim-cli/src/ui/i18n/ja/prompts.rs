@@ -30,6 +30,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "{latest} が利用可能（現在 {current}）。"
         }
         "To update, run: {command}" => "更新コマンド：{command}",
+        "To update, exit every client and stop the server, then run {command}" => {
+            "更新するには、すべてのクライアントを終了しサーバーを停止してから {command} を実行してください"
+        }
         "Skip this version" => "このバージョンをスキップ",
         "Skipped {version}." => "{version} をスキップ。",
         "Close" => "閉じる",

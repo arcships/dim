@@ -30,6 +30,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "{latest} 버전 출시 (현재 {current})"
         }
         "To update, run: {command}" => "업데이트하려면 실행: {command}",
+        "To update, exit every client and stop the server, then run {command}" => {
+            "업데이트하려면 모든 클라이언트를 종료하고 서버를 멈춘 뒤 {command}를 실행하세요"
+        }
         "Skip this version" => "이 버전 건너뛰기",
         "Skipped {version}." => "{version} 건너뜀.",
         "Close" => "닫기",

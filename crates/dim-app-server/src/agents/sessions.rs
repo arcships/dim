@@ -335,7 +335,7 @@ async fn published(publication: &Publication, sequence: u64) -> Result<(), Sessi
     Ok(())
 }
 
-/// A failed wait for a branch to settle (`stop`, `idle`): apart from a closed
+/// A failed wait for branch dispatch: apart from a closed
 /// Session, an unknown branch or a reloading capability, it is the branch's
 /// dispatch failure.
 fn settlement(error: AgentError) -> SessionsError {
@@ -659,15 +659,35 @@ impl AgentIndex {
     /// Answers whether `inputId` is still pending on the branch
     /// (session-access §2): pending from its `input/message` until
     /// `input/applied` followed by `input/consumed`, or `input/deleted`,
-    /// references it. The branch's own InputQueue holds exactly that set, so
-    /// this reads it and reads no Timeline. An id the branch does not hold is
-    /// not pending.
+    /// references it. Waits for dispatch through the published head captured
+    /// on entry, then reads the branch's InputQueue without reading history.
+    /// An id the branch does not hold is not pending.
     pub async fn pending(&self, request: PendingRequest) -> Result<PendingReply, SessionsError> {
         self.until_unloaded(async {
             if request.input_id.is_empty() {
                 return Err(SessionsError::rejected("inputId must not be empty"));
             }
             let lease = self.acquire(&request.session_id).await?;
+            let publication = lease.session.publication(&request.branch_id)?;
+            let through = publication.sequence();
+            let mut dispatch = lease.session.dispatch_watch(&request.branch_id)?;
+            let mut published = publication.watch();
+            tokio::select! {
+                result = async {
+                    dispatch.wait_for(|state| state.sequence >= through || state.failure.is_some())
+                        .await.map(|state| state.failure.clone())
+                } => {
+                    if let Some(error) = result.map_err(|_| AgentError::Closed(request.branch_id.clone()))? {
+                        return Err(settlement(error));
+                    }
+                }
+                _ = published.wait_for(|&(_, closed)| closed) => {
+                    let error = dispatch.borrow().failure.clone()
+                        .or_else(|| publication.failure())
+                        .unwrap_or_else(|| AgentError::Closed(request.branch_id.clone()));
+                    return Err(settlement(error));
+                }
+            }
             let pending = lease
                 .session
                 .service::<InputQueue>(&request.branch_id)?

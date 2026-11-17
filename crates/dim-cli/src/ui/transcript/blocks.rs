@@ -119,14 +119,16 @@ pub(crate) const THINKING_ROWS: usize = 4;
 /// newest rows behind the bar, growing with the text up to `THINKING_ROWS`
 /// of body (the settled block holds the whole body, so it is never
 /// shorter); collapsed, one row with the newest text, as the settled row
-/// is one. The block only ever grows while the text streams.
+/// is one. Collapsed callers supply the projection's bounded excerpt.
 pub(crate) fn live_thinking(text: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
     if !expanded {
-        let newest = text.split_whitespace().collect::<Vec<_>>().join(" ");
         return vec![thinking_summary_row(
-            t("Thinking…"),
-            &newest,
-            true,
+            t(if text.is_empty() {
+                "Thinking…"
+            } else {
+                "Thinking excerpt"
+            }),
+            text,
             width,
             p,
         )];
@@ -186,9 +188,8 @@ pub(crate) fn thinking_prefix(text: &str, width: usize) -> String {
     text[..end].to_owned()
 }
 
-/// A settled thought: one row with its duration and the start of its last
-/// paragraph (the conclusion), or the whole text behind the bar when
-/// expanded.
+/// A settled thought. Collapsed callers supply the projection's excerpt;
+/// expanded callers supply the complete body.
 pub(crate) fn settled_thinking(
     text: &str,
     elapsed_ms: Option<u64>,
@@ -207,29 +208,13 @@ pub(crate) fn settled_thinking(
             .chain(body.iter().map(|row| thinking_row(row, width, p)))
             .collect();
     }
-    let summary = text
-        .rsplit("\n\n")
-        .find(|paragraph| !paragraph.trim().is_empty())
-        .unwrap_or_default()
-        .replace("**", "")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-    vec![thinking_summary_row(&label, &summary, false, width, p)]
+    vec![thinking_summary_row(&label, text, width, p)]
 }
 
-/// The one-row form of a thought: `◆ label · summary`. A running thought
-/// shows the end of `summary` (its newest words); a settled one its start.
-fn thinking_summary_row(
-    label: &str,
-    summary: &str,
-    newest: bool,
-    width: usize,
-    p: &Palette,
-) -> String {
-    use crate::ui::text::{truncate_cells, truncate_cells_start};
-    let gutter = gutter_width(width);
-    let content = width.saturating_sub(gutter).max(1);
+/// The one-row form of a thought: `◆ label · excerpt`.
+fn thinking_summary_row(label: &str, summary: &str, width: usize, p: &Palette) -> String {
+    let gutter = gutter_width(width).min(width);
+    let content = width.saturating_sub(gutter);
     let label = truncate_cells(label, content);
     let mut row = format!(
         "{}{}",
@@ -238,28 +223,16 @@ fn thinking_summary_row(
     );
     let room = content.saturating_sub(display_width(&label) + 3);
     if !summary.is_empty() && room > 0 {
-        let shown = if newest {
-            truncate_cells_start(summary, room)
-        } else {
-            truncate_cells(summary, room)
-        };
+        let shown = truncate_cells(summary, room);
         row.push_str(&fg(" · ", &p.faint));
         row.push_str(&fg(&shown, &p.faint));
     }
     row
 }
 
-/// The title row of a thought shown whole: `◆ label` behind the bar.
+/// The title row of a thought shown whole, aligned with its collapsed title.
 fn thinking_title(label: &str, width: usize, p: &Palette) -> String {
-    use crate::ui::text::truncate_cells;
-    let gutter = gutter_width(width);
-    let room = width.saturating_sub(gutter + 2).max(1);
-    format!(
-        "{}{}{}",
-        fg(&gutter_mark(THINKING_BAR, gutter), &p.border),
-        fg(&format!("{ASSISTANT_MARK} "), &p.accent),
-        thinking_label(&truncate_cells(label, room), p)
-    )
+    thinking_summary_row(label, "", width, p)
 }
 
 fn thinking_label(label: &str, p: &Palette) -> String {
@@ -688,11 +661,17 @@ pub(crate) fn render_block(
         } => hook_row(*row, body, *expanded, width, p),
         Block::Thinking {
             text,
+            excerpt,
             elapsed_ms,
             expanded,
             streamed,
+            ..
         } => {
-            let text = crate::sanitize::safe(text);
+            let text = if *expanded {
+                crate::sanitize::safe(text)
+            } else {
+                excerpt.clone()
+            };
             if *streamed && *expanded {
                 streamed_thinking(&text, *elapsed_ms, width, p)
             } else {

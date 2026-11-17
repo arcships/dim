@@ -38,6 +38,8 @@ mod modality;
 mod models;
 #[path = "cli_flow/permission.rs"]
 mod permission;
+#[path = "cli_flow/prompt_migration.rs"]
+mod prompt_migration;
 #[path = "cli_flow/prompt_suggestion.rs"]
 mod prompt_suggestion;
 #[path = "cli_flow/prompts.rs"]
@@ -66,10 +68,14 @@ mod startup;
 mod tasks;
 #[path = "cli_flow/title.rs"]
 mod title;
+#[path = "cli_flow/update_entry.rs"]
+mod update_entry;
 #[path = "cli_flow/windows.rs"]
 mod windows;
 #[path = "cli_flow/workflow.rs"]
 mod workflow;
+#[path = "cli_flow/worktrees.rs"]
+mod worktrees;
 
 #[path = "support/daemon.rs"]
 mod daemon_cleanup;
@@ -6669,12 +6675,12 @@ fn tui_skill_rows_come_from_the_catalog_and_complete_without_sending() {
         let mut terminal = Terminal::resume_tui(command);
         terminal.until("test / model");
 
-        // The enabled Skill is listed and its row completes the marker into
-        // the draft; no message is sent.
+        // The enabled Skill is listed and its row completes the reference into
+        // the draft, which draws the Skill's name; no message is sent.
         terminal.write(b"/comm");
         terminal.until("/skill:commit");
         terminal.raw(b"\r");
-        terminal.until_plain("/skill:commit ");
+        terminal.until_plain("/commit ");
         terminal.write(b"\x03");
 
         // A disabled or shadowed Skill is not offered: Tab completes nothing.
@@ -7461,7 +7467,7 @@ fn real_daemon_profile_conflicts_preserve_the_running_daemon_and_endpoint() {
 #[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
 fn configured_api_key_model_uses_production_tools_and_restores_the_same_session() {
-    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sha2::{Digest, Sha256};
     let binary = std::env::var("DIM_TEST_APP_SERVER")
         .expect("Set DIM_TEST_APP_SERVER to the dim-app-server binary");
     let home = Home::new();
@@ -7469,8 +7475,8 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
     let image = home.0.join("screenshot.dat");
     let bytes = image_fixture(image::ImageFormat::Png, 1, 1);
     fs::write(&image, &bytes).unwrap();
-    let image_data = STANDARD.encode(bytes);
-    let model_image = image_data.clone();
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let model_image = format!("img:{}", &digest[..16]);
     let outside = Home::new();
     let reference = outside.0.join("outside reference.txt");
     fs::write(&reference, "outside-attachment-marker\n").unwrap();
@@ -7543,9 +7549,10 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
                     user["content"],
                     json!([
                         {"type":"text","text":"continue"},
-                        {"type":"image_url","image_url":{"url":format!("data:image/png;base64,{model_image}")}}
+                        {"type":"text","text":model_image}
                     ])
                 );
+                assert!(!request.to_string().contains("image_url"), "{request}");
             }
             assert!(
                 request["tools"]
@@ -7592,10 +7599,8 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
                 let user = last_user();
                 let parts = user["content"].as_array().unwrap();
                 assert_eq!(parts[0], json!({"type":"text","text":"selected "}));
-                assert_eq!(
-                    parts[1],
-                    json!({"type":"image_url","image_url":{"url":format!("data:image/png;base64,{model_image}")}})
-                );
+                assert_eq!(parts[1], json!({"type":"text","text":model_image}));
+                assert!(!request.to_string().contains("image_url"), "{request}");
                 assert!(
                     user["content"]
                         .to_string()
@@ -12131,8 +12136,10 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     let mut terminal = Terminal::resume_tui(command);
     terminal.until("test / model");
     terminal.write(b"/models\r");
-    terminal.until("Subagent models: Agent choice");
-    terminal.write(b"Subagent\r");
+    terminal.until("Subagent models");
+    terminal.until("Agent choice");
+    // Tab focuses the policy section; Enter opens its page.
+    terminal.raw(b"\t\r");
     terminal.until("Inherit requesting branch");
     terminal.until("Existing members keep their models.");
     terminal.raw(b"\x1b[B\r");
@@ -12140,7 +12147,8 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     terminal.write(b"\r");
     thread::sleep(Duration::from_millis(300));
     terminal.write(b"\r");
-    terminal.until("Subagent models: Inherit requesting branch");
+    terminal.until("Subagent models");
+    terminal.until("Inherit requesting branch");
     terminal.until("Subagent model policy saved");
     terminal.write(b"\r");
     terminal.until("Fixed model");
@@ -12151,7 +12159,8 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     terminal.raw(b"\x1b[B\r");
     terminal.until("Fixed subagent model");
     terminal.write(b"other\r");
-    terminal.until("Subagent models: Test / other");
+    terminal.until("Subagent model policy saved");
+    terminal.until("Test / other");
     home.kill(&terminal);
     terminal.wait();
     daemon.join().unwrap();
@@ -12186,10 +12195,13 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     );
 }
 
-/// `/models` lists a Provider's models without offering `Edit models` when
-/// the daemon does not advertise the area's method.
+/// `/models` lists a Provider's models without offering `Manage models` when
+/// the daemon does not advertise the area's method, and keeps the recovery
+/// guidance as a read-only line. A Provider with nothing selectable names its
+/// models with missing limits once, and its other unavailable and disabled
+/// models beside them.
 #[test]
-fn tui_models_picker_hides_edit_models_without_management_methods() {
+fn tui_models_picker_hides_manage_models_without_management_methods() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         wire.2 = true;
@@ -12206,7 +12218,13 @@ fn tui_models_picker_hides_edit_models_without_management_methods() {
                 "session.attach" => attach_record(&request),
                 "session.history" => json!({"events":[],"through":8,"nextAfter":8,"done":true}),
                 "session.idle" => json!({"sequence":8}),
-                "provider.list" => json!({"providers":[{"providerId":"test","displayName":"Test","enabled":true}]}),
+                "provider.list" => json!({"providers":[
+                    {"providerId":"test","displayName":"Test","enabled":true},
+                    {"providerId":"bare","displayName":"Bare","enabled":true}]}),
+                "provider.catalog" if request["params"]["providerId"] == "bare" => json!({"catalog":{"version":1,"disabledModelIds":["gone"],"models":[
+                    {"id":"narrow","name":"Narrow","unavailableReason":"limits_undeclared","missingLimits":["contextWindow","maxOutputTokens"],"capabilities":dim_agent_types::CatalogCapabilities::default()},
+                    {"id":"blocked","name":"Blocked","unavailableReason":"provider_unavailable","missingLimits":[],"capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)},
+                    {"id":"gone","name":"Gone","missingLimits":[],"capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}]}}),
                 "provider.catalog" => json!({"catalog":{"version":1,"disabledModelIds":[],"models":[
                     {"id":"model","name":"Model","capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)}]}}),
                 "account.providers" => json!([]),
@@ -12219,10 +12237,17 @@ fn tui_models_picker_hides_edit_models_without_management_methods() {
     terminal.until("test / model");
     terminal.write(b"/models\r");
     terminal.until("Test / model");
+    terminal.until("dimcode models bare --set-missing-limits");
     thread::sleep(Duration::from_millis(300));
     let opened = terminal.transcript.clone();
-    assert!(opened.contains("Model"), "{opened}");
-    assert!(!opened.contains("Edit models"), "{opened}");
+    assert!(opened.contains("Model management"), "{opened}");
+    assert!(opened.contains("Bare: 1 model needs a window"), "{opened}");
+    assert!(
+        opened.contains("Bare: 1 unavailable and 1 disabled"),
+        "{opened}"
+    );
+    assert!(!opened.contains("2 unavailable"), "{opened}");
+    assert!(!opened.contains("Manage models"), "{opened}");
     terminal.raw(b"\x1b");
     thread::sleep(Duration::from_millis(200));
     terminal.write(b"/exit\r");
@@ -13178,8 +13203,9 @@ fn tui_default_theme_respects_background_and_saved_choice() {
     }
 }
 
-/// `dimcode daemon vacuum` rewrites an offline store through the sibling App
-/// Server and reports its size before and after (#600).
+/// `dimcode daemon vacuum` removes the content rows nothing references, rewrites
+/// an offline store through the sibling App Server, and reports its size before
+/// and after with what it removed (#600, #1697).
 #[test]
 fn daemon_vacuum_reclaims_an_offline_store() {
     use dim_app_server::storage::SqliteStorage;
@@ -13203,6 +13229,13 @@ fn daemon_vacuum_reclaims_an_offline_store() {
             )
             .unwrap();
     }
+    // A node content row nothing references: the maintenance entry removes it.
+    connection
+        .execute(
+            "INSERT INTO timeline_content(session_id, hash, kind, body) VALUES ('s', ?1, 'node', ?2)",
+            rusqlite::params!["unreferenced", json!({"parent":null,"message":{"role":"user","content":"gone"}}).to_string()],
+        )
+        .unwrap();
     connection
         .execute_batch("COMMIT; DELETE FROM timeline_events; PRAGMA wal_checkpoint(TRUNCATE)")
         .unwrap();
@@ -13216,6 +13249,18 @@ fn daemon_vacuum_reclaims_an_offline_store() {
     );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.starts_with("Vacuumed "), "{stdout}");
+    assert!(
+        stdout.contains("Removed 1 unreachable content rows"),
+        "the command reports what it removed: {stdout}"
+    );
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    let left: i64 = connection
+        .query_row("SELECT count(*) FROM timeline_content", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(left, 0, "the unreferenced row is gone");
+    drop(connection);
     let after = fs::metadata(&database).unwrap().len();
     assert!(
         after < before,

@@ -196,6 +196,21 @@ mod tests {
             )
             .await;
             assert_eq!(params, json!({"sessionId":"shown"}));
+            // A classified refusal, the shape `session.attach` answers with
+            // for a branch that still needs the explicit prompt migration
+            // (recovery.rs): a producer's message under its own code.
+            exchange("session.detach", json!({"result":{}})).await;
+            let migration = "invalid input: Prompt references require explicit migration: \
+                             stop the daemon, then run dimcode --migrate-prompt-references \
+                             --database DB --session SESSION --branch BRANCH";
+            exchange(
+                "session.attach",
+                json!({"error":{
+                    "code":-32000, "message":migration,
+                    "data":{"appError":"session_invalid_input"}
+                }}),
+            )
+            .await;
         });
         let client = dim_client::Client::connect(&dim_client::ConnectionConfig {
             endpoint,
@@ -272,6 +287,28 @@ mod tests {
             .await;
         assert!(
             matches!(receiver.try_recv().unwrap(), Update::ReportReply { panel: 2, reply: Reply::Prepared(Some(session), _) } if session == "shown")
+        );
+        // The classified refusal does not route into the report flow: the
+        // report's fallback is for an unclassified internal fault, and a
+        // message the user can act on is not that. It reaches the caller with
+        // its own code and text.
+        worker.session_id = "shown".into();
+        let refused = worker
+            .attach("legacy".into(), SwitchKind::Resumed)
+            .await
+            .expect_err("a classified refusal is the caller's error");
+        assert!(
+            refused
+                .to_string()
+                .contains("dimcode --migrate-prompt-references"),
+            "the actionable message is what the user reads: {refused}"
+        );
+        assert!(
+            !receiver.try_iter().any(|update| matches!(
+                update,
+                Update::Switched { .. } | Update::Reportable { .. }
+            )),
+            "a refusal the user can act on is not offered as a report"
         );
         daemon.await.unwrap();
     }

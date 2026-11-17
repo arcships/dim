@@ -201,7 +201,9 @@ impl Default for KeyState {
 
 pub struct McpAuth {
     store: Store,
-    http: reqwest_mcp::Client,
+    http: tokio::sync::OnceCell<reqwest_mcp::Client>,
+    #[cfg(feature = "testing")]
+    fail_http_build: std::sync::atomic::AtomicBool,
     keys: Mutex<HashMap<CredentialKey, KeyState>>,
     /// Each key's attempts. This lock orders attempt state (design §7):
     /// every change to it holds the lock, and an exchange holds it from its
@@ -221,13 +223,43 @@ impl McpAuth {
     ) -> Result<Arc<Self>, Box<dyn std::error::Error + Send + Sync>> {
         Ok(Arc::new(Self {
             store: Store::new(files, root)?,
-            http: oauth::http()?,
+            http: tokio::sync::OnceCell::new(),
+            #[cfg(feature = "testing")]
+            fail_http_build: std::sync::atomic::AtomicBool::new(false),
             keys: Mutex::default(),
             attempts: tokio::sync::Mutex::default(),
             stopping: CancellationToken::new(),
             gate: Mutex::new(()),
             tasks: TaskTracker::new(),
         }))
+    }
+
+    async fn http(&self) -> Result<&reqwest_mcp::Client, McpAuthError> {
+        self.http
+            .get_or_try_init(|| async {
+                #[cfg(feature = "testing")]
+                if self
+                    .fail_http_build
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    return Err(McpAuthError::Unavailable);
+                }
+                oauth::http()
+            })
+            .await
+    }
+
+    /// Feature `testing` only: fail the next OAuth HTTP client initialization.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_oauth_client_build(&self) {
+        self.fail_http_build
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Feature `testing` only: whether an OAuth request has built the client.
+    #[cfg(feature = "testing")]
+    pub fn oauth_client_initialized(&self) -> bool {
+        self.http.initialized()
     }
 
     /// Drops pending attempts and waits for token requests already sent.
@@ -352,7 +384,7 @@ impl McpAuth {
                 biased;
                 _ = self.stopping.cancelled() => return Err(McpAuthError::Closed),
                 _ = cancel.cancelled() => return Err(McpAuthError::Cancelled),
-                result = oauth::authorize(&self.http, request) => result?,
+                result = async { oauth::authorize(self.http().await?, request).await } => result?,
             };
             let id = Uuid::new_v4();
             let expires_at = oauth::now() + ATTEMPT_MS;
@@ -492,18 +524,23 @@ impl McpAuth {
         let Some((verifier, client, binding)) = current else {
             return Err(McpAuthError::AttemptClosed);
         };
-        let response = oauth::token(
-            &self.http,
-            &binding.token_endpoint,
-            &client,
-            &binding.resource,
-            oauth::Grant::Code {
-                code: &code,
-                verifier: &verifier,
-            },
-            &binding.requested_scopes,
-        )
-        .await;
+        let response = match self.http().await {
+            Ok(http) => {
+                oauth::token(
+                    http,
+                    &binding.token_endpoint,
+                    &client,
+                    &binding.resource,
+                    oauth::Grant::Code {
+                        code: &code,
+                        verifier: &verifier,
+                    },
+                    &binding.requested_scopes,
+                )
+                .await
+            }
+            Err(_) => Err(oauth::TokenError::Unavailable),
+        };
         let mut attempts = self.attempts.lock().await;
         let Some(slot) = attempts.get_mut(&key).filter(|slot| slot.is(attempt_id)) else {
             drop(attempts);
@@ -573,12 +610,15 @@ impl McpAuth {
         let Some(endpoint) = oauth::stored_endpoint(endpoint, resource) else {
             return false;
         };
+        let Ok(http) = self.http().await else {
+            return false;
+        };
         let mut revoked = true;
         if let Some(refresh) = &tokens.refresh_token {
-            revoked &= oauth::revoke(&self.http, &endpoint, client, refresh, "refresh_token").await;
+            revoked &= oauth::revoke(http, &endpoint, client, refresh, "refresh_token").await;
         }
         revoked &= oauth::revoke(
-            &self.http,
+            http,
             &endpoint,
             client,
             &tokens.access_token,
@@ -671,15 +711,20 @@ impl McpAuth {
         if self.stopping.is_cancelled() {
             return Err(Refusal::Unavailable);
         }
-        let response = oauth::token(
-            &self.http,
-            &record.token_endpoint,
-            &client,
-            &record.resource,
-            oauth::Grant::Refresh(&refresh_token),
-            &tokens.scopes,
-        )
-        .await;
+        let response = match self.http().await {
+            Ok(http) => {
+                oauth::token(
+                    http,
+                    &record.token_endpoint,
+                    &client,
+                    &record.resource,
+                    oauth::Grant::Refresh(&refresh_token),
+                    &tokens.scopes,
+                )
+                .await
+            }
+            Err(_) => Err(oauth::TokenError::Unavailable),
+        };
         let record = locked.document.get_mut(&key).unwrap();
         let result = match response {
             Ok(mut tokens) => {

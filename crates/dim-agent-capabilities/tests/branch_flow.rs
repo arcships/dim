@@ -7359,6 +7359,136 @@ async fn a_turn_spanning_a_restart_after_a_steer_writes_no_idle_notice() {
     soon(agent.close()).await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
+    async fn texts(tree: &TreeCommands, branch: &str) -> Vec<String> {
+        let mut query = TimelineQuery {
+            scope: TimelineQueryScope::Chain,
+            from: None,
+            through: None,
+            include_publishing: false,
+            query: QuerySpec {
+                filter: Some(QueryFilter::Prefix {
+                    value: QueryOperand::Field {
+                        path: "data.user.content[0].text".into(),
+                    },
+                    prefix: "visible-".into(),
+                }),
+                select: QuerySelect::Fields {
+                    fields: vec!["data.user.content[0].text".into()],
+                },
+                group_by: vec![],
+                pick: None,
+                order_by: vec![],
+            },
+            page: Some(QueryPage {
+                limit: std::num::NonZeroU64::MIN,
+                after: None,
+            }),
+        };
+        let mut texts = Vec::new();
+        loop {
+            let reply = tree.query(branch.into(), query.clone()).await.unwrap();
+            query.through = Some(reply.through);
+            let QueryOutput::Rows { rows } = reply.result else {
+                panic!("property rows")
+            };
+            for row in rows {
+                let QueryValue::Value { value } = &row.values[0] else {
+                    panic!("input text")
+                };
+                texts.push(value.as_str().unwrap().to_owned());
+            }
+            if reply.next.is_none() {
+                break;
+            }
+            query.page.as_mut().unwrap().after = reply.next;
+        }
+        query.include_publishing = true;
+        assert!(matches!(
+            tree.query(branch.into(), query).await,
+            Err(AgentError::InvalidInput(_))
+        ));
+        texts
+    }
+    let probe = Arc::new(Probe::default());
+    let store = Arc::new(MemoryTimelineStore::default());
+    let config = builder_with_store(&probe, store);
+    let agent = MinimalHost::start(&config).await.unwrap();
+    let session = agent
+        .create_session(SessionConfig::default())
+        .await
+        .unwrap();
+    session
+        .submit("visible-root".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    soon(session.idle("main")).await.unwrap();
+    let cut = session.sequence("main").unwrap();
+    let child = session
+        .branch("main".into(), cut, options("child"))
+        .await
+        .unwrap();
+    soon(session.idle(&child)).await.unwrap();
+    session
+        .submit("visible-child".into(), InputMode::Queue, &child)
+        .await
+        .unwrap();
+    soon(session.idle(&child)).await.unwrap();
+    let leaf = session
+        .branch(
+            child.clone(),
+            session.sequence(&child).unwrap(),
+            options("leaf"),
+        )
+        .await
+        .unwrap();
+    let zero = session
+        .branch(child.clone(), 0, options("zero cut"))
+        .await
+        .unwrap();
+    soon(session.idle(&leaf)).await.unwrap();
+    soon(session.idle(&zero)).await.unwrap();
+    for branch in ["main", child.as_str()] {
+        session
+            .submit(
+                "visible-excluded-after-cut".into(),
+                InputMode::Queue,
+                branch,
+            )
+            .await
+            .unwrap();
+        soon(session.idle(branch)).await.unwrap();
+    }
+    session
+        .submit("visible-leaf".into(), InputMode::Queue, &leaf)
+        .await
+        .unwrap();
+    soon(session.idle(&leaf)).await.unwrap();
+    let tree = session.session_service::<TreeCommands>().unwrap();
+    let expected = ["visible-root", "visible-child", "visible-leaf"];
+    assert_eq!(texts(&tree, &leaf).await, expected);
+    assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
+    session
+        .end_branch(
+            &leaf,
+            BranchSource::Host {
+                operation_id: "test-end".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(texts(&tree, &leaf).await, expected);
+    let session_id = session.id().to_owned();
+    soon(agent.close()).await.unwrap();
+    let agent = MinimalHost::start(&config).await.unwrap();
+    let restored = agent.restore_session(session_id).await.unwrap();
+    let tree = restored.session_service::<TreeCommands>().unwrap();
+    assert_eq!(texts(&tree, &leaf).await, expected);
+    assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
+    soon(agent.close()).await.unwrap();
+}
+
 /// A chain read pages on the queried branch, so a page that ends in an
 /// ancestor continues at that fact rather than restarting on the branch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

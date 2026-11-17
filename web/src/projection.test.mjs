@@ -23,7 +23,7 @@ function event(sequence, content) {
 
 test("a user message carries the cut a child line opens at", () => {
   const projection = new Projection()
-  projection.apply(event(5, { kind: "input", text: "try RwLock\nfor the cache lock", blocks: [] }))
+  projection.apply(event(5, { kind: "input", text: "try RwLock\nfor the cache lock", content: [{ type: "text", text: "try RwLock\nfor the cache lock" }], blocks: [] }))
   projection.apply(event(6, {
     kind: "branch-create",
     branchId: "b-7c",
@@ -118,7 +118,7 @@ test("branch messages, ends and the last turn end become rows", () => {
 
 test("replayed events do not duplicate rows", () => {
   const projection = new Projection()
-  const input = event(1, { kind: "input", text: "hello", blocks: [] })
+  const input = event(1, { kind: "input", text: "hello", content: [{ type: "text", text: "hello" }], blocks: [] })
   assert.equal(projection.apply(input), true)
   assert.equal(projection.apply(input), false)
   assert.equal(projection.rows.length, 1)
@@ -126,7 +126,7 @@ test("replayed events do not duplicate rows", () => {
 
 test("a user row carries the Skills its message loaded", () => {
   const projection = new Projection()
-  projection.apply(event(5, { kind: "input", text: "check the build", skills: ["checkin"], blocks: [] }))
+  projection.apply(event(5, { kind: "input", text: "check the build", content: [{ type: "text", text: "check the build" }], skills: ["checkin"], blocks: [] }))
   assert.deepEqual(projection.rows, [{
     kind: "user",
     key: "user-5",
@@ -140,7 +140,7 @@ test("a user row carries the Skills its message loaded", () => {
 
 test("a hook-bearing user row carries the number of hook contexts", () => {
   const projection = new Projection()
-  projection.apply(event(5, { kind: "input", text: "check the build", skills: ["checkin"], hooks: 2, blocks: [] }))
+  projection.apply(event(5, { kind: "input", text: "check the build", content: [{ type: "text", text: "check the build" }], skills: ["checkin"], hooks: 2, blocks: [] }))
   assert.deepEqual(projection.rows, [{
     kind: "user",
     key: "user-5",

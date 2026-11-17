@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
-import { MAIN_BRANCH, type DraftAttachments } from "../../rpc/protocol"
+import { MAIN_BRANCH, type DraftAttachments, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useConnectionStore } from "../../stores/connection"
+import { useToastStore } from "../../stores/toast"
 import { useUiStore } from "../../stores/ui"
 import ApprovalPrompt from "../chat/ApprovalPrompt.vue"
 import ComposerPanel from "../chat/ComposerPanel.vue"
@@ -16,6 +17,7 @@ const { t } = useI18n()
 const chat = useChatStore()
 const connection = useConnectionStore()
 const ui = useUiStore()
+const toast = useToastStore()
 const composer = ref<InstanceType<typeof ComposerPanel>>()
 
 const view = computed(() => chat.views[props.sessionId])
@@ -29,6 +31,7 @@ const searchFiles = computed(() => view.value?.methods.includes("session.files.s
 const open = computed(() => line.value === undefined
   ? branch.value?.status !== "failed"
   : line.value.state.kind === "working" || line.value.state.kind === "waiting")
+const prompting = computed(() => approval.value !== undefined || questions.value.length > 0)
 const title = computed(() => lineName(t, line.value, props.branchId))
 const state = computed(() => line.value?.state ?? (branch.value?.running ? { kind: "working" as const } : { kind: "waiting" as const }))
 const parentName = computed(() => {
@@ -47,8 +50,15 @@ const stopping = computed(() => branch.value?.stopping ?? false)
 
 watch(() => [props.sessionId, props.branchId], () => chat.ensureLine(props.sessionId, props.branchId), { immediate: true })
 
-function send(text: string, attachments: DraftAttachments): Promise<void> {
-  return chat.submit(props.sessionId, props.branchId, text, attachments)
+function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
+  return chat.submit(props.sessionId, props.branchId, text, attachments, mode)
+}
+
+/** Withdraws one held message of this line, so the composer can recall it into the draft; a message the run already adopted stays out. */
+async function withdrawHeld(input: QueuedInput): Promise<WithdrawResult["status"]> {
+  const result = await chat.withdrawInput(props.sessionId, props.branchId, input.id, undefined)
+  if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
+  return result.status
 }
 
 function quote(text: string): void {
@@ -142,28 +152,33 @@ function noModel(): void {
       <div v-else-if="questions.length" class="line-approval question-prompts">
         <QuestionPrompt v-for="question in questions" :key="JSON.stringify([question.branchId, question.requestId, question.callId])" :session-id="sessionId" :question="question" />
       </div>
-      <ComposerPanel
-        v-else-if="open"
-        ref="composer"
-        :running="running"
-        :stopping="stopping"
-        :model="view.model"
-        :send="send"
-        :stores-pastes="view?.methods.includes('attachment.put') === true"
-        :search-files="searchFiles"
-        :stop="stop"
-        :model-selectable="false"
-        :select-model="noModel"
-        :placeholder="t('lines.placeholder')"
-        :create-branch="connection.supports('session.branch_create') ? createBranch : undefined"
-        :open-lines="() => ui.openLines(sessionId)"
-        variant="panel"
-      >
-        <template #status>
-          <span class="line-status">⑂ {{ lineStateLabel(t, state) }}</span>
-        </template>
-      </ComposerPanel>
-      <div v-else class="line-readonly">
+      <KeepAlive>
+        <ComposerPanel
+          v-if="open && !prompting"
+          ref="composer"
+          :session-id="sessionId"
+          :running="running"
+          :stopping="stopping"
+          :model="view.model"
+          :send="send"
+          :stores-pastes="view?.methods.includes('attachment.put') === true"
+          :search-files="searchFiles"
+          :stop="stop"
+          :held="branch?.queued ?? []"
+          :withdraw-held="view?.methods.includes('session.input.withdraw') === true ? withdrawHeld : undefined"
+          :model-selectable="false"
+          :select-model="noModel"
+          :placeholder="t('lines.placeholder')"
+          :create-branch="connection.supports('session.branch_create') ? createBranch : undefined"
+          :open-lines="() => ui.openLines(sessionId)"
+          variant="panel"
+        >
+          <template #status>
+            <span class="line-status">⑂ {{ lineStateLabel(t, state) }}</span>
+          </template>
+        </ComposerPanel>
+      </KeepAlive>
+      <div v-if="!open && !prompting" class="line-readonly">
         <span>⑂ {{ lineStateLabel(t, state) }}</span>
         <span>{{ t("lines.readOnly") }}</span>
       </div>

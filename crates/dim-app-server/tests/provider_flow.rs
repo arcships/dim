@@ -7520,6 +7520,73 @@ async fn legacy_import_applies_one_frozen_rule_to_omitted_fields_builtins_and_sc
     std::fs::remove_dir_all(home).unwrap();
 }
 
+/// A builtin row's name is the bundled definition's, not the legacy row's: a
+/// catalog rename is what the row now carries, so a source that states an older
+/// name still imports. The driver and auth it states must still match, because
+/// those decide what the record reaches.
+#[test]
+fn legacy_builtin_rows_take_the_bundled_name_not_the_source_one() {
+    let bundled = BundledCatalog::load().unwrap();
+    let model = json!([legacy_model("legacy-model")]);
+    let row = |id: &str, display_name: &str, driver: &str| LegacyRow {
+        id: id.into(),
+        version: 1,
+        digest: "digest".into(),
+        fields: [
+            ("source".to_string(), Value::String("builtin".into())),
+            ("displayName".into(), Value::String(display_name.into())),
+            ("driverKind".into(), Value::String(driver.into())),
+            (
+                "auth".into(),
+                Value::String(
+                    json!({"type":"api_key","headerName":"Authorization","prefix":"Bearer "})
+                        .to_string(),
+                ),
+            ),
+            (
+                "baseUrl".into(),
+                Value::String("https://api.deepseek.com".into()),
+            ),
+            (
+                "credential".into(),
+                Value::String(json!({"type":"apiKey","apiKey":"legacy-key"}).to_string()),
+            ),
+            ("models".into(), Value::String(model.to_string())),
+            ("modelsSource".into(), Value::String("bundled".into())),
+            ("metadata".into(), Value::String("{}".into())),
+            ("enabled".into(), Value::from(1)),
+            ("activeModelId".into(), Value::Null),
+            ("accountUsageSettings".into(), Value::Null),
+            ("capabilityDefaults".into(), Value::Null),
+            ("defaultBaseUrl".into(), Value::Null),
+            ("headers".into(), Value::Null),
+            ("modelConfigOverrides".into(), Value::Null),
+            ("proxy".into(), Value::Null),
+            ("retryConfig".into(), Value::Null),
+            ("timeoutMs".into(), Value::Null),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    // A source row written before a catalog rename still imports, and carries
+    // the name the catalog states now.
+    let renamed = row("deepseek", "An Older Name", "openai-compatible");
+    let conversion = convert_legacy_provider(&renamed, None, &bundled).unwrap();
+    let stored = serde_json::to_value(&conversion.record).unwrap();
+    assert_eq!(
+        stored["displayName"],
+        json!(bundled.provider("deepseek").unwrap().display_name.as_str()),
+        "the builtin row states the catalog's name, not the source's"
+    );
+    // A source row that states another driver reaches another endpoint, so it
+    // is still not the definition the catalog describes.
+    let other_driver = row("deepseek", "DeepSeek", "anthropic");
+    assert!(
+        convert_legacy_provider(&other_driver, None, &bundled).is_err(),
+        "a row whose driver differs from the catalog's is still refused"
+    );
+}
+
 #[test]
 fn legacy_credentials_keep_their_native_shapes() {
     let bundled = BundledCatalog::load().unwrap();

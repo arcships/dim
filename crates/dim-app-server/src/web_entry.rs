@@ -104,7 +104,7 @@ impl WebEntry {
         let mut state = self.state.lock().await;
         if state.enabled {
             state.enabled = false;
-            self.close_if_unused(&mut state, hub).await;
+            self.close_if_unused(&mut state).await;
             return Ok(toggled(&state));
         }
         state.enabled = true;
@@ -130,7 +130,7 @@ impl WebEntry {
     pub async fn disable(&self, hub: &Arc<ConnectionHub>) -> WebStatus {
         let mut state = self.state.lock().await;
         state.enabled = false;
-        self.close_if_unused(&mut state, hub).await;
+        self.close_if_unused(&mut state).await;
         status(hub, &state)
     }
 
@@ -141,7 +141,7 @@ impl WebEntry {
     /// Called as a local connection ends. When it was the last holder and
     /// the switch is off, the listener closes, every token is dropped and
     /// web connections detach.
-    pub async fn release(&self, hub: &Arc<ConnectionHub>, holder: &str) {
+    pub async fn release(&self, holder: &str) {
         let mut state = self.state.lock().await;
         let Some(open) = state.open.as_mut() else {
             return;
@@ -149,10 +149,10 @@ impl WebEntry {
         if !open.holders.remove(holder) {
             return;
         }
-        self.close_if_unused(&mut state, hub).await;
+        self.close_if_unused(&mut state).await;
     }
 
-    async fn close_if_unused(&self, state: &mut Lifecycle, hub: &Arc<ConnectionHub>) {
+    async fn close_if_unused(&self, state: &mut Lifecycle) {
         if state.enabled
             || state
                 .open
@@ -165,7 +165,6 @@ impl WebEntry {
             return;
         };
         open.stop.cancel();
-        hub.close_entry(Entry::Web);
         let _ = open.task.await;
     }
 
@@ -626,12 +625,13 @@ async fn upgrade(
     if hub.control.shutdown().is_cancelled() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    let closing = site.stopping.clone();
     ws.max_message_size(MAX_FRAME_BYTES)
         .max_frame_size(MAX_FRAME_BYTES)
         .on_upgrade(move |socket| async move {
             let tracker = hub.tasks.clone();
             let task = tracker.spawn(async move {
-                run_ws(hub, socket, Entry::Web).await;
+                run_ws(hub, socket, Entry::Web, closing).await;
             });
             let _ = task.await;
         })

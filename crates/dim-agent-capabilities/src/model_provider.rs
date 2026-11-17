@@ -69,13 +69,14 @@ fn model_failure(facts: ModelFailureFacts) -> ModelFailure {
     }
 }
 
-pub struct ModelProvider {
+struct ModelProvider {
     state: Mutex<ModelState>,
     tasks: TaskTracker,
     errors: Mutex<Vec<AgentError>>,
     context: Arc<ContextPreparation>,
     host: Arc<ModelHost>,
     resolver: Option<Arc<ProviderConnectionResolver>>,
+    files: Option<Arc<SessionFiles>>,
     timeline: Arc<Timeline>,
     identity: Arc<TimelineIdentity>,
     progress: Arc<StateCell<ModelProgress>>,
@@ -481,7 +482,7 @@ impl ModelProvider {
         } else {
             let result = AssertUnwindSafe(async {
                 crate::context_policy::check_cancel(&cancel)?;
-                let request = images::adapt(&call.request);
+                let request = images::adapt(&call.request, self.files.as_deref(), &cancel).await?;
                 self.context
                     .validate(&call.request_id, request.clone(), cancel.clone())
                     .await?;
@@ -569,7 +570,6 @@ impl ModelProvider {
 }
 
 pub struct ModelProviderPlugin {
-    provider: Key<ModelProvider>,
     progress: Key<StateCell<ModelProgress>>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
@@ -578,6 +578,8 @@ pub struct ModelProviderPlugin {
     /// Each request's connection comes from the process
     /// `ProviderConnectionResolver`; otherwise it is local.
     resolver: Option<Key<ProviderConnectionResolver>>,
+    /// Optional process service, read at load without gating standalone hosts.
+    files: Option<Key<SessionFiles>>,
     identity: Key<TimelineIdentity>,
 }
 impl ModelProviderPlugin {
@@ -592,13 +594,16 @@ impl ModelProviderPlugin {
     }
     fn with(names: &Names<'_>, resolves: bool) -> rutis::Result<Self> {
         Ok(Self {
-            provider: names.key()?,
             progress: names.state_cell()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
             context: names.key()?,
             host: names.key()?,
             resolver: resolves.then(|| names.key()).transpose()?,
+            files: names
+                .registered::<SessionFiles>()
+                .then(|| names.key())
+                .transpose()?,
             identity: names.key()?,
         })
     }
@@ -628,6 +633,7 @@ impl DynPlugin for ModelProviderPlugin {
                 Some(key) => Some(ctx.require_at(key)?),
                 None => None,
             };
+            let files = self.files.as_ref().and_then(|key| ctx.get_at(key));
             let identity = ctx.require_at(&self.identity)?;
             let service = Arc::new(ModelProvider {
                 state: Mutex::new(ModelState::default()),
@@ -636,6 +642,7 @@ impl DynPlugin for ModelProviderPlugin {
                 context,
                 host,
                 resolver,
+                files,
                 timeline,
                 identity,
                 progress: Arc::new(StateCell::new(ModelProgress::default())),
@@ -772,7 +779,6 @@ impl DynPlugin for ModelProviderPlugin {
                 )
                 .await?;
             ctx.provide_at(self.progress.clone(), service.progress.clone())?;
-            ctx.provide_at(self.provider.clone(), service)?;
             Ok(Effect::Done)
         })
     }

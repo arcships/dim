@@ -263,6 +263,9 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
             .unwrap(),
     )
     .unwrap();
+    use sha2::{Digest, Sha256};
+    let digest = format!("{:x}", Sha256::digest(std::fs::read(&image_path).unwrap()));
+    let reference = format!("img:{}", &digest[..16]);
     let seen = Seen::default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/gateway/v1", listener.local_addr().unwrap());
@@ -373,9 +376,10 @@ async fn temporary_startup_connections_execute_all_formats_without_sharing_or_pe
                 "{format}: {uri}"
             );
             assert!(
-                body.to_string().contains(png),
-                "{format}: the provider receives image bytes: {body}"
+                body.to_string().contains(&reference),
+                "{format}: the provider receives the image reference: {body}"
             );
+            assert!(!body.to_string().contains(png), "{format}: {body}");
             assert!(!body.to_string().contains(image["fileId"].as_str().unwrap()));
             assert!(
                 history
@@ -956,16 +960,18 @@ async fn temporary_startup_rebinds_after_restart_and_preserves_parent_cut_connec
                         .any(|event| matches!(&event.kind, EventKind::TurnEnd(_)))
                 });
             if woken {
-                return;
+                break;
             }
             changed.changed().await.unwrap();
         }
+        session.idle("main").await.unwrap();
+        assert_ok(&client.rpc("session.detach", json!({"sessionId":sid})).await);
+        while !session.unload_if_idle().await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     })
     .await
-    .expect("the request's result and the turn it wakes are committed");
-    session.idle("main").await.unwrap();
-    assert_ok(&client.rpc("session.detach", json!({"sessionId":sid})).await);
-    assert!(session.unload_if_idle().await.unwrap());
+    .expect("the request settles and the detached Session unloads");
     assert_ok(&client.rpc("session.attach", json!({"sessionId":sid})).await);
     submit(&mut client, &sid, &child_id).await;
     assert_eq!(

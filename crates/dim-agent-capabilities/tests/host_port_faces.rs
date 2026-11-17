@@ -442,3 +442,114 @@ fn the_port_errors_cross_as_code_and_message() {
     .unwrap();
     assert_eq!(failed, json!({"code": "failed", "message": "no document"}));
 }
+
+struct PromptRead {
+    started: Option<tokio::sync::mpsc::UnboundedSender<CancellationToken>>,
+    failure: Option<HostError>,
+}
+impl PromptRead {
+    fn read(
+        &self,
+        cancel: CancellationToken,
+    ) -> dim_agent_capabilities::host::HostFuture<'_, Option<Arc<str>>> {
+        Box::pin(async move {
+            if let Some(started) = &self.started {
+                started.send(cancel).unwrap();
+                std::future::pending::<()>().await;
+            }
+            match &self.failure {
+                Some(error) => Err(error.clone()),
+                None => Ok(None),
+            }
+        })
+    }
+}
+impl dim_agent_capabilities::prompt_sources::BasePromptSettings for PromptRead {
+    fn base(
+        &self,
+        cancel: CancellationToken,
+    ) -> dim_agent_capabilities::host::HostFuture<'_, Option<Arc<str>>> {
+        self.read(cancel)
+    }
+}
+impl dim_agent_capabilities::skills::SkillsInstructionsSettings for PromptRead {
+    fn instructions(
+        &self,
+        cancel: CancellationToken,
+    ) -> dim_agent_capabilities::host::HostFuture<'_, Option<Arc<str>>> {
+        self.read(cancel)
+    }
+}
+impl dim_agent_capabilities::summary_strategy::SummaryPromptSettings for PromptRead {
+    fn system_prompt(
+        &self,
+        cancel: CancellationToken,
+    ) -> dim_agent_capabilities::host::HostFuture<'_, Option<Arc<str>>> {
+        self.read(cancel)
+    }
+}
+fn prompt_ports(owner: Arc<PromptRead>) -> [(Arc<dyn HostDispatch>, &'static str); 3] {
+    [
+        (
+            Arc::new(dim_agent_capabilities::prompt_sources::BasePromptSettingsHost(owner.clone())),
+            "base",
+        ),
+        (
+            Arc::new(dim_agent_capabilities::skills::SkillsInstructionsSettingsHost(owner.clone())),
+            "instructions",
+        ),
+        (
+            Arc::new(dim_agent_capabilities::summary_strategy::SummaryPromptSettingsHost(owner)),
+            "systemPrompt",
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn prompt_override_faces_preserve_missing_text_and_owner_failures() {
+    for failure in [None, Some(HostError::failed("prompts settings: closed"))] {
+        let owner = Arc::new(PromptRead {
+            started: None,
+            failure: failure.clone(),
+        });
+        for (port, method) in prompt_ports(owner) {
+            let result = call(&port, method, json!({})).await;
+            if let Some(error) = &failure {
+                let rejected = result.unwrap_err();
+                assert_eq!(rejected.code(), Some("failed"));
+                assert!(rejected.to_string().contains(&error.to_string()));
+            } else {
+                assert_eq!(result.unwrap(), Value::Null);
+            }
+            assert_eq!(
+                call(&port, method, json!({"extra":true}))
+                    .await
+                    .unwrap_err()
+                    .code(),
+                Some("invalid_request")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn abandoning_each_prompt_override_face_cancels_its_owner_read() {
+    let (started, mut reads) = tokio::sync::mpsc::unbounded_channel();
+    let owner = Arc::new(PromptRead {
+        started: Some(started),
+        failure: None,
+    });
+    for (port, method) in prompt_ports(owner) {
+        let read = tokio::spawn(async move { call(&port, method, json!({})).await });
+        let cancel = tokio::time::timeout(std::time::Duration::from_secs(5), reads.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!cancel.is_cancelled());
+        read.abort();
+        let _ = read.await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), cancel.cancelled())
+            .await
+            .expect("dropping the wire wait cancels the owner read");
+    }
+}

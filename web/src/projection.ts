@@ -88,7 +88,7 @@ export class Projection {
     const content = event.content
     switch (content.kind) {
       case "input":
-        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, hooks: content.hooks, user: content.user })
+        if (content.user !== undefined) this.held.set(event.id, { id: event.id, text: content.text ?? "", skills: content.skills, hooks: content.hooks, content: content.content, user: content.user })
         break
       case "input-consumed":
       case "input-deleted": this.held.delete(content.inputId); break
@@ -118,11 +118,12 @@ export class Projection {
     switch (content.kind) {
       case "input":
         if (content.text !== undefined) {
+          const images = content.content.filter((block) => block.type === "image")
           this.push({
             kind: "user",
             key: `user-${event.sequence}`,
             text: content.text,
-            ...(content.images === undefined ? {} : { images: content.images }),
+            ...(images.length === 0 ? {} : { images }),
             skills: content.skills,
             ...(content.hooks === undefined ? {} : { hooks: content.hooks }),
             at: event.createAt,

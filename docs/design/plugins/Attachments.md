@@ -36,7 +36,7 @@ in `session.submit`. Web clients first upload the browser file through the
 [Web HTTP API](../web-workspace.md#session-file-http-api). Rpc validates reference
 shape and ownership. A failed import preserves the client's draft.
 
-The capability-dependent request view and final provider encoding are requirements
+The per-request image reference view and final provider encoding are requirements
 to their owners in A.4. The context flow is defined by the cross-module design.
 
 ### 3.2 Text paste
@@ -119,6 +119,20 @@ The accepted image formats and scaling rule are owned by
 Image preparation uses that same rule. A submission accepts at most 20 images.
 Image bytes follow the Session file limit; the submission carries file IDs.
 
+ModelProvider replaces every image block in a conversational request, in user
+content and tool results alike, with `img:` followed by the first 16 lowercase
+hexadecimal characters of SHA-256 of the base64-decoded image file bytes, not
+the pixels or base64 text. The rule applies to vision, text-only and
+unknown-capability models alike. Equal bytes have equal references; the
+reference contract is [ImageUnderstanding §3](ImageUnderstanding.md#3-references).
+File-backed sources must be resolved before computing the reference.
+
+URL sources, missing or undecodable base64, and formats this build cannot decode
+keep their existing omission placeholders: `[Image omitted: the current model does not accept images.]`
+for a text-only model, otherwise `[Image omitted: the image cannot be sent to this model.]`.
+Only the request changes: history, the Timeline and adopted input retain their
+original image blocks. There is no persisted reference or cross-request cache.
+
 ### File import and read
 
 `attachment.import {sessionId,path,name?,image?}` imports an authorized absolute
@@ -150,11 +164,10 @@ continue to show the accepted image's format and dimensions.
 
 ### A.4 Requirements to other owners
 
-ModelProvider preserves each image's position in user and tool content. A model
-without image input receives `[Image omitted: the current model does not accept images.]`.
-Vision and unknown-capability requests retain valid references; final Aimux
-execution reads and encodes them. Read failures fail execution and preserve history.
-Switching back to vision reuses only references still in effective context.
+ModelProvider preserves each image's position in user and tool content and applies
+A.1's reference rule after resolving file-backed sources. Read failures fail
+execution and preserve history. Model changes never restore conversational image
+pixels; references are recomputed only for images still in effective context.
 
 ## Appendix B. Full conflict table
 

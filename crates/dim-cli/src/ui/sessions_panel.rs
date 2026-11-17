@@ -43,9 +43,8 @@ pub struct SessionsPanel {
     /// leaves it `None`, and the local scope stays the exact launch
     /// workspace.
     repository: Option<Vec<String>>,
-    /// The rows' names by id, without the origin tag beside them: the
-    /// question and the notices name a row the list may no longer hold.
-    names: std::collections::HashMap<String, String>,
+    /// The rows' names and closed flags, keyed by their durable id.
+    names: std::collections::HashMap<String, (String, bool)>,
     /// The row the pending question deletes; `None` while no question is up.
     confirming: Option<DeleteTarget>,
     /// A delete is in flight: the rows stay drawn, and only Esc acts until
@@ -262,10 +261,15 @@ impl SessionsPanel {
                 _ => Effect::None,
             };
         }
+        self.list.set_notes(Vec::new());
         if key.code == KeyCode::Char('x') && key.mods.contains(Modifiers::CTRL) {
             return match self.list.selected_id() {
                 Some(id) => {
-                    let name = self.names.get(&id).cloned().unwrap_or_else(|| id.clone());
+                    let name = self
+                        .names
+                        .get(&id)
+                        .map(|(name, _)| name.clone())
+                        .unwrap_or_else(|| id.clone());
                     self.list.set_confirmation(
                         tf("Delete \"{name}\"?", &[("name", &safe_line(&name))]),
                         t("Enter confirm").to_owned(),
@@ -289,7 +293,17 @@ impl SessionsPanel {
         match event {
             Event::None => Effect::None,
             Event::Close => Effect::Close,
-            Event::Pick { id, .. } => Effect::Resume(id),
+            Event::Pick { id, .. } => {
+                if self.names.get(&id).is_some_and(|(_, closed)| *closed) {
+                    self.list.set_notes(vec![tf(
+                        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home.",
+                        &[("id", &id)],
+                    )]);
+                    Effect::None
+                } else {
+                    Effect::Resume(id)
+                }
+            }
             Event::Refresh => Effect::Refresh,
         }
     }
@@ -324,14 +338,10 @@ impl SessionsPanel {
     }
 }
 
-/// The rows' names by id: the label without the origin tag the picker draws
-/// beside it, cleaned to one printable line. It is kept beside the list
-/// because `session_rows` consumes the items, and a question or a notice may
-/// name a row the list no longer holds.
-fn item_names(items: &[SessionItem]) -> std::collections::HashMap<String, String> {
+fn item_names(items: &[SessionItem]) -> std::collections::HashMap<String, (String, bool)> {
     items
         .iter()
-        .map(|item| (item.id.clone(), safe_line(&label(item))))
+        .map(|item| (item.id.clone(), (safe_line(&label(item)), item.closed)))
         .collect()
 }
 
@@ -340,7 +350,7 @@ fn session_rows(items: Vec<SessionItem>, workspaces: bool) -> Vec<Item> {
     items
         .iter()
         .map(|item| {
-            let detail = if workspaces {
+            let mut detail = if workspaces {
                 format!(
                     "{} · {}",
                     relative_time(item.updated_at, now),
@@ -349,6 +359,10 @@ fn session_rows(items: Vec<SessionItem>, workspaces: bool) -> Vec<Item> {
             } else {
                 relative_time(item.updated_at, now)
             };
+            if item.closed {
+                detail.push_str(" · ");
+                detail.push_str(t("Session closed"));
+            }
             let mut row = Item::new(
                 item.id.clone(),
                 match tag(item.origin.as_deref()) {
@@ -445,6 +459,7 @@ mod tests {
             updated_at: 0,
             model: "p/m".into(),
             origin: Some("client".into()),
+            closed: false,
         }
     }
 

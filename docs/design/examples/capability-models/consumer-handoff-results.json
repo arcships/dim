@@ -1,0 +1,263 @@
+{
+  "java": "OpenJDK 17.0.18",
+  "tools_release": "1.7.4",
+  "tlc_version": "2.19 (2024-08-08, rev 5a47802)",
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "workers": 1,
+  "max_heap": "2g",
+  "date": "2026-11-17",
+  "code_base": "c8e4edd5b6cf01936ec1478b8d000f5476da7a1f",
+  "source_sha256": {
+    "crates/dim-agent-runtime/src/core/dispatcher.rs": "0ae70eba3c562430957a8f2405563d004457155bcdbe5350012f86cdc6f4e6f4",
+    "crates/dim-agent-runtime/src/core/keys.rs": "cbd7144c8299c744fceb33a066f3abfdc31f37828002eef4cdfb2890548879d7",
+    "docs/design/plugin-contract.md": "334911368d203a57ee516323e7e56e84b0155d863c5c3a5343e5179263db3656",
+    "docs/design/rutis-usage.md": "fff6ffb2c4b8f3029896ac238deac471ea71e965e00061ca82d9b814935c6cae",
+    "Cargo.lock": "84bca017388fc50ef1a052b125970fb5954fa75dff7a2f02b0a81af98565d537"
+  },
+  "rutis": {
+    "version": "0.19.3",
+    "crate_checksum": "37143a70e4a943d50dd1e3303b7f2b856460a56a362ee62fa62712e55882961a",
+    "source_sha256": {
+      "src/bus.rs": "738d41d7f550b021c9148bb43c5a2d53040da7cd8b69ba924938cf686a024091",
+      "src/bus/run.rs": "2349e9a2e6cb651e94b4ad1b4fd10f9bafa8cbd973e9af0186c4e3978bc0b157",
+      "src/bus/table.rs": "eea52d65a9bd1983479a08c1795772203212859d1ea840bc9748f78c9232bd49"
+    }
+  },
+  "modified_flow_test": {
+    "path": "tests/integration/tests/timeline_tail.rs",
+    "sha256": "2e60cee4c4d50cb674a1453419138e7e10055743a399f659241e3a698b262880",
+    "result": "8 passed; 0 failed",
+    "clippy": "passed (-D warnings)",
+    "review_fix": "Rebuild-start handshake before input publication; bounded start/completion waits. Same 5 public-flow tests passed.",
+    "followup": "Real consume drain arrivals, scoped removal/re-registration with query recovery, rebuild/drain errors, and ordinary live error with a second consumer. Model/configs unchanged; original TLC results reused."
+  },
+  "scope": "Finite consume/serial handoff safety, not arbitrary generations, owner recovery correctness, rutis refinement or client error propagation. No liveness claim.",
+  "runs": [
+    {
+      "config": "docs/design/examples/capability-models/ConsumerHandoff.cfg",
+      "module": "docs/design/examples/capability-models/ConsumerHandoff.tla",
+      "module_sha256": "247ed4e16969d008977afe4c906a3082be3eb914550fbb3dc4175fcd738519a5",
+      "config_sha256": "d2d2d896a76fc1e15030c7aa577cb123212c4f2dda006c3b56f600f4a36191c2",
+      "exit": 0,
+      "generated": 157608,
+      "distinct": 53499,
+      "queue_remaining": 0,
+      "depth": 27,
+      "fingerprint": 28,
+      "seed": 4370558027995426401,
+      "finished": "Finished in 04s at (2026-11-17 12:31:37)"
+    },
+    {
+      "config": "docs/design/examples/capability-models/ConsumerHandoff-TwoConsumers.cfg",
+      "module": "docs/design/examples/capability-models/ConsumerHandoff.tla",
+      "module_sha256": "247ed4e16969d008977afe4c906a3082be3eb914550fbb3dc4175fcd738519a5",
+      "config_sha256": "31401e0a7d96bb5578100115818734c903f91957b94f97baabc8e3b1d9baff56",
+      "exit": 0,
+      "generated": 2347002,
+      "distinct": 573915,
+      "queue_remaining": 0,
+      "depth": 31,
+      "fingerprint": 35,
+      "seed": -2668946934195054107,
+      "finished": "Finished in 11s at (2026-11-17 12:30:43)"
+    },
+    {
+      "config": "docs/design/examples/capability-models/ConsumerHandoff-ThreeFilters.cfg",
+      "module": "docs/design/examples/capability-models/ConsumerHandoff.tla",
+      "module_sha256": "247ed4e16969d008977afe4c906a3082be3eb914550fbb3dc4175fcd738519a5",
+      "config_sha256": "e8dacb2beb9aeb0c6aca6ecc7da36d7a9de43d31b4fa833e6474ed35f13316db",
+      "exit": 0,
+      "generated": 5972409,
+      "distinct": 1130830,
+      "queue_remaining": 0,
+      "depth": 29,
+      "fingerprint": 130,
+      "seed": 3699752306579583492,
+      "finished": "Finished in 37s at (2026-11-17 12:32:10)"
+    }
+  ],
+  "single_consumer_reachable_states": {
+    "held_during_rebuild": {
+      "state": 1246,
+      "allocated": 1,
+      "published": 1,
+      "cursor": 0,
+      "current": 1,
+      "faultAt": 0,
+      "cut": 0,
+      "busy": 0,
+      "active": true,
+      "ready": false,
+      "fault": "none",
+      "phase": "rebuild",
+      "source": "none",
+      "held": [
+        1
+      ],
+      "batch": [],
+      "calls": []
+    },
+    "live_cut_covers_unpublished": {
+      "state": 1262,
+      "allocated": 1,
+      "published": 0,
+      "cursor": 0,
+      "current": 0,
+      "faultAt": 0,
+      "cut": 1,
+      "busy": 0,
+      "active": true,
+      "ready": true,
+      "fault": "none",
+      "phase": "live",
+      "source": "none",
+      "held": [],
+      "batch": [],
+      "calls": []
+    },
+    "failed_rebuild_still_holds": {
+      "state": 4914,
+      "allocated": 1,
+      "published": 1,
+      "cursor": 0,
+      "current": 1,
+      "faultAt": 0,
+      "cut": 0,
+      "busy": 0,
+      "active": false,
+      "ready": false,
+      "fault": "none",
+      "phase": "failed",
+      "source": "none",
+      "held": [
+        1
+      ],
+      "batch": [],
+      "calls": []
+    },
+    "removed_with_inflight_call": {
+      "state": 13248,
+      "allocated": 1,
+      "published": 1,
+      "cursor": 0,
+      "current": 1,
+      "faultAt": 0,
+      "cut": 0,
+      "busy": 1,
+      "active": false,
+      "ready": true,
+      "fault": "none",
+      "phase": "live",
+      "source": "live",
+      "held": [],
+      "batch": [],
+      "calls": [
+        1
+      ]
+    },
+    "successful_live_suffix": {
+      "state": 18754,
+      "allocated": 1,
+      "published": 1,
+      "cursor": 1,
+      "current": 0,
+      "faultAt": 0,
+      "cut": 0,
+      "busy": 0,
+      "active": true,
+      "ready": true,
+      "fault": "none",
+      "phase": "live",
+      "source": "none",
+      "held": [],
+      "batch": [],
+      "calls": [
+        1
+      ]
+    },
+    "ordinary_error_advances_current": {
+      "state": 18755,
+      "allocated": 1,
+      "published": 1,
+      "cursor": 1,
+      "current": 0,
+      "faultAt": 1,
+      "cut": 0,
+      "busy": 0,
+      "active": true,
+      "ready": true,
+      "fault": "error",
+      "phase": "live",
+      "source": "none",
+      "held": [],
+      "batch": [],
+      "calls": [
+        1
+      ]
+    },
+    "panic_does_not_advance_current": {
+      "state": 18756,
+      "allocated": 1,
+      "published": 1,
+      "cursor": 0,
+      "current": 0,
+      "faultAt": 1,
+      "cut": 0,
+      "busy": 0,
+      "active": true,
+      "ready": true,
+      "fault": "panic",
+      "phase": "live",
+      "source": "none",
+      "held": [],
+      "batch": [],
+      "calls": [
+        1
+      ]
+    },
+    "batch_and_held_are_distinct": {
+      "state": 34743,
+      "allocated": 2,
+      "published": 2,
+      "cursor": 1,
+      "current": 2,
+      "faultAt": 0,
+      "cut": 2,
+      "busy": 0,
+      "active": true,
+      "ready": true,
+      "fault": "none",
+      "phase": "drain",
+      "source": "none",
+      "held": [
+        2
+      ],
+      "batch": [
+        1
+      ],
+      "calls": []
+    },
+    "arrivals_while_drain_awaits": {
+      "state": 39143,
+      "allocated": 2,
+      "published": 2,
+      "cursor": 1,
+      "current": 2,
+      "faultAt": 0,
+      "cut": 0,
+      "busy": 1,
+      "active": true,
+      "ready": true,
+      "fault": "none",
+      "phase": "drain",
+      "source": "drain",
+      "held": [
+        2
+      ],
+      "batch": [],
+      "calls": [
+        1
+      ]
+    }
+  }
+}

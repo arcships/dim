@@ -130,7 +130,9 @@ checkpoint 的含义不变：它是写入者在某个边界上的视图，因此
 owner 提供 `migrate_prompt_references(Arc<Timeline>) -> Result<bool>`，仅用于独占持有的离线 Timeline。停止持有目标数据库的 daemon 后执行：
 
 ~~~sh
-cargo run --locked -p xtask -- migrate-prompt-references DB SESSION BRANCH
+dimcode --migrate-prompt-references --database DB --session SESSION --branch BRANCH
 ~~~
 
-工具独占打开原数据库，只装载目标分支 Timeline 与目录祖先截止，不创建 Session、挂载插件或执行 PromptHost。已有有效引用或没有旧采用的分支写入0条；旧无引用历史显式投影后最多写1条现有 prompt-state/v2 引用结果，等待提交再退出。重复执行不重复写入。正常 attach、getter、resume 不调用此入口。唯一一条 changed 且 previous 为空的首次采用崩溃间隙仍由正常恢复补齐，不被当作多条旧历史迁移。
+该命令随发布产物提供，不需要源码或 `xtask`，同一条命令也接受 `dimcode app-server --migrate-prompt-references ...` 前缀。`dimcode` 不在 PATH 时用其绝对路径；`xtask -- migrate-prompt-references DB SESSION BRANCH` 保留为开发用薄调用，行为相同。
+
+工具独占打开原数据库，只装载目标分支 Timeline 与目录祖先截止：先以只读连接校验目标库正是当前格式的 schema 与 marker（不创建、不升级，不支持的格式直接拒绝且不改动库），再取 `.lock` 独占锁——daemon 正在运行时这个锁被占用，命令报告“另一个进程持有该库，先停掉 daemon”并退出。已有有效引用或没有旧采用的分支写入0条；旧无引用历史显式投影后最多写1条现有 prompt-state/v2 引用结果，等待提交再退出。重复执行不重复写入。正常 attach、getter、resume 不调用此入口。唯一一条 changed 且 previous 为空的首次采用崩溃间隙仍由正常恢复补齐，不被当作多条旧历史迁移。

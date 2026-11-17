@@ -5,7 +5,6 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     input_queue::InputQueue,
-    model_provider::ModelProvider,
     tool_executor::ToolExecutor,
 };
 use dim_agent_runtime::testing::MinimalHost;
@@ -166,7 +165,7 @@ struct Extension {
     barrier: Arc<ExtensionBarrier>,
     dispatcher: Key<Dispatcher>,
     context_preparation: Key<ContextPreparation>,
-    model_provider: Key<ModelProvider>,
+    model_progress: Key<StateCell<ModelProgress>>,
     tool_executor: Key<ToolExecutor>,
 }
 impl Extension {
@@ -175,7 +174,7 @@ impl Extension {
             barrier,
             dispatcher: names.key()?,
             context_preparation: names.key()?,
-            model_provider: names.key()?,
+            model_progress: names.state_cell()?,
             tool_executor: names.key()?,
         })
     }
@@ -188,7 +187,7 @@ impl DynPlugin for Extension {
         vec![
             self.dispatcher.erase(),
             self.context_preparation.erase(),
-            self.model_provider.erase(),
+            self.model_progress.erase(),
             self.tool_executor.erase(),
         ]
     }

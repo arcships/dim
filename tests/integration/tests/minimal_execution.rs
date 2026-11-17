@@ -1606,6 +1606,7 @@ async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
     })
     .await;
     assert!(ended(&before).is_empty());
+    session.idle("main").await.unwrap();
     let plugins = session.branch_diagnostics("main").unwrap().plugins;
     let recovery = plugins
         .iter()

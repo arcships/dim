@@ -25,6 +25,7 @@ import type {
   ModelRetryProgress,
   ModelUpdateResult,
   Notification,
+  OperatorBlock,
   ProviderCatalog,
   ProviderPresentation,
   ProviderSummary,
@@ -478,17 +479,25 @@ function runtimeElement(index: number, text: string): (typeof RUNTIME_MARKERS)[n
 }
 
 /**
- * The operator's own text of a message, the Skills its blocks loaded, and how
- * many hook contexts it carries. A text block after the first that opens one of
- * those elements is not their words: a Skill shows as one line, a hook's
- * context as a count, and neither joins the message.
+ * The operator's own content of a message in the order the server holds it:
+ * each text run as it was written and each stored image where it stands, plus
+ * the one line the message shows, the Skills its blocks loaded and how many
+ * hook contexts it carries. A text block after the first that opens a runtime
+ * element is not their words: a Skill shows as one line and a hook's context as
+ * a count, so neither joins the content.
  */
-function userText(blocks: unknown, at: string): { text: string; skills: string[]; hooks: number } {
-  const text: string[] = []
+function operatorContent(blocks: unknown, at: string): { content: OperatorBlock[]; text: string; skills: string[]; hooks: number } {
+  const content: OperatorBlock[] = []
+  const runs: string[] = []
   const skills: string[] = []
   let hooks = 0
   arr(blocks, at).forEach((item, index) => {
     const block = obj(item, `${at}[${index}]`)
+    if (block.type === "image") {
+      const image = fileImage(block, `${at}[${index}]`)
+      if (image !== undefined) content.push(image)
+      return
+    }
     if (block.type !== "text" || typeof block.text !== "string") return
     const element = runtimeElement(index, block.text)
     if (element === "dim-skill") {
@@ -502,9 +511,10 @@ function userText(blocks: unknown, at: string): { text: string; skills: string[]
       hooks += 1
       return
     }
-    text.push(block.text)
+    content.push({ type: "text", text: block.text })
+    runs.push(block.text)
   })
-  return { text: text.join("\n"), skills, hooks }
+  return { content, text: runs.join("\n"), skills, hooks }
 }
 
 function textOf(blocks: unknown, at: string): string {
@@ -514,14 +524,19 @@ function textOf(blocks: unknown, at: string): string {
   }).join("\n")
 }
 
+/** One image block as the stored file reference a message can resend; another kind or source is not one. */
+function fileImage(block: Json, at: string): import("./protocol").ImageBlock | undefined {
+  if (block.type !== "image") return undefined
+  const source = obj(block.source, `${at}.source`)
+  if (source.type !== "file") return undefined
+  return { type: "image", source: readUploadedImage({ image: source }) }
+}
+
 function fileImages(value: unknown, at: string): import("./protocol").ImageBlock[] {
   if (typeof value === "string") return []
   return arr(value, at).flatMap((item, index) => {
-    const block = obj(item, `${at}[${index}]`)
-    if (block.type !== "image") return []
-    const source = obj(block.source, `${at}[${index}].source`)
-    if (source.type !== "file") return []
-    return [{ type: "image" as const, source: readUploadedImage({ image: source }) }]
+    const image = fileImage(obj(item, `${at}[${index}]`), `${at}[${index}]`)
+    return image === undefined ? [] : [image]
   })
 }
 
@@ -573,15 +588,14 @@ function content(type: string, name: string, data: Json, at: string): EventConte
     case "input/message": {
       const blocks = rawBlocks(data.blocks, `${at}.blocks`)
       if (data.user === undefined || data.user === null) {
-        if (blocks.length === 0) return { kind: "input", blocks }
+        if (blocks.length === 0) return { kind: "input", content: [], blocks }
         const mode = optStr(data, "mode", at)
         const text = blocks.map((block) => block.text).find((value) => value.startsWith("<dim-branch-")) ?? blocks[0]!.text
         return { kind: "source-input", text, blocks, ...(mode === undefined ? {} : { mode }) }
       }
       const user = obj(data.user, `${at}.user`)
-      const { text, skills, hooks } = userText(user.content, `${at}.user.content`)
-      const images = fileImages(user.content, `${at}.user.content`)
-      return { kind: "input", text, ...(images.length === 0 ? {} : { images }), user: readUserInput(user, `${at}.user`), skills: skills.length === 0 ? undefined : skills, ...(hooks === 0 ? {} : { hooks }), blocks }
+      const { content: operator, text, skills, hooks } = operatorContent(user.content, `${at}.user.content`)
+      return { kind: "input", text, user: readUserInput(user, `${at}.user`), content: operator, skills: skills.length === 0 ? undefined : skills, ...(hooks === 0 ? {} : { hooks }), blocks }
     }
     case "input/applied":
       return { kind: "input-applied", inputId: str(data, "input_id", at) }
@@ -973,8 +987,8 @@ export function readPendingInputs(value: unknown): InputPage {
     const row = obj(item, rowAt)
     if (row.user === null) return []
     const user = readUserInput(obj(row.user, `${rowAt}.user`), `${rowAt}.user`)
-    const display = userText(user.content, `${rowAt}.user.content`)
-    return [{ id: str(row, "inputId", rowAt), text: display.text, skills: display.skills, ...(display.hooks === 0 ? {} : { hooks: display.hooks }), user }]
+    const { content, text, skills, hooks } = operatorContent(user.content, `${rowAt}.user.content`)
+    return [{ id: str(row, "inputId", rowAt), text, skills, ...(hooks === 0 ? {} : { hooks }), content, user }]
   })
   return { branchId: str(source, "branchId", at), through: num(source, "through", at), inputs, next: source.next }
 }

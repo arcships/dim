@@ -22,6 +22,7 @@ dim-session-title.workspace = true
 dim-goal.workspace = true
 dim-report.workspace = true
 dim-modality.workspace = true
+dim-image-understanding.workspace = true
 dim-ocr.workspace = true
 dim-modality-aimux.workspace = true
 dim-oauth = { path = "../dim-oauth" }
@@ -35,6 +36,10 @@ agent-client-protocol-schema = { version = "=1.12.0", default-features = false }
 base64 = "0.22.1"
 sha2 = "0.10.9"
 dim-agent-types.workspace = true
+# The legacy prompt-reference flow seeds a real branch through a Session, which
+# needs the runtime's test host.
+dim-agent-runtime = { workspace = true, features = ["testing"] }
+dim-agent-capabilities = { workspace = true, features = ["testing"] }
 futures-util.workspace = true
 http = "1"
 url = "2"

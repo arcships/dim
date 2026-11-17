@@ -190,33 +190,48 @@ Read-only detail/cards display that observed model, not a guess from current pol
 
 ## 5. Native CLI interaction
 
-Add one action to the existing `/models` picker. It edits policy, not the leader's
-current model. The fixed option reuses the model picker with a policy-selection
-purpose; choosing it sends neither `session.model.update` nor `provider.select`.
-It writes only `collaboration.set_model_policy`, preserving both the leader's
-adopted model and Provider's scoped default.
+Add one action to the existing `/models` dialog, in its `Subagent models`
+section ([CLI commands](cli-commands.md#the-models-area)). It edits policy, not
+the leader's current model, and the section shows the policy as it stands. The
+fixed option reuses the model picker with a policy-selection purpose; choosing
+it sends neither `session.model.update` nor `provider.select`. It writes only
+`collaboration.set_model_policy`, preserving both the leader's adopted model
+and Provider's scoped default.
 
 ```text
-Select a model                  Subagent models
-  Current provider / model        Agent choice (default)
-  Other provider / model          Inherit requesting branch
-  Edit models                     Fixed model > select from existing picker
-  Subagent models: Agent choice
+Models
+  Conversation model
+  > Search models
+  › Current provider / model           high  current
+  Selected: Current provider / model
+  Subagent models
+  › Agent choice                                            Enter
+  Model management
+  › Manage models                                   3 providers
+
+Subagent models
+  Agent choice (default)
+  Inherit requesting branch
+  Fixed model > the model candidates again
 
 Applies to new members, including named Agents.
 Existing members keep their models.
 ```
 
-Read the source revision on opening and after a successful own write. On conflict,
-keep the selection visible and require reread before another save. Cancel performs
-no write. A failed/empty fixed-model listing leaves the existing policy intact.
-Hosts without the advertised management methods omit this action; no legacy or
+The section is outside the scrolling candidate list, so a long catalog never
+hides it; Tab / Shift+Tab reaches it, and Enter opens the flow. Read the source
+revision on opening and after a successful own write. On conflict, keep the
+selection visible and require reread before another save. Cancel performs no
+write. A failed/empty fixed-model listing leaves the existing policy intact.
+Hosts that do not advertise the policy methods omit this section; no legacy or
 in-memory write fallback is added. No independent settings screen or second
 command route is required for this TUI scope.
 
-The picker's `Edit models` row opens the models management area for the Provider
-its row names, and is absent from a daemon that does not advertise
-`provider.management` ([CLI commands](cli-commands.md#the-models-area)).
+The `Manage models` entry opens the Provider list whose rows name each Provider
+and its state, and choosing one opens the models management area for that
+Provider ([CLI commands](cli-commands.md#the-models-area)). It is absent from a
+daemon that does not advertise `provider.management`, whose diagnostics stay
+read-only there.
 
 ## 6. Implementation and acceptance
 

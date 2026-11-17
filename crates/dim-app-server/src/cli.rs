@@ -201,6 +201,11 @@ pub fn product_session_defaults(defaults: &mut dim_agent_runtime::SessionConfig)
     defaults.permission_policy.preset = dim_agent_types::PermissionPreset::WorkspaceWrite;
 }
 
+/// How `--migrate-prompt-references` is written, printed both by its own usage
+/// error and by the one a flag in the wrong position reaches.
+const MIGRATE_PROMPT_REFERENCES_USAGE: &str =
+    "--migrate-prompt-references --database PATH --session ID --branch NAME";
+
 /// [`run`] with a managed provider plugin, which an account build's own
 /// executable supplies; it is installed when the server has a product home.
 /// `install` contributes the host's native plugins to the builder before assembly.
@@ -269,10 +274,51 @@ pub fn run_with(
         let path = PathBuf::from(database);
         let vacuumed = crate::storage::vacuum_store(path.clone())?;
         println!(
-            "Vacuumed {}: {} -> {} bytes",
+            "Vacuumed {}: {} -> {} bytes\nRemoved {} unreachable content rows holding {} bytes",
             path.display(),
             vacuumed.before,
-            vacuumed.after
+            vacuumed.after,
+            vacuumed.reclaimed.rows,
+            vacuumed.reclaimed.bytes
+        );
+        return Ok(());
+    }
+    if argv.first().map(String::as_str) == Some("--migrate-prompt-references") {
+        let mut session = None;
+        let mut branch = None;
+        let mut database = None;
+        let mut args = argv.iter().skip(1);
+        let usage = || -> Box<dyn std::error::Error> {
+            format!("Use {MIGRATE_PROMPT_REFERENCES_USAGE}").into()
+        };
+        while let Some(flag) = args.next() {
+            let value = args.next().ok_or_else(usage)?;
+            match flag.as_str() {
+                "--database" => database = Some(PathBuf::from(value)),
+                "--session" => session = Some(value.clone()),
+                "--branch" => branch = Some(value.clone()),
+                _ => return Err(usage()),
+            }
+        }
+        let (Some(database), Some(session), Some(branch)) = (database, session, branch) else {
+            return Err(usage());
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let migrated = runtime.block_on(crate::storage::migrate_prompt_references(
+            database.clone(),
+            session.clone(),
+            branch.clone(),
+        ))?;
+        println!(
+            "{} prompt reference(s) for Session {session}, branch {branch} in {}",
+            if migrated.written {
+                "Wrote 1"
+            } else {
+                "Wrote 0"
+            },
+            database.display()
         );
         return Ok(());
     }
@@ -358,9 +404,15 @@ pub fn run_with(
                 println!(
                     "dim-app-server (--product-home PATH | --model-config PATH | --mock-model) [--unix PATH | --pipe NAME] [--ws HOST:PORT | --no-ws] [--threads COUNT] [--home PATH | --database PATH] [--defaults FILE] [--session-rows FILE] [--node PATH --js-runtime PATH] [--python PATH] [--web-assets PATH]\n\
                      dim-app-server --export-timeline SESSION_ID --database PATH\n\
-                     dim-app-server --vacuum --database PATH"
+                     dim-app-server --vacuum --database PATH\n\
+                     dim-app-server --migrate-prompt-references --database PATH --session ID --branch NAME"
                 );
                 return Ok(());
+            }
+            _ if arg == "--migrate-prompt-references" => {
+                return Err(
+                    format!("Use {MIGRATE_PROMPT_REFERENCES_USAGE} as the first argument").into(),
+                );
             }
             _ => return Err(format!("Unknown argument: {arg}").into()),
         }

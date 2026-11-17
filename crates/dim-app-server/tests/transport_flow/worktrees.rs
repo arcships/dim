@@ -643,61 +643,127 @@ async fn invalid_git_metadata_cannot_block_discovery_or_publish_a_root() {
     server.join().await.unwrap();
 }
 
-/// `session.create {worktree}` records the managed directory in the Session's
-/// own transaction, `worktree.list` joins it with the association, a removal
-/// refuses while the Session exists, and after `session.delete` the removal
-/// deletes both the Git worktree and the record.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn managed_worktree_creation_is_recorded_listed_and_removed() {
-    let work = Work::new();
-    let server = host(&work).await;
-    let mut client = Client::new_version(&server, false, 3).await;
-    let created = client
-        .rpc("session.create", json!({"cwd": work.repo, "worktree": {}}))
-        .await;
-    assert_ok(&created);
-    let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
-    let task_id = created["result"]["worktree"]["taskId"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    let root = PathBuf::from(created["result"]["worktree"]["root"].as_str().unwrap());
-    let cwd = PathBuf::from(created["result"]["worktree"]["cwd"].as_str().unwrap());
-    assert!(root.starts_with(work.home.join("worktrees")));
-    assert_eq!(cwd, root);
-    assert!(cwd.join("packages/a").is_dir());
+async fn managed_worktree_ownership_and_tool_workspace_survive_host_restart() {
+    for relative_cwd in ["", "packages/a"] {
+        let work = Work::new();
+        let server = host(&work).await;
+        let mut client = Client::new_version(&server, false, 3).await;
+        let source_cwd = work.repo.join(relative_cwd);
+        let created = client
+            .rpc("session.create", json!({"cwd": source_cwd, "worktree": {}}))
+            .await;
+        assert_ok(&created);
+        let session_id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        let task_id = created["result"]["worktree"]["taskId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let root = PathBuf::from(created["result"]["worktree"]["root"].as_str().unwrap());
+        let cwd = root.join(relative_cwd).canonicalize().unwrap();
+        assert!(root.starts_with(work.home.join("worktrees")));
+        assert_eq!(created["result"]["worktree"]["cwd"], json!(cwd));
+        assert!(root.join("packages/a/seed.txt").is_file());
+        let listed = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&listed);
+        assert_eq!(listed["result"]["worktrees"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["result"]["worktrees"][0]["taskId"], task_id);
+        assert_eq!(
+            listed["result"]["worktrees"][0]["sessions"],
+            json!([session_id])
+        );
+        drop(client);
+        server.shutdown();
+        server.join().await.unwrap();
 
-    let listed = client.rpc("worktree.list", json!({})).await;
-    assert_ok(&listed);
-    let entries = listed["result"]["worktrees"].as_array().unwrap();
-    assert!(
-        entries.iter().any(|entry| {
-            entry["taskId"] == json!(task_id) && entry["sessions"] == json!([session_id])
-        }),
-        "{listed}"
-    );
-
-    let refused = client
-        .rpc("worktree.remove", json!({"taskId": task_id}))
-        .await;
-    assert_eq!(
-        refused["error"]["data"]["appError"],
-        json!("worktree_in_use")
-    );
-
-    assert_ok(
-        &client
-            .rpc("session.delete", json!({"sessionId": session_id}))
+        let server = host(&work).await;
+        let mut client = Client::new_version(&server, false, 3).await;
+        let restored = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&restored);
+        assert_eq!(restored["result"], listed["result"]);
+        let attached = client
+            .rpc("session.attach", json!({"sessionId": session_id}))
+            .await;
+        assert_ok(&attached);
+        assert_eq!(attached["result"]["cwd"], json!(cwd));
+        let managed = server.agent().unwrap().get_session(&session_id).unwrap();
+        let written = cwd.join("after-restart.txt");
+        succeeded(
+            run(
+                &managed,
+                "write",
+                json!({"path":"after-restart.txt","content":"managed workspace after restart"}),
+            )
             .await,
-    );
-    let removed = client
-        .rpc("worktree.remove", json!({"taskId": task_id}))
-        .await;
-    assert_ok(&removed);
-    assert_eq!(removed["result"]["removed"], json!(true));
-    assert!(!root.exists());
-    server.shutdown();
-    server.join().await.unwrap();
+        );
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "managed workspace after restart"
+        );
+        assert!(!source_cwd.join("after-restart.txt").exists());
+        assert!(
+            chain_events(&managed, "main", ..)
+                .await
+                .unwrap()
+                .iter()
+                .all(|event| !matches!(event.kind, EventKind::ApprovalRequest(_))),
+            "workspace-write must not ask for per-file approval in the restored cwd"
+        );
+        let refused = client
+            .rpc("worktree.remove", json!({"taskId": task_id, "force": true}))
+            .await;
+        assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+        assert_eq!(
+            std::fs::read_to_string(&written).unwrap(),
+            "managed workspace after restart"
+        );
+
+        let shared = session(&server, &source_cwd).await;
+        succeeded(run(&shared, "read", json!({"path": written})).await);
+        let owners = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&owners);
+        let owners = owners["result"]["worktrees"][0]["sessions"]
+            .as_array()
+            .unwrap();
+        assert_eq!(owners.len(), 2);
+        assert!(owners.contains(&json!(session_id)));
+        assert!(owners.contains(&json!(shared.id())));
+        assert_ok(
+            &client
+                .rpc("session.delete", json!({"sessionId": session_id}))
+                .await,
+        );
+        let refused = client
+            .rpc("worktree.remove", json!({"taskId": task_id, "force": true}))
+            .await;
+        assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+        assert_ok(
+            &client
+                .rpc("session.delete", json!({"sessionId": shared.id()}))
+                .await,
+        );
+        let dirty = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&dirty);
+        assert_eq!(dirty["result"]["worktrees"][0]["sessions"], json!([]));
+        assert_eq!(dirty["result"]["worktrees"][0]["untracked"], 1);
+        let refused = client
+            .rpc("worktree.remove", json!({"taskId": task_id}))
+            .await;
+        assert_eq!(refused["error"]["data"]["appError"], "worktree_in_use");
+        assert!(written.exists());
+        std::fs::remove_file(written).unwrap();
+        let removed = client
+            .rpc("worktree.remove", json!({"taskId": task_id}))
+            .await;
+        assert_ok(&removed);
+        assert_eq!(removed["result"]["removed"], true);
+        assert!(!root.exists());
+        let empty = client.rpc("worktree.list", json!({})).await;
+        assert_ok(&empty);
+        assert_eq!(empty["result"]["worktrees"], json!([]));
+        server.shutdown();
+        server.join().await.unwrap();
+    }
 }
 
 /// A home that never created a worktree has no root directory; listing and
@@ -800,7 +866,9 @@ async fn committed_shell_completion_recovers_after_notice_failure_and_host_loss(
             error.to_string().contains("injected exec notice failure"),
             "{error}"
         );
-        std::fs::write(work.home.join("ready"), session.id()).unwrap();
+        let ready = work.home.join("ready.tmp");
+        std::fs::write(&ready, session.id()).unwrap();
+        std::fs::rename(ready, work.home.join("ready")).unwrap();
         std::future::pending::<()>().await;
         return;
     }

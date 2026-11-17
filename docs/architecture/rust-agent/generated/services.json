@@ -743,6 +743,12 @@
             "external": true
           },
           {
+            "service": "dim_agent_capabilities::host::SessionFiles",
+            "provider": null,
+            "declared": false,
+            "external": false
+          },
+          {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "provider": 35,
             "declared": true,
@@ -1555,12 +1561,6 @@
       {
         "service": "dim_agent_capabilities::input_queue::InputQueue@main",
         "provider": 42,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::model_provider::ModelProvider@main",
-        "provider": 44,
         "generation": 1,
         "removing": false
       },

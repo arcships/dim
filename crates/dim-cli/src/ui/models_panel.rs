@@ -1,16 +1,21 @@
-//! The `/models` picker (port of `ModelPanel` and `buildModelRows` for the
-//! models a daemon offers, with an "Edit models" row per Provider that opens
-//! that Provider's management area), and its
-//! "Subagent models" action when the daemon manages that policy:
+//! The `/models` dialog: the conversation model candidates, the subagent
+//! model policy and the Providers' model management, in three fixed
+//! sections. Only the candidate viewport scrolls; the policy and the
+//! management entry stay where they are.
 //!
 //! ```text
-//! Select a model
-//! > Provider / model          ZDR  ‹ high ›  current
-//!   Other provider / model    low
-//!   Third provider / model    —
-//!   Edit models
-//!   Subagent models: Agent choice
-//! Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close
+//! Models
+//! Conversation model
+//! > Search models
+//! › Dim OAuth / deepseek-v4.1-flash      ‹ high ›  current
+//!   Dim OAuth / gpt-6-astra              medium
+//! Selected: Dim OAuth / deepseek-v4.1-flash  unidentified
+//! Subagent models
+//! › Agent choice                                         Enter
+//! Model management
+//! › Manage models                                 3 providers
+//!   4 with missing limits / 27 unavailable
+//! Enter select + default · ←/→ effort · Tab section · Esc clear/close
 //!
 //! Subagent models
 //!   Agent choice (default)
@@ -18,25 +23,39 @@
 //!   Fixed model > the model list again
 //!   Applies to new members, including named Agents.
 //!   Existing members keep their models.
+//!
+//! Manage models
+//! › Test              ready
+//!   Relay             3 with missing limits
+//!   Manual            no models
+//! Test: 3 models need a window · dimcode models test --set-missing-limits
+//! Enter manage · Esc back
 //! ```
 //!
-//! ←/→ cycles the highlighted model's advertised reasoning efforts and wraps.
-//! The choice stays on that row while the list keeps it: a replaced list — one
-//! read after the catalog changed included — keeps the choices whose model is
-//! still listed and still advertises that effort, and drops the others; Ctrl+X
-//! drops the highlighted row's choice with its saved preferences. Enter adopts
-//! the model and writes it as the default the next Session in the launch
-//! workspace reads; a cycled effort is saved as its `reasoningEffort` and sent
-//! with the model's other saved preferences. A model with no advertised effort
-//! ignores the arrows; one that advertises efforts draws `—` in the effort cell
-//! until one is chosen, saved or declared, bracketed while the row is focused.
-//! Filtering keeps ←/→ for effort; Ctrl+B/F moves the
-//! filter cursor.
+//! Tab/Shift+Tab moves between the three sections and Up/Down stays inside
+//! the focused one. The search filters the candidates only; the sections
+//! stay where they are. Escape from a child page returns one level and
+//! restores the query, selection and list position; at the root it clears
+//! the search first, then closes.
 //!
-//! Choosing a policy writes only `collaboration.set_model_policy`; the leader's
-//! model and the provider default are untouched.
+//! ←/→ cycles the highlighted candidate's advertised reasoning efforts and
+//! wraps. The choice stays on that row while the list keeps it: a replaced
+//! list — one read after the catalog changed included — keeps the choices
+//! whose model is still listed and still advertises that effort, and drops
+//! the others; Ctrl+X drops the highlighted row's choice with its saved
+//! preferences. Enter adopts the model and writes it as the default the next
+//! Session in the launch workspace reads; a cycled effort is saved as its
+//! `reasoningEffort` and sent with the model's other saved preferences.
+//!
+//! Enter on the policy section opens the existing Agent choice / Inherit
+//! requesting branch / Fixed model flow. Enter on the management section
+//! opens the Provider list, whose rows name each Provider and its state;
+//! choosing one opens that Provider's existing management area, and closing
+//! it returns here. Choosing a policy writes only
+//! `collaboration.set_model_policy`; the leader's model and the provider
+//! default are untouched.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::model::session::{
     Area, EmptyProvider, EmptyReason, ModelItem, ModelList, ModelOutcome, ModelPolicyUpdate,
@@ -45,16 +64,20 @@ use crate::model::session::{
 use crate::ui::i18n::{t, tf};
 use crate::ui::list_panel::{Event, Item, ListPanel};
 use crate::ui::prompts::Effect;
+use crate::ui::render::panel::{IDLE_MARKER, SELECTED_MARKER, wrap_words};
+use crate::ui::rows::title_plain;
 use crate::ui::terminal::{KeyCode, KeyEvent, Modifiers};
+use crate::ui::text::{display_width, truncate_cells};
 use crate::ui::theme::Palette;
+use crate::ui::theme::ansi::{Paint, fg, paint};
 use dim_agent_types::ModelId;
 
-const HINT: &str =
-    "Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close";
+const HINT: &str = "Enter select + default · ←/→ effort · Tab section · Esc clear/close";
+const POLICY_SECTION_HINT: &str = "Enter change · Tab section · Esc clear/close";
+const MANAGEMENT_SECTION_HINT: &str = "Enter manage · Tab section · Esc clear/close";
 const POLICY_HINT: &str = "Enter select · Esc back";
-const EDIT_MODELS: &str = "__edit_models__";
-const SUBAGENT_MODELS: &str = "__subagent_models__";
-const SECTION: &str = "Models";
+const MANAGE_HINT: &str = "Enter manage · Esc back";
+const CONVERSATION: &str = "Conversation model";
 const AGENT: &str = "agent";
 const INHERIT: &str = "inherit";
 const FIXED: &str = "fixed";
@@ -65,6 +88,15 @@ enum View {
     Policy,
     /// The model list again, choosing the fixed subagent model.
     Fixed,
+    /// The Provider list management starts from.
+    Manage,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Model,
+    Policy,
+    Management,
 }
 
 /// The policy as last read; `revision` is `None` after a conflict or
@@ -76,7 +108,11 @@ struct Policy {
 
 pub struct ModelsPanel {
     view: View,
+    /// The root's list, kept while a child view is open, so returning
+    /// restores its query, selection and window.
+    root: ListPanel,
     list: ListPanel,
+    section: Section,
     listed: Option<Result<ModelList, String>>,
     /// `None` while the daemon does not manage the policy: no action.
     policy: Option<Policy>,
@@ -89,7 +125,9 @@ impl ModelsPanel {
     pub fn new() -> Self {
         Self {
             view: View::Models,
-            list: list(View::Models),
+            root: list(View::Models, Section::Model),
+            list: list(View::Models, Section::Model),
+            section: Section::Model,
             listed: None,
             policy: None,
             chosen: BTreeMap::new(),
@@ -111,7 +149,13 @@ impl ModelsPanel {
                 })
             })
         });
+        let manages = models.as_ref().is_ok_and(|list| list.manage);
         self.listed = Some(models);
+        if self.view == View::Manage && !manages {
+            self.back_to_root(Section::Management);
+            return;
+        }
+        self.normalize_section();
         self.rebuild(None);
     }
 
@@ -145,7 +189,7 @@ impl ModelsPanel {
             }
         };
         if saved {
-            self.open(View::Models, Some(SUBAGENT_MODELS));
+            self.back_to_root(Section::Policy);
         } else {
             self.rebuild(None);
         }
@@ -156,10 +200,27 @@ impl ModelsPanel {
         self.policy.as_ref()?.current.as_ref()
     }
 
-    fn open(&mut self, view: View, preselect: Option<&str>) {
+    /// Opens a child view, keeping the root's list for the way back.
+    fn open_child(&mut self, view: View, preselect: Option<&str>) {
+        if self.view == View::Models {
+            std::mem::swap(&mut self.list, &mut self.root);
+        }
         self.view = view;
-        self.list = list(view);
+        self.list = list(view, self.section);
         self.rebuild(preselect);
+    }
+
+    /// Returns to the root, with the list and position it had, focused on
+    /// `section` when that section is still there.
+    fn back_to_root(&mut self, section: Section) {
+        if self.view != View::Models {
+            std::mem::swap(&mut self.list, &mut self.root);
+            self.view = View::Models;
+        }
+        self.section = section;
+        self.normalize_section();
+        self.sync_hint();
+        self.rebuild(None);
     }
 
     /// Fills the list of the current view, keeping its selection.
@@ -182,55 +243,29 @@ impl ModelsPanel {
             }
             (View::Fixed, _) => None,
             (View::Policy, _) => mode.map(str::to_owned),
+            (View::Manage, _) => None,
         };
         let focus = preselect
             .map(str::to_owned)
             .or_else(|| selected.clone())
             .or_else(|| marked.clone());
-        let show_effort = self.view == View::Models;
+        let effort = self.view == View::Models;
         let items = match self.view {
             View::Policy => Some(Ok(self.policy_rows(mode))),
             View::Models | View::Fixed => self.listed.as_ref().map(|listed| {
                 listed.clone().map(|list| {
-                    let manage = list.manage && self.view == View::Models;
-                    let listed: BTreeSet<&str> = list
-                        .models
-                        .iter()
-                        .map(|model| model.provider_id.as_str())
-                        .collect();
-                    let mut items = model_rows(
+                    model_rows(
                         &list.models,
                         marked.as_deref(),
-                        show_effort.then_some(focus.as_deref()).flatten(),
-                        show_effort.then_some(&self.chosen),
-                        manage,
-                    );
-                    items.extend(limits_rows(&list.limits, manage, &listed));
-                    let empty: Vec<EmptyProvider> = list
-                        .empty
-                        .iter()
-                        .filter(|provider| {
-                            !list
-                                .limits
-                                .iter()
-                                .any(|limits| limits.provider_id == provider.provider_id)
-                        })
-                        .cloned()
-                        .collect();
-                    items.extend(empty_rows(&empty, manage, &listed));
-                    if self.view == View::Models
-                        && let Some(policy) = &self.policy
-                    {
-                        let label = self.label(policy.current.as_ref());
-                        items.push(Item::new(
-                            SUBAGENT_MODELS,
-                            tf("Subagent models: {policy}", &[("policy", &label)]),
-                            "",
-                        ));
-                    }
-                    items
+                        if effort { focus.as_deref() } else { None },
+                        if effort { Some(&self.chosen) } else { None },
+                    )
                 })
             }),
+            View::Manage => self
+                .listed
+                .as_ref()
+                .map(|listed| listed.clone().map(|list| provider_rows(&list))),
         };
         if let Some(items) = items {
             let preselect = preselect.or(selected.as_deref()).or(marked.as_deref());
@@ -279,7 +314,256 @@ impl ModelsPanel {
         }
     }
 
-    /// Saves `policy`, or rereads first when the revision is not known.
+    /// Whether the daemon manages Providers, so the management section offers
+    /// its entry.
+    fn manages(&self) -> bool {
+        matches!(&self.listed, Some(Ok(list)) if list.manage)
+    }
+
+    /// The sections this panel draws, in order.
+    fn sections(&self) -> Vec<Section> {
+        let mut sections = vec![Section::Model];
+        if self.policy.is_some() {
+            sections.push(Section::Policy);
+        }
+        if self.manages() {
+            sections.push(Section::Management);
+        }
+        sections
+    }
+
+    fn normalize_section(&mut self) {
+        if !self.sections().contains(&self.section) {
+            self.section = Section::Model;
+        }
+    }
+
+    fn sync_hint(&mut self) {
+        if self.view == View::Models {
+            self.list.set_hint(t(hint(self.section)).to_owned());
+        }
+    }
+
+    fn focus_next(&mut self, forward: bool) {
+        let sections = self.sections();
+        let at = sections
+            .iter()
+            .position(|section| *section == self.section)
+            .unwrap_or(0);
+        let next = if forward {
+            (at + 1) % sections.len()
+        } else {
+            (at + sections.len() - 1) % sections.len()
+        };
+        self.section = sections[next];
+        self.sync_hint();
+    }
+
+    /// The candidate the current filter shows under the selection.
+    fn selected_model(&self) -> Option<&ModelItem> {
+        if self.view != View::Models {
+            return None;
+        }
+        let id = self.list.selected_id()?;
+        self.models()
+            .iter()
+            .find(|model| key(&model.provider_id, &model.model_id) == id)
+    }
+
+    fn selected_provider(&self) -> Option<Provider> {
+        if self.view != View::Manage {
+            return None;
+        }
+        let list = match &self.listed {
+            Some(Ok(list)) => list,
+            _ => return None,
+        };
+        let id = self.list.selected_id()?;
+        providers(list)
+            .into_iter()
+            .find(|p| provider_key(&p.id) == id)
+    }
+
+    /// The selected candidate in words: what it is and how its id was
+    /// identified. The row itself shows the effort and the current marker.
+    fn summary(&self, model: &ModelItem) -> String {
+        let mut line = format!("{} / {}", provider_name(model), model.model_id);
+        let outcome = outcome_text(&model.outcome);
+        if !outcome.is_empty() {
+            line.push_str("  ");
+            line.push_str(&outcome);
+        }
+        tf("Selected: {model}", &[("model", &line)])
+    }
+
+    /// One line per condition the candidate list no longer carries: a
+    /// Provider's missing limits, and why it offers nothing selectable.
+    fn diagnostics(&self) -> Vec<String> {
+        let list = match &self.listed {
+            Some(Ok(list)) => list,
+            _ => return Vec::new(),
+        };
+        let mut missing = 0;
+        let mut unavailable = 0;
+        let mut disabled = 0;
+        let mut empty = 0;
+        let mut unreadable = 0;
+        for limits in &list.limits {
+            missing += limits.count;
+        }
+        for provider in &list.empty {
+            match provider.reason {
+                EmptyReason::NoModels { .. } => empty += 1,
+                EmptyReason::Mixed {
+                    unavailable: u,
+                    disabled: d,
+                } => {
+                    unavailable += u;
+                    disabled += d;
+                }
+                EmptyReason::Unavailable { count } => unavailable += count,
+                EmptyReason::Disabled { count } => disabled += count,
+                EmptyReason::Unreadable => unreadable += 1,
+            }
+        }
+        let count = |value: usize| value.to_string();
+        let mut parts = Vec::new();
+        if missing > 0 {
+            let value = count(missing);
+            parts.push(tf("{count} with missing limits", &[("count", &value)]));
+        }
+        if unavailable > 0 {
+            let value = count(unavailable);
+            parts.push(tf("{count} unavailable", &[("count", &value)]));
+        }
+        if disabled > 0 {
+            let value = count(disabled);
+            parts.push(tf("{count} disabled", &[("count", &value)]));
+        }
+        if empty > 0 {
+            let value = count(empty);
+            parts.push(tf("{count} without models", &[("count", &value)]));
+        }
+        if unreadable > 0 {
+            let value = count(unreadable);
+            parts.push(tf("{count} unreadable", &[("count", &value)]));
+        }
+        parts
+    }
+
+    /// The recovery guidance of every Provider, for a daemon that offers no
+    /// management actions.
+    fn management_guidance(&self) -> Vec<String> {
+        let list = match &self.listed {
+            Some(Ok(list)) => list,
+            _ => return Vec::new(),
+        };
+        providers(list)
+            .into_iter()
+            .flat_map(|provider| provider.guidance())
+            .collect()
+    }
+
+    fn footer(&self, inner: usize, rows: usize, p: &Palette) -> Vec<String> {
+        if rows < 12 {
+            return self.compact_footer(inner, p);
+        }
+        let mut lines = Vec::new();
+        if let Some(model) = self.selected_model() {
+            lines.push(fg(&truncate_cells(&self.summary(model), inner), &p.muted));
+        }
+        if let Some(policy) = &self.policy {
+            lines.push(title_plain(t("Subagent models"), inner, p));
+            let label = self.label(policy.current.as_ref());
+            lines.push(action_row(
+                &label,
+                "Enter",
+                self.section == Section::Policy,
+                inner,
+                p,
+            ));
+        }
+        let guidance = self.management_guidance();
+        if self.manages() || !guidance.is_empty() {
+            lines.push(title_plain(t("Model management"), inner, p));
+            if self.manages() {
+                let count = match &self.listed {
+                    Some(Ok(list)) => providers(list).len(),
+                    _ => 0,
+                };
+                let detail = if count == 1 {
+                    t("1 provider").to_owned()
+                } else {
+                    let count = count.to_string();
+                    tf("{count} providers", &[("count", &count)])
+                };
+                lines.push(action_row(
+                    t("Manage models"),
+                    &detail,
+                    self.section == Section::Management,
+                    inner,
+                    p,
+                ));
+                let parts = self.diagnostics();
+                if !parts.is_empty() {
+                    for row in wrap_words(&parts.join(" / "), inner.saturating_sub(2).max(1)) {
+                        lines.push(format!("  {}", fg(&row, &p.muted)));
+                    }
+                }
+            } else {
+                for line in guidance {
+                    for row in wrap_words(&line, inner.saturating_sub(2).max(1)) {
+                        lines.push(format!("  {}", fg(&row, &p.muted)));
+                    }
+                }
+            }
+        }
+        lines
+    }
+
+    /// The footer a terminal too short for the section titles keeps: the
+    /// diagnostics, then the entry of the focused section last, so the
+    /// section the user is in survives the row budget.
+    fn compact_footer(&self, inner: usize, p: &Palette) -> Vec<String> {
+        let mut lines = Vec::new();
+        if self.manages() {
+            let parts = self.diagnostics();
+            if !parts.is_empty() {
+                for row in wrap_words(&parts.join(" / "), inner.saturating_sub(2).max(1)) {
+                    lines.push(format!("  {}", fg(&row, &p.muted)));
+                }
+            }
+        } else {
+            for line in self.management_guidance() {
+                for row in wrap_words(&line, inner.saturating_sub(2).max(1)) {
+                    lines.push(format!("  {}", fg(&row, &p.muted)));
+                }
+            }
+        }
+        match self.section {
+            Section::Policy => {
+                if let Some(policy) = &self.policy {
+                    let label = self.label(policy.current.as_ref());
+                    lines.push(action_row(&label, "Enter", true, inner, p));
+                }
+            }
+            Section::Management if self.manages() => {
+                let count = match &self.listed {
+                    Some(Ok(list)) => providers(list).len(),
+                    _ => 0,
+                };
+                let detail = if count == 1 {
+                    t("1 provider").to_owned()
+                } else {
+                    let count = count.to_string();
+                    tf("{count} providers", &[("count", &count)])
+                };
+                lines.push(action_row(t("Manage models"), &detail, true, inner, p));
+            }
+            _ => {}
+        }
+        lines
+    }
     fn choose(&self, policy: SubagentModelPolicy) -> Effect {
         match self.policy.as_ref().and_then(|p| p.revision.clone()) {
             Some(expected_revision) => Effect::SetModelPolicy {
@@ -292,81 +576,93 @@ impl ModelsPanel {
 
     /// A paste goes into the filter.
     pub fn paste(&mut self, text: &str) {
+        if self.view == View::Models {
+            self.section = Section::Model;
+            self.sync_hint();
+        }
         self.list.paste(text);
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Effect {
-        if self.view == View::Models
-            && key.mods.0 == 0
-            && matches!(key.code, KeyCode::Left | KeyCode::Right)
-        {
-            return self.cycle(key.code == KeyCode::Right);
-        }
-        if self.view == View::Models
-            && key.code == KeyCode::Char('x')
-            && key.mods.contains(Modifiers::CTRL)
-        {
-            // Clearing the saved preferences drops the row's cycled effort
-            // too: the notice asks for the model to be selected again so it
-            // adopts its defaults, and that only holds if the cycle is gone.
-            let Some(id) = self.list.selected_id() else {
-                return Effect::None;
-            };
-            self.chosen.remove(&id);
-            self.rebuild(None);
-            return self
-                .models()
-                .iter()
-                .find(|model| id == self::key(&model.provider_id, &model.model_id))
-                .map(|model| Effect::ClearModelPreferences {
-                    provider_id: model.provider_id.clone(),
-                    model_id: model.model_id.clone(),
-                    expected_version: model.provider_version,
-                })
-                .unwrap_or(Effect::None);
+        if self.view == View::Models {
+            match key.code {
+                KeyCode::Tab => {
+                    self.focus_next(true);
+                    return Effect::None;
+                }
+                KeyCode::BackTab => {
+                    self.focus_next(false);
+                    return Effect::None;
+                }
+                KeyCode::Enter if self.section != Section::Model => {
+                    return match self.section {
+                        Section::Policy => {
+                            self.open_child(View::Policy, None);
+                            Effect::None
+                        }
+                        Section::Management if self.manages() => {
+                            self.open_child(View::Manage, None);
+                            Effect::None
+                        }
+                        _ => Effect::None,
+                    };
+                }
+                KeyCode::Esc => {}
+                _ if self.section != Section::Model => return Effect::None,
+                KeyCode::Left | KeyCode::Right if key.mods.0 == 0 => {
+                    return self.cycle(key.code == KeyCode::Right);
+                }
+                KeyCode::Char('x') if key.mods.contains(Modifiers::CTRL) => {
+                    return self.clear_preferences();
+                }
+                _ => {}
+            }
         }
         let before = self.list.selected_id();
         let event = self.list.handle_key(key);
-        if self.view == View::Models && event == Event::None && self.list.selected_id() != before {
+        if self.view == View::Models
+            && self.section == Section::Model
+            && event == Event::None
+            && self.list.selected_id() != before
+        {
             self.rebuild(None);
         }
+        self.dispatch(event)
+    }
+
+    fn dispatch(&mut self, event: Event) -> Effect {
         match (self.view, event) {
             (_, Event::None | Event::Refresh) => Effect::None,
             (View::Models, Event::Close) => Effect::Close,
             (View::Policy, Event::Close) => {
-                self.open(View::Models, Some(SUBAGENT_MODELS));
+                self.back_to_root(Section::Policy);
                 Effect::None
             }
             (View::Fixed, Event::Close) => {
-                self.open(View::Policy, Some(FIXED));
+                self.open_child(View::Policy, Some(FIXED));
                 Effect::None
             }
-            (View::Models, Event::Pick { id, .. }) if id.starts_with(EDIT_MODELS) => {
-                match id
-                    .strip_prefix(EDIT_MODELS)
-                    .and_then(|rest| rest.strip_prefix("::"))
-                {
-                    Some(provider_id) => Effect::OpenArea {
-                        area: Area::Models {
-                            provider_id: provider_id.to_owned(),
-                        },
-                        note: None,
-                    },
-                    None => Effect::None,
-                }
-            }
-            (View::Models, Event::Pick { id, .. }) if id == SUBAGENT_MODELS => {
-                self.open(View::Policy, None);
+            (View::Manage, Event::Close) => {
+                self.back_to_root(Section::Management);
                 Effect::None
             }
             (View::Policy, Event::Pick { id, .. }) if id == FIXED => {
-                self.open(View::Fixed, None);
+                self.open_child(View::Fixed, None);
                 Effect::None
             }
             (View::Policy, Event::Pick { id, .. }) if id == INHERIT => {
                 self.choose(SubagentModelPolicy::Inherit)
             }
             (View::Policy, Event::Pick { .. }) => self.choose(SubagentModelPolicy::Agent),
+            (View::Manage, Event::Pick { id, .. }) => id
+                .strip_prefix("__provider__::")
+                .map(|provider_id| Effect::OpenArea {
+                    area: Area::Models {
+                        provider_id: provider_id.to_owned(),
+                    },
+                    note: None,
+                })
+                .unwrap_or(Effect::None),
             (view, Event::Pick { id, label }) => match id.split_once("::") {
                 Some((provider, model)) if view == View::Fixed => {
                     self.choose(SubagentModelPolicy::Fixed {
@@ -385,6 +681,26 @@ impl ModelsPanel {
                 None => Effect::None,
             },
         }
+    }
+
+    fn clear_preferences(&mut self) -> Effect {
+        // Clearing the saved preferences drops the row's cycled effort
+        // too: the notice asks for the model to be selected again so it
+        // adopts its defaults, and that only holds if the cycle is gone.
+        let Some(id) = self.list.selected_id() else {
+            return Effect::None;
+        };
+        self.chosen.remove(&id);
+        self.rebuild(None);
+        self.models()
+            .iter()
+            .find(|model| id == self::key(&model.provider_id, &model.model_id))
+            .map(|model| Effect::ClearModelPreferences {
+                provider_id: model.provider_id.clone(),
+                model_id: model.model_id.clone(),
+                expected_version: model.provider_version,
+            })
+            .unwrap_or(Effect::None)
     }
 
     fn cycle(&mut self, forward: bool) -> Effect {
@@ -424,15 +740,37 @@ impl ModelsPanel {
     }
 
     pub fn cursor(&self, width: usize) -> Option<(usize, usize)> {
+        if self.view == View::Models && self.section != Section::Model {
+            return None;
+        }
         self.list.cursor(width)
     }
 
     pub fn render(&self, width: usize, rows: usize, p: &Palette) -> Vec<String> {
+        let inner = width.saturating_sub(4).max(1);
+        if self.view == View::Manage {
+            let mut footer = Vec::new();
+            if let Some(provider) = self.selected_provider() {
+                for line in provider.guidance() {
+                    for row in wrap_words(&line, inner.saturating_sub(2).max(1)) {
+                        footer.push(format!("  {}", fg(&row, &p.muted)));
+                    }
+                }
+                if !footer.is_empty() {
+                    footer.insert(0, String::new());
+                }
+            }
+            return self.list.render_with_footer(width, rows, p, &footer);
+        }
+        if self.view == View::Models {
+            let footer = self.footer(inner, rows, p);
+            return self.list.render_with_footer(width, rows, p, &footer);
+        }
         self.list.render(width, rows, p)
     }
 }
 
-fn list(view: View) -> ListPanel {
+fn list(view: View, section: Section) -> ListPanel {
     let models = |title, hint| {
         ListPanel::new(
             title,
@@ -444,11 +782,28 @@ fn list(view: View) -> ListPanel {
         )
     };
     match view {
-        View::Models => models("Select a model", HINT),
+        View::Models => models("Models", hint(section)).with_lead(t(CONVERSATION)),
         View::Fixed => models("Fixed subagent model", POLICY_HINT),
         View::Policy => {
             ListPanel::new("Subagent models", t(POLICY_HINT), "", "", "", false).without_filter()
         }
+        View::Manage => ListPanel::new(
+            "Manage models",
+            t(MANAGE_HINT),
+            "Loading providers...",
+            "No matching providers.",
+            "No matching providers.",
+            false,
+        )
+        .with_inline_rows(),
+    }
+}
+
+fn hint(section: Section) -> &'static str {
+    match section {
+        Section::Model => HINT,
+        Section::Policy => POLICY_SECTION_HINT,
+        Section::Management => MANAGEMENT_SECTION_HINT,
     }
 }
 
@@ -457,46 +812,35 @@ fn model_rows(
     marked: Option<&str>,
     focus: Option<&str>,
     chosen: Option<&BTreeMap<String, String>>,
-    manage: bool,
 ) -> Vec<Item> {
-    let mut items: Vec<Item> = Vec::new();
-    if !models.is_empty() {
-        items.push(Item::heading(t(SECTION)));
-    }
-    for (index, model) in models.iter().enumerate() {
-        let id = key(&model.provider_id, &model.model_id);
-        let mut row = Item::new(
-            id.clone(),
-            format!("{} / {}", provider_name(model), model.model_id),
-            effort_detail(
-                model,
-                chosen
-                    .and_then(|chosen| chosen.get(&id))
-                    .map(String::as_str),
-                Some(id.as_str()) == focus,
-                Some(id.as_str()) == marked,
-            ),
-        );
-        row.search = model.display_name.clone();
-        if model.zdr {
-            row.detail = if row.detail.is_empty() {
-                "ZDR".to_owned()
-            } else {
-                format!("ZDR  {}", row.detail)
-            };
-            row.search.push_str(" ZDR");
-        }
-        items.push(row);
-        // The Provider's first block ends here: its edit row follows it.
-        if manage
-            && models
-                .get(index + 1)
-                .is_none_or(|next| next.provider_id != model.provider_id)
-        {
-            items.push(edit_row(&model.provider_id, &model.provider_name));
-        }
-    }
-    items
+    models
+        .iter()
+        .map(|model| {
+            let id = key(&model.provider_id, &model.model_id);
+            let mut row = Item::new(
+                id.clone(),
+                format!("{} / {}", provider_name(model), model.model_id),
+                effort_detail(
+                    model,
+                    chosen
+                        .and_then(|chosen| chosen.get(&id))
+                        .map(String::as_str),
+                    Some(id.as_str()) == focus,
+                    Some(id.as_str()) == marked,
+                ),
+            );
+            row.search = model.display_name.clone();
+            if model.zdr {
+                row.detail = if row.detail.is_empty() {
+                    "ZDR".to_owned()
+                } else {
+                    format!("ZDR  {}", row.detail)
+                };
+                row.search.push_str(" ZDR");
+            }
+            row
+        })
+        .collect()
 }
 
 fn effort_detail(model: &ModelItem, chosen: Option<&str>, focused: bool, current: bool) -> String {
@@ -513,24 +857,16 @@ fn effort_detail(model: &ModelItem, chosen: Option<&str>, focused: bool, current
     } else {
         shown.unwrap_or("—").to_owned()
     };
-    let state = match (effort.is_empty(), current) {
+    match (effort.is_empty(), current) {
         (true, true) => t("current").to_owned(),
         (false, true) => format!("{effort}  {}", t("current")),
         (false, false) => effort,
         (true, false) => String::new(),
-    };
-    // How the id was identified is the row's own statement about the model, so
-    // it rides after the effort: a user reading an unusable row sees which
-    // model it was taken to be, or the rows that disagreed.
-    let outcome = outcome_text(&model.outcome);
-    match (state.is_empty(), outcome.is_empty()) {
-        (true, _) => outcome,
-        (_, true) => state,
-        (false, false) => format!("{state}  {outcome}"),
     }
 }
 
-/// What identification made of one row's id, as the row's suffix.
+/// What identification made of one row's id, as the selected model's summary
+/// says it.
 fn outcome_text(outcome: &ModelOutcome) -> String {
     match outcome {
         ModelOutcome::Identified {
@@ -557,128 +893,243 @@ fn outcome_text(outcome: &ModelOutcome) -> String {
     }
 }
 
-/// A provider that offers nothing selectable keeps a muted row, after the
-/// models, naming it, why and the command that shows the details.
-fn empty_rows(providers: &[EmptyProvider], manage: bool, listed: &BTreeSet<&str>) -> Vec<Item> {
-    let mut items = Vec::new();
-    for provider in providers {
-        let name = ("provider", provider.provider_name.as_str());
-        let id = ("id", provider.provider_id.as_str());
-        let text = match provider.reason {
-            EmptyReason::NoModels { listable: true } => tf(
-                "{provider}: no models · dimcode models {id} --refresh",
-                &[name, id],
-            ),
-            EmptyReason::NoModels { listable: false } => tf(
-                "{provider}: no models · add a model with provider.models.create",
-                &[name],
-            ),
-            EmptyReason::Mixed {
-                unavailable,
-                disabled,
-            } => {
-                let unavailable = unavailable.to_string();
-                let disabled = disabled.to_string();
-                tf(
-                    "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}",
-                    &[
-                        name,
-                        ("unavailable", &unavailable),
-                        ("disabled", &disabled),
-                        id,
-                    ],
-                )
-            }
-            EmptyReason::Unavailable { count: 1 } => tf(
-                "{provider}: 1 model unavailable · dimcode models {id}",
-                &[name, id],
-            ),
-            EmptyReason::Unavailable { count } => {
-                let count = count.to_string();
-                tf(
-                    "{provider}: {count} models unavailable · dimcode models {id}",
-                    &[name, ("count", &count), id],
-                )
-            }
-            EmptyReason::Disabled { count: 1 } => tf(
-                "{provider}: 1 model disabled · dimcode models {id}",
-                &[name, id],
-            ),
-            EmptyReason::Disabled { count } => {
-                let count = count.to_string();
-                tf(
-                    "{provider}: {count} models disabled · dimcode models {id}",
-                    &[name, ("count", &count), id],
-                )
-            }
-            EmptyReason::Unreadable => tf(
-                "{provider}: catalog unreadable · dimcode models {id}",
-                &[name, id],
-            ),
-        };
-        let mut row = Item::heading(text);
-        row.sticky = true;
-        items.push(row);
-        if manage && !listed.contains(provider.provider_id.as_str()) {
-            items.push(edit_row(&provider.provider_id, &provider.provider_name));
-        }
-    }
-    items
+/// One Provider the management list names, from the models it offers and the
+/// diagnostics the picker no longer carries.
+struct Provider {
+    id: String,
+    name: String,
+    models: usize,
+    limits: Option<NeedsLimitsProvider>,
+    empty: Option<EmptyProvider>,
 }
 
-/// A provider whose catalog holds models no source declares a window for
-/// keeps one muted row, after the models, counting them and naming the
-/// command that declares both limits; it replaces the provider's empty row.
-fn limits_rows(
-    providers: &[NeedsLimitsProvider],
-    manage: bool,
-    listed: &BTreeSet<&str>,
-) -> Vec<Item> {
-    let mut items = Vec::new();
-    for provider in providers {
-        let name = ("provider", provider.provider_name.as_str());
-        let id = ("id", provider.provider_id.as_str());
-        let mut text = if provider.count == 1 {
+impl Provider {
+    /// Whether it offers a selectable model.
+    fn state(&self) -> String {
+        let mut parts = Vec::new();
+        if self.models > 0 {
+            parts.push(t("ready").to_owned());
+        }
+        if let Some(limits) = &self.limits {
+            let count = limits.count.to_string();
+            parts.push(tf("{count} with missing limits", &[("count", &count)]));
+        }
+        if let Some(empty) = &self.empty {
+            parts.push(empty_state(&empty.reason));
+        }
+        parts.join(" · ")
+    }
+
+    /// What to do about a Provider no candidate row can be selected from.
+    fn guidance(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if let Some(limits) = &self.limits {
+            lines.push(limits_text(limits));
+        }
+        if let Some(empty) = &self.empty {
+            lines.push(empty_text(empty));
+        }
+        lines
+    }
+}
+
+fn provider_key(id: &str) -> String {
+    format!("__provider__::{id}")
+}
+
+fn providers(list: &ModelList) -> Vec<Provider> {
+    let mut providers: Vec<Provider> = Vec::new();
+    let slot = |id: &str, name: &str, providers: &mut Vec<Provider>| match providers
+        .iter()
+        .position(|provider| provider.id == id)
+    {
+        Some(at) => at,
+        None => {
+            providers.push(Provider {
+                id: id.to_owned(),
+                name: if name.is_empty() {
+                    id.to_owned()
+                } else {
+                    name.to_owned()
+                },
+                models: 0,
+                limits: None,
+                empty: None,
+            });
+            providers.len() - 1
+        }
+    };
+    for model in &list.models {
+        let at = slot(&model.provider_id, &model.provider_name, &mut providers);
+        providers[at].models += 1;
+    }
+    for limits in &list.limits {
+        let at = slot(&limits.provider_id, &limits.provider_name, &mut providers);
+        providers[at].limits = Some(limits.clone());
+    }
+    for empty in &list.empty {
+        let at = slot(&empty.provider_id, &empty.provider_name, &mut providers);
+        providers[at].empty = Some(empty.clone());
+    }
+    providers
+}
+
+fn provider_rows(list: &ModelList) -> Vec<Item> {
+    providers(list)
+        .into_iter()
+        .map(|provider| {
+            let mut row = Item::new(
+                provider_key(&provider.id),
+                provider.name.clone(),
+                provider.state(),
+            );
+            row.search = provider.id;
+            row
+        })
+        .collect()
+}
+
+/// A Provider that offers nothing selectable, in the Provider row's words.
+fn empty_state(reason: &EmptyReason) -> String {
+    match reason {
+        EmptyReason::NoModels { .. } => t("no models").to_owned(),
+        EmptyReason::Mixed {
+            unavailable,
+            disabled,
+        } => {
+            let unavailable = unavailable.to_string();
+            let disabled = disabled.to_string();
             tf(
-                "{provider}: 1 model needs a window · dimcode models {id} --set-missing-limits",
-                &[name, id],
+                "{unavailable} unavailable, {disabled} disabled",
+                &[("unavailable", &unavailable), ("disabled", &disabled)],
             )
-        } else {
-            let count = provider.count.to_string();
+        }
+        EmptyReason::Unavailable { count } => {
+            let count = count.to_string();
+            tf("{count} unavailable", &[("count", &count)])
+        }
+        EmptyReason::Disabled { count } => {
+            let count = count.to_string();
+            tf("{count} disabled", &[("count", &count)])
+        }
+        EmptyReason::Unreadable => t("catalog unreadable").to_owned(),
+    }
+}
+
+/// A Provider that offers nothing selectable, naming it, why and the command
+/// that shows the details.
+fn empty_text(provider: &EmptyProvider) -> String {
+    let name = ("provider", provider.provider_name.as_str());
+    let id = ("id", provider.provider_id.as_str());
+    match provider.reason {
+        EmptyReason::NoModels { listable: true } => tf(
+            "{provider}: no models · dimcode models {id} --refresh",
+            &[name, id],
+        ),
+        EmptyReason::NoModels { listable: false } => tf(
+            "{provider}: no models · add a model with provider.models.create",
+            &[name],
+        ),
+        EmptyReason::Mixed {
+            unavailable,
+            disabled,
+        } => {
+            let unavailable = unavailable.to_string();
+            let disabled = disabled.to_string();
             tf(
-                "{provider}: {count} models need a window · dimcode models {id} --set-missing-limits",
+                "{provider}: {unavailable} unavailable and {disabled} disabled · dimcode models {id}",
+                &[
+                    name,
+                    ("unavailable", &unavailable),
+                    ("disabled", &disabled),
+                    id,
+                ],
+            )
+        }
+        EmptyReason::Unavailable { count: 1 } => tf(
+            "{provider}: 1 model unavailable · dimcode models {id}",
+            &[name, id],
+        ),
+        EmptyReason::Unavailable { count } => {
+            let count = count.to_string();
+            tf(
+                "{provider}: {count} models unavailable · dimcode models {id}",
                 &[name, ("count", &count), id],
             )
-        };
-        // The reason and the rows that disagree appear together, so a user
-        // choosing what an id stands for reads the candidates here rather than
-        // only in the refusal text.
-        if !provider.candidates.is_empty() {
-            text.push_str(&format!(" · {}", provider.candidates.join(", ")));
         }
-        let mut row = Item::heading(text);
-        row.sticky = true;
-        items.push(row);
-        if manage && !listed.contains(provider.provider_id.as_str()) {
-            items.push(edit_row(&provider.provider_id, &provider.provider_name));
+        EmptyReason::Disabled { count: 1 } => tf(
+            "{provider}: 1 model disabled · dimcode models {id}",
+            &[name, id],
+        ),
+        EmptyReason::Disabled { count } => {
+            let count = count.to_string();
+            tf(
+                "{provider}: {count} models disabled · dimcode models {id}",
+                &[name, ("count", &count), id],
+            )
         }
+        EmptyReason::Unreadable => tf(
+            "{provider}: catalog unreadable · dimcode models {id}",
+            &[name, id],
+        ),
     }
-    items
 }
 
-/// One Provider's `Edit models` row: its detail carries the name and the id,
-/// so two Providers are never confused.
-fn edit_row(provider_id: &str, provider_name: &str) -> Item {
-    let detail = if provider_name.is_empty() || provider_name == provider_id {
-        provider_id.to_owned()
+/// A Provider whose catalog holds models no source declares a window for,
+/// counting them and naming the command that declares both limits.
+fn limits_text(provider: &NeedsLimitsProvider) -> String {
+    let name = ("provider", provider.provider_name.as_str());
+    let id = ("id", provider.provider_id.as_str());
+    let mut text = if provider.count == 1 {
+        tf(
+            "{provider}: 1 model needs a window · dimcode models {id} --set-missing-limits",
+            &[name, id],
+        )
     } else {
-        format!("{provider_name}  {provider_id}")
+        let count = provider.count.to_string();
+        tf(
+            "{provider}: {count} models need a window · dimcode models {id} --set-missing-limits",
+            &[name, ("count", &count), id],
+        )
     };
-    Item::new(
-        format!("{EDIT_MODELS}::{provider_id}"),
-        t("Edit models"),
-        detail,
-    )
+    // The reason and the rows that disagree appear together, so a user
+    // choosing what an id stands for reads the candidates here rather than
+    // only in the refusal text.
+    if !provider.candidates.is_empty() {
+        text.push_str(&format!(" · {}", provider.candidates.join(", ")));
+    }
+    text
+}
+
+/// A section's single action row: its label on the left, its detail at the
+/// right edge, marked while the section has the focus.
+fn action_row(label: &str, detail: &str, focused: bool, inner: usize, p: &Palette) -> String {
+    let marker = if focused {
+        SELECTED_MARKER
+    } else {
+        IDLE_MARKER
+    };
+    let room = inner.saturating_sub(display_width(marker));
+    let detail = truncate_cells(detail, room.saturating_sub(2));
+    let detail_room = display_width(&detail);
+    let label = truncate_cells(label, room.saturating_sub(detail_room + 2));
+    let gap = room.saturating_sub(display_width(&label) + detail_room);
+    let label = if focused {
+        paint(
+            &format!("{marker}{label}"),
+            Paint {
+                fg: Some(&p.accent),
+                bold: true,
+                ..Paint::default()
+            },
+        )
+    } else {
+        fg(&format!("{marker}{label}"), &p.text_soft)
+    };
+    if detail.is_empty() {
+        return label;
+    }
+    format!("{label}{}{}", " ".repeat(gap), fg(&detail, &p.muted))
 }
 
 fn provider_name(model: &ModelItem) -> &str {
@@ -697,6 +1148,7 @@ fn key(provider: &str, model: &str) -> String {
 mod tests {
     use super::*;
     use crate::ui::terminal::Modifiers;
+    use crate::ui::theme::palette::terminal_palette;
     use crate::ui::theme::{Appearance, ColorMode};
 
     fn key_of(code: KeyCode) -> KeyEvent {
@@ -753,17 +1205,48 @@ mod tests {
         panel
     }
 
-    fn drawn(panel: &ModelsPanel) -> String {
+    fn managed() -> ModelsPanel {
+        let mut panel = ModelsPanel::new();
+        panel.set_models(Ok(ModelList {
+            manage: true,
+            models: vec![
+                item_for("dim", "Dim OAuth", "flash", &[], Some("low"), Some("low")),
+                item_for("other", "Other", "plain", &[], None, None),
+            ],
+            current: Some(("dim".into(), "flash".into())),
+            empty: vec![EmptyProvider {
+                provider_id: "third".into(),
+                provider_name: "Third".into(),
+                reason: EmptyReason::NoModels { listable: false },
+            }],
+            limits: vec![NeedsLimitsProvider {
+                provider_id: "other".into(),
+                provider_name: "Other".into(),
+                count: 2,
+                candidates: Vec::new(),
+            }],
+        }));
         panel
-            .render(
-                80,
-                16,
-                &crate::ui::theme::palette::terminal_palette(
-                    ColorMode::TrueColor,
-                    Appearance::Dark,
-                ),
-            )
-            .join("\n")
+    }
+
+    fn policy(panel: &mut ModelsPanel) {
+        panel.set_policy(ModelPolicyUpdate::Read {
+            revision: "1".into(),
+            policy: SubagentModelPolicy::Agent,
+            saved: false,
+        });
+    }
+
+    fn drawn(panel: &ModelsPanel) -> String {
+        crate::ui::render::panel::strip_escapes(
+            &panel
+                .render(
+                    80,
+                    24,
+                    &terminal_palette(ColorMode::TrueColor, Appearance::Dark),
+                )
+                .join("\n"),
+        )
     }
 
     #[test]
@@ -801,14 +1284,15 @@ mod tests {
         assert!(!screen.contains("ZDR"), "{screen}");
     }
 
-    /// The row says how its id was identified, in the four wordings: one row,
-    /// several agreeing rows, a disagreement, and nothing.
+    /// The selected model's summary says how its id was identified, in the
+    /// four wordings: one row, several agreeing rows, a disagreement, and
+    /// nothing. The candidate rows themselves stay short.
     #[test]
-    fn a_rows_suffix_says_how_its_id_was_identified() {
+    fn the_selected_models_summary_says_how_its_id_was_identified() {
         let mut panel = ModelsPanel::new();
-        let outcome = |outcome| ModelItem {
-            provider_id: "relay".into(),
-            provider_name: "Relay".into(),
+        let outcome = |provider: &str, outcome| ModelItem {
+            provider_id: provider.into(),
+            provider_name: provider.into(),
             provider_version: 1,
             model_id: "listed-id".into(),
             display_name: "listed-id".into(),
@@ -821,54 +1305,75 @@ mod tests {
         panel.set_models(Ok(ModelList {
             manage: false,
             models: vec![
-                outcome(ModelOutcome::Identified {
-                    provider_id: "moonshot".into(),
-                    model_id: "kimi-k3".into(),
-                    inferred: false,
-                }),
-                outcome(ModelOutcome::Identified {
-                    provider_id: "openai".into(),
-                    model_id: "gpt-5.5".into(),
-                    inferred: true,
-                }),
-                outcome(ModelOutcome::Ambiguous {
-                    candidates: vec![
-                        "ark-code/ark-code-latest".into(),
-                        "byteplus-coding-plan/ark-code-latest".into(),
-                    ],
-                }),
-                outcome(ModelOutcome::Unidentified),
+                outcome(
+                    "one",
+                    ModelOutcome::Identified {
+                        provider_id: "moonshot".into(),
+                        model_id: "kimi-k3".into(),
+                        inferred: false,
+                    },
+                ),
+                outcome(
+                    "several",
+                    ModelOutcome::Identified {
+                        provider_id: "openai".into(),
+                        model_id: "gpt-5.5".into(),
+                        inferred: true,
+                    },
+                ),
+                outcome(
+                    "ambiguous",
+                    ModelOutcome::Ambiguous {
+                        candidates: vec![
+                            "ark-code/ark-code-latest".into(),
+                            "byteplus-coding-plan/ark-code-latest".into(),
+                        ],
+                    },
+                ),
+                outcome("nothing", ModelOutcome::Unidentified),
             ],
             current: None,
             empty: Vec::new(),
             limits: Vec::new(),
         }));
-        // Wide enough that the candidates a row names are not cut off.
-        let screen = panel
-            .render(
-                120,
-                16,
-                &crate::ui::theme::palette::terminal_palette(
-                    ColorMode::TrueColor,
-                    Appearance::Dark,
-                ),
-            )
-            .join("\n");
-        assert!(
-            screen.contains("identified: kimi-k3 at moonshot"),
-            "{screen}"
-        );
-        assert!(
-            screen.contains("inferred from several rows: gpt-5.5 at openai"),
-            "{screen}"
-        );
-        assert!(
-            screen.contains(
-                "ambiguous: ark-code/ark-code-latest, byteplus-coding-plan/ark-code-latest"
+        // Wide enough that the candidate a summary names is not cut off.
+        let screen = |panel: &ModelsPanel| {
+            panel
+                .render(
+                    160,
+                    24,
+                    &terminal_palette(ColorMode::TrueColor, Appearance::Dark),
+                )
+                .join("\n")
+        };
+        for (wording, at) in [
+            ("identified: kimi-k3 at moonshot", 0),
+            ("inferred from several rows: gpt-5.5 at openai", 1),
+            (
+                "ambiguous: ark-code/ark-code-latest, byteplus-coding-plan/ark-code-latest",
+                2,
             ),
-            "{screen}"
-        );
-        assert!(screen.contains("unidentified"), "{screen}");
+            ("unidentified", 3),
+        ] {
+            for _ in 0..at {
+                panel.handle_key(key_of(KeyCode::Down));
+            }
+            let screen = screen(&panel);
+            assert!(screen.contains("Selected:"), "{screen}");
+            assert!(screen.contains(wording), "{screen}");
+            // The candidates themselves carry no identification text.
+            assert!(
+                !screen
+                    .lines()
+                    .find(|line| line.contains("/ listed-id"))
+                    .unwrap_or_default()
+                    .contains("identified"),
+                "{screen}"
+            );
+            for _ in 0..at {
+                panel.handle_key(key_of(KeyCode::Up));
+            }
+        }
     }
 
     /// A row that offers efforts and has none chosen, saved or declared says
@@ -1038,7 +1543,7 @@ mod tests {
         let screen = drawn(&panel);
         assert!(screen.contains("> flash"), "{screen}");
         assert!(!screen.contains("plain"), "{screen}");
-        assert!(screen.contains("Ctrl+B/F"), "{screen}");
+        assert!(screen.contains("←/→ effort"), "{screen}");
         let cursor = panel.cursor(80).expect("the filter has a cursor");
         for (arrow, effort) in [
             (KeyCode::Right, "medium"),
@@ -1167,134 +1672,264 @@ mod tests {
         ));
     }
 
-    /// Every provider with models whose limits no source declares keeps one
-    /// muted row after the model rows: it counts them and names the command
-    /// that declares both limits, in the singular too.
+    /// Candidates, policy and management are separate sections; the
+    /// candidate list keeps its own rows and the diagnostics no longer
+    /// become candidate entries.
     #[test]
-    fn a_provider_whose_models_need_a_window_keeps_one_counted_row() {
-        let mut panel = panel();
-        panel.set_models(Ok(ModelList {
-            manage: false,
-            models: vec![
-                item("flash", &[], None, None),
-                item("plain", &[], None, None),
-            ],
-            current: None,
-            empty: Vec::new(),
-            limits: vec![NeedsLimitsProvider {
-                provider_id: "dim".into(),
-                provider_name: "Dim OAuth".into(),
-                count: 2,
-                candidates: Vec::new(),
-            }],
-        }));
+    fn candidates_policy_and_management_are_separate_sections() {
+        let mut panel = managed();
+        policy(&mut panel);
         let screen = drawn(&panel);
+        assert!(screen.contains("Conversation model"), "{screen}");
+        assert!(screen.contains("Subagent models"), "{screen}");
+        assert!(screen.contains("Agent choice"), "{screen}");
+        assert!(screen.contains("Model management"), "{screen}");
+        assert!(screen.contains("Manage models"), "{screen}");
+        assert!(screen.contains("3 providers"), "{screen}");
         assert!(
-            screen.contains("Dim OAuth: 2 models need a window"),
+            screen.contains("2 with missing limits / 1 without models"),
             "{screen}"
         );
-        assert!(screen.contains("dimcode models dim"), "{screen}");
-        let models = screen.find("flash").unwrap();
-        let row = screen.find("2 models need a window").unwrap();
-        assert!(models < row, "{screen}");
-
-        panel.set_models(Ok(ModelList {
-            manage: false,
-            models: vec![item("flash", &[], None, None)],
-            current: None,
-            empty: Vec::new(),
-            limits: vec![NeedsLimitsProvider {
-                provider_id: "dim".into(),
-                provider_name: "Dim OAuth".into(),
-                count: 1,
-                candidates: Vec::new(),
-            }],
-        }));
-        assert!(
-            drawn(&panel).contains("Dim OAuth: 1 model needs a window"),
-            "{}",
-            drawn(&panel)
-        );
+        assert!(!screen.contains("Edit models"), "{screen}");
+        assert!(!screen.contains("need a window · dimcode"), "{screen}");
     }
 
-    /// When the provider has nothing selectable, the limits row replaces
-    /// its empty-provider row instead of joining it.
+    /// Tab and Shift+Tab move between the sections the panel draws, and the
+    /// hint follows the focus.
     #[test]
-    fn a_limits_row_replaces_the_providers_empty_row() {
-        let mut panel = panel();
-        panel.set_models(Ok(ModelList {
-            manage: false,
-            models: Vec::new(),
-            current: None,
-            empty: vec![EmptyProvider {
-                provider_id: "dim".into(),
-                provider_name: "Dim OAuth".into(),
-                reason: EmptyReason::Unavailable { count: 3 },
-            }],
-            limits: vec![NeedsLimitsProvider {
-                provider_id: "dim".into(),
-                provider_name: "Dim OAuth".into(),
-                count: 3,
-                candidates: Vec::new(),
-            }],
-        }));
+    fn tab_moves_between_sections_and_follows_the_focus() {
+        let mut panel = managed();
+        policy(&mut panel);
+        assert!(drawn(&panel).contains("←/→ effort"), "{}", drawn(&panel));
+        assert_eq!(panel.handle_key(key_of(KeyCode::Tab)), Effect::None);
+        let screen = drawn(&panel);
+        assert!(screen.contains("Enter change"), "{screen}");
+        assert!(!screen.contains("←/→ effort"), "{screen}");
+        assert!(matches!(
+            panel.handle_key(key_of(KeyCode::Enter)),
+            Effect::None
+        ));
+        assert!(drawn(&panel).contains("Agent choice (default)"));
+        assert_eq!(panel.handle_key(key_of(KeyCode::Esc)), Effect::None);
         let screen = drawn(&panel);
         assert!(
-            screen.contains("Dim OAuth: 3 models need a window"),
-            "{screen}"
+            screen.contains("Enter change"),
+            "the policy stays focused: {screen}"
         );
-        assert!(screen.contains("dimcode models dim"), "{screen}");
-        assert!(!screen.contains("models unavailable"), "{screen}");
+        assert_eq!(panel.handle_key(key_of(KeyCode::Tab)), Effect::None);
+        assert!(drawn(&panel).contains("Enter manage"), "{}", drawn(&panel));
+        assert_eq!(panel.handle_key(key_of(KeyCode::Tab)), Effect::None);
+        assert!(drawn(&panel).contains("←/→ effort"), "{}", drawn(&panel));
+        assert_eq!(panel.handle_key(key_of(KeyCode::BackTab)), Effect::None);
+        assert!(drawn(&panel).contains("Enter manage"), "{}", drawn(&panel));
     }
 
-    /// Each Provider offers its own edit row, after its first block, and
-    /// picking one asks for that Provider's area; a daemon without
-    /// `provider.management` offers none.
+    /// The search filters candidates only: with no match, the policy and
+    /// management sections stay where they were.
     #[test]
-    fn each_provider_offers_edit_models_with_its_own_row() {
-        let mut panel = ModelsPanel::new();
-        panel.set_models(Ok(ModelList {
-            manage: true,
-            models: vec![
-                item_for("dim", "Dim OAuth", "flash", &[], None, None),
-                item_for("other", "Other", "plain", &[], None, None),
-            ],
-            current: None,
-            empty: vec![EmptyProvider {
-                provider_id: "third".into(),
-                provider_name: "Third".into(),
-                reason: EmptyReason::NoModels { listable: false },
-            }],
-            limits: Vec::new(),
-        }));
+    fn a_filtered_candidate_list_keeps_the_other_sections() {
+        let mut panel = managed();
+        policy(&mut panel);
+        panel.paste("no such model");
         let screen = drawn(&panel);
-        assert_eq!(screen.matches("Edit models").count(), 3, "{screen}");
-        for text in ["Dim OAuth  dim", "Other  other", "Third  third"] {
-            assert!(screen.contains(text), "{text}: {screen}");
-        }
-        // The rows follow their Provider's first block: flash, its edit row,
-        // plain, its edit row.
+        assert!(screen.contains("No matching models."), "{screen}");
+        assert!(
+            !screen.contains("Selected:"),
+            "no selected model, so no summary: {screen}"
+        );
+        assert!(screen.contains("Subagent models"), "{screen}");
+        assert!(screen.contains("Agent choice"), "{screen}");
+        assert!(screen.contains("Manage models"), "{screen}");
+    }
+
+    /// The management entry opens the Provider list; the Providers with no
+    /// selectable model are reachable, and their state is the row's detail.
+    #[test]
+    fn manage_models_lists_every_provider_with_its_state() {
+        let mut panel = managed();
+        policy(&mut panel);
+        panel.handle_key(key_of(KeyCode::Tab));
+        panel.handle_key(key_of(KeyCode::Tab));
+        assert_eq!(panel.handle_key(key_of(KeyCode::Enter)), Effect::None);
+        let screen = drawn(&panel);
+        assert!(screen.contains("Dim OAuth"), "{screen}");
+        assert!(screen.contains("Other"), "{screen}");
+        assert!(screen.contains("Third"), "{screen}");
+        assert!(screen.contains("ready"), "{screen}");
+        assert!(screen.contains("2 with missing limits"), "{screen}");
+        assert!(screen.contains("no models"), "{screen}");
+        assert!(!screen.contains("dimcode models other"), "{screen}");
         panel.handle_key(key_of(KeyCode::Down));
-        match panel.handle_key(key_of(KeyCode::Enter)) {
+        let screen = drawn(&panel);
+        assert!(screen.contains("dimcode models other"), "{screen}");
+        panel.handle_key(key_of(KeyCode::Up));
+        assert!(matches!(
+            panel.handle_key(key_of(KeyCode::Enter)),
             Effect::OpenArea {
-                area: Area::Models { provider_id },
+                area: Area::Models { ref provider_id },
                 note: None,
-            } => {
-                assert_eq!(provider_id, "dim");
-            }
-            _ => panic!("expected the Provider's area"),
-        }
+            } if provider_id == "dim"
+        ));
+    }
 
-        // Without `provider.management`, no Provider offers the row.
+    /// A daemon without `provider.management` offers no management action,
+    /// while the read-only diagnostics and their recovery guidance stay.
+    #[test]
+    fn an_unmanaged_daemon_keeps_the_read_only_diagnostics() {
         let mut panel = ModelsPanel::new();
         panel.set_models(Ok(ModelList {
             manage: false,
             models: vec![item_for("dim", "Dim OAuth", "flash", &[], None, None)],
             current: None,
-            empty: Vec::new(),
+            empty: vec![EmptyProvider {
+                provider_id: "third".into(),
+                provider_name: "Third".into(),
+                reason: EmptyReason::Unreadable,
+            }],
             limits: Vec::new(),
         }));
         let screen = drawn(&panel);
-        assert!(!screen.contains("Edit models"), "{screen}");
+        assert!(screen.contains("Model management"), "{screen}");
+        assert!(screen.contains("Third: catalog unreadable"), "{screen}");
+        assert!(!screen.contains("Manage models"), "{screen}");
+        assert_eq!(panel.handle_key(key_of(KeyCode::Tab)), Effect::None);
+        assert!(drawn(&panel).contains("←/→ effort"), "{}", drawn(&panel));
+    }
+
+    /// The fixed-model picker is candidate rows only: no management action,
+    /// no diagnostics.
+    #[test]
+    fn the_fixed_model_picker_holds_candidates_only() {
+        let mut panel = managed();
+        policy(&mut panel);
+        panel.handle_key(key_of(KeyCode::Tab));
+        panel.handle_key(key_of(KeyCode::Enter));
+        panel.handle_key(key_of(KeyCode::Down));
+        panel.handle_key(key_of(KeyCode::Down));
+        assert_eq!(panel.handle_key(key_of(KeyCode::Enter)), Effect::None);
+        let screen = drawn(&panel);
+        assert!(screen.contains("Fixed subagent model"), "{screen}");
+        assert!(screen.contains("Dim OAuth / flash"), "{screen}");
+        assert!(!screen.contains("need a window"), "{screen}");
+        assert!(!screen.contains("unreadable"), "{screen}");
+        assert!(!screen.contains("Manage models"), "{screen}");
+    }
+
+    /// Escape from a child page returns one level and restores the query,
+    /// selection and list position it had.
+    #[test]
+    fn returning_from_a_child_page_restores_the_candidate_list() {
+        let mut panel = managed();
+        policy(&mut panel);
+        panel.paste("plain");
+        panel.handle_key(key_of(KeyCode::Down));
+        let before = drawn(&panel);
+        assert!(before.contains("> plain"), "{before}");
+        panel.handle_key(key_of(KeyCode::Tab));
+        panel.handle_key(key_of(KeyCode::Enter));
+        assert!(drawn(&panel).contains("Agent choice (default)"));
+        assert_eq!(panel.handle_key(key_of(KeyCode::Esc)), Effect::None);
+        let after = drawn(&panel);
+        assert!(after.contains("> plain"), "{after}");
+        assert!(after.contains("Enter change"), "{after}");
+        assert!(after.contains("Other / plain"), "{after}");
+    }
+
+    /// The policy section is absent until the daemon reports the policy, and
+    /// when a saved policy comes back the panel focuses it.
+    #[test]
+    fn the_policy_section_follows_the_daemon_and_a_save_focuses_it() {
+        let mut panel = managed();
+        let screen = drawn(&panel);
+        assert!(!screen.contains("Subagent models"), "{screen}");
+        panel.handle_key(key_of(KeyCode::Tab));
+        assert!(drawn(&panel).contains("Enter manage"));
+        policy(&mut panel);
+        panel.set_policy(ModelPolicyUpdate::Read {
+            revision: "2".into(),
+            policy: SubagentModelPolicy::Inherit,
+            saved: true,
+        });
+        let screen = drawn(&panel);
+        assert!(screen.contains("Inherit requesting branch"), "{screen}");
+        assert!(screen.contains("Enter change"), "{screen}");
+    }
+
+    /// At the 15 rows an 80x24 scrollback session gives the dialog, the
+    /// compact footer keeps all three sections, the selected summary and a
+    /// viewport of three candidates.
+    #[test]
+    fn a_short_dialog_keeps_every_section_and_the_summary() {
+        let mut panel = ModelsPanel::new();
+        panel.set_models(Ok(ModelList {
+            manage: true,
+            models: (1..=10)
+                .map(|index| {
+                    item(
+                        &format!("model-{index:02}"),
+                        &["low", "high"],
+                        None,
+                        Some("low"),
+                    )
+                })
+                .collect(),
+            current: Some(("dim".into(), "model-01".into())),
+            empty: Vec::new(),
+            limits: Vec::new(),
+        }));
+        policy(&mut panel);
+        let rows = panel.render(
+            80,
+            15,
+            &terminal_palette(ColorMode::TrueColor, Appearance::Dark),
+        );
+        let screen = crate::ui::render::panel::strip_escapes(&rows.join("\n"));
+        assert!(rows.len() <= 15, "{screen}");
+        assert!(screen.contains("Conversation model"), "{screen}");
+        assert!(screen.contains("model-01"), "{screen}");
+        assert!(screen.contains("model-02"), "{screen}");
+        assert!(screen.contains("model-03"), "{screen}");
+        assert!(screen.contains("Selected:"), "{screen}");
+        assert!(screen.contains("Subagent models"), "{screen}");
+        assert!(screen.contains("Agent choice"), "{screen}");
+        assert!(screen.contains("Model management"), "{screen}");
+        assert!(screen.contains("Manage models"), "{screen}");
+    }
+
+    /// A terminal too short for the titles keeps the focused section and the
+    /// diagnostics; Tab still changes what is shown.
+    #[test]
+    fn the_shortest_dialog_shows_the_focused_section() {
+        let mut panel = managed();
+        policy(&mut panel);
+        let screen = |panel: &ModelsPanel| {
+            let rows = panel.render(
+                80,
+                7,
+                &terminal_palette(ColorMode::TrueColor, Appearance::Dark),
+            );
+            assert!(rows.len() <= 7, "{}", rows.join("\n"));
+            crate::ui::render::panel::strip_escapes(&rows.join("\n"))
+        };
+        let models = screen(&panel);
+        assert!(models.contains("Dim OAuth / flash"), "{models}");
+        assert!(
+            models.contains("2 with missing limits"),
+            "the diagnostics stay: {models}"
+        );
+        assert!(models.contains("Enter select + default"), "{models}");
+        assert!(!models.contains("Manage models"), "{models}");
+
+        panel.handle_key(key_of(KeyCode::Tab));
+        let policy_view = screen(&panel);
+        assert!(policy_view.contains("Agent choice"), "{policy_view}");
+        assert!(!policy_view.contains("Manage models"), "{policy_view}");
+        assert!(policy_view.contains("Enter change"), "{policy_view}");
+
+        panel.handle_key(key_of(KeyCode::Tab));
+        let management = screen(&panel);
+        assert!(management.contains("Manage models"), "{management}");
+        assert!(!management.contains("Agent choice"), "{management}");
+        assert!(management.contains("Enter manage"), "{management}");
     }
 }

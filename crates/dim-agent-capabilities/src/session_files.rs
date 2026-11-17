@@ -147,7 +147,7 @@ fn check_image_budget(bytes: usize) -> Result<(), HostError> {
     Ok(())
 }
 
-async fn resolve(
+pub(crate) async fn resolve(
     request: &ModelRequest,
     files: Option<&SessionFiles>,
     source: &ImageSource,

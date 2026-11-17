@@ -106,6 +106,19 @@ export interface AuxiliaryModel {
   /** Resolving or rejecting cancelled cancels and joins the original model call. */
   complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
 }
+
+export type ModalityTargetReply =
+  { status: 'resolved'; target: ModelId } |
+  { status: 'unavailable'; reasons: { dimension: string; detail: string }[] };
+export interface ModalityTargetError extends Error {
+  code: 'invalid_params' | 'modality_unknown_operation' | 'modality_failed' |
+    'operation_interrupted' | 'service_reloading';
+}
+/** Process service `modalityTargets`; current operation selection, without credentials or execution. */
+export interface ModalityTargets {
+  resolve(request: { category: string; operation: string; model?: ModelId | null }): Promise<ModalityTargetReply>;
+}
+
 export type PermissionPreset = 'read-only' | 'workspace-write' | 'full-access';
 export interface PermissionPolicy {
   preset: PermissionPreset;
@@ -510,6 +523,17 @@ export interface ManagedSearch {
   search(request: { query: string; count: number }): Promise<{
     results: { title: string; url: string; snippet: string; publishedAt?: string }[]
   }>
+}
+
+/** The existing user override; null keeps the consumer's factory or built-in text. */
+export interface BasePromptSettingsHost {
+  base(request: Record<string, never>): Promise<string | null>;
+}
+export interface SkillsInstructionsSettingsHost {
+  instructions(request: Record<string, never>): Promise<string | null>;
+}
+export interface SummaryPromptSettingsHost {
+  systemPrompt(request: Record<string, never>): Promise<string | null>;
 }
 
 /** The ToolRegistry owner's read-only source status view. */

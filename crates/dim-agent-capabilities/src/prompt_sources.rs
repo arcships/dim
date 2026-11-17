@@ -359,6 +359,33 @@ pub trait BasePromptSettings: Send + Sync + 'static {
 }
 
 pub struct BasePromptSettingsHost(pub Arc<dyn BasePromptSettings>);
+
+impl rutis_bridge::session::HostDispatch for BasePromptSettingsHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"base":"async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        const NAME: &str = "basePromptSettingsHost";
+        if method != "base" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(NAME, args)?;
+        let owner = self.0.clone();
+        crate::port_faces::serving(NAME, async move {
+            let cancel = CancellationToken::new();
+            let _abandoned = cancel.clone().drop_guard();
+            owner
+                .base(cancel)
+                .await
+                .map_err(crate::host::ModelPortError::from)
+        })
+    }
+}
 /// The Session's reply language, when the operator selected one: the live
 /// value the `dim/language` source reads and the App Server's
 /// `session.language.*` methods change. It starts from `SessionConfig.language`

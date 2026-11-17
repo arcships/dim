@@ -5,8 +5,7 @@ The TimelineTree plugin registers TimelineTree in every Session and TreeTimeline
 The single-line display read also belongs to TimelineTree. The directory itself
 is read without history I/O; display details are requested separately. It reads the
 creation prompt/source and end fact by position only when detail is requested. It omits the
-optional inherited user-message count instead of querying the historical prefix. Ended prefixes use the tree's stored branch chain;
-this does not widen the public own-line-only `TreeCommands.query` contract.
+optional inherited user-message count instead of querying the historical prefix. Ended prefixes use the tree's stored branch chain.
 Restore selects lifecycle kind/positions first. Closed lines retain directory metadata without
 reading creation/end bodies; unfinished closes read the terminal data they must settle, and
 only active lines read their opening source. Parent-child adjacency orders the directory once.
@@ -47,9 +46,7 @@ that ended writes nothing and answers `branch_ended`. `info` answers for an
 ended line too, and `page` reads an open or ended line from the store at its
 head, rebuilding stored request bodies. `batch_end`
 checks a cursor against that line's atomic batch boundaries.
-`query` selects one line's own facts: it forwards to the
-Timeline while open and uses the ended head after closing, with the property
-query's fixed cutoff, selection and continuation. It rejects chain scope.
+`query` selects a line's own facts or its inherited chain: it forwards to the Timeline while open and uses the ended head and retained directory after closing, with the property query's fixed cutoff, selection and continuation. Chain scope accepts only published facts (`include_publishing: false`), bounds every ancestor at its inherited cut and never reaches siblings or later parent facts. Continuation retains the original cutoff and query, including when a page ends in an ancestor. Own-line queries retain their existing publishing-tail contract.
 
 A child's opening input
 is the identity block, and when the prefix it inherits holds a live parent

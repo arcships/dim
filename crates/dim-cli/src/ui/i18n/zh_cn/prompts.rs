@@ -26,6 +26,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "{latest} 已发布（当前 {current}）。"
         }
         "To update, run: {command}" => "升级请执行：{command}",
+        "To update, exit every client and stop the server, then run {command}" => {
+            "要升级，请退出所有客户端并停止服务器，然后运行 {command}"
+        }
         "Skip this version" => "跳过此版本",
         "Skipped {version}." => "已跳过 {version}。",
         "Close" => "关闭",

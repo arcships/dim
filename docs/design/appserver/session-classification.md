@@ -162,8 +162,10 @@ Each filter selects its own class and no other. Over the five origins:
 `withAcpSessions` composes identically and independently. `automation` is not a sub-value released by `withInternal`:
 `withInternal: true` does not list `automation` rows, and `withAutomationSessions: true` does not list members or stages.
 
-`query`, `cwd`, `withPreview` and the order are unchanged and never read the origin; the three filters are additional
-conditions of the same query, so they compose with a search and apply before the same page boundary.
+`query`, `cwd` and the order are unchanged. The three filters are additional conditions of the same query, so they
+compose with a search and apply before the same page boundary. The catalog's optional
+[`withAcpHistory`](session-catalog.md#31-sessioncatalog) lets a client make ACP visibility independent of preview and
+closed state without changing how other classes are filtered.
 
 A client that only wants to page every Session sends all three filters `true`. A daemon that does not advertise
 `session.catalog.origins` lists every Session as before, which is what a client of that daemon shows.
@@ -202,6 +204,8 @@ A filtered page adds no read and decodes nothing:
 - **Preference.** "Show ACP sessions" is a persisted client preference, off by default, saved with the client's other
   interface switches (in the CLI, `config.json` through `/settings`). It is not a daemon setting and not stored on a
   Session; a client that migrates its own legacy settings carries its own value over, and the default otherwise.
+  When enabled, Session state does not hide ACP rows; when disabled, no ACP row is shown. The CLI's interaction
+  and handling of closed rows are owned by [the resume picker](../cli-commands.md#the-resume-picker).
 - **Labels.** A listed row is labelled by origin: a conversation, an ACP Session, an internal Session. An internal row a
   client shows carries its parent link when `parentSessionId` is present. The label is separate from the row's text,
   which is the stored title when there is one, else the preview, else the Session id; a repeated delegation prompt

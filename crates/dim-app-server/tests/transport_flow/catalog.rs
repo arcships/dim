@@ -1150,6 +1150,107 @@ async fn catalog_activity_time_follows_user_activity_not_housekeeping() {
     server.join().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn catalog_can_list_acp_history_independently_of_closed_and_preview_state() {
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let workspace = store.0.join("needle");
+    std::fs::create_dir(&workspace).unwrap();
+    let mut ids = std::collections::BTreeMap::new();
+    for (name, origin, preview, closed) in [
+        ("chat", "client", true, false),
+        ("closed-chat", "client", true, true),
+        ("empty-chat", "client", false, false),
+        ("acp", "acp", true, false),
+        ("closed-acp", "acp", true, true),
+        ("empty-acp", "acp", false, false),
+        ("closed-empty-acp", "acp", false, true),
+        ("other-workspace", "acp", true, true),
+    ] {
+        let cwd = if name == "other-workspace" {
+            &store.0
+        } else {
+            &workspace
+        };
+        let created = client
+            .rpc(
+                "session.create",
+                json!({"cwd":cwd,"tools":[],"origin":origin}),
+            )
+            .await;
+        assert_ok(&created);
+        let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        if preview {
+            super::deletion::turn(&mut client, &id, name).await;
+        }
+        if closed {
+            assert_ok(&client.rpc("session.close", json!({"sessionId":id})).await);
+        }
+        ids.insert(name, id);
+    }
+    for (history, acp, expected) in [
+        (false, true, vec!["chat", "acp"]),
+        (true, false, vec!["chat"]),
+        (
+            true,
+            true,
+            vec!["chat", "acp", "closed-acp", "empty-acp", "closed-empty-acp"],
+        ),
+    ] {
+        let mut request = json!({"limit":1,"cwd":workspace,"query":"needle","withPreview":true,
+            "withAcpSessions":acp,"withAcpHistory":history});
+        let mut found = std::collections::BTreeSet::new();
+        loop {
+            let page = client.rpc("session.catalog", request.clone()).await;
+            assert_ok(&page);
+            let rows = page["result"]["sessions"].as_array().unwrap();
+            assert_eq!(rows.len(), 1, "filters apply before each page: {page}");
+            for row in rows {
+                let id = row["sessionId"].as_str().unwrap();
+                assert!(
+                    found.insert(id.to_owned()),
+                    "no duplicate across pages: {id}"
+                );
+                let name = ids
+                    .iter()
+                    .find(|(_, value)| value.as_str() == id)
+                    .unwrap()
+                    .0;
+                assert_eq!(row["closed"], name.starts_with("closed-"));
+            }
+            let Some(cursor) = page["result"]["nextCursor"].as_str() else {
+                break;
+            };
+            if history && acp {
+                let mut changed = request.clone();
+                changed["cursor"] = cursor.into();
+                changed["withAcpHistory"] = json!(false);
+                let refused = client.rpc("session.catalog", changed).await;
+                assert_eq!(refused["error"]["code"], -32602, "{refused}");
+            }
+            request["cursor"] = cursor.into();
+        }
+        assert_eq!(
+            found,
+            expected.iter().map(|name| ids[name].clone()).collect()
+        );
+    }
+    let summaries = client.rpc("session.summaries", json!({})).await;
+    assert_ok(&summaries);
+    assert!(
+        !summaries["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["sessionId"] == ids["closed-acp"])
+    );
+    drop(client);
+    drop(agent);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// #1171: a Session this daemon closed stays out of the catalog until the
 /// read asks for it; `includeClosed` lists it marked `closed`, an unknown
 /// parameter is still refused, and a restart forgets the close, so the

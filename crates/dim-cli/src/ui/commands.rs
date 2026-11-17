@@ -320,6 +320,12 @@ pub const COMMANDS: &[Command] = &[
         Needs::Nothing,
     ),
     slash("keys", "show the key bindings", &[], Needs::Nothing),
+    slash(
+        "update",
+        "show the command that updates this installation",
+        &[],
+        Needs::Nothing,
+    ),
     Command {
         requires_exact_name: true,
         ..slash("report", "report the current session", &[], Needs::Nothing)

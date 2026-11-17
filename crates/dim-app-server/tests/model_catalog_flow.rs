@@ -403,6 +403,42 @@ fn a_plan_provider_is_marked_and_its_api_entry_is_not() {
     }
 }
 
+/// Alibaba sells Token Plan once per region, each with its own endpoint and API
+/// keys, so the mainland plan is a provider of its own beside the international
+/// one: both are API-key plans of the same vendor, and neither answers for the
+/// other's endpoint.
+#[test]
+fn the_mainland_token_plan_is_its_own_plan_provider_beside_the_international_one() {
+    let catalog = BundledCatalog::load().unwrap();
+    for (provider_id, display_name, base_url) in [
+        (
+            "bailian-token-plan",
+            "Alibaba Cloud Model Studio Token Plan",
+            "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        ),
+        (
+            "qwencloud-token-plan",
+            "QwenCloud Token Plan",
+            "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        ),
+    ] {
+        let provider = catalog.provider(provider_id).expect(provider_id);
+        assert_eq!(provider.display_name, display_name);
+        assert_eq!(provider.default_base_url.as_deref(), Some(base_url));
+        assert_eq!(provider.auth.kind, "api_key", "{provider_id}");
+        assert_eq!(catalog.is_plan(provider_id), Some(true), "{provider_id}");
+        assert_eq!(
+            catalog.vendor_namespace(provider_id),
+            Some("alibaba"),
+            "{provider_id}"
+        );
+        assert!(
+            !provider.models.is_empty(),
+            "{provider_id} is a plan with no declarations"
+        );
+    }
+}
+
 /// The ids the shipped catalog answers where the catalog's own metadata says
 /// they belong: a model a plan resells at the vendor row that declares it, a
 /// model only the user's list declares at that declaration, a vendor's own id

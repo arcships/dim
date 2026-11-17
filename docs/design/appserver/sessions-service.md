@@ -478,9 +478,9 @@ a caller keeps its records and asks again later.
 
 ### 6.10 pending
 
-`{sessionId, branchId, inputId}` → `{pending}`; errors `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`.
+`{sessionId, branchId, inputId}` → `{pending}`; errors `rejected`, `session_closed`, `branch_missing`, `branch_ended`, `reloading`, `failed`.
 
-The read answers whether the input is still pending on that branch under the rule of [session access §2](../contracts/session-access.md#2-data-and-state): pending from its `input/message` until `input/applied` followed by `input/consumed`, or `input/deleted`, references it. The branch's own InputQueue holds exactly that set, so the method reads it with `Session::service::<InputQueue>(branch)` — the path `withdraw` uses (§6.6) — and reads no Timeline. It acquires the Session like every method except `launch`, `delete` and `exists`, so an unloaded branch is restored for the answer.
+The read answers whether the input is still pending on that branch under the rule of [session access §2](../contracts/session-access.md#2-data-and-state): pending from its `input/message` until `input/applied` followed by `input/consumed`, or `input/deleted`, references it. The read synchronizes with dispatch at the captured published head as defined in session access §2, then reads the same InputQueue through `Session::service::<InputQueue>(branch)` — the path `withdraw` uses (§6.6). It reads no history and does not wait for turn completion. Dispatch failures return `failed`; branch closure and index reload end the wait with the existing lifecycle errors. It acquires the Session like every method except `launch`, `delete` and `exists`, so an unloaded branch is restored for the answer.
 
 An `inputId` the branch does not hold answers `false`; that covers both an id that was consumed or deleted and one a restart lost. A fixed loop reads this before it delivers its next window, so a round still held behind a running turn defers that window instead of queueing a second one.
 

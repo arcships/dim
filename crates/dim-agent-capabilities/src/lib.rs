@@ -110,7 +110,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<context_preparation::ContextPreparation>(catalog, branch);
     register::<context_usage::ContextUsage>(catalog, branch);
     register::<context_preparation::ConfigurationPublisher>(catalog, branch);
-    register::<model_provider::ModelProvider>(catalog, branch);
     register::<tool_executor::ToolExecutor>(catalog, branch);
     register::<tool_binding::ToolBinding>(catalog, branch);
     register::<permission::Permission>(catalog, branch);

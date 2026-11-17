@@ -156,6 +156,24 @@ impl RpcError {
 }
 impl From<AgentError> for RpcError {
     fn from(error: AgentError) -> Self {
+        // A capability's refusal reaches its caller as `Framework` when a
+        // `rutis::Result` wrapped the `AgentError` as `PluginFailed` and a
+        // host boundary read it back as a framework fault. The variant is
+        // still there, in the wrapped source, and it is the caller's only
+        // way to learn that a refusal can be corrected; the RPC mapping is
+        // where it would otherwise be lost. Only `PluginFailed` carrying an
+        // `AgentError` unwraps: every other `Framework` stays a framework
+        // fault, so the fallback below keeps its -32603 meaning.
+        let error = match &error {
+            AgentError::Framework(kind) => match kind.as_ref() {
+                rutis::host::ErrorKind::PluginFailed(source) => source
+                    .downcast_ref::<AgentError>()
+                    .cloned()
+                    .unwrap_or(error),
+                _ => error,
+            },
+            _ => error,
+        };
         let variant = match &error {
             AgentError::InvalidInput(_) => "InvalidInput",
             AgentError::UnknownBranch(_) => "UnknownBranch",

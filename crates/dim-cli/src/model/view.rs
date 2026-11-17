@@ -62,7 +62,7 @@ pub struct ViewRow {
     /// The progress-only thinking ID replaced by the first durable event.
     pub provisional_id: Option<String>,
     pub kind: RowKind,
-    /// Presentation of an image message; `text` remains editable text only.
+    /// Display-only message text or a bounded original thinking excerpt.
     pub display: Option<String>,
     pub text: String,
     pub streaming: bool,

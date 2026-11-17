@@ -79,6 +79,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [客户端 UI 扩展](design/client-ui-extensions.md)：框架无关的面板挂载、公开服务、内容生命周期与展示资源（#1136）
 - [Native CLI contract](../crates/dim-cli/README.md)
 - [CLI commands, conversation export and JSONL execution](design/cli-commands.md)（[中文](zh/design/cli-commands.md)）
+- [TUI 思考摘录与正文收起](design/tui-thinking-excerpts.md)（中文，#1658）：有界原文摘取、刷新合并、正文单击与文本选择边界
 - [CLI attachment input and paste handling](design/cli-attachment-input.md)
 - [Session and error reports](design/plugins/Report.md) ([#1319](https://github.com/arcships/dim/issues/1319))
 - [Read-only member conversations in the CLI](design/member-conversation.md) (#300, #333, #324, #263)

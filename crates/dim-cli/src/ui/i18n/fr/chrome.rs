@@ -374,9 +374,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "quitter",
 
         // composer/palette.rs
-        "Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter choisir + défaut · ←/→ effort · Ctrl+B/F curseur · Ctrl+X oublier · Esc effacer/fermer"
-        }
         "Default for new sessions in {folder}: {model}" => {
             "Modèle par défaut des nouvelles sessions dans {folder} : {model}"
         }
@@ -525,6 +522,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "S'applique aux nouveaux membres, agents nommés inclus."
         }
         "Existing members keep their models." => "Les membres existants gardent leur modèle.",
+        "Conversation model" => "Modèle de conversation",
+        "Selected: {model}" => "Sélectionné : {model}",
+        "Model management" => "Gestion des modèles",
+        "Manage models" => "Gérer les modèles",
+        "1 provider" => "1 fournisseur",
+        "{count} providers" => "{count} fournisseurs",
+        "ready" => "prêt",
+        "no models" => "aucun modèle",
+        "catalog unreadable" => "catalogue illisible",
+        "{count} with missing limits" => "{count} sans limites",
+        "{count} unavailable" => "{count} indisponibles",
+        "{count} disabled" => "{count} désactivés",
+        "{count} without models" => "{count} sans modèle",
+        "{count} unreadable" => "{count} illisibles",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} indisponibles, {disabled} désactivés"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter choisir + défaut · ←/→ effort · Tab section · Esc effacer/fermer"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter modifier · Tab section · Esc effacer/fermer"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter gérer · Tab section · Esc effacer/fermer"
+        }
+        "Enter manage · Esc back" => "Enter gérer · Esc retour",
         "unknown" => "inconnu",
         "Subagent model policy saved" => "Politique des sous-agents enregistrée",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -548,6 +572,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         // keys.rs
         "show the key bindings" => "afficher les raccourcis",
+        "show the command that updates this installation" => "afficher la commande de mise à jour",
         "Application keys" => "Raccourcis de l'app",
         "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
             "Enter envoie au repos · Shift+Enter / Alt+Enter / Ctrl+J nouvelle ligne · ↑↓ historique"

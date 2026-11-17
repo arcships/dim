@@ -12,7 +12,7 @@
 //! Settings key when the model is one of its options; options of an operation
 //! no adapter serves are the models Provider declares for that operation id.
 //! `image.understand` is selection only: its consumer is the Session
-//! image-understanding path, which does not read the default yet (§9.4).
+//! `image_understand` tool, which resolves through `modalityTargets` per call.
 //!
 //! The task layer (`modality.task.submit/status/list/wait/cancel/result` and
 //! the `modalityTasks` process service) stores its records and files in
@@ -31,6 +31,7 @@
 mod adapter;
 mod engine;
 mod realtime;
+mod targets;
 pub mod task;
 pub use adapter::{
     AdapterError, AdapterErrorCode, AdapterFuture, AdapterOperation, AdapterOutput,
@@ -69,6 +70,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+pub use targets::{ModalityTargets, TargetError, TargetReply, TargetRequest};
 pub use task::{TaskRecord, TaskState};
 use tokio_util::sync::CancellationToken;
 
@@ -298,15 +300,15 @@ fn declares(operations: &[String], category: &str, operation: &str) -> bool {
 }
 
 /// A display reason, never parsed by a client (Modality A.3).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reason {
-    pub dimension: &'static str,
+    pub dimension: String,
     pub detail: String,
 }
 fn reason(dimension: &'static str, detail: impl Into<String>) -> Reason {
     Reason {
-        dimension,
+        dimension: dimension.into(),
         detail: detail.into(),
     }
 }
@@ -1260,6 +1262,12 @@ impl DynPlugin for ModalityPlugin {
                 cleanup.shutdown().await;
                 Ok(())
             })?;
+            let targets = Arc::new(ModalityTargets::new(shared.clone()));
+            ctx.provide_at(Key::<ModalityTargets>::of(), targets.clone())?;
+            ctx.provide_at(
+                rutis_bridge::session::host_key("modalityTargets"),
+                targets as Arc<dyn rutis_bridge::session::HostDispatch>,
+            )?;
             shared.spawn_scheduler();
             // Startup on every apply (A.6): settle the records this
             // generation cannot continue before the methods are visible.
@@ -1513,6 +1521,7 @@ impl std::fmt::Debug for InstallOptions {
 /// host executable to observe the OCR path.
 pub fn install_with(builder: &mut AgentBuilder, options: InstallOptions) {
     dim_agent_runtime::names::register::<ModalityAdapterService>(builder.catalog_mut(), None);
+    builder.catalog_mut().register_shared("modalityTargets");
     builder.optional_plugin(move |names| {
         Ok(Box::new(ModalityPlugin::new(names, options.clone())?) as Box<dyn DynPlugin>)
     });

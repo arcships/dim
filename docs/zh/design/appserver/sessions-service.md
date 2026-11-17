@@ -317,9 +317,9 @@ Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQu
 
 ### 6.10 pending
 
-`{sessionId, branchId, inputId}` → `{pending}`；错误 `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`。
+`{sessionId, branchId, inputId}` → `{pending}`；错误 `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`failed`。
 
-该读取回答该输入在该分支上是否仍待处理，规则见 [session 访问 §2](../contracts/session-access.md#2-数据与状态)：从 `input/message` 起待处理，直到引用它的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。该分支自己的 InputQueue 恰好持有这个集合，因此本方法用 `Session::service::<InputQueue>(branch)` 读取它——即 `withdraw` 使用的路径（§6.6）——并且不读 Timeline。它像除 `launch`、`delete` 与 `exists` 之外的每个方法一样取得 Session，因此未加载的分支会为这次回答而被恢复。
+该读取回答该输入在该分支上是否仍待处理，规则见 [session 访问 §2](../contracts/session-access.md#2-数据与状态)：从 `input/message` 起待处理，直到引用它的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。本次读取按 session 访问 §2，在捕获的已发布序号处等待分发，然后通过 `Session::service::<InputQueue>(branch)` 读取同一个 InputQueue——即 `withdraw` 使用的路径（§6.6）。它不读取历史，也不等待 turn 结束。分发故障返回 `failed`；分支关闭和索引重载以现有生命周期错误结束等待。它像除 `launch`、`delete` 与 `exists` 之外的每个方法一样取得 Session，因此未加载的分支会为这次回答而被恢复。
 
 分支不持有的 `inputId` 回答 `false`；这既覆盖已被消费或删除的 id，也覆盖重启丢失的 id。固定节奏的 loop 在投递下一个窗口之前读取它，因此仍排在运行中 turn 之后的一轮会推迟该窗口，而不是再排一轮。
 

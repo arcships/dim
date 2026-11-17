@@ -538,7 +538,8 @@ async fn upgrade(
         .on_upgrade(move |socket| async move {
             let tracker = hub.tasks.clone();
             let task = tracker.spawn(async move {
-                run_ws(hub, socket, Entry::Bare).await;
+                let closing = hub.closing();
+                run_ws(hub, socket, Entry::Bare, closing).await;
             });
             let _ = task.await;
         })
@@ -621,26 +622,34 @@ impl Writer {
 #[cfg(any(unix, windows))]
 async fn run_local(hub: Arc<ConnectionHub>, stream: LocalStream) {
     let (read, write) = tokio::io::split(stream);
+    let closing = hub.closing();
     run_connection(
         hub,
         Reader::Local(BufReader::new(read), Vec::new()),
         Writer::Local(write),
         Entry::Local,
+        closing,
     )
     .await;
 }
-pub(crate) async fn run_ws(hub: Arc<ConnectionHub>, socket: WebSocket, entry: Entry) {
+pub(crate) async fn run_ws(
+    hub: Arc<ConnectionHub>,
+    socket: WebSocket,
+    entry: Entry,
+    closing: CancellationToken,
+) {
     let (write, read) = socket.split();
-    run_connection(hub, Reader::Ws(read), Writer::Ws(write), entry).await;
+    run_connection(hub, Reader::Ws(read), Writer::Ws(write), entry, closing).await;
 }
 async fn run_connection(
     hub: Arc<ConnectionHub>,
     mut reader: Reader,
     mut writer: Writer,
     entry: Entry,
+    closing: CancellationToken,
 ) {
     let local = entry == Entry::Local;
-    let (connection, mut outbound) = Connection::new(hub.clone(), entry);
+    let (connection, mut outbound) = Connection::new(hub.clone(), entry, closing);
     let closed = connection.closed.clone();
     let timeout = hub.config().write_timeout;
     let writer_task = tokio::spawn(async move {
@@ -772,6 +781,7 @@ async fn run_connection(
                                                 methods.push("session.catalog.origins");
                                                 methods.push("session.catalog.workspaces");
                                                 methods.push("session.catalog.includeClosed");
+                                                methods.push("session.catalog.acpHistory");
                                                 methods.push("session.catalog.automation");
                                             }
                                             methods

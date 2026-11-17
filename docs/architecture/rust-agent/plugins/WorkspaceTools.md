@@ -229,9 +229,11 @@ it, is refused before it is read.
 HEIC, HEIF and AVIF are refused with the format named; every other binary file
 is refused as before. `read` never decides for the model: the same image block
 goes into the tool result whatever the model, and the stored result holds what
-was sent, the scaled image. ModelProvider turns the image into its text
-placeholder for a model without image input
-([ModelProvider](ModelProvider.md#image-handling)).
+was sent, the scaled image. In every conversational request, ModelProvider
+replaces that image block with its content reference, even for a vision model;
+the stored result stays unchanged. Reference computation and the existing
+placeholders for sources without decodable bytes are owned by
+[Attachments A.1](../../../design/plugins/Attachments.md#a1-image-handling-cli-checks-and-modelprovider).
 
 The model-facing texts and their classes
 ([model prompts §4](../../../design/model-prompts.md#4-protocol-and-policy)):
@@ -454,8 +456,9 @@ animated GIF's first frame, transparent pixels on white, a WebP EXIF chunk
 larger than its file refused, a missing file reported as `file_not_found`, the
 pixel guard before decoding, and the refusals.
 [read_image_flow.rs](../../../../crates/dim-app-server/tests/read_image_flow.rs)
-runs a model's `read` on a PNG: a vision model receives the image block, and a
-model without image input receives the placeholder.
+runs a model's `read` on a PNG. The request-only reference rule for vision and
+text-only models, and preservation of the stored tool result, are covered by
+[host_flows.rs](../../../../crates/dim-agent-capabilities/tests/host_flows.rs).
 
 The App Server's [native execution flow](../../../../crates/dim-app-server/tests/transport_flow/shell_input.rs)
 reads a live capture through C1, holds its real SQLite terminal commit, checks

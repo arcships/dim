@@ -98,6 +98,27 @@ Each owner declares its own port, so a capability depends only on its own text:
 - Reading happens in the Session part's `apply`, so the value is fixed for that Session. Nothing
   rewrites the adopted System prompt of a running conversation.
 
+### 3.1 Data operations
+
+The same three read ports are available to plugins of any language:
+
+| Service | Async operation | Request | Reply |
+| --- | --- | --- | --- |
+| `basePromptSettingsHost` | `base` | `{}` | string or `null` |
+| `skillsInstructionsSettingsHost` | `instructions` | `{}` | string or `null` |
+| `summaryPromptSettingsHost` | `systemPrompt` | `{}` | string or `null` |
+
+Each reply is that port's existing override text; `null` means no user override.
+The ports read through the same PromptSettings owner and source. They add no cache,
+extra source read, configuration field or change to the precedence above.
+
+Errors are `{code, message}`. The product owner reports `failed` for a settings read
+error, including a settings read ended by cancellation, retaining its existing error
+text. Malformed wire requests are `invalid_request`. Dropping a wire call cancels
+its read token and abandons its reply; this does not introduce a new product error
+code. Native callers retain their existing cancellation token and error behavior;
+a failed port read does not change the source.
+
 ## 4. Client entry
 
 The settings methods are the primitive: `settings.read` and `settings.update` with
@@ -199,4 +220,6 @@ pub struct SummaryPromptSettingsHost(pub Arc<dyn SummaryPromptSettings>);
 ```
 
 The App Server row registers the `prompts` declaration and provides the three hosts from one
-`PromptDocument`; each host reads only its field.
+`PromptDocument`; each host reads only its field. Each binding is provided at its Rust type key and
+`host_key` for its service name. Its dispatcher calls the same owner method; native
+callers invoke that method directly without JSON conversion.

@@ -164,7 +164,7 @@ sequenceDiagram
 
 `dimcode modality` 和 Web 设置页调用 `modality.capabilities`，返回每个类别与操作及其可用性原因、可选选项、已持久化的默认值，以及任务或使用方现在会使用的模型。不隐藏任何内容，也没有 `--all`。每个不可用的类别或操作都按维度显示原因，例如“not in this build”“Apple Vision needs macOS 12 or later on Apple Silicon”“the PP-OCR plugin is not running”“the PP-OCR plugin needs an update”“no adapter”“not configured”“no adapter for the configured model”（决策 E16）。最后一项由 Modality 已采纳的业务配置（`modality` 设置文档中的默认值或显式模型，及其 Provider 连接）对照 Modality 能解析到的适配器得出（§9.1）。
 
-图像操作是第一个实现切片，产品构建现在为该切片的一部分内置了适配器：内置 `dim-modality-aimux` 适配器（A.2）经 aimux 服务 `generate`，并在提供方的包读取编辑输入文件时服务 `edit`，而 `enhance` 仍是没有任何构建服务的适配器操作，因此以 `adapter` 原因报告 `unavailable`。可用性是运行时的属性，并按模型回答：安装后 `available` 即为 true，具体服务什么由 `operations` 针对任务所指的模型决定。内置家族名副本为 A.2 列出的内建目录提供方回答图像 `operations`。自建提供方的 UUID 没有专属副本时，仍会解析到家族名副本；其图像模型报 `adapter` 原因是因为该副本的 `operations` 不为它们返回图像操作，而不是没有绑定。已解析的适配器若不为 Provider 列出的任何模型服务，不算缺少适配器，并如实说明：图像操作仍用 `adapter` 维度，报“the adapter serves no image model Provider lists”，其选项是已声明的模型——与任何没有适配器服务的操作相同。`understand` 能解析并显示其默认值，但在 §9.4 落地前没有运行时使用方。可配置性是设置的属性：只要模型在该操作的可选选项中，`configure` 就接受任何有默认 key 的 A.1 操作的默认值，因此默认值可以在运行时落地之前持久化；本构建不能运行的操作仍保持 `available: false` 及其 `build` 或 `adapter` 原因。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作，端到端流程则让内置适配器对着桩提供方运行。
+图像操作是第一个实现切片，产品构建现在为该切片的一部分内置了适配器：内置 `dim-modality-aimux` 适配器（A.2）经 aimux 服务 `generate`，并在提供方的包读取编辑输入文件时服务 `edit`，而 `enhance` 仍是没有任何构建服务的适配器操作，因此以 `adapter` 原因报告 `unavailable`。可用性是运行时的属性，并按模型回答：安装后 `available` 即为 true，具体服务什么由 `operations` 针对任务所指的模型决定。内置家族名副本为 A.2 列出的内建目录提供方回答图像 `operations`。自建提供方的 UUID 没有专属副本时，仍会解析到家族名副本；其图像模型报 `adapter` 原因是因为该副本的 `operations` 不为它们返回图像操作，而不是没有绑定。已解析的适配器若不为 Provider 列出的任何模型服务，不算缺少适配器，并如实说明：图像操作仍用 `adapter` 维度，报“the adapter serves no image model Provider lists”，其选项是已声明的模型——与任何没有适配器服务的操作相同。`understand` 为 Session 使用方解析目标（§9.4）。可配置性是设置的属性：只要模型在该操作的可选选项中，`configure` 就接受任何有默认 key 的 A.1 操作的默认值，因此默认值可以在运行时落地之前持久化；本构建不能运行的操作仍保持 `available: false` 及其 `build` 或 `adapter` 原因。流程测试配置 fixture 适配器服务它们所覆盖的适配器操作，端到端流程则让内置适配器对着桩提供方运行。
 
 Realtime 选项跟随 Provider 的传输声明，不经解析到的适配器的 `operations` 收窄。因此，不服务 realtime 的提供方专属副本可能让声明过的模型仍出现在选项中，但 `realtime.open` 以 `unavailable` 拒绝；已存在的提供方副本缺少某个操作时，不会重试家族名副本。
 
@@ -172,7 +172,7 @@ Realtime 选项跟随 Provider 的传输声明，不经解析到的适配器的 
 
 任务按此顺序解析模型：请求中的显式 `model`；该操作 key 已持久化的默认值；自动解析——当 Provider 的全局默认选择可选且服务该操作时用它，否则用 Provider 可选模型读取顺序中第一个可选的、服务该操作的模型。显式模型或已持久化的默认值不再可选时任务失败（`model_unavailable` 或 `default_unavailable`）；解析出的模型没有可用适配器服务时以 `unavailable` 失败。Modality 从不替换成别的模型。只有默认值缺失时才进入自动解析，因此清除默认值即恢复自动解析。解析出的模型写入任务记录，之后默认值变化不影响它。
 
-`image.understand` 使用同样的解析但没有任务：Modality 解析其默认值并在 `modality.capabilities` 中暴露，Session 的图像理解路径（附件与 `read`）是使用方。该路径尚未读取该默认值；§9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。
+`image.understand` 使用同样的解析但没有任务：Modality 经 `modality.capabilities` 与 `modalityTargets` 暴露生效目标。Session 使用方是 [ImageUnderstanding](../../../design/plugins/ImageUnderstanding.md)，它每次工具调用时解析目标（§9.4），独立于对话模型。
 
 `modality` 来源只有用户作用域：操作默认值属于用户，不属于项目。来源缺失时读为空默认值。这些方法是对 protocol-v3 的增量管理方法；旧 daemon 返回 `unknown_method`，客户端把该类别显示为不可用。旧产品的 `modality-settings.json` 不导入；将来的迁移是另一项改动。Provider 记录、模型描述符与聊天默认选择不变；Modality 不存 Provider 或 Session 状态，也不写 Timeline 事件。
 
@@ -304,10 +304,10 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 
 ### 9.4 Session 图像理解使用方
 
-- **问题。** Modality 解析 `modality.image.understand`，但 Session 的图像理解路径（附件与 `read`）把图像发给 Session 采纳的模型；没有任何东西读取 Modality 的默认值。在该需求落地前，理解这一行只能解析与显示。
-- **现有机制。** `read` 把图像块返回给 Session 模型，`session.model.update` 与 Prompt 采纳的配置选择该模型。Session 路径到进程所有者默认值之间没有输入路径或类型化查找。在浏览器里选择正是该需求要排除的仅浏览器默认值。
+- **问题。** Session 图像理解使用方需要 Modality 当前的操作目标，独立于对话模型。
+- **现有机制。** `session.model.update` 与 Prompt 采纳的配置选择对话模型，而非图像理解目标。在浏览器里选择正是该需求要排除的仅浏览器默认值。
 - **需要的能力。** Session 图像理解路径经 Modality 的 `modality.image.understand` 默认值（显式 → 默认值 → 自动）解析其模型，或等价的类型化交接。该交接是一次类型化读取：进程服务 `modalityTargets` 回答某个操作当前解析到的目标，或它不可用的原因，采用与 `modality.capabilities` 相同的优先级与原因措辞，按调用读取，既不门控也不重载 Modality，也不返回凭据。Modality 拥有并提供这次读取（它是 Modality 作用域的进程服务）；使用方是 [ImageUnderstanding](../../../design/plugins/ImageUnderstanding.md)，它拥有工具及其请求。
-- **顺序影响。** 每次工具调用；不新增事件类型（普通工具调用与结果事实）；在该需求落地前已有 Session 保持其行为；不重载。
+- **顺序影响。** 每次工具调用；不新增事件类型（普通工具调用与结果事实）；不重载。
 - **所有者/issue。** Modality 提供 `modalityTargets`；Agent/Prompt 所有者拥有使用方，[#798](https://github.com/arcships/dim/issues/798)。
 
 ## 附录 A. 接口细节
@@ -326,7 +326,7 @@ Settings 业务来源与 `pluginFiles` 补充是对其他插件的改动，列�
 | `realtime` | `realtime` | `voice`、`transcribe`、`avatar` | — | 会话 | Provider | `modality.realtime` |
 | `ocr` | `ocr` | `recognize` | 图像或 PDF | `data: { pages: [{ page, text? }], textTruncated? }`，页文本合计不超过 1 MiB，超出的页面只带 `page`；`result.json`；`text.txt`；`layout` 模式下每个栅格化页面一个 `page-NNNN.png` | 宿主 helper（`local/apple-vision`，或插件提供的目标） | `modality.ocr` |
 
-图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 Session 图像理解路径（附件与 `read`，见 [WorkspaceTools §read results and images](../../../architecture/rust-agent/plugins/WorkspaceTools.md#read-results-and-images)）；该路径尚未读取该默认值，因此 §9.4 中 Agent/Prompt 的需求必须先落地，默认值才会改变运行时使用的模型。在此之前，理解这一行只解析与显示。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）；宿主操作自行声明其参数：`ocr.recognize` 接受 `params.outputMode`，取值为 `"text"`（默认）或 `"layout"`（A.2）。CLI 只为 A.1 声明的输入提供具名参数——提示词或文本、输入文件、`image edit --mask`（一个输入文件，其名称写入 `params.mask`）以及 `image enhance MODE`（`params.mode`）——其余参数一律走 `--param KEY=VALUE`。
+图像理解是图像类别中的一个操作，其默认值由 Modality 解析（`modality.image.understand`）。它的使用方是 [ImageUnderstanding](../../../design/plugins/ImageUnderstanding.md)，通过 §9.4 的类型化交接读取。图像操作使用按操作的 key，本设计中不设类别回退；其他类别先解析按操作的 key，再解析类别 key（A3）。输入之外的操作参数由各适配器声明，并在提交时校验（A4）；宿主操作自行声明其参数：`ocr.recognize` 接受 `params.outputMode`，取值为 `"text"`（默认）或 `"layout"`（A.2）。CLI 只为 A.1 声明的输入提供具名参数——提示词或文本、输入文件、`image edit --mask`（一个输入文件，其名称写入 `params.mask`）以及 `image enhance MODE`（`params.mode`）——其余参数一律走 `--param KEY=VALUE`。
 
 操作的规范能力 id 是 `<category>.<operation>`，例如 `image.generate` 与 `realtime.voice`；Provider 的 `modalityCapabilities` 声明使用同一组字符串，快照携带这两个字段而不再重复 id。不存在别名（`image.read` 不是别名），实时子调用也没有 id：`open`、`send`、`close` 与 `event` 是方法，`realtime.voice`、`realtime.transcribe` 与 `realtime.avatar` 是实时能力。本构建通过内置适配器服务 `realtime.voice`；另外两个以 `adapter` 维度上报，其 detail 指名该操作，例如 “No available adapter serves realtime.transcribe”。
 
@@ -384,6 +384,19 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 ### A.3 方法
 
 命名空间 `modality`，注册到进程的 `managementMethods`（声明与 `call` 遵循[方法](../contracts/session-boundary.md)契约），每个方法都是管理方法。`modalityTasks`（进程，无 key）提供 `submit`、`status`、`list`、`wait`、`cancel` 与 `result`，请求与回复同下方的 `modality.task.*` 方法。`wait` 使用每次调用的进度接收器；实时使用绑定连接的通知（[方法](../contracts/session-boundary.md)）。
+
+`modalityTargets` 数据面（进程，无 key）提供一个异步方法
+`resolve({ category, operation, model? })`。回复为
+`{ status: "resolved", target: { providerId, modelId } }`，或
+`{ status: "unavailable", reasons: [{ dimension, detail }] }`。它使用快照的选项和
+有效目标：显式模型优先于持久化默认值，仅在没有默认值时自动选择。不可用的显式模型
+或默认值返回它自己的原因；否则，不可用的操作返回快照的操作原因，即使它声明的模型
+仍可配置。`image.understand` 不需要媒体适配器。
+每次调用读取当前业务设置和 Provider 状态，不创建任务、不解析连接、不写 Timeline
+事实，也不增加适配器门控或重载边。回复不含凭据。错误为 `{ code, message }`：
+wire 参数形状错误为 `invalid_params`，未知类别或操作为 `modality_unknown_operation`，
+所有者读取失败为 `modality_failed`，调用方取消为 `operation_interrupted`，所有者代际已结束为
+`service_reloading`。丢弃调用只取消该次调用自己的待完成读取，不影响其他调用。
 
 | 方法 | 参数 | 结果 |
 | --- | --- | --- |
@@ -567,8 +580,8 @@ helper 以目标的描述调用（A.2.1）：描述中的 `executable` 与 `args
 14. 两次使用同一 revision 的 `configure`：第二次以 `modality_conflict` 失败且不写入；重新读取看到第一个写入者的值。
 15. 自动解析：没有默认值时，任务在 Provider 的全局默认选择服务该操作时使用它，否则使用 Provider 可选模型读取顺序中第一个被服务的模型；`effective.source` 为 `"automatic"` 并给出该模型。
 16. Web 入口准入：经认证的 loopback Web 入口可调用 `modality.capabilities` 与 `modality.configure`；裸与未认证的 WebSocket 不能；`modality.task.*` 与实时方法不被准入；声明与分发一致。
-17. Web 渲染：宽与紧凑布局显示所有者选项、自动生效模型与不可用原因，包括理解“尚未生效”的状态；冲突保留已输入的草稿并提供重新加载；在 Web 会话中所做的 Provider 或模型变更会刷新页面；回复不带凭据。
-18. `image.understand` 经 `modality.capabilities`/`modality.configure` 解析并显示默认值。在 §9.4 中 Agent/Prompt 的需求落地前，Session 图像理解路径继续使用 Session 模型，页面如实说明；落地后，fixture 图像理解流程使用已配置的默认值，清除它即恢复自动解析。
+17. Web 渲染：宽与紧凑布局显示所有者选项、自动生效模型与不可用原因；理解行说明该设置用于 `image_understand`，而非对话模型。冲突保留已输入的草稿并提供重新加载；在 Web 会话中所做的 Provider 或模型变更会刷新页面；回复不带凭据。
+18. `image.understand` 经 `modality.capabilities`/`modality.configure` 解析并显示默认值。fixture [图像理解流程](../../../design/plugins/ImageUnderstanding.md#9-acceptance)使用已配置的默认值，清除它即恢复自动解析，不可用的默认值从不回退。
 
 ## 附录 E. 假设
 

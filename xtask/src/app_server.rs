@@ -251,9 +251,10 @@ pub async fn serve_home(
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
                 }),
             );
-            dim_modality::install(&mut builder);
         }
     }
+    dim_modality::install(&mut builder);
+    dim_image_understanding::install(&mut builder);
     dim_agent_capabilities::prompt_suggestion::install(&mut builder);
     dim_app_server::collaboration::install(&mut builder);
     dim_agent_questions::install(&mut builder);

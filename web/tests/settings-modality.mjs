@@ -102,7 +102,7 @@ test("modality rows show the automatic effective model and an unavailable defaul
     assert.match(body, /Currently effective: None\. The configured default is unavailable and is never replaced by another model\./)
     assert.match(body, /Currently effective: None\. No model serves this operation now\./)
     assert.match(body, /Model is no longer selectable/)
-    assert.match(body, /the Session image-understanding path does not read this default yet/)
+    assert.match(body, /Used by image_understand for each image question\. This does not change the conversational model\./)
     const [generate, edit, , understand] = selects(root)
     assert.equal(generate.props.value, "__auto__")
     assert.doesNotMatch(text(generate), /\(unavailable\)/)

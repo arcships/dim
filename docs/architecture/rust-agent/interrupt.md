@@ -94,7 +94,7 @@ sequenceDiagram
 - 中断以日志顺序确定生效位置。相关能力按已消费的中断与 turn 边界判断：属于被中断 turn 的迟到请求直接提交取消终态，不能启动宿主，即使它写在中断之后。下一个 turn 的请求照常执行；已经真实完成的结果保留。
 - Dispatcher handler 不等待宿主 join，不等待自己将来分发的事件。任务与清理责任先登记，再返回。
 - 已取消的迟到调用在 handler 中直接提交取消终态，不新增异步任务。
-- stop 是门面操作：写 turn 范围 stop/interrupt，等 Loop 已分发到该中断且不再处于 stopping。Loop 在处理器内更新状态，早于本事件分发完成；重载时还可能从已提交、尚未发布的终态重建出已结算状态。门面在观察到结算时固定一次 Timeline 已提交水位，并等待 Dispatcher 覆盖该位置后返回已分发序号，保证包含 turn/end。该水位不随新输入增长；不等待 Loop 空闲，之后的输入可能已开始新 turn。Loop 重载期间等新一代接手（重载即重启），分支关闭后 Loop 不在时返回 `Closed`。idle 不写事件，等 Loop 已分发到 Timeline 尾部且没有未闭合的 turn。两者都不等待脱离工作；放弃等待仍复用受管关闭协调。重复 stop 只在上一次仍覆盖当前 turn 时合并（其中断尚未分发，或 Loop 仍不在 running）；上一次的中断已分发、新 turn 已在运行时，新的 stop 等上一次结束后写自己的中断。
+- stop 是门面操作：写 turn 范围 stop/interrupt，等 Loop 已分发到该中断且不再处于 stopping。Loop 在处理器内更新状态，早于本事件分发完成；重载时还可能从已提交、尚未发布的终态重建出已结算状态。门面在观察到结算时固定一次 Timeline 已提交水位，并等待 Dispatcher 覆盖该位置后返回已分发序号，保证包含 turn/end。该水位不随新输入增长；不等待 Loop 空闲，之后的输入可能已开始新 turn。Loop 重载期间等新一代接手（重载即重启），已进入结算等待的 stop 在分支正在关闭且 Loop 不在时，优先返回已记录的 Dispatcher 故障，否则返回 `Closed`；关闭开始后新调用的 stop 在准入时仍返回 `Closed`。idle 不写事件，等 Loop 已分发到 Timeline 尾部且没有未闭合的 turn。两者都不等待脱离工作；放弃等待仍复用受管关闭协调。重复 stop 只在上一次仍覆盖当前 turn 时合并（其中断尚未分发，或 Loop 仍不在 running）；上一次的中断已分发、新 turn 已在运行时，新的 stop 等上一次结束后写自己的中断。
 - Timeline close 写 branch 范围中断并等待，再停止 Dispatcher、关闭 rutis root。Session close 对各分支执行同样流程；各能力的资源由其登记的 rutis effect 释放。
 - Dispatcher 失败或终态追加失败时，向调用者保留错误，进入各能力作用域的资源清理；不能等待永远无法推进的分发游标。
 

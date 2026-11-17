@@ -125,6 +125,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Observing conversation" => "正在檢視對話",
         "Conversation unavailable" => "對話無法使用",
         "Session closed" => "工作階段已關閉",
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "此工作階段已關閉，無法繼續對話。使用相同的 --home 執行 dimcode export {id} 可讀取已儲存的歷史。"
+        }
         "Member conversation" => "成員對話",
         "x stop command · Esc back" => "x 停止指令 · Esc 返回",
         "Esc back" => "Esc 返回",
@@ -283,6 +286,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Queue ({count})" => "佇列（{count}）",
         "Thinking…" => "思考中…",
+        "Thinking excerpt" => "思考摘錄",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "歡迎使用 DIM {version}！",
@@ -329,9 +333,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "離開",
 
         // composer/palette.rs
-        "Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 選擇並設為預設 · ←/→ 推理強度 · Ctrl+B/F 移動游標 · Ctrl+X 清除已儲存 · Esc 清除/關閉"
-        }
         "Default for new sessions in {folder}: {model}" => {
             "新工作階段在 {folder} 的預設模型：{model}"
         }
@@ -470,6 +471,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Fixed model" => "固定模型",
         "Applies to new members, including named Agents." => "適用於新成員，包括具名 Agent。",
         "Existing members keep their models." => "既有成員保留原模型。",
+        "Conversation model" => "對話模型",
+        "Selected: {model}" => "已選擇：{model}",
+        "Model management" => "模型管理",
+        "Manage models" => "管理模型",
+        "1 provider" => "1 個 Provider",
+        "{count} providers" => "{count} 個 Provider",
+        "ready" => "就緒",
+        "no models" => "沒有模型",
+        "catalog unreadable" => "無法讀取 catalog",
+        "{count} with missing limits" => "{count} 個缺少上限",
+        "{count} unavailable" => "{count} 個不可用",
+        "{count} disabled" => "{count} 個已停用",
+        "{count} without models" => "{count} 個沒有模型",
+        "{count} unreadable" => "{count} 個無法讀取",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} 個不可用、{disabled} 個已停用"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter 選擇並設為預設 · ←/→ 推理強度 · Tab 切換區段 · Esc 清除/關閉"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter 變更 · Tab 切換區段 · Esc 清除/關閉"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter 管理 · Tab 切換區段 · Esc 清除/關閉"
+        }
+        "Enter manage · Esc back" => "Enter 管理 · Esc 返回",
         "unknown" => "不明",
         "Subagent model policy saved" => "已儲存子代理模型原則",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -493,6 +521,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         // keys.rs
         "show the key bindings" => "顯示快速鍵",
+        "show the command that updates this installation" => "顯示如何更新目前安裝",
         "Application keys" => "應用程式快速鍵",
         "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
             "閒置時 Enter 送出 · Shift+Enter / Alt+Enter / Ctrl+J 換行 · ↑↓ 歷程"

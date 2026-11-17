@@ -1147,7 +1147,7 @@ cycled effort is saved as its `reasoningEffort` and the adoption then sends only
 the target, so the server applies the value just saved together with the model's
 other saved preferences. Editing a Provider's model list is the
 models management area ([CLI commands § The Models area](../cli-commands.md#the-models-area)):
-`Edit models` in `/models` and `dimcode models PROVIDER add|edit|set|remove|inspect`
+`Manage models` in `/models` and `dimcode models PROVIDER add|edit|set|remove|inspect`
 read `provider.management` and write through `provider.models.*`; the picker
 actions above are unchanged.
 
@@ -1165,10 +1165,20 @@ enable or a re-point, asks once more. A failed read or a failed refresh keeps
 the provider's row, and a reply that arrives after the picker closed only
 records the fill: the next open reads it.
 
-An undeclared model is not a picker row. Every provider with at least one such
-model keeps one muted row after its model rows: it counts them and names the
-command that declares them. When the provider offers nothing selectable, that
-row replaces the empty-provider row instead of joining it.
+An undeclared model is not a picker row. The picker's `Model management`
+section, outside the scrolling candidate list, keeps the compact diagnostics:
+how many models have missing limits, how many are unavailable or disabled, how
+many Providers have no models, and how many catalogs the owner could not read
+([CLI commands § The Models area](../cli-commands.md#the-models-area)). Enter
+opens a Provider list whose rows name each Provider and its state; a Provider
+with at least one model missing limits says how many, and its footer names the
+command that declares them (`dimcode models PROVIDER --set-missing-limits ...`).
+A Provider that offers nothing selectable stays reachable in that list with its
+reason, including `no models` and `catalog unreadable`. Choosing a Provider
+opens the existing models management area, so the diagnostics never become
+model candidates. A daemon that does not advertise `provider.management` shows
+the same reasons and their recovery commands as read-only lines, with no
+executable management action.
 `dimcode models PROVIDER --set-limits MODEL --context-window N
 --max-output-tokens N` declares both limits of one model through `models.edit`,
 and `--set-missing-limits --context-window N --max-output-tokens N` declares them
@@ -1182,9 +1192,11 @@ does. The list marks a model whose limits are undeclared as `undeclared` and
 names the declaring command below its rows.
 
 ```text
-Select a model
-> Provider / model          ZDR  ‹ high ›
-Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close
+Models
+  Conversation model
+  > Provider / model          ZDR  ‹ high ›
+  Selected: Provider / model
+Enter select + default · ←/→ effort · Tab section · Esc clear/close
 ```
 
 ```text
@@ -1328,7 +1340,11 @@ A `builtin` row maps onto the builtin of its id. Without a target the import
 starts from that builtin's bundled definition, exactly as an import over a
 seeded target does, so a `builtin` row whose id has no bundled definition is
 rejected; over an existing target the target must be the pristine seeded
-record. A `custom` row whose id belongs to the bundled catalog is rejected.
+record. The converted record states the definition's name, not the source row's:
+a builtin's name is catalog data the user does not set, so a source row written
+before a catalog rename still imports and carries the current name. Its driver
+and auth must match, because those decide what the record reaches. A `custom`
+row whose id belongs to the bundled catalog is rejected.
 Both entries parse and validate an existing target record with the same
 parser, and a target that does not validate rejects the row. Migration
 classifies a non-pristine target as `Conflict` with no reason before the

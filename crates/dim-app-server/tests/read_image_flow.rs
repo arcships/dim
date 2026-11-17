@@ -1,6 +1,5 @@
-//! #656: `read` returns an image file as an image block, and the request the
-//! model receives carries either that image or — for a model without image
-//! input — the placeholder #654's rule puts in its place.
+//! #656: `read` retains an image block in history while conversational
+//! requests carry its content reference for every model.
 #![cfg(unix)]
 
 use dim_agent_capabilities::{
@@ -23,7 +22,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-const PLACEHOLDER: &str = "[Image omitted: the current model does not accept images.]";
 const LINE: &str = "Read image: screen.png (2x2 px).";
 /// A 2x2 PNG (left column red, right column blue): its content, not its
 /// extension, is what `read` recognizes.
@@ -90,16 +88,17 @@ fn tool_result_part(request: &ModelRequest) -> Option<&MessagePart> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn read_image_reaches_a_vision_model_and_becomes_text_for_others() {
+async fn read_image_reaches_every_model_as_a_reference_and_history_keeps_the_image() {
     let home = home();
     let work = home.join("work");
-    std::fs::write(work.join("screen.png"), {
-        use base64::Engine as _;
-        base64::engine::general_purpose::STANDARD
-            .decode(PNG)
-            .unwrap()
-    })
-    .unwrap();
+    use base64::Engine as _;
+    use sha2::{Digest, Sha256};
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(PNG)
+        .unwrap();
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let reference = format!("img:{}", &digest[..16]);
+    std::fs::write(work.join("screen.png"), bytes).unwrap();
 
     let mut platform = HostPlatform::current(ShellStatus::Unavailable {
         code: "READ_IMAGE_FLOW",
@@ -168,7 +167,7 @@ async fn read_image_reaches_a_vision_model_and_becomes_text_for_others() {
         );
 
         let mut sent_image = false;
-        let mut sent_placeholder = false;
+        let mut sent_reference = false;
         let mut sent_line = false;
         for request in requests.lock().unwrap().iter().skip(before) {
             let Some(MessagePart::ToolResult {
@@ -181,20 +180,17 @@ async fn read_image_reaches_a_vision_model_and_becomes_text_for_others() {
             for block in blocks {
                 match block {
                     ContentBlock::Image { .. } => sent_image = true,
-                    ContentBlock::Text { text } if text == PLACEHOLDER => sent_placeholder = true,
+                    ContentBlock::Text { text } if text == &reference => sent_reference = true,
                     ContentBlock::Text { text } if text == LINE => sent_line = true,
                     _ => {}
                 }
             }
         }
         assert!(sent_line, "vision={vision}: the request carries the line");
-        assert_eq!(
-            sent_image, vision,
-            "vision={vision}: only a model that takes images receives one"
-        );
-        assert_eq!(
-            sent_placeholder, !vision,
-            "vision={vision}: only a model without image input gets the placeholder"
+        assert!(!sent_image, "vision={vision}: no pixels reach the model");
+        assert!(
+            sent_reference,
+            "vision={vision}: the request carries the reference"
         );
         session.close().await.unwrap();
     }

@@ -21,6 +21,7 @@ dim-goal.workspace = true
 dim-report.workspace = true
 dim-event-hub.workspace = true
 dim-modality.workspace = true
+dim-image-understanding.workspace = true
 dim-agent-types.workspace = true
 dim-client.workspace = true
 rutis.workspace = true

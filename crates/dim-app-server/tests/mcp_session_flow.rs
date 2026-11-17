@@ -2448,11 +2448,17 @@ async fn a_shadowed_user_server_closes_its_unused_connection() {
 const TOOL_IMAGE: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jD1sAAAAASUVORK5CYII=";
 
-/// The Part 1 flow: an MCP tool returns a text block and a PNG, and the model
-/// request that follows carries the image instead of failing.
+/// An MCP image result retains its source while the model receives a reference.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() {
+    use base64::Engine as _;
     use dim_agent_aimux::{AimuxModels, AimuxPlugin, ConfiguredModelsPlugin};
+    use sha2::{Digest, Sha256};
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(TOOL_IMAGE)
+        .unwrap();
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let reference = format!("img:{}", &digest[..16]);
     tokio::time::timeout(Duration::from_secs(30), async {
         let requests: Arc<Mutex<Vec<Value>>> = Default::default();
         let seen = requests.clone();
@@ -2668,17 +2674,14 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             .find(|message| message["role"] == "tool")
             .unwrap();
         assert!(
-            tool["content"].as_str().unwrap().contains("[Image: sent in the following user message as tool output.]"),
+            tool["content"].as_str().unwrap().contains(&reference),
             "{tool}"
         );
         assert!(tool["content"].as_str().unwrap().contains("screenshot captured"));
         assert!(tool["content"].as_str().unwrap().contains("[Image omitted: the image cannot be sent to this model.]"));
-        let user = next["messages"].as_array().unwrap().last().unwrap();
-        assert_eq!(user["role"], "user");
-        assert!(
-            user["content"][1]["image_url"]["url"].as_str().unwrap() == format!("data:image/png;base64,{TOOL_IMAGE}"),
-            "{user}"
-        );
+        assert!(!next.to_string().contains(TOOL_IMAGE), "{next}");
+        assert!(!next.to_string().contains("image_url"), "{next}");
+        assert!(!next.to_string().contains("[Image: sent in the following user message as tool output.]"), "{next}");
         session
             .submit("thanks".into(), InputMode::Queue, "main")
             .await

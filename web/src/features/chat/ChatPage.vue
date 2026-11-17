@@ -10,7 +10,7 @@ import QueuedInputs from "./QueuedInputs.vue"
 import QuestionPrompt from "./QuestionPrompt.vue"
 import TimelineView from "./TimelineView.vue"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
-import { MAIN_BRANCH, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset } from "../../rpc/protocol"
+import { MAIN_BRANCH, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
 import { intervalSeconds, loopReport, parseLoopRequest } from "../../loop"
 import { useChatStore } from "../../stores/chat"
@@ -41,6 +41,7 @@ const parent = computed(() => parentId.value === undefined ? undefined : session
 const children = computed(() => sessions.summaries.filter((session) => session.parentSessionId === props.sessionId))
 const approval = computed(() => view.value?.approvals.find((request) => request.branchId === MAIN_BRANCH))
 const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === MAIN_BRANCH) ?? [])
+const prompting = computed(() => approval.value !== undefined || questions.value.length > 0)
 const rulesAvailable = computed(() => connection.supports("permission.rules") && connection.supports("permission.set_rules"))
 const storesPastes = computed(() => view.value?.methods.includes("attachment.put") === true)
 const searchFiles = computed(() => view.value?.methods.includes("session.files.search") ? (query: string) => chat.searchFiles(props.sessionId, query) : undefined)
@@ -86,12 +87,19 @@ const sessionCommands = computed(() => {
   }
 })
 
-function send(text: string, attachments: DraftAttachments): Promise<void> {
-  return chat.submit(props.sessionId, MAIN_BRANCH, text, attachments)
+function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
+  return chat.submit(props.sessionId, MAIN_BRANCH, text, attachments, mode)
 }
 
 function stop(): Promise<void> {
   return chat.stop(props.sessionId, MAIN_BRANCH)
+}
+
+/** Withdraws one held message of main, so the composer can recall it into the draft; reports a message the run already adopted. */
+async function withdrawHeld(input: QueuedInput): Promise<WithdrawResult["status"]> {
+  const result = await chat.withdrawInput(props.sessionId, MAIN_BRANCH, input.id, undefined)
+  if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
+  return result.status
 }
 
 function selectModel(model: ModelId): Promise<void> {
@@ -381,24 +389,29 @@ async function fork(): Promise<void> {
     <div v-else-if="questions.length" class="composer-panel question-prompts">
       <QuestionPrompt v-for="question in questions" :key="JSON.stringify([question.branchId, question.requestId, question.callId])" :session-id="sessionId" :question="question" />
     </div>
-    <ComposerPanel
-      v-else
-      ref="composer"
-      :running="view.running"
-      :stopping="view.stopping"
-      :model="view.model"
-      :send="send"
-      :stores-pastes="storesPastes"
-      :search-files="searchFiles"
-      :permission="permissionControl"
-      :stop="stop"
-      :model-selectable="connection.supports('session.model.update')"
-      :select-model="selectModel"
-      :create-branch="canNewLine ? createBranch : undefined"
-      :open-lines="branchable ? () => ui.openLines(sessionId) : undefined"
-      :session-commands="sessionCommands"
-      :skills="skills"
-    />
+    <KeepAlive>
+      <ComposerPanel
+        v-if="!prompting"
+        ref="composer"
+        :session-id="sessionId"
+        :running="view.running"
+        :stopping="view.stopping"
+        :model="view.model"
+        :send="send"
+        :stores-pastes="storesPastes"
+        :search-files="searchFiles"
+        :permission="permissionControl"
+        :stop="stop"
+        :held="view.queued"
+        :withdraw-held="view.methods.includes('session.input.withdraw') ? withdrawHeld : undefined"
+        :model-selectable="connection.supports('session.model.update')"
+        :select-model="selectModel"
+        :create-branch="canNewLine ? createBranch : undefined"
+        :open-lines="branchable ? () => ui.openLines(sessionId) : undefined"
+        :session-commands="sessionCommands"
+        :skills="skills"
+      />
+    </KeepAlive>
   </section>
 </template>
 

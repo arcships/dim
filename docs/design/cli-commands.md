@@ -131,7 +131,23 @@ history, without a preview line limit or an omitted-prefix marker. Only the
 unfinished wrapping tail remains live. A streamed thought has a fixed `Thought`
 heading and appends its duration below the body on completion; it never prints
 the body again to replace the heading. Collapsed thinking remains a single-row
-summary. Fullscreen and the line side panel retain their existing previews.
+excerpt. It uses only visible provider reasoning in its original language,
+not a generated summary. New complete sentences or nonempty hard lines replace
+the excerpt; an unfinished suffix keeps the previous complete unit. Before any
+complete unit exists, show a marked, bounded prefix instead of a sliding tail.
+Content refreshes coalesce over 500ms; completion and phase changes are immediate.
+No visible reasoning adds no invented excerpt. Rendering uses terminal cells
+and whole graphemes, omitting the excerpt before squeezing out the status label.
+Selection is maintained incrementally from incoming text with bounded fragments,
+not by rescanning the full thinking text on animation frames. It adds no model
+request, RPC, Timeline fact or persisted setting. See the
+[thinking display design](tui-thinking-excerpts.md) for selection and cost bounds.
+
+Fullscreen and the line side panel retain their existing expanded previews.
+Their expanded and collapsed thought titles share the same gutter and label
+column; the body bar occupies that gutter, not an extra indentation layer.
+Fullscreen mouse gestures, including thought-body collapse and selection
+priority, follow the [CLI interaction contract](../../crates/dim-cli/README.md).
 
 ## Command menu
 
@@ -145,7 +161,7 @@ order, not alphabetically or by recent use. The menu draws no category column:
 /tasks /rename /web /connect /login
 /skills /reload-skills /mcp /plugins /runtime
 /hooks /scheduled /workflow /workflow:save
-/tools /tui /theme /language /keys /report /exit
+/tools /tui /theme /language /keys /update /report /exit
 ```
 
 `/fast` is listed only when the model advertises service tiers.
@@ -177,7 +193,8 @@ Session's catalog: the client rereads it on attach, on a Session switch, after
 `/reload-skills`, and after a change in `/skills`. A daemon that does not serve
 `skills.catalog` shows the commands alone, without an error. Choosing a Skill row,
 with `Enter` or `Tab`, fills `/skill:<name> ` and never sends; the token is part
-of the message text and the draft draws it as one highlighted unit. Typing `/skill:`
+of the message text and the draft draws it as one highlighted unit, reading the
+Skill's name. Typing `/skill:`
 narrows the menu to Skills: the query after the `skill:` namespace matches Skill
 names only. A draft that begins with `/skill:` is sent as a message and never run as
 a command, and a token may stand mid-sentence as long as it starts the message or
@@ -185,6 +202,28 @@ follows whitespace. Skills come after commands; a Skill leads only when its name
 starts with the query and no command name or alias does, so a name shared with a
 command keeps both rows, the command first. `/` is the only trigger: `@` stays the
 file picker.
+
+The draft draws a reference the palette filled by the Skill's name, so a chosen
+`status` reads `/status` and not the parser's `/skill:status`:
+
+```text
+› /stat|                 › /status |
+  ├─ /skill:status       ├─ a filled /skill:status
+  └─ /skill:staged       └─ drawn by its name, sent as /skill:status
+```
+
+Only a filled reference is a named unit; text the operator typed is drawn as typed,
+so no character of the operator's own words ever reads as something else and a
+half-typed or malformed reference stays visible. The draft's text is still
+`/skill:<name> `: that is what it submits and what the input history keeps. Native
+terminal selection copies the displayed `/status`; pasting that label does not
+restore a Skill reference. Choose the Skill again or paste its canonical token.
+The cursor steps over the reference as one unit, a delete takes it whole, and the
+input wraps by the name it draws. A Skill
+whose name is also a command the input dispatches keeps the canonical token
+(`/skill:models`, not `/models`), because the plain name would read as that command
+while the draft is still a message. The menu's rows read `/skill:<name>` in both
+modes: a row states the token it fills; the transcript keeps the submitted token.
 
 The menu fits the available terminal columns and rows in both modes. Command
 names take priority over descriptions and shortcut labels. A shortcut that
@@ -345,7 +384,9 @@ The default send mode is a TUI setting: an ACP client decides for itself how it
 holds a message typed during a run, and reaches interrupt and send now with
 `session/cancel` followed by a new `session/prompt`
 ([AcpGateway §4.2](plugins/AcpGateway.md#42-prompt-and-cancellation)). The Web
-composer is #1601.
+workspace offers the same two modes with a default saved in the browser, and the
+same interrupt-and-send-now sequence
+([Web workspace §4.5](web-workspace.md#45-sending-during-a-run)).
 
 Enter on an empty composer opens `/tasks` only after the earlier branches have
 had their say: the shell-run guard in either mode, then the steer of the oldest
@@ -1262,7 +1303,8 @@ the panel's confirmation.
 
 ### The Models area
 
-The models area (#818): `Edit models` in `/models` opens one Provider's panel, and `dimcode
+The models area (#818): `Manage models` in `/models` opens the Provider list and
+then one Provider's panel, and `dimcode
 models PROVIDER enable|disable|remove|inspect MODEL`, `edit MODEL`, `set MODEL PATH` and `add
 PATH` are the same area at the command line, over `provider.management` and the
 `provider.models.*` writes ([provider management](appserver/provider-management.md)). The Provider
@@ -1322,23 +1364,69 @@ date, pricing, rate limit, the bundled match and the capability overrides.
 ╰──── Enter toggle · Ctrl+E edit · Ctrl+R reload · Ctrl+N add · Ctrl+X remove · Tab inspect ─╯
 ```
 
-The picker gains one row per Provider: `Edit models`, inside that Provider's block, its detail
-naming the Provider, so a Provider with no selectable model can be opened too. The row is absent
-when the daemon does not advertise `provider.management`. It opens the area in place of the
-picker, and Esc there closes the area to the prompt, not back to the picker.
+`/models` keeps the conversation model candidates, the subagent model policy and
+Provider management in three fixed sections (#1676); only the candidate list
+scrolls. Candidates are the selectable models only: a row carries the Provider
+name, the model id, `ZDR` when the catalog declares it, the advertised reasoning
+effort and the `current` marker. The selected candidate's summary under the list
+names how its id was identified; the candidate rows themselves stay short, and
+an empty summary area carries no instructional prose.
+
+Tab / Shift+Tab moves between the sections the daemon offers and Up/Down stays
+inside the focused one; the footer names what that section's Enter does. The
+search filters the candidates only: it never hides the policy or the management
+entry, and no match leaves both where they were. The selection starts on the
+current model. `←`/`→` cycles effort only in the candidate section, and `Ctrl+X`
+clears the selected model's saved preferences only there. At the root, Escape
+clears the search first and closes second.
+
+The policy section shows the current policy, and Enter opens the existing Agent
+choice / Inherit requesting branch / Fixed model flow; the fixed-model page
+lists model candidates only. The section is absent from a daemon that does not
+advertise the policy methods ([subagent model
+policy](subagent-model-policy.md#5-native-cli-interaction)).
+
+The management section holds one `Manage models` entry and the compact
+diagnostics: models with missing limits, unavailable and disabled models, a
+Provider with no models, and a catalog the owner cannot read. A Provider's
+models with missing limits are its reason, so they are not counted again as
+unavailable. Enter opens a
+Provider list whose rows name each Provider and its state; a Provider that
+offers no selectable model is listed there too. Choosing a Provider opens its
+existing model management area, with its existing editing, enablement, refresh
+and inspection operations. Closing that area returns to the Provider list, and
+closing that returns to the sections with the search, selection and list
+position they had; Read Models runs again so the candidates show what the owner
+now offers. A daemon without `provider.management` offers no action: the
+diagnostics and their recovery guidance stay as read-only lines.
 
 ```text
-Select a model
-> Ready / flash              ZDR  ‹ high ›  current
-  Ready / plain              low
-  Ready / sonnet             —
-  Edit models                Ready  ready
-  Other / model-x
-  Edit models                Other  other
-  Manual: no models · add a model with provider.models.create
-  Edit models                Manual  manual
-  Subagent models: Agent choice
-Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close
+╭─ Models ──────────────────────────────────────────────────────────────────────────────────────╮
+│ Conversation model                                                                            │
+│                                                                                               │
+│ >                                                                                             │
+│                                                                                               │
+│ › Ready / flash                         ZDR  ‹ high ›  current                                │
+│   Other / model-x                       low                                                   │
+│   Manual / house-model                                                                        │
+│ Selected: Ready / flash  identified: flash at ready                                           │
+│ Subagent models                                                                               │
+│ › Agent choice                                                                          Enter │
+│ Model management                                                                              │
+│ › Manage models                                                                   3 providers │
+│   4 with missing limits / 2 unavailable                                                       │
+╰───────────────────────── Enter select + default · ←/→ effort · Tab section · Esc clear/close ─╯
+```
+
+```text
+╭─ Manage models ───────────────────────────────────────────────────────────────────────────────╮
+│ >                                                                                             │
+│ › Ready                     ready · 4 with missing limits                                     │
+│   Other                     ready                                                             │
+│   Manual                    no models                                                         │
+│   Relay                     2 unavailable                                                     │
+│   Ready: 4 models need a window · dimcode models ready --set-missing-limits                   │
+╰─────────────────────────────────── Enter manage · Esc back ───────────────────────────────────╯
 ```
 
 `dimcode models PROVIDER remove MODEL` removes without the panel's confirmation, and `dimcode
@@ -1674,7 +1762,8 @@ whole rule as one quoted argument, so global options stay unambiguous.
 | `/export markdown PATH` or `/export json PATH` | Export the current main branch to a file while the interactive client is idle. |
 | `/export` in either terminal UI | Choose Markdown or JSON in a dialog for an opened Session; save a uniquely named file in the CLI current directory. |
 | `dimcode export SESSION_ID [--output PATH] [--database PATH]` | Write the Session's whole Timeline as versioned JSONL without a daemon ([Timeline export](appserver/timeline-export.md)); write to stdout when no output path is supplied. |
-| `dimcode daemon vacuum [--database PATH]` | Rewrite an offline native store with SQLite `VACUUM` to reclaim the pages deleted Sessions left, and print its size before and after ([storage format](appserver/native-storage-format.md#sqlite-运行参数与空间回收)); it fails while a daemon owns the database and never creates or upgrades one. |
+| `dimcode daemon vacuum [--database PATH]` | Remove the content rows no stored reference reaches from an offline native store (`node`/`message` only, one transaction per Session), then rewrite it with SQLite `VACUUM` to reclaim the pages they and deleted Sessions left; print the size before and after with the removed rows and their content bytes, and remove nothing when a Session names content the store does not hold ([storage format](appserver/native-storage-format.md#sqlite-运行参数与空间回收)). It fails while a daemon owns the database and never creates or upgrades one. |
+| `dimcode --migrate-prompt-references --database PATH --session ID --branch NAME` | Write the saved-reference result the guard's explicit-migration message asks for, offline, and print what it wrote ([explicit legacy migration](prompt-state-read.md#显式旧引用迁移入口)); it must be the first argument, refuses a missing database, a store a daemon holds and a store not at the current format, never creates or upgrades one, and a repeated run writes nothing and reports `Wrote 0`. |
 | `dimcode migration [run\|inspect] [--source OLD_HOME]` | Import by default, or inspect, a stopped legacy data home through the shared [Migration plugin](../../crates/dim-migration/README.md). |
 | `dimcode migration list\|show TASK\|cancel TASK` | Query durable results or request cancellation without a daemon. |
 | `dimcode migration retry TASK [--source OLD_HOME]` | Reconcile a previous task's source again; return a new task linked to the old report. |
@@ -2023,6 +2112,25 @@ the selection down.
 - A daemon before `session.catalog` is listed through `session.summaries`, and
   the client applies the scope to the rows it receives: the exact launch
   workspace, membership in the git set, or no filter.
+- The `/settings` "Show ACP sessions" switch applies the
+  [ACP visibility preference](appserver/session-classification.md#38-client-requirements).
+  Workspace and search filters still apply. When on, the picker requests
+  [`withAcpHistory`](appserver/session-catalog.md#31-sessioncatalog) alongside
+  `withAcpSessions` if the daemon advertises `session.catalog.acpHistory`;
+  ordinary rows keep their existing preview and closed filters. An older
+  daemon keeps its supported request, without the new parameter.
+  Closed rows include `Session closed` in their detail; Enter keeps the
+  picker open and explains that the Session cannot be resumed and its stored
+  Timeline can be read with `dimcode export SESSION_ID` (using the same
+  `--home`). It does not attempt attach or reopen the Session.
+
+  ```text
+  Show ACP sessions: off           Show ACP sessions: on
+    [Chat] Update cache              [Chat] Update cache
+                                     [ACP ] Editor conversation
+                                     [ACP ] Earlier work · Session closed
+                                     [ACP ] <empty Session id>
+  ```
 - `dimcode --resume ID` resumes a Session of any workspace, and cleanup selects
   across every workspace.
 - `Ctrl+X` removes the selected row after `Delete "{name}"? Enter confirm ·
@@ -2530,6 +2638,19 @@ when it fits.
 | > Close 2/2              |
 | Left/Right Tab Enter Esc |
 +----------- Up/Down 1-2/7-+
+```
+
+`/update` is that command as a client-side report in both terminal UI modes. It
+runs nothing: the update command holds the installation's exclusive lease, and
+the interface itself is a client whose share of that lease it cannot release
+while it serves the operator. So `/update` names the command the dialog would
+name, for a recognised installation, or the [manual and rebuild
+instructions](#update-dialog) for any other layout, and it never consults the
+channel: the automatic startup check keeps owning the dialog and its skip list.
+
+```text
+> /update
+To update, exit every client and stop the server, then run dima update
 ```
 
 ### Coordinated client/server upgrade

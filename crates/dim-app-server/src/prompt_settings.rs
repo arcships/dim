@@ -127,13 +127,24 @@ impl DynPlugin for PromptSettingsPlugin {
             let base: Arc<dyn BasePromptSettings> = storage.clone();
             let instructions: Arc<dyn SkillsInstructionsSettings> = storage.clone();
             let summary: Arc<dyn SummaryPromptSettings> = storage;
-            ctx.provide_as::<BasePromptSettingsHost>(Arc::new(BasePromptSettingsHost(base)))?;
-            ctx.provide_as::<SkillsInstructionsSettingsHost>(Arc::new(
-                SkillsInstructionsSettingsHost(instructions),
-            ))?;
-            ctx.provide_as::<SummaryPromptSettingsHost>(Arc::new(SummaryPromptSettingsHost(
+            let base = Arc::new(BasePromptSettingsHost(base));
+            ctx.provide_as::<BasePromptSettingsHost>(base.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("basePromptSettingsHost"),
+                base,
+            )?;
+            let instructions = Arc::new(SkillsInstructionsSettingsHost(instructions));
+            ctx.provide_as::<SkillsInstructionsSettingsHost>(instructions.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("skillsInstructionsSettingsHost"),
+                instructions,
+            )?;
+            let summary = Arc::new(SummaryPromptSettingsHost(summary));
+            ctx.provide_as::<SummaryPromptSettingsHost>(summary.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("summaryPromptSettingsHost"),
                 summary,
-            )))?;
+            )?;
             Ok(Effect::Done)
         })
     }

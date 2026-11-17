@@ -523,6 +523,7 @@ mod tests {
             "theme",
             "language",
             "keys",
+            "update",
             "report",
             "exit",
         ];

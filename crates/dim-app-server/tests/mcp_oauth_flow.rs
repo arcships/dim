@@ -737,8 +737,20 @@ async fn sign_in_connects_refreshes_once_per_key_and_signs_out() {
     let (resource, authority) = (servers.resource.clone(), servers.authority.clone());
     authority.code_expires_in.store(10, Ordering::SeqCst);
     let daemon = Daemon::start(&[("docs", json!({"type":"http","url":resource.url()}))]).await;
+    let auth = daemon
+        .server
+        .service::<dim_app_server::mcp::McpAuth>()
+        .unwrap();
+    assert!(
+        !auth.oauth_client_initialized(),
+        "startup built the OAuth HTTP client"
+    );
     let mut client = daemon.client().await;
     let first = daemon.session(&mut client).await;
+    assert!(
+        !auth.oauth_client_initialized(),
+        "a 401 connection built the OAuth HTTP client"
+    );
 
     let state = client.mcp_state(&first, "docs", "auth_required").await;
     assert_eq!(state["message"], "authorization required");
@@ -748,7 +760,39 @@ async fn sign_in_connects_refreshes_once_per_key_and_signs_out() {
         json!({"status":"required"})
     );
 
+    auth.fail_next_oauth_client_build();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let methods = daemon
+        .server
+        .service::<dim_app_server::methods::ManagementMethods>()
+        .unwrap();
+    let accepted = methods
+        .provider("mcp.auth.start")
+        .unwrap()
+        .accept(
+            "mcp.auth.start".into(),
+            user("docs"),
+            None,
+            cancelled,
+            |_| {},
+        )
+        .unwrap();
+    let error = accepted.reply.await.unwrap().unwrap_err();
+    assert_eq!(error.data.unwrap().app_error, "operation_interrupted");
+    let _ = accepted.settled.await;
+    assert!(!auth.oauth_client_initialized());
+    assert_eq!(
+        client.error("mcp.auth.start", user("docs")).await,
+        "mcp_auth_unavailable"
+    );
+    assert!(!auth.oauth_client_initialized());
+    assert!(authority.registrations.lock().unwrap().is_empty());
     let started = client.ok("mcp.auth.start", user("docs")).await;
+    assert!(
+        auth.oauth_client_initialized(),
+        "discovery did not build the OAuth HTTP client"
+    );
     assert_eq!(started["redirectUri"], "http://localhost:1456/callback");
     assert_eq!(started["resource"], resource.url());
     assert_eq!(started["issuer"], authority.base());

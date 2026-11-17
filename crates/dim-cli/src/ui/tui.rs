@@ -383,6 +383,9 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             return code;
         }
         let mouse = app.mouse && !app.native_selection();
+        if !mouse && let Some(full) = &mut full {
+            full.cancel_click();
+        }
         if full.is_some() && terminal.mouse() != mouse && terminal.set_mouse(mouse).is_err() {
             let code = terminal.lost();
             app.host.shutdown();
@@ -498,6 +501,18 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
             }
             _ => SESSION_POLL,
         };
+        let wait = full
+            .as_ref()
+            .and_then(|full| full.click_wait(now))
+            .map_or(wait, |due| wait.min(due));
+        let wait = app
+            .excerpts
+            .values()
+            .filter(|excerpt| excerpt.text != excerpt.next)
+            .map(|excerpt| {
+                Duration::from_millis(500).saturating_sub(now.duration_since(excerpt.at))
+            })
+            .fold(wait, Duration::min);
         // The first message waits for the first frame so it follows the
         // banner, then enters the interface as the submission event.
         let next = if app.initial.is_some() && last_frame.is_some() {
@@ -505,6 +520,11 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
         } else {
             terminal.next_event(wait)
         };
+        if matches!(&next, Wait::Event(InputEvent::Key(_)))
+            && let Some(full) = &mut full
+        {
+            full.cancel_click();
+        }
         match next {
             Wait::Lost => {
                 let code = terminal.lost();
@@ -516,6 +536,17 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                     let code = terminal.lost();
                     app.host.shutdown();
                     return code;
+                }
+                if let Some(full) = &mut full
+                    && let Some(click) = full.pending_click(&app, Instant::now())
+                {
+                    dirty |= match click {
+                        MouseOutcome::Click { block, row } => {
+                            app.click(block, row, full.layout_cols() as usize)
+                        }
+                        MouseOutcome::Thought { key, body } => app.click_panel_thought(&key, body),
+                        _ => false,
+                    };
                 }
                 if app.tick() {
                     dirty = true;
@@ -554,6 +585,9 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
                     MouseOutcome::Models => {
                         app.run_command("models", "");
                         dirty = true;
+                    }
+                    MouseOutcome::Thought { key, body } => {
+                        dirty |= app.click_panel_thought(&key, body);
                     }
                     MouseOutcome::Click {
                         block: Some(block),
@@ -1010,6 +1044,12 @@ struct ThoughtFrame {
     tail: Vec<String>,
 }
 
+struct DisplayedExcerpt {
+    text: String,
+    next: String,
+    at: Instant,
+}
+
 struct App {
     host: Box<dyn SessionPort>,
     composer: Composer,
@@ -1025,9 +1065,12 @@ struct App {
     /// committed group too).
     tool_detail: Detail,
     thinking_detail: Detail,
+    thinking_choices: HashMap<(String, String), HashMap<String, bool>>,
+    thinking_gesture: u64,
     default_send_mode: SubmitMode,
     tool_choices: HashMap<(String, String), HashMap<String, bool>>,
     tail_groups: Vec<(usize, ToolGroup)>,
+    tail_thoughts: Vec<(std::ops::Range<usize>, String)>,
     notices: Vec<String>,
     reports: Vec<Block>,
     report_error: Option<crate::report::Captured>,
@@ -1045,6 +1088,7 @@ struct App {
     failure_committed: bool,
     planner: StreamPlanner,
     thoughts: HashMap<String, ThoughtStream>,
+    excerpts: HashMap<(String, String, String), DisplayedExcerpt>,
     commits: CommitState,
     markdown: MarkdownRenderer,
     palette: Palette,
@@ -1156,6 +1200,9 @@ struct App {
     /// A surface was opened from the Permissions page: closing it goes back
     /// to the page, as Process isolation and Command rules do.
     permissions_return: Option<ApprovalsPanel>,
+    /// The `/models` picker a Provider's management area was opened from:
+    /// closing the area goes back to the picker, as it was left.
+    models_return: Option<ModelsPanel>,
     /// Fullscreen reads the mouse (`tuiMouseMode`); off leaves selection
     /// and the wheel to the terminal.
     pub mouse: bool,
@@ -1439,7 +1486,7 @@ enum Prompt {
     Export(ListPanel),
     Report(Box<report_panel::Panel>),
     Fork(ForkAsk),
-    Models(ModelsPanel),
+    Models(Box<ModelsPanel>),
     Providers(Box<ProvidersPanel>),
     Plugins(PluginsPanel),
     Runtime(RuntimePanel),
@@ -1481,6 +1528,8 @@ impl App {
             cwd_key,
             tool_detail: saved_tool_detail(&home),
             thinking_detail: saved_detail(&home, THINKING_DETAILS_KEY),
+            thinking_choices: HashMap::new(),
+            thinking_gesture: 0,
             default_send_mode: if crate::ui::config::read(&home, DEFAULT_SEND_MODE_KEY)
                 .is_some_and(|value| value == SubmitMode::Queue.as_str())
             {
@@ -1490,6 +1539,7 @@ impl App {
             },
             tool_choices: HashMap::new(),
             tail_groups: Vec::new(),
+            tail_thoughts: Vec::new(),
             home,
             notices: Vec::new(),
             reports: Vec::new(),
@@ -1504,6 +1554,7 @@ impl App {
             failure_committed: false,
             planner: StreamPlanner::new(),
             thoughts: HashMap::new(),
+            excerpts: HashMap::new(),
             commits: CommitState::default(),
             markdown,
             palette,
@@ -1559,6 +1610,7 @@ impl App {
             jump: None,
             settings_return: None,
             permissions_return: None,
+            models_return: None,
             mouse,
             notify,
             notifications: Vec::new(),
@@ -1682,6 +1734,9 @@ impl App {
     fn open_prompt(&mut self, prompt: Prompt) {
         if matches!(self.prompt, Some(Prompt::Sessions(_))) {
             self.host.send(Command::CloseSessions);
+        }
+        if !matches!(prompt, Prompt::Management(_)) {
+            self.models_return = None;
         }
         if let Some(Prompt::Ask(question)) = self.prompt.take() {
             self.question_stash = Some(question);
@@ -2049,6 +2104,15 @@ impl App {
         self.sync_sessions();
         self.sync_task_details();
         let mut changed = false;
+        for excerpt in self.excerpts.values_mut() {
+            if excerpt.next != excerpt.text
+                && now.duration_since(excerpt.at) >= Duration::from_millis(500)
+            {
+                excerpt.text.clone_from(&excerpt.next);
+                excerpt.at = now;
+                changed = true;
+            }
+        }
         if now.duration_since(self.git_checked) >= GIT_BRANCH_POLL {
             self.git_checked = now;
             if let Some(branch) = self.git_head.as_deref().and_then(git_branch)
@@ -3902,6 +3966,13 @@ impl App {
                 if matches!(self.prompt, Some(Prompt::Sessions(_))) {
                     self.host.send(Command::CloseSessions);
                 }
+                if matches!(self.prompt, Some(Prompt::Management(_)))
+                    && let Some(panel) = self.models_return.take()
+                {
+                    self.prompt = Some(Prompt::Models(Box::new(panel)));
+                    self.host.send(Command::ListModels);
+                    return Outcome::Continue;
+                }
                 self.prompt = match self.prompt.take() {
                     Some(Prompt::Fork(ask)) => ask.timeline.map(Prompt::Timeline),
                     _ => None,
@@ -4024,13 +4095,14 @@ impl App {
                 )));
             }
             Effect::OpenArea { area, note } => {
-                self.permissions_return = match self.prompt.take() {
-                    Some(Prompt::Approvals(panel)) => Some(panel),
-                    prompt => {
-                        self.prompt = prompt;
-                        None
-                    }
-                };
+                let taken = self.prompt.take();
+                self.permissions_return = None;
+                self.models_return = None;
+                match taken {
+                    Some(Prompt::Approvals(panel)) => self.permissions_return = Some(panel),
+                    Some(Prompt::Models(panel)) => self.models_return = Some(*panel),
+                    prompt => self.prompt = prompt,
+                }
                 self.open_management(area, note);
             }
             Effect::StopTask {
@@ -4221,11 +4293,11 @@ impl App {
                 if provider_id == DIM_OAUTH_ID {
                     self.signed_in = true;
                 }
-                self.prompt = Some(Prompt::Models(ModelsPanel::new()));
+                self.prompt = Some(Prompt::Models(Box::new(ModelsPanel::new())));
                 self.host.send(Command::ListModels);
             }
             Effect::OpenModels => {
-                self.prompt = Some(Prompt::Models(ModelsPanel::new()));
+                self.prompt = Some(Prompt::Models(Box::new(ModelsPanel::new())));
                 self.host.send(Command::ListModels);
             }
             Effect::Logout(target) => self.host.send(Command::Logout(target)),
@@ -4818,12 +4890,19 @@ impl App {
             Setting::ThinkingDetails => {
                 self.thinking_detail = self.thinking_detail.flipped();
                 let expanded = self.thinking_detail == Detail::Expanded;
+                self.thinking_gesture += 1;
+                let choices = self.thinking_choices.get(&self.tool_scope());
                 for block in &mut self.history {
                     if let Block::Thinking {
-                        expanded: value, ..
+                        source_id,
+                        expanded: value,
+                        ..
                     } = block
                     {
-                        *value = expanded;
+                        *value = choices
+                            .and_then(|choices| choices.get(source_id))
+                            .copied()
+                            .unwrap_or(expanded);
                     }
                 }
                 self.request_reflow();
@@ -5512,7 +5591,7 @@ impl App {
                 Outcome::Continue
             }
             "models" => {
-                self.open_prompt(Prompt::Models(ModelsPanel::new()));
+                self.open_prompt(Prompt::Models(Box::new(ModelsPanel::new())));
                 self.host.send(Command::ListModels);
                 Outcome::Continue
             }
@@ -5526,6 +5605,22 @@ impl App {
                 self.reports.push(Block::Status {
                     text: rows.join("\n"),
                     tone: Tone::Muted,
+                });
+                Outcome::Continue
+            }
+            "update" => {
+                self.reports.push(match crate::update::command() {
+                    Ok(command) => Block::Status {
+                        text: tf(
+                            "To update, exit every client and stop the server, then run {command}",
+                            &[("command", &command)],
+                        ),
+                        tone: Tone::Muted,
+                    },
+                    Err(reason) => Block::Status {
+                        text: reason,
+                        tone: Tone::Warning,
+                    },
                 });
                 Outcome::Continue
             }
@@ -5595,6 +5690,7 @@ impl App {
 
     fn frame(&mut self, size: (u16, u16)) -> Frame {
         self.advance_reveal();
+        self.refresh_excerpts(Instant::now());
         let cols = size.0 as usize;
         let width = cols.saturating_sub(2 + MARGIN).max(1);
         let mut frame = Frame::default();
@@ -5878,11 +5974,28 @@ impl App {
                     cols,
                     most,
                     self.tool_detail,
-                    self.thinking_detail,
+                    &|row| {
+                        let session = &self.snapshot.as_ref().expect("side snapshot").session_id;
+                        let expanded = self
+                            .thinking_choices
+                            .get(&(session.clone(), side.id.clone()))
+                            .and_then(|choices| choices.get(&row.row_id))
+                            .copied()
+                            .unwrap_or(self.thinking_detail == Detail::Expanded);
+                        (
+                            if expanded {
+                                Detail::Expanded
+                            } else {
+                                Detail::Collapsed
+                            },
+                            self.excerpt(session, &side.id, row).to_owned(),
+                            self.panel_thought_key(row),
+                        )
+                    },
                     &self.palette,
                     &self.markdown,
                 );
-                self.side_rows = self.side_rows.max(reply.len()).min(most);
+                self.side_rows = self.side_rows.max(reply.live.len()).min(most);
                 Some(side_panel(side, reply, self.side_rows, cols, &self.palette))
             }
             Some(_) => None,
@@ -5897,11 +6010,23 @@ impl App {
         let (side_above, side_below) = if self.fullscreen {
             (side, None)
         } else {
-            (None, side)
+            (None, side.map(|panel| panel.live))
         };
         if let Some(panel) = side_above {
             let margin = " ".repeat(MARGIN);
-            live.extend(panel.into_iter().map(|row| format!("{margin}{row}")));
+            frame.thought_rows = panel
+                .thought_rows
+                .into_iter()
+                .map(|(row, columns, key, body)| {
+                    (
+                        live.len() + row,
+                        columns.start + MARGIN..columns.end + MARGIN,
+                        key,
+                        body,
+                    )
+                })
+                .collect();
+            live.extend(panel.live.into_iter().map(|row| format!("{margin}{row}")));
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -6333,6 +6458,112 @@ impl App {
         }
     }
 
+    fn refresh_excerpts(&mut self, now: Instant) {
+        let mut present = HashSet::new();
+        let mut update = |session: &str, branch: &str, rows: &[std::sync::Arc<ViewRow>]| {
+            for row in rows.iter().filter(|row| row.kind == RowKind::Thinking) {
+                let key = (session.to_owned(), branch.to_owned(), row.row_id.clone());
+                if let Some(previous) = &row.provisional_id {
+                    let old = (session.to_owned(), branch.to_owned(), previous.clone());
+                    if let Some(excerpt) = self.excerpts.remove(&old) {
+                        self.excerpts.entry(key.clone()).or_insert(excerpt);
+                    }
+                    if let Some(choices) = self
+                        .thinking_choices
+                        .get_mut(&(session.to_owned(), branch.to_owned()))
+                        && let Some(choice) = choices.remove(previous)
+                    {
+                        choices.entry(row.row_id.clone()).or_insert(choice);
+                    }
+                    if let Some(choice) = self.member_expansions.remove(previous) {
+                        self.member_expansions
+                            .entry(row.row_id.clone())
+                            .or_insert(choice);
+                    }
+                }
+                if !row.streaming {
+                    continue;
+                }
+                let next = row.display.as_deref().unwrap_or_default();
+                let excerpt =
+                    self.excerpts
+                        .entry(key.clone())
+                        .or_insert_with(|| DisplayedExcerpt {
+                            text: next.to_owned(),
+                            next: next.to_owned(),
+                            at: now,
+                        });
+                if (excerpt.text.is_empty()
+                    || now.duration_since(excerpt.at) >= Duration::from_millis(500))
+                    && excerpt.text != next
+                {
+                    excerpt.text = next.to_owned();
+                    excerpt.at = now;
+                }
+                if excerpt.next != next {
+                    excerpt.next = next.to_owned();
+                }
+                present.insert(key);
+            }
+        };
+        if let Some(snapshot) = &self.snapshot {
+            update(&snapshot.session_id, &snapshot.focus, &snapshot.rows);
+            if let Some(side) = &snapshot.side {
+                update(&snapshot.session_id, &side.id, &side.rows);
+            }
+        }
+        if let Some(Prompt::Tasks(panel)) = &self.prompt
+            && let Some(snapshot) = panel.member_snapshot()
+        {
+            update(&snapshot.session_id, &snapshot.focus, &snapshot.rows);
+        }
+        self.excerpts.retain(|key, _| present.contains(key));
+    }
+
+    fn excerpt<'a>(&'a self, session: &str, branch: &str, row: &'a ViewRow) -> &'a str {
+        self.excerpts
+            .get(&(session.to_owned(), branch.to_owned(), row.row_id.clone()))
+            .map_or_else(
+                || row.display.as_deref().unwrap_or_default(),
+                |excerpt| excerpt.text.as_str(),
+            )
+    }
+
+    fn panel_thought_key(&self, row: &ViewRow) -> String {
+        let snapshot = self.snapshot.as_ref().expect("side snapshot");
+        serde_json::to_string(&(
+            &snapshot.session_id,
+            &snapshot.side.as_ref().expect("side line").id,
+            self.thinking_gesture,
+            &row.row_id,
+        ))
+        .expect("thinking identity is JSON")
+    }
+
+    fn click_panel_thought(&mut self, key: &str, body: bool) -> bool {
+        if !self.panel_thought(key, body) {
+            return false;
+        }
+        let snapshot = self.snapshot.as_ref().expect("validated side snapshot");
+        let side = snapshot.side.as_ref().expect("validated side line");
+        let row = side
+            .rows
+            .iter()
+            .find(|row| self.panel_thought_key(row) == key)
+            .expect("validated thought");
+        let choices = self
+            .thinking_choices
+            .entry((snapshot.session_id.clone(), side.id.clone()))
+            .or_default();
+        let expanded = choices
+            .get(&row.row_id)
+            .copied()
+            .unwrap_or(self.thinking_detail == Detail::Expanded);
+        choices.insert(row.row_id.clone(), !body && !expanded);
+        self.thinking_gesture += 1;
+        true
+    }
+
     fn project_member(&mut self, cols: usize) {
         let Some(Prompt::Tasks(panel)) = &self.prompt else {
             return;
@@ -6352,7 +6583,11 @@ impl App {
                 continue;
             }
             let detail = if row.kind == RowKind::Thinking {
-                self.thinking_detail
+                match self.member_expansions.get(&row.row_id) {
+                    Some(true) => Detail::Expanded,
+                    Some(false) => Detail::Collapsed,
+                    None => self.thinking_detail,
+                }
             } else {
                 self.tool_detail
             };
@@ -6363,6 +6598,20 @@ impl App {
                     Some(&self.member_choices),
                 )),
                 RowKind::StreamingAssistant => Block::Assistant(row.text.clone()),
+                RowKind::Thinking => Block::Thinking {
+                    source_id: row.row_id.clone(),
+                    text: if detail == Detail::Expanded {
+                        row.text.clone()
+                    } else {
+                        String::new()
+                    },
+                    excerpt: self
+                        .excerpt(&snapshot.session_id, &snapshot.focus, row)
+                        .to_owned(),
+                    elapsed_ms: row.elapsed_ms,
+                    expanded: detail == Detail::Expanded,
+                    streamed: false,
+                },
                 _ => project_row(&snapshot.rows, index, detail),
             };
             if let Some(expanded) = self.member_expansions.get(&row.row_id) {
@@ -6439,7 +6688,9 @@ impl App {
             };
             let elapsed_ms = if row.streaming { None } else { row.elapsed_ms };
             let source = Block::Thinking {
+                source_id: row.row_id.clone(),
                 text: source_text.clone(),
+                excerpt: row.display.clone().unwrap_or_default(),
                 elapsed_ms,
                 expanded,
                 streamed: true,
@@ -6487,6 +6738,7 @@ impl App {
     /// the reasoning preview and running tools, in transcript order).
     #[allow(clippy::type_complexity)]
     fn transcript(&mut self, width: usize) -> (Vec<String>, Vec<(Block, Placement)>, Vec<String>) {
+        self.tail_thoughts.clear();
         if !self.arm_window() {
             return (Vec::new(), Vec::new(), Vec::new());
         }
@@ -6633,6 +6885,7 @@ impl App {
         let mut sources: Vec<(Block, Placement)> = Vec::new();
         let global = self.tool_detail;
         let choices = self.tool_choices.get(&self.tool_scope());
+        let thinking_choices = self.thinking_choices.get(&self.tool_scope());
         let detail_of = |index: usize| {
             if snapshot.rows[index].kind == RowKind::Thinking {
                 return self.thinking_detail;
@@ -6676,6 +6929,17 @@ impl App {
                 (RowKind::AssistantMessage, Some(batch)) => streamed(batch),
                 _ => {
                     let mut block = project_row(&snapshot.rows, index, detail_of(index));
+                    if self.fullscreen
+                        && let Block::Thinking {
+                            source_id,
+                            expanded,
+                            ..
+                        } = &mut block
+                        && let Some(choice) =
+                            thinking_choices.and_then(|choices| choices.get(source_id))
+                    {
+                        *expanded = *choice;
+                    }
                     if self.fullscreen && snapshot.rows[index].kind == RowKind::ToolCall {
                         block = Block::ToolGroup(project_fullscreen_group(
                             &group_rows(&snapshot.rows, index),
@@ -6743,6 +7007,7 @@ impl App {
         let pad = " ".repeat(MARGIN);
         let mut tail: Vec<String> = Vec::new();
         let mut tail_groups = Vec::new();
+        let mut tail_thoughts = Vec::new();
         for item in &live_items {
             let rows: Vec<String> = match item {
                 LiveItem::Text(id) => match self.planner.pending(id) {
@@ -6798,9 +7063,18 @@ impl App {
                         }
                         thought.tail.clone()
                     } else {
+                        let expanded = thinking_choices
+                            .filter(|_| self.fullscreen)
+                            .and_then(|choices| choices.get(&row.row_id))
+                            .copied()
+                            .unwrap_or(self.thinking_detail == Detail::Expanded);
                         live_thinking(
-                            &row.text,
-                            self.thinking_detail == Detail::Expanded,
+                            if expanded {
+                                &row.text
+                            } else {
+                                self.excerpt(&snapshot.session_id, &snapshot.focus, row)
+                            },
+                            expanded,
                             width,
                             p,
                         )
@@ -6833,10 +7107,19 @@ impl App {
             if rows.is_empty() {
                 continue;
             }
+            if self.fullscreen
+                && let LiveItem::Thinking(index) = item
+            {
+                tail_thoughts.push((
+                    tail.len() + 1..tail.len() + 1 + rows.len(),
+                    snapshot.rows[*index].row_id.clone(),
+                ));
+            }
             tail.push(String::new());
             tail.extend(rows.into_iter().map(|r| format!("{pad}{r}")));
         }
         self.tail_groups = tail_groups;
+        self.tail_thoughts = tail_thoughts;
         (commits, sources, tail)
     }
 
@@ -7245,10 +7528,28 @@ impl App {
             self.sync_tool_origins();
             return true;
         }
-        let Some(id) = block else { return false };
-        if row != 1 {
+        let Some(id) = block else {
+            let Some((source_id, header)) = self.live_thought(row) else {
+                return false;
+            };
+            let source_id = source_id.to_owned();
+            let scope = self.tool_scope();
+            let choices = self.thinking_choices.entry(scope).or_default();
+            let expanded = choices
+                .get(&source_id)
+                .copied()
+                .unwrap_or(self.thinking_detail == Detail::Expanded);
+            if !header && !expanded {
+                return false;
+            }
+            choices.insert(source_id, header && !expanded);
+            self.thinking_gesture += 1;
+            return true;
+        };
+        if row != 1 && self.thinking_body(block, cols, row).is_none() {
             return false;
         }
+        self.thinking_gesture += 1;
         if self.shows_member() {
             let Some(Prompt::Tasks(panel)) = &self.prompt else {
                 return false;
@@ -7285,6 +7586,7 @@ impl App {
             return true;
         }
         let index = id.checked_sub(self.dropped);
+        let scope = self.tool_scope();
         match index.and_then(|index| self.history.get_mut(index)) {
             Some(Block::Compaction {
                 expanded,
@@ -7297,9 +7599,19 @@ impl App {
                     *text = "".into();
                 }
             }
+            Some(Block::Thinking {
+                source_id,
+                expanded,
+                ..
+            }) => {
+                *expanded = row == 1 && !*expanded;
+                self.thinking_choices
+                    .entry(scope)
+                    .or_default()
+                    .insert(source_id.clone(), *expanded);
+            }
             Some(
-                Block::Thinking { expanded, .. }
-                | Block::Hook { expanded, .. }
+                Block::Hook { expanded, .. }
                 | Block::MemberResult { expanded, .. }
                 | Block::Error { expanded, .. },
             ) => expanded.toggle(),
@@ -7308,6 +7620,24 @@ impl App {
         self.mark_rewritten(id);
         self.sync_compaction_details();
         true
+    }
+
+    fn live_thought(&self, row: usize) -> Option<(&str, bool)> {
+        if self.shows_member() {
+            return None;
+        }
+        let (rows, source_id) = self
+            .tail_thoughts
+            .iter()
+            .find(|(rows, _)| rows.contains(&row))?;
+        self.snapshot
+            .as_ref()?
+            .rows
+            .iter()
+            .any(|source| {
+                source.row_id == *source_id && source.streaming && source.kind == RowKind::Thinking
+            })
+            .then_some((source_id.as_str(), row == rows.start))
     }
 
     fn tool_scope(&self) -> (String, String) {
@@ -7959,6 +8289,72 @@ impl App {
 }
 
 impl Document for App {
+    fn panel_thought(&self, key: &str, body: bool) -> bool {
+        if !self.fullscreen || self.prompt.is_some() {
+            return false;
+        }
+        let Some(snapshot) = &self.snapshot else {
+            return false;
+        };
+        let Some(side) = &snapshot.side else {
+            return false;
+        };
+        side.rows.iter().any(|row| {
+            row.kind == RowKind::Thinking
+                && self.panel_thought_key(row) == key
+                && (!body
+                    || self
+                        .thinking_choices
+                        .get(&(snapshot.session_id.clone(), side.id.clone()))
+                        .and_then(|choices| choices.get(&row.row_id))
+                        .copied()
+                        .unwrap_or(self.thinking_detail == Detail::Expanded))
+        })
+    }
+
+    fn thinking_body(&self, block: Option<usize>, cols: usize, row: usize) -> Option<String> {
+        let source_id = match block {
+            Some(block) => {
+                let index = block.checked_sub(self.dropped())?;
+                let Block::Thinking {
+                    source_id,
+                    expanded: true,
+                    ..
+                } = self.active_history().get(index)?
+                else {
+                    return None;
+                };
+                if row < 2 || row >= self.rows(index, cols).len() {
+                    return None;
+                }
+                source_id
+            }
+            None => {
+                let (source_id, header) = self.live_thought(row)?;
+                if header
+                    || !self
+                        .thinking_choices
+                        .get(&self.tool_scope())
+                        .and_then(|choices| choices.get(source_id))
+                        .copied()
+                        .unwrap_or(self.thinking_detail == Detail::Expanded)
+                {
+                    return None;
+                }
+                source_id
+            }
+        };
+        Some(
+            serde_json::to_string(&(
+                self.tool_scope(),
+                self.member_target.as_ref(),
+                self.thinking_gesture,
+                source_id,
+            ))
+            .expect("thinking identity is JSON"),
+        )
+    }
+
     fn disclosure(&self, block: Option<usize>, cols: usize, row: usize) -> Option<String> {
         let (node, _) = self.tool_disclosure(block, row, cols)?;
         if self.shows_member() {
@@ -8252,16 +8648,16 @@ fn side_reply(
     cols: usize,
     height: usize,
     detail: Detail,
-    thinking_detail: Detail,
+    thinking: &dyn Fn(&ViewRow) -> (Detail, String, String),
     p: &Palette,
     markdown: &MarkdownRenderer,
-) -> Vec<String> {
+) -> Frame {
     let inner = cols
         .saturating_sub(2 + MARGIN)
         .max(4)
         .saturating_sub(4)
         .max(1);
-    let mut blocks: Vec<Vec<String>> = Vec::new();
+    let mut blocks = Vec::new();
     let mut rows = 0;
     for (index, row) in side.rows.iter().enumerate().rev() {
         if rows >= height {
@@ -8272,39 +8668,56 @@ fn side_reply(
         {
             continue;
         }
+        let mut key = None;
         let block = match row.kind {
             RowKind::StreamingAssistant => Block::Assistant(row.text.clone()),
-            RowKind::Thinking => project_row(&side.rows, index, thinking_detail),
+            RowKind::Thinking => {
+                let (detail, excerpt, identity) = thinking(row);
+                key = Some(identity);
+                Block::Thinking {
+                    source_id: row.row_id.clone(),
+                    text: if detail == Detail::Expanded {
+                        row.text.clone()
+                    } else {
+                        String::new()
+                    },
+                    excerpt,
+                    elapsed_ms: row.elapsed_ms,
+                    expanded: detail == Detail::Expanded,
+                    streamed: false,
+                }
+            }
             _ => project_row(&side.rows, index, detail),
         };
         let rendered = render_block(&block, inner, p, markdown, false);
         rows += rendered.len() + 1;
-        blocks.push(rendered);
+        blocks.push((rendered, key));
     }
     blocks.reverse();
-    let mut lines: Vec<String> = Vec::new();
-    for block in blocks {
-        if !lines.is_empty() {
-            lines.push(String::new());
+    let mut frame = Frame::default();
+    for (block, key) in blocks {
+        if !frame.live.is_empty() {
+            frame.live.push(String::new());
         }
-        lines.extend(block);
+        if let Some(key) = key {
+            frame.thought_rows.extend(
+                (0..block.len())
+                    .map(|row| (frame.live.len() + row, 0..inner, key.clone(), row != 0)),
+            );
+        }
+        frame.live.extend(block);
     }
-    lines
+    frame
 }
 
 /// The side panel above the composer (timeline UI §4.7): the line's
 /// transcript, its last `height` rows, over the line's state.
-fn side_panel(
-    side: &SideLine,
-    reply: Vec<String>,
-    height: usize,
-    cols: usize,
-    p: &Palette,
-) -> Vec<String> {
+fn side_panel(side: &SideLine, reply: Frame, height: usize, cols: usize, p: &Palette) -> Frame {
     use crate::ui::render::panel::bordered;
     let outer = cols.saturating_sub(2 + MARGIN).max(4);
     let inner = outer.saturating_sub(4).max(1);
-    let mut rows: Vec<String> = reply[reply.len().saturating_sub(height)..].to_vec();
+    let skip = reply.live.len().saturating_sub(height);
+    let mut rows: Vec<String> = reply.live[skip..].to_vec();
     rows.resize_with(height, String::new);
     let state = match side.state {
         LineState::Working => format!("{}…", t("working")),
@@ -8328,7 +8741,19 @@ fn side_panel(
         },
     );
     let hint = fg(t("Esc close"), &p.muted);
-    bordered(&rows, outer, None, &p.border, Some(&title), Some(&hint))
+    Frame {
+        live: bordered(&rows, outer, None, &p.border, Some(&title), Some(&hint)),
+        thought_rows: reply
+            .thought_rows
+            .into_iter()
+            .filter_map(|(row, _, key, body)| {
+                row.checked_sub(skip)
+                    .filter(|row| *row < height)
+                    .map(|row| (row + 1, 2..2 + inner, key, body))
+            })
+            .collect(),
+        ..Frame::default()
+    }
 }
 
 fn chunk(lines: &[String]) -> String {
@@ -8918,6 +9343,7 @@ mod tests {
                     updated_at: u64::MAX,
                     model: "p/m".into(),
                     origin: None,
+                    closed: false,
                 })
                 .collect()));
             Prompt::Sessions(panel)
@@ -10190,7 +10616,7 @@ mod tests {
                 "-m",
                 "Initial",
             ]);
-            crate::ui::tilde(&path.to_string_lossy())
+            path.to_string_lossy().into_owned()
         };
 
         let theme = test_theme();
@@ -10244,13 +10670,21 @@ mod tests {
 
         // A branch wider than the path, so the path-alone rung is reachable:
         // it takes over once the tail beside the branch would be too short.
-        let path = root.path().join("checkout").to_string_lossy().into_owned();
-        let branch = format!("team/{}", "x".repeat(width_of(&crate::ui::tilde(&path))));
+        let checkout = root.path().join("checkout").to_string_lossy().into_owned();
+        let branch = format!(
+            "team/{}",
+            "x".repeat(width_of(&crate::ui::tilde(&checkout)))
+        );
+        // The attach carries the directory a daemon answers with. The border
+        // draws it through `tilde`, which shortens the temp root wherever the
+        // fixture lives below the home, so the label compares against the
+        // drawn form while the attach keeps the real path.
         let path = repository("checkout", &branch);
+        let shown = crate::ui::tilde(&path);
         let suffix = format!(" ({branch})");
-        let whole = format!("{path}{suffix}");
+        let whole = format!("{shown}{suffix}");
         assert!(
-            width_of(&suffix) + TAIL > width_of(&path),
+            width_of(&suffix) + TAIL > width_of(&shown),
             "this repository shows the path-alone rung"
         );
         attach(&mut app, "s-a", &path);
@@ -10275,13 +10709,13 @@ mod tests {
         );
         // The path alone, whole at its own width, then cut from the front.
         assert_eq!(
-            label(&mut app, width_of(&path)),
-            path,
+            label(&mut app, width_of(&shown)),
+            shown,
             "the whole path stays when the branch gives way"
         );
-        let cut = label(&mut app, width_of(&path) - 1);
+        let cut = label(&mut app, width_of(&shown) - 1);
         assert!(
-            cut.starts_with('…') && cut != path,
+            cut.starts_with('…') && cut != shown,
             "the path is cut: {cut:?}"
         );
         // No form fits: with a cell left the label is the cut mark alone,
@@ -10540,9 +10974,8 @@ mod tests {
             assert_eq!(live.len(), 1, "{text:?}");
             assert_eq!(settled.len(), 1, "{text:?}");
         }
-        let row = live_thinking(&long, false, 40, p).remove(0);
-        assert!(row.contains("thought."), "{row:?}");
-        assert!(!row.contains("Paragraph 1 "), "{row:?}");
+        let row = live_thinking("Inspect the caller.", false, 40, p).remove(0);
+        assert!(row.contains("Inspect the caller."), "{row:?}");
     }
 
     /// A session that never answers: the interface alone is under test.
@@ -11442,7 +11875,7 @@ mod tests {
                 app.run_command("models", "");
                 let frame = app.frame(size);
                 emu.feed(&screen.render(&frame, size, &app.palette, app));
-                assert!(emu.rows_text().join("\n").contains("Select a model"));
+                assert!(emu.rows_text().join("\n").contains("Conversation model"));
                 assert_ne!(
                     screen.mouse(event(MouseKind::Press, column), app),
                     MouseOutcome::Models
@@ -11491,7 +11924,7 @@ mod tests {
             typed(&mut drawn.app, "/model");
             drawn.key(KeyCode::Enter);
             let models = screen(&mut drawn);
-            assert!(models.contains("Select a model"), "{models}");
+            assert!(models.contains("Conversation model"), "{models}");
         }
     }
 
@@ -12378,11 +12811,11 @@ mod tests {
             80,
             10,
             Detail::Collapsed,
-            Detail::Expanded,
+            &|_| (Detail::Expanded, String::new(), String::new()),
             &app.palette,
             &app.markdown,
         );
-        let tail = strip_escapes(&tail.join("\n"));
+        let tail = strip_escapes(&tail.live.join("\n"));
         assert!(
             tail.contains("reply 199") && !tail.contains("reply 150"),
             "{tail}"
@@ -13545,6 +13978,47 @@ mod tests {
         );
     }
 
+    /// Both TUI modes draw a filled Skill by its name, and the message the same
+    /// draft sends still carries the canonical `/skill:<name>` token.
+    #[test]
+    fn a_filled_skill_draws_its_name_in_both_modes() {
+        use crate::management::skills::Entry;
+        for fullscreen in [false, true] {
+            let mut drawn = Drawn::new((100, 30), None, false);
+            drawn.app.fullscreen = fullscreen;
+            drawn.app.apply(Update::Skills(vec![Entry {
+                id: "user:status".into(),
+                source: Some("user".into()),
+                name: "status".into(),
+                description: "Show the status".into(),
+                file_path: "/home/.agents/skills/status/SKILL.md".into(),
+                enabled: true,
+                shadowed_by: None,
+                user_invocable: true,
+            }]));
+            drawn.app.composer.clear();
+            for ch in "/stat".chars() {
+                drawn.key(KeyCode::Char(ch));
+            }
+            drawn.key(KeyCode::Tab);
+
+            let screen = drawn.emu.rows_text().join("\n");
+            assert!(
+                screen.contains("/status"),
+                "the input draws the Skill's name in fullscreen={fullscreen}: {screen}"
+            );
+            assert!(
+                !screen.contains("skill:status"),
+                "the parser's namespace is not drawn in fullscreen={fullscreen}: {screen}"
+            );
+            assert_eq!(
+                drawn.app.composer.text(),
+                "/skill:status ",
+                "the draft still holds the canonical token in fullscreen={fullscreen}"
+            );
+        }
+    }
+
     /// A resumed session of `count` user messages `ask N`, each cut at `N`.
     fn resume_asks(drawn: &mut Drawn, count: usize) {
         drawn
@@ -13690,6 +14164,281 @@ mod tests {
             .app
             .switch_session("s1".into(), crate::model::session::SwitchKind::Resumed);
         drawn
+    }
+
+    #[test]
+    fn thinking_excerpts_coalesce_in_both_modes_and_settle_without_a_sliding_tail() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for fullscreen in [false, true] {
+            for cols in [100, 60, 40, 32] {
+                let mut drawn = attached();
+                drawn.size = (cols, 40);
+                drawn.app.fullscreen = fullscreen;
+                let mut thought = (*message(false)).clone();
+                thought.row_id = "thought-preview".into();
+                thought.kind = RowKind::Thinking;
+                thought.streaming = true;
+                thought.text = "Read the callers. Still checking".into();
+                thought.display = Some("Read the callers.".into());
+                show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+                let frame = drawn.app.frame(drawn.size);
+                let visible = strip_escapes(&frame.live.join("\n"));
+                assert!(visible.contains("Thinking excerpt · Read"), "{visible}");
+                assert!(!visible.contains("Still checking"), "{visible}");
+                thought.row_id = "thought-durable".into();
+                thought.provisional_id = Some("thought-preview".into());
+                thought.display = Some("Check the owner.".into());
+                thought
+                    .text
+                    .push_str(". Check the owner. Another unfinished tail");
+                show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+                let frame = drawn.app.frame(drawn.size);
+                let visible = strip_escapes(&frame.live.join("\n"));
+                assert!(visible.contains("Thinking excerpt · Read"), "{visible}");
+                assert!(!visible.contains("Check the owner"), "{visible}");
+                drawn
+                    .app
+                    .tick_at(Instant::now() + Duration::from_millis(501));
+                let frame = drawn.app.frame(drawn.size);
+                let visible = strip_escapes(&frame.live.join("\n"));
+                assert!(visible.contains("Thinking excerpt · Check"), "{visible}");
+                thought.streaming = false;
+                thought.elapsed_ms = Some(18000);
+                thought.text.push_str(". Keep the owner.");
+                thought.display = Some("Keep the owner.".into());
+                show(&mut drawn, vec![std::sync::Arc::new(thought)]);
+                let history = strip_escapes(&drawn.app.reflow_history(cols as usize).join("\n"));
+                assert!(history.contains("Thought for 18.0s · Keep"), "{history}");
+                assert!(!history.contains("unfinished"), "{history}");
+                assert_eq!(history.matches("Thought for 18.0s").count(), 1, "{history}");
+            }
+        }
+    }
+
+    #[test]
+    fn fullscreen_live_thinking_collapses_by_mouse_and_keeps_choices_when_settled() {
+        use crate::ui::render::fullscreen::FullScreen;
+        use crate::ui::render::panel::strip_escapes;
+        use crate::ui::terminal::{MouseEvent, MouseKind};
+
+        for cols in [100, 32] {
+            let mut drawn = attached();
+            drawn.size = (cols, 40);
+            drawn.app.set_fullscreen(true);
+            drawn.app.thinking_detail = Detail::Expanded;
+            let mut thought = (*message(false)).clone();
+            thought.row_id = "live-thought".into();
+            thought.kind = RowKind::Thinking;
+            thought.streaming = true;
+            thought.text = "Read callers.\nKeep locks.".into();
+            thought.display = Some("Keep locks.".into());
+            show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+            let mut screen = FullScreen::new(drawn.size, false);
+            let mut emu = crate::ui::render::testterm::Emu::new(cols as usize, 40);
+            let frame = drawn.app.frame(drawn.size);
+            emu.feed(&screen.render(&frame, drawn.size, &drawn.app.palette, &drawn.app));
+            let body_row = emu
+                .rows_text()
+                .iter()
+                .position(|row| row.contains("Read callers."))
+                .expect("live thought body is visible") as u16;
+            for kind in [MouseKind::Press, MouseKind::Release] {
+                screen.mouse(
+                    MouseEvent {
+                        kind,
+                        column: 6,
+                        row: body_row,
+                    },
+                    &drawn.app,
+                );
+            }
+            let Some(MouseOutcome::Click { block: None, row }) =
+                screen.pending_click(&drawn.app, Instant::now() + Duration::from_millis(401))
+            else {
+                panic!("live body must defer its collapse gesture");
+            };
+            assert!(drawn.app.click(None, row, cols as usize));
+            let frame = drawn.app.frame(drawn.size);
+            let visible = strip_escapes(&frame.live.join("\n"));
+            assert!(visible.contains("Thinking excerpt"), "{visible}");
+            assert!(!visible.contains("Read callers."), "{visible}");
+            let header = frame
+                .live
+                .iter()
+                .position(|row| row.contains("Thinking excerpt"))
+                .unwrap();
+            assert!(drawn.app.click(None, header, cols as usize));
+            let frame = drawn.app.frame(drawn.size);
+            assert!(strip_escapes(&frame.live.join("\n")).contains("Read callers."));
+            let body = frame
+                .live
+                .iter()
+                .position(|row| row.contains("Read callers."))
+                .unwrap();
+            assert!(drawn.app.click(None, body, cols as usize));
+
+            thought.provisional_id = Some(thought.row_id.clone());
+            thought.row_id = "written-thought".into();
+            show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+            let frame = drawn.app.frame(drawn.size);
+            assert!(!strip_escapes(&frame.live.join("\n")).contains("Read callers."));
+            thought.streaming = false;
+            thought.elapsed_ms = Some(1200);
+            show(&mut drawn, vec![std::sync::Arc::new(thought)]);
+            let history = strip_escapes(&drawn.app.reflow_history(cols as usize).join("\n"));
+            assert!(history.contains("Keep"), "{history}");
+            assert!(!history.contains("Read callers."), "{history}");
+        }
+    }
+
+    #[test]
+    fn fullscreen_thinking_bodies_collapse_without_moving_titles_or_other_block_actions() {
+        use crate::ui::render::panel::strip_escapes;
+
+        for cols in [100, 60, 40, 32] {
+            let mut drawn = attached();
+            drawn.size = (cols, 40);
+            drawn.app.fullscreen = true;
+            let mut thought = (*message(false)).clone();
+            thought.row_id = "thought-main".into();
+            thought.kind = RowKind::Thinking;
+            thought.text =
+                "先确认边界。\nInspect e\u{301} and 👩‍💻 before changing the owner.".into();
+            thought.display = Some("先确认边界。".into());
+            thought.elapsed_ms = Some(18000);
+            show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
+            let at = drawn
+                .app
+                .history
+                .iter()
+                .position(|block| matches!(block, Block::Thinking { .. }))
+                .unwrap();
+            let id = drawn.app.dropped + at;
+            let collapsed = strip_escapes(&drawn.app.rows(at, cols as usize).join("\n"));
+            assert!(drawn.app.click(Some(id), 1, cols as usize));
+            let expanded = strip_escapes(&drawn.app.rows(at, cols as usize).join("\n"));
+            assert_eq!(
+                collapsed
+                    .lines()
+                    .find(|row| row.contains("Thought"))
+                    .unwrap()
+                    .find("Thought"),
+                expanded
+                    .lines()
+                    .find(|row| row.contains("Thought"))
+                    .unwrap()
+                    .find("Thought")
+            );
+            assert!(expanded.contains("先确认边界。"), "{expanded}");
+            assert!(
+                drawn
+                    .app
+                    .thinking_body(Some(id), cols as usize, 2)
+                    .is_some()
+            );
+            assert!(drawn.app.click(Some(id), 3, cols as usize));
+            assert!(!drawn.app.click(Some(id), 3, cols as usize));
+            drawn.app.rebuild_window(0);
+            drawn.app.frame(drawn.size);
+            assert!(drawn.app.history.iter().any(|block| matches!(
+                block,
+                Block::Thinking {
+                    expanded: false,
+                    ..
+                }
+            )));
+            drawn.app.record(Block::Hook {
+                row: crate::ui::transcript::block::HookRow::Context,
+                body: "hook body".into(),
+                expanded: true,
+            });
+            let hook = drawn.app.dropped + drawn.app.history.len() - 1;
+            assert!(!drawn.app.click(Some(hook), 3, cols as usize));
+
+            thought.row_id = "thought-side".into();
+            drawn.app.snapshot.as_mut().unwrap().side = Some(SideLine {
+                id: "side".into(),
+                purpose: "inspect".into(),
+                state: LineState::Working,
+                rows: vec![std::sync::Arc::new(thought)],
+            });
+            let frame = drawn.app.frame(drawn.size);
+            let (_, _, key, _) = frame
+                .thought_rows
+                .iter()
+                .find(|(_, _, _, body)| !*body)
+                .expect("side header hit");
+            assert!(drawn.app.click_panel_thought(key, false));
+            let frame = drawn.app.frame(drawn.size);
+            let (_, columns, key, _) = frame
+                .thought_rows
+                .iter()
+                .find(|(_, _, _, body)| *body)
+                .expect("side body hit");
+            assert!(
+                columns.start > MARGIN && columns.end < cols as usize - MARGIN,
+                "panel borders are not hits"
+            );
+            assert!(drawn.app.click_panel_thought(key, true));
+            assert!(
+                !drawn.app.click_panel_thought(key, true),
+                "an old gesture never reopens the thought"
+            );
+            let frame = drawn.app.frame(drawn.size);
+            assert!(frame.thought_rows.iter().all(|(_, _, _, body)| !*body));
+
+            let mut task = background_task("member-task", "Review ownership");
+            task.kind = crate::model::view::TaskKind::Member(
+                crate::model::view::MemberTarget::Session("member".into()),
+            );
+            let mut panel = TasksPanel::new(drawn.app.snapshot.as_ref().unwrap());
+            panel.open_card(task);
+            let mut member_thought = (*message(false)).clone();
+            member_thought.row_id = "member-thought".into();
+            member_thought.kind = RowKind::Thinking;
+            member_thought.text = "A member checks cancellation. More unfinished text".into();
+            member_thought.display = Some("A member checks cancellation.".into());
+            panel.member(
+                "member",
+                Box::new(ViewSnapshot {
+                    session_id: "member".into(),
+                    focus: "main".into(),
+                    rows: vec![std::sync::Arc::new(member_thought)],
+                    ..ViewSnapshot::default()
+                }),
+                crate::model::view::MemberConversationState::Live,
+                None,
+            );
+            drawn.app.prompt = Some(Prompt::Tasks(panel));
+            drawn.app.frame(drawn.size);
+            assert!(
+                drawn
+                    .app
+                    .rows(1, cols as usize)
+                    .join("\n")
+                    .contains("A member")
+            );
+            assert!(drawn.app.click(Some(1), 1, cols as usize));
+            drawn.app.frame(drawn.size);
+            assert!(
+                drawn
+                    .app
+                    .rows(1, cols as usize)
+                    .join("\n")
+                    .contains("unfinished text")
+            );
+            assert!(drawn.app.click(Some(1), 3, cols as usize));
+            drawn.app.frame(drawn.size);
+            assert!(
+                !drawn
+                    .app
+                    .rows(1, cols as usize)
+                    .join("\n")
+                    .contains("unfinished text")
+            );
+            assert!(!drawn.app.click(Some(1), 3, cols as usize));
+        }
     }
 
     #[test]
@@ -18974,6 +19723,7 @@ mod tests {
             updated_at: u64::MAX,
             model: "p/m".into(),
             origin: None,
+            closed: false,
         };
         let here = item("s-here", "Fix the failing test", &launch);
         let also = item("s-also", "Retry the flaky test", &launch);

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-event-hub", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-report", "crates/dim-codemode", "crates/dim-modality", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
+members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-event-hub", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-report", "crates/dim-codemode", "crates/dim-modality", "crates/dim-image-understanding", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
 exclude = ["vendor/grok-build"]
 
 [workspace.package]
@@ -31,6 +31,7 @@ dim-goal = { path = "crates/dim-goal" }
 dim-report = { path = "crates/dim-report" }
 dim-codemode = { path = "crates/dim-codemode" }
 dim-modality = { path = "crates/dim-modality" }
+dim-image-understanding = { path = "crates/dim-image-understanding" }
 dim-ocr = { path = "crates/dim-ocr" }
 dim-modality-aimux = { path = "crates/dim-modality-aimux" }
 dim-client = { path = "crates/dim-client" }
@@ -53,6 +54,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 debug = "line-tables-only"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "debuginfo"

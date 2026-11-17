@@ -149,9 +149,7 @@ impl TimelineStore for Held {
 /// that started it.
 #[derive(Default)]
 struct Rebuild {
-    staged: Vec<Arc<AgentEvent>>,
     processed: Vec<u64>,
-    read: bool,
     covered: u64,
     published: u64,
 }
@@ -163,6 +161,7 @@ struct TailPart {
     shared: Arc<Mutex<Rebuild>>,
     read_now: Arc<Mutex<Option<UnboundedReceiver<()>>>>,
     read_done: UnboundedSender<()>,
+    rebuild_started: UnboundedSender<()>,
 }
 impl TailPart {
     fn new(
@@ -170,6 +169,7 @@ impl TailPart {
         shared: Arc<Mutex<Rebuild>>,
         read_now: Arc<Mutex<Option<UnboundedReceiver<()>>>>,
         read_done: UnboundedSender<()>,
+        rebuild_started: UnboundedSender<()>,
     ) -> rutis::Result<Self> {
         Ok(Self {
             timeline: names.key()?,
@@ -178,6 +178,7 @@ impl TailPart {
             shared,
             read_now,
             read_done,
+            rebuild_started,
         })
     }
 }
@@ -198,51 +199,49 @@ impl DynPlugin for TailPart {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let shared = self.shared.clone();
-            let staging = shared.clone();
-            dispatcher.subscribe(ctx, "TailHandover", &["*"], move |event| {
-                let mut rebuild = staging.lock().unwrap();
-                if !rebuild.read {
-                    rebuild.staged.push(event);
-                } else if event.sequence > rebuild.covered {
-                    rebuild.processed.push(event.sequence);
-                }
-                Box::pin(async { Ok(()) })
-            })?;
-            let read_now = self.read_now.lock().unwrap().take();
+            let read_now = self.read_now.clone();
             let done = self.read_done.clone();
+            let started = self.rebuild_started.clone();
+            let task_ctx = ctx.clone();
             let task = tokio::spawn(async move {
-                let Some(mut read_now) = read_now else {
-                    return;
-                };
-                if !lifecycle.activated().await {
-                    return;
-                }
-                let Some(()) = read_now.recv().await else {
-                    return;
-                };
-                let published = timeline.sequence();
-                let reply = timeline
-                    .query(page(4096, true))
+                let restored = shared.clone();
+                dispatcher
+                    .consume(
+                        &task_ctx,
+                        "TailHandover".into(),
+                        vec!["*".into()],
+                        Arc::new(move || {
+                            let timeline = timeline.clone();
+                            let lifecycle = lifecycle.clone();
+                            let restored = restored.clone();
+                            let read_now = read_now.lock().unwrap().take();
+                            let started = started.clone();
+                            Box::pin(async move {
+                                started.send(()).expect("rebuild registration observer");
+                                let mut read_now = read_now.expect("one rebuild per registration");
+                                assert!(lifecycle.activated().await);
+                                read_now.recv().await.expect("rebuild trigger");
+                                let published = timeline.sequence();
+                                let reply = timeline.query(page(4096, true)).await?;
+                                let QueryOutput::Events { events } = reply.result else {
+                                    panic!("handover selects events");
+                                };
+                                let mut rebuild = restored.lock().unwrap();
+                                rebuild.covered = reply.through;
+                                rebuild.published = published;
+                                rebuild
+                                    .processed
+                                    .extend(events.iter().map(|row| row.event.sequence));
+                                Ok(reply.through)
+                            })
+                        }),
+                        Arc::new(move |event| {
+                            shared.lock().unwrap().processed.push(event.sequence);
+                            Box::pin(async { Ok(()) })
+                        }),
+                    )
                     .await
-                    .expect("the read that adds the tail");
-                let QueryOutput::Events { events } = reply.result else {
-                    panic!("handover selects events");
-                };
-                let mut rebuild = shared.lock().unwrap();
-                rebuild.covered = reply.through;
-                rebuild.published = published;
-                rebuild.read = true;
-                rebuild
-                    .processed
-                    .extend(events.iter().map(|row| row.event.sequence));
-                let staged = std::mem::take(&mut rebuild.staged);
-                rebuild.processed.extend(
-                    staged
-                        .into_iter()
-                        .map(|event| event.sequence)
-                        .filter(|sequence| *sequence > reply.through),
-                );
-                drop(rebuild);
+                    .expect("consume rebuild and held-event drain");
                 let _ = done.send(());
             });
             ctx.effect(move || async move {
@@ -264,6 +263,7 @@ async fn handover(tail: bool) -> (u64, u64) {
     let shared = Arc::new(Mutex::new(Rebuild::default()));
     let (now_tx, now_rx) = unbounded_channel();
     let (done_tx, mut done_rx) = unbounded_channel();
+    let (started_tx, mut started_rx) = unbounded_channel();
     let read_now = Arc::new(Mutex::new(Some(now_rx)));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
@@ -276,6 +276,7 @@ async fn handover(tail: bool) -> (u64, u64) {
                 part.clone(),
                 read_now.clone(),
                 done_tx.clone(),
+                started_tx.clone(),
             )?))
         }),
     );
@@ -284,6 +285,10 @@ async fn handover(tail: bool) -> (u64, u64) {
         .create_session(SessionConfig::default())
         .await
         .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), started_rx.recv())
+        .await
+        .expect("consume must register before the test publishes input")
+        .expect("rebuild registration signal");
     store.hold();
     let pending = session
         .submit("first turn".into(), InputMode::Queue, "main")
@@ -294,7 +299,10 @@ async fn handover(tail: bool) -> (u64, u64) {
         session.idle("main").await.unwrap();
     }
     now_tx.send(()).unwrap();
-    done_rx.recv().await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), done_rx.recv())
+        .await
+        .expect("consume rebuild and held-event drain must finish")
+        .expect("consume completion signal");
     let (published, covered) = {
         let rebuild = shared.lock().unwrap();
         (rebuild.published, rebuild.covered)
@@ -667,4 +675,385 @@ async fn property_pages_include_matching_unpublished_facts_at_the_same_cut() {
         }
     }
     store.release();
+}
+
+struct ConsumeAccess {
+    timeline: Key<Timeline>,
+    dispatcher: Key<Dispatcher>,
+    send: UnboundedSender<(Ctx, Arc<Timeline>, Arc<Dispatcher>)>,
+}
+impl DynPlugin for ConsumeAccess {
+    fn name(&self) -> &str {
+        "test.consume-access"
+    }
+    fn injects(&self) -> Vec<TypeKey> {
+        vec![self.timeline.erase(), self.dispatcher.erase()]
+    }
+    fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            self.send
+                .send((
+                    ctx.clone(),
+                    ctx.require_at(&self.timeline)?,
+                    ctx.require_at(&self.dispatcher)?,
+                ))
+                .expect("consume flow receiver");
+            Ok(Effect::Done)
+        })
+    }
+}
+
+struct ConsumeOwner(UnboundedSender<Ctx>);
+impl rutis::Plugin for ConsumeOwner {
+    type Deps = ();
+    fn name(&self) -> &str {
+        "test.consume-owner"
+    }
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        self.0
+            .send(ctx.clone())
+            .expect("registration context receiver");
+        Ok(())
+    }
+}
+
+async fn bounded<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::time::timeout(std::time::Duration::from_secs(10), future)
+        .await
+        .expect("consumer flow must make progress")
+}
+
+async fn consume_branch() -> (MinimalHost, Session, Ctx, Arc<Timeline>, Arc<Dispatcher>) {
+    let (send, mut receive) = unbounded_channel();
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    dim_agent_capabilities::defaults::mock_hosts(&mut builder);
+    dim_agent_capabilities::defaults::install(&mut builder);
+    builder.require_feature(Feature::new("test.consume-access").branch(
+        "test.consume-access",
+        move |names| {
+            Ok(Box::new(ConsumeAccess {
+                timeline: names.key()?,
+                dispatcher: names.key()?,
+                send: send.clone(),
+            }))
+        },
+    ));
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = bounded(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    bounded(session.idle("main")).await.unwrap();
+    let (ctx, timeline, dispatcher) = bounded(receive.recv()).await.unwrap();
+    (agent, session, ctx, timeline, dispatcher)
+}
+
+async fn consume_owner(root: &Ctx) -> (rutis::host::FiberView, Ctx) {
+    let (send, mut receive) = unbounded_channel();
+    let owner = root.plugin(ConsumeOwner(send));
+    let ctx = bounded(receive.recv()).await.unwrap();
+    bounded(wait_active(
+        root,
+        std::slice::from_ref(&owner),
+        std::time::Duration::from_secs(10),
+        &Default::default(),
+    ))
+    .await
+    .unwrap();
+    (owner, ctx)
+}
+
+async fn dispatched(dispatcher: &Dispatcher, through: u64) {
+    let mut state = dispatcher.watch();
+    bounded(async {
+        while state.borrow().sequence < through {
+            assert!(
+                state.borrow().failure.is_none(),
+                "dispatch failed before target"
+            );
+            state.changed().await.unwrap();
+        }
+    })
+    .await;
+}
+
+fn consume_fact(timeline: &Timeline) -> u64 {
+    timeline
+        .append(
+            EventKind::Extension(
+                ExtensionEvent::new("consume-flow", "item", serde_json::json!({})).unwrap(),
+            )
+            .into(),
+        )
+        .unwrap()
+        .sequence
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consume_drains_new_arrivals_and_reregisters_without_repeating_history() {
+    let (agent, _session, root, timeline, dispatcher) = consume_branch().await;
+    let (owner, ctx) = consume_owner(&root).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (started, mut starts) = unbounded_channel();
+    let rebuild_release = Arc::new(tokio::sync::Notify::new());
+    let handler_release = Arc::new(tokio::sync::Notify::new());
+    let (entered, mut entries) = unbounded_channel();
+    let recovering = timeline.clone();
+    let registration = {
+        let dispatcher = dispatcher.clone();
+        let rebuild_release = rebuild_release.clone();
+        let handler_release = handler_release.clone();
+        let seen = seen.clone();
+        tokio::spawn(async move {
+            dispatcher
+                .consume(
+                    &ctx,
+                    "draining".into(),
+                    vec!["consume-flow/*".into()],
+                    Arc::new(move || {
+                        let started = started.clone();
+                        let timeline = recovering.clone();
+                        let release = rebuild_release.clone();
+                        Box::pin(async move {
+                            let cut = timeline.query(page(4096, true)).await?.through;
+                            started.send(()).unwrap();
+                            release.notified().await;
+                            Ok(cut)
+                        })
+                    }),
+                    Arc::new(move |event| {
+                        let seen = seen.clone();
+                        let release = handler_release.clone();
+                        entered.send(event.sequence).unwrap();
+                        Box::pin(async move {
+                            release.notified().await;
+                            seen.lock().unwrap().push(event.sequence);
+                            Ok(())
+                        })
+                    }),
+                )
+                .await
+        })
+    };
+    bounded(starts.recv()).await.unwrap();
+    let first = consume_fact(&timeline);
+    dispatched(&dispatcher, first).await;
+    rebuild_release.notify_one();
+    assert_eq!(bounded(entries.recv()).await.unwrap(), first);
+    let second = consume_fact(&timeline);
+    dispatched(&dispatcher, second).await;
+    handler_release.notify_one();
+    assert_eq!(bounded(entries.recv()).await.unwrap(), second);
+    handler_release.notify_one();
+    bounded(registration).await.unwrap().unwrap();
+    let third = consume_fact(&timeline);
+    assert_eq!(bounded(entries.recv()).await.unwrap(), third);
+    handler_release.notify_one();
+    dispatched(&dispatcher, third).await;
+    bounded(owner.dispose()).await.unwrap();
+    let absent = consume_fact(&timeline);
+    dispatched(&dispatcher, absent).await;
+    assert_eq!(*seen.lock().unwrap(), vec![first, second, third]);
+
+    let (next_owner, next_ctx) = consume_owner(&root).await;
+    let next_seen = Arc::new(Mutex::new(Vec::new()));
+    let rebuilt = next_seen.clone();
+    let restored_timeline = timeline.clone();
+    let live = next_seen.clone();
+    bounded(dispatcher.consume(
+        &next_ctx,
+        "replacement".into(),
+        vec!["consume-flow/*".into()],
+        Arc::new(move || {
+            let timeline = restored_timeline.clone();
+            let rebuilt = rebuilt.clone();
+            Box::pin(async move {
+                let mut query = page(4096, true);
+                query.query.filter = Some(QueryFilter::Compare {
+                    left: QueryOperand::Field {
+                        path: "kind".into(),
+                    },
+                    comparison: QueryComparison::Eq,
+                    right: QueryOperand::Value {
+                        value: serde_json::json!("consume-flow/item"),
+                    },
+                });
+                let reply = timeline.query(query).await?;
+                let QueryOutput::Events { events } = reply.result else {
+                    panic!("event query");
+                };
+                rebuilt
+                    .lock()
+                    .unwrap()
+                    .extend(events.into_iter().map(|row| row.event.sequence));
+                Ok(reply.through)
+            })
+        }),
+        Arc::new(move |event| {
+            live.lock().unwrap().push(event.sequence);
+            Box::pin(async { Ok(()) })
+        }),
+    ))
+    .await
+    .unwrap();
+    let last = consume_fact(&timeline);
+    dispatched(&dispatcher, last).await;
+    assert_eq!(
+        *next_seen.lock().unwrap(),
+        vec![first, second, third, absent, last]
+    );
+    assert_eq!(*seen.lock().unwrap(), vec![first, second, third]);
+    bounded(next_owner.dispose()).await.unwrap();
+    bounded(agent.close()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consume_rebuild_and_drain_failures_stay_local_until_the_owner_is_removed() {
+    for fail_rebuild in [true, false] {
+        let (agent, _session, root, timeline, dispatcher) = consume_branch().await;
+        let (owner, ctx) = consume_owner(&root).await;
+        let (started, mut starts) = unbounded_channel();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recovering = timeline.clone();
+        let registration = {
+            let dispatcher = dispatcher.clone();
+            let release = release.clone();
+            let seen = seen.clone();
+            tokio::spawn(async move {
+                dispatcher
+                    .consume(
+                        &ctx,
+                        "failing-rebuild".into(),
+                        vec!["consume-flow/item".into()],
+                        Arc::new(move || {
+                            let started = started.clone();
+                            let timeline = recovering.clone();
+                            let release = release.clone();
+                            Box::pin(async move {
+                                let cut = timeline.query(page(4096, true)).await?.through;
+                                started.send(()).unwrap();
+                                release.notified().await;
+                                if fail_rebuild {
+                                    Err(AgentError::InvalidInput("rebuild failed".into()))
+                                } else {
+                                    Ok(cut)
+                                }
+                            })
+                        }),
+                        Arc::new(move |event| {
+                            seen.lock().unwrap().push(event.sequence);
+                            Box::pin(async { Err(AgentError::InvalidInput("drain failed".into())) })
+                        }),
+                    )
+                    .await
+            })
+        };
+        bounded(starts.recv()).await.unwrap();
+        let first = consume_fact(&timeline);
+        let second = consume_fact(&timeline);
+        dispatched(&dispatcher, second).await;
+        release.notify_one();
+        let error = bounded(registration).await.unwrap().unwrap_err();
+        assert!(error.to_string().contains(if fail_rebuild {
+            "rebuild failed"
+        } else {
+            "drain failed"
+        }));
+        let third = consume_fact(&timeline);
+        dispatched(&dispatcher, third).await;
+        assert!(dispatcher.failure().is_none());
+        assert_eq!(
+            *seen.lock().unwrap(),
+            if fail_rebuild { vec![] } else { vec![first] }
+        );
+        bounded(owner.dispose()).await.unwrap();
+        let fourth = consume_fact(&timeline);
+        dispatched(&dispatcher, fourth).await;
+        assert_eq!(
+            *seen.lock().unwrap(),
+            if fail_rebuild { vec![] } else { vec![first] }
+        );
+        bounded(agent.close()).await.unwrap();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn consume_live_error_finishes_the_current_fact_and_stops_its_suffix() {
+    let (agent, _session, root, timeline, dispatcher) = consume_branch().await;
+    let (owner, ctx) = consume_owner(&root).await;
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let handled = seen.clone();
+    let recovering = timeline.clone();
+    bounded(dispatcher.consume(
+        &ctx,
+        "live-error".into(),
+        vec!["consume-flow/item".into()],
+        Arc::new(move || {
+            let timeline = recovering.clone();
+            Box::pin(async move { Ok(timeline.query(page(4096, true)).await?.through) })
+        }),
+        Arc::new(move |event| {
+            handled.lock().unwrap().push(event.sequence);
+            Box::pin(async { Err(AgentError::InvalidInput("live consumer failed".into())) })
+        }),
+    ))
+    .await
+    .unwrap();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observer = observed.clone();
+    let recovering = timeline.clone();
+    bounded(dispatcher.consume(
+        &ctx,
+        "healthy-consumer".into(),
+        vec!["consume-flow/item".into()],
+        Arc::new(move || {
+            let timeline = recovering.clone();
+            Box::pin(async move { Ok(timeline.query(page(4096, true)).await?.through) })
+        }),
+        Arc::new(move |event| {
+            observer.lock().unwrap().push(event.sequence);
+            Box::pin(async { Ok(()) })
+        }),
+    ))
+    .await
+    .unwrap();
+    let batch = timeline
+        .append_batch_registered(
+            (0..2)
+                .map(|_| {
+                    EventKind::Extension(
+                        ExtensionEvent::new("consume-flow", "item", serde_json::json!({})).unwrap(),
+                    )
+                    .into()
+                })
+                .collect(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    let first = batch[0].sequence;
+    let second = batch[1].sequence;
+    let mut state = dispatcher.watch();
+    bounded(async {
+        while state.borrow().failure.is_none() || state.borrow().sequence < first {
+            state.changed().await.unwrap();
+        }
+    })
+    .await;
+    assert!(
+        dispatcher
+            .failure()
+            .unwrap()
+            .to_string()
+            .contains("live consumer failed")
+    );
+    assert_eq!(*observed.lock().unwrap(), vec![first]);
+    assert_eq!(dispatcher.sequence(), first);
+    assert!(second > first);
+    assert_eq!(*seen.lock().unwrap(), vec![first]);
+    bounded(owner.dispose()).await.unwrap();
+    if let Err(error) = bounded(agent.close()).await {
+        assert!(error.to_string().contains("live consumer failed"));
+    }
+    assert_eq!(dispatcher.sequence(), first);
+    assert_eq!(*seen.lock().unwrap(), vec![first]);
 }

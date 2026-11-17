@@ -596,8 +596,8 @@ impl Composer {
     }
 
     /// Fills the draft with the selected row: a command's name, its name and a
-    /// space when it takes an argument, or a Skill's marker. It never runs the
-    /// row; Tab uses it for every kind.
+    /// space when it takes an argument, or a Skill's reference. It never runs
+    /// the row; Tab uses it for every kind.
     fn complete_row(&mut self, row: &crate::ui::rows::Row) -> Outcome {
         let filled = match &row.kind {
             crate::ui::rows::Kind::Command(command)
@@ -607,7 +607,8 @@ impl Composer {
             }
             crate::ui::rows::Kind::Command(command) => format!("/{}", command.name),
             crate::ui::rows::Kind::Skill(name) => {
-                format!("{}{name} ", dim_agent_types::skill_token::PREFIX)
+                self.fill_skill(name);
+                return Outcome::Handled;
             }
             crate::ui::rows::Kind::Heading | crate::ui::rows::Kind::Item => {
                 return Outcome::Handled;
@@ -616,6 +617,19 @@ impl Composer {
         self.clear();
         self.area.insert_str(&filled);
         Outcome::Handled
+    }
+
+    /// Fills a Skill's reference as one element: the draft holds
+    /// `/skill:<name> ` and draws the Skill's name, so the operator reads the
+    /// reference they chose rather than the parser's namespace. The element is
+    /// what keeps the two apart: its buffer text is submitted, its
+    /// display line is painted, and cursor, wrap and delete stay atomic over it.
+    fn fill_skill(&mut self, name: &str) {
+        self.clear();
+        let token = format!("{}{name}", dim_agent_types::skill_token::PREFIX);
+        self.area
+            .insert_element(&token, TOKEN_KIND, Some(token_line(&skill_label(name))));
+        self.area.insert_str(" ");
     }
 
     /// The `@` mention being typed, unless Esc closed it.
@@ -1427,6 +1441,23 @@ fn image_details(image: &crate::images::Attached) -> String {
         details.push_str(t("re-encoded"));
     }
     details
+}
+
+/// What the draft draws for the Skill reference the operator filled: the name
+/// alone, so the input reads `/status` and not the parser's `/skill:status`.
+///
+/// A name that is also a command the input dispatches keeps the canonical
+/// token, because `/status` would read as that command while the draft is
+/// still a message (Skills §9, `submit`).
+fn skill_label(name: &str) -> String {
+    let clashes = crate::ui::commands::COMMANDS
+        .iter()
+        .any(|command| command.slash && (command.name == name || command.aliases.contains(&name)));
+    if clashes {
+        format!("{}{name}", dim_agent_types::skill_token::PREFIX)
+    } else {
+        format!("/{name}")
+    }
 }
 
 /// A token's text as the draft draws it: the accent the input uses for what
@@ -2521,57 +2552,134 @@ mod tests {
         assert!((cursor.1 as usize) < rows.len());
     }
 
-    /// A `/skill:<name>` token in the draft is one highlighted unit, whether it
-    /// is typed or filled from the palette, mid-sentence or wrapped.
+    /// A Skill the palette filled draws its name, and the draft still submits
+    /// and keeps `/skill:<name> `: the display is a projection over one element,
+    /// not a change to the text.
     #[test]
-    fn a_skill_token_in_the_draft_draws_as_one_unit() {
+    fn a_filled_skill_draws_its_name_and_submits_its_token() {
         let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
         let palette = theme.palette;
-        let skills = vec![palette::Skill {
-            name: "commit".into(),
-            description: "Writes commit messages".into(),
+
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "status".into(),
+            description: "Show the status".into(),
             display_name: None,
             display_description: None,
-        }];
+        }]);
+        typed(&mut c, "/stat");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
 
-        let mut typed_token = Composer::new(Vec::new());
-        typed(&mut typed_token, "/skill:commit please");
-        let mut filled = Composer::new(Vec::new());
-        filled.set_skills(skills.clone());
-        typed(&mut filled, "/comm");
-        assert_eq!(filled.handle_key(key(KeyCode::Tab)), Outcome::Handled);
-        let mut mid_sentence = Composer::new(Vec::new());
-        typed(&mut mid_sentence, "run /skill:commit now");
-        let mut wrapped = Composer::new(Vec::new());
-        typed(&mut wrapped, "one two three /skill:commit");
+        let (rows, cursor) = c.render_rows(60, MAX_INPUT_ROWS, &palette);
+        let (drawn, bold) = drawn_token(&rows);
+        assert_eq!(drawn.trim_end(), "/status", "{rows:?}");
+        assert_eq!(bold, "/status", "the whole reference is one unit: {rows:?}");
+        assert_eq!(cursor, (8, 0), "the cursor sits after the drawn name");
 
-        let drawn: Vec<(String, String)> = [
-            (&mut typed_token, 60),
-            (&mut filled, 60),
-            (&mut mid_sentence, 60),
-            (&mut wrapped, 14),
-        ]
-        .into_iter()
-        .map(|(c, width)| {
-            let (rows, _) = c.render_rows(width, MAX_INPUT_ROWS, &palette);
-            drawn_token(&rows)
-        })
-        .collect();
-        let bold: Vec<&str> = drawn.iter().map(|(_, bold)| bold.as_str()).collect();
         assert_eq!(
-            bold, ["/skill:commit"; 4],
-            "a typed, filled, mid-sentence and wrapped token each stay whole: {drawn:?}"
+            c.text(),
+            "/skill:status ",
+            "the draft's text is still the canonical token"
         );
-        let glyphs = |text: &str| {
-            text.chars()
-                .filter(|c| !c.is_whitespace())
-                .collect::<String>()
-        };
         assert_eq!(
-            glyphs(&drawn[3].0),
-            glyphs("one two three /skill:commit"),
-            "a wrap drops the space it broke at and no character of the token: {drawn:?}"
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Submit("/skill:status ".into()),
+            "the message carries the token, not the drawn name"
         );
+    }
+
+    /// Typing the prefix by hand still draws what was typed: only a reference
+    /// the palette filled is a named unit, so no character the operator typed
+    /// is ever drawn as something else.
+    #[test]
+    fn a_typed_token_draws_as_typed() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut c = Composer::new(Vec::new());
+        typed(&mut c, "/skill:status and /skill:commit");
+        let (rows, _) = c.render_rows(60, MAX_INPUT_ROWS, &theme.palette);
+        let (drawn, bold) = drawn_token(&rows);
+        assert_eq!(drawn.trim_end(), "/skill:status and /skill:commit");
+        assert_eq!(bold, "/skill:status/skill:commit");
+    }
+
+    /// A Skill whose name is also a command keeps the canonical token, so the
+    /// draft never reads as the command the operator did not run.
+    #[test]
+    fn a_skill_named_like_a_command_keeps_its_token() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "models".into(),
+            description: "List the models".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        // A Skill sharing a command's name is reached through the `skill:`
+        // namespace, which narrows the menu to Skills; the row the command also
+        // matches comes first and would fill the command instead.
+        typed(&mut c, "/skill:mode");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        let (rows, _) = c.render_rows(60, MAX_INPUT_ROWS, &theme.palette);
+        let (drawn, _) = drawn_token(&rows);
+        assert_eq!(
+            drawn.trim_end(),
+            "/skill:models",
+            "the plain name would read as the command, so the token stays"
+        );
+        assert_eq!(c.text(), "/skill:models ");
+        assert_eq!(
+            c.handle_key(key(KeyCode::Enter)),
+            Outcome::Submit("/skill:models ".into()),
+            "a message, never the `/models` command"
+        );
+    }
+
+    #[test]
+    fn a_filled_skill_deletes_as_one_token() {
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "status".into(),
+            description: "Show the status".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        typed(&mut c, "/stat");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        typed(&mut c, "hi");
+        assert_eq!(c.text(), "/skill:status hi");
+
+        // Backspace erases the typed characters one at a time, then crosses the
+        // reference as one unit rather than a character at a time.
+        c.handle_key(key(KeyCode::Backspace));
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.text(), "/skill:status ");
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.text(), "/skill:status", "the space after the token goes");
+        c.handle_key(key(KeyCode::Backspace));
+        assert_eq!(c.text(), "", "the reference goes as one unit");
+    }
+
+    /// A filled reference wraps as its drawn name does, so a narrow input holds
+    /// the name and never the prefix.
+    #[test]
+    fn a_filled_skill_wraps_by_its_drawn_name() {
+        let theme = Theme::system(ColorMode::TrueColor, Appearance::Dark, None);
+        let mut c = Composer::new(Vec::new());
+        c.set_skills(vec![palette::Skill {
+            name: "status".into(),
+            description: "Show the status".into(),
+            display_name: None,
+            display_description: None,
+        }]);
+        typed(&mut c, "/stat");
+        assert_eq!(c.handle_key(key(KeyCode::Tab)), Outcome::Handled);
+        let (rows, _) = c.render_rows(8, MAX_INPUT_ROWS, &theme.palette);
+        let (drawn, bold) = drawn_token(&rows);
+        assert!(
+            drawn.starts_with("/status"),
+            "the name is drawn, not the prefix: {rows:?}"
+        );
+        assert_eq!(bold, "/status", "{rows:?}");
     }
 
     /// The characters the input rows draw, and the ones among them drawn bold.

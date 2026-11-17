@@ -102,8 +102,20 @@ export type UserInput = { content: Array<Record<string, unknown>> }
 /** A stored image content block. */
 export type ImageBlock = { type: "image"; source: { type: "file"; mediaType: string; fileId: string } }
 
-/** Local files and pasted text held until the message is accepted. */
-export type DraftAttachments = { images: File[]; pastes: string[]; onProgress?: (percent: number) => void }
+/** One run of a message's own content: the operator's text, or a stored image, in the order it was written. */
+export type OperatorBlock = { type: "text"; text: string } | ImageBlock
+
+/** A stored image a withdrawn message carried, and the offset it keeps its place at in the draft. */
+export type RestoredImage = { at: number; image: ImageBlock }
+
+/**
+ * Local files and pasted text held until the message is accepted, plus the
+ * stored images a withdrawn queue message carried, which are sent unchanged.
+ */
+export type DraftAttachments = { images: File[]; pastes: string[]; restored?: RestoredImage[]; onProgress?: (percent: number) => void }
+
+/** `session.submit.mode`: held for the next turn, or steered into the running one. */
+export type SubmitMode = "queue" | "steer"
 
 /** A file or directory the `@` mention picker offers: its path under the workspace and its absolute path. */
 export type FileCandidate = { relativePath: string; absolutePath: string; dir: boolean }
@@ -121,8 +133,8 @@ export type PermissionPolicy = {
 /** `session.permission.get`: the policy of `main` and the version a change must expect. */
 export type PermissionState = { version: number; policy: PermissionPolicy }
 
-/** A message the server holds in the queue of a running branch. */
-export type QueuedInput = { id: string; text: string; skills?: string[]; hooks?: number; user: UserInput }
+/** A message the server holds in the queue of a running branch: the operator's own blocks in order, one line of them, its Skills and its stored images. */
+export type QueuedInput = { id: string; text: string; skills?: string[]; hooks?: number; content: OperatorBlock[]; user: UserInput }
 
 /**
  * `session.input.withdraw`: the queued input was removed, or the server had already adopted it.
@@ -134,7 +146,7 @@ export type WithdrawResult =
 
 /** The Timeline facts the projection folds; every other kind is `other`. */
 export type EventContent =
-  | { kind: "input"; text?: string; user?: UserInput; images?: ImageBlock[]; skills?: string[]; hooks?: number; blocks: RawBlock[] }
+  | { kind: "input"; text?: string; user?: UserInput; content: OperatorBlock[]; skills?: string[]; hooks?: number; blocks: RawBlock[] }
   | { kind: "source-input"; text: string; mode?: string; blocks: RawBlock[] }
   | { kind: "input-consumed"; inputId: string }
   | { kind: "input-applied"; inputId: string }

@@ -21,6 +21,9 @@ struct Changed {
     /// The rewritten rows whose text candidates must be derived again, by
     /// Session, branch and sequence, each with its kind.
     rows: BTreeMap<(String, String, u64), String>,
+    /// The content addresses the rewritten rows named before the rewrite, by
+    /// Session: the roots of what the rewrite may have replaced.
+    replaced: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// What one image conversion did beyond rewriting the fact rows: how many
@@ -67,6 +70,7 @@ pub(super) fn upgrade(
             continue;
         };
         let mut wire = *record;
+        let before: BTreeSet<String> = wire.references().map(str::to_owned).collect();
         let mut record = loop {
             reader.begin_hold();
             match reader.decode(connection, &session, wire)? {
@@ -74,7 +78,7 @@ pub(super) fn upgrade(
                 Err(pending) => wire = pending,
             }
         };
-        let before = importer.changes;
+        let before_changes = importer.changes;
         importer.event(&session, &mut Arc::make_mut(&mut record.event).kind)?;
         if let Some(trace) = &mut record.trace {
             importer.event(&session, &mut trace.original.kind)?;
@@ -84,9 +88,16 @@ pub(super) fn upgrade(
                 }
             }
         }
-        if importer.changes == before {
+        if importer.changes == before_changes {
             continue;
         }
+        // Only a row this conversion rewrote can have orphaned the nodes it
+        // named, so only its addresses seed the removal below.
+        changed
+            .replaced
+            .entry(session.clone())
+            .or_default()
+            .extend(before);
         let mut content = Vec::new();
         let mut fresh = HashMap::new();
         let lists = std::iter::once(&record.event.kind)
@@ -120,6 +131,16 @@ pub(super) fn upgrade(
     }
     if changed.sessions.is_empty() {
         return Ok(Converted::default());
+    }
+    // The rewritten requests name new addresses; the rows holding the old ones
+    // hold the base64 bytes this conversion moved into files. Removing them in
+    // the transaction that committed the rewrites keeps the store from holding
+    // the payload beside the file it moved into: an interruption rolls both
+    // back, and a store that committed the conversion without this step is
+    // repaired by `dimcode daemon vacuum` instead.
+    for (session, replaced) in &changed.replaced {
+        let rows = super::reclaim::replaced(connection, session, replaced)?;
+        super::reclaim::remove(connection, session, &rows)?;
     }
     // A snapshot's state may hold the inline image bytes its facts no longer
     // do, so it cannot outlive the conversion. A Session the conversion did

@@ -133,7 +133,7 @@ onMounted(load)
           />
         </UFormField>
         <p>{{ s('Currently effective', '当前生效') }}: {{ effective(row) }}</p>
-        <p v-if="row.operation === 'understand'">{{ s('Selection only for now: the Session image-understanding path does not read this default yet, so it does not change the model a Session uses.', '目前仅用于选择：会话的图像理解路径尚未读取此默认值，因此不会改变会话使用的模型。') }}</p>
+        <p v-if="row.operation === 'understand'">{{ s('Used by image_understand for each image question. This does not change the conversational model.', 'image_understand 每次识图时使用此设置，不改变会话的对话模型。') }}</p>
       </section>
       <footer class="settings-actions">
         <UButton color="primary" type="submit" :disabled="busy || !dirty || conflict || !connection.supports('modality.configure')">{{ s('Save defaults', '保存默认设置') }}</UButton>

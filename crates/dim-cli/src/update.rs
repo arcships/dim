@@ -309,7 +309,7 @@ pub async fn available(home: &Path, current: &str) -> Option<Offer> {
     }
     let exe = std::env::current_exe().ok()?;
     let manual = if installer(&exe, &package, &version).is_some() {
-        format!("{} update", entry_point(&package))
+        update_command(&package)
     } else {
         manual(&package, current)
     };
@@ -415,6 +415,35 @@ fn entry_point(package: &str) -> &str {
     }
 }
 
+/// The command that updates this installation: its own entry point, which the
+/// operator runs once every client has exited and the server stopped.
+fn update_command(package: &str) -> String {
+    format!("{} update", entry_point(package))
+}
+
+/// What an installation the updater does not recognise may do instead: the
+/// package manager's own command, and a rebuild for a source checkout.
+fn not_installable(package: &str, current: &str) -> String {
+    format!(
+        "Cannot update this installation automatically. For a package install, run: {}. For a source build, pull and rebuild the source.",
+        manual(package, current)
+    )
+}
+
+/// The command that updates this copy, for a client that cannot run the
+/// installer itself (the terminal UI holds a share of the installation lease):
+/// the owner's entry point for a recognised installation, else
+/// [`not_installable`]. Installs nothing.
+pub fn command() -> Result<String, String> {
+    let package = package()?;
+    let current = dim_agent_capabilities::build::VERSION;
+    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    match installer(&executable, &package, channel(current)) {
+        Some(_) => Ok(update_command(&package)),
+        None => Err(not_installable(&package, current)),
+    }
+}
+
 /// Updates this installation's package on its current channel, independently
 /// of automatic-check preferences and skipped versions. Unknown installation
 /// layouts return a manual command without installing anything.
@@ -423,12 +452,8 @@ pub async fn run(legacy_exited: bool) -> crate::Result<i32> {
     let current = dim_agent_capabilities::build::VERSION;
     let tag = channel(current);
     let executable = std::env::current_exe()?;
-    let installation = installer(&executable, &package, tag).ok_or_else(|| {
-        format!(
-            "Cannot update this installation automatically. For a package install, run: {}. For a source build, pull and rebuild the source.",
-            manual(&package, current)
-        )
-    })?;
+    let installation =
+        installer(&executable, &package, tag).ok_or_else(|| not_installable(&package, current))?;
     run_install(installation, tag, legacy_exited).await?;
     Ok(0)
 }

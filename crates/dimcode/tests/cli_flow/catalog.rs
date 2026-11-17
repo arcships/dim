@@ -73,8 +73,6 @@ fn tui_resume_catalog_pages_searches_and_closes_without_waiting_for_a_read() {
     daemon.join().unwrap();
 }
 
-/// #557: the picker labels every row by its creation origin and asks for ACP
-/// Sessions only when the saved preference says so.
 #[test]
 fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
     let home = Home::new();
@@ -91,6 +89,7 @@ fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
             "session.catalog",
             "session.catalog.cancel",
             "session.catalog.origins",
+            "session.catalog.acpHistory",
         ]);
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
@@ -105,7 +104,7 @@ fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
         let first = wire.read("session.catalog");
         assert_eq!(
             first["params"],
-            json!({"limit":50,"query":"","withPreview":true,"withAcpSessions":true,"cwd":expected})
+            json!({"limit":50,"query":"","withPreview":true,"withAcpSessions":true,"withAcpHistory":true,"cwd":expected})
         );
         wire.reply(
             &first,
@@ -113,9 +112,19 @@ fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
                 {"sessionId":"chat","cwd":"/workspace","title":"Update cache","preview":"chat preview",
                  "model":{"providerId":"test","modelId":"model"},"updatedAt":5,"origin":"client"},
                 {"sessionId":"editor","cwd":"/workspace","title":"Editor conversation","preview":"acp preview",
-                 "model":{"providerId":"test","modelId":"model"},"updatedAt":4,"origin":"acp"}
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":4,"origin":"acp"},
+                {"sessionId":"closed-editor","cwd":"/workspace","title":"Earlier editor work","preview":"closed preview",
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":3,"origin":"acp","closed":true},
+                {"sessionId":"empty-editor","cwd":"/workspace",
+                 "model":{"providerId":"test","modelId":"model"},"updatedAt":2,"origin":"acp"}
             ]}),
         );
+        let off = wire.read("session.catalog");
+        assert_eq!(off["params"], json!({"limit":50,"query":"","withPreview":true,"cwd":expected}));
+        wire.reply(&off, json!({"sessions":[
+            {"sessionId":"chat","cwd":"/workspace","title":"Update cache","preview":"chat preview",
+             "model":{"providerId":"test","modelId":"model"},"updatedAt":5,"origin":"client"}
+        ]}));
         no_catalog(wire);
     });
     let mut command = home.command();
@@ -125,11 +134,30 @@ fn tui_resume_labels_origins_and_shows_acp_sessions_when_asked() {
     terminal.write(b"/resume\r");
     terminal.until("[Chat] Update cache");
     terminal.until("[ACP ] Editor conversation");
+    terminal.until("[ACP ] Earlier editor work");
+    terminal.until("Session closed");
+    terminal.until("[ACP ] empty-editor");
+    terminal.write(b"\x1b[B\x1b[B\r");
+    terminal.until("This session is closed and cannot be resumed.");
+    terminal.until("dimcode export closed-editor");
+    terminal.write(b"\x1b[27u");
+    terminal.write(b"/settings\r");
+    terminal.until("Show ACP sessions");
+    terminal.write(b"\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B ");
+    terminal.until_row("Show ACP sessions", "off");
+    terminal.write(b"\x1b[27u");
+    let off_start = terminal.transcript.len();
+    terminal.write(b"/resume\r");
+    terminal.until("[Chat] Update cache");
+    assert!(!terminal.transcript[off_start..].contains("[ACP ]"));
     terminal.write(b"\x1b[27u");
     terminal.write(b"/exit\r");
     terminal.until("Bye!");
     assert!(terminal.wait().success());
     daemon.join().unwrap();
+    let config: Value =
+        serde_json::from_slice(&fs::read(home.0.join("config.json")).unwrap()).unwrap();
+    assert_eq!(config["showAcpSessions"], false);
 }
 
 /// Ctrl+S widens the picker like a new query: every workspace, with each row

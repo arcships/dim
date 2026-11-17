@@ -181,6 +181,14 @@ attempt lives 10 min. Mcp's unload cancels discovery and registration in flight,
 request already sent is settled first (§4.1). A caller that leaves cancels nothing (management
 rule).
 
+The client is an owner resource built by the first operation that contacts an authorization
+server, not by Mcp's assembly: a process whose MCP entries never sign in or refresh holds no
+OAuth HTTP client. Concurrent first operations share that one build. If building the client
+fails, the operation reports `mcp_auth_unavailable` like a network failure; assembly still
+succeeds, so unrelated MCP entries keep working. Only a successful build is retained; a later
+operation retries a failed build. Discovery observes cancellation and owner shutdown before
+starting client initialization.
+
 ### 5.2 Discovery rules
 
 Every `mcp.auth.start` runs discovery again; nothing is cached across attempts. Mcp uses rmcp's
@@ -513,7 +521,7 @@ Per-call progress (C1, PR [#83](https://github.com/arcships/dim/pull/83)) is not
 | `mcp_auth_attempt_closed` | Unknown, expired, completed, cancelled or replaced attempt, or one closed by sign-out; a `start` overtaken by a sign-out | Start again |
 | `mcp_auth_callback_invalid` | Redirect URI, `state` or `iss` mismatch; no `code` | Paste the right URL; the attempt stays pending |
 | `mcp_auth_failed` | The authorization server refused: `error` in the callback, a token error, a registration rejected | Start again after fixing the cause |
-| `mcp_auth_unavailable` | Network failure, timeout or 5xx at the authorization server; store I/O | Retry |
+| `mcp_auth_unavailable` | Network failure, timeout or 5xx at the authorization server; store I/O; the OAuth HTTP client cannot be built | Retry |
 
 Existing codes are unchanged: `mcp_unknown_server`, `mcp_invalid_config`, and
 `mcp_unavailable` (also for a disabled entry, as today). Messages never carry secrets,
@@ -540,6 +548,7 @@ callback URLs or authorization server `error_description` text from an unvalidat
 | D15 | An entry with static credentials never uses OAuth; OAuth needs `https` or loopback `http` | Falling back to OAuth after a static credential fails mixes two credential sources; a bearer token over cleartext can be stolen |
 | D16 | Require same-origin PRM: the `resource_metadata` URL must be same-origin, and `resource` may be the server URL or a parent path on the same origin | RFC 9728 does not require a same-origin metadata URL; accepting another origin would let any `401` point discovery at another host. RFC 9728 asks for an identical `resource`; requiring it would mean replacing rmcp's validation, while the parent-path rule keeps the token audience inside the server's origin |
 | D17 | Attempt currency (§7): the `attemptId` identifies an attempt, and only the key's current attempt redeems its code, checked after the store lock and again after the token response. One attempts lock orders every change of attempt state; the exchange holds it from the second check until its outcome is published, so a later `start` or sign-out takes effect after the publication. Sign-out closes attempts when it is accepted and when it completes; a `start` prepared before a completed sign-out is refused. A superseded request already sent is settled, and its tokens are revoked best effort under the store lock and discarded. Holding the store lock orders the revocation before a newer attempt's exchange: a server that revokes a whole session then refuses the newer code at sign-in, instead of leaving a stored credential that is already dead | Checking only before the request lets a response still in flight overwrite a newer attempt. Ending the attempt before the store write and publishing after it lets a newer `start` return while the write is pending, so a superseded attempt stores and wakes after the newer one is current. Writing first and rolling back when superseded lets lock-free readers use the tokens in between, and a failed rollback leaves them stored. Cancelling a request in flight breaks "settled once sent" (§4.1): a redeemed code would leave live tokens nobody knows about. Storing them and leaving cleanup to a later sign-out undoes a sign-out the user has already completed. Discarding without revocation leaves the tokens valid at the authorization server until they expire. Taking the store lock in `start` would queue each sign-in behind refreshes of up to 30 s. A generation counter per attempt would duplicate the `attemptId` |
+| D18 | The OAuth HTTP client is built by the first operation that contacts an authorization server and kept for the Mcp generation. A build failure surfaces from that operation as `mcp_auth_unavailable`; Mcp's assembly succeeds | Building it at assembly allocates TLS and resolver state for entries that never sign in. A global HTTP service or a completed-request cache would own another part's resources and still need the same policy and budget at the point of use |
 
 ## 11. Security
 

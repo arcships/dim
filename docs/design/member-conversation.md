@@ -299,8 +299,13 @@ already used gets its own transcript row identity.
 | Session-member `session.model.progress`, `session.state`, `session.closed` | Live observed activity or explicit observation unavailability |
 | Provider `externalAgent.activity` on the leader, when #254 supplies it | Received member activity only; no provider history replay or Session read |
 
-Temporary profile names already exist on the leader's request. For an existing
-native Agent, read the public Agent list after identities are known and share that
+Temporary profile names already exist on the leader's request. Bind that name to
+the delivered native Agent ID so later requests reusing the Agent or member keep
+its name. The public directory excludes Team-owned temporary Agents; a directory
+read must not erase names learned from requests. Reading an earlier creation
+request also names already-visible follow-up cards.
+
+For an existing native Agent, read the public Agent list after identities are known and share that
 result across cards; it is read again only when a card names a native Agent the
 last read did not cover. A missing entry/read error shows the Agent ID rather than
 an invented name; the delivered Session ID remains available in detail. A completed

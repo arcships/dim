@@ -26,12 +26,15 @@ use crate::model::view::{
 };
 use crate::wire::{Event, EventContent, Progress, WorkflowRun, WorkflowState};
 
+mod thinking;
+
 /// Reasoning that is still arriving: the row shows what the Timeline holds
 /// plus the progress not written yet.
 struct OpenThought {
     index: usize,
     /// The request's `step/thinking` deltas so far.
     written: String,
+    excerpt: thinking::Excerpt,
     /// When the block's first durable `step/thinking` arrived; the block's
     /// start. `None` while only progress shows it.
     started_at: Option<u64>,
@@ -424,9 +427,12 @@ impl Projection {
                 let first = thought.written.is_empty();
                 thought.started_at.get_or_insert(event.create_at);
                 thought.written.push_str(&data.delta);
+                thought.excerpt.push(&data.delta);
+                let excerpt = thought.excerpt.text();
                 let text = thought.written.clone();
                 let row = self.row(index);
                 row.text = text;
+                row.display = Some(excerpt);
                 if first {
                     row.provisional_id = Some(std::mem::replace(
                         &mut row.row_id,
@@ -1050,6 +1056,17 @@ impl Projection {
                 && task.finished.is_none()
                 && task.kind == TaskKind::Member(MemberTarget::Starting)
         };
+        if let CollaborationDelivery::Ok { agent_id, .. } = &data.delivery
+            && !agent_id.contains(':')
+            && let Some(task) = self.tasks.iter().find(|task| starting(task))
+            && task.agent_id.is_none()
+            && let Some(name) = &task.agent
+        {
+            self.name_agents(
+                HashMap::from([(agent_id.clone(), name.clone())]),
+                Vec::new(),
+            );
+        }
         let delivered_name = match &data.delivery {
             CollaborationDelivery::Ok { agent_id, .. } => {
                 Some(self.agent_names.get(agent_id).unwrap_or(agent_id).clone())
@@ -1164,6 +1181,7 @@ impl Projection {
 
     pub fn prepend(&mut self, mut older: Self) {
         older.name_agents(self.agent_names.clone(), Vec::new());
+        self.name_agents(older.agent_names.clone(), Vec::new());
         older.rows.retain(|row| {
             if let Some(existing) = self
                 .rows
@@ -1584,12 +1602,17 @@ impl Projection {
         }
     }
 
-    /// Names native Agents on tasks and cards, from one shared `agent.list`
-    /// that was asked to name `asked`.
+    /// Names native Agents on tasks and cards from delivered profiles or
+    /// `agent.list`, retaining prior names when a directory read omits them.
+    /// `asked` records the IDs covered by a directory read, even on failure.
     pub fn name_agents(&mut self, names: HashMap<String, String>, asked: Vec<String>) {
         self.agents_read.extend(asked);
+        self.agent_names.extend(names);
         let update = |task: &mut TaskView| {
-            if let Some(name) = task.agent_id.as_ref().and_then(|id| names.get(id))
+            if let Some(name) = task
+                .agent_id
+                .as_ref()
+                .and_then(|id| self.agent_names.get(id))
                 && !name.is_empty()
             {
                 task.agent = Some(name.clone());
@@ -1605,7 +1628,6 @@ impl Projection {
                     .task,
             );
         }
-        self.agent_names = names;
         self.refresh_result_labels();
     }
 
@@ -1775,7 +1797,11 @@ impl Projection {
             return;
         }
         let text = format!("{}{}", thought.written, progress.thinking);
-        self.row(index).text = text;
+        let mut excerpt = thought.excerpt.clone();
+        excerpt.push(&progress.thinking);
+        let row = self.row(index);
+        row.text = text;
+        row.display = Some(excerpt.text());
     }
 
     /// The open reasoning row of a request, pushed on its first output.
@@ -1794,6 +1820,7 @@ impl Projection {
             OpenThought {
                 index,
                 written: String::new(),
+                excerpt: thinking::Excerpt::default(),
                 started_at: None,
             },
         );
@@ -1804,10 +1831,12 @@ impl Projection {
     /// it: progress that was never written (an interrupted thought) goes, and
     /// its duration spans its first event to `closed_at`.
     fn close_thinking(&mut self, request_id: &str, closed_at: u64) {
-        if let Some(thought) = self.thinking_rows.remove(request_id) {
+        if let Some(mut thought) = self.thinking_rows.remove(request_id) {
+            thought.excerpt.finish();
             let row = self.row(thought.index);
             row.streaming = false;
             row.text = thought.written;
+            row.display = Some(thought.excerpt.text());
             row.elapsed_ms = thought
                 .started_at
                 .map(|start| closed_at.saturating_sub(start));
@@ -2452,6 +2481,136 @@ mod tests {
         assert!(!rows[0].streaming);
         assert_eq!(rows[0].elapsed_ms, Some(1000), "the span of the block");
         assert_eq!(rows[1].kind, RowKind::StreamingAssistant);
+    }
+
+    #[test]
+    fn thinking_excerpts_keep_complete_original_units_across_progress_and_settlement() {
+        let mut projection = Projection::default();
+        let first = "先确认缓存失效边界。读取调用方后再决定是否修改。";
+        apply(
+            &mut projection,
+            &[model_start(1), step(2, "thinking", first)],
+        );
+        let offset = first.chars().count() as u64;
+        projection.progress(&progress("还需要核对异步任务的", offset));
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("读取调用方后再决定是否修改。")
+        );
+        projection.progress(&progress("还需要核对异步任务的生命周期。", offset));
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("还需要核对异步任务的生命周期。")
+        );
+        apply(
+            &mut projection,
+            &[step(
+                3,
+                "thinking",
+                "Do not change 3.14 or src/cache.rs yet. ",
+            )],
+        );
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("Do not change 3.14 or src/cache.rs yet.")
+        );
+        apply(&mut projection, &[step(4, "thinking", "Still checking...")]);
+        apply(&mut projection, &[step(5, "text", "Done.")]);
+        let rows = projection.snapshot().rows;
+        assert_eq!(
+            rows[0].display.as_deref(),
+            Some("Do not change 3.14 or src/cache.rs yet.")
+        );
+        assert_eq!(
+            rows[0].text,
+            format!("{first}Do not change 3.14 or src/cache.rs yet. Still checking...")
+        );
+
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[
+                model_start(1),
+                step(
+                    2,
+                    "thinking",
+                    "Look at https://example.org/a.rs and e\u{301} 👩‍💻",
+                ),
+            ],
+        );
+        let rows = projection.snapshot().rows;
+        assert_eq!(
+            rows[0].display.as_deref(),
+            Some("Look at https://example.org/a.rs and e\u{301} 👩‍💻…")
+        );
+        apply(
+            &mut projection,
+            &[step(3, "thinking", "\nKeep the lock free\nNext partial")],
+        );
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("Keep the lock free")
+        );
+
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[model_start(1), step(2, "thinking", "visible \x1b]hidden.")],
+        );
+        apply(
+            &mut projection,
+            &[step(3, "thinking", " not a summary\x1b\\text。unfinished")],
+        );
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("visible text。")
+        );
+
+        let mut projection = Projection::default();
+        for sequence in 2..20 {
+            apply(
+                &mut projection,
+                &[step(sequence, "thinking", &"中".repeat(2048))],
+            );
+        }
+        let rows = projection.snapshot().rows;
+        let excerpt = rows[0].display.as_deref().unwrap();
+        assert!(excerpt.len() <= 1024 && excerpt.ends_with('…'));
+        assert!(
+            rows[0].text.len() > 100_000,
+            "full reasoning is never bounded by its excerpt"
+        );
+        apply(
+            &mut projection,
+            &[step(20, "thinking", "。A new complete sentence. ")],
+        );
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("A new complete sentence.")
+        );
+
+        let mut projection = Projection::default();
+        apply(
+            &mut projection,
+            &[model_start(1), step(2, "thinking", "First! \"")],
+        );
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("First!")
+        );
+        apply(
+            &mut projection,
+            &[step(3, "thinking", "Second sentence.\" ")],
+        );
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("\"Second sentence.\"")
+        );
+        apply(&mut projection, &[step(4, "thinking", "\"Third!\"")]);
+        assert_eq!(
+            projection.snapshot().rows[0].display.as_deref(),
+            Some("\"Third!\"")
+        );
     }
 
     #[test]

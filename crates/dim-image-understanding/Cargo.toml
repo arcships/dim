@@ -1,0 +1,25 @@
+[package]
+name = "dim-image-understanding"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+dim-agent-capabilities.workspace = true
+dim-agent-runtime.workspace = true
+dim-agent-types.workspace = true
+dim-modality.workspace = true
+futures-util.workspace = true
+rutis.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+dim-agent-runtime = { workspace = true, features = ["testing"] }
+dim-app-server.workspace = true
+base64 = "0.22"
+uuid.workspace = true

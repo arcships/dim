@@ -251,10 +251,10 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
 | Sign in, sign out (OAuth, every Provider the daemon describes) | done | — | [Provider accounts](cli-commands.md#provider-accounts) |
-| API-key Providers, add/edit/test/enable/disable/switch | done; removal: none in the CLI (server supports it); model-list editing: `/models` → `Edit models` and `dimcode models PROVIDER` | done, including the model list and preferences (`provider.models.*`, `provider.preferences.update`) | [Provider management](appserver/provider-management.md) |
+| API-key Providers, add/edit/test/enable/disable/switch | done; removal: none in the CLI (server supports it); model-list editing: `/models` → `Manage models` and `dimcode models PROVIDER` | done, including the model list and preferences (`provider.models.*`, `provider.preferences.update`) | [Provider management](appserver/provider-management.md) |
 | Switch model | done | done | `session.model.update` |
 | Reasoning effort, fast mode | done (`/effort`, `/fast`, and ←/→ in `/models`) | — | [Model configuration](model-configuration.md) |
-| Subagent model policy | done (`/models` → Subagent models) | — | [Subagent model policy](subagent-model-policy.md), [#263](https://github.com/arcships/dim/issues/263) |
+| Subagent model policy | done (`/models` → `Subagent models` section) | — | [Subagent model policy](subagent-model-policy.md), [#263](https://github.com/arcships/dim/issues/263) |
 | Auxiliary models | designed server-side per owner (e.g. SessionTitle); no client UI | — | [AuxiliaryModel](appserver/auxiliary-model.md) |
 
 ### 3.2 Session management
@@ -274,7 +274,7 @@ Rows follow the sections of the [feature list](../feature-list.md), which descri
 
 | Capability | CLI | Web | Source |
 | --- | --- | --- | --- |
-| Send, steer (`Enter` while running, the default), queue (`Ctrl+S`), automatic sending, steer an empty draft (`Enter`), interrupt, interrupt and send now (`Ctrl+Enter`) | done | send and stop: done; queue: later phase | InputQueue (S1) |
+| Send, steer (`Enter` while running, the default), queue (`Ctrl+S`), automatic sending, steer an empty draft (`Enter`), interrupt, interrupt and send now (`Ctrl+Enter`) | done | done: the Web composer has the same two modes with its own default, and `Ctrl+Enter`/`⌘+Enter` for interrupt and send now ([Web workspace](web-workspace.md#45-sending-during-a-run)) | InputQueue (S1) |
 | Lines: tree, switch, create, send, stop, approvals, end | done | done (right-side Lines panel) | [Timeline branches](timeline-branches.md) §14, [Web workspace](web-workspace.md#41-lines-and-branch) |
 | `/queue` panel and queue deletion | done in both terminal UIs | — | [CLI commands](cli-commands.md#queued-messages) |
 | Retrieve a queued message for editing | done; images and multi-block messages remain queued with a notice | — | [CLI commands](cli-commands.md#queued-messages) |

@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, useId, watch } from "vue"
+import { computed, nextTick, onActivated, onMounted, onUnmounted, ref, useId, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
-import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy } from "../../rpc/protocol"
+import type { DraftAttachments, FileCandidate, ModelId, PermissionPreset, PermissionPolicy, QueuedInput, RestoredImage, SubmitMode, UserInput, WithdrawResult } from "../../rpc/protocol"
 import { linkMentions, mentionTrigger, type FileMention, type MentionTrigger } from "../../mentions"
 import { SKILL_TOKEN_PREFIX, namesSkillToken, skillCommandQuery, skillSegments, startsWithSkillToken } from "../../skill-token"
+import { useComposerStore } from "../../stores/composer"
 import { useModelsStore } from "../../stores/models"
 import { useSessionsStore } from "../../stores/sessions"
 import { useConnectionStore } from "../../stores/connection"
@@ -26,9 +27,12 @@ type SessionCommands = {
 }
 
 /**
- * The message composer: a growing text field, the model menu, and one button
- * that sends, or stops the run while one is in flight. Enter sends,
- * Shift+Enter breaks the line.
+ * The message composer: a growing text field, the model menu, and the actions
+ * that send, hold or stop. Enter sends, Shift+Enter breaks the line. During a
+ * run the default action steers into the running turn unless this browser
+ * chose holding as its default, the other action does the opposite, and
+ * `Ctrl+Enter` (`⌘+Enter` on macOS) stops the run and sends the draft with
+ * every held message recalled ahead of it (web-workspace §4).
  */
 const props = withDefaults(defineProps<{
   running: boolean
@@ -36,8 +40,8 @@ const props = withDefaults(defineProps<{
   model: ModelId | undefined
   /** False when this connection may not change the model; the menu then only names it. */
   modelSelectable: boolean
-  /** Sends the text and the draft's attachments; resolves once the server accepted it. */
-  send: (text: string, attachments: DraftAttachments) => Promise<void>
+  /** Sends the text and the draft's attachments in `mode`; resolves once the server accepted it. */
+  send: (text: string, attachments: DraftAttachments, mode: SubmitMode) => Promise<void>
   /** False where a draft cannot carry attachments, as on a new Session's page. */
   attachments?: boolean
   /** True when the Session stores long pastes through `attachment.put`. */
@@ -47,6 +51,15 @@ const props = withDefaults(defineProps<{
   /** The Session policy and its independent controls; absent where permission methods are unavailable. */
   permission?: { policy: PermissionPolicy | undefined; select: (preset: PermissionPreset) => Promise<void> }
   stop?: () => Promise<void>
+  /**
+   * The messages the server holds for this branch, oldest first: the composer
+   * recalls them into the draft through `withdrawHeld`.
+   */
+  held?: readonly QueuedInput[]
+  /** Withdraws one held message; absent where the Session serves no `session.input.withdraw`. */
+  withdrawHeld?: (input: QueuedInput) => Promise<WithdrawResult["status"]>
+  /** The Session whose stored image files a recalled message names, for its thumbnail. */
+  sessionId?: string
   selectModel: (model: ModelId) => Promise<void> | void
   /** The narrower line panel: no model menu, less vertical chrome. */
   variant?: "main" | "panel"
@@ -101,7 +114,27 @@ const MAX_PASTE = 10 * 1024 * 1024
 const MAX_IMAGES = 20
 const images = ref<Array<{ id: number; url: string; file: File }>>([])
 const pastes = ref<Array<{ id: number; text: string }>>([])
+/**
+ * A recalled image: the protocol's anchor, plus the send-now gesture that recalled
+ * it. The gesture decides two things text offsets cannot: whether the image moves
+ * past text inserted at its own offset, and which of several images at one offset
+ * comes first.
+ */
+type RecalledImage = RestoredImage & { batch: number }
+
+/** The stored images a recalled message carried, each with the draft offset it keeps its place at. */
+const restored = ref<RecalledImage[]>([])
 let attachmentSeq = 0
+const composerSettings = useComposerStore()
+/**
+ * A `Ctrl+Enter` whose withdrawals and stop are out: the draft it merged waits
+ * for the stop's reply, and no action sends anything until then.
+ */
+const sendNow = ref(false)
+/** The messages the server holds for this branch, oldest first. */
+const held = computed(() => props.held ?? [])
+/** The mode a draft goes out in during a run, and the other action's mode. */
+const alternateMode = computed<SubmitMode>(() => composerSettings.alternate())
 
 const availableCommands = computed(() => ([
   { category: "model", name: "models", available: props.modelSelectable && models.available && !changingModel.value },
@@ -150,8 +183,28 @@ watch(text, () => {
 }, { flush: "sync" })
 watch(matches, () => { activeIndex.value = 0 }, { flush: "sync" })
 
-const showStop = computed(() => props.running && props.stop !== undefined && text.value.trim() === "" && images.value.length === 0 && pastes.value.length === 0)
-const canSend = computed(() => (text.value.trim() !== "" || images.value.length > 0 || pastes.value.length > 0) && !sending.value)
+const hasDraft = computed(() => text.value.trim() !== "" || images.value.length > 0 || pastes.value.length > 0 || restored.value.length > 0)
+const showStop = computed(() => props.running && props.stop !== undefined && !hasDraft.value)
+const canSend = computed(() => hasDraft.value && !sending.value)
+/** Where the last draft sent during this run went; cleared when the run ends, with the recalled identities. */
+const destination = ref<SubmitMode | undefined>()
+/**
+ * Held messages this composer already recalled. A message that left the queue
+ * is not put back or sent again, even if the strip still lists it while the
+ * withdrawal's fact is in flight.
+ */
+const recalled = ref<ReadonlySet<string>>(new Set())
+watch(() => props.running, (running) => {
+  if (running) return
+  destination.value = undefined
+  recalled.value = new Set()
+})
+
+/** The mode a draft goes out in: this browser's choice during a run, `queue` while the run is idle. */
+const primaryMode = computed<SubmitMode>(() => props.running ? composerSettings.sendMode : "queue")
+/** `Ctrl+Enter` sends now only into a run; idle it submits like Enter. */
+const canSendNow = computed(() => props.running && props.stop !== undefined && (hasDraft.value || held.value.length > 0) && (held.value.length === 0 || props.withdrawHeld !== undefined) && !sending.value && !sendNow.value)
+const holdKey = /Mac|iPhone|iPad/.test(navigator.userAgent) ? "⌘+Enter" : "Ctrl+Enter"
 
 function resize(): void {
   const element = field.value
@@ -241,6 +294,42 @@ function removePaste(id: number): void {
   pastes.value = pastes.value.filter((paste) => paste.id !== id)
 }
 
+function removeRestored(index: number): void {
+  restored.value = restored.value.filter((_, at) => at !== index)
+}
+
+/** The draft text the restored images' offsets were last measured in. */
+let anchored = ""
+/** True while a recall writes the draft itself, so its own insertions are not read as edits. */
+let recalling = false
+/**
+ * The send-now gesture the composer is recalling for. Its images stand ahead of
+ * the draft's older ones at the same offset, in the queue order they were
+ * recalled in.
+ */
+let recallBatch = 0
+
+/**
+ * An edit around a recalled image moves it with the text it stood between, as a
+ * token does: the edit is the draft's common prefix and suffix, so typing or
+ * deleting shifts the offsets after it and an image inside a replaced run
+ * settles at the run's start. Only the offset moves: the anchor keeps its
+ * identity, so a submit that is already out still recognizes the image it took
+ * when its reply arrives.
+ */
+watch(text, (next) => {
+  const previous = anchored
+  anchored = next
+  if (recalling || next === previous || restored.value.length === 0) return
+  let start = 0
+  while (start < next.length && start < previous.length && next[start] === previous[start]) start++
+  let end = 0
+  while (end < next.length - start && end < previous.length - start && next[next.length - 1 - end] === previous[previous.length - 1 - end]) end++
+  const delta = next.length - previous.length
+  const tail = previous.length - end
+  for (const block of restored.value) block.at = block.at <= start ? block.at : block.at >= tail ? block.at + delta : start
+}, { flush: "sync" })
+
 /** The `@` mention the caret is in, read from the field's own value (the field is the source of truth for the caret). */
 function updateMention(): void {
   const element = field.value
@@ -285,8 +374,69 @@ function acceptCandidate(candidate: FileCandidate): void {
   })
 }
 
-async function submit(): Promise<void> {
+/**
+ * Puts a withdrawn message back into the composer at `at`: its content blocks in
+ * the order the server holds them, behind the messages recalled before it and
+ * ahead of the typed draft, and returns the offset just past what it inserted.
+ * The layout is the TUI's `restore_at`: a newline before the message when the
+ * draft there does not end a line, one between two adjacent text blocks, and one
+ * after the message when typed text follows. The field is plain text, so an
+ * image takes no room in it: the offset recorded for it is where it stood between
+ * the words, and the submit sends it back there.
+ *
+ * The message goes in as one insertion, so an image already in the draft moves
+ * with the words it stood between instead of staying at an offset the inserted
+ * text pushed it past. An image of an earlier gesture that stood exactly where
+ * the message goes in moves past the whole message: its words followed the
+ * message's, even when the message is images alone and inserts no text.
+ */
+function recall(item: QueuedInput, at: number): number {
+  if (recalled.value.has(item.id)) return at
+  recalled.value = new Set([...recalled.value, item.id])
+  const blocks = item.content
+  if (blocks.length === 0) return at
+  recalling = true
+  try {
+    const draft = text.value
+    const position = Math.min(at, draft.length)
+    const followed = position < draft.length
+    let inserted = ""
+    const placements: RecalledImage[] = []
+    let opened = false
+    let previousText = false
+    for (const block of blocks) {
+      if (!opened) {
+        opened = true
+        if (position > 0 && !draft.slice(0, position).endsWith("\n")) inserted += "\n"
+      } else if (block.type === "text" && previousText) {
+        inserted += "\n"
+      }
+      if (block.type === "image") {
+        previousText = false
+        placements.push({ at: position + inserted.length, image: block, batch: recallBatch })
+        continue
+      }
+      inserted += block.text
+      previousText = true
+    }
+    if (followed) inserted += "\n"
+    for (const block of restored.value) {
+      if (block.at > position || (block.at === position && block.batch !== recallBatch)) block.at += inserted.length
+    }
+    text.value = draft.slice(0, position) + inserted + draft.slice(position)
+    restored.value = [...restored.value, ...placements]
+    return position + inserted.length
+  } finally {
+    recalling = false
+  }
+}
+
+async function submit(sendMode: SubmitMode = primaryMode.value): Promise<void> {
   if (!canSend.value || composing.value) return
+  if (sendNow.value) {
+    error.value = t("composer.stillStopping")
+    return
+  }
   if (commandMode.value) {
     const row = menuRows.value[activeIndex.value]
     if (row?.kind === "skill") completeSkill(row.name.slice(SKILL_TOKEN_PREFIX.length))
@@ -332,6 +482,7 @@ async function submit(): Promise<void> {
   }
   sending.value = true
   error.value = ""
+  const wentTo = props.running ? sendMode : undefined
   try {
     if (branchCommand) {
       if (!props.createBranch) throw new Error(t("composer.branchUnavailable"))
@@ -340,11 +491,28 @@ async function submit(): Promise<void> {
       const sentMentions = fileMentions.value
       const sentImages = images.value
       const sentPastes = pastes.value
-      await props.send(linkMentions(message, sentMentions), { images: sentImages.map((image) => image.file), pastes: sentPastes.map((paste) => paste.text), onProgress: (percent) => { uploadProgress.value = percent } })
+      const sentRestored = restored.value
+      // A recalled image keeps the place it held in the draft: each gap around
+      // one is linked on its own, so a link never straddles it and every offset
+      // still lands between the words it held between. At one offset the later
+      // gesture's images come first, in the queue order they were recalled in.
+      const gaps: Array<{ at: number; image: typeof sentRestored[number]["image"] }> = []
+      let body = ""
+      let cursor = 0
+      for (const { at, image } of [...sentRestored].sort((left, right) => left.at - right.at || right.batch - left.batch)) {
+        const offset = Math.max(cursor, Math.min(at, message.length))
+        body += linkMentions(message.slice(cursor, offset), sentMentions)
+        gaps.push({ at: body.length, image })
+        cursor = offset
+      }
+      body += linkMentions(message.slice(cursor), sentMentions)
+      await props.send(body, { images: sentImages.map((image) => image.file), pastes: sentPastes.map((paste) => paste.text), ...(gaps.length === 0 ? {} : { restored: gaps }), onProgress: (percent) => { uploadProgress.value = percent } }, sendMode)
       fileMentions.value = fileMentions.value.filter((mention) => !sentMentions.includes(mention))
       sentImages.forEach((image) => URL.revokeObjectURL(image.url))
       images.value = images.value.filter((image) => !sentImages.includes(image))
       pastes.value = pastes.value.filter((paste) => !sentPastes.includes(paste))
+      restored.value = restored.value.filter((block) => !sentRestored.includes(block))
+      destination.value = wentTo
     }
     if (text.value === message) text.value = ""
     await nextTick()
@@ -357,7 +525,60 @@ async function submit(): Promise<void> {
   }
 }
 
+/** The action beside Enter: sends the draft in the other mode. */
+async function submitAlternate(): Promise<void> {
+  if (commandMode.value) return
+  await submit(alternateMode.value)
+}
+
+/**
+ * Interrupt and send now: withdraws every held message oldest first into the
+ * draft, asks the run to stop, and submits the combined draft once the stop's
+ * reply says the turn has settled. A submit written before the last interrupt
+ * cannot start a run after it, so the order is the point. A stop that fails
+ * keeps the whole draft, and a second trigger during the same stop sends
+ * nothing: one reply decides one submit.
+ */
+async function sendNowAndStop(): Promise<void> {
+  if (sendNow.value || composing.value) return
+  if (!props.running) {
+    await submit()
+    return
+  }
+  if (!canSendNow.value) return
+  sendNow.value = true
+  error.value = ""
+  destination.value = undefined
+  recallBatch++
+  let at = 0
+  for (const item of held.value) {
+    if (props.withdrawHeld === undefined) break
+    try {
+      if (await props.withdrawHeld(item) === "deleted") at = recall(item, at)
+    } catch (cause) {
+      // A message that stays held is not recalled and so is not sent twice;
+      // the reason is reported and the gesture goes on, as the TUI's Esc does.
+      error.value = cause instanceof Error ? cause.message : String(cause)
+    }
+  }
+  await nextTick()
+  resize()
+  try {
+    await props.stop?.()
+  } catch (cause) {
+    sendNow.value = false
+    error.value = t("composer.sendNowFailed", { error: cause instanceof Error ? cause.message : String(cause) })
+    return
+  }
+  sendNow.value = false
+  await submit("queue")
+  // This draft opens the run after the stopped one, so neither destination
+  // above describes it.
+  destination.value = undefined
+}
+
 async function stop(): Promise<void> {
+  if (sendNow.value) return
   error.value = ""
   try {
     await props.stop?.()
@@ -445,8 +666,17 @@ function onKeydown(event: KeyboardEvent): void {
     activeIndex.value = (activeIndex.value + (event.key === "ArrowDown" ? 1 : -1) + menuRows.value.length) % menuRows.value.length
     return
   }
+  const picker = menuOpen.value || mentionShown.value
   if (event.key === "Enter" && !event.shiftKey && !event.altKey) {
     event.preventDefault()
+    // A picker takes a modified Enter as Enter itself, as the TUI does. No
+    // picker: during a run it is interrupt and send now, and while the run is
+    // idle it submits as Enter does.
+    if ((event.ctrlKey || event.metaKey) && !picker && !sendNow.value) {
+      if (props.running) void sendNowAndStop()
+      else void submit()
+      return
+    }
     void submit()
   }
 }
@@ -469,6 +699,10 @@ onMounted(() => {
     observer.observe(element)
   }
 })
+onActivated(() => {
+  resize()
+  field.value?.focus()
+})
 defineExpose({ focus: () => field.value?.focus(), quote })
 </script>
 
@@ -476,10 +710,19 @@ defineExpose({ focus: () => field.value?.focus(), quote })
   <section class="composer-panel" :data-variant="variant ?? 'main'" :aria-label="t('chat.composer')">
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
     <div class="composer-surface" @click.self="field?.focus()" @dragover.prevent @drop="onDrop">
-      <div v-if="images.length > 0 || pastes.length > 0" class="draft-attachments">
+      <p v-if="destination" class="composer-destination" role="status" :data-mode="destination">
+        <UIcon :name="destination === 'steer' ? 'i-lucide-corner-down-right' : 'i-lucide-hourglass'" class="size-3.5 shrink-0" aria-hidden="true" />
+        <span>{{ destination === 'steer' ? t('composer.sentIntoRun') : t('composer.heldForNextTurn') }}</span>
+      </p>
+      <div v-if="images.length > 0 || pastes.length > 0 || restored.length > 0" class="draft-attachments">
         <span v-for="image in images" :key="image.id" class="draft-chip">
           <img :src="image.url" :alt="t('composer.imageAttachment')" class="draft-thumb">
           <UButton color="neutral" variant="ghost" size="xs" square icon="i-lucide-x" :aria-label="t('composer.removeAttachment')" @click="removeImage(image.id)" />
+        </span>
+        <span v-for="(block, index) in restored" :key="index" class="draft-chip">
+          <img v-if="sessionId" :src="`/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(block.image.source.fileId)}`" :alt="t('composer.imageAttachment')" class="draft-thumb" loading="lazy">
+          <span v-else>{{ t("composer.imageAttachment") }}</span>
+          <UButton color="neutral" variant="ghost" size="xs" square icon="i-lucide-x" :aria-label="t('composer.removeAttachment')" @click="removeRestored(index)" />
         </span>
         <span v-for="paste in pastes" :key="paste.id" class="draft-chip">
           <span>{{ t("composer.pastedText", { lines: paste.text.split("\n").length }) }}</span>
@@ -554,15 +797,29 @@ defineExpose({ focus: () => field.value?.focus(), quote })
         <div class="composer-run-group">
           <progress v-if="uploadProgress !== undefined" :value="uploadProgress" max="100" aria-label="File upload" />
           <ComposerModelMenu v-if="variant !== 'panel'" ref="modelMenu" :model="model" :selectable="modelSelectable" :disabled="changingModel" @select="onModel" />
+          <UTooltip v-if="sendNow" :text="t('composer.stopping')">
+            <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-loader-circle" :aria-label="t('composer.stopping')" disabled />
+          </UTooltip>
+          <template v-else-if="running">
+            <UTooltip :text="primaryMode === 'steer' ? t('composer.queueAlternate') : t('composer.steerAlternate')">
+              <UButton color="neutral" variant="ghost" size="sm" :square="variant === 'panel'" :icon="alternateMode === 'steer' ? 'i-lucide-corner-down-right' : 'i-lucide-hourglass'" :aria-label="alternateMode === 'steer' ? t('composer.steerAlternate') : t('composer.queueAlternate')" :disabled="!canSend || sending || sendNow" @click.stop="submitAlternate()">
+                <template v-if="variant !== 'panel'">{{ alternateMode === 'steer' ? t('composer.steer') : t('composer.queue') }}</template>
+              </UButton>
+            </UTooltip>
+            <UTooltip :text="t('composer.sendNowHint', { key: holdKey })">
+              <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-zap" :aria-label="t('composer.sendNowHint', { key: holdKey })" :disabled="!canSendNow" @click.stop="sendNowAndStop()" />
+            </UTooltip>
+          </template>
           <UTooltip :text="showStop ? t('composer.stopResponse') : t('composer.send')">
             <UButton
               color="neutral"
               variant="solid"
               size="sm"
               square
-              :icon="showStop ? 'i-lucide-square' : 'i-lucide-arrow-up'"
+              :icon="showStop ? 'i-lucide-square' : running && primaryMode === 'queue' ? 'i-lucide-hourglass' : 'i-lucide-arrow-up'"
               :aria-label="showStop ? t('composer.stopResponse') : t('composer.send')"
-              :disabled="showStop ? stopping : !canSend"
+              :aria-description="showStop || !running ? undefined : primaryMode === 'steer' ? t('composer.steerAlternate') : t('composer.queueAlternate')"
+              :disabled="showStop ? stopping || sendNow : !canSend || sending || sendNow"
               @click.stop="showStop ? stop() : submit()"
             />
           </UTooltip>
@@ -597,6 +854,10 @@ defineExpose({ focus: () => field.value?.focus(), quote })
 .draft-attachments { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-2) var(--space-3) 0; }
 .draft-chip { display: inline-flex; min-width: 0; align-items: center; gap: var(--space-1); padding: 2px var(--space-1) 2px var(--space-2); border: 1px solid var(--border); border-radius: var(--control-sm-radius); background: var(--muted); font-size: var(--text-xs); }
 .draft-thumb { width: 36px; height: 36px; border-radius: var(--control-xs-radius); object-fit: cover; }
+/* Where the last draft went: quiet, one line, and gone when the run ends. */
+.composer-destination { display: flex; align-items: center; gap: var(--space-1); margin: 0; padding: 0 var(--space-1); color: var(--muted-foreground); font-size: var(--text-xs); }
+.composer-destination[data-mode="steer"] { color: var(--primary); }
+.composer-destination > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .command-keys { margin: var(--space-1) 0 0; padding: var(--space-2); border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: var(--text-xs); }
 
 </style>

@@ -286,7 +286,7 @@ struct Worker {
     output: Option<OutputWatch>,
     /// The admitted read can outlive its detail; false discards that old reply.
     output_request: Option<(u64, bool)>,
-    catalog_request: Option<(u64, String, bool, SessionsScope)>,
+    catalog_request: Option<(u64, String, bool, SessionsScope, bool)>,
     /// When the next snapshot goes out; set by the first unpublished change.
     publish_at: Option<tokio::time::Instant>,
     /// The `shell.run` in flight: its request id and run id.
@@ -735,7 +735,7 @@ impl Worker {
     }
 
     async fn cancel_catalog(&mut self) -> crate::Result<()> {
-        if let Some((request, _, _, _)) = self.catalog_request.take()
+        if let Some((request, ..)) = self.catalog_request.take()
             && self.client.offers("session.catalog.cancel")
         {
             self.client
@@ -1550,6 +1550,9 @@ impl Worker {
                     let mut params = json!({"limit":50,"query":query,"withPreview":true});
                     if show_acp && self.client.offers("session.catalog.origins") {
                         params["withAcpSessions"] = json!(true);
+                        if self.client.offers("session.catalog.acpHistory") {
+                            params["withAcpHistory"] = json!(true);
+                        }
                     }
                     if let Some(cwd) = self.scope_cwd(&scope) {
                         params["cwd"] = cwd;
@@ -1562,7 +1565,9 @@ impl Worker {
                     ("session.summaries", json!({}))
                 };
                 match self.client.send(method, params).await {
-                    Ok(request) => self.catalog_request = Some((request, id, paged, scope)),
+                    Ok(request) => {
+                        self.catalog_request = Some((request, id, paged, scope, show_acp))
+                    }
                     Err(error) => self.send(Update::Sessions {
                         id,
                         paged,
@@ -2410,9 +2415,10 @@ impl Worker {
     /// `requireInactive`: the issue asks the picker to delete a Session a
     /// turn is running in, which the close in the delete settles.
     ///
-    /// The reply alone decides, because an attached Session is loaded and
-    /// so a `-32603` can only follow a close: every other error comes before
-    /// it and changes nothing.
+    /// A `-32603` does not confirm deletion or whether the Session closed:
+    /// storage operations can fail before or after close. The picker keeps
+    /// the row for reconciliation and leaves an affected current Session
+    /// (session-deletion-and-fork §3.5).
     async fn delete_session(&mut self, session_id: &str) -> DeleteOutcome {
         if !self.client.supports(&["session.delete"]) {
             return DeleteOutcome::Unsupported;
@@ -2428,11 +2434,11 @@ impl Worker {
             Ok(reply) if reply.deleted == Some(false) => DeleteOutcome::NothingRemoved,
             Ok(_) => DeleteOutcome::Deleted,
             Err(error) => {
-                let close_ran = error
+                let removal_failed = error
                     .downcast_ref::<client::RpcError>()
                     .is_some_and(|rpc| rpc.code == -32603);
                 let reason = crate::session_command::reason(&error);
-                if close_ran {
+                if removal_failed {
                     DeleteOutcome::ClosedNotRemoved(reason)
                 } else {
                     DeleteOutcome::Failed(reason)
@@ -3631,7 +3637,14 @@ impl Worker {
             let unavailable = catalog
                 .models
                 .iter()
-                .filter(|model| model.unavailable_reason.is_some())
+                .filter(|model| {
+                    model.unavailable_reason.is_some()
+                        && !crate::limits_undeclared(
+                            &model.missing_limits,
+                            model.unavailable_reason.as_deref(),
+                            catalog.disabled_model_ids.contains(&model.id),
+                        )
+                })
                 .count();
             let disabled = catalog
                 .models
@@ -3708,7 +3721,7 @@ impl Worker {
                     candidates,
                 });
             }
-            if models.len() == before {
+            if models.len() == before && (undeclared == 0 || unavailable + disabled > 0) {
                 let reason = if total == 0 {
                     EmptyReason::NoModels { listable }
                 } else if unavailable > 0 && disabled > 0 {
@@ -4513,7 +4526,7 @@ impl Worker {
             .as_ref()
             .is_some_and(|(request, ..)| *request == id)
         {
-            let (_, id, paged, scope) = self
+            let (_, id, paged, scope, show_acp) = self
                 .catalog_request
                 .take()
                 .expect("matched catalog request");
@@ -4541,11 +4554,17 @@ impl Worker {
                         SessionsScope::Local(Some(workspaces)) => workspaces.contains(&session.cwd),
                         SessionsScope::All => true,
                     });
+                    sessions.retain(|session| {
+                        if session.origin.as_deref() == Some("acp") {
+                            show_acp
+                        } else {
+                            session.preview.is_some()
+                        }
+                    });
                 }
                 Ok((
                     sessions
                         .into_iter()
-                        .filter(|session| session.preview.is_some())
                         .map(|session| SessionItem {
                             id: session.session_id,
                             title: session.title,
@@ -4554,6 +4573,7 @@ impl Worker {
                             updated_at: session.updated_at,
                             model: session.model.model_id,
                             origin: session.origin,
+                            closed: session.closed,
                         })
                         .collect(),
                     next_cursor,
@@ -5383,6 +5403,8 @@ struct SessionSummary {
     /// The creation origin, from a daemon that reports one (#557).
     #[serde(default)]
     origin: Option<String>,
+    #[serde(default)]
+    closed: bool,
 }
 
 fn execution_snapshot(value: serde_json::Value) -> Result<ExecutionSnapshot, String> {

@@ -572,6 +572,12 @@ async fn configured_compaction_uses_the_window_declared_in_the_model_file() {
         assert_ok(&imported);
         let accepted = images.rpc("attachment.read", json!({"sessionId":image_sid,"fileId":imported["result"]["attachmentId"],"offset":0})).await;
         assert_ok(&accepted);
+        use sha2::{Digest, Sha256};
+        let accepted_bytes = base64::engine::general_purpose::STANDARD
+            .decode(accepted["result"]["data"].as_str().unwrap())
+            .unwrap();
+        let digest = format!("{:x}", Sha256::digest(&accepted_bytes));
+        let reference = format!("img:{}", &digest[..16]);
         assert_ok(
             &images
                 .rpc(
@@ -600,7 +606,11 @@ async fn configured_compaction_uses_the_window_declared_in_the_model_file() {
             .find(|body| !body.to_string().contains(SUMMARIZER))
             .cloned()
             .unwrap();
-        assert!(request.to_string().contains(accepted["result"]["data"].as_str().unwrap()), "{request}");
+        assert!(request.to_string().contains(&reference), "{request}");
+        assert!(!request.to_string().contains(accepted["result"]["data"].as_str().unwrap()), "{request}");
+        assert!(history(&mut images, &image_sid).await.iter().any(|event| {
+            event.to_string().contains(imported["result"]["attachmentId"].as_str().unwrap())
+        }), "History preserves the image source");
 
         server.child.kill().await.unwrap();
         http.abort();

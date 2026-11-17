@@ -23,7 +23,7 @@ registerHooks({
 const { useChatStore } = await import("../src/stores/chat.ts")
 const { RpcError, RpcClient, ConnectionLost } = await import("../src/rpc/client.ts")
 const event = (sequence, content) => ({ id: `e${sequence}`, sequence, createAt: sequence, content })
-const input = (sequence, text) => event(sequence, { kind: "input", text, blocks: [] })
+const input = (sequence, text) => event(sequence, { kind: "input", text, content: [{ type: "text", text }], blocks: [] })
 const page = (events, through, nextAfter = through, done = true) => ({ events, through, nextAfter, done })
 const flush = () => new Promise(resolve => setTimeout(resolve, 25))
 const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no }); return { promise, resolve, reject } }

@@ -237,8 +237,9 @@ impl TreeCommands {
             tree.store.batch_end_at(&key, target).await
         }
     }
-    /// Computes properties of one line at a fixed cutoff. Chain scope is invalid.
-    /// An ended line reads its persisted facts and has no publishing tail.
+    /// Computes properties at a fixed cutoff. Chain scope reads only published
+    /// facts, with each ancestor bounded by its inherited cut. An ended line
+    /// reads its persisted facts and has no publishing tail.
     pub async fn query(
         &self,
         id: String,
@@ -968,9 +969,9 @@ impl TimelineTree {
         id: &str,
         query: TimelineQuery,
     ) -> Result<dim_agent_runtime::TimelineQueryReply> {
-        if query.scope != TimelineQueryScope::Branch {
+        if query.scope == TimelineQueryScope::Chain && query.include_publishing {
             return Err(AgentError::InvalidInput(
-                "a tree query reads one line's own facts".into(),
+                "a tree chain query stops at the published head".into(),
             ));
         }
         if let Some(context) = self.owned_context(id) {
@@ -991,22 +992,45 @@ impl TimelineTree {
                 "future timeline sequence {through}"
             )));
         }
-        let from = match query.from {
-            Some(position)
-                if position.branch_id == id
-                    && position.sequence > 0
-                    && position.sequence <= through =>
-            {
-                position.sequence
+        let mut scope = self.stored_scope(id, 1, through);
+        if query.scope == TimelineQueryScope::Chain {
+            let state = self.state.lock().unwrap();
+            let mut info = &state.ended.get(id).expect("the line ended").info;
+            let mut ancestors = Vec::new();
+            while let Some(parent) = &info.parent {
+                let cut = info
+                    .branch_point
+                    .expect("a child records its inherited cut");
+                if cut > 0 {
+                    ancestors.extend(self.stored_scope(parent, 1, cut).segments);
+                }
+                info = state
+                    .nodes
+                    .get(parent)
+                    .map(|node| &node.info)
+                    .or_else(|| state.ended.get(parent).map(|line| &line.info))
+                    .expect("the directory retains each ancestor");
             }
-            Some(_) => {
+            ancestors.reverse();
+            ancestors.extend(scope.segments);
+            scope.segments = ancestors;
+        }
+        if let Some(from) = query.from {
+            let index = scope
+                .segments
+                .iter()
+                .position(|segment| segment.branch_id == from.branch_id)
+                .ok_or_else(|| {
+                    AgentError::InvalidInput("query start is outside its branch scope".into())
+                })?;
+            if from.sequence == 0 || from.sequence > scope.segments[index].through {
                 return Err(AgentError::InvalidInput(
-                    "query start is outside its branch scope or sequence range".into(),
+                    "query start is outside its sequence range".into(),
                 ));
             }
-            None => 1,
-        };
-        let scope = self.stored_scope(id, from, through);
+            scope.segments.drain(..index);
+            scope.segments[0].from = from.sequence;
+        }
         let result = self
             .store
             .query(&scope, &query.query, query.page.as_ref())

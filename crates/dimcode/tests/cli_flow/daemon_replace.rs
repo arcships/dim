@@ -316,12 +316,17 @@ fn two_starting_clients_replace_an_idle_daemon_once() {
                 .unwrap()
         };
         let first = spawn(&home);
+        let first_pid = first.id();
         let second = spawn(&home);
+        let second_pid = second.id();
         let (first, second) = (wait(first), wait(second));
-        for (label, output) in [("first", &first), ("second", &second)] {
+        for (label, pid, output) in [
+            ("first", first_pid, &first),
+            ("second", second_pid, &second),
+        ] {
             assert!(
                 output.status.success(),
-                "iteration {iteration}, {label}:\n{}",
+                "iteration {iteration}, {label}, pid={pid}:\n{}",
                 describe_client(&home, output)
             );
         }

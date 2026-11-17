@@ -647,6 +647,9 @@ pub struct Catalog {
     /// Whether Sessions whose origin is `acp` are listed (#557).
     #[serde(default)]
     pub with_acp_sessions: bool,
+    /// Whether listed ACP Sessions bypass the preview and closed filters.
+    #[serde(default)]
+    pub with_acp_history: bool,
     /// Whether Sessions whose origin is `automation` are listed: work a saved
     /// configuration launched with no person present (#1421). Independent of
     /// both other class filters.

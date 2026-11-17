@@ -478,8 +478,9 @@ export interface TreeCommands {
    */
   page(id: string, after: number | bigint, limit: number | bigint, through: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
   /**
-   * Computes properties of one line at a fixed cutoff. Chain scope is invalid.
-   * An ended line reads its persisted facts and has no publishing tail.
+   * Computes properties at a fixed cutoff. Chain scope reads only published
+   * facts, with each ancestor bounded by its inherited cut. An ended line
+   * reads its persisted facts and has no publishing tail.
    * @throws {AgentErrorThrown}
    */
   query(id: string, query: TimelineQuery): Promise<TimelineQueryReply>

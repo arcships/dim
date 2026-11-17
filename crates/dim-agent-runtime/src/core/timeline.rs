@@ -161,9 +161,12 @@ impl Timeline {
             FaultReporter::default(),
         )
     }
-    /// Constructs a Timeline over validated, previously committed storage;
-    /// like [`Self::new`], only for tests.
-    #[cfg(feature = "testing")]
+    /// Constructs a Timeline over validated, previously committed storage,
+    /// for a caller that holds the store exclusively: an offline tool, which
+    /// opens it with no daemon running. A live branch's Timeline comes from
+    /// its owner ([`TimelineFactory::build`](crate::TimelineFactory)), never
+    /// from here. Not exported to other languages.
+    #[service(skip)]
     pub async fn restore(
         ctx: Ctx,
         key: TimelineKey,
@@ -1127,9 +1130,10 @@ impl TailLock<'_> {
     }
 }
 
-/// Closes a Timeline a test built directly with `Timeline::new`. A free
-/// function rather than a method, so the bridge generator never exports it.
-#[cfg(feature = "testing")]
+/// Closes a Timeline built directly with [`Timeline::restore`] or
+/// `Timeline::new`: the owner of a Timeline is what closes it, and a caller
+/// that constructed one itself is that owner. A free function rather than a
+/// method, so the bridge generator never exports it.
 pub fn close_timeline(timeline: &Timeline) -> BoxFuture<'static, Result<()>> {
     timeline.close()
 }

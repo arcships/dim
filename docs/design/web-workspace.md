@@ -47,7 +47,7 @@ It is open while either reason exists and closes only when both are gone. The sw
 | `web.disable` | `{}` | `{enabled, open, address?, connections}`; used by `dimcode web --off`; it clears the switch but does not disconnect holders |
 | `web.status` | `{}` | `{enabled, open, address?, connections}` |
 
-All are management methods (local transport only, protocol v4). Without `port` the entry binds the first free port from 43201 upward; an explicit `port` that is taken fails with `address_in_use`. A local connection that calls `web.open` holds the entry; the TUI switch does not need a holder. When the last reason disappears the listener stops, every token is dropped and web connections detach. Nothing is persisted, so after a daemon restart the entry is off; `dimcode web` opens it again or `/web` enables it. `web.open`/`web.toggle` fail with `web_assets_missing` when the binary was built without the frontend or the override directory has no build (§2.4).
+All are management methods (local transport only, protocol v4). Without `port` the entry binds the first free port from 43201 upward; an explicit `port` that is taken fails with `address_in_use`. A local connection that calls `web.open` holds the entry; the TUI switch does not need a holder. When the last reason disappears the listener stops, every token is dropped and web connections detach. Each authenticated Web connection belongs to the entry generation that accepted its upgrade, including upgrades whose callbacks finish after closing starts. Such connections follow normal detachment cleanup and cannot remain usable under a later generation; closing Web does not close the daemon’s Local or Bare transports. Nothing is persisted, so after a daemon restart the entry is off; `dimcode web` opens it again or `/web` enables it. `web.open`/`web.toggle` fail with `web_assets_missing` when the binary was built without the frontend or the override directory has no build (§2.4).
 
 ### 2.2 Authentication
 
@@ -154,7 +154,7 @@ The frontend directory is fixed when the daemon starts (§2.4); a daemon started
 | `rpc/protocol.ts` | Hand-written types for the v3 methods and notifications the UI uses (`session.*`, `approval.*`, `session.event`, `session.state`, `session.model.progress`) |
 | `projection.ts` | Folds `session.history` pages, `session.event` and `session.model.progress` into timeline rows (user, assistant text, thinking, tool call and result, approval), following `crates/dim-cli/src/projection.rs`; also tracks the waiting `ask_user` calls of each branch (`step/tool-call` until its batch's `step/tool-result`) and applies owner reads for pending inputs/questions and current Goal state |
 | Sidebar | Workspaces group Session summaries by `cwd` after excluding rows with the [internal origin](appserver/session-classification.md#31-the-origin) and the [automation origin](appserver/session-classification.md#31-the-origin); new Session by `session.create {cwd}` with a typed path or a known workspace; a row can be hidden by the browser-local archive (§4.4) |
-| Chat | Timeline (markdown, Shiki) with a message rail (one marker per user message from three messages on, as dim-agent's rail: hover shows the message and its first reply, a click scrolls it into view and marks it for a moment; `/timeline` is not offered, dim-agent has none), composer (submit, stop, model menu and permission preset picker, below), approval prompt (`approval.request` → `approval.respond`; "Allow for this session" → `session.grants.add` and "Always allow" for a simple `exec` command → `permission.set_rules`, both before the allow), question prompt for `ask_user` (`step/tool-call` → `session.question.respond`, closed by `step/tool-result`); the approval and question prompts take the composer's place; queued messages of the main line above the composer (`input/message` until `input/consumed` or `input/deleted`; Steer and Remove → `session.input.withdraw`, Steer resends the message's content with the withdrawal); composer attachments: pasted or dropped images are sent as image content blocks (`session.submit` with `user.content`), a paste longer than 16 KiB is stored with `attachment.put` when the Session serves it and its path is named in the message, as the TUI does (`crates/dim-cli/src/attachments.rs`); `@` file mentions: the composer offers the files of the Session's workspace from `session.files.search` (WorkspaceTools; the TUI picker's index and ranking), inserts a file as `@path` and sends it as a Markdown link to its absolute path (`[@path](/abs)`, as the TUI sends it); a directory steps into `@dir/` |
+| Chat | Timeline (markdown, Shiki) with a message rail (one marker per user message from three messages on, as dim-agent's rail: hover shows the message and its first reply, a click scrolls it into view and marks it for a moment; `/timeline` is not offered, dim-agent has none), composer (submit, steer or hold, interrupt and send now, stop, model menu and permission preset picker, below), approval prompt (`approval.request` → `approval.respond`; "Allow for this session" → `session.grants.add` and "Always allow" for a simple `exec` command → `permission.set_rules`, both before the allow), question prompt for `ask_user` (`step/tool-call` → `session.question.respond`, closed by `step/tool-result`); the approval and question prompts take the composer's place, and the composer they displace keeps its draft, its images and an in-flight send-now until it returns, because a failed stop writes its recalled message back into that draft after the prompt has already arrived; queued messages of the shown line above the composer (`input/message` until `input/consumed` or `input/deleted`; Steer and Remove → `session.input.withdraw`, Steer resends the message's content with the withdrawal); composer attachments: pasted or dropped images are sent as image content blocks (`session.submit` with `user.content`), a paste longer than 16 KiB is stored with `attachment.put` when the Session serves it and its path is named in the message, as the TUI does (`crates/dim-cli/src/attachments.rs`); a message recalls into the draft with its own content in the order it was written, so an image recalled with it keeps its stored file reference and the place between the words it held; `@` file mentions: the composer offers the files of the Session's workspace from `session.files.search` (WorkspaceTools; the TUI picker's index and ranking), inserts a file as `@path` and sends it as a Markdown link to its absolute path (`[@path](/abs)`, as the TUI sends it); a directory steps into `@dir/` |
 | Session permissions | The composer and `/permissions` select the `main` preset under [ADR 018](../adr/018-permission-is-the-preset.md) and the [Permission policy contract](../architecture/rust-agent/plugins/Permission.md#policy-contract). The client reads `session.permission.get` and `permission/changed`, displays the preset and tool lists, and preserves both lists in a versioned `session.permission.update`. Conflicts refresh without retrying. Choosing Full access requires confirmation. Process isolation links to its Settings control. |
 | Lines | Right detail panel with a Lines tree and one tab per opened line; each tab folds that line's own history and sends, stops, approves and ends on its `branchId` (§4.1) |
 | i18n | `en` and `zh-CN` |
@@ -985,6 +985,54 @@ target, or a lost reply) is reported while the remaining targets are deleted and
 untouched. Render the sidebar row action and the page in desktop and compact layouts; the page's states get a
 `web/tests/settings-archive.mjs` render test beside the existing settings pages, and the flows above are browser checks
 against a running entry.
+
+### 4.5 Sending during a run
+
+A draft typed while the shown line runs goes into that run or waits for the next
+one. This is the TUI's choice ([CLI commands](cli-commands.md#queued-messages)),
+made for the Web instead of the CLI: the Web workspace is its own client, and
+whoever signs in from this browser gets this browser's default rather than the
+one in the CLI home. As in the TUI the default is `steer`; only a saved `queue`
+switches it, so a missing or unknown stored value means `steer`.
+
+| Item | Contract |
+| --- | --- |
+| Default | `steer`: Enter submits the draft into the running turn at its next boundary. The alternate action holds it for the next turn. With `queue` the two swap |
+| Alternate action | A button beside Send, labelled with the other mode, through `session.submit {mode}` with the same text and attachments |
+| Interrupt and send now | `Ctrl+Enter` (`⌘+Enter` on macOS), and a button beside them. It withdraws every held message of the shown line oldest first (`session.input.withdraw`), waits for each reply, stops the run (`session.stop`), and submits the combined draft once that reply arrives. The withdrawals reach the session before the stop, and the submit only after it, because a submit written before the last interrupt cannot start a run after it |
+| Combined draft | The recalled messages in queue order, then the draft that was typed, each message keeping its own content in the order it was written: a text run stays where it stood and an image keeps the place it held between text runs, as the TUI's inline token does. Recalled text goes ahead of the typed text through the same separator rule the TUI uses: a newline before a recalled message when the draft there does not end a line, one between two adjacent text blocks, and one after the message when typed text follows |
+| Recalled images | A recalled message's stored images keep the draft offset they stood at and are sent with it as their existing file references, the text around them split at that offset; the draft's own pasted or dropped files are uploaded as usual and follow. Editing the draft moves an image with the text it stood between, and an inserted `@` file is linked within the run of text it belongs to, so a link never straddles an image. A recalled message goes in as one insertion, so an image already in the draft moves with the words it stood between, and an edit during a submit only moves offsets: the accepted message still recognizes the images it took, so text typed while it is out goes out without them. Images at one offset are ordered by the gesture that recalled them: a later gesture's images come first in queue order, so an image-only message takes its place ahead of an image-only draft, while an image ending an earlier message of the same gesture keeps its place ahead of the next one |
+| Failed stop | Nothing is submitted: the whole combined draft stays in the composer with the reason, and the withdrawals that already went are not repeated |
+| Guards | An empty draft with nothing held is a no-op. While that stop is out, no other action sends anything and the ordinary Stop is unavailable, because the gesture owns that stop; a second trigger sends no second stop: one reply decides one submit. A command or `@` menu open takes `Ctrl+Enter` as Enter itself, and text composition (IME) never reaches the gesture |
+| Destination | After a submit during a run the composer says where it went, `Sent into the running turn` or `Held for the next turn`, and clears the line when the run ends. A held message's row is the queue strip's, not a second notice |
+| Preference | `Appearance` → `Send during a run`, saved in this browser beside the theme and font size, applying immediately. Browser storage that refuses the write keeps the choice for this page and says it will not survive a reload |
+
+An idle line always submits as `queue`, whatever the default: the mode decides
+which of a run's two destinations a draft takes, and an idle line has only one.
+
+```text
+┌──────────────────────────────────────────────────────────┐
+│ Timeline: the run in flight                              │
+│                                                          │
+│ queued messages (main line strip)                        │
+│   1  run the linter                     [Steer] [Remove] │
+│   2  then fix the warnings              [Remove]         │
+├──────────────────────────────────────────────────────────┤
+│ Held for the next turn                                   │
+│ and then commit                [model]                   │
+│                               [Queue] [⚡] [↑ Send]       │
+│                         alternate ^ Ctrl+Enter sends now │
+└──────────────────────────────────────────────────────────┘
+```
+
+Verification is the existing Web tests: `web/tests/chat-input.mjs` drives the
+default and alternate modes, the preference's effect on both, the recall order
+and the single submit of `Ctrl+Enter`, the reply order and single stop of a
+delayed withdrawal with an empty draft, a failed stop that keeps the draft, a
+message the run already adopted, recalled images in their own order, and an idle
+submit. The preference's own storage is `web/src/stores/composer.test.mjs`. The
+flows against a running entry are browser checks with an offline model that
+takes a while to answer.
 
 ## 5. Build and release
 

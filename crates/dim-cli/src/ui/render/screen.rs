@@ -38,6 +38,9 @@ pub struct Frame {
     pub live: Vec<String>,
     /// Task ids by row in `live`, for fullscreen task-detail clicks.
     pub task_rows: Vec<(usize, String)>,
+    /// Panel thought rows: live row, content/gutter columns excluding outer
+    /// borders and padding, opaque identity, and whether this is a body row.
+    pub thought_rows: Vec<(usize, std::ops::Range<usize>, String, bool)>,
     /// Model label row and columns in `live`, for the fullscreen model picker.
     pub model_label: Option<(usize, std::ops::Range<usize>)>,
     /// Cursor position inside the live region (row, column), `None` hides it.
@@ -854,6 +857,7 @@ mod tests {
             commits: commits.iter().map(|s| s.to_string()).collect(),
             live: live.iter().map(|s| s.to_string()).collect(),
             task_rows: Vec::new(),
+            thought_rows: Vec::new(),
             model_label: None,
             cursor,
             dock: 0,

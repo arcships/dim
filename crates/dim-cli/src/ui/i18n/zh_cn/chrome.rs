@@ -124,6 +124,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Observing conversation" => "正在查看会话",
         "Conversation unavailable" => "会话不可用",
         "Session closed" => "会话已关闭",
+        "This session is closed and cannot be resumed. Read its stored history with dimcode export {id} using the same --home." => {
+            "此会话已关闭，无法继续对话。使用相同的 --home 运行 dimcode export {id} 可读取已保存的历史。"
+        }
         "Member conversation" => "成员会话内容",
         "x stop command · Esc back" => "x 停止命令 · Esc 返回",
         "Esc back" => "Esc 返回",
@@ -297,6 +300,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Queue ({count})" => "队列（{count}）",
         "Thinking…" => "思考中…",
+        "Thinking excerpt" => "思考摘录",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "欢迎使用 DIM {version}！",
@@ -382,9 +386,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "↑↓/Tab move · Enter select · Esc close" => "↑↓/Tab 切换 · Enter 选择 · Esc 关闭",
         "exit" => "退出应用",
 
-        "Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter 选择并设为默认 · ←/→ 推理强度 · Ctrl+B/F 移动光标 · Ctrl+X 清除保存的偏好 · Esc 清除/关闭"
-        }
         "Default for new sessions in {folder}: {model}" => "新会话在 {folder} 的默认模型：{model}",
         "Default for new sessions: {model}" => "新会话的默认模型：{model}",
         "Enter select · Esc clear/close" => "Enter 选择 · Esc 清除/关闭",
@@ -513,6 +514,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Fixed model" => "固定模型",
         "Applies to new members, including named Agents." => "适用于新成员，包括具名 Agent。",
         "Existing members keep their models." => "已有成员保留其模型。",
+        "Conversation model" => "对话模型",
+        "Selected: {model}" => "已选择：{model}",
+        "Model management" => "模型管理",
+        "Manage models" => "管理模型",
+        "1 provider" => "1 个 Provider",
+        "{count} providers" => "{count} 个 Provider",
+        "ready" => "就绪",
+        "no models" => "没有模型",
+        "catalog unreadable" => "无法读取 catalog",
+        "{count} with missing limits" => "{count} 个缺少上限",
+        "{count} unavailable" => "{count} 个不可用",
+        "{count} disabled" => "{count} 个已禁用",
+        "{count} without models" => "{count} 个没有模型",
+        "{count} unreadable" => "{count} 个无法读取",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} 个不可用、{disabled} 个已禁用"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter 选择并设为默认 · ←/→ 推理强度 · Tab 切换分区 · Esc 清除/关闭"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter 更改 · Tab 切换分区 · Esc 清除/关闭"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter 管理 · Tab 切换分区 · Esc 清除/关闭"
+        }
+        "Enter manage · Esc back" => "Enter 管理 · Esc 返回",
         "unknown" => "未知",
         "Subagent model policy saved" => "子代理模型策略已保存",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -555,6 +583,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "本会话因提示建议未被采用而暂停。在 /settings 中关闭再开启即可恢复。"
         }
         "show the key bindings" => "显示快捷键",
+        "show the command that updates this installation" => "显示如何升级当前安装",
         "Application keys" => "应用快捷键",
         "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
             "空闲时 Enter 提交 · Shift+Enter / Alt+Enter / Ctrl+J 换行 · ↑↓ 历史"

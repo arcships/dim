@@ -1413,6 +1413,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "dim-image-understanding"
+version = "0.1.0-alpha.25"
+dependencies = [
+ "base64 0.22.1",
+ "dim-agent-capabilities",
+ "dim-agent-runtime",
+ "dim-agent-types",
+ "dim-app-server",
+ "dim-modality",
+ "futures-util",
+ "rutis",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "uuid",
+]
+
+[[package]]
 name = "dim-migration"
 version = "0.1.0-alpha.25"
 dependencies = [
@@ -1609,6 +1628,7 @@ dependencies = [
  "dim-cli",
  "dim-event-hub",
  "dim-goal",
+ "dim-image-understanding",
  "dim-modality",
  "dim-modality-aimux",
  "dim-oauth",
@@ -6092,6 +6112,7 @@ dependencies = [
  "dim-client",
  "dim-event-hub",
  "dim-goal",
+ "dim-image-understanding",
  "dim-modality",
  "dim-report",
  "dim-session-title",

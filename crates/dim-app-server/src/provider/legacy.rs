@@ -592,12 +592,12 @@ pub fn convert_legacy_provider(
         version: if previous.is_some() { 2 } else { 1 },
     };
     if let Some(previous) = previous {
-        if record.display_name != previous.display_name
-            || record.driver_kind != previous.driver_kind
-            || record.auth != previous.auth
-        {
+        if record.driver_kind != previous.driver_kind || record.auth != previous.auth {
             return Err("Legacy builtin definition differs from the current definition".into());
         }
+        // A builtin's name is the bundled definition's, so a catalog rename
+        // reaches the row and an older source name does not reject it.
+        record.display_name = previous.display_name;
         record.endpoint_types = previous.endpoint_types;
     }
     validate_static_record(&source.id, &mut record)

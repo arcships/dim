@@ -11,7 +11,7 @@ use std::{
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use url::Url;
 use uuid::Uuid;
@@ -232,7 +232,9 @@ pub struct Service {
     key: &'static str,
     state_key: &'static str,
     config: Config,
-    client: Client,
+    client: OnceCell<Client>,
+    #[cfg(feature = "testing")]
+    fail_client_build: std::sync::atomic::AtomicBool,
     stopping: CancellationToken,
     attempts: Mutex<HashMap<Uuid, Attempt>>,
     tasks: TaskTracker,
@@ -360,23 +362,49 @@ impl Service {
             "xaiGrokBuild" => "xaiGrokBuildAccountState",
             _ => return Err(OAuthError::Config("credential authority")),
         };
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| OAuthError::Config("HTTP client"))?;
         Ok(Arc::new(Self {
             path: files.path(root, AUTH_FILE)?,
             files,
             key,
             state_key,
             config,
-            client,
+            client: OnceCell::new(),
+            #[cfg(feature = "testing")]
+            fail_client_build: std::sync::atomic::AtomicBool::new(false),
             stopping: CancellationToken::new(),
             attempts: Mutex::new(HashMap::new()),
             tasks: TaskTracker::new(),
             admission: std::sync::Mutex::new(()),
         }))
+    }
+    async fn client(&self) -> Result<&Client> {
+        self.client
+            .get_or_try_init(|| async {
+                #[cfg(feature = "testing")]
+                if self
+                    .fail_client_build
+                    .swap(false, std::sync::atomic::Ordering::SeqCst)
+                {
+                    return Err(OAuthError::Transient(None));
+                }
+                Client::builder()
+                    .timeout(Duration::from_secs(15))
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|_| OAuthError::Transient(None))
+            })
+            .await
+    }
+    /// Feature `testing` only: whether a token operation has built the client.
+    #[cfg(feature = "testing")]
+    pub(crate) fn client_initialized(&self) -> bool {
+        self.client.initialized()
+    }
+    /// Feature `testing` only: fail the next HTTP client initialization.
+    #[cfg(feature = "testing")]
+    pub(crate) fn fail_next_client_build(&self) {
+        self.fail_client_build
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     fn now() -> u64 {
         SystemTime::now()
@@ -687,6 +715,7 @@ impl Service {
             let redirect = self.config.redirect.as_ref().unwrap().as_str();
             let response = self
                 .token_request()
+                .await?
                 .form(&[
                     ("grant_type", "authorization_code"),
                     ("code", code),
@@ -759,7 +788,8 @@ impl Service {
         let result = async {
             let request = async {
                 let response = self
-                    .client
+                    .client()
+                    .await?
                     .post(endpoint)
                     .form(&[
                         ("client_id", self.config.client_id.as_str()),
@@ -860,6 +890,7 @@ impl Service {
                     tokio::time::sleep(Duration::from_secs(interval)).await;
                     let response = self
                         .token_request()
+                        .await?
                         .form(&[
                             ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                             ("device_code", code.as_str()),
@@ -1029,6 +1060,7 @@ impl Service {
         let tokens = record.tokens.take().ok_or(OAuthError::Missing)?;
         let response = self
             .token_request()
+            .await?
             .form(&[
                 ("grant_type", "refresh_token"),
                 ("refresh_token", tokens.refresh.as_str()),
@@ -1093,19 +1125,20 @@ impl Service {
         }
         Ok(())
     }
-    fn token_request(&self) -> reqwest::RequestBuilder {
+    async fn token_request(&self) -> Result<reqwest::RequestBuilder> {
         let request = self
-            .client
+            .client()
+            .await?
             .post(self.config.token.clone())
             .header("Accept", "application/json");
-        if self.key == "openaiCodex" {
+        Ok(if self.key == "openaiCodex" {
             request.header("originator", "codex_cli_rs").header(
                 "User-Agent",
                 "codex_cli_rs/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color",
             )
         } else {
             request
-        }
+        })
     }
     fn verify_uri(&self, uri: &Url) -> Result<()> {
         let trusted = if self.config.issuer.scheme() == "http" {

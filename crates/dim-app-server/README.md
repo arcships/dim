@@ -332,7 +332,11 @@ request takes a bearer; tokens are refreshed 30 s before expiry and once after a
 refresh per key across Sessions and daemons sharing the home. `mcp.catalog` entries gain
 `auth: {status: "required" | "authorized" | "expired", missingScopes?}`, and `session.mcp`
 reports `auth_required` until the key's credential changes, when the Session reconnects by
-itself. Tokens, codes and secrets never reach replies, errors, tool results or logs.
+itself. Tokens, codes and secrets never reach replies, errors, tool results or logs. The OAuth
+HTTP client is built by the first operation that contacts an authorization server; a process
+whose entries never sign in or refresh holds none. A build failure surfaces from that operation
+as `mcp_auth_unavailable`, not from plugin assembly. Only successful builds are retained;
+later operations retry a failed build.
 
 Native MCP settings use lazy source-local import and durable source CAS. Their
 v13 document bytes remain valid in the current store format. Unsupported databases, including
@@ -672,7 +676,7 @@ type ResetApplied = {
 }
 ```
 
-Account and login operations are exposed as `account.providers`, `account.status`, `account.recover`, `account.logout`, `account.usage`, `account.login.begin`, `account.login.browser.begin`, `account.login.browser.complete`, `account.login.status` and `account.login.cancel`; a failed attempt reports only `Login failed`. Existing `account.codex.*` and `account.grok.*` retain their native contracts. Attempt secrets are memory-only and cleared on completion, cancellation or expiry; a terminal attempt stays queryable until its deadline.
+Account and login operations are exposed as `account.providers`, `account.status`, `account.recover`, `account.logout`, `account.usage`, `account.login.begin`, `account.login.browser.begin`, `account.login.browser.complete`, `account.login.status` and `account.login.cancel`; a failed attempt reports only `Login failed`. Existing `account.codex.*` and `account.grok.*` retain their native contracts. The shared Codex/Grok service builds its HTTP client on the first token operation (login exchange, device request or refresh); a process with no such request holds none, and a build failure surfaces from that operation as `account_unavailable` instead of failing the plugin row. Only successful builds are retained; later operations retry a failed build. Attempt secrets are memory-only and cleared on completion, cancellation or expiry; a terminal attempt stays queryable until its deadline.
 
 `account.referral` and `account.reset_batches` take `{providerId}`. `account.apply_reset` takes the typed `apply_reset` input above: the client confirms an action and generates one nonblank idempotency key (at most 128 bytes), retaining it for retries after an uncertain reply. The subscription ID is a positive safe integer from `account.usage`; the account service authorizes it. Batch selection and consumption order belong to the account service, not the client. These three methods are optional provider operations; the trait defaults reject them with `account_invalid_input` for providers without this account functionality. The Dim provider implements all three. The issuer, tokens, request headers and refresh retry stay in the provider; none is a client parameter. Account-service error bodies are never returned to clients.
 

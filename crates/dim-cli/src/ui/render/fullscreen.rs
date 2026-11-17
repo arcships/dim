@@ -95,6 +95,16 @@ pub trait Document {
     fn disclosure(&self, _block: Option<usize>, _cols: usize, _row: usize) -> Option<String> {
         None
     }
+    /// An identity only for actual rows of an expanded thought body.
+    /// The key includes the view, Session, branch, request and source block,
+    /// and changes when that target is replaced or its expansion is reset.
+    fn thinking_body(&self, _block: Option<usize>, _cols: usize, _row: usize) -> Option<String> {
+        None
+    }
+    /// Whether a panel thought identity is current; body rows must still be expanded.
+    fn panel_thought(&self, _key: &str, _body: bool) -> bool {
+        false
+    }
     /// Foldable header rows of committed block `index`, in display order,
     /// using the same row coordinates as `disclosure` and `MouseOutcome::Click`.
     fn tool_rows(&self, _index: usize, _cols: usize) -> Vec<usize> {
@@ -122,6 +132,11 @@ pub enum MouseOutcome {
     Task(String),
     /// A click landed on the composer's model label.
     Models,
+    /// A click landed on a branch panel thought header or expanded body.
+    Thought {
+        key: String,
+        body: bool,
+    },
     /// A click landed elsewhere in the transcript: on row `row` of block
     /// `block` (stable id), or on row `row` of the live tail when `None`.
     Click {
@@ -150,8 +165,48 @@ struct Press {
     spot: MouseOutcome,
     text: String,
     target: Option<Disclosure>,
+    body: Option<String>,
     link: Option<String>,
     cell: (usize, usize),
+}
+
+struct PendingClick {
+    key: String,
+    spot: MouseOutcome,
+    deadline: Instant,
+}
+
+struct Clicks {
+    when: Instant,
+    cell: (usize, usize),
+    text: String,
+    count: u8,
+    panel: bool,
+}
+
+#[derive(PartialEq, Eq)]
+struct PanelThought {
+    columns: std::ops::Range<usize>,
+    key: String,
+    body: bool,
+    text: String,
+}
+
+impl PanelThought {
+    fn copy_columns(&self) -> std::ops::Range<usize> {
+        let plain = strip_escapes(&self.text);
+        let content = columns_of(&plain, self.columns.start, self.columns.end);
+        let margin = usize::from(content.starts_with(' '));
+        let text = content.strip_prefix(' ').unwrap_or(&content);
+        let inset = MARGIN_MARKS
+            .iter()
+            .find_map(|mark| {
+                text.strip_prefix(*mark)
+                    .map(|rest| margin + display_width(mark) + usize::from(rest.starts_with(' ')))
+            })
+            .unwrap_or(margin);
+        self.columns.start + inset..self.columns.end
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -213,14 +268,15 @@ impl Wheel {
     }
 }
 
-/// A text selection in transcript coordinates: `(row, column)`, absolute
-/// row index, display column. It shows once the pointer leaves the pressed
+/// A text selection: `(row, column)`, absolute transcript row or panel screen
+/// row, display column. It shows once the pointer leaves the pressed
 /// cell and stays after the release until the next press or Esc.
 #[derive(Debug, Clone, Copy)]
 struct Selection {
     anchor: (usize, usize),
     head: (usize, usize),
     dragged: bool,
+    panel: bool,
 }
 
 impl Selection {
@@ -286,6 +342,7 @@ pub struct FullScreen {
     /// The live tail of the last frame (streaming answer, running tools).
     tail: Vec<String>,
     task_rows: HashMap<usize, String>,
+    thought_rows: HashMap<usize, PanelThought>,
     model_label: Option<(usize, std::ops::Range<usize>)>,
     /// Where the last press landed and the row it showed: a click counts
     /// only while that row still shows the same text at the release, so
@@ -297,7 +354,8 @@ pub struct FullScreen {
     /// The last press: when, where, the row it showed and how many presses
     /// in a row landed there (a double click selects a word, a triple
     /// click the row).
-    clicks: Option<(Instant, (usize, usize), String, u8)>,
+    clicks: Option<Clicks>,
+    pending: Option<PendingClick>,
     /// The top of the view while the reader has scrolled away from the
     /// bottom; `None` follows new output.
     pinned: Option<Anchor>,
@@ -340,12 +398,14 @@ impl FullScreen {
             cache: HashMap::new(),
             tail: Vec::new(),
             task_rows: HashMap::new(),
+            thought_rows: HashMap::new(),
             model_label: None,
             press: None,
             pointer: None,
             hovered: None,
             clicked: None,
             clicks: None,
+            pending: None,
             pinned: None,
             floor: 0,
             view_rows: 0,
@@ -368,12 +428,14 @@ impl FullScreen {
         if size == self.size {
             return false;
         }
+        self.cancel_click();
         self.size = size;
         self.press = None;
         self.selection = None;
         self.thumb_drag = None;
         self.clicks = None;
         self.task_rows.clear();
+        self.thought_rows.clear();
         self.model_label = None;
         self.invalidate();
         true
@@ -391,6 +453,7 @@ impl FullScreen {
     /// floor held the old layout's top, and a transcript that got shorter
     /// (every group collapsed) would otherwise show only its last row.
     pub fn relayout(&mut self, cols: u16) {
+        self.cancel_click();
         let cols = (cols as usize).max(1);
         if let Some(anchor) = &mut self.pinned {
             anchor.offset = anchor.offset * self.layout_cols / cols;
@@ -401,6 +464,7 @@ impl FullScreen {
         self.measured.clear();
         self.starts = vec![0];
         self.cache.clear();
+        self.thought_rows.clear();
         self.selection = None;
         self.press = None;
         self.hovered = None;
@@ -417,12 +481,14 @@ impl FullScreen {
 
     /// Bytes that hand the screen back: the cursor is shown again.
     pub fn leave(&mut self) -> Vec<u8> {
+        self.cancel_click();
         self.cursor_visible = true;
         CURSOR_SHOW.to_vec()
     }
 
     /// Scrolls the transcript by `rows` (negative is up, towards older rows).
     pub fn scroll(&mut self, rows: isize) {
+        self.cancel_click();
         let max_top = self.max_top();
         let next = (self.top() as isize + rows).clamp(0, max_top as isize) as usize;
         self.pin(next);
@@ -440,11 +506,13 @@ impl FullScreen {
 
     /// Holds the view at the top of the transcript.
     pub fn scroll_to_top(&mut self) {
+        self.cancel_click();
         self.pin(0);
     }
 
     /// Follows new output again, from the bottom of the transcript.
     pub fn follow(&mut self) {
+        self.cancel_click();
         self.pinned = None;
         self.floor = 0;
     }
@@ -550,7 +618,43 @@ impl FullScreen {
     }
 
     pub fn clear_selection(&mut self) {
+        self.cancel_click();
         self.selection = None;
+    }
+
+    /// Cancels a deferred body click, including an unreleased body press.
+    /// Call when disabling mouse input or changing the active view.
+    pub fn cancel_click(&mut self) {
+        self.pending = None;
+        if self.press.as_ref().is_some_and(|press| {
+            press.body.is_some() || matches!(press.spot, MouseOutcome::Thought { .. })
+        }) {
+            self.press = None;
+        }
+    }
+
+    /// Time until a deferred body click is due; never waits itself.
+    pub fn click_wait(&self, now: Instant) -> Option<Duration> {
+        self.pending
+            .as_ref()
+            .map(|click| click.deadline.saturating_duration_since(now))
+    }
+
+    /// Confirms one still-expanded transcript or panel body and holds its view.
+    /// Drain terminal input first so a queued second press cancels the click.
+    pub fn pending_click(&mut self, doc: &dyn Document, now: Instant) -> Option<MouseOutcome> {
+        self.sync(doc);
+        let deadline = self.pending.as_ref()?.deadline;
+        if self.overlay_open || self.selecting() || self.press.is_some() {
+            self.cancel_click();
+            return None;
+        }
+        if deadline > now {
+            return None;
+        }
+        let click = self.pending.take()?;
+        self.hold();
+        Some(click.spot)
     }
 
     pub fn clear_focus(&mut self) {
@@ -712,6 +816,25 @@ impl FullScreen {
             .flatten()
     }
 
+    fn pointer_row(&self, doc: &dyn Document) -> Option<(usize, &str, MouseOutcome)> {
+        let (column, row) = self.pointer?;
+        if let Some(thought) = self.thought_rows.get(&row)
+            && thought.columns.contains(&column)
+            && doc.panel_thought(&thought.key, thought.body)
+        {
+            return Some((
+                row,
+                &thought.text,
+                MouseOutcome::Thought {
+                    key: thought.key.clone(),
+                    body: thought.body,
+                },
+            ));
+        }
+        let index = self.pointer_index()?;
+        Some((index, self.row(index)?, self.spot(index)))
+    }
+
     /// A press on the scrollbar grabs the thumb where it is; on the track
     /// beside it the thumb centres on the press first. The drag starts from
     /// that row and view.
@@ -780,6 +903,12 @@ impl FullScreen {
     /// Wheel scrolling and drag selection inside the transcript viewport.
     pub fn mouse(&mut self, event: MouseEvent, doc: &dyn Document) -> MouseOutcome {
         self.sync(doc);
+        if matches!(
+            event.kind,
+            MouseKind::Press | MouseKind::Drag | MouseKind::WheelUp | MouseKind::WheelDown
+        ) {
+            self.cancel_click();
+        }
         let row = event.row as usize;
         let column = event.column as usize;
         self.pointer = Some((column, row));
@@ -860,6 +989,7 @@ impl FullScreen {
                         spot,
                         text: String::new(),
                         target: None,
+                        body: None,
                         link: None,
                         cell: (column, row),
                     });
@@ -869,9 +999,9 @@ impl FullScreen {
                         MouseOutcome::Ignored
                     };
                 }
-                let Some((index, text)) = self
-                    .pointer_index()
-                    .and_then(|index| Some((index, self.row(index)?.to_owned())))
+                let Some((index, text, spot)) = self
+                    .pointer_row(doc)
+                    .map(|(index, text, spot)| (index, text.to_owned(), spot))
                 else {
                     self.clicks = None;
                     return if shown {
@@ -880,50 +1010,75 @@ impl FullScreen {
                         MouseOutcome::Ignored
                     };
                 };
+                let panel = matches!(spot, MouseOutcome::Thought { .. });
                 let now = Instant::now();
                 let count = match &self.clicks {
-                    Some((when, (r, c), pressed, n))
-                        if now.duration_since(*when) < MULTI_CLICK
-                            && *r == index
-                            && c.abs_diff(column) <= 1
-                            && *pressed == text =>
+                    Some(clicks)
+                        if now.duration_since(clicks.when) < MULTI_CLICK
+                            && clicks.cell.0 == index
+                            && clicks.cell.1.abs_diff(column) <= 1
+                            && clicks.panel == panel
+                            && clicks.text == text =>
                     {
-                        n % 3 + 1
+                        clicks.count % 3 + 1
                     }
                     _ => 1,
                 };
                 let link = link_at(&text, column);
-                let target = link
-                    .is_none()
+                let target = (link.is_none() && !panel)
                     .then(|| self.disclosure_at(index, doc))
                     .flatten();
                 let pressing = target.is_some();
+                let body = match &spot {
+                    MouseOutcome::Click { block, row } if link.is_none() && target.is_none() => {
+                        doc.thinking_body(*block, self.layout_cols, *row)
+                    }
+                    MouseOutcome::Thought { key, body: true } if link.is_none() => {
+                        Some(key.clone())
+                    }
+                    _ => None,
+                };
                 self.press = Some(Press {
-                    spot: self.spot(index),
+                    spot,
                     text: text.clone(),
                     target,
+                    body,
                     link,
                     cell: (column, row),
                 });
                 let width = content_width(self.layout_cols);
                 let plain = strip_escapes(&text);
-                let inset = text_inset(&plain);
+                let bounds = if panel {
+                    self.thought_rows[&row].copy_columns()
+                } else {
+                    text_inset(&plain)..width
+                };
+                let inset = bounds.start;
                 let span = match count {
                     2 if column >= inset => word_at(&plain, column),
-                    3 => Some((inset, width)),
+                    3 => Some((inset, bounds.end)),
                     _ => None,
-                };
-                self.clicks = Some((now, (index, column), text, count));
+                }
+                .map(|(start, end)| (start.max(inset), end.min(bounds.end)));
+                self.clicks = Some(Clicks {
+                    when: now,
+                    cell: (index, column),
+                    text,
+                    count,
+                    panel,
+                });
                 self.selection = Some(match span {
                     Some((start, end)) => Selection {
                         anchor: (index, start),
                         head: (index, end.saturating_sub(1).max(start)),
                         dragged: true,
+                        panel,
                     },
                     None => Selection {
                         anchor: (index, column),
                         head: (index, column),
                         dragged: false,
+                        panel,
                     },
                 });
                 if shown || span.is_some() || pressing {
@@ -941,6 +1096,27 @@ impl FullScreen {
                 let Some(selection) = self.selection else {
                     return MouseOutcome::Ignored;
                 };
+                if selection.panel {
+                    if !selection.dragged && selection.anchor == (row, column) {
+                        return MouseOutcome::Ignored;
+                    }
+                    self.press = None;
+                    self.clicks = None;
+                    let Some((&index, _)) = self
+                        .thought_rows
+                        .iter()
+                        .filter(|(_, thought)| doc.panel_thought(&thought.key, thought.body))
+                        .min_by_key(|(index, _)| index.abs_diff(row))
+                    else {
+                        return MouseOutcome::Ignored;
+                    };
+                    self.selection = Some(Selection {
+                        head: (index, column),
+                        dragged: true,
+                        ..selection
+                    });
+                    return MouseOutcome::Redraw;
+                }
                 let row = row.min(self.view_rows.saturating_sub(1));
                 if !selection.dragged
                     && (self.at(row), column) == (Some(selection.anchor.0), selection.anchor.1)
@@ -1014,9 +1190,8 @@ impl FullScreen {
                 }
                 self.selection = None;
                 if let Some(press) = press
-                    && let Some(index) = self.pointer_index()
-                    && let Some(text) = self.row(index)
-                    && press.spot == self.spot(index)
+                    && let Some((_, text, spot)) = self.pointer_row(doc)
+                    && press.spot == spot
                     && (press.target.is_some() || press.text == text)
                     && press.cell.1 == row
                     && press.link == link_at(text, column)
@@ -1025,6 +1200,16 @@ impl FullScreen {
                 {
                     if let Some(url) = press.link {
                         return MouseOutcome::Open(url);
+                    }
+                    if let Some(key) = press.body {
+                        if let Some(Clicks { when, count: 1, .. }) = self.clicks.as_ref() {
+                            self.pending = Some(PendingClick {
+                                key,
+                                spot: press.spot,
+                                deadline: *when + MULTI_CLICK,
+                            });
+                        }
+                        return MouseOutcome::Ignored;
                     }
                     self.clicked = press.target;
                     return press.spot;
@@ -1087,6 +1272,53 @@ impl FullScreen {
                     .map(|row| (self.view_rows + row, task.clone()))
             })
             .collect();
+        let thought_rows: HashMap<usize, PanelThought> = frame
+            .thought_rows
+            .iter()
+            .filter_map(|(row, columns, key, body)| {
+                let offset = row
+                    .checked_sub(split + dock_skip)
+                    .filter(|row| *row < dock_rows)?;
+                let columns = columns.start..columns.end.min(cols);
+                (columns.start < columns.end).then(|| {
+                    (
+                        self.view_rows + offset,
+                        PanelThought {
+                            columns,
+                            key: key.clone(),
+                            body: *body,
+                            text: frame.live[*row].clone(),
+                        },
+                    )
+                })
+            })
+            .collect();
+        let changed = |row| self.thought_rows.get(&row) != thought_rows.get(&row);
+        if self.selection.is_some_and(|selection| {
+            selection.panel
+                && (selection.anchor.0.min(selection.head.0)
+                    ..=selection.anchor.0.max(selection.head.0))
+                    .any(changed)
+        }) {
+            self.selection = None;
+        }
+        if self
+            .clicks
+            .as_ref()
+            .is_some_and(|clicks| clicks.panel && changed(clicks.cell.0))
+        {
+            self.clicks = None;
+        }
+        self.thought_rows = thought_rows;
+        if self.pending.as_ref().is_some_and(|click| {
+            matches!(click.spot, MouseOutcome::Thought { .. })
+                && !self
+                    .thought_rows
+                    .values()
+                    .any(|thought| thought.body && thought.key == click.key)
+        }) {
+            self.cancel_click();
+        }
         self.load(doc);
         let top = self.top();
         if self.pinned.is_none() {
@@ -1096,6 +1328,7 @@ impl FullScreen {
         let dim = frame.overlay.is_some();
         self.overlay_open = dim;
         if dim {
+            self.cancel_click();
             self.press = None;
             self.thumb_drag = None;
             self.clicks = None;
@@ -1109,6 +1342,14 @@ impl FullScreen {
             let (_, row) = press.cell;
             if let MouseOutcome::Task(task) = &press.spot {
                 return self.task_rows.get(&row) != Some(task);
+            }
+            if let MouseOutcome::Thought { key, body } = &press.spot {
+                return self.thought_rows.get(&row).is_none_or(|thought| {
+                    thought.key != *key
+                        || thought.body != *body
+                        || thought.text != press.text
+                        || !thought.columns.contains(&press.cell.0)
+                });
             }
             row >= self.view_rows
                 || self.at(row).is_none_or(|index| {
@@ -1166,7 +1407,7 @@ impl FullScreen {
                         }
                         _ => match self
                             .selection
-                            .filter(|s| s.dragged)
+                            .filter(|s| s.dragged && !s.panel)
                             .and_then(|s| s.columns(index, text_inset(&strip_escapes(row))))
                         {
                             Some(range) => highlight(row, range, width),
@@ -1217,7 +1458,14 @@ impl FullScreen {
             });
         }
         for row in dock.iter().skip(dock_skip) {
-            screen.push(clip(row, cols).0);
+            let selected = self
+                .selection
+                .filter(|s| s.panel && s.dragged)
+                .and_then(|selection| self.panel_selection_columns(&selection, screen.len()));
+            screen.push(match selected {
+                Some(range) => highlight(row, range, cols),
+                None => clip(row, cols).0,
+            });
         }
         screen.truncate(rows);
         for row in &mut screen {
@@ -1300,6 +1548,33 @@ impl FullScreen {
     /// leave, new blocks at the back get estimates.
     fn sync(&mut self, doc: &dyn Document) {
         let dropped = doc.dropped();
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|click| match &click.spot {
+                MouseOutcome::Click { block, row } => {
+                    block.is_some_and(|block| block < dropped || block - dropped >= doc.len())
+                        || doc.thinking_body(*block, self.layout_cols, *row).as_ref()
+                            != Some(&click.key)
+                }
+                MouseOutcome::Thought { .. } => !doc.panel_thought(&click.key, true),
+                _ => true,
+            })
+            || self.press.as_ref().is_some_and(|press| {
+                if let MouseOutcome::Thought { key, body } = &press.spot {
+                    return !doc.panel_thought(key, *body);
+                }
+                let Some(key) = &press.body else {
+                    return false;
+                };
+                let MouseOutcome::Click { block, row } = press.spot else {
+                    return true;
+                };
+                doc.thinking_body(block, self.layout_cols, row).as_ref() != Some(key)
+            })
+        {
+            self.cancel_click();
+        }
         let gone = dropped.saturating_sub(self.base).min(self.heights.len());
         let mut changed = false;
         if gone > 0 {
@@ -1507,6 +1782,19 @@ impl FullScreen {
         let mut rendered: HashMap<usize, Vec<String>> = HashMap::new();
         let mut lines = Vec::new();
         for index in r0..=r1 {
+            if selection.panel {
+                if let Some(thought) = self.thought_rows.get(&index)
+                    && doc.panel_thought(&thought.key, thought.body)
+                    && let Some((start, end)) = self.panel_selection_columns(selection, index)
+                {
+                    lines.push(
+                        columns_of(&strip_escapes(&thought.text), start, end)
+                            .trim_end()
+                            .to_owned(),
+                    );
+                }
+                continue;
+            }
             let row = match self.row(index) {
                 Some(row) => row.to_owned(),
                 None => {
@@ -1526,6 +1814,12 @@ impl FullScreen {
             lines.push(columns_of(&plain, start, end).trim_end().to_owned());
         }
         lines.join("\n")
+    }
+
+    fn panel_selection_columns(&self, selection: &Selection, row: usize) -> Option<(usize, usize)> {
+        let bounds = self.thought_rows.get(&row)?.copy_columns();
+        let (start, end) = selection.columns(row, bounds.start)?;
+        Some((start.min(bounds.end), end.min(bounds.end)))
     }
 }
 
@@ -2008,6 +2302,8 @@ mod tests {
         blocks: Vec<(bool, Vec<String>)>,
         dropped: usize,
         headers: HashMap<(Option<usize>, usize), String>,
+        bodies: HashMap<(Option<usize>, usize), String>,
+        panel: HashMap<String, bool>,
         cards: Vec<(usize, String, usize, usize)>,
         /// Blocks laid out so far.
         laid: std::cell::Cell<usize>,
@@ -2019,6 +2315,8 @@ mod tests {
                 blocks: Vec::new(),
                 dropped: 0,
                 headers: HashMap::new(),
+                bodies: HashMap::new(),
+                panel: HashMap::new(),
                 cards: Vec::new(),
                 laid: std::cell::Cell::new(0),
             }
@@ -2031,6 +2329,22 @@ mod tests {
 
         fn user(&mut self, text: &str) {
             self.blocks.push((true, vec![format!(" › {text}")]));
+        }
+
+        fn thought() -> Self {
+            let mut doc = Self::new();
+            doc.say(&[
+                " ◆ Thinking",
+                " ▎ alpha beta",
+                " ▎",
+                " ▎ https://example.com",
+            ]);
+            doc.headers.insert((Some(0), 1), "thought".into());
+            for row in 2..=4 {
+                doc.bodies
+                    .insert((Some(0), row), "view/session/branch/request/thought".into());
+            }
+            doc
         }
     }
 
@@ -2072,6 +2386,14 @@ mod tests {
         }
         fn disclosure(&self, block: Option<usize>, _cols: usize, row: usize) -> Option<String> {
             self.headers.get(&(block, row)).cloned()
+        }
+        fn thinking_body(&self, block: Option<usize>, _cols: usize, row: usize) -> Option<String> {
+            self.bodies.get(&(block, row)).cloned()
+        }
+        fn panel_thought(&self, key: &str, body: bool) -> bool {
+            self.panel
+                .get(key)
+                .is_some_and(|expanded| !body || *expanded)
         }
         fn tool_rows(&self, index: usize, _cols: usize) -> Vec<usize> {
             let mut rows: Vec<_> = self
@@ -2117,6 +2439,599 @@ mod tests {
     }
 
     const DOCK: [&str; 2] = ["> x", "status"];
+
+    fn thought_panel() -> Frame {
+        let mut f = frame(
+            &[],
+            &[
+                "  ╭──────────────────────╮",
+                "  │ ◆ Thinking           │",
+                "  │ ▎alpha beta          │",
+                "  ╰──────────────────────╯",
+                "> x",
+            ],
+        );
+        f.thought_rows = vec![
+            (1, 4..14, "panel/thought".into(), false),
+            (2, 4..15, "panel/thought".into(), true),
+        ];
+        f
+    }
+
+    #[test]
+    fn panel_thought_headers_click_immediately_and_bodies_defer_by_identity() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.panel.insert("panel/thought".into(), true);
+        let mut f = thought_panel();
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert!(emu.row(5).contains("▎alpha beta"));
+        let at = |kind, column, row| MouseEvent { kind, column, row };
+        screen.mouse(at(MouseKind::Press, 7, 4), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 7, 4), &doc),
+            MouseOutcome::Thought {
+                key: "panel/thought".into(),
+                body: false,
+            }
+        );
+        assert_eq!(screen.click_wait(Instant::now()), None);
+        screen.mouse(at(MouseKind::Press, 4, 5), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 4, 5), &doc),
+            MouseOutcome::Ignored
+        );
+        let now = Instant::now();
+        let due = now + screen.click_wait(now).unwrap();
+        assert_eq!(
+            screen.pending_click(&doc, due - Duration::from_nanos(1)),
+            None
+        );
+        f.live.push("status".into());
+        draw(&mut screen, &mut emu, &f, &doc);
+        assert!(emu.row(4).contains("▎alpha beta"));
+        assert_eq!(
+            screen.pending_click(&doc, due),
+            Some(MouseOutcome::Thought {
+                key: "panel/thought".into(),
+                body: true,
+            })
+        );
+        assert_eq!(screen.pending_click(&doc, due), None);
+        assert_eq!(screen.click_wait(due), None);
+    }
+
+    #[test]
+    fn panel_thought_selection_copies_content_without_borders_or_gutters() {
+        for column in [4, 7] {
+            let (mut screen, mut emu) = setup();
+            let mut doc = Doc::new();
+            doc.panel.insert("panel/thought".into(), true);
+            let mut f = thought_panel();
+            draw(&mut screen, &mut emu, &f, &doc);
+            let at = |kind| MouseEvent {
+                kind,
+                column,
+                row: 5,
+            };
+            screen.mouse(at(MouseKind::Press), &doc);
+            screen.mouse(at(MouseKind::Release), &doc);
+            f.live[1] = f.live[1].replace("Thinking", "Thinking…");
+            draw(&mut screen, &mut emu, &f, &doc);
+            screen.mouse(at(MouseKind::Press), &doc);
+            let double = screen.mouse(at(MouseKind::Release), &doc);
+            if column == 7 {
+                assert_eq!(double, MouseOutcome::Copy("alpha".into()));
+            } else {
+                assert_eq!(double, MouseOutcome::Ignored);
+            }
+            assert_eq!(
+                screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                None
+            );
+            screen.mouse(at(MouseKind::Press), &doc);
+            assert_eq!(
+                screen.mouse(at(MouseKind::Release), &doc),
+                MouseOutcome::Copy("alpha beta".into())
+            );
+            f.live[1] = f.live[1].replace("Thinking…", "Thinking");
+            let before = emu.rows_text();
+            let bytes = draw(&mut screen, &mut emu, &f, &doc);
+            assert!(String::from_utf8_lossy(&bytes).contains("\x1b[0;7m"));
+            assert_eq!(
+                emu.rows_text()[5],
+                before[5],
+                "selection changes styling, not panel text"
+            );
+            assert_eq!(screen.click_wait(Instant::now()), None);
+        }
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.panel.insert("panel/thought".into(), true);
+        let f = thought_panel();
+        draw(&mut screen, &mut emu, &f, &doc);
+        let at = |kind, column, row| MouseEvent { kind, column, row };
+        screen.mouse(at(MouseKind::Press, 4, 4), &doc);
+        screen.mouse(at(MouseKind::Drag, 29, 5), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 29, 5), &doc),
+            MouseOutcome::Copy("Thinking\nalpha beta".into())
+        );
+        assert_eq!(
+            screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+            None
+        );
+    }
+
+    #[test]
+    fn panel_thought_links_and_noncontent_cells_do_not_schedule_actions() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        let mut f = thought_panel();
+        draw(&mut screen, &mut emu, &f, &doc);
+        let at = |kind, column, row| MouseEvent { kind, column, row };
+        screen.mouse(at(MouseKind::Press, 7, 5), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 7, 5), &doc),
+            MouseOutcome::Ignored,
+            "metadata alone is not current authority"
+        );
+        doc.panel.insert("panel/thought".into(), true);
+        for (column, row) in [(2, 4), (3, 5), (15, 5), (25, 5), (6, 3), (6, 6), (6, 7)] {
+            screen.mouse(at(MouseKind::Press, column, row), &doc);
+            assert_eq!(
+                screen.mouse(at(MouseKind::Release, column, row), &doc),
+                MouseOutcome::Ignored
+            );
+            assert_eq!(screen.click_wait(Instant::now()), None);
+        }
+        let link = crate::ui::render::osc8::hyperlink("https://example.com", "alpha beta");
+        f.live[2] = format!("  │ ▎{link}          │");
+        draw(&mut screen, &mut emu, &f, &doc);
+        screen.mouse(at(MouseKind::Press, 7, 5), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 7, 5), &doc),
+            MouseOutcome::Open("https://example.com".into())
+        );
+        assert_eq!(screen.click_wait(Instant::now()), None);
+        screen.mouse(at(MouseKind::Press, 4, 5), &doc);
+        screen.mouse(at(MouseKind::Release, 5, 5), &doc);
+        assert_eq!(
+            screen.click_wait(Instant::now()),
+            None,
+            "release must remain in the same cell"
+        );
+    }
+
+    #[test]
+    fn panel_thought_metadata_is_limited_to_visible_dock_rows() {
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.panel.insert("panel/thought".into(), true);
+        let mut f = thought_panel();
+        f.dock = 2;
+        draw(&mut screen, &mut emu, &f, &doc);
+        let at = |kind, row| MouseEvent {
+            kind,
+            column: 7,
+            row,
+        };
+        screen.mouse(at(MouseKind::Press, 4), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 4), &doc),
+            MouseOutcome::Click {
+                block: None,
+                row: 1
+            }
+        );
+        assert_eq!(
+            screen.click_wait(Instant::now()),
+            None,
+            "tail metadata is not a panel hit"
+        );
+        f.dock = 0;
+        f.live.extend((0..6).map(|_| "other dock text".into()));
+        draw(&mut screen, &mut emu, &f, &doc);
+        for row in 0..SIZE.1 {
+            screen.mouse(at(MouseKind::Press, row), &doc);
+            assert!(!matches!(
+                screen.mouse(at(MouseKind::Release, row), &doc),
+                MouseOutcome::Thought { .. }
+            ));
+            assert_eq!(
+                screen.click_wait(Instant::now()),
+                None,
+                "clipped metadata cannot redirect to visible dock text"
+            );
+        }
+    }
+
+    #[test]
+    fn panel_thought_revalidates_without_painting_and_cancels_on_reset() {
+        for released in [false, true] {
+            for change in 0..9 {
+                let (mut screen, mut emu) = setup();
+                let mut doc = Doc::new();
+                doc.panel.insert("panel/thought".into(), true);
+                let mut f = thought_panel();
+                draw(&mut screen, &mut emu, &f, &doc);
+                let at = |kind| MouseEvent {
+                    kind,
+                    column: 7,
+                    row: 5,
+                };
+                screen.mouse(at(MouseKind::Press), &doc);
+                if released {
+                    screen.mouse(at(MouseKind::Release), &doc);
+                }
+                match change {
+                    0 => {
+                        doc.panel.remove("panel/thought");
+                    }
+                    1 => {
+                        doc.panel.insert("panel/thought".into(), false);
+                    }
+                    2 => screen.cancel_click(),
+                    3 => screen.clear_selection(),
+                    4 => screen.scroll(1),
+                    5 => {
+                        screen.resize((SIZE.0 + 1, SIZE.1));
+                    }
+                    6 => screen.relayout(SIZE.0),
+                    7 => {
+                        f.overlay = Some(Overlay {
+                            rows: vec!["picker".into()],
+                            cursor: None,
+                        });
+                        draw(&mut screen, &mut emu, &f, &doc);
+                    }
+                    8 => {
+                        f.thought_rows.clear();
+                        draw(&mut screen, &mut emu, &f, &doc);
+                    }
+                    _ => unreachable!(),
+                }
+                if !released {
+                    assert!(!matches!(
+                        screen.mouse(at(MouseKind::Release), &doc),
+                        MouseOutcome::Thought { .. }
+                    ));
+                }
+                assert_eq!(
+                    screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                    None,
+                    "released={released}, change={change}"
+                );
+                doc.panel.insert("panel/thought".into(), true);
+                assert_eq!(
+                    screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                    None
+                );
+            }
+        }
+        let (mut screen, mut emu) = setup();
+        let mut doc = Doc::new();
+        doc.panel.insert("panel/thought".into(), true);
+        draw(&mut screen, &mut emu, &thought_panel(), &doc);
+        let at = |kind| MouseEvent {
+            kind,
+            column: 7,
+            row: 4,
+        };
+        screen.mouse(at(MouseKind::Press), &doc);
+        doc.panel.clear();
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release), &doc),
+            MouseOutcome::Ignored,
+            "headers also revalidate without a frame"
+        );
+    }
+
+    #[test]
+    fn panel_and_transcript_thoughts_share_one_pending_slot() {
+        for panel_last in [false, true] {
+            let (mut screen, mut emu) = setup();
+            let mut doc = Doc::thought();
+            doc.panel.insert("panel/thought".into(), true);
+            draw(&mut screen, &mut emu, &thought_panel(), &doc);
+            let rows = if panel_last { [0, 5] } else { [5, 0] };
+            for row in rows {
+                screen.mouse(
+                    MouseEvent {
+                        kind: MouseKind::Press,
+                        column: 7,
+                        row,
+                    },
+                    &doc,
+                );
+                assert_eq!(screen.click_wait(Instant::now()), None);
+                screen.mouse(
+                    MouseEvent {
+                        kind: MouseKind::Release,
+                        column: 7,
+                        row,
+                    },
+                    &doc,
+                );
+                assert!(screen.click_wait(Instant::now()).is_some());
+            }
+            let expected = if panel_last {
+                MouseOutcome::Thought {
+                    key: "panel/thought".into(),
+                    body: true,
+                }
+            } else {
+                MouseOutcome::Click {
+                    block: Some(0),
+                    row: 2,
+                }
+            };
+            assert_eq!(
+                screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                Some(expected)
+            );
+            assert_eq!(
+                screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_body_single_click_waits_from_press_and_holds_the_committed_target_once() {
+        for (column, row, body_row) in [(0, 3, 2), (8, 3, 2), (28, 3, 2), (1, 4, 3)] {
+            let (mut screen, mut emu) = setup();
+            let doc = Doc::thought();
+            draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+            assert_eq!(emu.row(3).trim_end(), " ▎ alpha beta");
+            let at = |kind| MouseEvent { kind, column, row };
+            let before = Instant::now();
+            screen.mouse(at(MouseKind::Press), &doc);
+            let after = Instant::now();
+            assert_eq!(screen.click_wait(after), None);
+            assert_eq!(screen.pending_click(&doc, after + MULTI_CLICK), None);
+            assert_eq!(
+                screen.mouse(at(MouseKind::Release), &doc),
+                MouseOutcome::Ignored
+            );
+            let now = Instant::now();
+            let deadline = now + screen.click_wait(now).expect("body click is deferred");
+            assert!((before + MULTI_CLICK..=after + MULTI_CLICK).contains(&deadline));
+            assert_eq!(
+                screen.pending_click(&doc, deadline - Duration::from_nanos(1)),
+                None
+            );
+            draw(&mut screen, &mut emu, &frame(&["new output"], &DOCK), &doc);
+            assert_eq!(screen.click_wait(deadline), Some(Duration::ZERO));
+            assert_eq!(
+                screen.pending_click(&doc, deadline),
+                Some(MouseOutcome::Click {
+                    block: Some(0),
+                    row: body_row
+                })
+            );
+            assert_eq!(screen.pending_click(&doc, deadline + MULTI_CLICK), None);
+            assert_eq!(screen.click_wait(deadline), None);
+            let before = emu.rows_text();
+            draw(
+                &mut screen,
+                &mut emu,
+                &frame(&["new output", "more output"], &DOCK),
+                &doc,
+            );
+            let content = |rows: &[String]| {
+                rows[..5]
+                    .iter()
+                    .map(|row| columns_of(row, 0, 29).trim_end().to_owned())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                content(&emu.rows_text()),
+                content(&before),
+                "confirmation holds the viewport"
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_body_multi_clicks_keep_word_line_and_empty_gutter_selection() {
+        for (column, row) in [(6, 3), (0, 3), (0, 4)] {
+            let (mut screen, mut emu) = setup();
+            let doc = Doc::thought();
+            draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+            let at = |kind| MouseEvent { kind, column, row };
+            screen.mouse(at(MouseKind::Press), &doc);
+            assert_eq!(
+                screen.mouse(at(MouseKind::Release), &doc),
+                MouseOutcome::Ignored
+            );
+            assert!(screen.click_wait(Instant::now()).is_some());
+            screen.mouse(at(MouseKind::Press), &doc);
+            assert_eq!(screen.click_wait(Instant::now()), None);
+            let double = screen.mouse(at(MouseKind::Release), &doc);
+            if column == 6 {
+                assert_eq!(double, MouseOutcome::Copy("alpha".into()));
+            } else {
+                assert!(!matches!(
+                    double,
+                    MouseOutcome::Click { .. } | MouseOutcome::Copy(_)
+                ));
+            }
+            assert_eq!(
+                screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                None
+            );
+            screen.mouse(at(MouseKind::Press), &doc);
+            let triple = screen.mouse(at(MouseKind::Release), &doc);
+            if row == 3 {
+                assert_eq!(triple, MouseOutcome::Copy(" alpha beta".into()));
+            } else {
+                assert_eq!(triple, MouseOutcome::Redraw);
+            }
+            assert_eq!(screen.click_wait(Instant::now()), None);
+            assert_eq!(
+                screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn thinking_body_drag_link_and_header_keep_their_existing_actions() {
+        let (mut screen, mut emu) = setup();
+        let doc = Doc::thought();
+        draw(&mut screen, &mut emu, &frame(&[], &DOCK), &doc);
+        let at = |kind, column, row| MouseEvent { kind, column, row };
+        screen.mouse(at(MouseKind::Press, 3, 3), &doc);
+        screen.mouse(at(MouseKind::Drag, 7, 3), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 7, 3), &doc),
+            MouseOutcome::Copy("alpha".into())
+        );
+        assert_eq!(
+            screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+            None
+        );
+        screen.mouse(at(MouseKind::Press, 8, 5), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 8, 5), &doc),
+            MouseOutcome::Open("https://example.com".into())
+        );
+        assert_eq!(screen.click_wait(Instant::now()), None);
+        screen.mouse(at(MouseKind::Press, 3, 2), &doc);
+        assert_eq!(
+            screen.mouse(at(MouseKind::Release, 3, 2), &doc),
+            MouseOutcome::Click {
+                block: Some(0),
+                row: 1
+            }
+        );
+        assert_eq!(screen.click_wait(Instant::now()), None);
+        for (column, row) in [(4, 0), (4, 1), (4, 6), (SIZE.0 - 1, 3)] {
+            screen.mouse(at(MouseKind::Press, column, row), &doc);
+            screen.mouse(at(MouseKind::Release, column, row), &doc);
+            assert_eq!(screen.click_wait(Instant::now()), None);
+        }
+        screen.mouse(at(MouseKind::Press, 3, 3), &doc);
+        screen.mouse(at(MouseKind::Release, 4, 3), &doc);
+        assert_eq!(
+            screen.click_wait(Instant::now()),
+            None,
+            "release must match the pressed cell"
+        );
+    }
+
+    #[test]
+    fn thinking_body_pending_click_is_cancelled_by_input_and_view_changes() {
+        for change in 0..13 {
+            let (mut screen, mut emu) = setup();
+            let doc = Doc::thought();
+            let mut f = frame(&[], &DOCK);
+            draw(&mut screen, &mut emu, &f, &doc);
+            let at = |kind, column, row| MouseEvent { kind, column, row };
+            screen.mouse(at(MouseKind::Press, 6, 3), &doc);
+            screen.mouse(at(MouseKind::Release, 6, 3), &doc);
+            assert!(screen.click_wait(Instant::now()).is_some());
+            match change {
+                0 => {
+                    screen.mouse(at(MouseKind::Press, 4, 0), &doc);
+                }
+                1 => {
+                    screen.mouse(at(MouseKind::WheelDown, 6, 3), &doc);
+                }
+                2 => {
+                    screen.mouse(at(MouseKind::WheelUp, 6, 3), &doc);
+                }
+                3 => screen.scroll(1),
+                4 => {
+                    screen.resize((SIZE.0 + 1, SIZE.1));
+                }
+                5 => screen.relayout(SIZE.0),
+                6 => screen.clear_selection(),
+                7 => screen.cancel_click(),
+                8 => {
+                    f.overlay = Some(Overlay {
+                        rows: vec!["picker".into()],
+                        cursor: None,
+                    });
+                    draw(&mut screen, &mut emu, &f, &doc);
+                    f.overlay = None;
+                    draw(&mut screen, &mut emu, &f, &doc);
+                }
+                9 => {
+                    screen.mouse(at(MouseKind::Press, SIZE.0 - 1, 3), &doc);
+                }
+                10 => screen.scroll_to_top(),
+                11 => screen.follow(),
+                12 => {
+                    screen.mouse(at(MouseKind::Drag, 6, 3), &doc);
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                None,
+                "change {change}"
+            );
+            assert_eq!(screen.click_wait(Instant::now()), None, "change {change}");
+        }
+    }
+
+    #[test]
+    fn thinking_body_target_invalidation_cancels_before_release_and_before_timeout() {
+        for released in [false, true] {
+            for change in 0..4 {
+                let (mut screen, mut emu) = setup();
+                let mut doc = Doc::thought();
+                let f = frame(&[], &DOCK);
+                draw(&mut screen, &mut emu, &f, &doc);
+                let at = |kind| MouseEvent {
+                    kind,
+                    column: 6,
+                    row: 3,
+                };
+                screen.mouse(at(MouseKind::Press), &doc);
+                if released {
+                    screen.mouse(at(MouseKind::Release), &doc);
+                }
+                match change {
+                    0 => {
+                        doc.bodies
+                            .insert((Some(0), 2), "another/view/or/block".into());
+                    }
+                    1 => {
+                        doc.bodies.remove(&(Some(0), 2));
+                    }
+                    2 => {
+                        doc.blocks.clear();
+                    }
+                    3 => {
+                        doc.dropped = 1;
+                    }
+                    _ => unreachable!(),
+                }
+                if released {
+                    assert_eq!(screen.pending_click(&doc, Instant::now()), None);
+                } else {
+                    draw(&mut screen, &mut emu, &f, &doc);
+                }
+                doc.bodies
+                    .insert((Some(0), 2), "view/session/branch/request/thought".into());
+                if !released {
+                    assert!(!matches!(
+                        screen.mouse(at(MouseKind::Release), &doc),
+                        MouseOutcome::Click { .. }
+                    ));
+                }
+                assert_eq!(
+                    screen.pending_click(&doc, Instant::now() + MULTI_CLICK),
+                    None,
+                    "released={released}, change={change}"
+                );
+                assert_eq!(screen.click_wait(Instant::now()), None);
+            }
+        }
+    }
 
     #[test]
     fn disclosure_feedback_only_repaints_the_exact_header_and_deduplicates_motion() {
@@ -3099,6 +4014,7 @@ mod tests {
                             commits: Vec::new(),
                             live,
                             task_rows: Vec::new(),
+                            thought_rows: Vec::new(),
                             model_label: None,
                             cursor,
                             dock,

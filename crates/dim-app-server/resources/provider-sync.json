@@ -68,6 +68,7 @@
     "qwencloud": { "source": "remote", "upstreamId": "alibaba", "vendorNamespace": "alibaba" },
     "qwencloud-coding-plan": { "source": "remote", "upstreamId": "alibaba-coding-plan", "vendorNamespace": "alibaba" },
     "qwencloud-token-plan": { "source": "remote", "upstreamId": "alibaba-token-plan", "vendorNamespace": "alibaba" },
+    "bailian-token-plan": { "source": "remote", "upstreamId": "alibaba-token-plan-cn", "vendorNamespace": "alibaba" },
     "step-plan-intl": { "source": "remote", "upstreamId": "stepfun-ai-step-plan", "vendorNamespace": "stepfun" },
     "tencent-hunyuan": { "source": "remote", "upstreamId": "tencent-tokenhub", "vendorNamespace": "tencent" },
     "tencent-token-plan": { "source": "remote", "localModels": ["tc-code-latest"], "vendorNamespace": "tencent" },

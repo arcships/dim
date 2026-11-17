@@ -67,10 +67,10 @@ CLI 要求协议 v4，以及 `session.create` 和 `session.history` 两项功能
 | 能力 | CLI | Web | 来源 |
 | --- | --- | --- | --- |
 | 登录、登出（OAuth，守护进程描述的每个提供方） | 已实现 | — | [提供方账号](cli-commands.md#提供方账号) |
-| API-key Provider 的添加/编辑/测试/启用/禁用/切换 | 已实现；删除：CLI 中无（服务端已支持）；模型列表编辑：`/models` → `Edit models` 与 `dimcode models PROVIDER` | 已实现，含模型列表与偏好写入（`provider.models.*`、`provider.preferences.update`） | [Provider 管理](appserver/provider-management.md) |
+| API-key Provider 的添加/编辑/测试/启用/禁用/切换 | 已实现；删除：CLI 中无（服务端已支持）；模型列表编辑：`/models` → `Manage models` 与 `dimcode models PROVIDER` | 已实现，含模型列表与偏好写入（`provider.models.*`、`provider.preferences.update`） | [Provider 管理](appserver/provider-management.md) |
 | 切换模型 | 已实现 | 已实现 | `session.model.update` |
 | 推理强度、快速模式 | 已实现（`/effort`、`/fast`，以及 `/models` 中用 ←/→ 调整） | — | [模型配置](../../design/model-configuration.md) |
-| 子 agent 模型策略 | 已完成（`/models` → Subagent models） | — | [子 agent 模型策略](../../design/subagent-model-policy.md)、[#263](https://github.com/arcships/dim/issues/263) |
+| 子 agent 模型策略 | 已完成（`/models` → `Subagent models` 分区） | — | [子 agent 模型策略](../../design/subagent-model-policy.md)、[#263](https://github.com/arcships/dim/issues/263) |
 | 辅助模型 | 服务端已按所有者设计（例如 SessionTitle）；没有客户端界面 | — | [AuxiliaryModel](appserver/auxiliary-model.md) |
 
 ### 3.2 Session 管理
@@ -90,7 +90,7 @@ CLI 要求协议 v4，以及 `session.create` 和 `session.history` 两项功能
 
 | 能力 | CLI | Web | 来源 |
 | --- | --- | --- | --- |
-| 发送、引导（运行中按 `Enter`，缺省）、排队（`Ctrl+S`）、自动发送、引导空草稿（`Enter`）、中断、中断并立即发送（`Ctrl+Enter`） | 已实现 | 发送和停止：已实现；排队：后续阶段 | InputQueue（S1） |
+| 发送、引导（运行中按 `Enter`，缺省）、排队（`Ctrl+S`）、自动发送、引导空草稿（`Enter`）、中断、中断并立即发送（`Ctrl+Enter`） | 已实现 | 已实现：Web 输入框提供同样的两种模式，缺省值由浏览器保存；中断并立即发送为 `Ctrl+Enter`（macOS 为 `⌘+Enter`）（[Web 工作区](../../design/web-workspace.md#45-sending-during-a-run)） | InputQueue（S1） |
 | 线：树、切换、新建、发送、停止、审批、结束 | 已实现 | 已实现（右侧 Lines 面板） | [Timeline 线](../../design/timeline-branches.md) §14、[Web 工作区](../../design/web-workspace.md#41-lines-and-branch) |
 | `/queue` 面板与删除排队消息 | 无 | — | 服务端契约已实现（S1） |
 | 取回排队消息重新编辑 | 已实现；带附件的消息会丢失附件（§4 第 3 条） | — | |

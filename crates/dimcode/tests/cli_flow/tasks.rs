@@ -2220,6 +2220,62 @@ fn member_event(wire: &mut Wire, member: &str, event: Value) {
 }
 
 #[test]
+fn tui_reused_temporary_agents_keep_their_names_after_a_public_directory_read() {
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        fs::write(
+            home.0.join("config.json"),
+            json!({"locale":"en","tuiToolDetailsExpanded":true}).to_string(),
+        )
+        .unwrap();
+        let (drawn, wait_drawn) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&[]);
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, attach_record(&attach));
+            let history = wire.read("session.history");
+            let mut events = agent_request(1, "first", "first-call", json!({"kind":"temporary","profile":{"name":"Timeline Reviewer","description":"","systemPrompt":""}}), "Initial review").to_vec();
+            events.push(delivered(4, "req-1", "temporary-agent", "member"));
+            events.push(fact("first-ended", 5, 5000, "collaboration", "result", json!({"request_event_id":"req-1","agent_id":"temporary-agent","session_id":"member","status":"completed","text":"Initial review complete"})));
+            events.extend(agent_request(6, "reuse", "reuse-call", json!({"kind":"member","agent_id":"temporary-agent","session_id":"member"}), "Restored follow-up"));
+            events.push(delivered(9, "req-6", "temporary-agent", "member"));
+            events.push(fact("reuse-ended", 10, 10000, "collaboration", "result", json!({"request_event_id":"req-6","agent_id":"temporary-agent","session_id":"member","status":"completed","text":"Follow-up complete"})));
+            events.extend(agent_request(11, "missing", "missing-call", json!({"kind":"agent","agent_id":"unlisted-agent"}), "Missing public Agent"));
+            wire.reply(&history, json!({"events":events,"through":14,"nextAfter":14,"done":true}));
+            wire.no_context();
+            let mut requests = [wire.read_any(), wire.read_any()];
+            requests.sort_by_key(|request| request["method"].to_string());
+            let [providers, names] = requests;
+            assert_eq!(providers["method"], "account.providers");
+            assert_eq!(names["method"], "agent.list");
+            wire.reply(&providers, json!([]));
+            wire.reply(&names, json!([]));
+            wait_drawn.recv_timeout(PATIENCE).unwrap();
+            for value in agent_request(15, "live", "live-call", json!({"kind":"member","agent_id":"temporary-agent","session_id":"member"}), "Live follow-up") {
+                event(wire, "main", value);
+            }
+            wait_drawn.recv_timeout(PATIENCE).unwrap();
+            wire.quiet(Duration::from_millis(150));
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+        }
+        sized(&mut command, 100, 48);
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until_row("Restored follow-up", "· Agent: Timeline Reviewer");
+        terminal.until_anywhere("Missing public Agent");
+        drawn.send(()).unwrap();
+        terminal.until_row("Live follow-up", "· Agent: Timeline Reviewer");
+        assert!(!terminal.transcript.contains("Agent: temporary-agent"));
+        drawn.send(()).unwrap();
+        daemon.join().unwrap();
+        home.kill(&terminal);
+        terminal.wait();
+    }
+}
+
+#[test]
 fn tui_member_cards_share_observations_and_show_the_members_actual_model() {
     let home = Home::new();
     let (opened, wait_opened) = std::sync::mpsc::channel();
@@ -2475,8 +2531,9 @@ fn tui_member_cards_name_a_native_agent_the_hello_does_not_announce() {
 
 #[test]
 fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
-    for outcome in ["cached", "resolved", "missing", "failed"] {
+    for outcome in ["cached", "resolved", "missing", "failed", "temporary"] {
         let cached = outcome == "cached";
+        let temporary = outcome == "temporary";
         let home = Home::new();
         fs::write(
             home.0.join("config.json"),
@@ -2489,7 +2546,7 @@ fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
             let attach = wire.read("session.attach");
             wire.reply(&attach, attach_record(&attach));
             let history = wire.read("session.history");
-            let current_agent = if cached { "reviewer" } else { "current" };
+            let current_agent = if cached || temporary { "reviewer" } else { "current" };
             let mut events = agent_request(10, "current", "current-call", json!({"kind":"agent","agent_id":current_agent}), "Current review").to_vec();
             events.push(delivered(13, "req-10", current_agent, "current-member"));
             events.push(fact("current-ended",14,14000,"collaboration","result",json!({"request_event_id":"req-10","agent_id":current_agent,"session_id":"current-member","status":"completed","text":"Current review complete"})));
@@ -2498,18 +2555,23 @@ fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
                 let request = wire.read_any();
                 match request["method"].as_str().unwrap() {
                     "account.providers" => wire.reply(&request, json!([])),
-                    "agent.list" => wire.reply(&request, json!([{"agentId":current_agent,"name":if cached { "History Reviewer" } else { "Current Reviewer" }}])),
+                    "agent.list" => wire.reply(&request, if temporary { json!([]) } else { json!([{"agentId":current_agent,"name":if cached { "History Reviewer" } else { "Current Reviewer" }}]) }),
                     "session.context.usage" => wire.send(json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32601,"message":"Unknown method","data":{"appError":"unknown_method"}}})),
                     "session.history" => break request,
                     method => panic!("Unexpected startup read: {method}"),
                 }
             };
             assert_eq!(earlier["params"]["before"], 10);
-            let mut events = agent_request(1, "historical", "historical-call", json!({"kind":"agent","agent_id":"reviewer"}), "Historical dependency review").to_vec();
+            let target = if temporary {
+                json!({"kind":"temporary","profile":{"name":"History Reviewer","description":"","systemPrompt":""}})
+            } else {
+                json!({"kind":"agent","agent_id":"reviewer"})
+            };
+            let mut events = agent_request(1, "historical", "historical-call", target, "Historical dependency review").to_vec();
             events.push(delivered(4, "req-1", "reviewer", "member"));
             events.push(ended("historical-ended", 5, "req-1"));
             wire.reply(&earlier, json!({"events":events,"through":14,"nextAfter":5,"nextBefore":1,"done":true}));
-            if !cached {
+            if !cached && !temporary {
                 let list = wire.read("agent.list");
                 wait_drawn.recv_timeout(PATIENCE).unwrap_or_else(|error| panic!("{outcome}: {error}"));
                 event(wire, "main", fact("while-naming", 15, 15000, "input", "message", json!({
@@ -2539,12 +2601,14 @@ fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
         terminal.until("test / model");
         terminal.until_anywhere(if cached {
             "Agent: History Reviewer"
+        } else if temporary {
+            "Agent: reviewer"
         } else {
             "Agent: Current Reviewer"
         });
         terminal.write(b"/earlier\r");
         terminal.write(b"\x1b[H");
-        if !cached {
+        if !cached && !temporary {
             terminal.until_row("Historical dependency review", "· Agent: reviewer");
             drawn.send(()).unwrap();
             terminal.write(b"\x1b[F");
@@ -2557,13 +2621,16 @@ fn tui_earlier_member_cards_use_cached_and_newly_discovered_agent_names() {
         }
         terminal.until_row(
             "Historical dependency review",
-            if cached || outcome == "resolved" {
+            if cached || temporary || outcome == "resolved" {
                 "· Agent: History Reviewer"
             } else {
                 "· Agent: reviewer"
             },
         );
         terminal.until_anywhere("Task: Historical dependency review");
+        if temporary {
+            terminal.until_row("Current review", "· Agent: History Reviewer");
+        }
         drawn.send(()).unwrap();
         daemon.join().unwrap();
         home.kill(&terminal);

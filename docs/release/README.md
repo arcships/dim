@@ -119,14 +119,22 @@ Updated clients disable Allow when the original action cannot be reviewed and ke
 
 Release builds use the following [GitHub-hosted runner images](https://docs.github.com/en/actions/reference/runners/github-hosted-runners). Each platform stages its native executable after checking its reported release version.
 
-| Platform | Rust target | Runner |
-| --- | --- | --- |
-| macOS ARM64 | `aarch64-apple-darwin` | `macos-15` |
-| macOS Intel | `x86_64-apple-darwin` | `macos-15-intel` |
-| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` |
-| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-22.04` |
-| Windows ARM64 | `aarch64-pc-windows-msvc` | `windows-11-arm` |
-| Windows x64 | `x86_64-pc-windows-msvc` | `windows-2022` |
+| Platform | Rust target | Runner | RAM | Release LTO |
+| --- | --- | --- | --- | --- |
+| macOS ARM64 | `aarch64-apple-darwin` | `macos-15` | 7 GB | thin |
+| macOS Intel | `x86_64-apple-darwin` | `macos-15-intel` | 14 GB | fat |
+| Linux ARM64 | `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | 16 GB | fat |
+| Linux x64 | `x86_64-unknown-linux-gnu` | `ubuntu-22.04` | 16 GB | fat |
+| Windows ARM64 | `aarch64-pc-windows-msvc` | `windows-11-arm` | 16 GB | fat |
+| Windows x64 | `x86_64-pc-windows-msvc` | `windows-2022` | 16 GB | fat |
+
+The RAM values are the public-repository specifications in the linked GitHub runner reference.
+Release builds cap Cargo at two jobs, including inside the Linux container. The shared fat-LTO
+profile has a measured Linux x64 single-process peak above 8 GiB; a jobs cap does not reduce that
+single-process requirement. macOS ARM64 therefore retains thin LTO until its full release build
+and runtime smoke checks establish that fat LTO fits the 7 GB runner. Other targets still need
+their own release-profile build and runtime validation; Linux measurements do not establish
+their peak memory requirements.
 
 The Ubuntu preflight generates the Rust distribution notices once with cargo-about 0.9.3 using the versioned checkout. All six targets download that artifact. Linux builds on each native host with GNU tools in a digest-pinned manylinux_2_28 container. The executable also runs in that glibc 2.28 environment. Windows uses native MSVC, clang-cl on ARM64, NASM on x64, and the Windows system tar to create ZIP archives. Actions installs Node from `.node-version` and Rust uses `rust-toolchain.toml`. Web and Release assembly run on hosted Ubuntu.
 

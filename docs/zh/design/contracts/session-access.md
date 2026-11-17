@@ -66,7 +66,7 @@ flowchart LR
 | 带 key 块的效果 | 历史投影（[history.rs](../../../../crates/dim-agent-capabilities/src/history.rs)） | 从固定前缀与压缩事实重建 |
 | 调用方进度（运行、待定的 `submissionId`） | 调用方的进程存储 | 调用方的文档 |
 
-输入从其 `input/message` 起处于待处理状态，直到引用其事件 id 的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。单独的 `input/withdraw` 从不改变输入是否待处理；只有 InputQueue 的结果事实会改变。每个“待处理输入”推导（Goal、AcpGateway、Scheduler、Workflow）都严格使用这条规则。分支不持有的 id 回答 `pending: false`，因此因重启丢失一轮的调用方与轮次已被消费的调用方读到同一答案。
+输入从其 `input/message` 起处于待处理状态，直到引用其事件 id 的 `input/applied` 及随后的 `input/consumed`，或 `input/deleted` 出现为止。单独的 `input/withdraw` 从不改变输入是否待处理；只有 InputQueue 的结果事实会改变。每个“待处理输入”推导（Goal、AcpGateway、Scheduler、Workflow）都严格使用这条规则。`sessions.pending` 取得分支后捕获已发布序号，等待分发达到该序号，再读取当前 InputQueue。它不等待 turn 结束，也不读取历史；随后已分发的消费或删除也可能体现在结果中。放弃等待只结束本次调用。分支不持有的 id 回答 `pending: false`，因此因重启丢失一轮的调用方与轮次已被消费的调用方读到同一答案。
 
 ## 3. 流程
 
@@ -229,7 +229,7 @@ Queue 输入在 Loop 启动它所驱动的 turn 时被消费。Steer 输入在�
 | `lookup` | async | `{sessionId, branchId, submissionId}` | `LookupReply` | `ambiguous`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `exists` | async | `{sessionId}` | `{exists}` | `rejected`、`reloading` |
 | `history` | async | `HistoryRequest` | `HistoryPage` | `rejected`、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |
-| `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading` |
+| `pending` | async | `{sessionId, branchId, inputId}` | `{pending: boolean}` | [S2 §6.10](../appserver/sessions-service.md#610-pending) |
 | `withdraw` | async | `WithdrawRequest` | `WithdrawReply` | `rejected`、`session_closed`、`branch_missing`、`branch_ended`、`reloading`、`publication_unknown` |
 | `stop` | async | `{sessionId, branchId, reason?}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
 | `idle` | async | `{sessionId, branchId}` | `{sequence}` | `session_closed`、`branch_missing`、`branch_ended`、`reloading` |
@@ -453,7 +453,7 @@ InputQueue 仍是拥有决定的分支 Capability；InputMethods 仍是 Session 
 | `lookup` | `Session::lookup(branch, submission_id)`，与 `session.input_lookup` 共用：读分支的提交标识索引，等待找到的输入发布 |
 | `history` | `Session::sequence(branch)`，低于 `at_least` 时以 `future_sequence` 失败，然后 `AgentIndex::history_page(id, branch, after, limit, through)` |
 | `withdraw` | `Session::service::<InputQueue>(branch)` 后调用 `InputQueue::withdraw(InputWithdrawData { input_id, reason, steer: None }) -> Result<Withdrawal, AgentError>`。数据面只允许普通撤回，返回 `Deleted { sequence }` 或 `NotHeld`。`InputMethods` 为已检查的 Steer 候选调用仅限 Rust 的 `withdraw_checked`，保留提交事件并确认发布后才返回回执（A.4）。 |
-| `pending` | `Session::service::<InputQueue>(branch)` 后 `InputQueue::pending(input_id) -> bool`：该分支自己的队列回答 §2 的规则；它不持有的 id 为 `false` |
+| `pending` | 捕获 `Session::publication(branch).sequence()`，通过 `Session::dispatch_watch(branch)` 等待分发达到该序号并观察发布关闭，再调用 `Session::service::<InputQueue>(branch)` 和 `InputQueue::pending(input_id) -> bool`：该分支自己的队列回答 §2 的规则；它不持有的 id 为 `false` |
 | `stop`、`idle` | `Session::stop`、`Session::idle`（已有） |
 | `delete` | `AgentIndex::delete(id)`（S5c，crate 内部使用）：准入闸门、关闭、`SessionStore::delete_session`、遗忘 |
 | `SessionConfig` | 下方的 Rust 结构体 |

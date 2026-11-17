@@ -106,6 +106,26 @@ async fn the_prompts_source_serves_the_three_texts() {
         Some("S")
     );
 
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    for error in [
+        base.0.base(cancelled.clone()).await.unwrap_err(),
+        instructions
+            .0
+            .instructions(cancelled.clone())
+            .await
+            .unwrap_err(),
+        summary.0.system_prompt(cancelled).await.unwrap_err(),
+    ] {
+        assert!(
+            matches!(
+                error,
+                dim_agent_capabilities::host::HostError::Failed { .. }
+            ),
+            "the product owner preserves its settings error mapping: {error}"
+        );
+    }
+
     let owner = settings
         .update_declared(
             "prompts",

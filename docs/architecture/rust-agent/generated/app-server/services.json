@@ -23,7 +23,7 @@
         "reads": []
       },
       {
-        "id": 74,
+        "id": 75,
         "parent": 2,
         "name": "Attachments",
         "state": "Active",
@@ -53,7 +53,7 @@
         ]
       },
       {
-        "id": 73,
+        "id": 74,
         "parent": 2,
         "name": "Report",
         "state": "Active",
@@ -100,7 +100,7 @@
         ]
       },
       {
-        "id": 72,
+        "id": 73,
         "parent": 2,
         "name": "goal",
         "state": "Active",
@@ -147,7 +147,7 @@
         ]
       },
       {
-        "id": 71,
+        "id": 72,
         "parent": 2,
         "name": "eventhub",
         "state": "Active",
@@ -245,8 +245,8 @@
         ]
       },
       {
-        "id": 75,
-        "parent": 71,
+        "id": 76,
+        "parent": 72,
         "name": "eventhub-ready",
         "state": "Active",
         "generation": 1,
@@ -261,14 +261,14 @@
           {
             "service": "dim_event_hub::bridge::EventHub",
             "scope": null,
-            "provider": 71,
+            "provider": 72,
             "generation": 1
           }
         ],
         "reads": []
       },
       {
-        "id": 70,
+        "id": 71,
         "parent": 2,
         "name": "Scheduler",
         "state": "Active",
@@ -383,7 +383,7 @@
         ]
       },
       {
-        "id": 69,
+        "id": 70,
         "parent": 2,
         "name": "Questions",
         "state": "Active",
@@ -413,9 +413,39 @@
         ]
       },
       {
-        "id": 68,
+        "id": 69,
         "parent": 2,
         "name": "PromptSuggestion",
+        "state": "Active",
+        "generation": 1,
+        "injects": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "status": "Ready"
+          }
+        ],
+        "resolved": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "provider": 45,
+            "generation": 1
+          }
+        ],
+        "reads": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "provider": 45,
+            "declared": true,
+            "external": true
+          }
+        ]
+      },
+      {
+        "id": 68,
+        "parent": 2,
+        "name": "ImageUnderstanding",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -3359,19 +3389,19 @@
       },
       {
         "service": "dim_agent_scheduler::loops::Loops",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_agent_scheduler::methods::ScheduleJobs",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_agent_scheduler::wakeups::Wakeups",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
@@ -3539,18 +3569,24 @@
       },
       {
         "service": "dim_event_hub::bridge::EventHub",
-        "provider": 71,
+        "provider": 72,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_event_hub::subscriptions::EventSubscriptions",
-        "provider": 71,
+        "provider": 72,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_modality::engine::ModalityTasks#modalityTasks",
+        "provider": 67,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_modality::targets::ModalityTargets",
         "provider": 67,
         "generation": 1,
         "removing": false
@@ -3574,6 +3610,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#basePromptSettingsHost",
+        "provider": 27,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#callChannel",
         "provider": 12,
         "generation": 1,
@@ -3593,13 +3635,13 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventHub",
-        "provider": 71,
+        "provider": 72,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventSubscriptions",
-        "provider": 71,
+        "provider": 72,
         "generation": 1,
         "removing": false
       },
@@ -3623,7 +3665,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#loops",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
@@ -3636,6 +3678,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#managementMethods",
         "provider": 10,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#modalityTargets",
+        "provider": 67,
         "generation": 1,
         "removing": false
       },
@@ -3683,7 +3731,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
@@ -3730,6 +3778,18 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#skillsInstructionsSettingsHost",
+        "provider": 27,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#summaryPromptSettingsHost",
+        "provider": 27,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#toolchainSourceHost",
         "provider": 25,
         "generation": 1,
@@ -3737,7 +3797,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#wakeups",
-        "provider": 70,
+        "provider": 71,
         "generation": 1,
         "removing": false
       },

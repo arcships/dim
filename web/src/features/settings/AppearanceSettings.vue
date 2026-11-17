@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from "vue"
+import type { SubmitMode } from "../../rpc/protocol"
 import { useSettingsText } from "../../i18n/settings-general"
 import { useAppearanceStore } from "../../stores/appearance"
+import { useComposerStore } from "../../stores/composer"
 
 const s = useSettingsText()
 const appearance = useAppearanceStore()
+const composer = useComposerStore()
 const themes = [{ value: 'light', icon: 'i-lucide-sun' }, { value: 'dark', icon: 'i-lucide-moon' }, { value: 'system', icon: 'i-lucide-monitor' }] as const
+const sendModes = [{ value: 'steer', icon: 'i-lucide-corner-down-right' }, { value: 'queue', icon: 'i-lucide-hourglass' }] as const
 const languageItems = computed(() => [
   { label: s('System default', '跟随系统'), value: '__system__' },
   { label: 'English', value: 'en' },
@@ -15,14 +19,18 @@ function selectLanguage(value: string): void {
   const next = value === "__system__" ? "" : value
   if (next === "" || next === "en" || next === "zh-CN") void appearance.selectLanguage(next)
 }
+function selectSendMode(value: SubmitMode): void {
+  composer.sendMode = value
+}
 </script>
 
 <template>
   <article class="settings-page">
     <header><h2 data-route-heading tabindex="-1">{{ s('Appearance', '外观') }}</h2><p>{{ s('Changes apply immediately and are saved in this browser, independently of the CLI.', '更改立即生效并保存在此浏览器中，与 CLI 设置相互独立。') }}</p></header>
-    <UAlert v-if="appearance.error" class="settings-banner" color="error" variant="subtle" :description="appearance.error" role="alert" />
+    <UAlert v-if="composer.error || appearance.error" class="settings-banner" color="error" variant="subtle" :description="composer.error || appearance.error" role="alert" />
     <section class="settings-card"><h3>{{ s('Theme', '主题') }}</h3><div class="theme-options" role="group" :aria-label="s('Theme', '主题')"><button v-for="theme in themes" :key="theme.value" class="theme-option" :class="{ 'is-selected': appearance.theme === theme.value }" type="button" :aria-pressed="appearance.theme === theme.value" @click="appearance.theme = theme.value"><UIcon :name="theme.icon" class="size-[22px]" aria-hidden="true" /><span>{{ theme.value === 'light' ? s('Light', '浅色') : theme.value === 'dark' ? s('Dark', '深色') : s('System', '跟随系统') }}</span></button></div></section>
     <section class="settings-card"><h3>{{ s('UI font size', '界面字号') }}</h3><div class="settings-actions" role="group" :aria-label="s('UI font size', '界面字号')"><UButton v-for="size in [12, 13, 14, 15, 16, 18]" :key="size" size="md" :color="appearance.fontSize === size ? 'primary' : 'neutral'" :variant="appearance.fontSize === size ? 'solid' : 'outline'" :aria-pressed="appearance.fontSize === size" @click="appearance.fontSize = size">{{ size }}</UButton></div><p>{{ s('Scales the entire interface, including controls and chat text.', '缩放整个界面，包括控件和聊天文本。') }}</p></section>
+    <section class="settings-card"><h3>{{ s('Send during a run', '运行中发送') }}</h3><div class="settings-actions" role="group" :aria-label="s('Send during a run', '运行中发送')"><UButton v-for="mode in sendModes" :key="mode.value" size="md" :color="composer.sendMode === mode.value ? 'primary' : 'neutral'" :variant="composer.sendMode === mode.value ? 'solid' : 'outline'" :aria-pressed="composer.sendMode === mode.value" @click="selectSendMode(mode.value)"><UIcon :name="mode.icon" class="size-4 shrink-0" aria-hidden="true" />{{ mode.value === 'steer' ? s('Steer into the run', '插话到当前运行') : s('Hold for the next turn', '暂存到下一轮') }}</UButton></div><p>{{ composer.sendMode === 'steer' ? s('Enter sends the draft into the running turn. Its other action holds the draft for the next turn instead.', 'Enter 会把草稿插入正在运行的轮次；另一个操作改为把草稿暂存到下一轮。') : s('Enter holds the draft for the next turn. Its other action steers the draft into the running turn instead.', 'Enter 会把草稿暂存到下一轮；另一个操作改为把草稿插入正在运行的轮次。') }}</p><p>{{ s('Interrupt and send now stays available either way. Saved in this browser, independently of the CLI.', '无论哪种选择，都可用“中断并立即发送”。保存在此浏览器中，与 CLI 设置相互独立。') }}</p></section>
     <section class="settings-card"><h3>{{ s('Language', '语言') }}</h3><UFormField :label="s('Interface language', '界面语言')"><USelect :model-value="appearance.language || '__system__'" :items="languageItems" size="md" class="w-full" @update:model-value="selectLanguage" /></UFormField></section>
   </article>
 </template>

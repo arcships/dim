@@ -47,6 +47,16 @@ impl GrokOAuthService {
     ) -> Result<()> {
         self.0.finish_rejected(rejected, c).await
     }
+    /// Feature `testing` only: whether a token operation has built the client.
+    #[cfg(feature = "testing")]
+    pub fn http_client_initialized(&self) -> bool {
+        self.0.client_initialized()
+    }
+    /// Feature `testing` only: fail the next HTTP client initialization.
+    #[cfg(feature = "testing")]
+    pub fn fail_next_http_client_build(&self) {
+        self.0.fail_next_client_build();
+    }
 }
 pub struct GrokOAuthPlugin {
     root: usize,

@@ -30,6 +30,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Versi {latest} tersedia (terpasang {current})."
         }
         "To update, run: {command}" => "Perbarui dengan: {command}",
+        "To update, exit every client and stop the server, then run {command}" => {
+            "Untuk memperbarui, keluar dari semua klien, hentikan server, lalu jalankan {command}"
+        }
         "Skip this version" => "Lewati versi ini",
         "Skipped {version}." => "{version} dilewati.",
         "Close" => "Tutup",

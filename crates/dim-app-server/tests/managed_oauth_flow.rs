@@ -317,16 +317,38 @@ async fn codex_login_refresh_logout_and_restart_preserve_account_boundaries() {
     let (_root, files, plugin, a) = codex(&home, &f.base).await;
     let (_other_root, other_files, other_plugin, b) = codex(&home, &f.base).await;
     let cancel = CancellationToken::new();
+    assert!(!a.http_client_initialized(), "startup built an HTTP client");
+    assert!(!b.http_client_initialized(), "startup built an HTTP client");
     assert!(!a.status(&cancel).await.unwrap().authenticated);
+    assert!(
+        !a.http_client_initialized(),
+        "reading account state built an HTTP client"
+    );
 
     let stale = a.begin_browser(&cancel).await.unwrap();
+    assert!(
+        !a.http_client_initialized(),
+        "starting a browser attempt built an HTTP client"
+    );
     login(&b, "account-first").await;
+    assert!(
+        b.http_client_initialized(),
+        "the token exchange did not build the HTTP client"
+    );
+    assert!(
+        !a.http_client_initialized(),
+        "another service's token exchange built this one's HTTP client"
+    );
     b.logout(&cancel).await.unwrap();
     assert!(matches!(
         a.complete_browser(stale.attempt_id, callback(&stale, "stale-account"), &cancel)
             .await,
         Err(OAuthError::AccountChanged)
     ));
+    assert!(
+        a.http_client_initialized(),
+        "the token exchange did not build the HTTP client"
+    );
     assert!(read(&home).get("openaiCodex").is_none());
 
     login(&a, "账户甲乙丙丁戊庚").await;
@@ -817,8 +839,35 @@ async fn grok_device_flow_observes_slowdown_expiry_cancellation_and_uri_trust() 
     active(&plugin).await;
     let grok = root.get::<GrokOAuthService>().unwrap();
     let cancel = CancellationToken::new();
+    assert!(
+        !grok.http_client_initialized(),
+        "startup built an HTTP client"
+    );
+    assert!(!grok.status(&cancel).await.unwrap().authenticated);
+    assert!(
+        !grok.http_client_initialized(),
+        "reading account state built an HTTP client"
+    );
+    grok.fail_next_http_client_build();
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        grok.begin_device(&cancelled).await,
+        Err(OAuthError::Closed)
+    ));
+    assert!(!grok.http_client_initialized());
+    assert!(matches!(
+        grok.begin_device(&cancel).await,
+        Err(OAuthError::Transient(None))
+    ));
+    assert!(!grok.http_client_initialized());
+    assert_eq!(f.device_requests.load(Ordering::SeqCst), 0);
     let started = std::time::Instant::now();
     let begin = grok.begin_device(&cancel).await.unwrap();
+    assert!(
+        grok.http_client_initialized(),
+        "the device request did not build the HTTP client"
+    );
     assert_eq!(begin.user_code, "USER-42");
     assert_eq!(
         begin.verification_uri.as_str(),

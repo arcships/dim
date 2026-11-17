@@ -368,9 +368,6 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "exit" => "keluar",
 
         // composer/palette.rs
-        "Enter select + default · ←/→ effort · Ctrl+B/F cursor · Ctrl+X clear saved · Esc clear/close" => {
-            "Enter pilih + default · ←/→ upaya · Ctrl+B/F kursor · Ctrl+X hapus simpanan · Esc hapus/tutup"
-        }
         "Default for new sessions in {folder}: {model}" => {
             "Model default untuk sesi baru di {folder}: {model}"
         }
@@ -519,6 +516,33 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Untuk anggota baru, termasuk Agen bernama."
         }
         "Existing members keep their models." => "Anggota lama tetap pakai modelnya.",
+        "Conversation model" => "Model percakapan",
+        "Selected: {model}" => "Dipilih: {model}",
+        "Model management" => "Manajemen model",
+        "Manage models" => "Kelola model",
+        "1 provider" => "1 penyedia",
+        "{count} providers" => "{count} penyedia",
+        "ready" => "siap",
+        "no models" => "tanpa model",
+        "catalog unreadable" => "catalog tak terbaca",
+        "{count} with missing limits" => "{count} tanpa batas",
+        "{count} unavailable" => "{count} tidak tersedia",
+        "{count} disabled" => "{count} nonaktif",
+        "{count} without models" => "{count} tanpa model",
+        "{count} unreadable" => "{count} tak terbaca",
+        "{unavailable} unavailable, {disabled} disabled" => {
+            "{unavailable} tidak tersedia, {disabled} nonaktif"
+        }
+        "Enter select + default · ←/→ effort · Tab section · Esc clear/close" => {
+            "Enter pilih + default · ←/→ upaya · Tab bagian · Esc hapus/tutup"
+        }
+        "Enter change · Tab section · Esc clear/close" => {
+            "Enter ubah · Tab bagian · Esc hapus/tutup"
+        }
+        "Enter manage · Tab section · Esc clear/close" => {
+            "Enter kelola · Tab bagian · Esc hapus/tutup"
+        }
+        "Enter manage · Esc back" => "Enter kelola · Esc kembali",
         "unknown" => "tak diketahui",
         "Subagent model policy saved" => "Kebijakan model subagen disimpan",
         "Subagent model policy changed elsewhere; choose again to reread it" => {
@@ -542,6 +566,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         // keys.rs
         "show the key bindings" => "lihat pintasan tombol",
+        "show the command that updates this installation" => {
+            "lihat perintah untuk memperbarui instalasi ini"
+        }
         "Application keys" => "Tombol aplikasi",
         "Enter submit when idle · Shift+Enter / Alt+Enter / Ctrl+J newline · ↑↓ history" => {
             "Enter kirim saat idle · Shift+Enter / Alt+Enter / Ctrl+J baris baru · ↑↓ riwayat"

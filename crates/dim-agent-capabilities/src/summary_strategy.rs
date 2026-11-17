@@ -129,6 +129,33 @@ pub trait SummaryPromptSettings: Send + Sync + 'static {
 
 pub struct SummaryPromptSettingsHost(pub Arc<dyn SummaryPromptSettings>);
 
+impl rutis_bridge::session::HostDispatch for SummaryPromptSettingsHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"systemPrompt":"async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        const NAME: &str = "summaryPromptSettingsHost";
+        if method != "systemPrompt" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(NAME, args)?;
+        let owner = self.0.clone();
+        crate::port_faces::serving(NAME, async move {
+            let cancel = CancellationToken::new();
+            let _abandoned = cancel.clone().drop_guard();
+            owner
+                .system_prompt(cancel)
+                .await
+                .map_err(crate::host::ModelPortError::from)
+        })
+    }
+}
+
 pub struct ProductSummaryStrategyPlugin {
     host: Key<CompactionStrategyHost>,
     model: Key<ModelHost>,

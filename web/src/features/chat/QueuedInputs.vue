@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue"
 import { useI18n } from "vue-i18n"
-import type { QueuedInput } from "../../rpc/protocol"
+import { MAIN_BRANCH, type QueuedInput } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useToastStore } from "../../stores/toast"
 
@@ -20,7 +20,7 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
   if (busy.value) return
   busy.value = true
   try {
-    const result = await chat.withdrawInput(props.sessionId, item.id, steer ? item.user : undefined)
+    const result = await chat.withdrawInput(props.sessionId, MAIN_BRANCH, item.id, steer ? item.user : undefined)
     if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
   } catch (cause) {
     toast.push({ tone: "danger", title: t("command.failed"), description: cause instanceof Error ? cause.message : String(cause) })

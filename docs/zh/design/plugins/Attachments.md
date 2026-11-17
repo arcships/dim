@@ -227,20 +227,18 @@ CLI 在提交前检查：
 
 限制（A2）：每次提交最多 20 张图片，整个编码请求不超过 16 MiB 传输帧；仍然超出帧的提交被拒绝并保留草稿。块保持其顺序。
 
-ModelProvider 补充（已在 S11 实现，`model_provider/images.rs`；[总体设计附录 B.1](../overview.md#b1-session-与分支-capability)），在构建模型请求时作用于每个图片块：
+ModelProvider 在构建对话模型请求时处理每个图片块，覆盖所有写入方的用户内容和工具结果。文件来源先解析为字节，再应用下表；引用契约见 [ImageUnderstanding §3](../../../design/plugins/ImageUnderstanding.md#3-references)。
 
 | 图片块 | 请求内容 |
 | --- | --- |
-| 请求所用模型接受图片输入，且适配器接受该块的格式和大小 | 原样发送 |
-| 模型不接受图片输入（Provider 目录） | 文本 `[Image omitted: the current model does not accept images.]` |
-| 能力未知 | 原样发送；由提供方决定（A4） |
-| URL 来源、缺失或无法解码的 base64 数据，或 PNG、JPEG、WebP、GIF 以外的格式 | 文本 `[Image omitted: the image cannot be sent to this model.]`（A10） |
+| 可解码的 base64 图片，格式为 PNG、JPEG、WebP 或 GIF；模型接受图片、不接受图片或能力未知均相同 | 文本 `img:` 加 base64 解码后的图片文件字节的 SHA-256 前 16 个小写十六进制字符；不散列像素或 base64 文本，相同字节得到相同引用 |
+| URL 来源、缺失或无法解码的 base64 数据，或本构建无法解码的格式 | 保留原有占位：纯文本模型为 `[Image omitted: the current model does not accept images.]`，否则为 `[Image omitted: the image cannot be sent to this model.]`（A10） |
 
-这里不检查大小：没有适配器公布按模型的图片大小上限，所以超大的图片照常发送，由提供方决定，与能力未知时相同（A4）。CLI 的缩放规则和限制（A2）在提交前仍然适用。
+CLI 的缩放规则和限制（A2）在提交前仍然适用；引用散列图片块实际携带的文件字节，不再次缩放或重编码。
 
-历史从不改变；每个请求按自己的模型重新决定。
+仅请求改变；历史、Timeline 和已采用输入保留原始图片块。不持久化引用，不增加跨请求缓存，切换回视觉模型也不发送像素。
 
-为什么放在 ModelProvider：图片检查不能放在 RPC 入口或 App Server（原则 §4 第 3 条和 §1），CLI 的检查覆盖不到原始客户端和其他写入方。不采用的做法：在 `session.submit` 上由 Rpc 校验（入口检查）；`input/message` 上的 before 回调（写入时还不知道消费它的请求用哪个模型）；Attachments 上传方法（覆盖不到其他写入方）。这项处理不写事件，历史不变；每个请求按已采用的 `context/configured` 和 Provider 目录决定，中断和重载只影响正在构建的请求。[#27](https://github.com/arcships/dim/issues/27) 已确认，构建请求时的占位是对已采用输入的格式转换，不是新的上下文路径。
+为什么放在 ModelProvider：图片处理不能放在 RPC 入口或 App Server（原则 §4 第 3 条和 §1），CLI 的检查覆盖不到原始客户端和其他写入方。这项处理不写事件，历史不变；中断和重载只影响正在构建的请求。[#27](https://github.com/arcships/dim/issues/27) 已确认，构建请求时的格式转换不是新的上下文路径。
 
 ### A.2 `attachment.put`
 

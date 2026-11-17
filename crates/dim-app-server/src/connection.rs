@@ -237,8 +237,9 @@ impl Connection {
     pub fn new(
         hub: Arc<ConnectionHub>,
         entry: Entry,
+        closing: CancellationToken,
     ) -> (Arc<Self>, tokio::sync::mpsc::UnboundedReceiver<Frame>) {
-        let closed = hub.closing.child_token();
+        let closed = closing.child_token();
         let (sender, receiver) = Sender::new(closed.clone());
         let connection = Arc::new(Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -289,7 +290,7 @@ impl Connection {
             .hub
             .with_rpc(|rpc| rpc.callers.close_connection(&self.id));
         if self.entry == Entry::Local {
-            self.hub.web.release(&self.hub, &self.id).await;
+            self.hub.web.release(&self.id).await;
         }
         self.hub.ui.release(&self.id);
         self.hub.ui.finished(&self.id);
@@ -2103,12 +2104,6 @@ impl ConnectionHub {
             .expect("connection index")
             .get(id)
             .and_then(Weak::upgrade)
-    }
-    /// Asks every connection accepted on `entry` to close.
-    pub fn close_entry(&self, entry: Entry) {
-        for connection in self.entry_connections(entry) {
-            connection.closed.cancel();
-        }
     }
     /// A token cancelled when the hub closes; listeners it owns stop with it.
     pub fn closing(&self) -> CancellationToken {

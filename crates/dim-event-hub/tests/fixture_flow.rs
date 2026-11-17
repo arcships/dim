@@ -457,13 +457,23 @@ async fn a_producer_that_applied_first_declares_on_the_notice() {
     // Its own apply found no service; the notice gave it one and it declared
     // then.
     wait_for("the ready notice", || fixture.producer.hub().is_some()).await;
-    let sources = fixture.call("eventhub.sources", json!({})).await.unwrap();
-    let listed = sources["sources"].as_array().unwrap();
-    let im = listed
-        .iter()
-        .find(|source| source["source"] == json!("im"))
-        .unwrap_or_else(|| panic!("the notice's declaration is listed: {sources}"));
-    assert_eq!(im["guide"], json!("The IM guide."), "{sources}");
+    let im = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let sources = fixture.call("eventhub.sources", json!({})).await.unwrap();
+            if let Some(im) = sources["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|source| source["source"] == json!("im"))
+            {
+                break im.clone();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the notice's declaration is listed");
+    assert_eq!(im["guide"], json!("The IM guide."), "{im}");
     fixture.subscribe("noticed", &["im.*"], None).await.unwrap();
     let receipt = fixture.producer.publish(event("noticed")).await.unwrap();
     assert_eq!(

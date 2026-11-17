@@ -1367,3 +1367,91 @@ async fn a_fork_opening_reaches_v3_clients_after_the_copied_facts() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// `session.fork` restores an unloaded source before copying it. A source
+/// awaiting prompt migration returns its actionable refusal (#1666).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_fork_of_a_branch_awaiting_prompt_migration_answers_its_instruction() {
+    use dim_agent_capabilities::prompt::Prompt;
+    use dim_agent_runtime::{ConfigureOutcome, PromptSourceTarget};
+    use dim_agent_types::{PromptDelivery, PromptEntry, PromptScope};
+
+    let store = Store::new();
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let sid = forked(&client.rpc("session.create", create(json!(["wait"]))).await);
+    turn(&mut client, &sid, "first").await;
+    // Two adoptions of one source: the branch's first `prompt/changed` now
+    // differs from its last, which is the history the guard refuses to
+    // replay without a saved reference (`prompt-state-read.md` §7).
+    let prompt = agent
+        .get_session(&sid)
+        .unwrap()
+        .service::<Prompt>("main")
+        .unwrap();
+    let scope = PromptScope::Branch {
+        timeline: "main".into(),
+    };
+    let target = PromptSourceTarget {
+        source: "domain-state".into(),
+        scope: scope.clone(),
+    };
+    for version in ["first", "latest"] {
+        let entry = PromptEntry {
+            source: target.source.clone(),
+            version: version.into(),
+            body: format!("{version} domain state"),
+            scope: scope.clone(),
+            delivery: PromptDelivery::State,
+            order: 0,
+        };
+        assert_eq!(
+            prompt
+                .clone()
+                .configure_loaded(None, vec![(target.clone(), Some(entry))])
+                .await
+                .unwrap(),
+            ConfigureOutcome::Adopted
+        );
+    }
+    let at = agent.get_session(&sid).unwrap().sequence("main").unwrap();
+    drop((client, prompt, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+    // The store a branch written before `prompt-state/v2` leaves: its
+    // adoptions remain and no saved reference does.
+    let connection = store.connection();
+    let removed = connection
+        .execute(
+            "DELETE FROM timeline_events WHERE session_id=?1 AND kind='prompt-state/recovered'",
+            [&sid],
+        )
+        .unwrap();
+    assert!(removed > 0, "the seed saved references to drop");
+    drop(connection);
+
+    // A daemon that starts on that store: the fork is the first thing asked
+    // of the source, as it is after an upgrade.
+    let (server, agent) = launch_with_agent(Arc::new(MockTools), store.config()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let refused = fork(&mut client, &sid, at).await;
+    assert_eq!(
+        refused["error"]["code"],
+        json!(-32000),
+        "the refusal is the producer's, not the framework's: {refused}"
+    );
+    assert_eq!(
+        refused["error"]["data"]["appError"],
+        json!("session_invalid_input"),
+        "a migration the user can run is invalid input, not an internal fault: {refused}"
+    );
+    let message = refused["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("dimcode --migrate-prompt-references"),
+        "the client reads the command that repairs the source: {refused}"
+    );
+
+    drop((client, agent));
+    server.shutdown();
+    server.join().await.unwrap();
+}

@@ -63,7 +63,9 @@ pub enum Block {
     },
     /// A settled thought: one summary row, or the whole text when expanded.
     Thinking {
+        source_id: String,
         text: String,
+        excerpt: String,
         elapsed_ms: Option<u64>,
         expanded: bool,
         streamed: bool,
@@ -153,7 +155,9 @@ pub fn project_row(rows: &[Arc<ViewRow>], index: usize, detail: Detail) -> Block
             expanded: false,
         },
         RowKind::Thinking => Block::Thinking {
+            source_id: row.row_id.clone(),
             text: row.text.clone(),
+            excerpt: row.display.clone().unwrap_or_default(),
             elapsed_ms: row.elapsed_ms,
             expanded: detail == Detail::Expanded,
             streamed: false,

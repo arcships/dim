@@ -348,7 +348,7 @@ Dispatcher 与 before 的精确名称、`*`、`领域/*` 只过滤同一分支�
 | 传播 | 上游重载时，rutis 沿 `Deps` 依赖驱逐并重新装载下游，可跨进程、Session、分支作用域 |
 | 能力 | 随上游重载的能力按[能力重载协议](#能力重载协议)卸载与装载 |
 | 核心状态 | Timeline、TimelineTree、Dispatcher、AgentIndex 内的 Agent 句柄不注入可重载的上游 |
-| 门面 | `Branch` 经 TimelineContext 每次调用按分支键查找 `LoopState` 与公开服务，不持有能力实例；状态查询在 Loop 重载期间返回可重试错误。写入输入不查找任何能力端口，InputQueue 重载期间的输入由新一代从 Timeline 接收；stop、idle 只等待 `LoopState`，不拼装其他能力的状态：Loop 重载期间等新一代接手（重载即重启，见[总纲](time-bus.md)第 5 条），分支关闭后 Loop 不在时返回 `Closed`；关闭开始时 Loop 正在重载，则中断已提交、不再等待，不算关闭失败，未完成的 turn 按重载结算。分支仍存活时，`approval.respond` 因审批服务换代失败返回 `service_reloading`。`Session` 持有的 TimelineTree 不注入可重载的上游 |
+| 门面 | `Branch` 经 TimelineContext 每次调用按分支键查找 `LoopState` 与公开服务，不持有能力实例；状态查询在 Loop 重载期间返回可重试错误。写入输入不查找任何能力端口，InputQueue 重载期间的输入由新一代从 Timeline 接收；stop、idle 只等待 `LoopState`，不拼装其他能力的状态：Loop 重载期间等新一代接手（重载即重启，见[总纲](time-bus.md)第 5 条），分支正在关闭且 Loop 不在时，优先返回已记录的 Dispatcher 故障，否则返回 `Closed`（新 stop 的关闭准入见[中断 §3](interrupt.md#3-完成与并发)）；关闭开始时 Loop 正在重载，则中断已提交、不再等待，不算关闭失败，未完成的 turn 按重载结算。分支仍存活时，`approval.respond` 因审批服务换代失败返回 `service_reloading`。`Session` 持有的 TimelineTree 不注入可重载的上游 |
 | 拥有 | 作用域 Plugin 卸载即关闭该实例 |
 | 代次结算 | 移除一代服务前先停止新工作、排空已受理工作并写完必需终态（AGENTS 规则 8）；连接断开不等于关闭 Session，运行时句柄不是持久身份。依赖丢失回到 Pending 时的业务结算语义仍为 Proposed（issue #6，见 ADR 001） |
 | 触发 | 需要替换服务实现的配置变化、显式 restart、`check()` 变化；普通配置值更新由服务内部通知，不重载。故障不触发重载。各 Plugin 的设计列出自身触发来源 |

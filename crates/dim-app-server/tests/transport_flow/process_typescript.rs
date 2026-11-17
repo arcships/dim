@@ -1315,3 +1315,62 @@ async fn node_session_files_reuses_native_storage_and_ownership() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_reads_prompt_overrides_from_the_same_owner_as_native_consumers() {
+    use dim_agent_capabilities::{
+        prompt_sources::BasePromptSettingsHost, skills::SkillsInstructionsSettingsHost,
+        summary_strategy::SummaryPromptSettingsHost,
+    };
+    let home = home();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"prompt-settings",
+        "name":parts.anchor.parent().unwrap().join("fixtures/prompt-settings.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "promptsettingsprobe.read", json!({})).await,
+        json!({"base":null,"skills":null,"summary":null})
+    );
+    for document in [json!({"base":"B","skills":"K","summary":"S"}), json!({})] {
+        let current = client
+            .rpc("settings.read", json!({"source":"prompts","scope":"user"}))
+            .await;
+        assert_ok(&current);
+        assert_ok(
+            &client
+                .rpc(
+                    "settings.update",
+                    json!({
+                        "source":"prompts", "scope":"user",
+                        "expectedRevision":current["result"]["revision"], "document":document
+                    }),
+                )
+                .await,
+        );
+        let read = files_available(&mut client, "promptsettingsprobe.read", json!({})).await;
+        let base = server.service::<BasePromptSettingsHost>().unwrap();
+        let skills = server.service::<SkillsInstructionsSettingsHost>().unwrap();
+        let summary = server.service::<SummaryPromptSettingsHost>().unwrap();
+        assert_eq!(
+            read,
+            json!({
+                "base":base.0.base(CancellationToken::new()).await.unwrap(),
+                "skills":skills.0.instructions(CancellationToken::new()).await.unwrap(),
+                "summary":summary.0.system_prompt(CancellationToken::new()).await.unwrap()
+            })
+        );
+        assert_eq!(
+            read,
+            json!({"base":document["base"],"skills":document["skills"],"summary":document["summary"]})
+        );
+    }
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

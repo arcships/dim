@@ -61,6 +61,33 @@ pub trait SkillsInstructionsSettings: Send + Sync + 'static {
 
 pub struct SkillsInstructionsSettingsHost(pub Arc<dyn SkillsInstructionsSettings>);
 
+impl rutis_bridge::session::HostDispatch for SkillsInstructionsSettingsHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"instructions":"async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        const NAME: &str = "skillsInstructionsSettingsHost";
+        if method != "instructions" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        let crate::port_faces::Empty {} = crate::port_faces::request(NAME, args)?;
+        let owner = self.0.clone();
+        crate::port_faces::serving(NAME, async move {
+            let cancel = CancellationToken::new();
+            let _abandoned = cancel.clone().drop_guard();
+            owner
+                .instructions(cancel)
+                .await
+                .map_err(crate::host::ModelPortError::from)
+        })
+    }
+}
+
 /// Requires the Session and branch parts in the profile and adds the
 /// per-content extension. The Skills plugin (`SkillsCatalogPlugin`, or a
 /// host's plugin that mounts its catalog) registers the parts.

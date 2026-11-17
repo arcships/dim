@@ -340,7 +340,9 @@ async fn the_v50_conversion_rebuilds_only_the_rewritten_rows_and_keeps_other_sna
     assert_eq!(tool[0]["source"]["type"], "file", "{tool}");
     let node: serde_json::Value = connection
         .query_row(
-            "SELECT body FROM timeline_content WHERE session_id='affected' AND kind='node'",
+            "SELECT c.body FROM timeline_content c JOIN timeline_events e \
+             ON e.session_id=c.session_id AND c.hash=json_extract(e.body, '$.record.refs.list') \
+             WHERE e.session_id='affected' AND e.sequence=2 AND c.kind='node'",
             [],
             |row| row.get::<_, String>(0),
         )

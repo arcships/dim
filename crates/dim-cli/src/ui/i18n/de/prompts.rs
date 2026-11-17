@@ -30,6 +30,9 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "Version {latest} verfügbar (installiert: {current})."
         }
         "To update, run: {command}" => "Update mit: {command}",
+        "To update, exit every client and stop the server, then run {command}" => {
+            "Zum Aktualisieren alle Clients beenden, den Server stoppen und dann {command} ausführen"
+        }
         "Skip this version" => "Version überspringen",
         "Skipped {version}." => "{version} übersprungen.",
         "Close" => "Schließen",

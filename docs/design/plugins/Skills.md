@@ -475,6 +475,15 @@ round trip, and no AgentLoop change. The design is:
   move the highlight off the characters. A surface that already maps a byte range onto what it
   paints uses that mapping directly; one that wraps the text itself carries each drawn
   character's source byte out of the wrap and shares that one wrap with the plain rows.
+- **A filled reference shows its name, and only its name.** The CLI input draws a reference the
+  palette filled as the Skill's name (`/status`), and holds `/skill:<name> ` as its text: the name
+  is what the operator chose and what they read back, while the token stays what is submitted
+  and kept in the input history. The name is a projection over that text and never a
+  rewrite of it, so a Skill loads identically whether it was drawn by name or typed in full, and
+  text the operator typed is always drawn as typed. A name that is also a command the input
+  dispatches keeps the canonical token in the draft, because the plain name would read as that
+  command while the draft is still a message. The CLI's selection and copying behavior is
+  defined in [CLI commands](../cli-commands.md#command-menu); other surfaces state their own presentation.
 - **`$skill: <name>` keeps loading.** Inputs and habits from before this token keep working, so
   the parser accepts the old marker too: `$skill:`, optional spaces, then the run of
   non-whitespace characters that follows, matched exactly. No client writes it any more and the

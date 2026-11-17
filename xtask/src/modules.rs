@@ -93,6 +93,7 @@ pub fn generate(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
                             | "dim-goal"
                             | "dim-report"
                             | "dim-modality"
+                            | "dim-image-understanding"
                             | "dim-ocr"
                     )
             })

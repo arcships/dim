@@ -9,9 +9,9 @@ use dim_agent_types::{CatalogCapabilities, ModelId};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_modality::{
     AdapterError, AdapterFuture, AdapterOperation, AdapterOutput, AdapterProgress, ArtifactHook,
-    Clock, InstallOptions, Job, JobFile, ModalityAdapter, ModalityAdapterService, ProgressSink,
-    RealtimeConnection, RealtimeEnd, RealtimeEvent, RealtimeFrame, RealtimeLimits, RealtimeOpened,
-    RealtimeTransport, RemoteCancel, Submitted, adapter_key,
+    Clock, InstallOptions, Job, JobFile, ModalityAdapter, ModalityAdapterService, ModalityTargets,
+    ProgressSink, RealtimeConnection, RealtimeEnd, RealtimeEvent, RealtimeFrame, RealtimeLimits,
+    RealtimeOpened, RealtimeTransport, RemoteCancel, Submitted, TargetRequest, adapter_key,
 };
 use futures_util::{SinkExt, StreamExt};
 use rutis::Disposer;
@@ -20,9 +20,9 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UnixStream};
@@ -889,6 +889,321 @@ async fn start_in_with_limits(
         },
     )
     .await
+}
+
+struct TargetProbe(Arc<OnceLock<Ctx>>);
+
+impl Plugin for TargetProbe {
+    type Deps = ();
+
+    fn name(&self) -> &str {
+        "ModalityTargetProbe"
+    }
+
+    async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
+        self.0.set(ctx.clone()).ok();
+        Ok(())
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cancelling_target_reads_releases_only_the_callers_pending_work() {
+    let home = home("dm-target-cancel");
+    let fixture = OcrHelperFixture::new(None);
+    fixture.silent();
+    let helper = fixture.clone();
+    let observed = Arc::new(OnceLock::new());
+    let probe = observed.clone();
+    let server = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("native")),
+            ..Default::default()
+        },
+        None,
+        move |builder| {
+            let probe = probe.clone();
+            builder.plugin(move |_| Ok(Box::new(TargetProbe(probe.clone()))));
+            let helper = helper.clone();
+            builder.plugin(move |_| Ok(Box::new(OcrHelperPlugin(helper.clone()))));
+        },
+    )
+    .await;
+    let ctx = observed.get().unwrap();
+    let targets = ctx.get::<ModalityTargets>().unwrap();
+    let call = targets.clone();
+    let cancel = CancellationToken::new();
+    let cancelled = cancel.clone();
+    let native = tokio::spawn(async move {
+        call.resolve(
+            TargetRequest {
+                category: "ocr".into(),
+                operation: "recognize".into(),
+                model: None,
+            },
+            cancelled,
+        )
+        .await
+    });
+    wait_for_count(|| fixture.describes(), 1, "the pending target read").await;
+    cancel.cancel();
+    assert_eq!(
+        native.await.unwrap().unwrap_err().code,
+        "operation_interrupted"
+    );
+    wait_for_count(|| fixture.dropped(), 1, "the cancelled target read").await;
+
+    let face = ctx
+        .get_at::<dyn HostDispatch>(&host_key("modalityTargets"))
+        .unwrap();
+    let pending = face
+        .invoke(
+            "resolve",
+            ServiceValue::List(vec![
+                json!({"category":"ocr", "operation":"recognize"}).into(),
+            ]),
+        )
+        .unwrap();
+    let pending = tokio::spawn(rutis_bridge::session::settle(pending));
+    wait_for_count(|| fixture.describes(), 2, "the pending wire target read").await;
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
+    wait_for_count(|| fixture.dropped(), 2, "the abandoned wire target read").await;
+    assert_eq!(
+        resolve_target(ctx, json!({"category":"image", "operation":"understand"})).await,
+        json!({"status":"unavailable", "reasons":[{
+            "dimension":"configuration", "detail":"No selectable vision model"
+        }]})
+    );
+    assert_eq!(
+        fixture.describes(),
+        2,
+        "image reads never wait for the OCR helper"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+async fn resolve_target(ctx: &Ctx, request: Value) -> Value {
+    let targets = ctx.get::<ModalityTargets>().unwrap();
+    let native = targets
+        .resolve(
+            serde_json::from_value(request.clone()).unwrap(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let face = ctx
+        .get_at::<dyn HostDispatch>(&host_key("modalityTargets"))
+        .unwrap();
+    let wire = rutis_bridge::session::settle(
+        face.invoke("resolve", ServiceValue::List(vec![request.into()]))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .json()
+    .unwrap();
+    assert_eq!(serde_json::to_value(native).unwrap(), wire);
+    wire
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn target_reads_follow_defaults_and_provider_changes_without_media_execution() {
+    let home = home("dm-targets");
+    let config = ServerConfig {
+        product_home: Some(home.clone()),
+        target_home: Some(home.join("native")),
+        ..Default::default()
+    };
+    let observed = Arc::new(OnceLock::new());
+    let probe = observed.clone();
+    let fixture = Arc::new(FixtureAdapter::default());
+    let adapter = fixture.clone();
+    let server = launch_with(Arc::new(MockTools), config, None, move |builder| {
+        let probe = probe.clone();
+        builder.plugin(move |_| Ok(Box::new(TargetProbe(probe.clone()))));
+        let adapter = adapter.clone();
+        builder.plugin(move |_| Ok(Box::new(FixturePlugin(adapter.clone()))));
+    })
+    .await;
+    let ctx = observed.get().unwrap();
+    let targets = ctx.get::<ModalityTargets>().unwrap();
+    let understand = json!({"category":"image", "operation":"understand"});
+    let unavailable = json!({"status":"unavailable", "reasons":[{
+        "dimension":"configuration", "detail":"No selectable vision model"
+    }]});
+    assert_eq!(resolve_target(ctx, understand.clone()).await, unavailable);
+    let mut client = Client::new_version(&server, false, 3).await;
+    let mut vision = CatalogCapabilities::with_limits(128_000, 16_384);
+    vision.vision = true;
+    create_provider_with(&mut client, vec![
+        json!({"modelId":"alpha", "displayName":"alpha", "status":"active", "capabilities":vision}),
+        chat("beta", &[]),
+        json!({"modelId":"gamma", "displayName":"gamma", "status":"active", "capabilities":vision}),
+    ]).await;
+    let resolved = |name| json!({"status":"resolved", "target":model(name)});
+    let selected = client.rpc("provider.select", model("beta")).await;
+    assert_ok(&selected);
+    assert_eq!(
+        resolve_target(ctx, understand.clone()).await,
+        resolved("alpha")
+    );
+    let mut selection = model("gamma");
+    selection["expectedVersion"] = selected["result"]["version"].clone();
+    assert_ok(&client.rpc("provider.select", selection).await);
+    assert_eq!(
+        resolve_target(ctx, understand.clone()).await,
+        resolved("gamma")
+    );
+    let initial = client.rpc("modality.capabilities", json!({})).await;
+    let configured = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision":initial["result"]["revision"],
+                "category":"image", "operation":"understand", "model":model("alpha")
+            }),
+        )
+        .await;
+    assert_ok(&configured);
+    assert_eq!(
+        resolve_target(ctx, understand.clone()).await,
+        resolved("alpha")
+    );
+    let mut explicit = understand.clone();
+    explicit["model"] = model("gamma");
+    assert_eq!(
+        resolve_target(ctx, explicit.clone()).await,
+        resolved("gamma")
+    );
+    explicit["model"] = model("beta");
+    assert_eq!(
+        resolve_target(ctx, explicit.clone()).await,
+        json!({
+            "status":"unavailable", "reasons":[{
+                "dimension":"configuration", "detail":"Model is not a selectable vision model"
+            }]
+        })
+    );
+    let catalog = client
+        .rpc("provider.catalog", json!({"providerId":PROVIDER}))
+        .await;
+    assert_ok(&client.rpc("provider.models.set_enabled", json!({
+        "providerId":PROVIDER, "expectedVersion":catalog["result"]["catalog"]["version"],
+        "modelIds":["beta", "gamma"]
+    })).await);
+    assert_eq!(
+        resolve_target(ctx, understand.clone()).await,
+        json!({
+            "status":"unavailable", "reasons":[{
+                "dimension":"provider", "detail":"Model is no longer selectable"
+            }]
+        }),
+        "an unavailable default cannot silently select gamma"
+    );
+    explicit["model"] = model("gamma");
+    assert_eq!(resolve_target(ctx, explicit).await, resolved("gamma"));
+    let cleared = client
+        .rpc(
+            "modality.configure",
+            json!({
+                "expectedRevision":configured["result"]["revision"],
+                "category":"image", "operation":"understand", "model":null
+            }),
+        )
+        .await;
+    assert_ok(&cleared);
+    assert_eq!(
+        resolve_target(ctx, understand.clone()).await,
+        resolved("gamma")
+    );
+
+    fixture.remove().await;
+    let after_removal = targets
+        .resolve(
+            serde_json::from_value(understand.clone()).unwrap(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(after_removal).unwrap(),
+        resolved("gamma"),
+        "adapter removal neither gates nor reloads the target owner"
+    );
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_eq!(
+        resolve_target(ctx, json!({"category":"image", "operation":"generate"})).await,
+        json!({"status":"unavailable", "reasons":operation(&snapshot, "generate")["reasons"]})
+    );
+    assert_eq!(
+        resolve_target(ctx, json!({"category":"video", "operation":"generate"})).await,
+        json!({"status":"unavailable", "reasons":[{"dimension":"build", "detail":"Not in this build"}]})
+    );
+    let catalog = client
+        .rpc("provider.catalog", json!({"providerId":PROVIDER}))
+        .await;
+    assert_ok(&client.rpc("provider.models.set_enabled", json!({
+        "providerId":PROVIDER, "expectedVersion":catalog["result"]["catalog"]["version"],
+        "modelIds":["beta"]
+    })).await);
+    assert_eq!(resolve_target(ctx, understand.clone()).await, unavailable);
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+    assert_eq!(
+        targets
+            .resolve(serde_json::from_value(understand.clone()).unwrap(), cancel)
+            .await
+            .unwrap_err()
+            .code,
+        "operation_interrupted"
+    );
+    let unknown = TargetRequest {
+        category: "image".into(),
+        operation: "unknown".into(),
+        model: None,
+    };
+    assert_eq!(
+        targets
+            .resolve(unknown, CancellationToken::new())
+            .await
+            .unwrap_err()
+            .code,
+        "modality_unknown_operation"
+    );
+    let face = ctx
+        .get_at::<dyn HostDispatch>(&host_key("modalityTargets"))
+        .unwrap();
+    for args in [
+        json!([]),
+        json!([{"category":"image"}]),
+        json!([{"category":"image", "operation":"understand", "credential":"not-allowed"}]),
+        json!([understand, {}]),
+    ] {
+        assert!(face.invoke("resolve", ServiceValue::from(args)).is_err());
+    }
+    assert_eq!(fixture.submits(), 0);
+    let tasks = client.rpc("modality.task.list", json!({})).await;
+    assert_eq!(tasks["result"]["tasks"], json!([]));
+    server.shutdown();
+    server.join().await.unwrap();
+    let stopped = TargetRequest {
+        category: "image".into(),
+        operation: "understand".into(),
+        model: None,
+    };
+    assert_eq!(
+        targets
+            .resolve(stopped, CancellationToken::new())
+            .await
+            .unwrap_err()
+            .code,
+        "service_reloading"
+    );
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
