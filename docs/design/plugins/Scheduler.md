@@ -709,6 +709,8 @@ A schedule is exactly one of these objects; mixed forms and unknown fields are r
 
 `every_minutes` is a positive integer. Omitting `tz` from the cron form uses the host's local time zone, not UTC. An `at` value includes its UTC offset (`Z` or an explicit offset).
 
+Prefer `every_minutes` for fixed-minute intervals, `cron` for calendar times in the chosen time zone, and `at` for one delivery at a specific instant.
+
 Granularity one minute (A1). After a gap, only the latest due window is considered: it fires if observed within 60 s of its instant (A2); otherwise one `missed` record collapses the stretch. Older windows are never replayed. The timer evaluates wall clock on every tick and on wake, so suspended time is never caught up.
 
 ### A.5 Timeline and capability mechanics

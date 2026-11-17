@@ -424,11 +424,7 @@ impl Job {
 impl Schedule {
     fn validate(&self) -> Result<(), SettingsError> {
         match self {
-            Self::Cron(cron) => cron_for(cron).map(|_| ()).map_err(|_| {
-                SettingsError::Invalid(
-                    "invalid cron expression or time zone: cron needs five fields, e.g. {\"cron\":\"*/30 * * * *\",\"tz\":\"Asia/Shanghai\"}; tz must be an IANA time zone, or omitted for the host's local time zone",
-                )
-            }),
+            Self::Cron(cron) => cron_for(cron).map(|_| ()).map_err(SettingsError::Invalid),
             Self::Every(every) if every.every_minutes >= 1 => Ok(()),
             Self::Every(_) => Err(SettingsError::Invalid(
                 "every_minutes must be a positive integer, e.g. {\"every_minutes\":30}",
@@ -523,16 +519,17 @@ where
 }
 
 /// Five-field cron with an optional IANA time zone (A.4).
-fn cron_for(cron: &CronSchedule) -> Result<ParsedCron, String> {
+fn cron_for(cron: &CronSchedule) -> Result<ParsedCron, &'static str> {
     if cron.cron.split_whitespace().count() != 5 {
-        return Err("cron needs five fields".into());
+        return Err("cron needs five fields, e.g. {\"cron\":\"*/30 * * * *\"}");
     }
     let zone = match &cron.tz {
-        Some(name) => name
-            .parse::<chrono_tz::Tz>()
-            .map_err(|_| format!("unknown time zone {name}"))?,
+        Some(name) => name.parse::<chrono_tz::Tz>().map_err(|_| {
+            "tz must be an IANA time zone, e.g. {\"cron\":\"*/30 * * * *\",\"tz\":\"Asia/Shanghai\"}, or omit tz for the host's local time zone"
+        })?,
         None => chrono_tz::UTC,
     };
-    let parsed = Cron::from_str(&cron.cron).map_err(|error| error.to_string())?;
+    let parsed = Cron::from_str(&cron.cron)
+        .map_err(|_| "invalid cron expression, e.g. {\"cron\":\"*/30 * * * *\"}")?;
     Ok(ParsedCron { cron: parsed, zone })
 }

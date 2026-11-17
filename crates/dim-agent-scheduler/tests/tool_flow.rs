@@ -422,11 +422,11 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         (json!({"cron": "0 */30 * * * *"}), "five fields"),
         (
             json!({"cron": "not a valid cron expression"}),
-            "five fields",
+            "invalid cron expression",
         ),
         (
-            json!({"cron": "*/30 * * * *", "tz": "Mars/Olympus"}),
-            "IANA time zone",
+            json!({"cron": "*/30 * * * *", "tz": "Asia/Shanghia"}),
+            "tz must be an IANA time zone",
         ),
         (
             json!({"at": "2030-01-01T00:00:00"}),
@@ -463,6 +463,12 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
                 "{id}: {content}"
             );
             assert!(content.contains(expected), "{id}: {content}");
+            if schedule.get("tz").is_some() {
+                assert!(
+                    !content.contains("cron needs"),
+                    "{id} must identify the invalid zone, not the valid cron: {content}"
+                );
+            }
             assert!(
                 content.contains("{\""),
                 "{id} has an actionable object example: {content}"
