@@ -69,7 +69,55 @@ fn declaration(description: &str) -> ToolDefinition {
                     "additionalProperties": false,
                     "properties": {
                         "name": {"type": "string"},
-                        "schedule": {"type": "object"},
+                        "schedule": {
+                            "type": "object",
+                            "description": "Exactly one schedule form; do not combine fields from different forms.",
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "required": ["cron"],
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "cron": {
+                                            "type": "string",
+                                            "description": "Five-field cron: minute hour day-of-month month day-of-week; supports lists, ranges and steps. Example: */30 * * * *."
+                                        },
+                                        "tz": {
+                                            "type": "string",
+                                            "description": "Optional IANA time zone, e.g. Asia/Shanghai. Omit to use the host's local time zone, not UTC."
+                                        }
+                                    },
+                                    "examples": [{"cron": "*/30 * * * *", "tz": "Asia/Shanghai"}]
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["every_minutes"],
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "every_minutes": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": u32::MAX,
+                                            "description": "Repeat every this many minutes, anchored at the job's enable time. Use 30 for a 30-minute interval."
+                                        }
+                                    },
+                                    "examples": [{"every_minutes": 30}]
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["at"],
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "at": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "description": "One RFC 3339 instant with Z or an explicit UTC offset. Example: 2030-01-01T00:00:00Z."
+                                        }
+                                    },
+                                    "examples": [{"at": "2030-01-01T00:00:00Z"}]
+                                }
+                            ]
+                        },
                         "prompt": {"type": "string"},
                         "input_mode": {"type": "string", "enum": ["queue", "steer", "append"]}
                     }

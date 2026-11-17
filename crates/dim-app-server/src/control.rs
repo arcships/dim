@@ -12,10 +12,12 @@ type ShutdownReply = Box<dyn FnOnce(bool) -> BoxFuture<'static, ()> + Send>;
 
 /// Admission for process-owned work, including work accepted before a Session
 /// exists. A hold starts before acceptance and ends after the last owned effect.
-#[derive(Default)]
+/// It also observes the host's initial publication.
 pub struct ProcessActivity {
     count: Arc<AtomicUsize>,
     foreign: Mutex<ActivityState>,
+    ready: watch::Receiver<bool>,
+    shutdown: CancellationToken,
 }
 
 const PAUSED: usize = 1 << (usize::BITS - 1);
@@ -26,8 +28,39 @@ struct ActivityState {
     holds: std::collections::HashMap<u64, ProcessHold>,
 }
 
+impl Default for ProcessActivity {
+    /// Creates a standalone admission owner whose publication is already complete.
+    fn default() -> Self {
+        Self::observing(watch::channel(true).1, CancellationToken::new())
+    }
+}
+
+impl ProcessActivity {
+    fn observing(ready: watch::Receiver<bool>, shutdown: CancellationToken) -> Self {
+        Self {
+            count: Default::default(),
+            foreign: Default::default(),
+            ready,
+            shutdown,
+        }
+    }
+}
+
 #[rutis::service]
 impl ProcessActivity {
+    /// Resolves once the host has opened after every required process row
+    /// became Active. Resolves false when startup fails or shutdown begins
+    /// before that observation. A row reload does not reset it.
+    /// Calls after shutdown begins return false, even after an earlier true.
+    pub async fn activated(&self) -> bool {
+        let mut ready = self.ready.clone();
+        tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => false,
+            result = ready.wait_for(|ready| *ready) => result.is_ok(),
+        }
+    }
+
     /// The native binding of a hold. Dropping it releases the settled work.
     #[must_use = "dropping the hold releases admission"]
     #[rutis::service(skip)]
@@ -108,13 +141,18 @@ pub struct ServerControl {
 }
 impl ServerControl {
     fn new() -> Self {
+        Self::with_shutdown(CancellationToken::new())
+    }
+    fn with_shutdown(shutdown: CancellationToken) -> Self {
+        let (ready, activity_ready) = watch::channel(false);
+        let activity = Arc::new(ProcessActivity::observing(activity_ready, shutdown.clone()));
         Self {
-            ready: watch::channel(false).0,
-            shutdown: CancellationToken::new(),
+            ready,
+            shutdown,
             force: AtomicBool::new(false),
             fault: Mutex::new(None),
             shutdown_replies: Mutex::new(Vec::new()),
-            activity: Arc::default(),
+            activity,
             paused: Mutex::new(Vec::new()),
         }
     }
@@ -143,12 +181,7 @@ impl ServerControl {
     }
     /// Resolves once every selected plugin is ready; never after shutdown began.
     pub(crate) async fn opened(&self) -> bool {
-        let mut ready = self.ready.subscribe();
-        tokio::select! {
-            biased;
-            _ = self.shutdown.cancelled() => false,
-            result = ready.wait_for(|ready| *ready) => result.is_ok(),
-        }
+        self.activity.activated().await
     }
     pub(crate) fn is_ready(&self) -> bool {
         *self.ready.borrow() && !self.shutdown.is_cancelled()
@@ -181,6 +214,13 @@ impl ServerControlPlugin {
     pub fn new() -> Self {
         Self(Arc::new(ServerControl::new()))
     }
+    /// [`ServerControlPlugin::new`] sharing `shutdown` with the caller.
+    /// Feature `testing` only, so a test can hold publication and exercise
+    /// the host's own shutdown path through the same token.
+    #[cfg(feature = "testing")]
+    pub fn with_shutdown(shutdown: CancellationToken) -> Self {
+        Self(Arc::new(ServerControl::with_shutdown(shutdown)))
+    }
 }
 impl Plugin for ServerControlPlugin {
     type Deps = ();
@@ -191,5 +231,34 @@ impl Plugin for ServerControlPlugin {
         ctx.provide_as::<ProcessActivity>(self.0.activity.clone())?;
         ctx.provide_as::<ServerControl>(self.0.clone())?;
         Ok(())
+    }
+}
+
+/// Feature `testing`: a hold between the required rows becoming Active and
+/// the host's opening publication. `serve` waits on it; `shutdown` is the
+/// host's own shutdown token, so cancelling it ends the hold the way leaving
+/// startup does.
+#[cfg(feature = "testing")]
+#[derive(Debug, Default)]
+pub struct PublicationHold {
+    pub waiting: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+    pub shutdown: CancellationToken,
+}
+
+#[cfg(feature = "testing")]
+impl PublicationHold {
+    /// Notifies `waiting`, then waits for `release` or the host shutdown.
+    pub async fn wait(&self) {
+        self.waiting.notify_one();
+        tokio::select! {
+            _ = self.shutdown.cancelled() => {}
+            _ = self.release.notified() => {}
+        }
+    }
+
+    /// Lets the held host continue to publication.
+    pub fn release(&self) {
+        self.release.notify_one();
     }
 }

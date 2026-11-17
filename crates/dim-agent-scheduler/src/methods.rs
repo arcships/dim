@@ -259,11 +259,26 @@ impl DynPlugin for SchedulerPlugin {
                 let startup = shared.clone();
                 let loops_startup = loops.clone();
                 shared.spawn(async move {
+                    #[cfg(feature = "testing")]
+                    if let Some(signals) = &startup.signals {
+                        signals.startup_waiting();
+                    }
+                    if !startup.activated().await {
+                        return;
+                    }
                     crate::engine::settle_delivering(&startup).await;
                     note_loop_lookup(&startup, loops_startup.settle_delivering().await);
                 });
             }
-            shared.spawn(crate::engine::prune(shared.clone()));
+            {
+                let owner = shared.clone();
+                shared.spawn(async move {
+                    if !owner.activated().await {
+                        return;
+                    }
+                    crate::engine::prune(owner).await;
+                });
+            }
             let texts = self.texts.clone();
             ctx.require_at(&self.parts)?.register(
                 ctx,
@@ -278,6 +293,9 @@ impl DynPlugin for SchedulerPlugin {
             )?;
             let timer = shared.clone();
             shared.spawn(async move {
+                if !timer.activated().await {
+                    return;
+                }
                 let mut ticks = 0u32;
                 loop {
                     let until = timer.now() + std::time::Duration::from_secs(1);
@@ -420,6 +438,16 @@ impl Shared {
     pub(crate) fn now(&self) -> DateTime<Utc> {
         self.clock.now()
     }
+
+    /// True once the host has published the process; false when this
+    /// generation unloads or the host shuts down before that observation.
+    pub(crate) async fn activated(&self) -> bool {
+        tokio::select! {
+            biased;
+            _ = self.stop.cancelled() => false,
+            activated = self.activity.activated() => activated,
+        }
+    }
 }
 
 /// Records the cadence the loop lookup pass settled on: only a round whose
@@ -439,6 +467,10 @@ fn note_loop_lookup(shared: &Shared, answer: Result<Lookup, SchedulerError>) {
     shared
         .loop_lookup
         .store(tick, std::sync::atomic::Ordering::Release);
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.loop_lookup_done();
+    }
 }
 
 fn handler(shared: Arc<Shared>) -> Handler {

@@ -12185,8 +12185,9 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     terminal.until("Fixed model");
     terminal.raw(b"\x1b[B\r");
     terminal.until("Fixed subagent model");
-    terminal.until("Test / other");
-    terminal.raw(b"\x1b[B\r");
+    terminal.write(b"other");
+    thread::sleep(Duration::from_millis(300));
+    terminal.write(b"\r");
     terminal.until("Subagent model policy saved");
     terminal.until_row("Test / other", "Enter");
     home.kill(&terminal);

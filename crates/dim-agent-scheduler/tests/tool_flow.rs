@@ -40,6 +40,24 @@ impl Script {
             .map(|request| format!("{request:?}"))
             .collect()
     }
+    fn tool_result(&self, id: &str) -> Option<(String, bool)> {
+        self.requests.lock().unwrap().iter().find_map(|request| {
+            request.messages.iter().find_map(|message| {
+                let MessageContent::Parts(parts) = &message.content else {
+                    return None;
+                };
+                parts.iter().find_map(|part| match part {
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content: ToolContent::Text(text),
+                        is_error,
+                        ..
+                    } if tool_use_id == id => Some((text.clone(), is_error == &Some(true))),
+                    _ => None,
+                })
+            })
+        })
+    }
     /// The user texts of the first request recorded after the first `count`
     /// that carries `marker`. A run id is written by its own delivery only, so
     /// that request is the delivered turn's.
@@ -225,7 +243,7 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
     model.push(vec![call(
         "c1",
         json!({"action": "create", "job": {
-            "name": "nightly", "schedule": {"at": "2030-01-01T00:00:00Z"},
+            "name": "nightly", "schedule": {"every_minutes": 30},
             "prompt": "Summarize the day.", "input_mode": "steer"}}),
     )]);
     client
@@ -260,8 +278,50 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         "a tool save carries no authority transition: {texts}"
     );
 
+    {
+        let requests = model.requests.lock().unwrap();
+        let tool = requests[0]
+            .tools
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|tool| tool.name == "schedule")
+            .unwrap();
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let schedule = &schema["properties"]["job"]["properties"]["schedule"];
+        assert_eq!(schedule["type"], "object");
+        let variants = schedule["anyOf"].as_array().unwrap();
+        assert_eq!(variants.len(), 3);
+        for (variant, field) in variants.iter().zip(["cron", "every_minutes", "at"]) {
+            assert_eq!(variant["type"], "object");
+            assert_eq!(variant["required"], json!([field]));
+            assert_eq!(variant["additionalProperties"], false);
+            assert!(variant["examples"][0][field].is_string() || field == "every_minutes");
+        }
+        assert!(
+            variants[0]["properties"]["cron"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("Five-field")
+        );
+        assert!(
+            variants[0]["properties"]["tz"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("host's local time zone, not UTC")
+        );
+        assert_eq!(
+            variants[1]["properties"]["every_minutes"]["type"],
+            "integer"
+        );
+        assert_eq!(variants[1]["properties"]["every_minutes"]["minimum"], 1);
+        assert_eq!(variants[1]["examples"][0], json!({"every_minutes": 30}));
+        assert_eq!(variants[2]["properties"]["at"]["format"], "date-time");
+    }
+
     let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
     let saved = &listed["jobs"][0];
+    assert_eq!(saved["schedule"], json!({"every_minutes": 30}));
     assert_eq!(saved["name"], "nightly", "{listed}");
     assert_eq!(
         saved["created_by"],
@@ -278,6 +338,155 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
     assert!(saved["cwd"].is_null(), "{listed}");
 
     let job_id = listed["jobs"][0]["id"].as_str().unwrap().to_owned();
+    for (index, (schedule, expected)) in [
+        (json!({"cron": "0 0 1 1 *"}), json!({"cron": "0 0 1 1 *"})),
+        (
+            json!({"cron": "0 0 1 1 *", "tz": "Asia/Shanghai"}),
+            json!({"cron": "0 0 1 1 *", "tz": "Asia/Shanghai"}),
+        ),
+        (
+            json!({"at": "2030-01-01T08:00:00+08:00"}),
+            json!({"at": "2030-01-01T00:00:00Z"}),
+        ),
+        (json!({"every_minutes": 30}), json!({"every_minutes": 30})),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let id = format!("update-schedule-{index}");
+        model.push(vec![call(
+            &id,
+            json!({
+                "action": "update", "job_id": job_id, "job": {"schedule": schedule}
+            }),
+        )]);
+        client
+            .rpc(
+                "session.submit",
+                json!({
+                    "sessionId": interactive, "branchId": "main", "text": "change the schedule"
+                }),
+            )
+            .await
+            .unwrap();
+        wait_for("the schedule update", || model.tool_result(&id).is_some()).await;
+        let (content, is_error) = model.tool_result(&id).unwrap();
+        assert!(!is_error, "{id}: {content}");
+        let updated: Value = client.typed("schedule.list", json!({})).await.unwrap();
+        assert_eq!(updated["jobs"][0]["schedule"], expected, "{updated}");
+        for field in ["id", "name", "target", "created_by"] {
+            assert_eq!(
+                updated["jobs"][0][field], saved[field],
+                "{field}: {updated}"
+            );
+        }
+    }
+
+    let database = rusqlite::Connection::open(home.path().join("dimcode.sqlite")).unwrap();
+    let persisted: (i64, String) = database
+        .query_row(
+            "SELECT version, document FROM settings_documents WHERE source = 'user/schedule'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let invalid_schedules = [
+        (json!({}), "exactly one schedule object"),
+        (json!([30]), "exactly one schedule object"),
+        (json!(["*/30 * * * *"]), "exactly one schedule object"),
+        (
+            json!(["*/30 * * * *", "Asia/Shanghai"]),
+            "exactly one schedule object",
+        ),
+        (json!("every 30 minutes"), "exactly one schedule object"),
+        (
+            json!({"type": "every", "minutes": 30}),
+            "exactly one schedule object",
+        ),
+        (
+            json!({"every_minutes": 30, "at": "2030-01-01T00:00:00Z"}),
+            "no mixed forms or unknown fields",
+        ),
+        (
+            json!({"every_minutes": 30, "extra": true}),
+            "no mixed forms or unknown fields",
+        ),
+        (json!({"every_minutes": 0}), "positive integer"),
+        (json!({"every_minutes": -1}), "positive integer"),
+        (json!({"every_minutes": 1.5}), "positive integer"),
+        (json!({"every_minutes": "30"}), "positive integer"),
+        (
+            json!({"every_minutes": 4_294_967_296_u64}),
+            "positive integer",
+        ),
+        (json!({"cron": "0 */30 * * * *"}), "five fields"),
+        (
+            json!({"cron": "not a valid cron expression"}),
+            "invalid cron expression",
+        ),
+        (
+            json!({"cron": "*/30 * * * *", "tz": "Asia/Shanghia"}),
+            "tz must be an IANA time zone",
+        ),
+        (
+            json!({"at": "2030-01-01T00:00:00"}),
+            "RFC 3339 instant with UTC offset",
+        ),
+    ];
+    for (index, (schedule, expected)) in invalid_schedules.into_iter().enumerate() {
+        for action in ["create", "update"] {
+            let id = format!("invalid-{action}-{index}");
+            let mut input = json!({"action": action, "job": {
+                "name": "rejected", "schedule": schedule, "prompt": "Do not save this."
+            }});
+            if action == "update" {
+                input["job_id"] = json!(job_id);
+            }
+            model.push(vec![call(&id, input)]);
+            client
+                .rpc(
+                    "session.submit",
+                    json!({
+                        "sessionId": interactive, "branchId": "main", "text": "try this schedule"
+                    }),
+                )
+                .await
+                .unwrap();
+            wait_for("the invalid schedule result", || {
+                model.tool_result(&id).is_some()
+            })
+            .await;
+            let (content, is_error) = model.tool_result(&id).unwrap();
+            assert!(is_error, "{id}: {content}");
+            assert!(
+                content.starts_with("schedule: schedule_invalid\n"),
+                "{id}: {content}"
+            );
+            assert!(content.contains(expected), "{id}: {content}");
+            if schedule.get("tz").is_some() {
+                assert!(
+                    !content.contains("cron needs"),
+                    "{id} must identify the invalid zone, not the valid cron: {content}"
+                );
+            }
+            assert!(
+                content.contains("{\""),
+                "{id} has an actionable object example: {content}"
+            );
+            let after: (i64, String) = database
+                .query_row(
+                    "SELECT version, document FROM settings_documents WHERE source = 'user/schedule'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                after, persisted,
+                "{id} leaves persisted jobs and their version unchanged"
+            );
+        }
+    }
+
     let before = model.count();
     let accepted: Value = client
         .typed("schedule.run_now", json!({"job_id": job_id}))
@@ -355,10 +564,13 @@ async fn the_schedule_tool_saves_jobs_for_interactive_sessions_only() {
         )
         .await
         .unwrap();
-    wait_for("the retarget refusal", || {
-        model.texts().contains("schedule: schedule_invalid")
-    })
-    .await;
+    wait_for("the retarget refusal", || model.tool_result("c3").is_some()).await;
+    let (content, is_error) = model.tool_result("c3").unwrap();
+    assert!(is_error, "{content}");
+    assert!(
+        content.starts_with("schedule: schedule_invalid\n"),
+        "{content}"
+    );
 
     drop(client);
     server.shutdown();

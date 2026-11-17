@@ -297,6 +297,17 @@ Dim adds two phases between them, for Session and branch parts:
 
 Dispatcher handlers can receive opening facts before activation.
 
+Process publication is host-wide, not a third per-part phase. The
+`processActivity` process data face exposes `activated()`: it resolves `true` once the
+host has opened after every required process row became Active, and `false` when
+startup fails or shutdown begins before that call observes publication. A new call
+after shutdown begins returns `false`, even if an earlier call returned `true`;
+a row reload does not reset publication. The shared catalog name, its `HostDispatch` and the native binding are the same
+operation with the same cancellation. A process part that must not act before the
+initial assembly — for example, before another required row has published its owner
+state — awaits it in its own tasks; `apply` still completes assembly and does not block
+on it. A part that does not depend on initial assembly is not required to await it.
+
 ### 7.2 Generations, reload and rebuild
 
 A reload is a restart from the Timeline (time bus §5). How the unloading generation settles its work,

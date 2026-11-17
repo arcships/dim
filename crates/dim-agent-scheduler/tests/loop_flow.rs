@@ -629,11 +629,13 @@ async fn a_restart_retries_an_unanswered_lookup_on_the_next_tick() {
     server.shutdown();
     server.join().await.unwrap();
 
+    let lookups = dim_agent_scheduler::testing::signals(home.path()).loop_lookups();
     let server = start_armed(home.path(), Arc::new(Script::default()), |holds| {
         holds.fail_lookups(1);
     })
     .await;
     let mut client = connect(&server).await;
+    dim_agent_scheduler::testing::loop_lookup(home.path(), lookups).await;
 
     // The startup pass's lookup was lost, so the round stays `delivering` and
     // the per-tick pass asks again. One crossed tick is that retry — far short

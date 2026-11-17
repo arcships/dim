@@ -27,8 +27,9 @@ chrono-tz = "0.10"
 croner = "4"
 
 [features]
-# Flow tests hold a target-gone disable between its read and its write.
-testing = []
+# Flow tests hold a target-gone disable between its read and its write, and
+# hold the host's publication.
+testing = ["dim-app-server/testing"]
 
 [dev-dependencies]
 dim-agent-scheduler = { path = ".", features = ["testing"] }

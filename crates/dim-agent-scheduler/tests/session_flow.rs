@@ -701,6 +701,60 @@ async fn unknown_keeps_the_delivery_unsettled_and_the_count_persists() {
     server.join().await.unwrap();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reloading_after_publication_still_counts_against_the_bound() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+    let job_id = save_session_job(
+        &mut client,
+        "reloading",
+        &session,
+        None,
+        json!({"at": "2030-01-01T00:00:00Z"}),
+    )
+    .await;
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    edit_runs(home.path(), |runs| {
+        runs.push(seeded_delivery(
+            "seed-reloading",
+            &job_id,
+            &session,
+            "scheduler:seed-reloading",
+            Some(4),
+        ));
+    });
+
+    let hold = Arc::new(dim_app_server::PublicationHold::default());
+    let path = home.path().to_owned();
+    let starting = {
+        let hold = hold.clone();
+        tokio::spawn(async move { start_held(&path, Arc::new(Script::default()), hold).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), hold.waiting.notified())
+        .await
+        .expect("the restarted host reaches publication");
+    holds(home.path()).reloading_lookups(1);
+    hold.release();
+    let server = starting.await.unwrap();
+    let mut client = support::connect(&server).await;
+    let run = settled(&mut client, &job_id, "seed-reloading").await;
+    assert_eq!(run["state"], "lost", "{run}");
+    assert_eq!(run["detail"], "reloading", "{run}");
+    assert_eq!(run["attempts"], 5, "{run}");
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "the exhausted lookup wrote no duplicate input"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// Polls the store until a delivery's persisted attempts reach `attempts`.
 async fn wait_attempts(home: &std::path::Path, run_id: &str, attempts: u32) -> Value {
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -762,6 +816,7 @@ async fn the_fifth_answer_settles_lost_and_an_exhausted_budget_needs_no_lookup()
         ));
     });
 
+    let retention_before = signals(home.path()).retention();
     let server = start(home.path(), Arc::new(Script::default())).await;
     let mut client = support::connect(&server).await;
     let run = settled(&mut client, &fifth, "seed-fifth").await;
@@ -778,6 +833,15 @@ async fn the_fifth_answer_settles_lost_and_an_exhausted_budget_needs_no_lookup()
         "no window wrote an input"
     );
 
+    // Recovery spawns one pass at start and one for each settled delivery.
+    // The signal follows the pass's admission hold and lock, so three
+    // completions leave no retention work that idle shutdown must refuse.
+    let mut passes = signals(home.path()).retention();
+    while passes < retention_before + 3 {
+        retention(home.path(), passes).await;
+        passes = signals(home.path()).retention();
+    }
+
     client
         .rpc(
             "session.idle",
@@ -789,6 +853,149 @@ async fn the_fifth_answer_settles_lost_and_an_exhausted_budget_needs_no_lookup()
         .rpc("daemon.shutdown", json!({"ifIdle": true}))
         .await
         .unwrap();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn startup_holds_recovery_until_the_host_publishes_the_process() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+    let fourth = save_session_job(
+        &mut client,
+        "held-fourth",
+        &session,
+        None,
+        json!({"at": "2030-01-01T00:00:00Z"}),
+    )
+    .await;
+    let exhausted = save_session_job(
+        &mut client,
+        "held-exhausted",
+        &session,
+        None,
+        json!({"at": "2030-01-01T00:00:00Z"}),
+    )
+    .await;
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    edit_runs(home.path(), |runs| {
+        runs.push(seeded_delivery(
+            "held-fourth",
+            &fourth,
+            &session,
+            "scheduler:held-fourth",
+            Some(4),
+        ));
+        runs.push(seeded_delivery(
+            "held-exhausted",
+            &exhausted,
+            &session,
+            "scheduler:held-exhausted",
+            Some(5),
+        ));
+    });
+    let stored = stored_runs(home.path());
+
+    let waits = startup_waits(home.path());
+    let hold = Arc::new(dim_app_server::PublicationHold::default());
+    let path = home.path().to_owned();
+    let starting = {
+        let hold = hold.clone();
+        tokio::spawn(async move { start_held(&path, Arc::new(Script::default()), hold).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), hold.waiting.notified())
+        .await
+        .expect("the host reaches publication");
+    startup_waiting(home.path(), waits).await;
+    assert_eq!(
+        stored_runs(home.path()),
+        stored,
+        "no lookup runs before publication"
+    );
+    hold.release();
+    let server = starting.await.unwrap();
+    let mut client = support::connect(&server).await;
+
+    let run = settled(&mut client, &fourth, "held-fourth").await;
+    assert_eq!(run["state"], "lost", "{run}");
+    assert_eq!(run["detail"], "unknown", "{run}");
+    assert_eq!(run["attempts"], 5, "one lookup after publication: {run}");
+    let run = settled(&mut client, &exhausted, "held-exhausted").await;
+    assert_eq!(run["state"], "lost", "{run}");
+    assert_eq!(run["detail"], "lookup_budget_exhausted", "{run}");
+    assert_eq!(run["attempts"], 5, "{run}");
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "recovery wrote no input"
+    );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_shutdown_during_the_publication_wait_leaves_the_record_for_the_next_start() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+    let job = save_session_job(
+        &mut client,
+        "cancelled-start",
+        &session,
+        None,
+        json!({"at": "2030-01-01T00:00:00Z"}),
+    )
+    .await;
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    edit_runs(home.path(), |runs| {
+        runs.push(seeded_delivery(
+            "cancelled-start",
+            &job,
+            &session,
+            "scheduler:cancelled-start",
+            Some(4),
+        ));
+    });
+    let stored = stored_runs(home.path());
+
+    let waits = startup_waits(home.path());
+    let hold = Arc::new(dim_app_server::PublicationHold::default());
+    let shutdown = hold.shutdown.clone();
+    let path = home.path().to_owned();
+    let starting = {
+        let hold = hold.clone();
+        tokio::spawn(async move { start_held(&path, Arc::new(Script::default()), hold).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(30), hold.waiting.notified())
+        .await
+        .expect("the host reaches publication");
+    startup_waiting(home.path(), waits).await;
+    assert_eq!(stored_runs(home.path()), stored, "the wait spends nothing");
+    shutdown.cancel();
+    let server = starting.await.unwrap();
+    server.join().await.unwrap();
+    assert_eq!(
+        stored_runs(home.path()),
+        stored,
+        "cancelled startup spends no attempt"
+    );
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let run = settled(&mut client, &job, "cancelled-start").await;
+    assert_eq!(run["state"], "lost", "{run}");
+    assert_eq!(run["detail"], "unknown", "{run}");
+    assert_eq!(run["attempts"], 5, "{run}");
+
+    drop(client);
+    server.shutdown();
     server.join().await.unwrap();
 }
 

@@ -10,6 +10,7 @@ use support::*;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_accepted_launch_survives_idle_shutdown_before_its_session_exists() {
     let home = home();
+    let retained = signals(home.path()).retention();
     let model = Arc::new(Script::default());
     let server = start(home.path(), model).await;
     let mut client = connect(&server).await;
@@ -54,6 +55,7 @@ async fn an_accepted_launch_survives_idle_shutdown_before_its_session_exists() {
         )
         .await
         .unwrap();
+    retention(home.path(), retained + 2).await;
     client
         .rpc("daemon.shutdown", json!({"ifIdle": true}))
         .await

@@ -57,6 +57,22 @@ impl Script {
 }
 
 async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
+    start_impl(home, model, None).await
+}
+
+async fn start_held(
+    home: &Path,
+    model: Arc<Script>,
+    hold: Arc<dim_app_server::PublicationHold>,
+) -> RunningServer {
+    start_impl(home, model, Some(hold)).await
+}
+
+async fn start_impl(
+    home: &Path,
+    model: Arc<Script>,
+    publication_hold: Option<Arc<dim_app_server::PublicationHold>>,
+) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
@@ -77,6 +93,7 @@ async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
             database_path: Some(home.join("dimcode.sqlite")),
             product_home: Some(home.to_owned()),
             unix_path: Some(home.join("native.sock")),
+            publication_hold,
             ..Default::default()
         },
     )
@@ -627,6 +644,95 @@ async fn a_restarts_stop_timer_ends_when_its_record_is_gone() {
         !stopped_at_its_stop_time(&history),
         "a record the store no longer holds is not stopped: {history:?}"
     );
+
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+/// A restored overdue stop acts after publication: the timer waits for the
+/// host's initial publication before its first `sessions.stop`, so an
+/// already-passed deadline does not meet a `reloading` owner and spend the
+/// 60 s retry. The record and deadline are not rewritten.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_overdue_restored_stop_waits_for_publication_then_stops_once() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(home.path().join("scheduler")).unwrap();
+
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    select_model(&mut client).await;
+    let saved: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {"name": "overdue", "schedule": {"at": "2030-01-01T00:00:00Z"},
+                "prompt": "Summarize the day.",
+                "target": {"kind": "launch", "cwd": home.path(), "max_run_minutes": 5}}}),
+        )
+        .await
+        .unwrap();
+    let job_id = saved["job"]["id"].as_str().unwrap().to_owned();
+    let accepted: Value = client
+        .typed("schedule.run_now", json!({"job_id": job_id}))
+        .await
+        .unwrap();
+    let run_id = accepted["run_id"].as_str().unwrap().to_owned();
+    let delivered = await_state(&mut client, &job_id, &run_id, "delivered").await;
+    let session_id = delivered["session_id"].as_str().unwrap().to_owned();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let past = (dim_agent_scheduler::testing::clock(home.path()).now()
+        - chrono::Duration::seconds(60))
+    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    edit_runs(home.path(), |runs| {
+        let run = runs
+            .iter_mut()
+            .find(|run| run["run_id"] == run_id.as_str())
+            .unwrap();
+        run["state"] = json!("lost");
+        run["detail"] = json!("unknown");
+        run["deadline_at"] = json!(past);
+        run.as_object_mut().unwrap().remove("input_event_id");
+    });
+
+    let waits = dim_agent_scheduler::testing::startup_waits(home.path());
+    let ended = dim_agent_scheduler::testing::stop_timers(home.path());
+    let hold = Arc::new(dim_app_server::PublicationHold::default());
+    let path = home.path().to_owned();
+    let starting = {
+        let hold = hold.clone();
+        tokio::spawn(async move { start_held(&path, Arc::new(Script::default()), hold).await })
+    };
+    tokio::time::timeout(Duration::from_secs(30), hold.waiting.notified())
+        .await
+        .expect("the host reaches publication");
+    // The startup recovery task and the restored stop timer both stop at the
+    // publication wait.
+    dim_agent_scheduler::testing::startup_waiting(home.path(), waits + 1).await;
+    assert_eq!(
+        dim_agent_scheduler::testing::stop_timers(home.path()),
+        ended,
+        "the overdue stop waits for publication"
+    );
+    hold.release();
+    let server = starting.await.unwrap();
+    let mut client = connect(&server).await;
+    dim_agent_scheduler::testing::stop_ended(home.path(), ended).await;
+    let history = branch_events(&mut client, &session_id).await;
+    assert!(
+        stopped_at_its_stop_time(&history),
+        "the overdue stop acts after publication: {history:?}"
+    );
+    let after = stored_runs(home.path())
+        .into_iter()
+        .find(|run| run["run_id"] == run_id.as_str())
+        .unwrap();
+    assert_eq!(after["state"], "lost", "{after}");
+    assert_eq!(after["deadline_at"], json!(past), "{after}");
 
     drop(client);
     server.shutdown();

@@ -5,8 +5,11 @@ use chrono::{DateTime, Local, SecondsFormat, Utc};
 use croner::Cron;
 use dim_agent_types::{InputMode, PermissionPolicy, PermissionPreset};
 use dim_app_server::settings::{BusinessDocument, SettingsError};
-use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, str::FromStr};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{MapAccess, Visitor, value::MapAccessDeserializer},
+};
+use std::{collections::HashSet, marker::PhantomData, str::FromStr};
 
 pub const MAX_PROMPT_BYTES: usize = 32 * 1024;
 pub const DEFAULT_MAX_RUN_MINUTES: u32 = 60;
@@ -158,11 +161,36 @@ pub struct ModelSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(
+    untagged,
+    expecting = r#"exactly one schedule object: {"cron":"*/30 * * * *","tz":"Asia/Shanghai"} (five-field cron; optional IANA tz, host-local if omitted), {"every_minutes":30} (positive integer), or {"at":"2030-01-01T00:00:00Z"} (RFC 3339 instant with UTC offset); no mixed forms or unknown fields"#
+)]
 pub enum Schedule {
-    Cron(CronSchedule),
-    Every(EverySchedule),
-    At(AtSchedule),
+    Cron(#[serde(deserialize_with = "schedule_object")] CronSchedule),
+    Every(#[serde(deserialize_with = "schedule_object")] EverySchedule),
+    At(#[serde(deserialize_with = "schedule_object")] AtSchedule),
+}
+
+fn schedule_object<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct Object<T>(PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>> Visitor<'de> for Object<T> {
+        type Value = T;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a schedule object")
+        }
+
+        fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<T, M::Error> {
+            T::deserialize(MapAccessDeserializer::new(map))
+        }
+    }
+
+    deserializer.deserialize_map(Object(PhantomData))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -396,11 +424,11 @@ impl Job {
 impl Schedule {
     fn validate(&self) -> Result<(), SettingsError> {
         match self {
-            Self::Cron(cron) => cron_for(cron)
-                .map(|_| ())
-                .map_err(|_| SettingsError::Invalid("invalid cron expression or time zone")),
+            Self::Cron(cron) => cron_for(cron).map(|_| ()).map_err(SettingsError::Invalid),
             Self::Every(every) if every.every_minutes >= 1 => Ok(()),
-            Self::Every(_) => Err(SettingsError::Invalid("every_minutes must be at least 1")),
+            Self::Every(_) => Err(SettingsError::Invalid(
+                "every_minutes must be a positive integer, e.g. {\"every_minutes\":30}",
+            )),
             Self::At(_) => Ok(()),
         }
     }
@@ -491,16 +519,17 @@ where
 }
 
 /// Five-field cron with an optional IANA time zone (A.4).
-fn cron_for(cron: &CronSchedule) -> Result<ParsedCron, String> {
+fn cron_for(cron: &CronSchedule) -> Result<ParsedCron, &'static str> {
     if cron.cron.split_whitespace().count() != 5 {
-        return Err("cron needs five fields".into());
+        return Err("cron needs five fields, e.g. {\"cron\":\"*/30 * * * *\"}");
     }
     let zone = match &cron.tz {
-        Some(name) => name
-            .parse::<chrono_tz::Tz>()
-            .map_err(|_| format!("unknown time zone {name}"))?,
+        Some(name) => name.parse::<chrono_tz::Tz>().map_err(|_| {
+            "tz must be an IANA time zone, e.g. {\"cron\":\"*/30 * * * *\",\"tz\":\"Asia/Shanghai\"}, or omit tz for the host's local time zone"
+        })?,
         None => chrono_tz::UTC,
     };
-    let parsed = Cron::from_str(&cron.cron).map_err(|error| error.to_string())?;
+    let parsed = Cron::from_str(&cron.cron)
+        .map_err(|_| "invalid cron expression, e.g. {\"cron\":\"*/30 * * * *\"}")?;
     Ok(ParsedCron { cron: parsed, zone })
 }

@@ -2057,7 +2057,6 @@
       "parent": "dim_agent_scheduler",
       "file": "crates/dim-agent-scheduler/src/document.rs",
       "unexpandedMacros": [
-        "format",
         "matches",
         "serde_json::json"
       ]
@@ -22838,6 +22837,13 @@
     },
     {
       "from": "dim_agent_scheduler::support",
+      "to": "dim_app_server::control",
+      "references": [
+        "path dim_app_server::PublicationHold"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::support",
       "to": "dim_client",
       "references": [
         "path Client",
@@ -23766,11 +23772,14 @@
       "references": [
         "mod control",
         "path ProcessActivity",
+        "path PublicationHold",
         "path ServerControl",
         "path ServerControlPlugin::new",
+        "path ServerControlPlugin::with_shutdown",
         "path control",
         "use control::ProcessActivity",
         "use control::ProcessHold",
+        "use control::PublicationHold",
         "use control::ServerControl",
         "use control::ServerControlPlugin"
       ]
@@ -55199,6 +55208,18 @@
     {
       "module": "dim_agent_runtime::testing",
       "path": "Bound::Unbounded"
+    },
+    {
+      "module": "dim_agent_scheduler::document",
+      "path": "D::Error"
+    },
+    {
+      "module": "dim_agent_scheduler::document",
+      "path": "M::Error"
+    },
+    {
+      "module": "dim_agent_scheduler::document",
+      "path": "T::deserialize"
     },
     {
       "module": "dim_agent_scheduler::testing",

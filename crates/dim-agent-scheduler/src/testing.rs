@@ -34,6 +34,9 @@ pub struct Holds {
     /// Fails the armed number of `sessions.lookup` replies with a transient
     /// transport error, so a lookup pass can meet one that answers nothing.
     lookup_failures: AtomicUsize,
+    /// Answers the armed number of `sessions.lookup` replies `reloading`, as a
+    /// published owner generation's stop or load does.
+    reloading_lookups: AtomicUsize,
 }
 
 /// A hold between a disable's document read and its CAS write. Every disable
@@ -108,6 +111,21 @@ impl Holds {
     /// Whether this lookup reply is to fail, counting down to zero.
     pub(crate) fn take_lookup_failure(&self) -> bool {
         self.lookup_failures
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    /// Answers the next `count` `sessions.lookup` replies `reloading`, as a
+    /// published owner generation's stop or load does.
+    pub fn reloading_lookups(&self, count: usize) {
+        self.reloading_lookups.store(count, Ordering::SeqCst);
+    }
+
+    /// Whether this lookup reply is to answer `reloading`, counting down.
+    pub(crate) fn take_reloading_lookup(&self) -> bool {
+        self.reloading_lookups
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
                 left.checked_sub(1)
             })
@@ -223,6 +241,8 @@ pub struct Signals {
     retained: watch::Sender<u64>,
     ticked: watch::Sender<u64>,
     timer: watch::Sender<Option<TimerWait>>,
+    startup: watch::Sender<u64>,
+    loop_lookups: watch::Sender<u64>,
 }
 
 impl Signals {
@@ -262,7 +282,8 @@ impl Signals {
         self.stopped.send_modify(|ended| *ended += 1);
     }
 
-    /// Publishes one finished retention pass, after its last write.
+    /// Publishes one finished retention pass, after the pass released its
+    /// admission hold and pass lock.
     pub(crate) fn retention_done(&self) {
         self.retained.send_modify(|passes| *passes += 1);
     }
@@ -270,6 +291,26 @@ impl Signals {
     /// The retention passes this generation has finished.
     pub fn retention(&self) -> u64 {
         *self.retained.borrow()
+    }
+
+    /// Publishes that a Scheduler task reached its pre-publication wait.
+    pub(crate) fn startup_waiting(&self) {
+        self.startup.send_modify(|waits| *waits += 1);
+    }
+
+    /// The pre-publication waits this generation has reached.
+    pub fn startup_waits(&self) -> u64 {
+        *self.startup.borrow()
+    }
+
+    /// Publishes a completed loop lookup pass after its retry cadence is recorded.
+    pub(crate) fn loop_lookup_done(&self) {
+        self.loop_lookups.send_modify(|passes| *passes += 1);
+    }
+
+    /// The loop lookup passes completed by this home's Scheduler generations.
+    pub fn loop_lookups(&self) -> u64 {
+        *self.loop_lookups.borrow()
     }
 }
 
@@ -399,4 +440,30 @@ pub async fn retention(home: &Path, before: u64) {
     })
     .await
     .expect("the retention pass ends");
+}
+
+/// Waits for a loop lookup pass after the count taken before its host starts.
+pub async fn loop_lookup(home: &Path, before: u64) {
+    let mut passes = signals(home).loop_lookups.subscribe();
+    tokio::time::timeout(BOUND, async {
+        let _ = passes.wait_for(|passes| *passes > before).await;
+    })
+    .await
+    .expect("the loop lookup pass ends");
+}
+
+/// The Scheduler tasks that reached their pre-publication wait.
+pub fn startup_waits(home: &Path) -> u64 {
+    signals(home).startup_waits()
+}
+
+/// Waits for one more Scheduler task to reach its pre-publication wait, with
+/// the count taken before the start that spawns it.
+pub async fn startup_waiting(home: &Path, before: u64) {
+    let mut waits = signals(home).startup.subscribe();
+    tokio::time::timeout(BOUND, async {
+        let _ = waits.wait_for(|waits| *waits > before).await;
+    })
+    .await
+    .expect("the Scheduler reaches its publication wait");
 }
