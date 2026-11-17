@@ -1,6 +1,12 @@
 name: PR check
 on:
   workflow_dispatch:
+    inputs:
+      verify_platform:
+        description: Platform for full workspace verification
+        type: choice
+        default: linux
+        options: [linux, macos, both]
   push:
     branches: [main]
   pull_request:
@@ -141,11 +147,18 @@ jobs:
     if: >-
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
       needs.changes.outputs.scripts == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.verify_platform == 'both' && '["linux","macos"]' || inputs.verify_platform == 'macos' && '["macos"]' || '["linux"]') }}
     concurrency:
-      group: ci-main-verify-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
+      group: ci-main-verify-${{ matrix.platform }}-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
       cancel-in-progress: true
     # PR runners must be isolated from release credentials and private networks.
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: >-
+      ${{ fromJSON(matrix.platform == 'macos' && '["self-hosted","macOS","ARM64"]' ||
+        vars.DIM_CI_USE_SELF_HOSTED_LINUX == 'true' && '["self-hosted","linux","x64","dim-verify-linux"]' ||
+        '["ubuntu-22.04"]') }}
     timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "4"
@@ -160,6 +173,17 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
+      - name: Prepare Linux sandbox tests
+        if: runner.os == 'Linux' && needs.changes.outputs.rust == 'true'
+        env:
+          DIM_CI_USE_SELF_HOSTED_LINUX: ${{ vars.DIM_CI_USE_SELF_HOSTED_LINUX }}
+        shell: bash
+        run: |
+          if ! command -v bwrap >/dev/null && [[ "$DIM_CI_USE_SELF_HOSTED_LINUX" != true ]]; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap
+          fi
+          command -v bwrap
       - name: Build and lint the Rust workspace
         if: needs.changes.outputs.rust == 'true'
         shell: bash
@@ -247,10 +271,19 @@ jobs:
           set -euo pipefail
           # The Python of `py:` rows: a relocatable CPython, pinned by hash, so the
           # self-hosted runner needs neither a system Python 3.10+ nor sudo.
-          python_build="cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz"
+          case "$RUNNER_OS" in
+            Linux)
+              python_build="cpython-3.12.15+20261003-x86_64-unknown-linux-gnu-install_only.tar.gz"
+              python_sha256="f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5"
+              ;;
+            macOS)
+              python_build="cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz"
+              python_sha256="316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213"
+              ;;
+          esac
           curl -fsSL -o "$RUNNER_TEMP/python.tar.gz" \
             "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/${python_build/+/%2B}"
-          echo "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213  $RUNNER_TEMP/python.tar.gz" | shasum -a 256 -c -
+          echo "$python_sha256  $RUNNER_TEMP/python.tar.gz" | shasum -a 256 -c -
           rm -rf "$RUNNER_TEMP/python" runtime/.venv
           tar -xzf "$RUNNER_TEMP/python.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/python/bin/python3" -m venv runtime/.venv
@@ -263,6 +296,49 @@ jobs:
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
+  verify-macos:
+    needs: changes
+    if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.rust == 'true'
+    concurrency:
+      group: ci-main-verify-macos-native-${{ github.ref == 'refs/heads/main' && 'shared' || github.run_id }}
+      cancel-in-progress: true
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41581a48a89fd1d8 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Build and run native macOS tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts="$RUNNER_TEMP/macos-test-artifacts.jsonl"
+          cargo test --locked --no-run --message-format=json \
+            -p dim-agent-capabilities -p dim-app-server -p dim-cli -p dim-modality -p dim-ocr -p dimcode \
+            --lib --test host_platform_flow --test workspace_files --test transport_flow \
+            --test modality_flow --test contract --test engine --test cli_flow --test ocr_helper_flow > "$artifacts"
+          node scripts/run-rust-test.mjs "$artifacts" dim_agent_capabilities seatbelt_
+          node scripts/run-rust-test.mjs "$artifacts" dim_cli clipboard::native_flow
+          node scripts/run-rust-test.mjs "$artifacts" host_platform_flow --test-threads=2
+          node scripts/run-rust-test.mjs "$artifacts" workspace_files atomic_mutations_preserve_native_metadata --exact
+          node scripts/run-rust-test.mjs "$artifacts" transport_flow --exact \
+            execution_settings::execution_settings_decide_the_next_process_boundary \
+            worktrees::new_processes_use_confirmed_roots_while_existing_shells_keep_their_boundary \
+            worktrees::committed_shell_completion_recovers_after_notice_failure_and_host_loss
+          node scripts/run-rust-test.mjs "$artifacts" modality_flow ocr_plugin_helper_cannot_read_outside_its_read_set --exact
+          node scripts/run-rust-test.mjs "$artifacts" contract an_input_over_the_limit_is_a_typed_refusal --exact
+          node scripts/run-rust-test.mjs "$artifacts" engine
+          node scripts/run-rust-test.mjs "$artifacts" cli_flow interactive_input_names_its_terminal_without_listing_dev_while_terminals_close --exact
+          node scripts/run-rust-test.mjs "$artifacts" ocr_helper_flow
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
@@ -321,7 +397,7 @@ jobs:
           retention-days: 1
   ci-ok:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
-    needs: [changes, dependencies, windows-cli, web, verify, acp-registry]
+    needs: [changes, dependencies, windows-cli, web, verify, verify-macos, acp-registry]
     if: always()
     runs-on: self-hosted
     timeout-minutes: 5
