@@ -2840,6 +2840,18 @@
       ]
     },
     {
+      "id": "dim_app_server::link",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server",
+      "file": "crates/dim-app-server/src/link.rs",
+      "unexpandedMacros": [
+        "format",
+        "info",
+        "matches",
+        "warn"
+      ]
+    },
+    {
       "id": "dim_app_server::managed_oauth",
       "crate": "dim_app_server",
       "parent": "dim_app_server",
@@ -24137,6 +24149,13 @@
         "mod hooks_settings",
         "path hooks_settings::HooksService",
         "path hooks_settings::HooksSettingsPlugin::new"
+      ]
+    },
+    {
+      "from": "dim_app_server",
+      "to": "dim_app_server::link",
+      "references": [
+        "mod link"
       ]
     },
     {
