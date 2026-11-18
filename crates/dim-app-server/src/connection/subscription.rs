@@ -130,8 +130,11 @@ impl Progress {
         let Some(mut receiver) = receiver else {
             return true;
         };
-        if !matches!(self.cells.get(&branch), Some(Some(followed)) if followed.same_channel(&receiver))
-        {
+        let followed = matches!(
+            self.cells.get(&branch),
+            Some(Some(followed)) if followed.same_channel(&receiver)
+        );
+        if !followed {
             return true;
         }
         let snapshot = receiver.borrow_and_update().clone();
@@ -748,7 +751,8 @@ impl Connection {
                         match session.state(&branch) {
                             Ok(next) => {
                                 if reported.get(&branch) != Some(&next) {
-                                    if !self.notify(&id, generation, state_notice(version, &id, &branch, &next)) {
+                                    let notice = state_notice(version, &id, &branch, &next);
+                                    if !self.notify(&id, generation, notice) {
                                         return;
                                     }
                                     reported.insert(branch.clone(), next.clone());
@@ -766,8 +770,10 @@ impl Connection {
                                         closed: true,
                                         ..Default::default()
                                     };
+                                    let notice =
+                                        state_notice(version, &id, &branch, &closed);
                                     if reported.get(&branch) != Some(&closed)
-                                        && !self.notify(&id, generation, state_notice(version, &id, &branch, &closed))
+                                        && !self.notify(&id, generation, notice)
                                     {
                                         return;
                                     }
@@ -779,7 +785,9 @@ impl Connection {
                 }
                 changed = async {
                     match &mut progress {
-                        Some(progress) if !progress.changes.is_empty() => progress.changes.next().await,
+                        Some(progress) if !progress.changes.is_empty() => {
+                            progress.changes.next().await
+                        }
                         _ => std::future::pending().await,
                     }
                 } => {

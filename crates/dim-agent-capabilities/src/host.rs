@@ -6,7 +6,7 @@ use rutis::Ctx;
 use rutis::host::{CtxHost, Key};
 use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue};
 use serde_json::json;
-use std::{collections::HashMap, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashMap, future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use dim_agent_runtime::panic_message;
@@ -181,7 +181,86 @@ pub trait LoadPrompt: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> HostFuture<'_, Option<PromptEntry>>;
 }
+#[derive(Clone)]
 pub struct PromptHost(pub Arc<dyn LoadPrompt>);
+
+impl PromptHost {
+    /// Loads one source using its existing cancellation and settlement contract.
+    pub fn load(
+        &self,
+        target: PromptSourceTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Option<PromptEntry>> {
+        self.0.load(target, cancel)
+    }
+}
+
+impl HostDispatch for PromptHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"load": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "load" {
+            return Err(crate::port_faces::unknown_method("promptHost", method));
+        }
+        let args = args.list()?;
+        let [target, BridgeValue::Reference(cancelled)] = args.as_slice() else {
+            return Err(crate::port_faces::invalid(
+                "promptHost",
+                "load needs its target and cancellation function",
+            ));
+        };
+        if !cancelled.is_function() {
+            return Err(crate::port_faces::invalid(
+                "promptHost",
+                "cancellation must be a function",
+            ));
+        }
+        let target = serde_json::from_value(target.clone().json()?)
+            .map_err(|error| crate::port_faces::invalid("promptHost", error))?;
+        let cancelled = cancelled.clone();
+        let caller = rutis_bridge::session::caller_row()
+            .map(|row| row.ctx().cancellation_token())
+            .unwrap_or_default();
+        let owner = self.clone();
+        Ok(BridgeValue::future(async move {
+            let cancel = caller.child_token();
+            let _finished = cancel.clone().drop_guard();
+            let cancelled: CancelledFn = Arc::new(move || {
+                let cancelled = cancelled.clone();
+                let caller = caller.clone();
+                Box::pin(async move {
+                    tokio::select! {
+                        _ = caller.cancelled() => {},
+                        _ = async {
+                            let reply = cancelled.call_async(BridgeValue::List(vec![])).await?;
+                            rutis_bridge::session::settle(reply).await
+                        } => {},
+                    }
+                    Ok(())
+                })
+            });
+            let result =
+                call_until_cancelled(cancelled, cancel.clone(), owner.load(target, cancel)).await;
+            match result {
+                Ok(entry) => rutis_bridge::session::arg(&entry),
+                Err(error) => {
+                    let code = match &error {
+                        HostError::Cancelled(_) => "cancelled",
+                        HostError::Failed { .. } => "failed",
+                    };
+                    Err(rutis_bridge::exports::failure(
+                        "PromptLoadError",
+                        code,
+                        error.to_string(),
+                        None,
+                    ))
+                }
+            }
+        }))
+    }
+}
 
 pub struct EmptyPromptHost;
 impl LoadPrompt for EmptyPromptHost {
@@ -1366,7 +1445,7 @@ pub struct ContextModelHost(pub Option<Arc<dyn ResolveContextModel>>);
 #[serde(rename_all = "camelCase")]
 pub struct StoredSessionFile {
     pub file_id: String,
-    pub path: std::path::PathBuf,
+    pub path: PathBuf,
     pub bytes: u64,
 }
 /// The `sessionFiles` error codes: `not_found`, `invalid`, `too_large`,
@@ -1438,7 +1517,7 @@ pub trait SessionFilesService: Send + Sync + 'static {
     fn register(
         &self,
         session_id: String,
-        path: std::path::PathBuf,
+        path: PathBuf,
     ) -> Pin<Box<dyn Future<Output = Result<(), SessionFileError>> + Send + '_>>;
     /// Whether `session_id` owns the artifact at `path`, a resolved absolute
     /// path: an exact registered output path, or an attachment path inside
@@ -1447,14 +1526,14 @@ pub trait SessionFilesService: Send + Sync + 'static {
     fn owns(
         &self,
         session_id: String,
-        path: std::path::PathBuf,
+        path: PathBuf,
     ) -> Pin<Box<dyn Future<Output = Result<bool, SessionFileError>> + Send + '_>>;
     /// Every path `session_id` owns: a Session file's directory and each
     /// registered output path.
     fn owned_paths(
         &self,
         session_id: String,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<std::path::PathBuf>, SessionFileError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PathBuf>, SessionFileError>> + Send + '_>>;
 }
 /// The process service `sessionFiles`, provided by SessionStore, so that its
 /// consumers name no App Server type.

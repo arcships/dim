@@ -51,8 +51,13 @@ const workspaceItems = computed(() => {
 const canDelete = computed(() => connection.phase === "connected" && connection.supports("session.delete"))
 const deleteBlocked = s("Deleting needs a connection that serves session.delete.", "删除需要支持 session.delete 的连接。")
 
+function unnamed(row: SessionSummary): boolean {
+  return row.title === null && row.preview === undefined
+}
+
 function label(row: SessionSummary): string {
-  return row.title ?? row.preview ?? row.sessionId
+  const untitled = s("Untitled session", "未命名会话")
+  return unnamed(row) ? untitled : row.title ?? row.preview ?? untitled
 }
 
 /** The current directory, then the read an App Server without `includeClosed` accepts. */
@@ -172,6 +177,7 @@ onMounted(() => load())
     <UAlert v-if="report" class="settings-banner" color="neutral" variant="subtle" :description="report" role="status" />
     <section v-for="row in visible" :key="row.sessionId" class="settings-card">
       <h3>{{ label(row) }}</h3>
+      <p v-if="unnamed(row)" class="settings-meta"><small><code>{{ row.sessionId }}</code></small></p>
       <p><code>{{ row.cwd }}</code></p>
       <p>
         <time :datetime="new Date(row.updatedAt).toISOString()">{{ new Date(row.updatedAt).toLocaleString() }}</time>

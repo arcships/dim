@@ -15,7 +15,7 @@ use dim_agent_capabilities::{
     host::*,
     host_platform::{HostPlatform, HostPlatformConfig, HostPlatformPlugin, resolve_shell},
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules},
+    permission::{CommandRules, NoCommandRules},
     skill_settings::SkillSettingsHost,
     skills::{MemorySkillSettings, SkillsCatalogPlugin},
 };
@@ -210,14 +210,14 @@ impl Harness {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         platform(&mut builder);
         builder
-            .timeline_store(store.clone())
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(compacting.then(|| {
                 Arc::new(compaction_support::Window::default()) as Arc<dyn ResolveContextModel>
             }))))
-            .session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))))
+            .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))))
             .session_value(Arc::new(CompactionStrategyHost(compacting.then(|| {
                 Arc::new(compaction_support::Window::default()) as Arc<dyn CompactionStrategy>
             }))))
@@ -1299,7 +1299,19 @@ async fn shell_exit_kills_background_jobs() {
         "{}",
         text(&end.result)
     );
-    assert!(gone(&pid).await);
+    assert!(
+        gone(&pid).await,
+        "background process {pid} survived the shell reset: result={:?}, process={:?}",
+        end.result,
+        std::process::Command::new("ps")
+            .args(["-o", "pid=,ppid=,pgid=,stat=,comm=", "-p", &pid])
+            .output()
+            .map(|output| (
+                output.status,
+                String::from_utf8_lossy(&output.stdout).into_owned(),
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            ))
+    );
     session.close().await.unwrap();
     harness.shutdown().await;
 }
@@ -1638,6 +1650,10 @@ async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
     let final_events = local_events(&session).await;
     assert_eq!(ended(&final_events).len(), 1);
     assert_eq!(notifications(&final_events), notifications(&after));
-    assert!(text(results(&final_events).last().unwrap()).contains("new-generation"));
+    assert!(
+        text(results(&final_events).last().unwrap()).contains("new-generation"),
+        "the new generation must execute: {:?}",
+        results(&final_events).last().unwrap()
+    );
     harness.shutdown().await;
 }

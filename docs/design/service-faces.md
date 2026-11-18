@@ -90,6 +90,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `wakeups` | `wakeups.create/list/cancel` | 形状按 [Scheduler](plugins/Scheduler.md#102-methods-and-tool) §10.2。 |
 | `loops` | `loops.start/next/list/stop` | 形状按 [Scheduler](plugins/Scheduler.md#126-interfaces) §12.6；`start`、`next`、`stop` 是迁改，`list` 是读取。投递 pass、恢复与 `settle_delivering` 不在此面。 |
 | `sessionFiles` | `sessionFiles.put/import/read/register/owns/owned_paths` | 形状按 [Session files](appserver/session-files.md) §9.1，`SessionFiles` 是进程内绑定。 |
+| `commandRules` | `commandRules.read` | Session 命令规则读取，按 [命令规则](appserver/permission-command-rules.md#41-language-neutral-adr-002-d5) §4.1。 |
 | `managedSearch` | `managedSearch.search` | 凭据由实现持有，见 §4.6。 |
 | `agentConfig` | `agentConfig.get()` | 形状见 §4.8。 |
 | `sessionLanguage` | `sessionLanguage.get()` | 形状见 §4.8。 |
@@ -106,13 +107,12 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 | 名字 | 数据兄弟 | 说明 |
 | --- | --- | --- |
-| `agentDirectory`、`agentIndex` | `sessions` | 目录查询走 `sessions` |
+| `agentIndex` | `sessions` | 目录查询走 `sessions` |
 | `settingsService` | `settings` | GoalBranch 的取消契约见 §4.1。 |
 | `modelHost` | `auxiliaryModel` | PromptSuggestion 的请求与流式语义见 §4.2。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
 | `sessionStore` | `sessionMetadata`、`sessionFiles` | 行与文件分开 |
 | `timelineTree`、`timelineTreeControl` | `treeCommands` | 建/读分支走 `treeCommands` |
-| `callers` | `callChannel` | 调用通道走数据面 |
 
 ### 3.4 对象/句柄：拆成操作加 id
 
@@ -121,7 +121,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `hostPlatform` | `ProcessTree`、`PtyProcessTree`、临时目录 | 数据面 `execHost`：`start`/`wait`/`kill`/`settle`/`output`/`tail`/`removeOutputDirectory`/`shell`/`write`/`resize`/`info`/`confined`/`configured`（[resource and store data faces](resource-faces.md) §3，#1295）；`hostPlatform` 是提供方和它的 Rust binding |
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 连接与事务 | 数据面 `store` 的 Session 行部分（§5）；`sqliteStorage` 是提供方内部的 SQL 引擎（#1298） |
-| `timelineStore` | 连接与批次 | 同一 `store` 面的 Timeline 部分：`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
+| `timelineStore` | 连接与批次 | Session 作用域的 `timelineStore` 数据面（resource-faces §9 允许与仓储族分名）：`createSession`/`sessionConfig`/`releaseSession`/`rollbackSession`/`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`batchEndAt`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
 | `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
@@ -155,7 +155,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 `backgroundExec.start` 需要活的进程对象，仍是 `exec` 工具的操作，不在数据面上；`backgroundExec.stop` 是 kill。
 这些名字在 catalog 里是 `data`，Rust 类型仍由部件在同一实例按类型键读取。
 
-`hostPlatform`、`fileStorage`、`sqliteStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
+`hostPlatform`、`fileStorage`、`sqliteStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store`、`timelineStore` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
 
 ### 3.5 热路径与顺序：待操作化
 原因 `hot-path`：每回合或每条输入上的状态机、本地顺序或同步回调。操作面的粒度须保留原有顺序和失败语义。
@@ -173,12 +173,7 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
-| `branchLine` | branch | BranchLine | hot-path | 待迁移；按 #1292 定义操作面 |
 | `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
-| `commandRulesHost` | session | CommandRules | hot-path | 待迁移；按 #1292 定义操作面 |
-| `promptHost` | session | PromptRegistry | hot-path | 待迁移；按 #1292 定义操作面 |
-| `promptRegistry` | session | PromptRegistry | hot-path | 待迁移；按 #1292 定义操作面 |
-| `initialPromptConfiguration` | session | PromptRegistry | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
@@ -188,37 +183,24 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 
 ### 3.6 入口、凭据与宿主资源
 
-按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。
+按 #1292 逐批确定各项的公共操作，并按 §2.6 迁移登记。状态、资源和凭据留在各自的 owner。`managedSearch` 的搜索操作见 §4.6。`skillsCatalog` 的插件内容操作见 [Skills owner 契约](../architecture/rust-agent/plugins/Skills.md#plugin-content-data-face)。
 
 | 名字 | scope | provider | reason |
 | --- | --- | --- | --- |
 | `serverControl` | process | ServerControl | control |
 | `connectionHub` | process | Connection | control |
 | `pluginFileTransactions` | process | PluginFiles | host-resource |
-| `publication` | process | McpPublication | host-resource |
-| `mcpAuth` | process | Mcp | secret |
 | `grokOAuthService` | process | GrokOAuth | secret |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | secret |
 | `uiHost` | process | UiHost | control |
 | `uiExtensions` | process | UiExtensions | control |
 | `mentionIndex` | process | WorkspaceToolsOwner | host-resource |
-| `skillsCatalog` | process | SkillsCatalog | host-resource |
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | secret |
 | `providerConnectionResolver` | process | Provider | host-resource |
-| `collaboration` | process | Collaboration | host-resource |
 | `sessionLoader` | session | SessionScope | control |
 | `timelineFactory` | session | SessionScope | control |
-| `sessionSkills` | session | Skills | host-resource |
-| `skillsBranch` | branch | SkillsBranch | host-resource |
-
-### 3.7 待迁移的数据内容
-原因 `legacy-no-consumer`：内容是数据，但还没有转成 data face。没有 leaf 消费者不是保留 internal 的理由；这些名字按批次迁移，`legacy-no-consumer` 只是迁移状态，不是永久分类。
-
-| 名字 | scope | provider | reason | 动作 |
-| --- | --- | --- | --- | --- |
-| `collaborationSession` | session | CollaborationSession | legacy-no-consumer | 按 #1292 定义操作面 |
 
 ## 4. 批次契约（#1292）
 
@@ -314,7 +296,7 @@ loops.stop {sessionId, loopId} -> 记录形状，未结算时另带 {settled: fa
 
 ### 4.8 旧主机端口：`agentConfig` 等五个
 
-这五个端口的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`collaborationSession` 不在这五个操作面的范围内，按 §2.6 处理其公共操作或私有实现职责。
+这五个端口的内容是配置或一次写入：所有者把操作绑定到端口类型上，`#[rutis::service]` 生成 dispatcher，名字 shared；Rust 调用方直接调同一个方法，不另写适配层。`collaborationSession` 的审批目标读取由 [Collaboration owner](subagent-tool-approval.md#31-data-face) 定义。
 
 ```text
 agentConfig.get() -> {name, systemPrompt, model: {providerId, modelId}}
@@ -387,6 +369,19 @@ modelSelectionHost.resolve({explicit?: ModelId, cwd?}) -> ModelSelection
 - 回复就是 owner 的类型：`ExecutionSettings`、`PromptSuggestionSettings`、`ModelCapabilitySnapshot`、`ModalityModelSnapshot`、`ModelSelection` 都是 serde camelCase 数据。`InstalledToolchain` 的 `PathBuf` 换成 UTF-8 字符串（`{bin, root}`）：某个 runtime 的目录不是 UTF-8 时只跳过那一项，其余照常给子进程用；`cwd` 的请求方向同理，`ModelSelectionRequest::at` 是 Rust 调用方换字段的唯一一处。
 - 提供方仍是原来的部件（App Server 的 `ExecutionSettings`、`ToolchainSource`、`PromptSuggestionSettings`、`Provider`，以及 aimux 的 `ConfiguredModels`）：`provide` 一次给出类型键上的绑定和 `host_key(name)` 上的 face；没有适配层，也没有第二份业务逻辑。
 - 测试：`host_port_faces.rs` 比对 Rust binding 与 wire 的结果、请求形状、错误与取消；`provider_flow.rs` 等既有流程验证真实 owner 的读取。
+
+### Skills Session 列表
+
+`skillsBranch` 的 `list({})` 与 Session 内部视图的边界由 [Skills owner](../architecture/rust-agent/plugins/Skills.md#data-face) 定义。Rust binding 与 wire 使用同一 owner；`SessionSkills` 保留为 Session 实例内的私有类型 key，不再有目录名字。
+
+### MCP 插件内容
+
+`mcpService` 的四个既有插件文档操作与取消、错误、私有资源边界由 [MCP owner](appserver/mcp-management.md#81-plugin-content-data-face) 定义。
+
+### 4.11 `hooksService`
+
+插件内容登记、撤回、列表和拒绝原因读取使用同一个 Hooks owner；原生与跨语言绑定保持其持久化、
+启用及已接纳工作结算语义。操作与错误由 [Hooks A.2.1](plugins/Hooks.md#a21-plugin-content-data-face) 定义。
 
 ## 5. 验证
 

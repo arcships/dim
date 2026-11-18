@@ -56,12 +56,20 @@ configuration and no profile record of its own. Its implementation is
 
 ## Model preview before creation
 
-The protected-local `session.model.preview` read accepts `{cwd, agentId?, model?,
+The `session.model.preview` read accepts `{cwd, agentId?, model?,
 modelPreferences?, startup?}` with the same field shapes and resolution rules as
 `session.create`. It returns `{model: {providerId, modelId}, modelPreferences?}`,
 using the effective preferences described below. It is advertised in v3/v4
-`hello.features` for local Session-execution clients, in both the product and
+`hello.features` for trusted Session-execution clients, in both the product and
 model-config profiles. Clients call it only when advertised.
+
+Its authority is the creation authority of the connection's entry. The owner
+connection may state every field, `startup` included. The authenticated Web
+entry creates Sessions, so it may preview the fields a browser states; it is
+refused `startup` with `local_transport_required`, because [model
+startup](model-startup.md) is a protected-local launch channel and a browser
+holds no launch input. The unauthenticated connection is refused whatever the
+fields. No entry gains authority its `session.create` does not already imply.
 
 The read resolves through the same model owner as creation, including Agent
 profile selection, workspace/global defaults, automatic selection and startup

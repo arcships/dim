@@ -17,7 +17,7 @@ use futures_util::{FutureExt, future::join_all};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::service;
 use rutis::{Ctx, Error};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     num::NonZeroU64,
@@ -813,8 +813,12 @@ impl TimelineTree {
                     }
                 }
                 if let Some((timeline, through)) = &validate {
+                    let validation = tokio::time::timeout(
+                        owner.factory.startup_timeout(),
+                        crate::history::validate_context_boundary_at(timeline, *through),
+                    );
                     let boundary = tokio::select! {
-                        result = tokio::time::timeout(owner.factory.startup_timeout(), crate::history::validate_context_boundary_at(timeline, *through)) =>
+                        result = validation =>
                             result.map_err(|_| AgentError::Build("branch opening timed out".into()))??,
                         _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
                     };
@@ -855,8 +859,12 @@ impl TimelineTree {
                     // through the existing path and the parent keeps
                     // dispatching.
                     let key = parent_key();
+                    let live = tokio::time::timeout(
+                        owner.factory.startup_timeout(),
+                        owner.keyed_live(parent, timeline, *cut, &key),
+                    );
                     let carried = tokio::select! {
-                        result = tokio::time::timeout(owner.factory.startup_timeout(), owner.keyed_live(parent, timeline, *cut, &key)) =>
+                        result = live =>
                             result.map_err(|_| AgentError::Build("branch opening timed out".into()))??,
                         _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
                     };
@@ -866,8 +874,12 @@ impl TimelineTree {
                 }
                 let opened = context.timeline().append(opening.into())?;
                 tokio::select! {
-                    result = context.finish_opening(opened.sequence, owner.factory.startup_timeout()) => result?,
-                    _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
+                    result = context.finish_opening(
+                        opened.sequence,
+                        owner.factory.startup_timeout(),
+                    ) => result?,
+                    _ = owner.cancel.cancelled() =>
+                        return Err(AgentError::Cancelled("branch creation".into())),
                 }
                 if let Some(first) = first {
                     context.branch().input(first).await?;
@@ -1172,8 +1184,11 @@ impl TimelineTree {
                     unreachable!("input block projections retain array positions")
                 };
                 for (found, retire) in keys.iter().zip(retires).rev() {
-                    if matches!(found, QueryValue::Value { value: serde_json::Value::String(found) } if found == key)
-                    {
+                    let selected = match found {
+                        QueryValue::Value { value } => value.as_str() == Some(key),
+                        _ => false,
+                    };
+                    if selected {
                         return Ok(!matches!(
                             retire,
                             QueryValue::Value {
@@ -2364,8 +2379,9 @@ impl DynPlugin for BranchToolPlugin {
         })
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LineRole {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LineRole {
     Main,
     Tool,
     Host,
@@ -2658,6 +2674,7 @@ pub struct BranchLine {
     changed: tokio::sync::Notify,
     stop: CancellationToken,
 }
+#[service]
 impl BranchLine {
     async fn block(&self, key: &str) -> Result<Option<(String, String, bool)>> {
         let reply = self
@@ -2731,8 +2748,10 @@ impl BranchLine {
             unreachable!("branch block projections")
         };
         for ((found, text), retire) in keys.iter().zip(texts).zip(retires).rev() {
-            if matches!(found, QueryValue::Value { value: serde_json::Value::String(found) } if found == key)
-            {
+            if matches!(
+                found,
+                QueryValue::Value { value: serde_json::Value::String(found) } if found == key
+            ) {
                 let QueryValue::Value {
                     value: serde_json::Value::String(text),
                 } = text
@@ -3102,11 +3121,11 @@ impl BranchLine {
         }
     }
     /// The line committed its own `branch/end`.
-    fn ending(&self) -> bool {
+    pub fn ending(&self) -> bool {
         self.view.lock().unwrap().ending
     }
     /// The `nextCursor` of the line's latest successful read of `target`.
-    async fn cursor(&self, target: &str) -> Result<Option<u64>> {
+    pub async fn cursor(&self, target: &str) -> Result<Option<u64>> {
         if let Some(cursor) = self.view.lock().unwrap().cursors.get(target).copied() {
             return Ok(Some(cursor));
         }
@@ -3280,7 +3299,7 @@ impl BranchLine {
             .unwrap_or(0)
     }
     /// The line's role and parent, from its directory record.
-    fn resolved(&self) -> Option<(LineRole, Option<String>)> {
+    pub fn resolved(&self) -> Option<(LineRole, Option<String>)> {
         {
             let view = self.view.lock().unwrap();
             if let Some(role) = view.role {

@@ -290,7 +290,9 @@ impl Fixture {
             }
         });
         let mut builder = AgentBuilder::new(AgentConfig::default());
-        builder.timeline_store(Arc::new(MemoryTimelineStore::default()));
+        builder.timeline_store(TimelineStoreBinding::new(Arc::new(
+            MemoryTimelineStore::default(),
+        )));
         defaults::install(&mut builder);
         defaults::mock_model_hosts_with_model(
             &mut builder,

@@ -11,13 +11,15 @@ This is a design, not an implementation record. Every operation below is a targe
 
 ## 1. Scope
 
-Three faces, each a name whose public contract is data:
+Resource and state operations use these public data faces:
 
 | Face | Operations | Provided by | Issue |
 | --- | --- | --- | --- |
 | `execHost` | `start`, `wait`, `kill`, `settle`, `output`, `tail`, `removeOutputDirectory`, `shell`, `write`, `resize`, `info`, `confined`, `configured` | the process owner | #1295 |
 | `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
-| `store` | Timeline and Session-row repository operations, and the commit notification | the state owner | #1298 |
+| `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
+| `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
+| `worktreeAssociations` | `associate` ([service faces](service-faces.md) §4.8) | the process state owner | #1298 |
 
 ```text
  control node                                        resource leaf (mounted per #1296)
@@ -25,15 +27,17 @@ Three faces, each a name whose public contract is data:
    exec, ShellSession      ── execHost ─ data ──────►  processes, PTY, output files
    settings, auth, Hooks   ── fsHost ─── data ──────►  the same face, answered locally
    Permission and Approval                            never asked, never decides
-   Timeline facts, task records, Session-file rows
-   Session state owner     ── store ──── data ──────►  the same face, answered locally
+   Session repository      ── store ───────────────►  the state owner, locally
+   Timeline facts          ── timelineStore ───────►  the same state owner, locally
+   Worktree associations   ── worktreeAssociations ►  the same state owner, locally
 ```
 
 **A face is a shape; the mount is a deployment.** `execHost` and `fsHost` are provided by the
 daemon that holds the process, the file or the session's own configuration — the control node's
 own plugins, or a resource leaf mounted per
-[#1296](https://github.com/arcships/dim/issues/1296). `store` is provided where the Session state
-is, always in the daemon that owns that Session
+[#1296](https://github.com/arcships/dim/issues/1296). `store`, `timelineStore` and
+`worktreeAssociations` are provided where the Session state is, always in the daemon that owns
+that Session
 ([#1298](https://github.com/arcships/dim/issues/1298)); it is the same face whether the rows live in
 SQLite or PostgreSQL. Whether a face is reachable over a link is decided by deployment, not by a
 classification on the name.
@@ -450,7 +454,7 @@ moves the Git probe away from the Session that has to persist the result.
 | --- | --- |
 | Git probe, repository identity, fixed-prefix mapping, root directory identity | `fsHost.resolve`, on the node holding the files |
 | Session view: confirmed roots with their identities, in-flight recognitions, "already known" answers, branch-independent cache | the file facts Session part — ADR 014's `fileAccessFacts` service — on the control node (worktree access §3) |
-| Worktree directory record and Session usage association, deduplicated and written atomically | the `store` face's `associateWorktree` operation, provided by SessionStore (worktree access §4, R2) |
+| Worktree directory record and Session usage association, deduplicated and written atomically | `worktreeAssociations.associate`, provided by SessionStore (worktree access §4, R2) |
 | Publishing the expanded range, and its revalidation | the Session part, after the store acknowledges (§4.2.2) |
 | Admission, asks, presets | `Permission` and `Approval`, on the control side, unchanged |
 
@@ -460,7 +464,7 @@ The order is fixed, and the Session part is the only participant that both waits
    `recognize` only when its own view does not already cover the path.
 2. The node answers the resolution, the node facts, and either a `worktree` candidate or a
    `discoveryError`.
-3. A candidate goes to `store.associateWorktree {sessionId, repository, root, subtree}`. That
+3. A candidate goes to `worktreeAssociations.associate {sessionId, repository, root, subtree}`. That
    operation writes the directory record and the usage association together and answers `{}` only
    after both commit, deduplicated by repository and root and by Session and directory. A failed
    write is a `discoveryError` for the caller: the range is not published, and the user can still
@@ -479,16 +483,16 @@ and the node cannot expand a Session's range on its own.
 Session close releases the view; restore and reload start from an empty view and re-verify; fork
 copies neither the view nor the associations. Session deletion releases the associations inside
 its own delete transaction and keeps the directory records. The persisted records are read only
-through `associateWorktree` and the store's own Session deletion step, never by reading tables: no
-other part queries them for admission.
+through `worktreeAssociations.associate` and the store's own Session deletion step, never by reading
+tables: no other part queries them for admission.
 
 #### 4.2.2 Revalidation before publication
 
 The candidate is a filesystem observation made before a storage wait. It must still be true when
 it is published, or it must not be published:
 
-1. After `associateWorktree` returns, the Session part checks its own lifecycle: a Session that is
-   closing, deleted or between generations publishes nothing and answers the call with its normal
+1. After `worktreeAssociations.associate` returns, the Session part checks its own lifecycle: a Session
+   that is closing, deleted or between generations publishes nothing and answers the call with its normal
    closing or cancelled outcome. A committed association stays; only publication stops.
 2. It revalidates the candidate with a second `resolve` — `recognize: false`, so no Git probe and
    no new grant — passing the candidate's `{root, subtree, rootIdentity}` in `roots` and the target
@@ -595,16 +599,22 @@ and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 Operation refusals are not in this table: they arrive as the tool result's own `isError` with the
 code the operation already uses, so one code vocabulary serves the local and the remote path.
 
-## 5. `store`
+## 5. `store` and `timelineStore`
 
-`store` is the Session state face. It is one name with two operation families and one
-notification, provided by the daemon that owns the Session:
+The repository and Timeline operations use two names on the daemon that owns the state: process
+`store` provides the repository operations (§5.2), retaining its existing Timeline `query`,
+and Session-scoped `timelineStore` provides the Timeline operations and completion notifications
+below. Both use the existing state owner; the split follows §9(6), without changing Session
+placement or the storage engine.
+Worktree association uses the separate existing `worktreeAssociations` face
+([service faces](service-faces.md) §4.8), listed alongside them below.
 
 | Family | Operations |
 | --- | --- |
-| Timeline | `append` (sync), `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `saveSnapshot`, `latestSnapshot` |
-| Timeline completion | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
-| Session rows | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, `associateWorktree`, the row-set operations for sessions, owners, branches, content, snapshots, grants, metadata, settings, providers, agents and Session-file rows, and `fork` and `delete` |
+| Timeline (`timelineStore`) | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, `append` (sync), `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot` |
+| Timeline completion (`timelineStore`) | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
+| Session rows (`store`) | The repository operations listed in §5.2 |
+| Worktree association (`worktreeAssociations`) | `associate`; [service faces](service-faces.md) §4.8 |
 
 ### 5.1 Ordered admission and durable completion
 
@@ -640,10 +650,159 @@ notification {subscriptionId, batchId, branchId, through, result: "committed" | 
   (`readPage`, `query`, `trace`, and the completion notifications) is the part a remote consumer
   may use.
 
+#### Binding shapes and lifecycle
+
+The Timeline methods take one request object. Keys are `{sessionId, branchId}`;
+`head` returns `{sequence}`, `branches {sessionId}` returns `{branches:[{info,sequence}]}`.
+`readPage {sessionId,branchId,after,limit,through}` returns `{events}`. `limit` is a target event
+count: the final complete atomic batch may exceed it. `readSegments {sessionId,segments:
+[{branchId,from,through}]}` returns `{segments}` in request order, using the existing shared read
+scope. Each stored record is `{event,trace,batchEnd}` using the canonical event and trace data.
+The Rust `TimelineStore::read(key, range)` convenience corresponds to one interval of
+`readSegments`, returning that segment directly. The native binding preserves backend overrides;
+it does not introduce a separate wire operation or replace an override with fallback probes.
+`batchEnd {sessionId,branchId,sequence}` validates the boundary and returns `{}`;
+`batchEndAt` returns `{sequence}` for the containing batch's end through the backend's existing
+operation, without repeated remote probes. `trace` takes the same position and returns `{trace}`.
+`query` takes the scope, query and optional page described in §5.2 and keeps that canonical reply.
+
+`createSession {sessionId,config}`, `releaseSession {sessionId}`, `rollbackSession {sessionId}`
+and `saveSnapshot {sessionId,branchId,snapshot}` return `{}`. `sessionConfig {sessionId}` returns
+`{config}`. `latestSnapshot {sessionId,branchId,through,interpreter}` returns `{snapshot}`.
+These are storage lifecycle steps. `createSession` prepares the backend record; it does not
+initialize or publish an Agent Session. `rollbackSession` undoes a successfully prepared creation
+whose initialization failed, after its producers have stopped; it is not the general deletion
+workflow. `releaseSession` drains accepted backend writes and releases their resources without
+closing the Agent Session or its admission. App Server creation/deletion retain the repository
+and lifecycle obligations in §5.2.
+
+Snapshots retain their canonical fields (`sequence`, `event_id`, `interpreter`, `state`), optional
+acceleration semantics and owner validation. Domain errors preserve `{code,message}` using
+`invalid`, `closed`, `cancelled` or `storage`; parsing rejects malformed requests at the boundary.
+
+The bridge binding of `commits` is `commits({sessionId}, listener) -> {subscriptionId}`. The caller
+must declare `timelineStore`; the owner registers the listener with that calling row before
+returning, and the row's unload withdraws it. Register before the batches to observe are admitted;
+there is no replay of earlier admissions. `closeCommits` withdraws it explicitly and is
+idempotent. Each listener receives only its requested Session's completions, tagged with its own
+subscription id. A slow or failed observer does not delay durable completion or release, and
+ending observation never cancels a write or the native publication callback. The calling row must
+belong to the runtime in which the provider installed the binding; sharing the native binding
+with another runtime does not connect that runtime's listeners to the provider's completion bus.
+
+The native binding retains synchronous `append` admission and its existing publish callback.
+Its notification `batchId` is the JSON encoding of `[branchId, through]`, the batch identity
+already known at admission; local data calls preserve their supplied `batchId`. This identifier
+is notification correlation only, with no additional durable fact or lookup. A synchronous
+admission refusal produces no completion notification. The one backend callback keeps native
+publication synchronous, then enqueues observation on rutis's existing ordered asynchronous
+bus. Release drains that backend's writes and callbacks; it does not wait for observers to finish.
+Foreign-language rows in the provider runtime may observe and read; a separate runtime has
+read-only access. Synchronous append across a link is rejected as stated in §5.1.
+
+The Rust `TimelineStore` trait is the local binding of `timelineStore`, not a second contract
+(§6); the SQL engine remains the provider's implementation. The binding of `append` is
+synchronous admission, and the binding of `commits` is publish-callback registration,
+with the existing ordering and draining.
+
 ### 5.2 Session rows
 
-- `associateWorktree {sessionId, repository, root, subtree}` writes the worktree directory record
-  and the Session usage association as one commit and answers `{}` after it, so the reply is the
+The process `store` face exposes the existing Session repository operations below.
+Every method is asynchronous. Paths are the caller's already resolved absolute strings;
+`config` is the existing SessionConfig data and `configText` retains its exact stored bytes.
+The operations keep the owner transactions and existing existence checks; they do not
+resolve paths, decide permission or create a second Session lifecycle.
+
+| Operation | Request | Reply |
+| --- | --- | --- |
+| `addGrant` | `{sessionId,path,kind,mode}` | `{}` |
+| `removeGrant` | `{sessionId,path}` | `{}` |
+| `grants` | `{sessionId}` | `{grants:[{path,kind,mode}]}` |
+| `setSessionLanguage` | `{sessionId,language}` | `{}` |
+| `creationRecord` | `{sessionId}` | `{origin,leaderSessionId}` |
+| `owner` | `{sessionId}` | `{agentId}` |
+| `hasRecords` | `{sessionId}` | `{exists}` |
+| `createOwnedSession` | `{sessionId,config,agentId,protocolVersion,leaderSessionId,origin,worktree}` | `{}` |
+| `sessionConfig` | `{sessionId}` | `{config}` |
+| `sessionConfigText` | `{sessionId}` | `{configText}` |
+| `fork` | `{sourceSessionId,sessionId,at,configText}` | `{}` |
+| `delete` | `{sessionId}` | `{removed}` |
+| `worktreeDirectories` | `{}` | `{directories:[{repository,root,lastUsedAtMs}]}` |
+| `sessionsUnderWorkspace` | `{root}` | `{sessionIds}` |
+| `worktreeUsages` | `{repository,root}` | `{usages:[{sessionId,subtree}]}` |
+| `removeWorktreeDirectory` | `{repository,root}` | `{removed}` |
+| `removeWorktree` | `{repository,root}`, asynchronous removal callback | `{removed}` |
+| `catalog` | `{request,agent?,version,hosts,closed}` | existing catalog page |
+| `query` | `{scope,query,page?}` | `{result,next}` |
+
+These are repository steps, not the client lifecycle workflows `sessions.delete` and
+`session.fork`. Trusted plugins may address any Session id; the process face does not apply
+per-caller Session ownership or grant scoping. The lifecycle owner remains responsible for:
+
+- `createOwnedSession`: reserve the creation/admission identity, select a supported protocol,
+  validate the configuration and apply that protocol's live feature restrictions before
+  persisting it, then initialize/publish the Session or roll the preparation back.
+- `delete`: close the Session and settle its producers before removing its rows and output.
+  This operation neither closes a live Session nor removes its Agent admission slot.
+- `fork`: validate the source collaboration role, published main cut, atomic/context boundary
+  and rest point; supply the source's stored configuration text with `initialTitle` removed,
+  then initialize the fork under the source Agent/protocol. The repository copies the supplied
+  text without applying live protocol exclusions or rebuilding the configuration.
+
+`createOwnedSession`, `fork` and `delete` reject Session ids that are not a single normal path
+component with `invalid`, before acquiring ownership or touching rows or output paths. These
+checks are shared with the native Session admission/deletion boundary.
+
+Grant kind is `file` or `dir`, mode is `read` or `write`; adding read never downgrades
+an existing write grant. `language` is a ReplyLanguage code or null to clear it.
+`origin` is the existing Session origin. `leaderSessionId`, `agentId`, `config` and
+`configText` are null when the corresponding optional owner value is absent;
+`creationRecord` and language writes still reject a missing Session. `worktree`
+is null or `{repository,root,subtree}`. Session creation retains the atomic
+owner/configuration/worktree publication. `lastUsedAtMs` is null for legacy directory
+records without an association timestamp.
+
+`removeWorktree` keeps the owner exclusion from its usage checks through the physical
+removal and directory-row deletion. Its callback receives the checked root path and
+is awaited; no SQL or Timeline commit lock is held while awaiting it. A callback failure
+leaves the directory row in place. As with the native callback, it must not await operations
+that acquire this same ownership mutex: `createOwnedSession`, `fork`, `delete`,
+`removeWorktreeDirectory`, `removeWorktree`, or `worktreeAssociations.associate`. Reads and
+other operations that do not acquire that mutex remain available. The callback may refuse with `invalid`, `cancelled`
+or `storage`; unexpected callback or transport failures are `storage`. There is no
+separate check/remove lease and no window for a concurrent Session creation to use
+a directory being removed. `removeWorktreeDirectory` is the existing database-only
+candidate cleanup, with its existing association checks.
+
+`catalog` takes the existing Session catalog request and the calling Agent owner's
+loaded/closed snapshots. Its result is the stored catalog page: sequence comes from the
+database and `closed` is false on each returned row. The Agent lifecycle owner enriches that
+page with live sequence and closed state for client responses; `store.catalog` does not read
+or reproduce AgentIndex. Its pagination and filtering remain the storage catalog contract. `query` takes the existing fixed read scope: `{key:{sessionId,
+branchId},through,segments:[{branchId,from,through,storedThrough,tail}]}`. Its query,
+page, result and immutable tail events retain the Timeline query contract. Neither
+operation adds a preliminary query or rereads the caller's snapshots.
+
+Refusals are `{code,message}`: `invalid`, `closed`, `cancelled` or `storage`, preserving
+the owner message. Existing absence behavior is retained: `addGrant` on an unknown Session
+fails `storage` (foreign-key refusal), `removeGrant` succeeds without a matching row, and
+`setSessionLanguage` fails `closed`. Unsupported protocol versions retain the native database
+`storage` refusal; the lifecycle owner validates versions before preparation. These methods expose storage operations to trusted plugins, not
+new external client entry points. Session files, title metadata and worktree association
+continue to use their existing `sessionFiles`, `sessionMetadata` and
+`worktreeAssociations` public contracts rather than additional aliases on `store`.
+
+The Rust `Store` binding exposes only these repository operations and directly returns
+the same owner's operation futures. Its typed key and dispatcher share one binding;
+`SessionStore` remains the native bootstrap/implementation owner, not the public `store`
+type. Title reads use the existing `sessionMetadata` binding. Native shared result types
+and filesystem paths retain their existing lossless Rust representation; only the wire
+boundary serializes paths as data. The existing asynchronous removal callback keeps its
+original path argument and ownership exclusion.
+
+
+- `worktreeAssociations.associate {sessionId, repository, root, subtree}` writes the worktree directory
+  record and the Session usage association as one commit and answers `{}` after it, so the reply is the
   acknowledgement the file facts owner waits for before publishing a confirmed root (§4.2.1). Its
   deduplication, its place in Session deletion and its format decision belong to
   [worktree access §4](worktree-access.md#4-持久使用关联与清理边界) and the storage owner; the
@@ -664,11 +823,6 @@ notification {subscriptionId, batchId, branchId, through, result: "committed" | 
 - One Session has one writer, and the store face carries no lease, takeover or second-writer
   operation: that rule belongs to the Session owner, above the store.
 
-The Rust `TimelineStore` trait and the SQL engine are the local binding and implementation of this
-face, not a second contract (§6). The binding of `append` is the synchronous admission and the
-binding of `commits` is the publish-callback registration: the same two things the runtime has
-today, with the same ordering and the same draining.
-
 ## 6. Provider, binding, and the owners that use each operation
 
 | Old name | Face | What the name is now |
@@ -676,7 +830,7 @@ today, with the same ordering and the same draining.
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
 | `fileStorage` | `fsHost` | The provider and its binding: roots, leases, generations and one validated path component per open are its internals |
 | `sqliteStorage` | `store` | The SQL engine inside the provider |
-| `timelineStore` | `store` | The Timeline half of the face; the `TimelineStore` trait is its binding |
+| `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
 For the owners below, Rust callers use a thin binding over the operations — a direct
 in-process call rather than JSON — and none of them publishes a second API: there is no owner
@@ -697,7 +851,7 @@ The owners that read node files or start node processes, and the operations they
 | UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
 | Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
 | Hooks configuration commands | `execHost.configured` |
-| Worktree association | `store.associateWorktree` |
+| Worktree association | `worktreeAssociations.associate` |
 
 ## 7. Rule check
 
@@ -706,7 +860,7 @@ The owners that read node files or start node processes, and the operations they
 | §1, ADR 002 D1 | Each face belongs to the part that owns the resource or the state; consumers stay in their own scope. No new Capability on the control side |
 | §4 rule 1 | Command events are not added. A background command's fact is still `exec/started`/`exec/ended` on its branch, written by its owner |
 | §4 rule 2 | A handoff keeps its fact on the branch and its process with the provider; nothing is handed to a second owner |
-| §4 rule 3 | No before callback and no commit-time I/O. `store.append` is the one operation allowed inside the caller's commit lock because it queues without I/O and does not wait; completion arrives through `commits`, after the commit and outside every lock. Every other face operation is outside the lock |
+| §4 rule 3 | No before callback and no commit-time I/O. `timelineStore.append` is the one operation allowed inside the caller's commit lock because it queues without I/O and does not wait; completion arrives through `commits`, after the commit and outside every lock. Every other face operation is outside the lock |
 | §4 rule 4 | Core, assembly and the Timeline carry no remote-execution or engine branch; the provider is chosen by deployment |
 | §4 rule 5 | No batch semantics change: `append` admits one atomic batch, and the completion notification carries the same commit and publish boundary the callback does today |
 | §4 rule 6 | File content and command output reach the model only through tool results, as they do today |
@@ -737,7 +891,7 @@ instead of failing one call with `node_unavailable`.
 
 No other requirement is raised:
 
-- The store face keeps the existing Timeline admission and publish ordering; the only change is
+- The `timelineStore` face keeps the existing Timeline admission and publish ordering; the only change is
   that completion is delivered as a notification on the face instead of a Rust callback, which is
   a binding inside the provider, with no change to sequence, batches, interrupt handling or
   reload.
@@ -766,9 +920,9 @@ No other requirement is raised:
    the text is the file operation's own (line numbers, previews, image blocks). A command returns
    records, and the control side composes the tool result, because the task identity, the
    background policy and the output-path registration are its.
-6. **One `store` name or two.** The Timeline family and the Session-row family are one face with
-   two families here because one repository port serves both (#1298). If the implementation finds
-   two names clearer, the split is a naming decision on that PR, not a new contract.
+6. **Repository face names.** `store` names the Session-row repository operations, and
+   `timelineStore` names the Timeline operations and completion notifications. Both delegate
+   to the same state owner (#1298); the naming split changes neither placement nor ordering.
 7. **Root identity form.** The Session passes the opaque `rootIdentity` back to the provider.
    The provider owns its platform form and comparison.
 8. **Retained task records.** Settlement is explicit (§3.8). If a long-lived local provider wants a
@@ -786,9 +940,10 @@ registered output path reuses `output` after the provider releases its task reco
 `fsHost` adds no primitive file API and no per-file traversal: its storage family is the reads and
 leases the node's storage already offers, needed because a path's facts and its bytes cannot be
 read on a machine that does not hold the file; `resolve` is where resolution and the worktree
-probe belong. `store` publishes the repository operations the state owner already has, so the SQL
-engine and the `TimelineStore` trait stop being second contracts instead of gaining a wrapper;
-admission stays synchronous and completion keeps the callback's ordering as a notification.
+probe belong. `store` publishes the repository operations the state owner already has;
+`timelineStore` publishes its Timeline operations and completion notifications. The SQL engine
+remains private implementation, and `TimelineStore` is the native binding of `timelineStore`.
+Admission stays synchronous and completion keeps the callback's ordering as a notification.
 
 The `worktree` candidate carries the identity needed to recheck the mapping after the association
 commits. `retainedFrom` and `reset` let a caller resume a bounded capture after its cursor expires.

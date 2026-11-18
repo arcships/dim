@@ -213,7 +213,10 @@ impl Approval {
                             HostError::Cancelled(CAPABILITY_RELOADING.into())
                         })?;
                     };
-                    self.permission.decide(&checked, risk, &cancel).await.map(|decision| (through, decision))
+                    self.permission
+                        .decide(&checked, risk, &cancel)
+                        .await
+                        .map(|decision| (through, decision))
                 } => {
                     recheck = false;
                     let (through, decision) = decision?;
@@ -254,7 +257,11 @@ impl Approval {
                     pending.disarm();
                     let mut published = self.timeline.watch();
                     loop {
-                        if let Some(error) = self.timeline.failure().or_else(|| self.dispatcher.failure()) {
+                        if let Some(error) = self
+                            .timeline
+                            .failure()
+                            .or_else(|| self.dispatcher.failure())
+                        {
                             return Err(HostError::failed(error.to_string()));
                         }
                         let (sequence, closed) = *published.borrow_and_update();
@@ -265,12 +272,17 @@ impl Approval {
                             return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
                         }
                         tokio::select! {
-                            _ = cancel.cancelled() => return Err(HostError::Cancelled(CANCELLED.into())),
+                            _ = cancel.cancelled() =>
+                                return Err(HostError::Cancelled(CANCELLED.into())),
                             changed = published.changed() => {
-                                changed.map_err(|_| HostError::Cancelled(CAPABILITY_RELOADING.into()))?;
+                                changed.map_err(|_| {
+                                    HostError::Cancelled(CAPABILITY_RELOADING.into())
+                                })?;
                             }
                             changed = dispatched.changed() => {
-                                changed.map_err(|_| HostError::Cancelled(CAPABILITY_RELOADING.into()))?;
+                                changed.map_err(|_| {
+                                    HostError::Cancelled(CAPABILITY_RELOADING.into())
+                                })?;
                             }
                         }
                     }

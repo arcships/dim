@@ -446,7 +446,7 @@ impl McpSessionPlugin {
             identity: names.key()?,
             session: names.instance(SESSION_GROUP)?,
             mcp: names.key()?,
-            directory: names.key()?,
+            directory: super::owner_key(),
             config: names.key()?,
             loader: names.key()?,
             lifecycle: names.key()?,
@@ -700,7 +700,9 @@ async fn discover(
 ) {
     let mut held = None;
     let result = async {
-        let connection = directory.server(owner.connections.clone(), project, id.clone(), &cancel).await?;
+        let connection = directory
+            .server(owner.connections.clone(), project, id.clone(), &cancel)
+            .await?;
         lease.hold(&connection);
         held = Some(connection.clone());
         let mut changed = connection.tool_changes();
@@ -788,10 +790,29 @@ async fn discover(
                     if previous.as_ref() != Some(&tools) || current != generation {
                         let version = uuid::Uuid::new_v4().to_string();
                         let set = Arc::new(ToolSourceSet {
-                            key: format!("mcp:{id}"), version: version.clone(),
-                            tools: tools.iter().filter(|tool| model_visible(tool)).map(|tool| contribution(&id, tool, connection.clone(), owner.stopped.clone(), owner.files.clone(), owner.session_id.clone())).collect(),
+                            key: format!("mcp:{id}"),
+                            version: version.clone(),
+                            tools: tools
+                                .iter()
+                                .filter(|tool| model_visible(tool))
+                                .map(|tool| {
+                                    contribution(
+                                        &id,
+                                        tool,
+                                        connection.clone(),
+                                        owner.stopped.clone(),
+                                        owner.files.clone(),
+                                        owner.session_id.clone(),
+                                    )
+                                })
+                                .collect(),
                         });
-                        owner.publish(&id, Some((set.clone(), connection.clone())), McpSourceState::Ready { version }, &cancel);
+                        owner.publish(
+                            &id,
+                            Some((set.clone(), connection.clone())),
+                            McpSourceState::Ready { version },
+                            &cancel,
+                        );
                         published = Some(set);
                         previous = Some(tools);
                         generation = current;
@@ -802,7 +823,9 @@ async fn discover(
                             McpServerState::Closed => return Err(McpError::Unavailable),
                             McpServerState::AuthRequired { expired } => break Some(expired),
                             McpServerState::Failed => {
-                                let message = connection.failure().unwrap_or_else(|| "MCP connection failed".into());
+                                let message = connection
+                                    .failure()
+                                    .unwrap_or_else(|| "MCP connection failed".into());
                                 owner.publish(
                                     &id,
                                     published.clone().map(|set| (set, connection.clone())),
@@ -820,7 +843,9 @@ async fn discover(
                                 continue 'discover;
                             }
                             McpServerState::Disconnected => {
-                                let message = connection.failure().unwrap_or_else(|| "MCP connection closed".into());
+                                let message = connection
+                                    .failure()
+                                    .unwrap_or_else(|| "MCP connection closed".into());
                                 owner.publish(
                                     &id,
                                     published.clone().map(|set| (set, connection.clone())),
@@ -842,9 +867,22 @@ async fn discover(
                         tokio::select! {
                             biased;
                             _ = cancel.cancelled() => return Ok(()),
-                            result = state.changed() => { if result.is_err() { return Err(McpError::Unavailable); } },
-                            result = changed.changed() => { if result.is_err() { return Err(McpError::Unavailable); } continue 'discover; },
-                            usable = credential_change(credential.as_mut()) => { if !usable? { continue 'discover; } },
+                            result = state.changed() => {
+                                if result.is_err() {
+                                    return Err(McpError::Unavailable);
+                                }
+                            },
+                            result = changed.changed() => {
+                                if result.is_err() {
+                                    return Err(McpError::Unavailable);
+                                }
+                                continue 'discover;
+                            },
+                            usable = credential_change(credential.as_mut()) => {
+                                if !usable? {
+                                    continue 'discover;
+                                }
+                            },
                         }
                     }
                 }
@@ -860,7 +898,8 @@ async fn discover(
                 }
             }
         }
-    }.await;
+    }
+    .await;
     let withdrawn = held.take().is_some_and(|held| held.withdrawn());
     // The replacement owns the slot once this discovery is cancelled; only a
     // discovery that ended on its own error releases the generation.

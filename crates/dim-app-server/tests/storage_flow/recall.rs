@@ -51,7 +51,7 @@ async fn sqlite_recall_verifies_indexed_candidates_and_fallbacks_against_the_sam
         );
         defaults::install(&mut builder);
         recall::install(&mut builder);
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
             .create_session(SessionConfig {

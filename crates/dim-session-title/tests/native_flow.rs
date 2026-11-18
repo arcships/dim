@@ -720,7 +720,9 @@ async fn optional_title_generation_routes_falls_back_and_cancels_without_gating_
         .await
         .unwrap()
         .unwrap();
-    release.send("   ".into()).unwrap();
+    // Punctuation only, so the reply carries text and still normalizes to no
+    // title (SessionTitle §3.3).
+    release.send("???".into()).unwrap();
     titled(
         &mut client,
         &failed,
@@ -728,6 +730,41 @@ async fn optional_title_generation_routes_falls_back_and_cancels_without_gating_
         "auto",
     )
     .await;
+
+    let whitespace = create(&mut client, &store.0, true).await;
+    submit(
+        &mut client,
+        &whitespace,
+        "an empty answer falls back to the excerpt",
+    )
+    .await;
+    let (_, release) = tokio::time::timeout(Duration::from_secs(10), generations.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    release.send(json!({"kind":"failed"})).unwrap();
+    // A whitespace answer has no text, so it is a malformed response the
+    // auxiliary model retries once (SessionTitle §3.3, model failures §4).
+    for attempt in 1..=2 {
+        let (_, release) = tokio::time::timeout(Duration::from_secs(10), requests.recv())
+            .await
+            .unwrap_or_else(|_| panic!("request {attempt} reaches the model"))
+            .unwrap();
+        release.send("   ".into()).unwrap();
+    }
+    // The helper's 10 s window, well inside the shared 30 s budget, fails this
+    // case if the excerpt waits for the deadline instead of the retry.
+    titled(
+        &mut client,
+        &whitespace,
+        "an empty answer falls back to the excerpt",
+        "auto",
+    )
+    .await;
+    assert!(
+        requests.try_recv().is_err(),
+        "two empty answers spend the one malformed retry"
+    );
 
     let deadline = create(&mut client, &store.0, true).await;
     submit(

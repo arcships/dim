@@ -1,7 +1,7 @@
 //! Branch permission: decides a tool call by risk, its file-access facts and
 //! policy. The policy is `SessionConfig.permission_policy` folded with this
 //! branch's dispatched `permission/changed` events. The user's command rules,
-//! read through the Session's `CommandRulesHost` on each decision, deny or
+//! read through the Session's `CommandRules` on each decision, deny or
 //! approve commands of process-starting calls. A file read or write reads the
 //! Session's `fileAccessFacts` service, which resolves the workspace, system,
 //! owned and grant facts; without that service a write keeps the
@@ -117,7 +117,67 @@ pub trait ReadCommandRules: Send + Sync + 'static {
     fn rules(&self, cancel: CancellationToken) -> HostFuture<'_, Vec<CommandRule>>;
 }
 /// Session port of the command rules; each profile binds exactly one.
-pub struct CommandRulesHost(pub Arc<dyn ReadCommandRules>);
+#[derive(Clone)]
+pub struct CommandRules(pub Arc<dyn ReadCommandRules>);
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CommandRulesReply {
+    pub rules: Vec<CommandRule>,
+}
+
+impl CommandRules {
+    /// Reads the current rules once; cancellation or drop ends only this read.
+    pub async fn read(&self, cancel: CancellationToken) -> Result<CommandRulesReply, HostError> {
+        let rules = crate::port_faces::read(
+            cancel,
+            || HostError::Cancelled("command rules read cancelled".into()),
+            |cancel| self.0.rules(cancel),
+        )
+        .await?;
+        Ok(CommandRulesReply { rules })
+    }
+}
+
+impl rutis_bridge::session::HostDispatch for CommandRules {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"read": "async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        if method != "read" {
+            return Err(crate::port_faces::unknown_method("commandRules", method));
+        }
+        let _: crate::port_faces::Empty = crate::port_faces::request("commandRules", args)?;
+        let owner = self.clone();
+        let cancel = rutis_bridge::session::caller_row()
+            .map(|row| row.ctx().cancellation_token())
+            .unwrap_or_default();
+        Ok(rutis_bridge::session::Value::cancellable_future(
+            async move {
+                let result = owner.read(cancel).await;
+                match result {
+                    Ok(reply) => rutis_bridge::session::arg(&reply),
+                    Err(error) => {
+                        let code = match &error {
+                            HostError::Cancelled(_) => "cancelled",
+                            HostError::Failed { .. } => "unavailable",
+                        };
+                        Err(rutis_bridge::exports::failure(
+                            "CommandRulesError",
+                            code,
+                            error.to_string(),
+                            None,
+                        ))
+                    }
+                }
+            },
+        ))
+    }
+}
 
 /// The rules of a host without a rules source.
 pub struct NoCommandRules;
@@ -139,7 +199,7 @@ struct Inner {
 pub struct Permission {
     timeline: Arc<Timeline>,
     state: Arc<StateCell<PermissionState>>,
-    rules: Arc<CommandRulesHost>,
+    rules: Arc<CommandRules>,
     /// Held for reads after publication: the optional facts and platform are
     /// looked up at decision time, never while the part loads.
     ctx: Ctx,
@@ -288,7 +348,12 @@ impl Permission {
             _ => None,
         };
         let rules = match command {
-            Some(_) => match self.rules.0.rules(cancel.clone()).await {
+            Some(_) => match self
+                .rules
+                .read(cancel.clone())
+                .await
+                .map(|reply| reply.rules)
+            {
                 Err(HostError::Cancelled(reason)) => return Err(HostError::Cancelled(reason)),
                 read => Some(read),
             },
@@ -315,7 +380,14 @@ impl Permission {
             let facts = self.ctx.get_at(&self.facts);
             if let (Some(Ok((_, target))), Some(facts)) = (&target, facts) {
                 let facts = tokio::select! {
-                    result = facts.0.facts(&self.session_id, access, target, GrantMode::Write, cancel.clone()) => result,
+                    result = facts.0.facts(
+                        &self.session_id,
+                        access,
+                        target,
+                        GrantMode::Write,
+                        cancel.clone(),
+                    ) =>
+                        result,
                     _ = cancel.cancelled() => return Err(HostError::Cancelled(CANCELLED.into())),
                 };
                 let facts = match facts {
@@ -404,7 +476,14 @@ impl Permission {
                 }
             };
             let facts = tokio::select! {
-                result = facts.0.facts(&self.session_id, access, target, GrantMode::Read, cancel.clone()) => result,
+                result = facts.0.facts(
+                    &self.session_id,
+                    access,
+                    target,
+                    GrantMode::Read,
+                    cancel.clone(),
+                ) =>
+                    result,
                 _ = cancel.cancelled() => return Err(HostError::Cancelled(CANCELLED.into())),
             };
             let facts = match facts {
@@ -757,7 +836,7 @@ pub struct PermissionPlugin {
     state: Key<StateCell<PermissionState>>,
     permission: Key<Permission>,
     config: Key<SessionConfig>,
-    rules: Key<CommandRulesHost>,
+    rules: Key<CommandRules>,
     facts: Key<FileAccessFacts>,
     identity: Key<SessionIdentity>,
     platform: Key<HostPlatform>,

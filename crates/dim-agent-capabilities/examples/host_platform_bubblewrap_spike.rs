@@ -275,8 +275,13 @@ mod linux {
         tokio::time::timeout(LIMIT, async {
             loop {
                 // SAFETY: signal 0 only observes this probe's recorded descendants.
-                if pids.iter().all(|pid| unsafe {libc::kill(*pid,0)} == -1
-                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)) { return; }
+                let gone = pids.iter().all(|pid| {
+                    (unsafe { libc::kill(*pid, 0) } == -1)
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                });
+                if gone {
+                    return;
+                }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })

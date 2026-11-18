@@ -57,7 +57,7 @@ pub type Consume<S, T> = for<'a> fn(
 ) -> futures_util::future::BoxFuture<'a, Result<T, HostError>>;
 
 /// Runs one request over its resolved connection under the product's failure
-/// policy: transient failures back off, a rejected credential is recovered
+/// policy: a retried kind backs off, a rejected credential is recovered
 /// once, and a terminal rejection is settled with its credential owner. A
 /// request that continues a `chain` starts from the attempts and the wait it
 /// spent, so the chain keeps one budget. `consume` reads one attempt's stream
@@ -253,7 +253,7 @@ impl RecoveryState {
         let Some(facts) = facts else {
             return FailureAction::Stop;
         };
-        if !retryable(facts.kind) {
+        if !facts.kind.retried() {
             return FailureAction::Stop;
         }
         if facts.kind == ModelFailureKind::MalformedResponse {
@@ -293,16 +293,4 @@ fn unix_millis_now() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
-}
-
-/// The retried kinds: transient transport, rate-limit, server and malformed
-/// responses. A malformed response is retried at most once per request.
-fn retryable(kind: ModelFailureKind) -> bool {
-    matches!(
-        kind,
-        ModelFailureKind::Network
-            | ModelFailureKind::RateLimited
-            | ModelFailureKind::ServerError
-            | ModelFailureKind::MalformedResponse
-    )
 }

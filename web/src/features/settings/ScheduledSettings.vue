@@ -305,9 +305,9 @@ onMounted(() => { void load() })
       <form v-else-if="editing && (isNew || selected)" @submit.prevent="save">
         <fieldset class="schedule-form" :disabled="busy || loading || !online || !connection.supports('schedule.save') || uncertain">
           <section class="settings-card settings-form">
-            <UFormField :label="s('Name', '名称')"><UInput v-model="draft.name" required /></UFormField>
+            <UFormField :label="s('Name', '名称')"><UInput v-model="draft.name" class="w-full" required /></UFormField>
             <UFormField :label="s('Instructions to run automatically', '未来自动执行的指令')" :description="`${promptBytes} / 32768 ${s('UTF-8 bytes', 'UTF-8 字节')}`">
-              <UTextarea v-model="draft.prompt" :rows="4" />
+              <UTextarea v-model="draft.prompt" class="w-full" :rows="8" />
             </UFormField>
             <UCheckbox v-if="isNew" v-model="draft.enabled" :label="s('Enable after creation', '创建后启用')" />
           </section>
@@ -321,7 +321,7 @@ onMounted(() => { void load() })
                 </UFormField>
                 <template v-if="draft.kind === 'launch'">
                   <UFormField :label="s('CLI host workspace', 'CLI 主机工作区')" :description="s('Current workspace is preselected. Suggestions come from known sessions and scheduled tasks; you can also enter a new host directory.', '默认使用当前工作区，候选来自已有会话和定时任务；也可输入新的主机目录。')">
-                    <USelectMenu v-model="draft.cwd" value-key="value" :create-item="{ when: 'always', position: 'bottom' }" :aria-label="s('CLI host workspace', 'CLI 主机工作区')" :items="workspaceOptions" @create="createWorkspace" />
+                    <USelectMenu v-model="draft.cwd" class="w-full" value-key="value" :create-item="{ when: 'always', position: 'bottom' }" :aria-label="s('CLI host workspace', 'CLI 主机工作区')" :items="workspaceOptions" @create="createWorkspace" />
                   </UFormField>
                   <UFormField :label="s('Requested permission', '声明权限')" :help="s('The host caps the preset when the Session launches.', '会话启动时仍受主机权限上限约束。')">
                     <USelectMenu v-model="policyChoice" value-key="value" :search-input="false" :aria-label="s('Requested permission', '声明权限')" :items="policyItems" />
@@ -425,5 +425,5 @@ onMounted(() => { void load() })
 .schedule-prompt { padding-block: var(--space-4); border-block: 1px solid var(--border); }
 .schedule-more { margin-top: var(--space-4); }
 .settings-list-toolbar > :first-child { flex: 1 1 180px; min-width: 0; }
-@media (max-width: 719px) { .schedule-filters, .schedule-run-meta { grid-template-columns: minmax(0, 1fr); } .schedule-page :is(button, a) { min-height: 44px; } }
+@media (max-width: 719px) { .schedule-filters, .schedule-run-meta { grid-template-columns: minmax(0, 1fr); } .schedule-page :is(button, a):not([role="checkbox"]) { min-height: 44px; } }
 </style>

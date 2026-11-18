@@ -1040,6 +1040,33 @@ Fullscreen takes the alternate screen, keeps the transcript itself and scrolls i
  ╰─ · working…  3s  esc interrupt ──── ~/project (branch) ─╯      the status and the place
 ```
 
+Before a Session is open, fullscreen uses the empty space above the dock for
+a welcome card. It appears on direct startup, when switching from scrollback
+at home, and when `/new` returns to home. The composer retains keyboard focus.
+The card lists existing shortcuts and slash commands. Type slash commands into
+the composer and press Enter to run them.
+
+```text
+             +----------------------------------+
+             | Welcome to DIM 0.1.0-alpha.25!   |
+             |                                  |
+             | Commands                  Ctrl+O |
+             | Sessions                 /resume |
+             | Models                   /models |
+             | scrollback                  /tui |
+             | Exit                       /exit |
+             +----------------------------------+
+
+ +------------------------------------------------------------+
+ | Ask anything... · Ctrl+J newline                           |
+ +---------------------------------------- ~/project (main) --+
+```
+
+Narrow panes drop the block logo. When the available space above existing
+notices cannot fit the card, the viewport can show a one-line DIM mark.
+Opening a Session removes the card. The card is local to the viewport and
+never enters the transcript or scrollback.
+
 Tasks running apart from the turn appear above the composer in both modes, one
 row per task, with the status mark, task title, member Agent name when applicable,
 and elapsed time. Tasks are never combined into a count-led horizontal strip or

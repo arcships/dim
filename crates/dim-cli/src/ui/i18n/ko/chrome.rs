@@ -306,7 +306,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C로 Web 작업 공간 중지",
         "To resume this session:" => "세션 재개:",
 
-        // composer/commands.rs: descriptions
+        // commands.rs: descriptions
         "start a new session" => "새 세션 시작",
         "show or set the reasoning effort" => "추론 강도 보기/설정",
         "show or set the priority service tier (on|off)" => "우선 서비스 등급 보기/설정 (on|off)",

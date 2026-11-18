@@ -10,7 +10,7 @@ use dim_agent_capabilities::{
     adapters::MockTools,
     defaults,
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules},
+    permission::{CommandRules, NoCommandRules},
     prompt_sources,
 };
 use dim_agent_runtime::testing::chain_events;
@@ -66,7 +66,7 @@ fn builder(with_sources: bool) -> AgentBuilder {
         defaults::install(&mut builder);
     }
     if with_sources {
-        builder.session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))));
+        builder.session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))));
     }
     defaults::mock_model_hosts(&mut builder);
     defaults::tool_host(&mut builder, Arc::new(MockTools));

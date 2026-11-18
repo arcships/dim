@@ -4,6 +4,7 @@ use super::*;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManagementView {
+    pub next: Option<String>,
     pub drivers: Vec<ManagementDriver>,
     pub providers: Vec<ManagementProvider>,
     pub errors: Vec<ProviderRecordError>,
@@ -115,6 +116,14 @@ pub struct ManagementModel {
     /// already the one to show.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub catalog_name: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagementModelPage {
+    pub after: Option<String>,
+    pub limit: Option<usize>,
+    pub query: Option<String>,
 }
 
 impl ProviderService {
@@ -424,32 +433,115 @@ impl ProviderService {
         model_id: Option<String>,
         cancel: &CancellationToken,
     ) -> Result<ManagementView, ProviderError> {
+        self.management_window(provider_id, model_id, None, cancel)
+            .await
+    }
+
+    pub async fn management_window(
+        self: &Arc<Self>,
+        provider_id: String,
+        model_id: Option<String>,
+        page: Option<ManagementModelPage>,
+        cancel: &CancellationToken,
+    ) -> Result<ManagementView, ProviderError> {
+        if page
+            .as_ref()
+            .is_some_and(|p| !(1..=128).contains(&p.limit.unwrap_or(32)))
+            || (page.is_some() && model_id.is_some())
+        {
+            return Err(ProviderError::InvalidConfig(
+                "A model page requires a limit in 1..=128 and no modelId".into(),
+            ));
+        }
         self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
         let id = provider_id.clone();
         let target = model_id.clone();
         let bundled = self.bundled.clone();
-        let (record,target_name,pending) = self
-            .owned(cancel, move |_| {
+        let (record,target_name,pending,next,page_names) = self
+            .owned(cancel, move |cancel| {
                 Box::pin(async move {
                     db.run_read(move |connection| {
                         let tx=connection.transaction().map_err(storage)?;
-                        let pending=tx.query_row("SELECT pending FROM provider_bundle WHERE provider_id=?1",[&id],|r|r.get::<_,bool>(0)).optional().map_err(storage)?.unwrap_or(false);
-                        let mut collisions=Vec::new();
+                        let pending = tx
+                            .query_row(
+                                "SELECT pending FROM provider_bundle WHERE provider_id=?1",
+                                [&id],
+                                |r| r.get::<_, bool>(0),
+                            )
+                            .optional()
+                            .map_err(storage)?
+                            .unwrap_or(false);
+                        let mut collisions = Vec::new();
                         if pending {
-                            let mut statement=tx.prepare("SELECT model_id FROM provider_models WHERE provider_id=?1 AND source='user' ORDER BY position").map_err(storage)?;
-                            for model in statement.query_map([&id],|r|r.get::<_,String>(0)).map_err(storage)? {
-                                let model=model.map_err(storage)?;
-                                if bundled.source().matching(&format!("t\0{id}\0{model}")).next().is_some() {collisions.push(model);}
+                            let mut statement = tx
+                                .prepare(
+                                    "SELECT model_id FROM provider_models WHERE provider_id=?1 AND source='user' ORDER BY position",
+                                )
+                                .map_err(storage)?;
+                            let rows = statement.query_map([&id], |r| r.get::<_, String>(0));
+                            for model in rows.map_err(storage)? {
+                                let model = model.map_err(storage)?;
+                                let bundled_match = bundled
+                                    .source()
+                                    .matching(&format!("t\0{id}\0{model}"))
+                                    .next()
+                                    .is_some();
+                                if bundled_match {
+                                    collisions.push(model);
+                                }
                             }
                         }
-                        let pending=pending.then_some(collisions);
-                        if let Some(target)=target {
-                            let record=read_model_record(&tx,&id,&target)?;
-                            let name=persistence::names(&tx,&bundled,&id,std::slice::from_ref(&target))?.remove(&target);
-                            return Ok((record,name,pending));
+                        let pending = pending.then_some(collisions);
+                        if let Some(target) = target {
+                            let record = read_model_record(&tx, &id, &target)?;
+                            let targets = std::slice::from_ref(&target);
+                            let mut listed = persistence::names(&tx, &bundled, &id, targets)?;
+                            let name = listed.remove(&target);
+                            return Ok((record, name, pending, None, None));
                         }
-                        Ok((persistence::read(&tx,&id,persistence::Models::All)?,None,pending))
+                        if let Some(page) = page {
+                            let limit = page.limit.unwrap_or(32);
+                            let query = page.query.unwrap_or_default().to_lowercase();
+                            let mut after = page.after.unwrap_or_default();
+                            let mut targets = Vec::new();
+                            loop {
+                                if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
+                                let keys = persistence::model_keys(
+                                    &tx,
+                                    &bundled,
+                                    &id,
+                                    None,
+                                    &after,
+                                    limit + 1 - targets.len(),
+                                )?;
+                                if keys.is_empty() { break; }
+                                for key in keys {
+                                    after = key.clone();
+                                    if !query.is_empty() {
+                                        let name = persistence::name(&tx, &bundled, &id, &key)?;
+                                        let hit = name.is_some_and(|n| {
+                                            n.model_id.to_lowercase().contains(&query)
+                                                || n.display_name.to_lowercase().contains(&query)
+                                        });
+                                        if !hit {
+                                            continue;
+                                        }
+                                    }
+                                    targets.push(key);
+                                }
+                                if targets.len() > limit { break; }
+                            }
+                            let more = targets.len() > limit;
+                            targets.truncate(limit);
+                            let next = more.then(|| targets.last().cloned()).flatten();
+                            let names = persistence::names(&tx, &bundled, &id, &targets)?;
+                            let selected = persistence::Models::Selected(&targets);
+                            let record = persistence::read(&tx, &id, selected)?;
+                            return Ok((record, None, pending, next, Some(names)));
+                        }
+                        let all = persistence::read(&tx, &id, persistence::Models::All)?;
+                        Ok((all, None, pending, None, None))
                     })
                     .await
                     .map_err(ProviderError::from)
@@ -496,8 +588,19 @@ impl ProviderService {
             }
             provider.preferences.retain(|id, _| id == &model_id);
         }
+        if let Some(names) = page_names
+            && let Some(models) = &mut provider.models
+        {
+            models.sort_by(|a, b| a.model.model_id.cmp(&b.model.model_id));
+            for model in models {
+                if let Some(name) = names.get(&model.model.model_id) {
+                    model.catalog_name = (model.model.display_name != *name).then(|| name.clone());
+                }
+            }
+        }
         self.check(cancel)?;
         Ok(ManagementView {
+            next,
             drivers: management_drivers(),
             providers: vec![provider],
             errors,

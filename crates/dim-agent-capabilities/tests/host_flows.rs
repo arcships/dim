@@ -1212,9 +1212,16 @@ async fn steer_and_append_enter_the_current_turn_at_tool_result_while_queue_wait
         let requests = Arc::new(Mutex::new(Vec::new()));
         let entered = Arc::new(Notify::new());
         let release = Arc::new(Notify::new());
-        let agent = MinimalHost::start(&builder(Arc::new(RecordingModel(requests.clone())), Arc::new(BoundaryTools {
-            entered: entered.clone(), release: release.clone(),
-        }))).await.unwrap();
+        let boundary = BoundaryTools {
+            entered: entered.clone(),
+            release: release.clone(),
+        };
+        let agent = MinimalHost::start(&builder(
+            Arc::new(RecordingModel(requests.clone())),
+            Arc::new(boundary),
+        ))
+        .await
+        .unwrap();
         let session = agent.create_session(SessionConfig { tools: Some(vec!["boundary".into()]), permission_policy: dim_agent_runtime::PermissionPolicy { preset: dim_agent_runtime::PermissionPreset::FullAccess, ..Default::default() }, ..Default::default() }).await.unwrap();
         session.submit("tool:boundary {}".into(), InputMode::Queue, "main").await.unwrap();
         entered.notified().await;
@@ -1245,13 +1252,27 @@ async fn steer_and_append_enter_the_current_turn_at_tool_result_while_queue_wait
         assert!(requests[2].messages.contains(&Arc::new(Message::text(Role::User, "next turn"))));
         let events = chain_events(&session, "main", ..).await.unwrap();
         let applied = |id: &str| events.iter().find(|event| matches!(&event.kind, EventKind::InputConsumed(data) if data.input_id == id)).unwrap().sequence;
-        let tool_result = events.iter().find(|event| matches!(event.kind, EventKind::ToolResult(_))).unwrap().sequence;
-        let turn_end = events.iter().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().sequence;
+        let tool_result = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::ToolResult(_)))
+            .unwrap()
+            .sequence;
+        let turn_end = events
+            .iter()
+            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+            .unwrap()
+            .sequence;
         assert!(tool_result < applied(&steered.id));
         assert!(applied(&steered.id) < applied(&appended.id));
         assert!(applied(&appended.id) < turn_end);
         assert!(turn_end < applied(&queued.id));
-        assert_eq!(events.iter().filter(|event| matches!(event.kind, EventKind::TurnStart(_))).count(), 2);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnStart(_)))
+                .count(),
+            2
+        );
         agent.close().await.unwrap();
     }).await.unwrap();
 }
@@ -1341,7 +1362,13 @@ impl ToolDriver for DelayedTools {
 async fn stop_waits_for_native_cleanup_and_keeps_a_real_success() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let started = Arc::new(Notify::new()); let cleaned = Arc::new(AtomicBool::new(false));
-        let agent = MinimalHost::start(&builder(Arc::new(EchoModel), Arc::new(DelayedTools { started: started.clone(), cleaned: cleaned.clone() }))).await.unwrap();
+        let tools = DelayedTools {
+            started: started.clone(),
+            cleaned: cleaned.clone(),
+        };
+        let agent = MinimalHost::start(&builder(Arc::new(EchoModel), Arc::new(tools)))
+            .await
+            .unwrap();
         let session = agent.create_session(SessionConfig { tools: Some(vec!["delayed".into()]), permission_policy: dim_agent_runtime::PermissionPolicy { preset: dim_agent_runtime::PermissionPreset::FullAccess, ..Default::default() }, ..SessionConfig::default() }).await.unwrap();
         session.submit("tool:delayed {}".into(), InputMode::Queue, "main").await.unwrap();
         started.notified().await;
@@ -1349,7 +1376,18 @@ async fn stop_waits_for_native_cleanup_and_keeps_a_real_success() {
         assert!(cleaned.load(Ordering::SeqCst));
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ToolResult(data) if data.results[0].result.content == ToolContent::Text("native operation succeeded".into()) && data.results[0].result.is_error.is_none())));
-        assert!(matches!(events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Cancelled { .. }, .. })));
+        assert!(matches!(
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Cancelled { .. },
+                ..
+            })
+        ));
         agent.close().await.unwrap();
     }).await.unwrap();
 }
@@ -2474,7 +2512,12 @@ async fn waiting_to_retry_obeys_stop_steer_and_provider_reload() {
                         "{outcomes:?}"
                     );
                     assert!(matches!(
-                        &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                        &events
+                            .iter()
+                            .rev()
+                            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                            .unwrap()
+                            .kind,
                         EventKind::TurnEnd(TurnEndData {
                             outcome: TurnOutcome::Cancelled { reason },
                             ..
@@ -2488,7 +2531,12 @@ async fn waiting_to_retry_obeys_stop_steer_and_provider_reload() {
                         EventKind::InputConsumed(data) if Some(&data.input_id) == steered.as_ref()
                     )));
                     assert!(matches!(
-                        &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+                        &events
+                            .iter()
+                            .rev()
+                            .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                            .unwrap()
+                            .kind,
                         EventKind::TurnEnd(TurnEndData {
                             outcome: TurnOutcome::Completed { .. },
                             ..
@@ -2873,7 +2921,12 @@ async fn an_interrupt_cancels_a_thirty_second_sleep_promptly() {
 async fn an_idle_append_starts_no_turn_and_joins_the_next_one() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let agent = MinimalHost::start(&builder(Arc::new(RecordingModel(requests.clone())), Arc::new(MockTools))).await.unwrap();
+        let agent = MinimalHost::start(&builder(
+            Arc::new(RecordingModel(requests.clone())),
+            Arc::new(MockTools),
+        ))
+        .await
+        .unwrap();
         let session = agent.create_session(SessionConfig::default()).await.unwrap();
         let appended = session.submit("idle context".into(), InputMode::Append, "main").await.unwrap();
         session.idle("main").await.unwrap();
@@ -2893,7 +2946,13 @@ async fn an_idle_append_starts_no_turn_and_joins_the_next_one() {
         assert!(requests[0].messages.contains(&Arc::new(Message::text(Role::User, "idle context"))));
         assert!(requests[0].messages.contains(&Arc::new(Message::text(Role::User, "go"))));
         let events = chain_events(&session, "main", ..).await.unwrap();
-        assert_eq!(events.iter().filter(|event| matches!(event.kind, EventKind::TurnStart(_))).count(), 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnStart(_)))
+                .count(),
+            1
+        );
         agent.close().await.unwrap();
     }).await.unwrap();
 }
@@ -2981,8 +3040,20 @@ async fn a_steer_during_output_continues_the_turn_instead_of_ending_it() {
         assert_eq!(requests.len(), 2);
         assert!(requests[1].messages.contains(&Arc::new(Message::text(Role::User, "STEER-MARKER"))));
         let events = chain_events(&session, "main", ..).await.unwrap();
-        assert_eq!(events.iter().filter(|event| matches!(event.kind, EventKind::TurnStart(_))).count(), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.kind, EventKind::TurnEnd(_))).count(), 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnStart(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .count(),
+            1
+        );
         assert!(events.iter().any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta == "partial answer")));
         agent.close().await.unwrap();
     }).await.unwrap();
@@ -4292,7 +4363,12 @@ fn sent_parts(request: &ModelRequest) -> Vec<String> {
 async fn image_references_survive_vision_and_text_model_switches_without_changing_history() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let requests = Arc::new(Mutex::new(Vec::new()));
-        let agent = MinimalHost::start(&builder(Arc::new(RecordingModel(requests.clone())), Arc::new(MockTools))).await.unwrap();
+        let agent = MinimalHost::start(&builder(
+            Arc::new(RecordingModel(requests.clone())),
+            Arc::new(MockTools),
+        ))
+        .await
+        .unwrap();
         let session = agent.create_session(SessionConfig::default()).await.unwrap();
         session
             .configure(ConfigureUpdate { model: Some(model_with_vision("seeing", true)), ..Default::default() }, "main")
@@ -4680,12 +4756,14 @@ async fn replacing_a_tool_image_preserves_other_messages_and_the_stored_result()
             );
         }
         assert_eq!(replaced, 1);
-        assert!(events.iter().any(|event| matches!(&event.kind,
-        EventKind::ToolResult(data) if data.results.iter().any(|result| matches!(
-            &result.result.content,
-            ToolContent::Blocks(blocks) if blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. }))
-        ))
-    )));
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::ToolResult(data) if data.results.iter().any(|result| matches!(
+                &result.result.content,
+                ToolContent::Blocks(blocks)
+                    if blocks.iter().any(|block| matches!(block, ContentBlock::Image { .. }))
+            ))
+        )));
         agent.close().await.unwrap();
     }
 }

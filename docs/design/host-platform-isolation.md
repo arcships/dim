@@ -311,7 +311,7 @@ None.
 
 Two booleans replace the policy file, its schema, its revisioned management methods and the
 escalation gate. One preparation operation reuses the existing spawn and spawn PTY paths and native
-errors; the port is the same shape as `CommandRulesHost` and `SkillSettingsHost`. BackgroundExec
+errors; the port is the same shape as `CommandRules` and `SkillSettingsHost`. BackgroundExec
 already holds the process, so no namespace or PID manager is needed, and ShellInput stays outside
 this boundary. The declaration line and the failure note are text in existing places — no new
 result field, code, Timeline fact or approval category.

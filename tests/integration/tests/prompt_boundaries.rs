@@ -437,7 +437,7 @@ async fn scope_retirement_rejects_inconsistent_before_batches_and_retries_after_
         let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let captured = Arc::new(std::sync::Mutex::new(None));
         let mut builder = AgentBuilder::new(AgentConfig::default());
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         defaults::mock_hosts(&mut builder);
         defaults::install_with_prompt(
             &mut builder,

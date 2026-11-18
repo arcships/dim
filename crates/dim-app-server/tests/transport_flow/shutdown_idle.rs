@@ -24,6 +24,69 @@ impl rutis::host::DynPlugin for ProcessOwner {
     }
 }
 
+struct ActivationOwner {
+    activity: rutis::host::Key<dim_app_server::ProcessActivity>,
+    captured: Arc<std::sync::OnceLock<Arc<dim_app_server::ProcessActivity>>>,
+    context: Arc<std::sync::OnceLock<rutis::Ctx>>,
+}
+
+impl rutis::host::DynPlugin for ActivationOwner {
+    fn name(&self) -> &str {
+        "ActivationOwner"
+    }
+    fn injects(&self) -> Vec<rutis::host::TypeKey> {
+        vec![self.activity.erase()]
+    }
+    fn apply<'a>(
+        &'a self,
+        ctx: &'a rutis::Ctx,
+    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+        Box::pin(async move {
+            let activity = ctx.require_at(&self.activity)?;
+            let _ = self.captured.set(activity);
+            let _ = self.context.set(ctx.clone());
+            Ok(rutis::host::Effect::Done)
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_activity_activation_is_shared_by_the_native_binding_and_the_named_face() {
+    let captured = Arc::new(std::sync::OnceLock::new());
+    let context = Arc::new(std::sync::OnceLock::new());
+    let (server, _) = launch_with(Arc::new(MockTools), ServerConfig::default(), {
+        let captured = captured.clone();
+        let context = context.clone();
+        move |builder| {
+            builder.plugin(move |names| {
+                Ok(Box::new(ActivationOwner {
+                    activity: names.key()?,
+                    captured: captured.clone(),
+                    context: context.clone(),
+                }) as Box<dyn rutis::host::DynPlugin>)
+            });
+        }
+    })
+    .await;
+    let activity = captured.get().unwrap().clone();
+    assert!(activity.activated().await, "the served host has published");
+    let by_name: bool = rutis_bridge::session::call_service(
+        context.get().unwrap(),
+        "processActivity",
+        "activated",
+        (),
+    )
+    .await
+    .unwrap();
+    assert_eq!(by_name, activity.activated().await);
+    server.shutdown();
+    server.join().await.unwrap();
+    assert!(
+        !activity.activated().await,
+        "host shutdown ends the observation"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_idle_shutdown_is_refused_for_process_work_and_accepted_once_the_first_session_idles() {
     let captured = Arc::new(std::sync::OnceLock::new());

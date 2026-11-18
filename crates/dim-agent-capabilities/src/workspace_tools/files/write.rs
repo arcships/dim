@@ -493,8 +493,9 @@ fn preserve_metadata(source: &std::fs::File, target: &std::fs::File) -> std::io:
     }
     #[cfg(target_os = "linux")]
     {
+        use std::collections::BTreeMap;
         use std::os::fd::AsRawFd;
-        let read = |file: &std::fs::File| -> std::io::Result<std::collections::BTreeMap<Vec<u8>, Vec<u8>>> {
+        let read = |file: &std::fs::File| -> std::io::Result<BTreeMap<Vec<u8>, Vec<u8>>> {
             let fd = file.as_raw_fd();
             let size = unsafe { libc::flistxattr(fd, std::ptr::null_mut(), 0) };
             if size < 0 {
@@ -505,14 +506,22 @@ fn preserve_metadata(source: &std::fs::File, target: &std::fs::File) -> std::io:
             if size < 0 {
                 return Err(std::io::Error::last_os_error());
             }
-            let mut attributes = std::collections::BTreeMap::new();
+            let mut attributes = BTreeMap::new();
             for name in names[..size as usize].split_inclusive(|b| *b == 0) {
-                let size = unsafe { libc::fgetxattr(fd, name.as_ptr().cast(), std::ptr::null_mut(), 0) };
+                let size =
+                    unsafe { libc::fgetxattr(fd, name.as_ptr().cast(), std::ptr::null_mut(), 0) };
                 if size < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
                 let mut value = vec![0u8; (size as usize).max(1)];
-                let size = unsafe { libc::fgetxattr(fd, name.as_ptr().cast(), value.as_mut_ptr().cast(), value.len()) };
+                let size = unsafe {
+                    libc::fgetxattr(
+                        fd,
+                        name.as_ptr().cast(),
+                        value.as_mut_ptr().cast(),
+                        value.len(),
+                    )
+                };
                 if size < 0 {
                     return Err(std::io::Error::last_os_error());
                 }

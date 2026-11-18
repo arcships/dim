@@ -85,11 +85,9 @@ async fn start(home: &Path) -> RunningServer {
         dim_agent_capabilities::model_provider::ModelProviderPlugin::process,
     );
     builder
-        .session_value(Arc::new(
-            dim_agent_capabilities::permission::CommandRulesHost(Arc::new(
-                dim_agent_capabilities::permission::NoCommandRules,
-            )),
-        ))
+        .session_data_value(Arc::new(dim_agent_capabilities::permission::CommandRules(
+            Arc::new(dim_agent_capabilities::permission::NoCommandRules),
+        )))
         .require_feature(
             Feature::new("PromptRegistry").session("PromptRegistry", |names| {
                 Ok(Box::new(

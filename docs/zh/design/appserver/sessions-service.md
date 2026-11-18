@@ -91,6 +91,8 @@ spike 改变了三处设计：服务由谁提供（第 5 条）、生命周期�
 | Session 门面、Permission、Loop | Session、分支 | 不变；经公共调用读取 |
 | InputQueue 撤回服务 | 分支 | 由 S1 新增 |
 
+`AgentDirectory` 是 Agents 目录、索引和 Agent scope 通过 typed key 共享的 owner 私有状态，不登记公共目录名；公共 Session 操作使用 `sessions`。私有依赖仍决定装配与清理顺序。
+
 ## 5. 服务形态
 
 | 项 | 内容 |

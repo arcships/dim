@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
     host::*,
     host_platform::HostPlatform,
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules},
+    permission::{CommandRules, NoCommandRules},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_sources,
     tool_registry::{
@@ -242,7 +242,7 @@ async fn both_paths_carry_one_composition() {
     // adopts with it, and the System comes from `context/configured`.
     let mut builder = AgentBuilder::new(AgentConfig::default());
     mock_model_hosts(&mut builder);
-    builder.session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))));
+    builder.session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))));
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
     prompt_sources::install_with_clock(
         &mut builder,
@@ -385,7 +385,7 @@ async fn an_adopted_request_and_the_summarizers_request_carry_one_system() {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
             }),
         );
-    builder.session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))));
+    builder.session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))));
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
     prompt_sources::install_with_clock(
         &mut builder,
@@ -493,7 +493,7 @@ async fn an_entry_takes_effect_when_its_writer_loads_and_ends_when_it_unloads() 
     let (flag_owner, views_owner) = (flag.clone(), views.clone());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     defaults::install_with_prompt(&mut builder, hosts.clone(), None);
     builder.require_feature(Feature::new("GuideProbeOwner").session(
         "GuideProbeOwner",
@@ -643,7 +643,7 @@ async fn a_branch_scoped_entry_publishes_only_on_its_branch() {
     let (flag_owner, views_owner) = (flag.clone(), views.clone());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     mock_model_hosts(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     workspace(&mut builder, &dirs);
     defaults::install_with_prompt(&mut builder, Arc::new(EmptyPromptHost), None);
     builder.require_feature(Feature::new("GuideProbeOwner").session(
@@ -773,7 +773,7 @@ async fn an_entry_registered_while_its_branch_opens_is_adopted() {
     let (flag_owner, views_owner) = (flag.clone(), views.clone());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     mock_model_hosts(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     workspace(&mut builder, &dirs);
     defaults::install_with_prompt(
         &mut builder,
@@ -1463,7 +1463,7 @@ async fn a_composition_that_moved_and_returned_while_its_branch_opens_is_adopted
     let (flag_owner, views_owner) = (flag.clone(), views.clone());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     defaults::install_with_prompt(
         &mut builder,
         hosts.clone(),
@@ -1556,7 +1556,7 @@ async fn an_entry_that_returns_during_the_open_adoption_is_adopted() {
     let (flag_owner, views_owner) = (flag.clone(), views.clone());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     defaults::install_with_prompt(
         &mut builder,
         hosts.clone(),
@@ -1899,7 +1899,7 @@ async fn branch_probe_agent(
     let mut builder = AgentBuilder::new(AgentConfig::default());
     mock_model_hosts(&mut builder);
     if let Some(store) = store {
-        builder.timeline_store(store);
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     }
     workspace(&mut builder, dirs);
     defaults::install_with_prompt(&mut builder, Arc::new(EmptyPromptHost), None);
@@ -1928,7 +1928,7 @@ async fn restore_guide_agent(
 ) -> MinimalHost {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     defaults::install_with_prompt(&mut builder, Arc::new(EmptyPromptHost), None);
     builder.require_feature(Feature::new("GuideProbeOwner").session(
         "GuideProbeOwner",

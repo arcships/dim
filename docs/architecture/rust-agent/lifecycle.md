@@ -48,7 +48,7 @@ flowchart TB
 | 实例隔离 | 实例键按作用域子树校验；总线按名字投递，分支通道见[单树事件](single-tree.md#事件) |
 | 严格读取 | 插件必需外部服务用 `require` / `require_as`；普通及命名作用域服务都检查声明，release 同样执行，失败保留 `ServiceReadError` |
 | 监听调用 | 卸载、重启、关闭和装载回滚等待插件正在运行的监听调用退出，至多到 rutis 关闭期限（`RUTIS_SHUTDOWN_TIMEOUT`）；不包含调用返回后的业务提交，不能代替 Timeline 与 Loop 状态的结算屏障 |
-| 诊断 | `Ctx::diagnostics()` 只读快照；`Agent::check_assembly()` 在快照上报告直接 `get_as` 绕过严格读取的未声明访问、读取代次与无实例键提供，以及必需行及其子树的 Active 状态；创建不运行该检查，测试在创建后调用一次 |
+| 诊断 | `Ctx::diagnostics()` 只读快照；`Agent::check_assembly()` 在快照上报告未声明的必需读取（包括查找提供者前的拒绝）、读取代次与无实例键提供，以及必需行及其子树的 Active 状态；可选读取不要求依赖声明；创建不运行该检查，测试在创建后调用一次 |
 
 插件调用的 panic 由 rutis 在注册元数据、apply 构造与 poll 边界捕获并转为失败；平台捕获自身工厂构造。业务 Dispatcher 和受管操作回调的构造/poll 由对应组件的故障边界处理。
 

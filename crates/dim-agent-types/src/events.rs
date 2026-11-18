@@ -679,6 +679,17 @@ impl ModelFailureKind {
         }
     }
 
+    /// Whether the retry policy retries this kind by itself: a transport,
+    /// rate-limit, server or malformed-response failure. `output_limit` and
+    /// `unknown` are read by other rules, never by this one.
+    #[must_use]
+    pub const fn retried(self) -> bool {
+        matches!(
+            self,
+            Self::Network | Self::RateLimited | Self::ServerError | Self::MalformedResponse
+        )
+    }
+
     /// The kind's wire name, snake_case.
     #[must_use]
     pub const fn keyword(self) -> &'static str {

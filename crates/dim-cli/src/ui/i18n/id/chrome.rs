@@ -334,7 +334,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C untuk menghentikan workspace Web.",
         "To resume this session:" => "Lanjutkan sesi ini:",
 
-        // composer/commands.rs: descriptions
+        // commands.rs: descriptions
         "start a new session" => "mulai sesi baru",
         "show or set the reasoning effort" => "lihat/atur tingkat penalaran",
         "show or set the priority service tier (on|off)" => {

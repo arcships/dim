@@ -36,7 +36,11 @@ export interface PluginFiles {
   open(): Promise<FileScope>;
 }
 
-/** JSON-only; rutis (0.11+) may deliver bigint in incoming tool data beyond this type. */
+/** JSON data carried by the native bridge. Integers outside JavaScript's safe range
+ * arrive as bigint; sending back bigint requires a signed or unsigned 64-bit value.
+ * Numbers must be finite. This is not the external client's JSON encoding. */
+export type BridgeJsonValue = null | boolean | number | bigint | string | BridgeJsonValue[] | BridgeJsonObject;
+export type BridgeJsonObject = { [key: string]: BridgeJsonValue };
 
 /** Project roots are process-local numbers, not durable identities. */
 export type SettingsScope = 'user' | { project: number };
@@ -120,6 +124,59 @@ export interface ModalityTargets {
 }
 
 export type PermissionPreset = 'read-only' | 'workspace-write' | 'full-access';
+/** Session command-rule read; the owner checks the current user source on each call. */
+export type CommandRule = { command: string; match: 'exact' | 'prefix'; decision: 'allow' | 'deny' }
+export type CommandRulesReply = { rules: CommandRule[] }
+export interface CommandRulesError extends Error { code: 'unavailable' | 'cancelled' }
+export interface CommandRules { read(request: Record<string, never>): Promise<CommandRulesReply> }
+
+/** Model configuration's existing serde form; numeric fields are finite numbers. */
+export interface ModelConfig {
+  temperature?: number; maxTokens?: number; topP?: number; topK?: number;
+  stopSequences?: string[];
+  reasoning?: {
+    enabled?: true; effort?: string; budgetTokens?: number;
+    summary?: 'auto' | 'concise' | 'detailed'; includeThoughts?: boolean; interleavedThinking?: boolean;
+  };
+  providerOptions?: {
+    openai?: {
+      reasoningEffort?: string; serviceTier?: string; summary?: 'auto' | 'concise' | 'detailed';
+      interleavedThinking?: boolean;
+    };
+    'openai-compatible'?: {
+      reasoningEffort?: string; serviceTier?: string; interleavedThinking?: boolean;
+      thinking?: { type?: 'enabled' | 'disabled' }; enable_thinking?: boolean;
+    };
+    anthropic?: {
+      effort?: string; thinking?: { type?: 'adaptive' | 'enabled' | 'disabled'; budgetTokens?: number };
+      sendReasoning?: boolean; interleavedThinking?: boolean;
+    };
+    gemini?: { thinkingConfig?: { thinkingBudget?: number; includeThoughts?: boolean } };
+    deepseek?: EffortProviderOptions; moonshotai?: EffortProviderOptions; xai?: EffortProviderOptions;
+    zenmux?: EffortProviderOptions; aihubmix?: EffortProviderOptions;
+  };
+}
+export interface EffortProviderOptions { reasoningEffort?: string; interleavedThinking?: boolean }
+
+/** One source's loaded prompt value, using the same target identity. */
+export interface PromptEntry {
+  source: string; version: string; body: string;
+  scope: import('./branch-services.js').PromptScope;
+  delivery: 'system' | 'context' | 'state'; order: number;
+}
+export interface PromptLoadError extends Error { code: 'failed' | 'cancelled' }
+export interface PromptHost {
+  /** Explicit cancellation or caller-row unload notifies the source and waits for its own result.
+   * Abandoning the returned Promise does not cancel an accepted load. */
+  load(target: import('./branch-services.js').PromptSourceTarget, cancelled: () => Promise<void>): Promise<PromptEntry | null>;
+}
+export interface PromptRegistrationError extends Error { code: 'failed' }
+export interface PromptRegistry {
+  names(): string[];
+  /** Withdrawal removes future lookups; accepted loads keep their original callback. */
+  register(name: string, load: (target: import('./branch-services.js').PromptSourceTarget, cancelled: () => Promise<void>) => Promise<PromptEntry | null>): Promise<void>;
+}
+
 export interface PermissionPolicy {
   preset: PermissionPreset;
   allowedTools: string[];
@@ -308,6 +365,9 @@ export interface SessionConfig {
   readonly collaborationRole: 'leader' | 'member';
   /** Native serde omits true; absence means interactive. */
   readonly interactive?: false;
+  readonly excludedTools?: readonly string[];
+  readonly language?: import('./branch-services.js').ReplyLanguage;
+  readonly initialTitle?: string;
 }
 
 /**
@@ -456,32 +516,37 @@ export interface MethodDeclaration {
 export interface MethodCall {
   callId: string;
   method: string;
-  params: JsonValue;
+  params: BridgeJsonValue;
   /** The connection that called, when a client connection made the call. */
   origin?: { connectionId: string };
 }
 export interface SessionMethodCall extends MethodCall {
-  params: JsonObject & { sessionId: string; branchId?: string };
+  params: BridgeJsonObject & { sessionId: string; branchId?: string };
 }
 /** A method's failure as data; Rpc maps `code` to the wire error. A method may
  * instead rethrow a service error it received. */
 export interface MethodError { code: string; message: string }
-export type MethodReply = { kind: 'value'; value?: JsonValue } | MethodError;
+export type MethodReply<T = BridgeJsonValue> = { kind: 'value'; value?: T } | MethodError;
+/** Checks data fields without requiring interfaces to declare an index signature. */
+export type CheckedData<T> = T extends BridgeJsonValue | undefined ? T
+  : T extends ((...args: never[]) => unknown) | (abstract new (...args: never[]) => unknown) ? never
+  : T extends object ? keyof T extends never ? never : { [K in keyof T]: CheckedData<T[K]> } : never;
+export type MethodProgress = <T>(data: T & CheckedData<T>) => void;
 export type SessionMethodDeclaration = MethodDeclaration;
-export type SessionMethodReply = MethodReply;
+export type SessionMethodReply<T = BridgeJsonValue> = MethodReply<T>;
 /** How a registered management namespace serves one call. */
-export type MethodHandler = (call: MethodCall, cancelled: Promise<void>, progress: (data: JsonValue) => void) => Promise<MethodReply>;
+export type MethodHandler<T = BridgeJsonValue> = (call: MethodCall, cancelled: Promise<void>, progress: MethodProgress) => Promise<MethodReply<T>>;
 /** How a registered Session namespace serves one call. */
-export type SessionMethodHandler = (call: SessionMethodCall, cancelled: Promise<void>, progress: (data: JsonValue) => void) => Promise<SessionMethodReply>;
+export type SessionMethodHandler<T = BridgeJsonValue> = (call: SessionMethodCall, cancelled: Promise<void>, progress: MethodProgress) => Promise<SessionMethodReply<T>>;
 /** Process service `managementMethods` (protected-local v3 only): a process row
  * registers each of its namespaces, which stays registered until the row unloads. */
 export interface ManagementMethods {
-  register(namespace: string, declarations: MethodDeclaration[], call: MethodHandler): Promise<void>;
+  register<T extends MethodReply<unknown>>(namespace: string, declarations: MethodDeclaration[], call: (call: MethodCall, cancelled: Promise<void>, progress: MethodProgress) => Promise<T & CheckedData<T>>): Promise<void>;
 }
 /** Session service `sessionMethods`: a Session row registers each of its
  * namespaces, which stays registered until the row unloads. */
 export interface SessionMethods {
-  register(namespace: string, declarations: SessionMethodDeclaration[], call: SessionMethodHandler): Promise<void>;
+  register<T extends SessionMethodReply<unknown>>(namespace: string, declarations: SessionMethodDeclaration[], call: (call: SessionMethodCall, cancelled: Promise<void>, progress: MethodProgress) => Promise<T & CheckedData<T>>): Promise<void>;
 }
 
 export type CallChannelErrorCode = 'undeclared' | 'gone' | 'too_large';
@@ -525,6 +590,134 @@ export interface ManagedSearch {
   }>
 }
 
+export interface WorktreeDirectory { repository: string; root: string }
+export interface TimelineReadScope {
+  key: { sessionId: string; branchId: string };
+  through: number;
+  segments: { branchId: string; from: number; through: number; storedThrough: number; tail: AgentEvent[] }[];
+}
+/** Process repository operations for trusted plugins; ids are not scoped to the caller. Create/fork/delete reject ids that are not one normal path component. */
+export interface Store {
+  query(request: { scope: TimelineReadScope; query: import('./branch-services.js').QuerySpec; page?: import('./branch-services.js').QueryPage | null }): Promise<{ result: import('./branch-services.js').QueryOutput; next: import('./branch-services.js').QueryCursor | null }>;
+  /** Stored page: database sequence and closed=false; the lifecycle owner supplies live enrichment. */
+  catalog(request: { request: { limit?: number; cursor?: string; query?: string; cwd?: string | string[]; withPreview?: boolean; withInternal?: boolean; withAcpSessions?: boolean; withAutomationSessions?: boolean; includeClosed?: boolean }; agent?: string | null; version: number; hosts: string[]; closed: string[] }): Promise<{ sessions: import('./client-protocol.js').SessionSummary[]; nextCursor?: string }>;
+
+  addGrant(request: { sessionId: string; path: string; kind: 'file' | 'dir'; mode: 'read' | 'write' }): Promise<{}>;
+  removeGrant(request: { sessionId: string; path: string }): Promise<{}>;
+  grants(request: { sessionId: string }): Promise<{ grants: { path: string; kind: 'file' | 'dir'; mode: 'read' | 'write' }[] }>;
+  setSessionLanguage(request: { sessionId: string; language: import('./branch-services.js').ReplyLanguage | null }): Promise<{}>;
+  creationRecord(request: { sessionId: string }): Promise<{ origin: 'client' | 'acp' | 'internal' | 'unknown' | 'automation'; leaderSessionId: string | null }>;
+  owner(request: { sessionId: string }): Promise<{ agentId: string | null }>;
+  hasRecords(request: { sessionId: string }): Promise<{ exists: boolean }>;
+  /** Storage removal after the lifecycle owner has closed the Session and settled its producers. */
+  delete(request: { sessionId: string }): Promise<{ removed: boolean }>;
+  /** Prepared row copy after role/cut/context/rest validation; configText is source text with initialTitle removed. */
+  fork(request: { sourceSessionId: string; sessionId: string; at: number; configText: string }): Promise<{}>;
+  sessionConfigText(request: { sessionId: string }): Promise<{ configText: string | null }>;
+  sessionConfig(request: { sessionId: string }): Promise<{ config: SessionConfig | null }>;
+  /** Prepare rows after admission, supported-version/configuration checks and protocol feature restrictions; caller initializes/publishes or rolls back. */
+  createOwnedSession(request: { sessionId: string; config: SessionConfig; agentId: string; protocolVersion: number; leaderSessionId: string | null; origin: 'client' | 'acp' | 'internal' | 'unknown' | 'automation'; worktree: (WorktreeDirectory & { subtree: string }) | null }): Promise<{}>;
+  worktreeDirectories(request: {}): Promise<{ directories: (WorktreeDirectory & { lastUsedAtMs: number | null })[] }>;
+  sessionsUnderWorkspace(request: { root: string }): Promise<{ sessionIds: string[] }>;
+  removeWorktreeDirectory(request: WorktreeDirectory): Promise<{ removed: boolean }>;
+  worktreeUsages(request: WorktreeDirectory): Promise<{ usages: { sessionId: string; subtree: string }[] }>;
+  /** Callback runs under the native ownership mutex: do not await createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree or worktreeAssociations.associate from it. */
+  removeWorktree(request: WorktreeDirectory, remove: (path: string) => Promise<void>): Promise<{ removed: boolean }>;
+}
+
+/** Session Timeline storage binding; resource-faces §5. Native append stays beside its state owner. */
+export interface StoredTimelineEvent {
+  event: import('./client-protocol.js').AgentEvent;
+  trace: TimelineTrace | null;
+  batchEnd: number;
+}
+export interface TimelineTrace {
+  event_id: string;
+  original: Omit<import('./client-protocol.js').AgentEvent, 'id' | 'sequence' | 'create_at'>;
+  steps: { handler: string; result?: Omit<import('./client-protocol.js').AgentEvent, 'id' | 'sequence' | 'create_at'> }[];
+}
+export interface StoredTimelineBranch {
+  info: { id: string; parent?: string; branch_point?: number; create_anchor?: number };
+  sequence: number;
+}
+export interface TimelineRecoverySnapshot {
+  sequence: number;
+  event_id: string;
+  interpreter: string;
+  state: string;
+}
+export interface TimelineStoreCompletion {
+  subscriptionId: string;
+  batchId: string;
+  branchId: string;
+  through: number;
+  result: 'committed' | { code: string; message: string };
+}
+export interface TimelineStore {
+  /** Synchronous admission is host-local; callers across a link are rejected. */
+  append(request: { sessionId: string; branchId: string; batchId: string; events: StoredTimelineEvent[] }): { accepted: true };
+  /** Registration completes before return; observe later admissions, without replay of earlier batches. */
+  commits(request: { sessionId: string }, listener: (completion: TimelineStoreCompletion) => void | Promise<void>): Promise<{ subscriptionId: string }>;
+  closeCommits(request: { subscriptionId: string }): Promise<{}>;
+  /** Prepare the backend record; the lifecycle owner initializes and publishes the Agent Session. */
+  createSession(request: { sessionId: string; config: SessionConfig }): Promise<{}>;
+  sessionConfig(request: { sessionId: string }): Promise<{ config: SessionConfig | null }>;
+  /** Drain accepted storage writes; does not close the Agent Session or its admission. */
+  releaseSession(request: { sessionId: string }): Promise<{}>;
+  /** Undo a prepared creation after failed initialization and stopped producers; not general Session deletion. */
+  rollbackSession(request: { sessionId: string }): Promise<{}>;
+  branches(request: { sessionId: string }): Promise<{ branches: StoredTimelineBranch[] }>;
+  head(request: { sessionId: string; branchId: string }): Promise<{ sequence: number }>;
+  readPage(request: { sessionId: string; branchId: string; after: number; limit: number; through: number }): Promise<{ events: StoredTimelineEvent[] }>;
+  readSegments(request: { sessionId: string; segments: { branchId: string; from: number; through: number }[] }): Promise<{ segments: StoredTimelineEvent[][] }>;
+  query: Store['query'];
+  trace(request: { sessionId: string; branchId: string; sequence: number }): Promise<{ trace: TimelineTrace | null }>;
+  batchEnd(request: { sessionId: string; branchId: string; sequence: number }): Promise<{}>;
+  batchEndAt(request: { sessionId: string; branchId: string; sequence: number }): Promise<{ sequence: number }>;
+  saveSnapshot(request: { sessionId: string; branchId: string; snapshot: TimelineRecoverySnapshot }): Promise<{}>;
+  latestSnapshot(request: { sessionId: string; branchId: string; through: number; interpreter: string }): Promise<{ snapshot: TimelineRecoverySnapshot | null }>;
+}
+
+/** One enabled Skill in the current Session view. */
+export type SkillSummary = { id: string; name: string; description: string; userInvocable: boolean };
+/** Branch service backed by its Session Skills owner. */
+export interface SkillsBranch {
+  list(request: Record<string, never>): SkillSummary[];
+}
+
+export type ApprovalDestination = {
+  branchId: string;
+  delegationId: string;
+  agentId: string;
+  interactive: boolean;
+  approvalTools: boolean;
+};
+/** Session service owned by Collaboration; reads an active delegation without changing it. */
+export interface CollaborationSession {
+  approvalDestination(request: { memberSessionId: string }): ApprovalDestination | null;
+}
+
+/** Process MCP owner operations for PluginManager content; credentials and connections stay private. */
+export interface McpService {
+  register(request: { plugin: string; dir: string; document: JsonValue }): Promise<null>;
+  withdraw(request: { plugin: string }): Promise<null>;
+  plugins(request: Record<string, never>): Promise<string[]>;
+  refusal(request: { plugin: string }): [string, string | null] | null;
+}
+
+export type SkillIssue =
+  | { kind: 'invalidManifest'; path: string; reason: string }
+  | { kind: 'unreadable'; path: string; reason: string }
+  | { kind: 'rootUnreadable'; root: string; reason: string }
+  | { kind: 'scanLimitReached'; root: string };
+/** Process Skills owner operations for plugin content; discovery state stays private. */
+export interface SkillsCatalog {
+  register(request: { plugin: string; root: string }): Promise<SkillIssue[]>;
+  withdraw(request: { plugin: string }): Promise<null>;
+  plugins(request: Record<string, never>): Promise<string[]>;
+  issues(request: { plugin: string }): Promise<SkillIssue[]>;
+}
+
 /** The existing user override; null keeps the consumer's factory or built-in text. */
 export interface BasePromptSettingsHost {
   base(request: Record<string, never>): Promise<string | null>;
@@ -534,6 +727,14 @@ export interface SkillsInstructionsSettingsHost {
 }
 export interface SummaryPromptSettingsHost {
   systemPrompt(request: Record<string, never>): Promise<string | null>;
+}
+
+/** Hooks-owned plugin content registration; see Hooks A.2. */
+export interface HooksService {
+  register(request: { plugin: string; dir: string; document: JsonValue }): Promise<null>;
+  withdraw(request: { plugin: string }): Promise<null>;
+  plugins(request: Record<string, never>): Promise<string[]>;
+  refusal(request: { plugin: string }): [error: string, reason: string | null] | null;
 }
 
 /** The ToolRegistry owner's read-only source status view. */

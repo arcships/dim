@@ -680,7 +680,7 @@ async fn a_checkpointed_step_renders_its_context_once() {
         Scripted::new(Mode::Cut),
         None,
     );
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .create_session(SessionConfig::default())
@@ -1076,7 +1076,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         Scripted::new(Mode::TwoMessages),
         None,
     );
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .create_session(SessionConfig::default())
@@ -1152,7 +1152,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         Scripted::new(Mode::InsideRetained),
         Some(&reload),
     );
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let (probe, armed) = (store.clone(), Arc::new(AtomicBool::new(false)));
     let child_reads = Arc::new(std::sync::Mutex::new(None));
     let (arm, child_probe) = (armed.clone(), child_reads.clone());

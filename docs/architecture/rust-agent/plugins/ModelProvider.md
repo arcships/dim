@@ -93,16 +93,16 @@ the provider's one-line `reason`, the `cause` chain, the attempt count, the
 total waited time, and the provider's wait when it asked for more than the
 budget left. The bridge
 ([stream.rs](../../../../crates/dim-agent-aimux/src/stream.rs)) decides the kind
-from the origin, the status, the normalized codes and the `AiMuxError` variant,
-never from message text. A host with no provider boundary gets `unknown` and the
-message it already carried. A tool start whose name is not in `request.tools`
-fails the request before a call is committed; it is a host failure, so its
-`failure.kind` is `unknown`. Arguments that never complete fail it with
-`failure.kind = malformed_response`, the kind the same defect carries when the
-bridge reports unparseable arguments. `failure` is absent on events written before it
-existed and on failures that are not a provider call's: the agent loop's
-unsettled call on a reload and a context preparation failure. `error` is the
-default English line
+from the origin, the status, the normalized codes, the `AiMuxError` variant, the
+finish reason and the reply's shape, never from message text. A host with no
+provider boundary gets `unknown` and the message it already carried. A tool
+start whose name is not in `request.tools` fails the request before a call is
+committed; it is a host failure, so its `failure.kind` is `unknown`. Arguments
+that never complete fail it with `failure.kind = malformed_response`, the kind
+the same defect carries when the bridge reports unparseable arguments.
+`failure` is absent on events written before it existed and on failures that are
+not a provider call's: the agent loop's unsettled call on a reload and a context
+preparation failure. `error` is the default English line
 `<meaning>: <reason>. <action>`, and the turn that the failure ends repeats the
 same string. A `presentation` from the host or from `ModelFailurePolicy` wins
 over the client's kind table; it is an override, not the default form. The full

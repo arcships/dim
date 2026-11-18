@@ -78,6 +78,40 @@ pub(super) async fn count(
         .count()
 }
 
+async fn assert_line_state(
+    agent: &dim_agent_runtime::Agent,
+    session: &str,
+    branch: &str,
+    marker: &str,
+) {
+    let session = agent.get_session(session).unwrap();
+    let line = session
+        .service::<dim_agent_capabilities::timeline_tree::BranchLine>(branch)
+        .unwrap();
+    let state: serde_json::Value =
+        serde_json::from_str(marker.split_once("/>").unwrap().1).unwrap();
+    assert_eq!(
+        state,
+        json!({
+            "resolved": line.resolved(), "ending": line.ending(), "cursor": line.cursor("main").await.unwrap(),
+        })
+    );
+    assert_eq!(
+        state["resolved"][0],
+        if branch == "main" { "main" } else { "host" }
+    );
+    assert_eq!(
+        state["resolved"][1],
+        if branch == "main" {
+            json!(null)
+        } else {
+            json!("main")
+        }
+    );
+    assert_eq!(state["ending"], false);
+    assert_eq!(state["cursor"], serde_json::Value::Null);
+}
+
 /// A server on persistent storage, so a restart restores the Sessions.
 pub(super) async fn launch_stored(
     config: ServerConfig,
@@ -158,6 +192,7 @@ async fn node_branch_typescript_part_follows_events_and_writes_input() {
     for session in &sessions {
         let marker = marked(&agent, session, "main", "<c5-marker").await;
         assert!(marker.contains(r#"branch="main""#), "{marker}");
+        assert_line_state(&agent, session, "main", &marker).await;
         let seen = marker
             .split(r#"seen=""#)
             .nth(1)
@@ -204,6 +239,7 @@ async fn node_branch_typescript_part_follows_events_and_writes_input() {
     );
     let marker = marked(&agent, &sessions[0], &child, "<c5-marker").await;
     assert!(marker.contains(&format!(r#"branch="{child}""#)), "{marker}");
+    assert_line_state(&agent, &sessions[0], &child, &marker).await;
     parent.idle(&child).await.unwrap();
     assert_eq!(count(&agent, &sessions[0], &child, "<c5-marker").await, 1);
     assert_eq!(count(&agent, &sessions[0], &child, "<c5-rebuilt").await, 0);
@@ -241,6 +277,7 @@ async fn node_branch_typescript_part_follows_events_and_writes_input() {
         );
         let rebuilt = marked(&agent, session, branch, "<c5-rebuilt").await;
         assert!(!rebuilt.contains(r#"from="0""#), "{rebuilt}");
+        assert_line_state(&agent, session, branch, &rebuilt).await;
         assert_eq!(count(&agent, session, branch, "<c5-marker").await, 1);
         assert_eq!(count(&agent, session, branch, "<c5-rebuilt").await, 1);
     }

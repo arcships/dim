@@ -63,6 +63,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Goal 状态结果读取](design/plugins/Goal-state-read.md)（中文，草案）：完整目标业务状态；运行只在内存，重载暂停，不恢复旧执行
 - [Rust agent design documents](architecture/README.md#design-documents)
 - [Owner-independent Timeline instances](design/collaboration-timeline.md) (#335)
+- [Timeline 合同、实现与模型对应](design/examples/timeline-contract-coverage.md)：公共约定的证据入口与有限模型边界
 - [Timeline branches](design/timeline-branches.md): what branches are for, branch versus member and fork, messages between lines, identity across compaction, ending a line (#427)（[中文](zh/design/timeline-branches.md)）
 - [Context replay memory plan](design/context-replay-memory.md)（中文）：每步重建的拷贝链、按边界重放与共享消息
 - [Context read switches and the cut](design/context-read-and-compaction.md)（中文）：两个冗余开关列、状态重放与消息收集的边界、一次性迁移

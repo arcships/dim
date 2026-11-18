@@ -1,6 +1,6 @@
 //! Session-scoped paths the user allowed for this Session, and the
 //! `session.grants.*` methods that manage them.
-use crate::storage::SessionStore;
+use crate::storage::Store;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_grants::{ReadSessionGrants, SessionGrantsHost, resolve_grant_path},
@@ -22,7 +22,7 @@ pub fn install(builder: &mut AgentBuilder) {
 }
 
 struct StoreGrants {
-    store: Arc<SessionStore>,
+    store: Arc<Store>,
     session_id: String,
 }
 impl ReadSessionGrants for StoreGrants {
@@ -41,7 +41,7 @@ impl ReadSessionGrants for StoreGrants {
 
 struct SessionGrantsPlugin {
     host: Key<SessionGrantsHost>,
-    store: Key<SessionStore>,
+    store: Key<Store>,
     identity: Key<SessionIdentity>,
     config: Key<SessionConfig>,
     methods: Key<SessionMethods>,

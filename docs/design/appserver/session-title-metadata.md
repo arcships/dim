@@ -104,8 +104,14 @@ protocol version.
 
 ### 4.2 Rust
 
-Rust consumers get `SessionStore` with `ctx.get::<SessionStore>()` and call `metadata` and `set_title` (Appendix A).
-The named service decodes requests, calls them and encodes replies; it adds no rule.
+Rust consumers inject `SessionMetadataService`, the typed binding of `sessionMetadata`, and call
+`read` and `set_title`. The binding is the existing dispatcher, published at both its typed key
+and `host_key("sessionMetadata")`; both routes delegate directly to the same SessionStore owner.
+The existing `SessionMetadata` reply type is unchanged.
+
+`set_title` is a regular function returning the owner's wait future. Calling it admits the write
+immediately, before that future is polled; dropping the future loses only the reply. The binding
+adds no asynchronous wrapper before handover, cancellation point, read, or second title writer.
 
 ## 5. setTitle sequence
 
@@ -361,7 +367,7 @@ fixture](../../../runtime/fixtures/session-metadata.ts); items 6 and 12 hold the
 | D5 | Notice `data` is `{title, titleSource, titleRevision}` | A.2's `{sessionId, title, titleSource, revision}` | The channel already names the Session (C6 D4); one field set for list entries and notices lets clients merge without mapping |
 | D6 | `titleRevision` in v3 list entries | `title` and `titleSource` only | Without it a client cannot order a list reply against a notice (§8) |
 | D7 | List fields for protocol v3 only | All protocol versions | v1 and v2 are frozen and receive no title notices |
-| D8 | Service `sessionMetadata` with `read` and `setTitle`; Rust keeps `metadata` and `set_title` | A.2's method name `metadata` | `sessionMetadata.metadata` repeats itself; `read` matches `settings.read` |
+| D8 | Service `sessionMetadata` with `read` and `setTitle`; the Rust binding uses `read` and `set_title` | A.2's method name `metadata` | `sessionMetadata.metadata` repeats itself; `read` matches `settings.read` |
 | D9 | Errors `conflict`, `not_found`, `storage` as data; malformed calls are bridge errors | A `rejected` code as in `sessions` | The three codes are the write's outcomes; a malformed call is a programming error, as in `settings` |
 | D10 | `not_found` for a Session the store does not hold | `session_closed` | Maintainer decision; it is SessionStore's vocabulary, and SessionTitle maps it to `session_not_found` |
 | D11 | SessionStore stores text as given | Validating length and characters | SessionTitle owns the title rules and validates them; checking again would duplicate the contract |
@@ -387,8 +393,8 @@ pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct TitleFields { pub title: Option<String>, pub title_source: Option<TitleSource>, pub title_revision: u64 }
 pub enum MetadataError { Conflict, NotFound, Storage(String) }
 
-impl SessionStore {
-    pub async fn metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+impl SessionMetadataService {
+    pub async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
     /// Admits and starts the write when called, or fails `Storage` once
     /// SessionStore is closing: the call is the handover. Dropping the
     /// returned future loses only the reply.

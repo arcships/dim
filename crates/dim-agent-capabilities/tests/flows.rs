@@ -23,7 +23,18 @@ async fn echo_tools_and_observable_state_follow_the_public_flow() {
         session.idle("main").await.unwrap();
         let events = chain_events(&session, "main", ..).await.unwrap();
         assert!(events.iter().any(|e| matches!(&e.kind, EventKind::Text(data) if data.delta == "Echo: hello")));
-        assert!(matches!(events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind, EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Completed { .. }, .. })));
+        assert!(matches!(
+            events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Completed { .. },
+                ..
+            })
+        ));
         assert_eq!(session.get::<LoopSnapshot>("main").unwrap().unwrap().phase, LoopPhase::Idle);
         session.submit("tool:echo {\"text\":\"tool-result\"}".into(), InputMode::Queue, "main").await.unwrap();
         session.idle("main").await.unwrap();
@@ -167,7 +178,9 @@ async fn closed_default_memory_sessions_release_history_but_shared_stores_retain
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
         if shared {
-            builder.timeline_store(std::sync::Arc::new(MemoryTimelineStore::default()));
+            builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(
+                std::sync::Arc::new(MemoryTimelineStore::default()),
+            ));
         }
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
@@ -199,7 +212,9 @@ async fn the_prompt_projection_covers_the_facts_a_restored_branch_published() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
     defaults::install(&mut builder);
-    builder.timeline_store(std::sync::Arc::new(MemoryTimelineStore::default()));
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(
+        std::sync::Arc::new(MemoryTimelineStore::default()),
+    ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .create_session(SessionConfig::default())
@@ -255,7 +270,9 @@ async fn repeated_idle_release_checks_never_reject_a_running_turn() {
     const TURNS: usize = 60;
     tokio::time::timeout(Duration::from_secs(20), async {
         let mut builder = AgentBuilder::new(AgentConfig::default());
-        builder.timeline_store(std::sync::Arc::new(MemoryTimelineStore::default()));
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(
+            std::sync::Arc::new(MemoryTimelineStore::default()),
+        ));
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
         let agent = MinimalHost::start(&builder).await.unwrap();
@@ -331,7 +348,9 @@ async fn repeated_idle_release_checks_never_reject_a_running_turn() {
 async fn a_refused_idle_release_reopens_the_branch_for_the_running_turn() {
     tokio::time::timeout(Duration::from_secs(10), async {
         let mut builder = AgentBuilder::new(AgentConfig::default());
-        builder.timeline_store(std::sync::Arc::new(MemoryTimelineStore::default()));
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(
+            std::sync::Arc::new(MemoryTimelineStore::default()),
+        ));
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
         let agent = MinimalHost::start(&builder).await.unwrap();

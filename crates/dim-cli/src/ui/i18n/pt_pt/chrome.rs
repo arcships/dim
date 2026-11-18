@@ -346,7 +346,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "To resume this session:" => "Para retomar esta sessão:",
 
-        // composer/commands.rs: descriptions
+        // commands.rs: descriptions
         "start a new session" => "iniciar nova sessão",
         "show or set the reasoning effort" => "ver ou definir o esforço de raciocínio",
         "show or set the priority service tier (on|off)" => {

@@ -264,7 +264,7 @@ Generated from the real assembly: the App Server product profile (`serve` with a
 `cargo run -p xtask -- check` fails when this file is stale. \
 The rules for names are in [How Dim uses rutis §3](../../../design/rutis-usage.md#3-services-by-name).\n\n\
 ## Services\n\n\
-Each catalog name a part of the assembly provides or injects. `data` means shared with a dispatcher; `internal(reason)` means the face cannot cross; `shared-no-dispatcher` is shared but a leaf cannot call it. Methods are `sync` or `async` (callers in other languages always get a Promise). \
+Each catalog name a part of the assembly provides or injects. `data` means shared with a dispatcher; `internal(reason)` means the face cannot cross; `shared-no-dispatcher` is shared but a leaf cannot call it. Methods are `sync` or `async` (TypeScript callers receive a direct value for `sync` and a Promise for `async`). \
 A non-data name is reached by Rust parts at its type's key.\n\n\
 | Name | Group | Provider | Face | Methods |\n| --- | --- | --- | --- | --- |\n",
         );

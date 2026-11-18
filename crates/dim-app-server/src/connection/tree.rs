@@ -139,7 +139,9 @@ impl Connection {
                 biased;
                 _ = self.closed.cancelled() => {},
                 _ = rpc.unloading.cancelled() => {},
-                result = published.wait_for(|&(sequence, closed)| sequence >= event.sequence || closed) => {
+                result = published
+                    .wait_for(|&(sequence, closed)| sequence >= event.sequence || closed) =>
+                {
                     let _ = result;
                 }
             }

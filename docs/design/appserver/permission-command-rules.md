@@ -56,10 +56,10 @@ Settings or assembly mechanism. The policy is owned by the
                                          | read (each call)
  Session scope                           |
  |  CommandRules (Session part, App Server) provides             |
- |    commandRules (Rust: CommandRulesHost) --read--> Settings    |
+ |    commandRules (Rust: CommandRules) --read--> Settings        |
  |  (mock and test profiles: defaults bind a fixed empty host)    |
  +---------------------------------------^-----------------------+
-                                         | Keyed<CommandRulesHost>
+                                         | Keyed<CommandRules>
  Branch scope                            |
  |  ToolExecutor --admit--> Approval --decide(call, risk)-->      |
  |                                      Permission (supplement)   |
@@ -67,7 +67,7 @@ Settings or assembly mechanism. The policy is owned by the
 ```
 
 Dependencies point to the core: Permission (core, dim-agent-capabilities) depends only on the
-Session port `CommandRulesHost` that the capabilities crate defines. App Server implements the
+Session port `CommandRules` that the capabilities crate defines. App Server implements the
 port over its Settings source; capabilities never names App Server or Settings. No dependency is
 optional: every profile that installs Permission binds exactly one rules host (§4.2).
 
@@ -155,7 +155,7 @@ pub trait ReadCommandRules: Send + Sync + 'static {
     fn rules(&self, cancel: CancellationToken)
         -> HostFuture<'_, Vec<CommandRule>>;   // Result<_, HostError>: Failed | Cancelled
 }
-pub struct CommandRulesHost(pub Arc<dyn ReadCommandRules>);       // Session value
+pub struct CommandRules(pub Arc<dyn ReadCommandRules>);       // Session value
 pub struct NoCommandRules;                                         // the fixed empty host
 
 impl Permission {
@@ -164,17 +164,24 @@ impl Permission {
 }
 ```
 
-`PermissionPlugin::Deps` gains `Keyed<CommandRulesHost>` (hard). `Approval::admit` passes the
+`PermissionPlugin::Deps` gains `Keyed<CommandRules>` (hard). `Approval::admit` passes the
 call it already holds and propagates a cancelled read; its two existing `decide` sites (first
 decision and the recheck after an allow response) are otherwise unchanged.
+
+`CommandRules::read(cancel)` is the typed operation and returns `CommandRulesReply { rules }`.
+The dispatcher serves `read({})` and delegates to that same read. The native binding keeps
+`HostError::Failed`/`Cancelled`; the wire boundary names them `unavailable`/`cancelled`.
+Capability-only hosts provide the same value at both Session keys with
+`AgentBuilder::session_data_value`; the product's CommandRules part provides both keys itself.
+Neither path adds a Settings read or caches rules.
 
 Bindings per profile (exactly one each):
 
 | Profile | Binding |
 | --- | --- |
-| `defaults::install`, `install_with_prompt`, `install_with_process_model` (mock App Server profile and test hosts) | `install_profile` binds the fixed empty host `NoCommandRules` with `session_value`, next to the `EmptyPromptHost` it already binds. Existing tests are unchanged |
-| `install_with_prompt_capability`, `install_local_execution`, `install_minimal_execution` | Bind nothing, like `PromptHost`: the host that installs them binds the port. Capability-only hosts (integration tests, the `xtask` local graph) bind `CommandRulesHost(Arc::new(NoCommandRules))` |
-| App Server product profile (`install_local_execution` in `main.rs`, its tests and the `xtask` App Server graph) | The profile calls `permission_rules::install(&mut builder)`, which adds the feature `CommandRules` and requires its Session part `CommandRules` (`require_feature`, Deps `Keyed<SettingsService>`); it provides `CommandRulesHost` reading `SettingsService::read::<PermissionSettings>(User)` on each call. `serve` registers the process part `PermissionRulesPlugin` (`register_part`, Deps `Keyed<SettingsService>` and `Keyed<ManagementMethods>`, owner row `permission`) with local execution, next to `mcp` and `skills`; it provides the management methods. Both live in `dim-app-server/src/permission_rules.rs` with the `PermissionSettings` document type (`NAMESPACE = "permission"`, `USER_FILE = "permission.json"`, no `PROJECT_FILE`) |
+| `defaults::install`, `install_with_prompt`, `install_with_process_model` (mock App Server profile and test hosts) | `install_profile` binds the fixed empty host `NoCommandRules` with `session_data_value`, next to the `EmptyPromptHost` it already binds. Existing tests are unchanged |
+| `install_with_prompt_capability`, `install_local_execution`, `install_minimal_execution` | Bind nothing, like `PromptHost`: the host that installs them binds the port. Capability-only hosts (integration tests, the `xtask` local graph) bind `CommandRules(Arc::new(NoCommandRules))` |
+| App Server product profile (`install_local_execution` in `main.rs`, its tests and the `xtask` App Server graph) | The profile calls `permission_rules::install(&mut builder)`, which adds the feature `CommandRules` and requires its Session part `CommandRules` (`require_feature`, Deps `Keyed<SettingsService>`); it provides `CommandRules` reading `SettingsService::read::<PermissionSettings>(User)` on each call. `serve` registers the process part `PermissionRulesPlugin` (`register_part`, Deps `Keyed<SettingsService>` and `Keyed<ManagementMethods>`, owner row `permission`) with local execution, next to `mcp` and `skills`; it provides the management methods. Both live in `dim-app-server/src/permission_rules.rs` with the `PermissionSettings` document type (`NAMESPACE = "permission"`, `USER_FILE = "permission.json"`, no `PROJECT_FILE`) |
 
 ## 5. Flows
 
@@ -228,8 +235,8 @@ Read failures deny because a deny rule may exist.
 ### 5.3 Admission
 
 ```
- ToolExecutor       Approval                     Permission           CommandRulesHost
-    | admit(call) --->| decide(call, risk) ------->| rules() ----------->| read user source
+ ToolExecutor       Approval                     Permission           CommandRules
+    | admit(call) --->| decide(call, risk) ------->| read(cancel) ------>| read user source
     |                 |<-- Allow | Ask | Deny -----|<-- rules ----------|
     |<- Ok (runs)     |   Allow                    |
     |<- error result  |   Deny: content = reason (existing HostError::failed path)
@@ -294,7 +301,7 @@ denials do today, for example
 
 | Part | Relationship |
 | --- | --- |
-| Permission | Supplement: `decide` takes the call and reads rules for command calls; Session dependency `CommandRulesHost`. Rules add no policy fields and change no policy versions or methods; presets follow Permission's own contract |
+| Permission | Supplement: `decide` takes the call and reads rules for command calls; Session dependency `CommandRules`. Rules add no policy fields and change no policy versions or methods; presets follow Permission's own contract |
 | Approval | Passes the call to `decide` at both existing sites and propagates a cancelled read. Events, `approval.respond`, replay and recovery unchanged |
 | ToolExecutor, WorkspaceTools, ShellTools | Unchanged; `exec` and `execute` already declare `execute_process` and take `command` |
 | Settings | Unchanged; one new source `permission` (user file, native row). Its `settings.changed` event is emitted as for any source; F2 does not listen |
@@ -305,7 +312,7 @@ denials do today, for example
 | Collaboration, Scheduler, Workflow | Rules are host-wide and apply in every Session; since allow only answers `Ask`, an automation Session capped at read-only is not widened |
 | Hooks (pre-tool) | Independent: Hooks advice is consulted after command rules and only when they do not deny ([Hooks A.6.1](../plugins/Hooks.md#a61-tool-advice-in-permission)) |
 
-Public additions: the Session port `commandRules` (Rust `CommandRulesHost`), the `CommandRule`
+Public additions: the Session port `commandRules` (Rust `CommandRules`), the `CommandRule`
 types, the `permission` management namespace (two methods) and the `permission` Settings source.
 Each is needed for a rule to be stored, written by a client, and read by Permission.
 
@@ -348,7 +355,7 @@ Decided by the maintainer:
    ([ADR 018](../../adr/018-permission-is-the-preset.md), [§10.1](#101-legacy-rule-kinds)).
 5. **Dedicated methods vs S8b `settings.read`/`settings.update`:** decided when S8b is designed;
    F2 keeps `permission.rules`/`permission.set_rules`.
-6. **Binding:** the Session port `Keyed<CommandRulesHost>` per profile (§4.2), not a process
+6. **Binding:** the Session port `Keyed<CommandRules>` per profile (§4.2), not a process
    service dependency; existing tests are unchanged.
 7. **Scope:** F2 is server side only: rules source, Permission check, management methods and flow
    tests. The CLI `/permissions` panel and the "always" option belong to F6 (CLI) as a requirement it

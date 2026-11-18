@@ -788,6 +788,12 @@ Ctrl+T 立即运行所选任务，并报告所有者为手动窗口记录的投�
 Esc      -> 清除查询；查询为空时关闭并释放结果
 ```
 
+`--set-limits` 指定单个模型时，写入前只读取该模型，写入后也只回读并展示该模型。
+
+```text
+read MODEL -> write MODEL -> display MODEL
+```
+
 ### Models 领域
 
 Models 领域（#818）：`/models` 里的 `Manage models` 先打开提供方列表，再打开单个提供方的面板，`dimcode models PROVIDER enable|disable|remove|inspect MODEL`、`edit MODEL`、`set MODEL PATH` 与 `add PATH` 是它在命令行上的同一领域，经 `provider.management` 与 `provider.models.*` 写入（[提供方管理](appserver/provider-management.md)）。提供方是领域的一部分，所以另一个提供方的回复不会落到面板里，面板标题也写明提供方（`Models · <name>`）。`dimcode models PROVIDER` 保持原有列表与四个标志；`--refresh` 就是该领域在命令行上的 reload。

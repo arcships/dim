@@ -38,6 +38,9 @@ pub(crate) fn request<T: DeserializeOwned>(
         .clone()
         .json()
         .map_err(|_| invalid(port, "the request is not data"))?;
+    if !request.is_object() {
+        return Err(invalid(port, "expected a request object"));
+    }
     serde_json::from_value(request).map_err(|error| invalid(port, error))
 }
 

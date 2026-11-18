@@ -11,6 +11,7 @@ import { useSessionsStore } from "../../stores/sessions"
 import { useConnectionStore } from "../../stores/connection"
 import ComposerModelMenu from "./ComposerModelMenu.vue"
 import ComposerPermissionMenu from "./ComposerPermissionMenu.vue"
+import type { ModelMenuPreview } from "./new-session-model"
 import { quoteInto } from "./quote"
 
 /** The Session commands the menu lists, each only when given. Errors are reported by the callee. */
@@ -38,6 +39,11 @@ const props = withDefaults(defineProps<{
   running: boolean
   stopping?: boolean
   model: ModelId | undefined
+  /**
+   * The new Session's model resolution: the state the menu shows and the two
+   * actions it offers. Absent where the Session's own model is authoritative.
+   */
+  modelPreview?: ModelMenuPreview
   /** False when this connection may not change the model; the menu then only names it. */
   modelSelectable: boolean
   /** Sends the text and the draft's attachments in `mode`; resolves once the server accepted it. */
@@ -796,7 +802,7 @@ defineExpose({ focus: () => field.value?.focus(), quote })
         </div>
         <div class="composer-run-group">
           <progress v-if="uploadProgress !== undefined" :value="uploadProgress" max="100" aria-label="File upload" />
-          <ComposerModelMenu v-if="variant !== 'panel'" ref="modelMenu" :model="model" :selectable="modelSelectable" :disabled="changingModel" @select="onModel" />
+          <ComposerModelMenu v-if="variant !== 'panel'" ref="modelMenu" :model="model" :preview="modelPreview" :selectable="modelSelectable" :disabled="changingModel" @select="onModel" @follow="modelPreview?.follow()" @retry="modelPreview?.retry()" />
           <UTooltip v-if="sendNow" :text="t('composer.stopping')">
             <UButton color="neutral" variant="ghost" size="sm" square icon="i-lucide-loader-circle" :aria-label="t('composer.stopping')" disabled />
           </UTooltip>

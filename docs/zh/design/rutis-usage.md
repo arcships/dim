@@ -93,7 +93,7 @@ builder 在两个宿主里建出的两个 Agent 不会挂上彼此的部件。
   做，用它自己的登记处。必需部件尚未有人登记时，实例的创建像等必需行一样等它。
   持有进程状态的功能从持有它的那一行登记部件：Mcp、Collaboration、Agents、SkillsCatalog，以及持有文件写协调器的
   WorkspaceTools。ConfiguredModels 与 ConfiguredModel、PermissionRules 与 CommandRules 仍是两个插件：由 profile
-  选择哪个部件为 Session 绑定 `PrepareModelHost` 或 `CommandRulesHost`，与进程行是否运行无关。最小宿主在启动时
+  选择哪个部件为 Session 绑定 `PrepareModelHost` 或 `CommandRules`，与进程行是否运行无关。最小宿主在启动时
   启动它的插件。
 - 工具、工具来源和提示词来源已经向 ToolRegistry 和 PromptRegistry 登记，Session 方法和管理方法的命名空间向 Session 的 `sessionMethods` 和进程的 `managementMethods` 登记，Rpc 每次调用时读取它们（R6，[#382](https://github.com/arcships/dim/issues/382)）。
 - `partRegistry` 可以跨语言调用：TypeScript 或 Python 插件是进程里的一行，用 `registerDefinition` 登记自己的部件（附录 B，[#403](https://github.com/arcships/dim/issues/403)）；声明了组的行会被 App Server 拒绝。
@@ -114,7 +114,7 @@ builder 在两个宿主里建出的两个 Agent 不会挂上彼此的部件。
 
 | 要素 | 形式 |
 | --- | --- |
-| 方法 | 名称，`sync` 或 `async`。其他语言的调用方总是得到 Promise |
+| 方法 | 名称，`sync` 或 `async`。TypeScript 调用方在 `sync` 时直接得到值，在 `async` 时得到 Promise |
 | 请求与回复 | serde 数据，以字段表或 JSON 结构描述 |
 | 错误 | 数据，`{code, message}`，错误码由服务写明。转发的部件重新抛出它收到的错误，由 wire 边界映射（[插件契约](plugin-contract.md#9-向机制所有者提出的需求) R3） |
 | 取消 | 一个协议动作：请求中的取消回调或 promise，或消费方丢弃该调用 |
@@ -165,7 +165,8 @@ loader 为每个副本解析每个名字，各运行时落实结果。部件代�
   只属于该实例的名字要以其组登记，这样每个实例各有一份；部件私有的名字由它的行隔离。否则其他实例也能看到该服务，
   第二个提供它的副本会因 rutis 的重复提供者错误而失败。
 - **必需与可选。** 必需的依赖要注入，并对部件门控。可选的依赖在使用时读取，不注入：Cordis 的 `ctx.get(name)`、
-  rutis 的 `ctx.get_at(&key)`。由配置选择的依赖，是否包含在副本的名字中由配置决定。
+  rutis 的 `ctx.get_at(&key)`。必需的依赖绝不用这种方式读：可选读取不门控、不随提供者重载，也不核对声明。
+  由配置选择的依赖，是否包含在副本的名字中由配置决定。
 - **Cordis。** 未经修改的 rutis Cordis 4（`@deepseek-ai/cordis`）插件作为 Node 行运行，得到同样的解析。
   Cordis 3 插件不在目标内。
 
@@ -243,8 +244,7 @@ Dim 的部件如何消费总线事件，以及 Dim 定义了哪些公开总线�
     （`caller_row`）。经调用方的 `ctx.effect` 做的登记在调用方卸载时撤下；bridge 能把其他语言的函数作为可调用的
     引用传过来（`RemoteFunction`）。
 - **所需机制：**每个所有者为它的贡献提供 `register`：ToolRegistry 管工具和工具来源，PromptRegistry 管提示词来源，
-  Rpc 管 Session 方法和管理方法的命名空间。工具和方法命名空间可以从任何语言登记；提示词来源和工具来源在有外来部件
-  需要之前仍只限 Rust。
+  Rpc 管 Session 方法和管理方法的命名空间。公开登记操作遵循[服务面 §2](service-faces.md)，是数据面；各所有者定义自己的贡献形状和回调生命周期。
   - 登记属于调用方。在 Rust 里调用方传入自己的 ctx；从其他语言调用时，bridge 把登记绑定到发起调用的行，处理函数
     是调用方自己的函数，经 bridge 回调。调用方卸载时登记撤下。
   - 同一个名字向同一个所有者登记第二次会失败，与一个名字有第二个提供者时一样。
@@ -301,9 +301,9 @@ P3 删除了旧形式（[#375](https://github.com/arcships/dim/issues/375)）；
 
 没有名字依赖的 Rust 部件就是普通的 rutis `Plugin`（`type Deps` 按类型）。依赖名字的部件是 rutis
 `host::DynPlugin`，也就是 rutis 给出的按 key 依赖的写法：部件保存这个副本的 key（由工厂从 `Names` 取得），
-在 `injects` 中列出，在 `apply` 中用 `require_at` 读取（只在存在时才用的依赖用 `get_at`，不列出）。
-Dim 不另加 trait 或适配层。列出的 key 在严格读取时发现提供者已消失，会返回它自己的错误，rutis 把部件退回
-Pending（A.3）。绑定在 Rust 中落实 §3.5：
+在 `injects` 中列出，在 `apply` 中用 `require_at` 读取。`get_at` 只读部件缺少它也能工作的服务，这种 key 不列出
+（§3.5）。Dim 不另加 trait 或适配层。列出的 key 在严格读取时发现提供者已消失，会返回它自己的错误，
+rutis 把部件退回 Pending（A.3）。绑定在 Rust 中落实 §3.5：
 
 - 按 `#[rutis::service]` 的规则给类型命名：`Timeline` 是 `timeline`，`dyn LoopState` 是 `loopState`
   （`names::name_of`）。一个 Rust 类型就是一个名字，所以在两个组提供的类型要拆成两个类型，或归到一个组。
@@ -377,6 +377,12 @@ Agent（`AgentBuilder::build`），宿主以 `partRegistry` 把它提供给自�
 （`AgentBuilder::agent_row`）包含它的提供方，并按 Agent 实例隔离该名称，因此共享宿主的其他 Agent、宿主自己
 对该名称的提供方都不会与它冲突。宿主把这一行放进自己的 loader，该 loader 的服务目录是 builder 的。`session_value` 保留给 Session 名称。
 
+对于直接实现 `HostDispatch` 的宿主配置 Session 值，
+`AgentBuilder::session_data_value` 把同一个 `Arc` 提供到原生类型键及
+`host_key_in(name, session_instance)`。名称必须已在服务目录的 Session 组中共享。
+两个绑定都属于 SessionScope，并随它撤销；`session_value` 保持原有原生/标记值行为。
+此绑定不增加部件或 owner 状态；取消契约由该值的操作负责。
+
 ### A.3 已定的问题
 
 来自 [#6](https://github.com/arcships/dim/issues/6)：
@@ -384,7 +390,7 @@ Agent（`AgentBuilder::build`），宿主以 `partRegistry` 把它提供给自�
 - **依赖消失。** 某个名称的提供者消失时，rutis 把依赖它的部件退回 Pending，提供者回来后再次加载。新的一代
   按能力重载协议从 Timeline 重新开始（[插件契约 §7.2](plugin-contract.md#72-代次重载与重建)），不再增加任何东西。
 - **可选依赖与由配置选择的依赖。** 同 §3.5：由配置选择的依赖在被选中时门控（工厂填的 `Option<Key<T>>`），
-  组合检查此时也覆盖它；只在存在时才用的依赖用 `get_at` 读取，不列在 `injects` 中。它的名称仍须登记。
+  组合检查此时也覆盖它；缺少它也能工作的依赖用 `get_at` 读取，不列在 `injects` 中。它的名称仍须登记。
 - **启动进展。** `startup_timeout` 限制 loader 启动、reconcile、必需行就绪和打开重放期间连续没有进展的时间。本次打开中一行的首次激活、分支派发序号前进或一份打开回执完成会重置间隔；同一行反复重启不算新的进展。
   `apply` 运行较久的插件可用 `opening_advanced(ctx)`（`dim_agent_runtime::assembly`）报告真实进展，同样重置该间隔；工作在阻塞线程上运行的插件从那里报告。
   只计本次打开范围内的进展，其他 Session 的活动不算；不设固定总时限。

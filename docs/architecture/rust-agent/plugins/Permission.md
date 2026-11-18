@@ -59,7 +59,7 @@ rules are unchanged. A client updating the preset sends the tool lists it read, 
 | Service | Purpose |
 | --- | --- |
 | `S:SessionConfig` | Seed the initial permission policy. |
-| `S:CommandRulesHost` | Read the user's command rules when deciding a command call. |
+| `S:CommandRules` | Read the user's command rules when deciding a command call. |
 | `S:SessionIdentity` | Name the Session in the facts query. |
 | `B:Dispatcher` | Replay local policies, apply committed policy changes and settle update waiters. |
 | `B:Timeline` | Write changes and read ancestor policies. |
@@ -308,7 +308,7 @@ and exits 3.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`S:CommandRulesHost`、`S:SessionConfig`、`S:SessionIdentity` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`S:CommandRules`、`S:SessionConfig`、`S:SessionIdentity` |
 | 提供 | `B:Permission`、`B:StateCell<PermissionState>`、`B:dyn HostDispatch#permission` |
 | 被注入于 | `Approval`、`HooksBranch` |
 <!-- /generated -->

@@ -213,6 +213,7 @@ pub const WEB_MANAGEMENT_METHODS: &[&str] = &[
     "provider.list",
     "provider.catalog",
     "provider.refresh",
+    "provider.model.set_enabled",
     "provider.models.set_enabled",
     "provider.models.edit",
     "provider.models.reset",
@@ -718,6 +719,18 @@ pub struct CatalogCancel {
 pub struct SessionId {
     pub session_id: String,
 }
+/// Requires the single path component used by Session command-output storage.
+pub(crate) fn check_session_id(id: &str) -> dim_agent_runtime::Result<()> {
+    if !matches!(std::path::Path::new(id).components().collect::<Vec<_>>()[..],
+        [std::path::Component::Normal(name)] if name == id)
+    {
+        return Err(dim_agent_runtime::AgentError::InvalidInput(format!(
+            "invalid Session id {id}"
+        )));
+    }
+    Ok(())
+}
+
 /// `session.delete`: with `requireInactive`, a Session in use refuses the
 /// delete with `session_active` instead of being closed and removed.
 #[derive(Debug, Deserialize)]

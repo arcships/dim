@@ -2281,11 +2281,11 @@
     {
       "providerId": "magpie",
       "displayName": "Magpie",
-      "driverKind": "openai-responses",
+      "driverKind": "openai-compatible",
       "defaultBaseUrl": "http://127.0.0.1:3425/v1",
       "auth": {"type":"api_key","headerName":"Authorization","prefix":"Bearer "},
       "models": [],
-      "metadata": {"adapter":"openai-responses","customModels":true,"source":"local","raw":{"id":"magpie","name":"Magpie","api":"http://127.0.0.1:3425/v1","adapter":"openai-responses","customModels":true}}
+      "metadata": {"adapter":"openai-compatible","customModels":true,"source":"local","raw":{"id":"magpie","name":"Magpie","api":"http://127.0.0.1:3425/v1","adapter":"openai-compatible","customModels":true}}
     },
     {
       "providerId": "xai",

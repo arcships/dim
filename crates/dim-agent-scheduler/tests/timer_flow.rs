@@ -129,8 +129,9 @@ async fn an_at_job_runs_once_when_its_instant_arrives_and_then_disables() {
     let mut client = Client::connect(&config).await.unwrap();
     select_model(&mut client).await;
 
-    let at = (chrono::Utc::now() + chrono::Duration::seconds(3))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let at = (jiff::Timestamp::now() + jiff::SignedDuration::from_secs(3))
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
     let saved: Value = client
         .typed(
             "schedule.save",

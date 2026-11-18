@@ -16,6 +16,19 @@ point as `Services`.
 The pinned rutis 0.19.3 declarations pass `tsc --strict` without `skipLibCheck`.
 This does not disable checking a plugin's calls against the service interfaces.
 
+`BridgeJsonValue` and `BridgeJsonObject` describe JSON-compatible data carried by the
+plugin bridge, including `bigint` for integers outside JavaScript's safe range.
+Session and management method registration checks the inferred reply fields as
+data, so a generated configuration interface can be returned directly without
+copying its fields or casting it. Functions and other non-data fields are rejected.
+Inline handlers infer their reply type. For an explicitly annotated handler or
+reply, supply its payload type as `MethodHandler<T>`, `SessionMethodHandler<T>`
+or `MethodReply<T>`; registration still checks that payload as data. The existing boundary
+requires finite numbers and integers representable by Rust's signed or unsigned
+64-bit JSON numbers; the TypeScript `bigint` type cannot express that range.
+The external client protocol's `JsonValue` remains JSON-only and does not admit
+`bigint`. These types describe their respective boundaries, not a conversion step.
+
 ## Available services
 
 The [generated catalog](architecture/rust-agent/generated/catalog.md) lists every name with its group,

@@ -141,7 +141,7 @@ async fn storage_failure_during_generic_cleanup_supersedes_the_session_fault() {
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
         builder
-            .timeline_store(store.clone())
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .require_feature(Feature::new("storage-session.capture-timeline").branch(
                 "storage-session.capture-timeline",
                 move |names| Ok(Box::new(CaptureTimeline::new(names, captured.clone())?)),
@@ -192,7 +192,7 @@ async fn sqlite_session_failure_rejects_writes_on_an_idle_sibling_timeline() {
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
         builder
-            .timeline_store(store.clone())
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .require_feature(Feature::new("storage-session.capture-timeline").branch(
                 "storage-session.capture-timeline",
                 move |names| Ok(Box::new(CaptureTimeline::new(names, captured.clone())?)),
@@ -296,16 +296,16 @@ async fn session_close_and_idle_unload_persist_finalizers_and_release_branch_par
             defaults::install(&mut builder);
             let generation = Arc::new(Mutex::new(Weak::new()));
             let mounted_generation = generation.clone();
-            builder.timeline_store(store.clone()).require_feature(
-                Feature::new("storage-session.record-cleanup").branch(
+            builder
+                .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
+                .require_feature(Feature::new("storage-session.record-cleanup").branch(
                     "storage-session.record-cleanup",
                     move |names| {
                         let marker = Arc::new(());
                         *mounted_generation.lock().unwrap() = Arc::downgrade(&marker);
                         Ok(Box::new(RecordCleanup::new(names, marker)?))
                     },
-                ),
-            );
+                ));
             let agent = MinimalHost::start(&builder).await.unwrap();
             let session = agent
                 .create_session(SessionConfig::default())

@@ -241,7 +241,12 @@ impl Transport<RoleClient> for StdioTransport {
                 _ = stopping.cancelled() => Err(McpServerError::Closed),
                 result = async {
                     let mut write = write.lock().await;
-                    write.as_mut().ok_or(McpServerError::Closed)?.send(item).await.map_err(|_| McpServerError::RequestFailed)
+                    write
+                        .as_mut()
+                        .ok_or(McpServerError::Closed)?
+                        .send(item)
+                        .await
+                        .map_err(|_| McpServerError::RequestFailed)
                 } => result,
             }
         }

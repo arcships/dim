@@ -25,7 +25,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use declared::Declared;
 pub(crate) use declared::{Read, Update};
-pub use declared::{SourceDeclaration, Writer, holds_write_only, without_write_only};
+pub use declared::{Settings, SourceDeclaration, Writer, holds_write_only, without_write_only};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SettingsError {

@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use dim_agent_capabilities::{
     methods::RpcError, prompt_state::PromptSnapshot, timeline_tree::TreeCommands,
 };
@@ -10,6 +9,7 @@ use dim_agent_types::{
     AgentEvent, BranchCreateFailedData, EventKind, ModelId, ModelOutputOutcome, TimelinePosition,
     TurnOutcome,
 };
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU64;
 use uuid::Uuid;
@@ -90,7 +90,8 @@ impl ErrorReference {
 pub(super) struct Observed {
     operation: Operation,
     code: Option<String>,
-    observed_at: DateTime<Utc>,
+    #[serde(with = "dim_agent_capabilities::timestamp")]
+    observed_at: Timestamp,
     client_version: String,
 }
 
@@ -156,7 +157,8 @@ impl Operation {
 pub(super) struct CapturedError {
     operation: Operation,
     pub(super) summary: &'static str,
-    pub(super) observed_at: DateTime<Utc>,
+    #[serde(with = "dim_agent_capabilities::timestamp")]
+    pub(super) observed_at: Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) code: Option<&'static str>,
 }

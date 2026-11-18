@@ -152,23 +152,48 @@ impl DynPlugin for TemporaryMcp {
             let (expires, wake, expiry_mutation) =
                 (bindings.clone(), changed.clone(), mutation.clone());
             tasks.spawn(async move {
-                if !lifecycle.activated().await { return; }
+                if !lifecycle.activated().await {
+                    return;
+                }
                 loop {
                     let notified = wake.notified();
-                    let deadline = expires.lock().unwrap().values().map(|b| *b.deadline.lock().unwrap()).min();
+                    let deadline = expires
+                        .lock()
+                        .unwrap()
+                        .values()
+                        .map(|b| *b.deadline.lock().unwrap())
+                        .min();
                     tokio::select! {
                         () = stop.cancelled()=>break,
                         () = lifecycle.closing()=>break,
                         () = notified=>{},
-                        () = async { match deadline { Some(at)=>tokio::time::sleep_until(at).await, None=>std::future::pending().await } }=>{},
+                        () = async {
+                            match deadline {
+                                Some(at) => tokio::time::sleep_until(at).await,
+                                None => std::future::pending().await,
+                            }
+                        } => {},
                     }
                     let _mutation = expiry_mutation.lock().await;
                     let retired = {
                         let mut bindings = expires.lock().unwrap();
-                        let ids: Vec<_> = bindings.iter().filter(|(_,b)| *b.deadline.lock().unwrap() <= Instant::now() || b.ready.borrow().as_ref().is_some_and(Result::is_err)).map(|(id,_)| *id).collect();
-                        ids.into_iter().filter_map(|id| bindings.remove(&id)).collect::<Vec<_>>()
+                        let ids: Vec<_> = bindings
+                            .iter()
+                            .filter(|(_, b)| {
+                                *b.deadline.lock().unwrap() <= Instant::now()
+                                    || b.ready.borrow().as_ref().is_some_and(Result::is_err)
+                            })
+                            .map(|(id, _)| *id)
+                            .collect();
+                        ids.into_iter()
+                            .filter_map(|id| bindings.remove(&id))
+                            .collect::<Vec<_>>()
                     };
-                    for binding in retired { if let Err(error) = binding.view.shutdown().await { tracing::warn!(%error, "temporary MCP cleanup failed"); } }
+                    for binding in retired {
+                        if let Err(error) = binding.view.shutdown().await {
+                            tracing::warn!(%error, "temporary MCP cleanup failed");
+                        }
+                    }
                 }
             });
             let identity = ctx.require_at(&self.identity)?;
@@ -176,81 +201,153 @@ impl DynPlugin for TemporaryMcp {
             let context = ctx.clone();
             let (session, tools, lifecycle) =
                 (self.session, self.tools.clone(), self.lifecycle.clone());
-            methods.register(ctx, NAMESPACE, ["attach","renew","detach"].into_iter().map(|name| MethodDecl::new(&format!("{NAMESPACE}.{name}"), true, Interruption::Drain)).collect(), Arc::new(move |call, cancelled, _| {
-                let session_id = identity.session_id.clone();
-                let files = files.clone();
-                let MethodCall { method, params, .. } = call;
-                let (bindings, changed, mutation, ctx, cwd, tools, lifecycle) = (bindings.clone(), changed.clone(), mutation.clone(), context.clone(), config.cwd.clone(), tools.clone(), lifecycle.clone());
-                Box::pin(async move {
-                    if method.ends_with(".attach") {
-                        let mut input: Attach = methods::params(params)?;
-                        if input.servers.is_empty() { return Ok(json!({})); }
-                        for (name, configuration) in &mut input.servers {
-                            if name.trim().is_empty() { return Err(RpcError::invalid("Empty MCP server name")); }
-                            if let McpServerSettings::Stdio { cwd: directory, .. } = configuration { *directory = Some(cwd.clone()); }
-                            let expanded = temporary_expansion(configuration);
-                            McpServerPlugin::new(name, expanded, Key::of()).map_err(|_| RpcError::invalid("Invalid temporary MCP configuration"))?;
-                        }
-                        let guard = mutation.lock().await;
-                        let stale = {
-                            let mut entries = bindings.lock().unwrap();
-                            let expired = entries.get(&input.binding_id).is_some_and(|b| *b.deadline.lock().unwrap() <= Instant::now() || b.ready.borrow().as_ref().is_some_and(Result::is_err) || b.view.state().error.is_some());
-                            if expired { entries.remove(&input.binding_id) } else { None }
-                        };
-                        if let Some(stale) = stale { stale.view.shutdown().await.map_err(|_| failed())?; }
-                        let binding = {
-                            let mut bindings = bindings.lock().unwrap();
-                            if let Some(binding) = bindings.get(&input.binding_id) {
-                                if binding.servers != input.servers { return Err(RpcError::service("mcp_binding_conflict", "Binding id already has different MCP configuration")); }
-                                *binding.deadline.lock().unwrap() = Instant::now() + LEASE;
-                                binding.clone()
-                            } else {
-                                let (ready, received) = watch::channel(None);
-                                let plugin = BindingPlugin { files, session_id, id: input.binding_id, session, servers: input.servers.clone(), tools, lifecycle, ready, changed: changed.clone() };
-                                let view = ctx.plugin(Box::new(plugin) as Box<dyn DynPlugin>);
-                                let binding = Arc::new(Binding { servers: input.servers, view, ready: received, deadline: Mutex::new(Instant::now()+LEASE) });
-                                bindings.insert(input.binding_id, binding.clone());
-                                binding
+            methods.register(
+                ctx,
+                NAMESPACE,
+                ["attach", "renew", "detach"]
+                    .into_iter()
+                    .map(|name| {
+                        MethodDecl::new(&format!("{NAMESPACE}.{name}"), true, Interruption::Drain)
+                    })
+                    .collect(),
+                Arc::new(move |call, cancelled, _| {
+                    let session_id = identity.session_id.clone();
+                    let files = files.clone();
+                    let MethodCall { method, params, .. } = call;
+                    let (bindings, changed, mutation, ctx, cwd, tools, lifecycle) = (
+                        bindings.clone(),
+                        changed.clone(),
+                        mutation.clone(),
+                        context.clone(),
+                        config.cwd.clone(),
+                        tools.clone(),
+                        lifecycle.clone(),
+                    );
+                    Box::pin(async move {
+                        if method.ends_with(".attach") {
+                            let mut input: Attach = methods::params(params)?;
+                            if input.servers.is_empty() {
+                                return Ok(json!({}));
                             }
-                        };
-                        changed.notify_one();
-                        let loaded = (&binding.view).await.map_err(|_| failed());
-                        drop(guard);
-                        let mut ready = binding.ready.clone();
-                        let result = async {
+                            for (name, configuration) in &mut input.servers {
+                                if name.trim().is_empty() {
+                                    return Err(RpcError::invalid("Empty MCP server name"));
+                                }
+                                if let McpServerSettings::Stdio { cwd: directory, .. } =
+                                    configuration
+                                {
+                                    *directory = Some(cwd.clone());
+                                }
+                                let expanded = temporary_expansion(configuration);
+                                McpServerPlugin::new(name, expanded, Key::of()).map_err(|_| {
+                                    RpcError::invalid("Invalid temporary MCP configuration")
+                                })?;
+                            }
+                            let guard = mutation.lock().await;
+                            let stale = {
+                                let mut entries = bindings.lock().unwrap();
+                                let expired = entries.get(&input.binding_id).is_some_and(|b| {
+                                    *b.deadline.lock().unwrap() <= Instant::now()
+                                        || b.ready.borrow().as_ref().is_some_and(Result::is_err)
+                                        || b.view.state().error.is_some()
+                                });
+                                if expired {
+                                    entries.remove(&input.binding_id)
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(stale) = stale {
+                                stale.view.shutdown().await.map_err(|_| failed())?;
+                            }
+                            let binding = {
+                                let mut bindings = bindings.lock().unwrap();
+                                if let Some(binding) = bindings.get(&input.binding_id) {
+                                    if binding.servers != input.servers {
+                                        return Err(RpcError::service(
+                                            "mcp_binding_conflict",
+                                            "Binding id already has different MCP configuration",
+                                        ));
+                                    }
+                                    *binding.deadline.lock().unwrap() = Instant::now() + LEASE;
+                                    binding.clone()
+                                } else {
+                                    let (ready, received) = watch::channel(None);
+                                    let plugin = BindingPlugin {
+                                        files,
+                                        session_id,
+                                        id: input.binding_id,
+                                        session,
+                                        servers: input.servers.clone(),
+                                        tools,
+                                        lifecycle,
+                                        ready,
+                                        changed: changed.clone(),
+                                    };
+                                    let view = ctx.plugin(Box::new(plugin) as Box<dyn DynPlugin>);
+                                    let binding = Arc::new(Binding {
+                                        servers: input.servers,
+                                        view,
+                                        ready: received,
+                                        deadline: Mutex::new(Instant::now() + LEASE),
+                                    });
+                                    bindings.insert(input.binding_id, binding.clone());
+                                    binding
+                                }
+                            };
+                            changed.notify_one();
+                            let loaded = (&binding.view).await.map_err(|_| failed());
+                            drop(guard);
+                            let mut ready = binding.ready.clone();
+                            let result = async {
                           loaded?;
                           loop {
                             if let Some(result) = ready.borrow().clone() { return result; }
                             tokio::select! {
                                 () = cancelled.cancelled()=>return Err(RpcError::interrupted()),
-                                result = ready.changed()=>if result.is_err() { return Err(failed()); },
+                                result = ready.changed() => {
+                                    if result.is_err() {
+                                        return Err(failed());
+                                    }
+                                },
                             }
                           }
                         }.await;
-                        if result.is_err() {
-                            let _guard = mutation.lock().await;
-                            { let mut entries = bindings.lock().unwrap();
-                            if entries.get(&input.binding_id).is_some_and(|current| Arc::ptr_eq(current,&binding)) { entries.remove(&input.binding_id); } }
-                            let _ = binding.view.shutdown().await;
+                            if result.is_err() {
+                                let _guard = mutation.lock().await;
+                                {
+                                    let mut entries = bindings.lock().unwrap();
+                                    let current = entries.get(&input.binding_id);
+                                    if current.is_some_and(|current| Arc::ptr_eq(current, &binding))
+                                    {
+                                        entries.remove(&input.binding_id);
+                                    }
+                                }
+                                let _ = binding.view.shutdown().await;
+                            }
+                            return result.map(|()| json!({}));
                         }
-                        return result.map(|()| json!({}));
-                    }
-                    let address: Address = methods::params(params)?;
-                    if method.ends_with(".renew") {
-                        let bindings = bindings.lock().unwrap();
-                        let binding = bindings.get(&address.binding_id).ok_or_else(missing)?;
-                        if *binding.deadline.lock().unwrap() <= Instant::now() { return Err(missing()); }
-                        *binding.deadline.lock().unwrap() = Instant::now()+LEASE;
+                        let address: Address = methods::params(params)?;
+                        if method.ends_with(".renew") {
+                            let bindings = bindings.lock().unwrap();
+                            let binding = bindings.get(&address.binding_id).ok_or_else(missing)?;
+                            if *binding.deadline.lock().unwrap() <= Instant::now() {
+                                return Err(missing());
+                            }
+                            *binding.deadline.lock().unwrap() = Instant::now() + LEASE;
+                            changed.notify_one();
+                            return Ok(json!({}));
+                        }
+                        let _guard = mutation.lock().await;
+                        let binding = bindings.lock().unwrap().remove(&address.binding_id);
                         changed.notify_one();
-                        return Ok(json!({}));
-                    }
-                    let _guard = mutation.lock().await;
-                    let binding = bindings.lock().unwrap().remove(&address.binding_id);
-                    changed.notify_one();
-                    if let Some(binding) = binding { binding.view.shutdown().await.map_err(|_| failed())?; }
-                    Ok(json!({}))
-                })
-            }))?;
+                        if let Some(binding) = binding {
+                            binding.view.shutdown().await.map_err(|_| failed())?;
+                        }
+                        Ok(json!({}))
+                    })
+                }),
+            )?;
             Ok(Effect::Done)
         })
     }
@@ -322,33 +419,83 @@ impl DynPlugin for BindingPlugin {
             let session_id = self.session_id.clone();
             tasks.spawn(async move {
                 let operation = async {
-                    if !lifecycle.activated().await { return Err(failed()); }
-                    let mut watches: Vec<_> = connections.iter().map(|(_,connection)| (connection.subscribe(), connection.tool_changes())).collect();
+                    if !lifecycle.activated().await {
+                        return Err(failed());
+                    }
+                    let mut watches: Vec<_> = connections
+                        .iter()
+                        .map(|(_, connection)| (connection.subscribe(), connection.tool_changes()))
+                        .collect();
                     let mut previous = None;
                     loop {
-                        for (state, tools) in &mut watches { state.borrow_and_update(); tools.borrow_and_update(); }
-                        let lists = try_join_all(connections.iter().map(|(_,connection)| connection.tools(&stop))).await.map_err(|error| failed_because(&error))?;
+                        for (state, tools) in &mut watches {
+                            state.borrow_and_update();
+                            tools.borrow_and_update();
+                        }
+                        let lists = try_join_all(
+                            connections
+                                .iter()
+                                .map(|(_, connection)| connection.tools(&stop)),
+                        )
+                        .await
+                        .map_err(|error| failed_because(&error))?;
                         if previous.as_ref() != Some(&lists) {
-                        let next = connections.iter().zip(&lists).map(|((id,connection),tools)| Arc::new(ToolSourceSet {
-                            key: format!("{prefix}:{id}"), version: uuid::Uuid::new_v4().to_string(),
-                            tools: tools.iter().map(|tool| contribution(id,tool,connection.clone(),stop.clone(),files.clone(),session_id.clone())).collect(),
-                        })).collect();
-                        *sets.lock().unwrap() = next;
-                        ctx.emit(ToolProviderChanged { name: tool_provider_changes(session) }).map_err(|_| failed())?;
-                        previous = Some(lists);
+                            let next = connections
+                                .iter()
+                                .zip(&lists)
+                                .map(|((id, connection), tools)| {
+                                    Arc::new(ToolSourceSet {
+                                        key: format!("{prefix}:{id}"),
+                                        version: uuid::Uuid::new_v4().to_string(),
+                                        tools: tools
+                                            .iter()
+                                            .map(|tool| {
+                                                contribution(
+                                                    id,
+                                                    tool,
+                                                    connection.clone(),
+                                                    stop.clone(),
+                                                    files.clone(),
+                                                    session_id.clone(),
+                                                )
+                                            })
+                                            .collect(),
+                                    })
+                                })
+                                .collect();
+                            *sets.lock().unwrap() = next;
+                            let changed = ToolProviderChanged {
+                                name: tool_provider_changes(session),
+                            };
+                            ctx.emit(changed).map_err(|_| failed())?;
+                            previous = Some(lists);
                         }
                         ready.send_replace(Some(Ok(())));
                         tokio::select! {
                             () = stop.cancelled()=>return Ok(()),
                             () = lifecycle.closing()=>return Ok(()),
-                            _ = select_all(watches.iter_mut().map(|(state,tools)| Box::pin(async move { tokio::select! { r=state.changed()=>r,r=tools.changed()=>r } })))=>{},
+                            _ = select_all(watches.iter_mut().map(|(state, tools)| {
+                                Box::pin(async move {
+                                    tokio::select! {
+                                        r = state.changed() => r,
+                                        r = tools.changed() => r,
+                                    }
+                                })
+                            })) => {},
                         }
                     }
                 };
                 tokio::pin!(operation);
-                let result = tokio::select! { ()=stop.cancelled()=>Ok(()), ()=lifecycle.closing()=>Ok(()), result=&mut operation=>result };
+                let result = tokio::select! {
+                    () = stop.cancelled() => Ok(()),
+                    () = lifecycle.closing() => Ok(()),
+                    result = &mut operation => result,
+                };
                 stop.cancel();
-                if let Err(error) = result { ready.send_replace(Some(Err(error))); changed.notify_one(); }
+                if let Err(error) = result {
+                    ready.send_replace(Some(Err(error)));
+                    changed.notify_one();
+                }
             });
             Ok(Effect::Done)
         })

@@ -80,7 +80,7 @@ flowchart LR
 | `HooksSession` | Session（可选；由 Hooks 插件在启用期间登记） | `HookSources`；HostPlatform；`SessionConfig.cwd`；`submitChecks`（InputQueue 的 Session 部件） | 向 `submitChecks` 登记提交检查 `hooks`，由操作者输入入口调用（A.6.2）；供 `HooksBranch` 使用的私有目录与命令执行器 |
 | `HooksBranch` | 分支（可选；由 Hooks 插件在启用期间登记） | `HooksSession` 的执行器；`Dispatcher`、`Approval`、`Permission`、`Branch::input` | 向分支的 Permission 登记建议方 `hooks`（A.6.1）；观察与上下文类 Hook |
 
-`HookSources` 沿用 `CommandRulesHost` 与 `SkillSettingsHost` 的现有宿主端口模式：agent 侧部件从不提及 Settings 或 App Server。Hooks 的部件向各自的所有者登记：`HooksBranch` 向 Permission，`HooksSession` 向 `submitChecks`。Permission 与入口不依赖任何建议方或检查（[ADR 002 D3](../../adr/002-plugin-scope.md#d3-依赖跟随作用域并从扩展指向核心)）：没有登记时，Permission 只按策略与命令规则决定，入口不经检查直接写入操作者输入。
+`HookSources` 沿用 `CommandRules` 与 `SkillSettingsHost` 的现有宿主端口模式：agent 侧部件从不提及 Settings 或 App Server。Hooks 的部件向各自的所有者登记：`HooksBranch` 向 Permission，`HooksSession` 向 `submitChecks`。Permission 与入口不依赖任何建议方或检查（[ADR 002 D3](../../adr/002-plugin-scope.md#d3-依赖跟随作用域并从扩展指向核心)）：没有登记时，Permission 只按策略与命令规则决定，入口不经检查直接写入操作者输入。
 
 **重载。** 启用、停用或升级 Hooks 只重载 Hooks 插件（D3）。已打开的 Session 与分支随它的登记变化挂载或卸下它的部件（[ADR 006 D3](../../adr/006-plugin-contract.md#d3-插件是一行每个实例挂载为它登记的部件)）。在它的部件卸载前，它们结算已接受的工作（AGENTS 规则 8）：终止运行中的命令，并按当时运行的 Hook 的 `onFailure` 回答每个未决的提交检查（A.5）。它们的登记随之撤下。建议尚未返回的调用会看到该建议被丢弃，视为 none，Permission 在没有它的情况下决定；Hooks 正在回答的审批留给用户。Hooks 的部件未挂载期间的提交与调用不经过 Hooks（A9）。编辑 Hook 文档、启用状态或 `disableAllHooks` 是业务配置，在下一个 Hook 点读取，从不重载（[D4](../../adr/002-plugin-scope.md#d4-结构性配置与业务配置分离)）。
 
@@ -412,6 +412,27 @@ AcpGateway 自己的设计把 Hooks 对 `session.submit` 的 `input_blocked` 拒
 
 `HookSources.read(cwd, cancel)` 按来源返回其 id、路径、启用状态与文档或错误。工作区是 Settings 为 `cwd` 授权的项目根，如同 `mcp.catalog` 的解析方式；没有项目的 `cwd` 没有项目来源。目录顺序为表中顺序，再按文档顺序。同一 Hook 点上 `command` 字符串与插件目录都相同的处理器只运行一次；插件之间的命令从不合并，因为 `DIM_PLUGIN_ROOT` 赋予它们不同的含义（A.3）。文档在每个 Hook 点读取；缺失的项目文件视为空，无法读取或无效的文件列为 `invalid` 并记诊断，其中的 Hook 都不运行。
 
+### A.2.1 插件内容数据面
+
+`hooksService` 是现有插件内容操作的进程数据面，与 A.7 的本地客户端管理入口分开。
+每个操作只接受一个 JSON 对象；位置参数数组和标量请求无效。
+
+| 操作 | 请求 | 回复 |
+| --- | --- | --- |
+| `register`（异步） | `{plugin, dir, document}`；插件 ID 和目录为字符串 | `null` |
+| `withdraw`（异步） | `{plugin}` | `null` |
+| `plugins`（异步） | `{}` | 插件 ID 数组 |
+| `refusal`（同步） | `{plugin}` | `[error, reason]` 或 `null`；`reason` 为字符串或 `null` |
+
+登记、替换、无效文档移除、持久化及启用规则沿用 A.2。`refusal` 读取 PluginManager 使用的同一份
+原子 error/reason 对，不新增来源读取。错误保留 [Settings owner 错误码](../appserver/settings-service.md#6-错误)
+及消息；原始原因带有凭据安全的静态 reason 时，wire 错误的 `data.reason` 携带该值。请求形状错误为
+`invalid_request`。
+
+原生绑定与 dispatcher 调用同一个 Hooks owner 操作。原生显式取消保留已有 token 检查。
+放弃 wire 等待不会回滚或中断已经接纳的登记：Settings 写入及拒绝信息更新仍由 owner 完成。
+不增加状态副本、注册表、来源扫描或重试策略。
+
 ### A.3 命令协议
 
 | 通道 | 内容 |
@@ -476,7 +497,7 @@ AcpGateway 自己的设计把 Hooks 对 `session.submit` 的 `input_blocked` 拒
 | 项 | 内容 |
 | --- | --- |
 | 被什么挡住 | §4 规则 3 禁止在 before 回调中等待，规则 8 要求 Timeline 不变，所以 `PreToolUse` 命令不能扣住 `step/tool-call`。规则 7 禁止替 Permission 决定。Permission 是每个调用“能否运行”的所有者，包括其预设无需询问即允许的调用。目前 `Permission::decide(call, risk, cancel)` 只询问它的命令规则端口，收不到调用身份，并且对准入与 Approval 允许后的复核做完全相同的调用。 |
-| 考虑过的现有机制 | `step/tool-call` 上的异步 before（已撤回，#21）；订阅 `step/tool-call` 的 Dispatcher（在交接给 ToolExecutor 之后运行，与执行竞争，规则 2）；回答 `approval/request`（只对本来就要提问的调用存在）；`CommandRulesHost`（由 profile 绑定的单一 Session 端口，只用于 `execute_process` 调用的命令，且按静态规则决定）。向所有者登记，与工具向 ToolRegistry 登记相同（[rutis 使用 R6](../rutis-usage.md#r6-贡献向所有者登记)）：建议方沿用它。 |
+| 考虑过的现有机制 | `step/tool-call` 上的异步 before（已撤回，#21）；订阅 `step/tool-call` 的 Dispatcher（在交接给 ToolExecutor 之后运行，与执行竞争，规则 2）；回答 `approval/request`（只对本来就要提问的调用存在）；`CommandRules`（由 profile 绑定的单一 Session 端口，只用于 `execute_process` 调用的命令，且按静态规则决定）。向所有者登记，与工具向 ToolRegistry 登记相同（[rutis 使用 R6](../rutis-usage.md#r6-贡献向所有者登记)）：建议方沿用它。 |
 | 需要的通用能力 | Approval 的 `admit` 在准入决定中把 `AdmitCall.source` 传给 Permission；复核仍是普通 `decide`。Permission 保存分支的建议方。分支部件在运行期间向分支的 Permission 登记建议方：`permission.registerAdvice(name, advise)`。登记属于发起调用的部件，在它卸载时撤下；同名的第二个建议方登记失败。`HooksBranch` 登记 `hooks`。在准入决定中，策略与命令规则之后、且结果不是 Deny 时，Permission 按名称顺序调用此刻已登记的每个建议方：`advise {source, name, input, risk, decision: "allow" \| "ask"}` → `{advice: "none" \| "allow" \| "ask" \| "deny", reason?}`（异步；取消 = Permission 丢弃调用）。任一 deny → `Deny {reason}`；否则任一 ask → `Ask {reason}`；否则任一 allow → `Allow`；否则 Permission 自己的决定。提供方错误视为 `none`。Permission 不依赖任何建议方；`HooksBranch` 依赖 Permission。不带业务含义：任何分支部件都可登记建议方。建议永远不能推翻 Deny，因为那时不会询问建议。ToolExecutor 不变：它本来就把调用 id 放在 `AdmitCall.source` 中。 |
 | 对序号、批次、中断、重载的影响 | 序号与批次：无新事件；被拒调用的错误文本在 ToolExecutor 现有的批次结果中；被允许的调用不写 `approval/request`。中断：批次令牌取消决定，从而取消建议调用。重载：调用中途撤下的建议方，其未返回的建议被丢弃，视为 `none`；没有已登记的建议方时，Permission 只按策略与命令规则决定。一个调用的准入延迟增加建议所需时间。 |
 | 由谁实现与 issue | Permission 与 Approval（`dim-agent-capabilities`）；[#758](https://github.com/arcships/dim/issues/758)（§10.2）。 |
@@ -667,7 +688,7 @@ Codex 的 `apply_patch` 没有别名：它的输入是补丁，而 Dim 的 `writ
 | `input_blocked` | `RpcError::app(-32000, "input_blocked", message)`；`data` 只有 `{appError}` |
 | `warnings` | `dim_agent_types::input` 中的 `SubmitWarning { check: String, message: String }`，序列化为 `{check, message}`，不做重命名；由 `SubmitResult` 与 `tree_protocol::CreateResult` 携带，并在 withdraw 回复的 `serde_json` 对象上设置 |
 | `Approval.respond` | 经 `Keyed<Approval>` 调用 `Approval::respond(approval_id, ApprovalDecision)` |
-| `HookSources` | Session 端口 `HookSourcesHost(Arc<dyn ReadHookSources>)`，由 App Server 绑定，如同 `CommandRulesHost` 与 `SkillSettingsHost` |
+| `HookSources` | Session 端口 `HookSourcesHost(Arc<dyn ReadHookSources>)`，由 App Server 绑定，如同 `CommandRules` 与 `SkillSettingsHost` |
 | `hooks`、`hooks-projects`、`hooks-plugins` | App Server 中的 `BusinessDocument` 类型（`hooks`：`USER_FILE` 为 `hooks.json`，没有 `PROJECT_FILE`；`hooks-projects`：`USER_FILE` 为 `hooks-projects.json`；`hooks-plugins`：`USER_FILE` 为 `hooks-plugins.json`，每个插件 id 一条 `{dir, hooks}`，如同 `mcp/config.rs` 中的 `McpPluginServers`） |
 | `.dimcode/hooks.json` | 由 `HooksSettings` 经 `FileStorage::path(root, ".dimcode/hooks.json")` 与 `read_limited` 读取，`root` 来自 `SettingsService::project_root(cwd)`，解析为 `hooks` 文档类型 |
 | `register`、`withdraw`、`plugins()` | `HooksService::register_plugin(plugin: String, dir: PathBuf, document: serde_json::Value, cancel: &CancellationToken) -> Result<()>`、`withdraw_plugin(plugin: String, cancel: &CancellationToken) -> Result<()>`、`plugins(cancel: &CancellationToken) -> Result<Vec<String>>` 与 `plugin_refusal(&self, plugin: &str) -> Option<(String, Option<&'static str>)>`，如同 `McpService` 的（`crates/dim-app-server/src/mcp.rs`）：被拒绝的文档不留条目，`plugin_refusal` 报告其错误文本以及原因携带的静态 reason，两者在同一把锁下读取；PluginManager 在其 `Owners` 中经 `names.key()` 读取该服务，`Kind::Hooks` 加入 `OWNERS` 与 `CONTENT`（[PluginManager §3.7](PluginManager.md#37-内容登记)） |

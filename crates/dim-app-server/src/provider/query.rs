@@ -3,6 +3,8 @@ use super::*;
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelQuery {
+    #[serde(default)]
+    pub selectable_only: bool,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub query: Option<String>,
@@ -101,26 +103,79 @@ impl ProviderService {
                     if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
                     if input.after.as_ref().is_some_and(|a| id < a.provider_id) { continue; }
                     let mut header = persistence::read(&tx,&id,persistence::Models::Header);
-                    if !matches!(&header,Ok(Some(PersistedProviderRecord::Static(record))) if !record.enabled) {
+                    if !matches!(
+                        &header,
+                        Ok(Some(PersistedProviderRecord::Static(record))) if !record.enabled
+                    ) {
                         persistence::adopt(&tx,&id,&bundled,&cancel)?;
                         header=persistence::read(&tx,&id,persistence::Models::Header);
                     }
-                    let display = descriptors.iter().find(|d|d.provider_id==id).map(|d|d.display_name.clone()).or_else(|| header.as_ref().ok().and_then(|r|r.as_ref()).and_then(|r| match r { PersistedProviderRecord::Static(r)=>Some(r.display_name.clone()), _=>None })).unwrap_or_else(||id.clone());
-                    if matches!(&header,Ok(Some(PersistedProviderRecord::Static(record))) if !record.enabled) { continue; }
-                    if matches!(&header,Ok(None)) && !accounts.contains_key(&id) { continue; }
-                    let provider_matches = query.as_ref().is_none_or(|q|display.to_lowercase().contains(q));
-                    let mut after = input.after.as_ref().filter(|a|a.provider_id==id).map(|a|a.model_id.clone()).unwrap_or_default();
+                    let display = descriptors
+                        .iter()
+                        .find(|d| d.provider_id == id)
+                        .map(|d| d.display_name.clone())
+                        .or_else(|| {
+                            header
+                                .as_ref()
+                                .ok()
+                                .and_then(|r| r.as_ref())
+                                .and_then(|r| match r {
+                                    PersistedProviderRecord::Static(r) => {
+                                        Some(r.display_name.clone())
+                                    }
+                                    _ => None,
+                                })
+                        })
+                        .unwrap_or_else(|| id.clone());
+                    if matches!(
+                        &header,
+                        Ok(Some(PersistedProviderRecord::Static(record))) if !record.enabled
+                    ) {
+                        continue;
+                    }
+                    if matches!(&header, Ok(None)) && !accounts.contains_key(&id) {
+                        continue;
+                    }
+                    let provider_matches = query
+                        .as_ref()
+                        .is_none_or(|q| display.to_lowercase().contains(q));
+                    let mut after = input
+                        .after
+                        .as_ref()
+                        .filter(|a| a.provider_id == id)
+                        .map(|a| a.model_id.clone())
+                        .unwrap_or_default();
                     let mut saw_model = false;
                     loop {
-                        let batch = persistence::model_keys(&tx,&bundled,&id,input.model_id.as_deref(),&after,(limit+1-candidates.len()).max(1))?;
+                        let batch = persistence::model_keys(
+                            &tx,
+                            &bundled,
+                            &id,
+                            input.model_id.as_deref(),
+                            &after,
+                            (limit + 1 - candidates.len()).max(1),
+                        )?;
                         if batch.is_empty() { break; }
                         saw_model = true;
                         for model in batch {
                             after = model.clone();
                             if !provider_matches {
-                                let name = persistence::name(&tx,&bundled,&id,&model)?;
-                                let matches = name.is_some_and(|n| n.model_id.to_lowercase().contains(query.as_deref().unwrap_or_default()) || n.display_name.to_lowercase().contains(query.as_deref().unwrap_or_default()));
-                                let zdr = query.as_deref()==Some("zdr") && tx.query_row("SELECT zdr FROM provider_names WHERE provider_id=?1 AND model_id=?2",params![id,model],|r|r.get::<_,bool>(0)).optional().map_err(storage)?.unwrap_or(false);
+                                let name = persistence::name(&tx, &bundled, &id, &model)?;
+                                let wanted = query.as_deref().unwrap_or_default();
+                                let matches = name.is_some_and(|n| {
+                                    n.model_id.to_lowercase().contains(wanted)
+                                        || n.display_name.to_lowercase().contains(wanted)
+                                });
+                                let zdr = query.as_deref() == Some("zdr")
+                                    && tx
+                                        .query_row(
+                                            "SELECT zdr FROM provider_names WHERE provider_id=?1 AND model_id=?2",
+                                            params![id, model],
+                                            |r| r.get::<_, bool>(0),
+                                        )
+                                        .optional()
+                                        .map_err(storage)?
+                                        .unwrap_or(false);
                                 if !matches && !zdr { continue; }
                             }
                             candidates.push((id.clone(),model,display.clone()));
@@ -128,52 +183,146 @@ impl ProviderService {
                         }
                         if candidates.len() > limit || input.model_id.is_some() { break; }
                     }
-                    if !saw_model && input.model_id.is_none() && input.after.as_ref().is_none_or(|a|id>a.provider_id) && (provider_matches || query.as_ref().is_some_and(|q|id.to_lowercase().contains(q))) {
-                        candidates.push((id.clone(),String::new(),display));
+                    if !saw_model
+                        && input.model_id.is_none()
+                        && input.after.as_ref().is_none_or(|a| id > a.provider_id)
+                        && (provider_matches
+                            || query
+                                .as_ref()
+                                .is_some_and(|q| id.to_lowercase().contains(q)))
+                    {
+                        candidates.push((id.clone(), String::new(), display));
                     }
                     if candidates.len() > limit { break; }
                 }
-                let more = candidates.len()>limit;
+                let more = candidates.len() > limit;
                 candidates.truncate(limit);
-                let next = more.then(|| candidates.last().map(|(provider_id,model_id,_)| ModelId {provider_id:provider_id.clone(),model_id:model_id.clone()})).flatten();
+                let last = candidates.last().map(|(provider_id, model_id, _)| ModelId {
+                    provider_id: provider_id.clone(),
+                    model_id: model_id.clone(),
+                });
+                let next = more.then_some(last).flatten();
                 let mut page = ModelPage {
-                    #[cfg(feature="testing")] work:Default::default(),
-                    models:Vec::new(),empty:Vec::new(),next };
+                    #[cfg(feature = "testing")]
+                    work: Default::default(),
+                    models: Vec::new(),
+                    empty: Vec::new(),
+                    next,
+                };
                 let mut names = HashMap::new();
-                let mut grouped = BTreeMap::<String,Vec<String>>::new();
-                for (provider,model,_) in &candidates { if !model.is_empty() { grouped.entry(provider.clone()).or_default().push(model.clone()); } }
-                for (provider,targets) in grouped { names.insert(provider.clone(),persistence::names(&tx,&bundled,&provider,&targets)?); }
-                for (provider_id,model_id,provider_name) in candidates {
-                    if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
-                    let record = persistence::read(&tx,&provider_id,if model_id.is_empty() { persistence::Models::Header } else { persistence::Models::One(&model_id) });
+                let mut grouped = BTreeMap::<String, Vec<String>>::new();
+                for (provider, model, _) in &candidates {
+                    if !model.is_empty() {
+                        grouped.entry(provider.clone()).or_default().push(model.clone());
+                    }
+                }
+                for (provider, targets) in grouped {
+                    names.insert(
+                        provider.clone(),
+                        persistence::names(&tx, &bundled, &provider, &targets)?,
+                    );
+                }
+                for (provider_id, model_id, provider_name) in candidates {
+                    if cancel.is_cancelled() {
+                        return Err(storage("Provider query cancelled"));
+                    }
+                    let fields = if model_id.is_empty() {
+                        persistence::Models::Header
+                    } else {
+                        persistence::Models::One(&model_id)
+                    };
+                    let record = persistence::read(&tx, &provider_id, fields);
                     if model_id.is_empty() {
                         let reason = match &record {
                             Err(_) => EmptyModelReason::Unreadable,
                             Ok(Some(PersistedProviderRecord::Static(r))) => {
-                                if !native.get(&provider_id).copied().unwrap_or(true) { continue; }
-                                EmptyModelReason::NoModels { listable: can_list_models(&bundled,&provider_id,r) }
+                                if !native.get(&provider_id).copied().unwrap_or(true) {
+                                    continue;
+                                }
+                                EmptyModelReason::NoModels {
+                                    listable: can_list_models(&bundled, &provider_id, r),
+                                }
                             }
-                            _ if accounts.get(&provider_id).is_some_and(|a|a.account.is_some()) => EmptyModelReason::NoModels { listable: true },
+                            _ if accounts
+                                .get(&provider_id)
+                                .is_some_and(|a| a.account.is_some()) =>
+                            {
+                                EmptyModelReason::NoModels { listable: true }
+                            }
                             _ if accounts.contains_key(&provider_id) => continue,
                             Ok(None) => continue,
                             _ => EmptyModelReason::Unreadable,
                         };
-                        page.empty.push(EmptyModelProvider { provider_id,provider_name,reason });
+                        page.empty.push(EmptyModelProvider {
+                            provider_id,
+                            provider_name,
+                            reason,
+                        });
                         continue;
                     }
-                    let (catalog,preferences) = match record {
-                        Ok(Some(PersistedProviderRecord::Static(record))) => (static_catalog(&bundled,&provider_id,&record,native.get(&provider_id).copied().unwrap_or(true)),record.model_preferences.get(&model_id).cloned().unwrap_or_default()),
-                        Ok(Some(PersistedProviderRecord::Managed(record))) if accounts.get(&provider_id).is_some_and(|a| a.account.is_some() && same_account(&record.account,a)) => (record.catalog(&bundled), record.model_preferences.get(&model_id).cloned().unwrap_or_default()),
+                    let (catalog, preferences) = match record {
+                        Ok(Some(PersistedProviderRecord::Static(record))) => {
+                            let catalog = static_catalog(
+                                &bundled,
+                                &provider_id,
+                                &record,
+                                native.get(&provider_id).copied().unwrap_or(true),
+                            );
+                            let preferences = record
+                                .model_preferences
+                                .get(&model_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            (catalog, preferences)
+                        }
+                        Ok(Some(PersistedProviderRecord::Managed(record)))
+                            if accounts.get(&provider_id).is_some_and(|a| {
+                                a.account.is_some() && same_account(&record.account, a)
+                            }) =>
+                        {
+                            let catalog = record.catalog(&bundled);
+                            let preferences = record
+                                .model_preferences
+                                .get(&model_id)
+                                .cloned()
+                                .unwrap_or_default();
+                            (catalog, preferences)
+                        }
                         Ok(_) => continue,
-                        Err(_) => { page.empty.push(EmptyModelProvider {provider_id,provider_name,reason:EmptyModelReason::Unreadable}); continue; }
+                        Err(_) => {
+                            page.empty.push(EmptyModelProvider {
+                                provider_id,
+                                provider_name,
+                                reason: EmptyModelReason::Unreadable,
+                            });
+                            continue;
+                        }
                     };
+                    if input.selectable_only && catalog.selectable(&model_id).is_none() {
+                        continue;
+                    }
                     let disabled = catalog.disabled_model_ids.contains(&model_id);
-                    let Some(mut model) = catalog.models.into_iter().find(|m|m.id==model_id) else { continue; };
-                    model.name = names.get_mut(&provider_id).and_then(|names|names.remove(&model_id)).ok_or_else(||storage("Selected model name disappeared"))?;
-                    page.models.push(ModelRow {provider_id,provider_name,model,version:catalog.version,preferences,disabled});
+                    let found = catalog.models.into_iter().find(|m| m.id == model_id);
+                    let Some(mut model) = found else {
+                        continue;
+                    };
+                    model.name = names
+                        .get_mut(&provider_id)
+                        .and_then(|names| names.remove(&model_id))
+                        .ok_or_else(|| storage("Selected model name disappeared"))?;
+                    page.models.push(ModelRow {
+                        provider_id,
+                        provider_name,
+                        model,
+                        version: catalog.version,
+                        preferences,
+                        disabled,
+                    });
                 }
-                #[cfg(feature="testing")]
-                { page.work=read_work::get(); }
+                #[cfg(feature = "testing")]
+                {
+                    page.work = read_work::get();
+                }
                 tx.commit().map_err(storage)?;
                 Ok(page)
             }).await.map_err(ProviderError::from)

@@ -139,7 +139,12 @@ impl Numeric {
                     || current.totals.compression.as_ref().is_some_and(|value| {
                         value.removed_messages.is_none() || value.replacement_messages.is_none()
                     })
-                    || matches!(&current.totals.configuration, Some(Configuration::Ready { counter }) if counter.control_identity.is_none() || counter.configured_tools.is_none()))
+                    || matches!(
+                        &current.totals.configuration,
+                        Some(Configuration::Ready { counter })
+                            if counter.control_identity.is_none()
+                                || counter.configured_tools.is_none()
+                    ))
             {
                 return Err(fault("missing native numeric counting metadata"));
             }

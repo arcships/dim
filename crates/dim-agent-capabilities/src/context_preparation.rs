@@ -108,9 +108,12 @@ impl ConfigurationPublisher {
                     "prompt scope ended before adoption".into(),
                 ));
             }
-            if matches!(change, PromptChange::Set { entry }
-                if entry.delivery == PromptDelivery::System && !matches!(scope, PromptScope::Branch { .. }))
-            {
+            if matches!(
+                change,
+                PromptChange::Set { entry }
+                    if entry.delivery == PromptDelivery::System
+                        && !matches!(scope, PromptScope::Branch { .. })
+            ) {
                 return Err(AgentError::InvalidInput(
                     "system prompts require branch scope".into(),
                 ));

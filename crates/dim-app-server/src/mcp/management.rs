@@ -702,10 +702,18 @@ pub(super) fn provide(
                 match method.as_str() {
                     "mcp.inspect" => {
                         let p: McpTarget = params(value)?;
-                        let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
-                        let resolved = directory.resolved(source, p.id.clone(), &stopping).await.map_err(error)?;
+                        let project = project(&settings, p.cwd, &stopping).await?;
+                        let source = source(p.source, project)?;
+                        let resolved = directory
+                            .resolved(source, p.id.clone(), &stopping)
+                            .await
+                            .map_err(error)?;
                         let entry = resolved.entry;
-                        let connections = directory.publication.inspect(source, p.id, &stopping).await.map_err(error)?;
+                        let connections = directory
+                            .publication
+                            .inspect(source, p.id, &stopping)
+                            .await
+                            .map_err(error)?;
                         return Ok(serde_json::json!({
                             "enabled": entry.enabled(),
                             "configuration": configuration_view(
@@ -741,7 +749,10 @@ pub(super) fn provide(
                                 .configuration
                         } else if let Some(patch) = p.patch {
                             let scope = writable(source)?;
-                            let mut entry = directory.editable(source, p.id.clone(), &stopping).await.map_err(error)?;
+                            let mut entry = directory
+                                .editable(source, p.id.clone(), &stopping)
+                                .await
+                                .map_err(error)?;
                             if !matches!(source, McpSource::User) && !entry.enabled {
                                 return Err(error(McpError::Disabled));
                             }
@@ -794,13 +805,20 @@ pub(super) fn provide(
                         document.insert(p.id.clone(), configuration);
                         document.validate().map_err(|e| error(e.into()))?;
                         let configuration = document.remove(&p.id).unwrap();
-                        let probe = directory.test(context, p.id, configuration, &stopping).await.map_err(error)?;
+                        let probe = directory
+                            .test(context, p.id, configuration, &stopping)
+                            .await
+                            .map_err(error)?;
                         return reply(probe);
                     }
                     "mcp.configuration" => {
                         let p: McpTarget = params(value)?;
-                        let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
-                        let entry = directory.editable(source, p.id, &stopping).await.map_err(error)?;
+                        let project = project(&settings, p.cwd, &stopping).await?;
+                        let source = source(p.source, project)?;
+                        let entry = directory
+                            .editable(source, p.id, &stopping)
+                            .await
+                            .map_err(error)?;
                         return reply(McpConfigurationResult {
                             revision: entry.revision,
                             enabled: entry.enabled,
@@ -816,7 +834,10 @@ pub(super) fn provide(
                         let p: UpdateMcp = params(value)?;
                         let source = source(p.source, project(&settings, p.cwd, &stopping).await?)?;
                         let scope = writable(source)?;
-                        let mut entry = directory.editable(source, p.id.clone(), &stopping).await.map_err(error)?;
+                        let mut entry = directory
+                            .editable(source, p.id.clone(), &stopping)
+                            .await
+                            .map_err(error)?;
                         if let Some(secret) = &entry.secret
                             && patch_sets_secret(&p.patch, secret)
                         {
@@ -826,9 +847,23 @@ pub(super) fn provide(
                         if let Some(secret) = &entry.secret {
                             config::strip_secret(&mut entry.configuration, secret);
                         }
-                        directory.update(scope, p.expected_version, p.id, McpChange::Put(entry.configuration), &stopping).await.map_err(error)?;
+                        directory
+                            .update(
+                                scope,
+                                p.expected_version,
+                                p.id,
+                                McpChange::Put(entry.configuration),
+                                &stopping,
+                            )
+                            .await
+                            .map_err(error)?;
                     }
-                    "mcp.temporary.capabilities" => return Ok(serde_json::json!({"transports":["stdio","http","sse"],"leaseSeconds":super::temporary::LEASE.as_secs()})),
+                    "mcp.temporary.capabilities" => {
+                        return Ok(serde_json::json!({
+                            "transports": ["stdio", "http", "sse"],
+                            "leaseSeconds": super::temporary::LEASE.as_secs(),
+                        }));
+                    }
                     "mcp.catalog" => {
                         let p: SelectionScope = params(value)?;
                         let project = project(&settings, p.cwd, &stopping).await?;

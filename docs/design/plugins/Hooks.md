@@ -80,7 +80,7 @@ flowchart LR
 | `HooksSession` | Session (optional; registered by the Hooks plugin while it is enabled) | `HookSources`; HostPlatform; `SessionConfig.cwd`; `submitChecks` (InputQueue's Session part) | Registers the submit check `hooks` with `submitChecks`, which the operator-input entries call (A.6.2); a private catalog and command runner used by `HooksBranch` |
 | `HooksBranch` | Branch (optional; registered by the Hooks plugin while it is enabled) | `HooksSession`'s runner; `Dispatcher`, `Approval`, `Permission`, `Branch::input` | Registers the advisor `hooks` with the branch's Permission (A.6.1); observation and context hooks |
 
-`HookSources` follows the existing host-port pattern of `CommandRulesHost` and `SkillSettingsHost`: the agent-side parts never name Settings or App Server. Hooks' parts register with their owners: `HooksBranch` with Permission, `HooksSession` with `submitChecks`. Permission and the entries depend on no advisor or check ([ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)): with none registered, Permission decides from policy and command rules alone, and the entries write operator input unchecked.
+`HookSources` follows the existing host-port pattern of `CommandRules` and `SkillSettingsHost`: the agent-side parts never name Settings or App Server. Hooks' parts register with their owners: `HooksBranch` with Permission, `HooksSession` with `submitChecks`. Permission and the entries depend on no advisor or check ([ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)): with none registered, Permission decides from policy and command rules alone, and the entries write operator input unchecked.
 
 **Reload.** Enabling, disabling or upgrading Hooks reloads only the Hooks plugin (D3). Open Sessions and branches mount or unmount its parts as its registrations change ([ADR 006 D3](../../adr/006-plugin-contract.md#d3-a-plugin-is-one-row-each-instance-mounts-the-parts-registered-for-it)). Before its parts unload they settle accepted work (AGENTS rule 8): running commands are terminated, and each pending submit check is answered by the `onFailure` of the hooks that were running (A.5). Their registrations are withdrawn with them. Calls whose advice was pending see that advice dropped, counted as none, and Permission decides without it; approvals Hooks was answering stay with the user. Submissions and calls while Hooks' parts are not mounted pass without Hooks (A9). Editing hook documents, enablement or `disableAllHooks` is business configuration, read at the next hook point, and never reloads ([D4](../../adr/002-plugin-scope.md#d4-structural-configuration-and-business-configuration-are-separate)).
 
@@ -412,6 +412,30 @@ Plugin documents are kept in the Settings source `hooks-plugins`, one `{dir, hoo
 
 `HookSources.read(cwd, cancel)` returns, per source, its id, path, enabled state and document or error. The workspace is the project root Settings authorizes for `cwd`, as `mcp.catalog` resolves it; a `cwd` with no project has no project source. Catalog order is the table order, then document order. Handlers at one hook point with the same `command` string and the same plugin directory run once; a plugin's commands are never merged with another plugin's, because `DIM_PLUGIN_ROOT` gives them different meanings (A.3). Documents are read at each hook point; a missing project file is empty, an unreadable or invalid one is listed `invalid` with a diagnostic and none of its hooks run.
 
+### A.2.1 Plugin content data face
+
+`hooksService` is the process data face for the existing plugin-content operations.
+It is separate from the local client management entry in A.7. Each operation accepts exactly
+one JSON object; positional arrays and scalar requests are invalid.
+
+| Operation | Request | Reply |
+| --- | --- | --- |
+| `register` (async) | `{plugin, dir, document}`; plugin id and directory are strings | `null` |
+| `withdraw` (async) | `{plugin}` | `null` |
+| `plugins` (async) | `{}` | array of plugin ids |
+| `refusal` (sync) | `{plugin}` | `[error, reason]` or `null`; `reason` is a string or `null` |
+
+Registration, replacement, invalid-document removal, persistence and enablement follow A.2.
+`refusal` reads the same atomic error/reason pair as PluginManager; it adds no source read.
+Errors retain the [Settings owner codes](../appserver/settings-service.md#6-errors) and
+message. Where the existing cause carries a credential-safe static reason, the wire error's
+`data.reason` carries it. Malformed requests are `invalid_request`.
+
+The typed binding and dispatcher invoke the same Hooks owner operations. Explicit native
+cancellation retains the existing token checks. Giving up a wire wait does not roll back or
+interrupt an accepted registration: its Settings write and refusal bookkeeping settle with
+the owner. No separate state, registry, source scan or retry policy is introduced.
+
 ### A.3 Command protocol
 
 | Channel | Content |
@@ -476,7 +500,7 @@ Context and reasons are each at most 16 KiB per hook. Fields Dim does not suppor
 | Item | Content |
 | --- | --- |
 | Blocked by | §4 rule 3 forbids waiting in a before callback, and rule 8 keeps Timeline unchanged, so a `PreToolUse` command cannot hold `step/tool-call`. Rule 7 forbids deciding for Permission. Permission is the owner of "may this call run" for every call, including calls its preset allows without asking. Today `Permission::decide(call, risk, cancel)` asks only its command-rules port, receives no call identity, and is called identically for the admission and for Approval's recheck after an allow. |
-| Existing mechanisms considered | Async before on `step/tool-call` (withdrawn, #21); a Dispatcher subscription to `step/tool-call` (runs after the handoff to ToolExecutor, races execution, rule 2); answering `approval/request` (only exists for calls that already ask); `CommandRulesHost` (one Session port bound by the profile, only for commands of `execute_process` calls, and it decides by static rules). Registration with an owner, as tools register with ToolRegistry ([rutis usage R6](../rutis-usage.md#r6-contributions-register-with-their-owner)): reused for the advisors. |
+| Existing mechanisms considered | Async before on `step/tool-call` (withdrawn, #21); a Dispatcher subscription to `step/tool-call` (runs after the handoff to ToolExecutor, races execution, rule 2); answering `approval/request` (only exists for calls that already ask); `CommandRules` (one Session port bound by the profile, only for commands of `execute_process` calls, and it decides by static rules). Registration with an owner, as tools register with ToolRegistry ([rutis usage R6](../rutis-usage.md#r6-contributions-register-with-their-owner)): reused for the advisors. |
 | Generic capability | Approval's `admit` passes `AdmitCall.source` to Permission for the admission decision; the recheck stays a plain `decide`. Permission keeps the branch's advisors. A branch part registers an advisor with the branch's Permission while it runs: `permission.registerAdvice(name, advise)`. The registration belongs to the calling part and is withdrawn when it unloads; a second advisor of the same name fails. `HooksBranch` registers `hooks`. In the admission decision, after policy and command rules and only when the result is not Deny, Permission calls each advisor registered at that moment, in name order: `advise {source, name, input, risk, decision: "allow" \| "ask"}` → `{advice: "none" \| "allow" \| "ask" \| "deny", reason?}` (async; cancellation = Permission drops the call). Any deny → `Deny {reason}`; else any ask → `Ask {reason}`; else any allow → `Allow`; else Permission's own decision. A provider error counts as `none`. Permission depends on no advisor; `HooksBranch` depends on Permission. No business meaning: any branch part may register an advisor. Advice never overrides a Deny, since it is not asked then. ToolExecutor is unchanged: it already puts the call id in `AdmitCall.source`. |
 | Effect on sequence, batch, interrupt, reload | Sequence and batch: no new event; a denied call's error text is in ToolExecutor's existing batch result; an allowed call writes no `approval/request`. Interrupt: the batch token cancels the decision and so the advice call. Reload: an advisor withdrawn mid-call has its pending advice dropped, counted as `none`; with no advisor registered, Permission decides from policy and command rules alone. Latency of a call's admission grows by the advice time. |
 | Owner and issue | Permission and Approval (`dim-agent-capabilities`); [#758](https://github.com/arcships/dim/issues/758) (§10.2). |
@@ -666,7 +690,7 @@ Codex `apply_patch` has no alias: its input is a patch, while Dim's `write` and 
 | `input_blocked` | `RpcError::app(-32000, "input_blocked", message)`; `data` is `{appError}` only |
 | `warnings` | `SubmitWarning { check: String, message: String }` in `dim_agent_types::input`, serialized as `{check, message}` with no rename; carried by `SubmitResult` and `tree_protocol::CreateResult`, and set on the withdraw reply's `serde_json` object |
 | `Approval.respond` | `Approval::respond(approval_id, ApprovalDecision)` from `Keyed<Approval>` |
-| `HookSources` | Session port `HookSourcesHost(Arc<dyn ReadHookSources>)`, bound by App Server as `CommandRulesHost` and `SkillSettingsHost` are |
+| `HookSources` | Session port `HookSourcesHost(Arc<dyn ReadHookSources>)`, bound by App Server as `CommandRules` and `SkillSettingsHost` are |
 | `hooks`, `hooks-projects`, `hooks-plugins` | `BusinessDocument` types in App Server (`hooks`: `USER_FILE` `hooks.json`, no `PROJECT_FILE`; `hooks-projects`: `USER_FILE` `hooks-projects.json`; `hooks-plugins`: `USER_FILE` `hooks-plugins.json`, one `{dir, hooks}` entry per plugin id, as `McpPluginServers` in `mcp/config.rs`) |
 | `.dimcode/hooks.json` | Read by `HooksSettings` through `FileStorage::path(root, ".dimcode/hooks.json")` and `read_limited`, `root` from `SettingsService::project_root(cwd)`, parsed into the `hooks` document type |
 | `register`, `withdraw`, `plugins()` | `HooksService::register_plugin(plugin: String, dir: PathBuf, document: serde_json::Value, cancel: &CancellationToken) -> Result<()>`, `withdraw_plugin(plugin: String, cancel: &CancellationToken) -> Result<()>`, `plugins(cancel: &CancellationToken) -> Result<Vec<String>>` and `plugin_refusal(&self, plugin: &str) -> Option<(String, Option<&'static str>)>`, as `McpService`'s (`crates/dim-app-server/src/mcp.rs`): a refused document leaves no entry, and `plugin_refusal` reports its error text with the static reason its cause carries, both read under one lock; PluginManager reads the service through `names.key()` in its `Owners`, its `Kind::Hooks` added to `OWNERS` and `CONTENT` ([PluginManager §3.7](PluginManager.md#37-content-registration)) |

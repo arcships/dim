@@ -1,5 +1,5 @@
 //! The user's command rules: the `permission` Settings source, its management
-//! methods, and the Session binding of Permission's `CommandRulesHost`.
+//! methods, and the Session binding of Permission's `CommandRules`.
 use crate::{
     methods::ManagementMethods,
     protocol::Empty,
@@ -8,7 +8,7 @@ use crate::{
 use dim_agent_capabilities::{
     host::{HostError, HostFuture},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
-    permission::{CommandRulesHost, ReadCommandRules},
+    permission::{CommandRules, ReadCommandRules},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
 use dim_agent_types::{COMMAND_SEPARATORS, CommandRule};
@@ -75,13 +75,15 @@ impl ReadCommandRules for SettingsRules {
 }
 
 struct CommandRulesPlugin {
-    host: Key<CommandRulesHost>,
+    host: Key<CommandRules>,
+    face: Key<dyn rutis_bridge::session::HostDispatch>,
     settings: Key<SettingsService>,
 }
 impl CommandRulesPlugin {
     fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
             host: names.key()?,
+            face: names.named("commandRules")?,
             settings: names.key()?,
         })
     }
@@ -96,9 +98,11 @@ impl DynPlugin for CommandRulesPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
+            let rules = Arc::new(CommandRules(Arc::new(SettingsRules(settings))));
+            ctx.provide_at(self.host.clone(), rules.clone())?;
             ctx.provide_at(
-                self.host.clone(),
-                Arc::new(CommandRulesHost(Arc::new(SettingsRules(settings)))),
+                self.face.clone(),
+                rules as Arc<dyn rutis_bridge::session::HostDispatch>,
             )?;
             Ok(Effect::Done)
         })

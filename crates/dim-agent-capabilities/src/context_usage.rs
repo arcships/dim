@@ -721,7 +721,8 @@ impl ContextUsage {
             tokio::select! {result=self.publication(through)=>result.map_err(|error|HostError::failed(error.to_string()))?,_=cancel.cancelled()=>return Err(HostError::Cancelled("Usage proof cancelled".into()))}
         }
         tokio::select! {
-            result = self.delivery(through) => result.map_err(|error| HostError::failed(error.to_string()))?,
+            result = self.delivery(through) =>
+                result.map_err(|error| HostError::failed(error.to_string()))?,
             _ = cancel.cancelled() => return Err(HostError::Cancelled("Usage proof cancelled".into())),
         }
         if through > source_through {

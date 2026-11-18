@@ -702,7 +702,9 @@ impl DynPlugin for InputMethodsPlugin {
                             // writes neither the withdrawal nor a replacement.
                             input
                                 .validate()
-                                .map_err(|reason| RpcError::from(AgentError::InvalidInput(reason.into())))?;
+                                .map_err(|reason| {
+                                    RpcError::from(AgentError::InvalidInput(reason.into()))
+                                })?;
                             // A blocked steer writes neither the withdrawal nor
                             // the new input (Hooks A.6.2).
                             match checks
@@ -747,8 +749,11 @@ impl DynPlugin for InputMethodsPlugin {
                                     let publication = branch.publication();
                                     let mut progress = publication.watch();
                                     tokio::select! {
-                                        _ = progress.wait_for(|&(published, closed)| published >= sequence || closed) => {}
-                                        _ = cancel.cancelled() => return Err(RpcError::interrupted()),
+                                        _ = progress.wait_for(
+                                            |&(published, closed)| published >= sequence || closed,
+                                        ) => {}
+                                        _ = cancel.cancelled() =>
+                                            return Err(RpcError::interrupted()),
                                     }
                                     if publication.sequence() < sequence {
                                         return Err(RpcError::app(

@@ -45,12 +45,15 @@ fn validate_entry(target: &PromptSourceTarget, entry: &PromptEntry) -> Result<()
 /// model a new Session adopts. Read when the branch opens, so it holds the
 /// sources registered then.
 pub struct InitialPromptConfiguration(Box<dyn Fn() -> Option<ConfigureUpdate> + Send + Sync>);
+#[rutis::service]
 impl InitialPromptConfiguration {
     /// The same configuration for every branch; `None` adopts nothing.
+    #[service(skip)]
     pub fn fixed(update: Option<ConfigureUpdate>) -> Self {
         Self(Box::new(move || update.clone()))
     }
     /// The configuration `read` returns when a branch opens.
+    #[service(skip)]
     pub fn read(read: impl Fn() -> Option<ConfigureUpdate> + Send + Sync + 'static) -> Self {
         Self(Box::new(read))
     }
@@ -243,7 +246,7 @@ impl Prompt {
                 self.report_panic(panic)
             };
             let future = catch_unwind(AssertUnwindSafe(|| {
-                self.host.0.load(target.clone(), cancel.clone())
+                self.host.load(target.clone(), cancel.clone())
             }))
             .map_err(defect)?;
             let value = AssertUnwindSafe(future)
@@ -856,13 +859,28 @@ impl DynPlugin for PromptPlugin {
                         {
                             let state = prompt.state.lock().unwrap();
                             for pending in state.pending.values() {
-                                let expired = pending.update.sources.iter().any(|target| match &event.kind {
-                                    EventKind::TurnEnd(data) => matches!(&target.scope, PromptScope::Turn {id,..} if id == &data.turn_id),
-                                    EventKind::BranchStart(_) => matches!(target.scope, PromptScope::Turn {..}),
-                                    EventKind::ContextScope(data) if data.status == ContextScopeStatus::Ended => target.scope == data.scope,
+                                let sources = &pending.update.sources;
+                                let expired = sources.iter().any(|target| match &event.kind {
+                                    EventKind::TurnEnd(data) => matches!(
+                                        &target.scope,
+                                        PromptScope::Turn { id, .. } if id == &data.turn_id
+                                    ),
+                                    EventKind::BranchStart(_) => {
+                                        matches!(target.scope, PromptScope::Turn { .. })
+                                    }
+                                    EventKind::ContextScope(data)
+                                        if data.status == ContextScopeStatus::Ended =>
+                                    {
+                                        target.scope == data.scope
+                                    }
                                     _ => false,
                                 });
-                                if expired || matches!(&event.kind,EventKind::StopInterrupt(data) if data.scope == InterruptScope::Branch) {
+                                let interrupted = matches!(
+                                    &event.kind,
+                                    EventKind::StopInterrupt(data)
+                                        if data.scope == InterruptScope::Branch
+                                );
+                                if expired || interrupted {
                                     pending.cancel.cancel();
                                 }
                             }
@@ -871,17 +889,32 @@ impl DynPlugin for PromptPlugin {
                         // the projection locked, so it is answered first.
                         let delivered = match &event.kind {
                             EventKind::PromptChanged(data) => {
-                                recovery::delivered(&prompt.timeline, &prompt.identity.branch_id, data, event.sequence)
-                                    .await?
+                                recovery::delivered(
+                                    &prompt.timeline,
+                                    &prompt.identity.branch_id,
+                                    data,
+                                    event.sequence,
+                                )
+                                .await?
                             }
                             _ => true,
                         };
                         let opening = {
                             let mut projection = prompt.projection.lock().unwrap();
                             if event.kind.key() == recovery::KEY {
-                                let EventKind::Extension(data) = &event.kind else { unreachable!("private recovery event") };
-                                if data.data().get("schema").and_then(serde_json::Value::as_str) != Some(recovery::SCHEMA) {
-                                    return Err(AgentError::fault("Prompt", "unsupported recovery schema"));
+                                let EventKind::Extension(data) = &event.kind else {
+                                    unreachable!("private recovery event")
+                                };
+                                if data
+                                    .data()
+                                    .get("schema")
+                                    .and_then(serde_json::Value::as_str)
+                                    != Some(recovery::SCHEMA)
+                                {
+                                    return Err(AgentError::fault(
+                                        "Prompt",
+                                        "unsupported recovery schema",
+                                    ));
                                 }
                                 projection.publish(&prompt, event.sequence);
                             } else {
@@ -893,11 +926,24 @@ impl DynPlugin for PromptPlugin {
                                     delivered,
                                 )?;
                             }
-                            if matches!(event.kind,EventKind::BranchStart(_) | EventKind::BranchResume(_)) {
-                                let (sequence,snapshot) = projection.opening.take().ok_or_else(||AgentError::fault("Prompt","missing opening snapshot"))?;
-                                if sequence != event.sequence {return Err(AgentError::fault("Prompt","opening snapshot has advanced"));}
+                            if matches!(
+                                event.kind,
+                                EventKind::BranchStart(_) | EventKind::BranchResume(_)
+                            ) {
+                                let (sequence, snapshot) =
+                                    projection.opening.take().ok_or_else(|| {
+                                        AgentError::fault("Prompt", "missing opening snapshot")
+                                    })?;
+                                if sequence != event.sequence {
+                                    return Err(AgentError::fault(
+                                        "Prompt",
+                                        "opening snapshot has advanced",
+                                    ));
+                                }
                                 Some(snapshot)
-                            } else { None }
+                            } else {
+                                None
+                            }
                         };
                         if let Some(snapshot) = opening {
                             let (reply, opened) = oneshot::channel();
@@ -914,8 +960,11 @@ impl DynPlugin for PromptPlugin {
                                     reply,
                                 })
                                 .map_err(|_| AgentError::Closed("Prompt".into()))?;
-                        }
-                        else if matches!(event.kind, EventKind::PromptConfigureRequest(_) | EventKind::PromptConfigureResult(_)) {
+                        } else if matches!(
+                            event.kind,
+                            EventKind::PromptConfigureRequest(_)
+                                | EventKind::PromptConfigureResult(_)
+                        ) {
                             prompt.schedule_adoption(event)?;
                         }
                         Ok(())

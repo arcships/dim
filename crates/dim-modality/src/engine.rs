@@ -17,7 +17,6 @@ use crate::task::{
 };
 use crate::{Evaluation, catalog_category, host_target, is_understand};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use dim_agent_capabilities::file_storage::{EntryKind, FileReader};
 use dim_agent_capabilities::host::{
     ModalityConnection, ModalityConnectionHost, ModalityTarget, ModelSelectionHost,
@@ -30,6 +29,7 @@ use dim_agent_capabilities::methods::{Progress, RpcError};
 use dim_agent_types::ModelId;
 use dim_app_server::plugin_files::PluginFileTransactions;
 use dim_app_server::settings::SettingsService;
+use jiff::{SignedDuration, Timestamp};
 use rutis::Ctx;
 use rutis::host::{CtxHost, Key};
 use serde::{Deserialize, Serialize};
@@ -98,14 +98,14 @@ const MAX_TERMINAL_TASKS: usize = 200;
 
 /// The clock a generation reads: the wall clock, or a test's.
 pub trait Clock: Send + Sync + 'static {
-    fn now(&self) -> DateTime<Utc>;
+    fn now(&self) -> Timestamp;
 }
 /// The wall clock.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 impl Clock for SystemClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+    fn now(&self) -> Timestamp {
+        Timestamp::now()
     }
 }
 
@@ -123,8 +123,8 @@ impl ArtifactHook for NoArtifactHook {
     fn after_count(&self, _work: &Path, _name: &str) {}
 }
 
-fn rfc3339(time: DateTime<Utc>) -> String {
-    time.to_rfc3339_opts(SecondsFormat::Nanos, true)
+fn rfc3339(time: Timestamp) -> String {
+    time.strftime("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
 }
 
 pub(crate) fn invalid_input(detail: impl Into<String>) -> RpcError {
@@ -509,7 +509,7 @@ impl Shared {
         }
     }
 
-    fn now(&self) -> DateTime<Utc> {
+    fn now(&self) -> Timestamp {
         self.clock.now()
     }
 
@@ -1486,26 +1486,22 @@ fn entry_task_id(name: &str) -> Option<String> {
 }
 
 /// When a terminal record was finished, for retention (A.4).
-fn record_time(record: &TaskRecord) -> Option<DateTime<Utc>> {
+fn record_time(record: &TaskRecord) -> Option<Timestamp> {
     let text = record.finished_at.as_deref().unwrap_or(&record.updated_at);
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|time| time.with_timezone(&Utc))
+    text.parse::<Timestamp>().ok()
 }
 
 /// The terminal tasks retention deletes (A.4, A2): everything older than 30
 /// days and everything beyond the newest 200, oldest first.
-fn retention_expired(
-    mut terminal: Vec<(String, DateTime<Utc>)>,
-    now: DateTime<Utc>,
-) -> Vec<String> {
+fn retention_expired(mut terminal: Vec<(String, Timestamp)>, now: Timestamp) -> Vec<String> {
     terminal.sort_by_key(|(_, time)| *time);
     let over = terminal.len().saturating_sub(MAX_TERMINAL_TASKS);
     terminal
         .into_iter()
         .enumerate()
         .filter(|(index, (_, time))| {
-            *index < over || now.signed_duration_since(*time) > ChronoDuration::days(RETENTION_DAYS)
+            *index < over
+                || now.duration_since(*time) > SignedDuration::from_hours(RETENTION_DAYS * 24)
         })
         .map(|(_, (task_id, _))| task_id)
         .collect()
@@ -1809,7 +1805,7 @@ impl Shared {
     /// record this write just produced; it participates in the count before
     /// it becomes visible through its slot.
     async fn retain(&self, extra: Option<&TaskRecord>) {
-        let mut terminal: Vec<(String, DateTime<Utc>)> = {
+        let mut terminal: Vec<(String, Timestamp)> = {
             let state = self.state.lock().unwrap();
             state
                 .slots

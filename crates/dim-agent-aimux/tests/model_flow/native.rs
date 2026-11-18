@@ -1996,8 +1996,8 @@ async fn a_reset_after_headers_is_a_network_failure() {
     root.shutdown().await.unwrap();
 }
 
-/// A stream-event failure whose code is neither permanent nor transient is not
-/// retried: the event's code decides, not the status the tag synthesizes.
+/// A stream-event failure whose code is neither a condition nor a class label is
+/// not retried: the event's code decides, not the status it carries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stream_event_failure_with_an_unknown_code_is_not_retried() {
     let responses = NativeServer::start("openai-responses").await;
@@ -2025,6 +2025,202 @@ async fn a_stream_event_failure_with_an_unknown_code_is_not_retried() {
     );
     responses.close().await;
     root.shutdown().await.unwrap();
+}
+
+/// A gateway's generic `api_error` label beside a 422 does not make the
+/// failure retryable: the status decides, and the request is tried once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_4xx_with_a_server_class_label_is_rejected_once() {
+    let responses = NativeServer::start("openai-responses").await;
+    let agent = model_agent(responses.models(), None).await;
+    let session = agent
+        .create_session(responses.session_config())
+        .await
+        .unwrap();
+    session
+        .submit("gateway-rejected".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let failure = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a failed model output");
+    assert_eq!(failure.kind, ModelFailureKind::InvalidRequest);
+    assert_eq!(failure.status, Some(422));
+    assert_eq!(
+        failure.reason.as_deref(),
+        Some("the upstream refused the request's shape")
+    );
+    assert_eq!(failure.attempts, 1, "a rejected request is not retried");
+    assert_eq!(
+        responses.endpoint.requests.lock().unwrap().len(),
+        1,
+        "a rejected request is not sent again"
+    );
+    agent.close().await.unwrap();
+    responses.close().await;
+}
+
+/// A reply that completes with neither text nor a tool call is a
+/// `malformed_response`: it is retried once, and the next attempt's answer
+/// finishes the turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_reply_is_retried_once_and_the_answer_finishes_the_turn() {
+    let chat = NativeServer::start("openai-chat").await;
+    let agent = model_agent(chat.models(), None).await;
+    let session = agent.create_session(chat.session_config()).await.unwrap();
+    session
+        .submit("empty-reply".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::Text(data) if data.delta == "after the empty reply")),
+        "{events:?}"
+    );
+    assert!(
+        matches!(
+            events
+                .iter()
+                .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Completed { .. },
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+    let requests = chat.endpoint.requests.lock().unwrap().len();
+    assert_eq!(requests, 2, "the empty reply and one retry");
+    agent.close().await.unwrap();
+    chat.close().await;
+}
+
+/// An empty reply twice is a `malformed_response` that ends the turn: the
+/// retry is spent on the first repeat, so no third request follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_empty_reply_twice_fails_the_turn_without_a_third_attempt() {
+    let chat = NativeServer::start("openai-chat").await;
+    let agent = model_agent(chat.models(), None).await;
+    let session = agent.create_session(chat.session_config()).await.unwrap();
+    session
+        .submit("empty-reply-twice".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let failure = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a failed model output");
+    assert_eq!(failure.kind, ModelFailureKind::MalformedResponse);
+    assert_eq!(
+        failure.reason.as_deref(),
+        Some("the response had no text and no tool call")
+    );
+    assert_eq!(failure.attempts, 2, "one retry, then the turn fails");
+    let requests = chat.endpoint.requests.lock().unwrap().len();
+    assert_eq!(requests, 2, "no third attempt");
+    agent.close().await.unwrap();
+    chat.close().await;
+}
+
+/// A reply of thinking only completes with no answer, so it is a
+/// `malformed_response`. Its thinking is already committed, which is what the
+/// retry policy tests: today that output stops recovery after the first
+/// attempt, so the turn fails with `attempts = 1`. Replay safety narrowed to
+/// answer content would retry it once, so the second attempt's answer would
+/// finish the turn over two requests.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_thinking_only_reply_fails_after_one_attempt() {
+    let chat = NativeServer::start("openai-chat").await;
+    let agent = model_agent(chat.models(), None).await;
+    let session = agent.create_session(chat.session_config()).await.unwrap();
+    session
+        .submit("empty-reply-thinking".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(&event.kind, EventKind::Thinking(data) if data.delta == "leaked tool-call markup")),
+        "the thinking-only reply is committed as it arrives: {events:?}"
+    );
+    let failure = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelOutputEnd(data) => match &data.outcome {
+                ModelOutputOutcome::Failed {
+                    failure: Some(failure),
+                    ..
+                } => Some(failure.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("a failed model output");
+    assert_eq!(failure.kind, ModelFailureKind::MalformedResponse);
+    assert_eq!(
+        failure.reason.as_deref(),
+        Some("the response had no text and no tool call")
+    );
+    // Today's behaviour: committed thinking closes replay safety, so there is
+    // no retry. Narrowing replay safety to answer content would make later
+    // implementation attempts 2 and run 2 requests, the second ending the turn
+    // with "after the thinking-only reply"; this test is the record of that
+    // change.
+    assert_eq!(
+        failure.attempts, 1,
+        "today: 1 attempt, no retry; a narrowed replay rule makes it 2"
+    );
+    assert!(
+        matches!(
+            events
+                .iter()
+                .rfind(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
+            EventKind::TurnEnd(TurnEndData {
+                outcome: TurnOutcome::Failed { .. },
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+    let requests = chat.endpoint.requests.lock().unwrap().len();
+    assert_eq!(
+        requests, 1,
+        "today: 1 request, no retry; a narrowed replay rule makes it 2"
+    );
+    agent.close().await.unwrap();
+    chat.close().await;
 }
 
 async fn respond_native(
@@ -2056,6 +2252,23 @@ async fn respond_native(
                 json!({
                     "error": {
                         "message": format!("fixture {status}"),
+                        "fixture": "raw-body-must-not-cross"
+                    }
+                })
+                .to_string(),
+            ))
+            .unwrap();
+    }
+    if request_text.contains("gateway-rejected") {
+        return Response::builder()
+            .status(422)
+            .header("content-type", "application/json")
+            .header("x-request-id", "request-rejected")
+            .body(Body::from(
+                json!({
+                    "error": {
+                        "type": "api_error",
+                        "message": "the upstream refused the request's shape",
                         "fixture": "raw-body-must-not-cross"
                     }
                 })
@@ -2183,7 +2396,29 @@ async fn respond_native(
     let missing_stop = request.to_string().contains("native-stop-eof");
     let data = match endpoint.kind {
         "openai-chat" | "openai-compatible" => {
-            if continuation {
+            if request_text.contains("empty-reply-thinking") {
+                let attempt = endpoint.requests.lock().unwrap().len();
+                if attempt == 1 {
+                    frame(
+                        json!({"reasoning_content":"leaked tool-call markup"}),
+                        Value::Null,
+                    ) + &frame(json!({}), json!("stop"))
+                        + "data: [DONE]\n\n"
+                } else {
+                    frame(
+                        json!({"content":"after the thinking-only reply"}),
+                        json!("stop"),
+                    ) + "data: [DONE]\n\n"
+                }
+            } else if request_text.contains("empty-reply") {
+                let attempt = endpoint.requests.lock().unwrap().len();
+                if request_text.contains("empty-reply-twice") || attempt == 1 {
+                    frame(json!({}), json!("stop")) + "data: [DONE]\n\n"
+                } else {
+                    frame(json!({"content":"after the empty reply"}), json!("stop"))
+                        + "data: [DONE]\n\n"
+                }
+            } else if continuation {
                 frame(json!({"content":"finished"}), json!("stop")) + "data: [DONE]\n\n"
             } else {
                 frame(json!({"content":"before"}), Value::Null)
@@ -3924,6 +4159,9 @@ async fn a_stored_summary_index_loads_and_continues() {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse(vec![
                     json!({"type":"response.created","response":{"id":"resp-1","created_at":1,"model":"alias"}}),
+                    json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg-1","role":"assistant","content":[]}}),
+                    json!({"type":"response.output_text.delta","item_id":"msg-1","output_index":0,"content_index":0,"delta":"answer"}),
+                    json!({"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}),
                     json!({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}),
                 ])),
         )

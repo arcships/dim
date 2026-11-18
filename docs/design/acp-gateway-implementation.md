@@ -109,7 +109,10 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 
 可选：`session.list` / `session.summaries`、`session.close`、`session.delete`、`session.fork`、`session.permission.get/update`、`approval.respond`；临时 MCP 使用 `mcp.temporary.capabilities`、`session.mcp_temporary.attach/renew/detach`；每 Session 用 `session.methods` 发现 `session.input.withdraw`、`session.question.respond`、`session.context.usage` 和 `attachment.put`。缺少撤回时取消直接走现有 `session.stop`，并披露已接收输入可能保留的限制。
 
-模型选择只读取 `provider.list`、`provider.catalog`、`provider.selection` 的安全投影。Provider 管理已有独立插件和公开读写接口，接线及尚未满足的 ACP 合同见 §4.5；首版不通过这些接口写入共享产品配置。账户认证只允许 §4.4 列出的 `account.providers/status` 和属于当前连接的 login attempt 调用；§4.7 的 `/usage` 额外允许当前模型 provider 的 `account.usage` 安全读取。不开放 `account.*` 代理、recover/logout、settings、持久 MCP 配置、插件管理或凭据接口。也不把 ACP 方法名直接转成原生 RPC 方法名。
+模型选择通过 `provider.models.query` 的 `selectableOnly:true` 获取可用模型页，按 `next` 继续读取，组成 ACP 要求的完整选项列表；过滤条件由 Provider 拥有方执行。Provider 管理已有独立插件和公开读写接口，接线及尚未满足的 ACP 合同见 §4.5；首版不通过这些接口写入共享产品配置。账户认证只允许 §4.4 列出的 `account.providers/status` 和属于当前连接的 login attempt 调用；§4.7 的 `/usage` 额外允许当前模型 provider 的 `account.usage` 安全读取。不开放 `account.*` 代理、recover/logout、settings、持久 MCP 配置、插件管理或凭据接口。也不把 ACP 方法名直接转成原生 RPC 方法名。
+
+模型和 effort 配置选项需要 `provider.models.query` 与 `session.model.update`；
+仅提供 `provider.catalog` 不满足该功能的依赖。版本边界沿用 §2，不增加全目录查询回退。
 
 ## 4. 稳定 ACP v1 方法逐项映射
 
@@ -415,9 +418,9 @@ cancel 到达 submit reply 之前时保留 cancel 标志，等拿到 input id �
 | --- | --- |
 | main `session.model.progress` 与 `step/text` / `step/thinking` | agent message/thought chunks；每 request 维护已发 Unicode scalar 区间。committed delta 是事实，progress 是可替换预览；重放、重连及 emoji 不重复、不截断 |
 | main `input/message` + applied/consumed/deleted | 有效 user message chunks；raw-only inputs 不显示，deleted 输入不进入有效回放；自己发出的 prompt 不重复 echo |
-| `step/tool-use-start`、`step/tool-use`、`step/tool-call`、`step/tool-start` | tool_call / tool_call_update，真实工具名、输入、位置和 pending/in_progress；ACP toolCallId 由 `(branchId,requestId,callId)` 确定性编码，避免模型在后续 request 重用 callId。native 回答仍用原始身份，显示 id 不充当 task id |
+| `step/tool-use-start`、`step/tool-use`、`step/tool-call`、`step/tool-start` | tool_call / tool_call_update，真实工具名、输入、位置和 pending/in_progress；ACP toolCallId 由 `(branchId,requestId,callId)` 确定性编码，避免模型在后续 request 重用 callId。native 回答仍用原始身份，显示 id 不充当 task id。title 命名工具作用的对象而非工具名：`read`/`write`/`edit` 用路径（`read` 给了范围时带行区间），`glob`/`grep` 用模式加被搜索路径，`web_fetch` 用 URL，`exec` 用模型自己的 `title` 或压成一行的命令，`web_search` 用其 `query`；kind 按工具映射到 `ToolKind`；带路径调用输出 `locations`，`read` 带起始行。Dim 在模型开始写调用时就发 `tool-use-start`，此时参数未知，因此第一条消息只命名工具，携带 `rawInput` 的那条消息才带 title/kind/locations |
 | `step/tool-completed` | 工具已执行的预览；不能提前宣称 tool batch 已提交到上下文 |
-| `step/tool-result` | 对应 tool_call_update completed/failed；只读 ToolResult.content 作为文本，最多 16 KiB；保留失败标记，不把 structuredContent 当模型结果 |
+| `step/tool-result` | 对应 tool_call_update completed/failed；编辑类工具的文件变更作为 `ToolCallContent::Diff` 前置：`edit` 每个替换各一条，带它自己的 `oldText`/`newText`；`write` 只有 `newText`（整文件写没有旧文本），失败结果不带 diff；随后只读 ToolResult.content 作为文本，最多 16 KiB；保留失败标记，不把 structuredContent 当模型结果 |
 | `approval.request`、`approval.resolved`、`approval.cancelled` | permission 请求和本地 waiter 结算；all branches 的审批均转交。显式保留 branchId/requestId，不能用 callId 单独关联 |
 | `SessionStore` title notice / native list metadata | 标准 session_info_update；按 revision 更新。manual 可映射 explicit；auto 不足以区分 generated/fallback，省略不可靠的 titleSource |
 | `session.context.usage` | 有值时 `usage_update {used:ceil(estimatedInputTokens),size:floor(contextWindow)}`，两个字段按 ACP 的 `u64` 输出 JSON 整数。这是估算上下文量。缺数据时不发送，未知 cost 省略，不能写 cost:0。不要把累计 token 消耗当上下文占用 |

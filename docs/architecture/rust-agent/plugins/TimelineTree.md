@@ -32,7 +32,7 @@ block and the branch markers — with their classes are listed on
 | --- | --- |
 | `S:TimelineFactory` | Build branch capability scopes. |
 | `S:SessionIdentity` | Identify the persisted Session. |
-| `S:dyn TimelineStore` | Persist/load branch directories and timeline facts. |
+| `S:dyn TimelineStore` | Native binding of the Session [`timelineStore` data face](../../../design/resource-faces.md#5-store-and-timelinestore); persist/load branch directories and Timeline facts through the same backend operations. |
 | `S:GuideEntries` | Register the `<dim-branch-line>` and `<dim-branch-parent>` entries for the Session, until this part unloads. |
 
 ### Events and lifetime

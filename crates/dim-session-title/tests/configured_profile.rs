@@ -138,7 +138,9 @@ fn models_file(directory: &Path, base_url: &str) -> PathBuf {
 fn configured_builder(directory: &Path, models: Arc<AimuxModels>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()))
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+            dim_agent_runtime::MemoryTimelineStore::default(),
+        )))
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))

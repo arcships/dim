@@ -87,6 +87,28 @@ A branch part schedules its own work from handlers and returns; no member wait o
 blocks a Dispatcher handler. The route uses the already accepted delegation's
 hold and member lease; it creates no independent reason to keep a completed delegation alive.
 
+### 3.1 Data face
+
+The Session service `collaborationSession` exposes the existing synchronous read
+`approvalDestination({memberSessionId})`. It returns `null` when the member has no active
+assignment accepting approvals or the destination branch is closing; otherwise it returns
+`{branchId, delegationId, agentId, interactive, approvalTools}`. The IDs identify the existing
+leader branch, delegation and member Agent. The flags are the leader Session's immutable
+interactive setting and whether both approval decision tools are mounted.
+
+Native and wire bindings call the same owner operation and take the same single state snapshot.
+The caller supplies one request object with exactly `memberSessionId: string`; malformed requests
+fail with `invalid_request`. The operation performs no I/O, starts no task and retains no wait to
+cancel. It does not admit or authorize an approval, retain a Session, or mutate a route. A missing
+destination still follows the denial path below; message delivery and sender resolution remain
+in that path's existing task. Closing and assignment settlement continue to be decided by facts.
+The service is withdrawn with its Session part.
+
+The process Collaboration coordinator is private typed wiring within the same owner. Its Session
+parts retain that declared dependency and reload ordering. Public callers receive the projection
+above, not coordinator objects, Session handles or state locks. Other internal owner operations
+remain private.
+
 ## 4. Route identity, facts and model input
 
 There is at most one active delegation per native member Session. Its owning leader branch is fixed
@@ -284,9 +306,10 @@ fault path, not a successful delegation result. No timeout, client absence or re
 
 ## 7. Impact and requirements raised to mechanism owners
 
-Public additions are two Collaboration tools, one Collaboration-owned read method and one
-display-only Session notice. Their consumers are the leader model and clients rendering its
-approval. The source input is interpreted only by Collaboration. Permission, Approval notifications, command rules and public
+Public additions are two Collaboration tools, the client-facing `session.collaboration.approval.get`
+read, the Session face `collaborationSession.approvalDestination` (§3.1), and one display-only
+Session notice. Their consumers are the leader model, clients rendering its approval, and
+foreign-language Session parts reading the approval destination. The source input is interpreted only by Collaboration. Permission, Approval notifications, command rules and public
 Session input shapes are unchanged. Implementation updates Collaboration's owning architecture
 page and generated assembly/catalog only if the actual dependencies change.
 

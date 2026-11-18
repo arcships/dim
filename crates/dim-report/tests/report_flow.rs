@@ -160,6 +160,14 @@ async fn a_report_names_the_daemons_build_and_a_client_of_another_one() {
         "the Dim line names the label this build reports: {}",
         report["body"]
     );
+    assert!(
+        report["body"]
+            .as_str()
+            .unwrap()
+            .contains("- Observed at 2026-11-10T00:00:00+00:00\n"),
+        "the observed instant keeps its UTC offset: {}",
+        report["body"]
+    );
     let diagnostics = archive(&report);
     assert_eq!(
         diagnostics["evidence"]["process"]["productVersion"],

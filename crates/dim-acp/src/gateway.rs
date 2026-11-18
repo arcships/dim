@@ -368,7 +368,7 @@ impl Gateway {
         };
         for path in paths {
             if let Some(file_id) = update
-                .pointer(&format!("{path}/fileId"))
+                .pointer(&format!("{path}/_meta/fileId"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
             {
@@ -403,7 +403,14 @@ impl Gateway {
                     .pointer_mut(&path)
                     .and_then(Value::as_object_mut)
                     .ok_or_else(Error::internal_error)?;
-                content.remove("fileId");
+                let meta = content
+                    .get_mut("_meta")
+                    .and_then(Value::as_object_mut)
+                    .ok_or_else(Error::internal_error)?;
+                meta.remove("fileId");
+                if meta.is_empty() {
+                    content.remove("_meta");
+                }
                 content.insert("data".into(), Value::String(STANDARD.encode(bytes)));
             }
         }
@@ -599,7 +606,7 @@ impl Gateway {
                             args["permissionPolicy"] = json!({"preset":mode});
                         }
                         let explicit = if let Some(model) = controls.startup {
-                            if !rpc.supports("provider.catalog") {
+                            if !rpc.supports("provider.models.query") {
                                 return Err(Error::invalid_params());
                             }
                             let choices = crate::config::models(&rpc).await?;
@@ -1322,15 +1329,16 @@ impl Gateway {
                 if reply.cancellation().is_cancelled() {
                     return reply.respond_with_error(Error::request_cancelled());
                 }
-                if !matches!(self.sessions.get(&id), Some(Slot::Ready(_))) {
+                let Some(Slot::Ready(session)) = self.sessions.get(&id) else {
                     return reply.respond_with_error(Error::resource_not_found(Some(id)));
-                }
+                };
+                let cwd = session.cwd.clone();
                 match result {
                     Ok(page) => {
                         let next = page
                             .next(before, through)
                             .map_err(|_| Error::internal_error())?;
-                        let mut projection = Projection::default();
+                        let mut projection = Projection::new(cwd);
                         for event in page.events {
                             for update in projection.event(&decode_native(event)?) {
                                 self.update(&id, update).await?;
@@ -1370,8 +1378,8 @@ impl Gateway {
                                 && !waiter.reply.cancellation().is_cancelled()
                         });
                         let mut session = Session {
-                            cwd: loading.cwd,
-                            projection: Projection::default(),
+                            cwd: loading.cwd.clone(),
+                            projection: Projection::new(loading.cwd),
                             prompt: None,
                             command: None,
                             config: prepared.config,
@@ -1845,7 +1853,7 @@ impl Gateway {
                         prompt_turn,
                     }) => {
                         let previous_through = session.projection.through;
-                        session.projection = Projection::default();
+                        session.projection = Projection::new(session.cwd.clone());
                         session.questions = dim_client::question::Pending::default();
                         session.question_through.clear();
                         let title = prepared.title;

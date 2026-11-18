@@ -83,7 +83,11 @@ Direct startup has a Session-owned connection binding. The CLI validates its
 external input and passes it through the protected-local Session boundary to
 Provider; it does not mutate the daemon's environment or generate a plaintext
 configuration file containing secrets. An already running daemon accepts the
-same boundary, so the current invocation's configuration is not lost.
+same boundary, so the current invocation's configuration is not lost. The
+preview read reaches the same resolver, so it takes the same boundary: a
+`session.model.preview` carrying `startup` from the authenticated Web entry is
+refused `local_transport_required`, because a browser holds no launch input and
+opening the admission is not part of what its Session creation states.
 
 Daemon spawning always strips the ten Session startup environment variables,
 including for management invocations that do not parse them. This changes only
@@ -129,13 +133,12 @@ connection requires explicit rebinding. Resuming with explicit overrides adopts
 them through the existing configuration path before accepting the first input.
 It does not rewrite existing branch history or reconfigure existing members.
 
-When a daemon does not advertise `session.create.modelFromSession`, a new
-Session may use the ordinary configured-model fallback only for a saved
-Provider. Read the public management listing to establish that membership;
-never infer a temporary source from the spelling of its identity or query that
-identity as a saved Provider. If it cannot be copied, explain how to restart a
-daemon supporting adopted-model copying and rebind the temporary connection,
-or select a configured Provider model when Provider management is available.
+New Sessions inheriting an adopted model use `session.create.modelFromSession`
+only when the daemon advertises it, as [model configuration](model-configuration.md#temporary-startup-adoption)
+requires. Otherwise the CLI names the configured model shown at Home. Entering
+a Session retains both its identity and its adopted model for a later `/new`;
+a failed initial entry ends startup before Home can submit inherited creation.
+There is no fallback to Provider membership reads or reconstruction from model IDs.
 
 Automatic title generation still uses the auxiliary model path's catalog
 `ModelId`, which carries no startup connection binding. A temporary direct

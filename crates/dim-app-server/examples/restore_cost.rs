@@ -642,7 +642,7 @@ async fn main() -> std::result::Result<(), Error> {
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
     }
-    builder.timeline_store(probe.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(probe.clone()));
     let agent = MinimalHost::start_with(&builder, |root, _| match mix == "product" {
         true => product_hosts(root),
         false => Ok(()),

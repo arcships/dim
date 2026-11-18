@@ -3,8 +3,8 @@
 //! The source is a declared Settings document (`prompt-suggestion.json`, user
 //! scope only) with the feature's switch and its length limit. The App Server
 //! owns the source; PromptSuggestion's Session part reads the host port at
-//! each decision ([PromptSuggestion](../../docs/design/plugins/PromptSuggestion.md)).
-use crate::settings::{SettingsScope, SettingsService, SourceDeclaration};
+//! each decision ([PromptSuggestion](../../../docs/design/plugins/PromptSuggestion.md)).
+use crate::settings::{Settings, SettingsScope, SourceDeclaration};
 use dim_agent_capabilities::prompt_suggestion::{
     PromptSuggestionSettingsError, PromptSuggestionSettingsHost, SOURCE,
 };
@@ -15,7 +15,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 pub struct PromptSuggestionSettingsPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
 }
 
 impl PromptSuggestionSettingsPlugin {
@@ -36,7 +36,7 @@ impl DynPlugin for PromptSuggestionSettingsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
-            settings.register_declared(
+            settings.register(
                 ctx,
                 SourceDeclaration {
                     source: SOURCE.into(),
@@ -62,7 +62,7 @@ impl DynPlugin for PromptSuggestionSettingsPlugin {
                 let settings = settings.clone();
                 Box::pin(async move {
                     let snapshot = settings
-                        .read_declared(SOURCE, SettingsScope::User, &cancel)
+                        .read(SOURCE, SettingsScope::User, &cancel)
                         .await
                         .map_err(|error| PromptSuggestionSettingsError::Failed {
                             message: error.to_string(),

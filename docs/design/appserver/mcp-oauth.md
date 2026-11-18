@@ -56,6 +56,8 @@ flow, and the gaps rmcp leaves, three of them MUSTs of the specification (Append
 - **Assembly.** Mcp is assembled only with local execution (`execution_root`), so OAuth exists
   exactly where MCP does.
 
+`McpAuth` is private typed wiring between the MCP owner and its connection parts, not a public catalog service. Authentication operations remain in the existing `mcp.auth.*` management namespace; credential state and request settlement stay with this owner.
+
 ## 4. Data and state
 
 ### 4.1 Credential record (persisted)

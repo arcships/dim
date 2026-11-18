@@ -2,7 +2,7 @@
 use super::*;
 use crate::model_catalog::FieldUpdate;
 
-#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateReplyKind {
     #[default]

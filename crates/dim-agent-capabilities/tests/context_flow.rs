@@ -577,7 +577,13 @@ async fn foreign_compaction_cursor_fails_recovery_without_another_model_call() {
         assert!(sources[1].recovery.is_some());
         assert_eq!(sources[0].through, sources[1].through);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(events.iter().filter(|event| matches!(event.kind, EventKind::ModelCall(_))).count(), 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::ModelCall(_)))
+                .count(),
+            1
+        );
         let compacted: Vec<_> = events
             .iter()
             .filter_map(|event| match &event.kind {
@@ -598,7 +604,12 @@ async fn foreign_compaction_cursor_fails_recovery_without_another_model_call() {
                 && matches!(&data.outcome, ModelOutputOutcome::Failed { error, .. } if error.contains("cut is outside the fixed context history"))
         )));
         assert!(matches!(
-            &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+            &events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { error }, .. })
                 if error.contains("cut is outside the fixed context history")
         ));
@@ -648,7 +659,12 @@ async fn compressor_cursor_cannot_split_an_assistant_tool_use_from_its_result() 
             2
         );
         assert!(matches!(
-            &events.iter().rev().find(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,
+            &events
+                .iter()
+                .rev()
+                .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+                .unwrap()
+                .kind,
             EventKind::TurnEnd(TurnEndData { outcome: TurnOutcome::Failed { error }, .. })
                 if error == "Compaction cut separates a tool call from its results or context."
         ));
@@ -1074,7 +1090,7 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
     tokio::time::timeout(Duration::from_secs(10), async {
         let store = Arc::new(context_reads::CountContextReads::default());
         let mut profile = builder(Arc::new(UsageModel));
-        profile.timeline_store(store.clone());
+        profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         store.create_session("usage-baseline", &SessionConfig::default()).await.unwrap();
         let timeline = Timeline::new(Ctx::root().unwrap(), TimelineKey {session_id:"usage-baseline".into(),branch_id:"main".into()},vec![],store.clone());
         timeline.append(EventKind::ContextConfigured(ContextConfiguredData {
@@ -1213,7 +1229,7 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
                 ..Context::default()
             },
         );
-        changed.timeline_store(store);
+        changed.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
         let agent = MinimalHost::start(&changed).await.unwrap();
         let session = agent.restore_session(id).await.unwrap();
         let usage = session
@@ -1347,7 +1363,7 @@ async fn restore_preserves_each_parent_tools_own_confirmed_child_effects() {
         HistoryRenderer::default(),
         Context::default(),
     );
-    profile.timeline_store(store);
+    profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent.restore_session("effects".into()).await.unwrap();
     tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
@@ -1596,7 +1612,7 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
             HistoryRenderer::default(),
             Context::default(),
         );
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent.restore_session("restore".into()).await.unwrap();
         tokio::time::timeout(Duration::from_secs(3), session.idle("main"))
@@ -1753,7 +1769,7 @@ async fn restoring_idle_unpaused_queue_input_applies_it_without_a_new_submission
         HistoryRenderer::default(),
         Context::default(),
     );
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .restore_session("queued-restore".into())
@@ -1850,7 +1866,7 @@ async fn restoring_pending_inputs_runs_each_queued_input_in_its_own_turn() {
         HistoryRenderer::default(),
         Context::default(),
     );
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .restore_session("applied-restore".into())
@@ -1963,7 +1979,7 @@ async fn a_restored_queue_writes_one_owed_deletion_for_a_handover_input() {
         HistoryRenderer::default(),
         Context::default(),
     );
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let deletions = |events: &[Arc<AgentEvent>]| {
         events
             .iter()

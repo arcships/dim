@@ -862,21 +862,6 @@ impl Worker {
             } else if let Some(model) = &self.model {
                 let (provider, model) = (model.provider_id.clone(), model.model_id.clone());
                 params["model"] = json!({"provider": provider, "modelId": model});
-                if self.model_session.is_some() && self.options.model_config.is_none() {
-                    let cannot_copy = "This daemon cannot copy the adopted Session model. Restart the daemon with a version supporting session.create.modelFromSession, then rebind the temporary connection with DIM_BASE_URL and DIM_API_FORMAT";
-                    if !self.client.offers("provider.management") {
-                        return Err(cannot_copy.into());
-                    }
-                    let snapshot: ProviderManagement = self
-                        .client
-                        .typed("provider.management", json!({"providerId": provider}))
-                        .await?;
-                    snapshot
-                        .providers
-                        .into_iter()
-                        .find(|entry| entry.info.provider_id == provider)
-                        .ok_or_else(|| format!("{cannot_copy}, or select a configured Provider model before starting a new Session"))?;
-                }
                 target = Some((provider, model));
             }
             match self.client.typed::<Created>("session.create", params).await {
@@ -5073,9 +5058,11 @@ pub(crate) async fn declare_model_limits(
     context_window: u64,
     max_output_tokens: u64,
 ) -> crate::Result<()> {
-    let snapshot: ProviderCatalogSnapshot = client
-        .typed("provider.catalog", json!({"providerId": provider_id}))
-        .await?;
+    let mut params = json!({"providerId": provider_id});
+    if let LimitTarget::Model(model_id) = &target {
+        params["modelId"] = json!(model_id);
+    }
+    let snapshot: ProviderCatalogSnapshot = client.typed("provider.catalog", params).await?;
     let catalog = snapshot
         .catalog
         .ok_or("Provider catalog must be refreshed before declaring model limits")?;
@@ -5126,6 +5113,7 @@ pub(crate) async fn declare_model_limits(
                     "expectedVersion": version,
                     "modelId": model_id,
                     "edit": edit,
+                    "reply": "summary",
                 }),
             )
             .await

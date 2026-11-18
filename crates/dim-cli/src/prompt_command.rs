@@ -1,6 +1,6 @@
 //! `dimcode prompt ...`: the operator's overrides of the built-in policy texts
 //! through the App Server's `settings` methods ([prompt
-//! overrides](../docs/design/appserver/prompt-overrides.md)).
+//! overrides](../../../docs/design/appserver/prompt-overrides.md)).
 //!
 //! The daemon owns the document and each capability reads its own field. This
 //! client presents one field as plain text: an empty draft writes nothing, and

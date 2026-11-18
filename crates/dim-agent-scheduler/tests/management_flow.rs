@@ -240,3 +240,32 @@ async fn invalid_run_history_fails_the_scheduler_and_keeps_its_bytes() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_out_of_range_launch_deadline_is_an_error() {
+    let home = home();
+    let (server, mut client) = start(home.path()).await;
+    ready(&mut client).await;
+
+    let created: Value = client
+        .typed(
+            "schedule.save",
+            json!({"job": {
+                "name": "far",
+                "schedule": {"at": "2099-01-01T00:00:00Z"},
+                "prompt": "Check the inbox.",
+                "target": {"kind": "launch", "cwd": "/workspace", "max_run_minutes": u32::MAX}
+            }}),
+        )
+        .await
+        .unwrap();
+    let id = created["job"]["id"].as_str().unwrap();
+    let error = client
+        .typed::<Value>("schedule.run_now", json!({"job_id": id}))
+        .await
+        .unwrap_err();
+    assert!(format!("{error}").contains("max_run_minutes"), "{error}");
+
+    server.shutdown();
+    server.join().await.unwrap();
+}

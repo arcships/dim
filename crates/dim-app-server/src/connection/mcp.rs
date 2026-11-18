@@ -138,10 +138,19 @@ impl Connection {
                 result = active.changed() => if result.is_err() { break },
                 result = async {
                     match &mut watches {
-                        Some((mcp, tools)) => tokio::select! { r = mcp.changed() => r, r = tools.changed() => r },
+                        Some((mcp, tools)) => tokio::select! {
+                            r = mcp.changed() => r,
+                            r = tools.changed() => r,
+                        },
                         None => std::future::pending().await,
                     }
-                } => if result.is_err() { watches = None; owners = None; continue; },
+                } => {
+                    if result.is_err() {
+                        watches = None;
+                        owners = None;
+                        continue;
+                    }
+                }
             }
         }
         let _ = listener.dispose().await;

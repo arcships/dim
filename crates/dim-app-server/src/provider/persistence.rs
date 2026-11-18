@@ -16,6 +16,7 @@ pub(super) enum Models<'a> {
     All,
     Mutable,
     One(&'a str),
+    Selected(&'a [String]),
 }
 
 struct Image<'a> {
@@ -252,6 +253,14 @@ pub(super) fn read(
                 let image = Image::open(connection, &revision, &bundled)?;
                 let positions = match models {
                     Models::One(target) => image.matching(&format!("t\0{id}\0{target}"))?,
+                    Models::Selected(targets) => {
+                        let mut positions = Vec::new();
+                        for target in targets {
+                            positions.extend(image.matching(&format!("t\0{id}\0{target}"))?);
+                        }
+                        positions.sort_unstable();
+                        positions
+                    }
                     Models::All => {
                         let mut positions: Vec<_> = image
                             .targets(id, "", usize::MAX)?
@@ -289,7 +298,16 @@ pub(super) fn read(
                     }
                 }
             }
+            let selected = if let Models::Selected(targets) = &models {
+                Some(serde_json::to_string(targets).map_err(storage)?)
+            } else {
+                None
+            };
             let (sql, target) = match models {
+                Models::Selected(_) => (
+                    "SELECT entry FROM provider_models WHERE provider_id=?1 AND source=?2 AND model_id IN (SELECT value FROM json_each(?3)) ORDER BY position",
+                    selected.as_deref(),
+                ),
                 Models::One(target) => (
                     "SELECT entry FROM provider_models WHERE provider_id=?1 AND source=?2 AND model_id=?3 ORDER BY position",
                     Some(target),
@@ -324,13 +342,22 @@ pub(super) fn read(
     }
     body["endpointTypes"] = Value::Object(source_routes);
     if !matches!(models, Models::Header) {
-        let sql = if matches!(models, Models::One(_)) {
+        let selected = if let Models::Selected(targets) = &models {
+            Some(serde_json::to_string(targets).map_err(storage)?)
+        } else {
+            None
+        };
+        let sql = if selected.is_some() {
+            "SELECT model_id,field,value FROM provider_model_state WHERE provider_id=?1 AND model_id IN (SELECT value FROM json_each(?2)) ORDER BY position"
+        } else if matches!(models, Models::One(_)) {
             "SELECT model_id,field,value FROM provider_model_state WHERE provider_id=?1 AND model_id=?2 ORDER BY position"
         } else {
             "SELECT model_id,field,value FROM provider_model_state WHERE provider_id=?1 ORDER BY position"
         };
         let mut statement = connection.prepare(sql).map_err(storage)?;
-        let mut rows = if let Models::One(target) = models {
+        let mut rows = if let Some(selected) = &selected {
+            statement.query(params![id, selected])
+        } else if let Models::One(target) = models {
             statement.query(params![id, target])
         } else {
             statement.query([id])

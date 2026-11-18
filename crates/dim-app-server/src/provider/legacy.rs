@@ -625,51 +625,137 @@ impl ProviderService {
                 let mut unreadable: HashMap<String, String> = HashMap::new();
                 for (kind, rows) in [("provider", snapshot.providers), ("selection", snapshot.selections)] {
                     for source in rows {
-                        let seen: Option<String> = tx.query_row("SELECT source_digest FROM provider_imports WHERE kind=?1 AND id=?2", params![kind, source.id], |row| row.get(0)).optional().map_err(storage)?;
+                        let seen: Option<String> = tx
+                            .query_row(
+                                "SELECT source_digest FROM provider_imports WHERE kind=?1 AND id=?2",
+                                params![kind, source.id],
+                                |row| row.get(0),
+                            )
+                            .optional()
+                            .map_err(storage)?;
                         if let Some(digest) = seen {
                             if kind == "provider" && digest == source.digest {
-                                match read_stored_static(&tx,&source.id) {
-                                    Ok(Some(record)) => { imported.insert(source.id.clone(),record); }
-                                    Err(_) => { unreadable.insert(source.id.clone(),"Target provider is unreadable; preserved".into()); }
+                                match read_stored_static(&tx, &source.id) {
+                                    Ok(Some(record)) => {
+                                        imported.insert(source.id.clone(), record);
+                                    }
+                                    Err(_) => {
+                                        unreadable.insert(
+                                            source.id.clone(),
+                                            "Target provider is unreadable; preserved".into(),
+                                        );
+                                    }
                                     Ok(None) => {}
                                 }
                             }
-                            items.push(ImportItem { kind, id: source.id, status: ImportStatus::AlreadyImported, reason: Some(if digest == source.digest { "Source row was already imported" } else { "Previously imported identity changed; automatic replay refused" }.into()), omitted: None });
+                            items.push(ImportItem {
+                                kind,
+                                id: source.id,
+                                status: ImportStatus::AlreadyImported,
+                                reason: Some(if digest == source.digest {
+                                    "Source row was already imported"
+                                } else {
+                                    "Previously imported identity changed; automatic replay refused"
+                                }
+                                .into()),
+                                omitted: None,
+                            });
                             continue;
                         }
                         let result: Result<Option<Vec<String>>, String> = if kind == "provider" {
-                            let previous = read_stored_static(&tx,&source.id).map_err(|_| "Target provider is unreadable; preserved".to_owned());
-                            match previous.and_then(|previous| convert_legacy_provider(&source, previous, &bundled)) {
+                            let unreadable_target = |_| {
+                                "Target provider is unreadable; preserved".to_owned()
+                            };
+                            let previous =
+                                read_stored_static(&tx, &source.id).map_err(unreadable_target);
+                            let converted = previous.and_then(|previous| {
+                                convert_legacy_provider(&source, previous, &bundled)
+                            });
+                            match converted {
                                 Err(reason) => Err(reason),
                                 Ok(conversion) => {
-                                    persistence::write(&tx, &source.id, conversion.record.version(), &serde_json::to_string(&conversion.record).map_err(storage)?).map_err(storage)?;
+                                    let body = serde_json::to_string(&conversion.record)
+                                        .map_err(storage)?;
+                                    persistence::write(
+                                        &tx,
+                                        &source.id,
+                                        conversion.record.version(),
+                                        &body,
+                                    )
+                                    .map_err(storage)?;
                                     imported.insert(source.id.clone(), conversion.record);
                                     Ok(Some(conversion.omitted))
                                 }
                             }
                         } else {
-                            let blocked = source.fields.get("providerId").and_then(Value::as_str).and_then(|id| unreadable.get(id)).cloned();
+                            let blocked = source
+                                .fields
+                                .get("providerId")
+                                .and_then(Value::as_str)
+                                .and_then(|id| unreadable.get(id))
+                                .cloned();
                             match blocked {
                                 Some(reason) => Err(reason),
-                                None => match convert_legacy_selection(&source, &imported, &bundled) {
-                                    Err(reason) => Err(reason),
-                                    Ok(selection) => {
-                                        let existing: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM provider_selections WHERE scope=?1)", [&selection.scope], |row| row.get(0)).map_err(storage)?;
-                                        if existing { Err("Target selection already exists".into()) }
-                                        else {
-                                            tx.execute("INSERT INTO provider_selections(scope,version,provider_id,model_id) VALUES (?1,1,?2,?3)", params![selection.scope, selection.provider_id, selection.model_id]).map_err(storage)?;
-                                            Ok(None)
+                                None => {
+                                    let selected =
+                                        convert_legacy_selection(&source, &imported, &bundled);
+                                    match selected {
+                                        Err(reason) => Err(reason),
+                                        Ok(selection) => {
+                                            let existing: bool = tx
+                                                .query_row(
+                                                    "SELECT EXISTS(SELECT 1 FROM provider_selections WHERE scope=?1)",
+                                                    [&selection.scope],
+                                                    |row| row.get(0),
+                                                )
+                                                .map_err(storage)?;
+                                            if existing {
+                                                Err("Target selection already exists".into())
+                                            } else {
+                                                tx.execute(
+                                                    "INSERT INTO provider_selections(scope,version,provider_id,model_id) VALUES (?1,1,?2,?3)",
+                                                    params![
+                                                        selection.scope,
+                                                        selection.provider_id,
+                                                        selection.model_id
+                                                    ],
+                                                )
+                                                .map_err(storage)?;
+                                                Ok(None)
+                                            }
                                         }
                                     }
-                                },
+                                }
                             }
                         };
                         match result {
                             Ok(omitted) => {
-                                tx.execute("INSERT INTO provider_imports(kind,id,source_schema,source_version,source_digest) VALUES (?1,?2,?3,?4,?5)", params![kind, source.id, snapshot.schema, source.version, source.digest]).map_err(storage)?;
-                                items.push(ImportItem { kind, id: source.id, status: ImportStatus::Imported, reason: None, omitted });
+                                tx.execute(
+                                    "INSERT INTO provider_imports(kind,id,source_schema,source_version,source_digest) VALUES (?1,?2,?3,?4,?5)",
+                                    params![
+                                        kind,
+                                        source.id,
+                                        snapshot.schema,
+                                        source.version,
+                                        source.digest
+                                    ],
+                                )
+                                .map_err(storage)?;
+                                items.push(ImportItem {
+                                    kind,
+                                    id: source.id,
+                                    status: ImportStatus::Imported,
+                                    reason: None,
+                                    omitted,
+                                });
                             }
-                            Err(reason) => items.push(ImportItem { kind, id: source.id, status: ImportStatus::Rejected, reason: Some(reason), omitted: None }),
+                            Err(reason) => items.push(ImportItem {
+                                kind,
+                                id: source.id,
+                                status: ImportStatus::Rejected,
+                                reason: Some(reason),
+                                omitted: None,
+                            }),
                         }
                     }
                 }

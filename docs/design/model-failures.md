@@ -5,22 +5,23 @@ What a failed model request reports, and how the retry policy reads it (issue
 
 ## 1. One closed kind, decided where the provider error is read
 
-The aimux bridge is the only place that holds the provider's structured error,
-so it decides `ModelFailureKind`. It uses only the origin, the HTTP status, the
-normalized codes and the `AiMuxError` variant. It never matches message text.
+The aimux bridge is the only place that holds the provider's structured error
+and sees the whole response, so it decides `ModelFailureKind`. It uses the
+origin, the HTTP status, the normalized codes, the `AiMuxError` variant, the
+finish reason and the reply's shape. It never matches message text.
 
 | kind | decided from | retried | meaning | action |
 | --- | --- | --- | --- | --- |
-| `network` | `ApiCall`, origin Transport, no HTTP status | yes | could not reach the provider, or the connection dropped | check the network or proxy |
-| `rate_limited` | 429, rate-limit codes | yes; `Retry-After` is used while it fits the wait budget | the provider is rate limiting requests | wait and try again |
-| `server_error` | 408, 5xx except 501 and 505, server and overload codes, transient stream-event codes | yes | the provider reported a server error | try again later or choose another model |
-| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream, tool arguments that never complete | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
-| `auth_rejected` | 401, 403, invalid-key/auth codes | no (the existing one credential recovery stays) | the provider rejected the credentials | sign in again or check the API key |
-| `quota_exhausted` | 402, quota/billing codes | no | the account has no quota left | check the plan or billing |
+| `network` | the origin is Transport, once no condition code decides | yes | could not reach the provider, or the connection dropped | check the network or proxy |
+| `rate_limited` | 429; the conditions `rate_limit_exceeded`, `rate_limit_error` | yes; `Retry-After` is used while it fits the wait budget | the provider is rate limiting requests | wait and try again |
+| `server_error` | 408, 5xx except 501 and 505; the labels `api_error`, `server_error`, `service_unavailable`, `request_timeout`, `timeout`; the conditions `engine_overloaded`, `model_overloaded`, `server_busy`, `overloaded_error` | yes | the provider reported a server error | try again later or choose another model |
+| `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream, tool arguments that never complete, a reply that stops with an end-turn finish and carries no non-whitespace text and no tool call | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
+| `auth_rejected` | 401, 403; the condition `invalid_api_key`; the label `authentication_error` | no (the existing one credential recovery stays) | the provider rejected the credentials | sign in again or check the API key |
+| `quota_exhausted` | 402; the conditions `insufficient_quota`, `quota_exceeded`, `billing_error`, `credit_exhausted` | no | the account has no quota left | check the plan or billing |
 | `not_found` | 404 | no | the provider did not find the model or endpoint | check the model and the provider's base URL |
-| `context_too_long` | 413, context-length codes | no | the conversation is longer than the model accepts | compact the conversation or start a new session |
-| `content_filtered` | content-policy codes | no | the provider's content filter blocked the response | rephrase the request |
-| `invalid_request` | 400, 409, 422, 501, 505, other 4xx, invalid-request codes including `max_tokens_exceeded`, `InvalidArgument`, `InvalidPrompt`, `UnsupportedFunctionality` | no | the provider rejected the request | see the details |
+| `context_too_long` | 413; the conditions `context_length_exceeded`, `context_too_long` | no | the conversation is longer than the model accepts | compact the conversation or start a new session |
+| `content_filtered` | the conditions `content_policy_violation`, `safety_block`, `moderation_block` | no | the provider's content filter blocked the response | rephrase the request |
+| `invalid_request` | 400, 409, 422, 501, 505, other 4xx; the label `invalid_request_error`; the condition `max_tokens_exceeded`; `InvalidArgument`, `InvalidPrompt`, `UnsupportedFunctionality` | no | the provider rejected the request | see the details |
 | `output_limit` | the `max_tokens` stop | no | the model stopped at its output limit | increase the output token limit and retry |
 | `unknown` | anything else | no | the model request failed | see the details |
 
@@ -30,11 +31,52 @@ chat call; if it ever reaches the bridge it is `unknown` and is not retried.
 
 Codes are compared trimmed and ASCII-lowercased.
 
-- 409, 501 and 505 are `invalid_request` whatever transient code came with
-  them; a permanent code still decides its own kind.
-- A stream-event failure carries the response's status, not the event's, so only
-  its code may decide: a transient code maps to `rate_limited` or
-  `server_error`, a permanent code to its kind, anything else to `unknown`.
+### The two roles of a provider string
+
+The field a provider string arrives in does not decide what it says; the string
+does. Anthropic's `type` is often a condition and OpenAI's often a class, and a
+gateway forwards either under any status.
+
+- A **condition code** names a condition the status alone cannot express:
+  `insufficient_quota`, `context_length_exceeded`, `rate_limit_exceeded`,
+  `engine_overloaded`, `invalid_api_key`, `content_policy_violation`,
+  `max_tokens_exceeded`. It is information the status does not carry, so it
+  decides.
+- A **class label** only restates an HTTP class: `api_error`, `server_error`,
+  `invalid_request_error`, `authentication_error`. A gateway or a relay stamps
+  such a label on the errors it forwards, whatever their status. When the
+  response carries an error status, the label can only agree with it or
+  contradict it, and when it contradicts, the status is the fact.
+
+### The rule
+
+One rule decides every protocol's failure:
+
+1. a condition code decides, a condition that is not retried before one that
+   is, so `insufficient_quota` beside `rate_limit_error` is `quota_exhausted`;
+2. otherwise a Transport-origin failure is `network`;
+3. otherwise an error status, 4xx or 5xx, on the response decides, by the
+   table above;
+4. otherwise a class label decides, which in practice is a stream event;
+5. otherwise the kind is `unknown`.
+
+A status outside 4xx and 5xx is not an error status and says nothing about
+the failure's kind, so step 3 skips it and the class label decides. A 2xx one
+reaches the bridge when a successful body was too large or did not parse, or
+when the provider reported an error inside a 2xx body; a 3xx one when a
+redirect could not be followed.
+
+A stream event's status is the provider's own mapping of the event's strings,
+not a response status: aimux takes an explicit 4xx or 5xx when the event
+carries one and otherwise guesses from the event's code and type, where a
+provider that matches nothing gets 500. Dim cannot tell an explicit status
+from a guessed one, so a stream event skips step 3 and steps 1 and 4 decide
+it; reading that status would turn every unrecognized event into a retried
+`server_error`. 501 and 505 are `invalid_request` by step 3 because the status
+table says so, not by an exception to this rule, and a condition code beside
+them still decides. Two kinds change from the rule: a 4xx answer that carries
+only a server-class label is no longer retried, and a 5xx carrying
+`invalid_request_error` is a `server_error` and is retried.
 
 Every `HostError::Failed` the bridge produces carries facts, including
 `AiMuxError::Timeout`, `InvalidResponseData`/`JsonParse`, `InvalidArgument`/
@@ -75,6 +117,8 @@ ModelFailure {
   continuation declines it, so the prohibition covers the continuation.
 - `reason` is the provider's error message for a response or stream-event
   failure, and the innermost frame of the cause chain for a transport failure.
+  A reply that completed with no answer has no provider error behind it, so its
+  reason is the fixed sentence its rule states and quotes no response content.
   A JSON parse message embeds the body text it could not read, so its `reason`
   is the parse diagnosis from the error's structure, and is absent when the
   error carries no cause. A tool failure is named from its `tool_name` field:
@@ -102,6 +146,24 @@ ModelFailure {
 - Tool arguments that never complete write
   `failure.kind = malformed_response`, the kind `InvalidToolInput` carries for
   the same defect.
+- A reply that stops with an end-turn finish and carries no non-whitespace text
+  and no tool call writes `failure.kind = malformed_response` with the reason
+  "the response had no text and no tool call". Thinking alone is not an answer,
+  so a reply of thinking only counts as empty. The bridge decides it where the
+  stream completes, because it is the only part that sees the whole response.
+  Whether the request is retried depends on what the attempt handed on: with
+  nothing but the message start handed on, it is retried once like any
+  `malformed_response`; once anything else has been handed on, a whitespace
+  text part included, the request is past the point where it may be retried
+  ([output.rs](../../crates/dim-agent-capabilities/src/output.rs) clears replay
+  safety on every chunk but the message start), so the turn ends with the
+  failure recorded and shown and the user resends by hand. A retry cannot
+  follow committed output: what the request committed must match the next
+  complete reply, thinking included
+  ([output.rs](../../crates/dim-agent-capabilities/src/output.rs)), and a second
+  attempt brings its own thinking.
+  The rule holds for every turn, driven Loop and Goal turns included: an empty
+  reply is not a step there either.
 - A failure from a host with no provider boundary gets kind `unknown` and the
   message it already carried.
 
@@ -153,8 +215,11 @@ line's `tried N times` is the persistent record.
 ## 4. Retry
 
 `invoke` is shared by ModelProvider, the auxiliary model and the summary
-strategy, so all three retry the same way; there is one implementation and no
-per-caller setting.
+strategy, so there is one policy and no per-caller setting, but not always the
+same outcome: replay safety is the consumer's to clear, and the auxiliary model
+and the summary strategy read the stream without handing anything on, so a
+reply that streamed only thinking or whitespace text is retried there, while
+a main turn ends on it.
 
 | item | value |
 | --- | --- |
@@ -164,7 +229,7 @@ per-caller setting.
 | backoff | the n-th retry sleeps 1 s × 2^(n−1), capped at 30 s, times a uniform jitter in [0.8, 1.0] |
 | `Retry-After` | used exactly as the delay, even above 30 s, while it fits in the budget left; if it does not fit, the request stops at once and records `retryAfterMs` |
 | wait budget | a request sleeps at most five minutes in all before it fails; a wait that does not fit in what is left stops the request at once |
-| unchanged | no retry after irreversible output; an interrupt cancels the sleep; one credential recovery with no delay, still within the 8 attempts; `ModelFailurePolicy::forbids_retry`; a terminal credential rejection is settled |
+| unchanged | no retry once the attempt handed anything but the message start on, thinking and whitespace text included; an interrupt cancels the sleep; one credential recovery with no delay, still within the 8 attempts; `ModelFailurePolicy::forbids_retry`; a terminal credential rejection is settled |
 
 The nominal backoff sleeps are 1, 2, 4, 8, 16, 30 and 30 s, about 91 s in all.
 The numbers follow the outage in #1197, which lasted tens of seconds: eight

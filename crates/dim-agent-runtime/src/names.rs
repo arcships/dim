@@ -100,7 +100,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<SessionLifecycle>(&mut catalog, session);
     register::<FaultReporter>(&mut catalog, session);
     register::<TimelineFactory>(&mut catalog, session);
-    register::<dyn TimelineStore>(&mut catalog, session);
+    catalog.register_shared_instance("timelineStore", SESSION_GROUP);
     register::<dyn TimelineTreeControl>(&mut catalog, session);
     register::<SessionLoader>(&mut catalog, session);
     let branch = Some(BRANCH_GROUP);

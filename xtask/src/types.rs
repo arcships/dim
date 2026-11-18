@@ -11,6 +11,8 @@ fn file(root: &Path) -> PathBuf {
 
 fn declarations(root: &Path) -> Result<String> {
     rutis_types::Exports::new()
+        .declared("serde_json::Value", "import('./plugin.js').BridgeJsonValue")
+        .declared("serde_json::Map", "import('./plugin.js').BridgeJsonObject")
         .declared(
             "dim_agent_types::PermissionPolicy",
             "import('./plugin.js').PermissionPolicy",
@@ -34,6 +36,10 @@ fn declarations(root: &Path) -> Result<String> {
         .declared(
             "dim_agent_runtime::SessionConfig",
             "import('./plugin.js').SessionConfig",
+        )
+        .declared(
+            "dim_agent_types::ModelConfig",
+            "import('./plugin.js').ModelConfig",
         )
         .declared("std::num::NonZeroU64", "number | bigint")
         .declared(

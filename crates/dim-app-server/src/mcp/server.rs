@@ -1032,7 +1032,12 @@ impl McpServer {
                             origin: "the connection deadline",
                         });
                     }
-                    result = sse::SseTransport::connect(http_client()?, config, self.authorization.clone(), handshake_cancel.clone()) => result?,
+                    result = sse::SseTransport::connect(
+                        http_client()?,
+                        config,
+                        self.authorization.clone(),
+                        handshake_cancel.clone(),
+                    ) => result?,
                 };
                 self.initialize(transport, cancel, handshake_cancel, deadline)
                     .await

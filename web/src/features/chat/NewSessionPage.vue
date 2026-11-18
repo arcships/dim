@@ -1,25 +1,29 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue"
+import { ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router"
 import { useI18n } from "vue-i18n"
 import BrandMark from "../../components/BrandMark.vue"
 import ComposerPanel from "./ComposerPanel.vue"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
-import { MAIN_BRANCH, type ModelId } from "../../rpc/protocol"
+import { useNewSessionModel } from "./new-session-model"
+import { MAIN_BRANCH } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
+import { useConnectionStore } from "../../stores/connection"
 import { useModels } from "../../stores/models"
 import { useSessionsStore, workspaceName } from "../../stores/sessions"
 
 /**
  * A new session: pick a known workspace or type an absolute directory, write
  * the first message, and send. Sending creates the session there, submits the
- * message and opens it.
+ * message and opens it. The composer shows the model creation would adopt
+ * there until a model is chosen for this session alone.
  */
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const sessions = useSessionsStore()
 const chat = useChatStore()
+const connection = useConnectionStore()
 const models = useModels()
 const menuOpen = ref(false)
 
@@ -30,18 +34,11 @@ watch(() => sessions.workspaces, (workspaces) => {
   if (cwd.value === "" && workspaces[0] !== undefined) cwd.value = workspaces[0].cwd
 }, { immediate: true })
 
-/** The model picked here; until then, the directory's default. */
-const picked = ref<ModelId>()
-const fallback = ref<ModelId>()
-watch(cwd, async (dir) => {
-  fallback.value = undefined
-  if (dir === "") return
-  const model = await models.defaultFor(dir)
-  if (cwd.value === dir) fallback.value = model
-}, { immediate: true })
-const model = computed(() => picked.value ?? fallback.value)
+const preview = useNewSessionModel((dir) => models.preview(dir))
+watch(cwd, (dir) => void preview.refresh(dir), { immediate: true })
+watch(() => connection.hello, () => void preview.refresh(cwd.value))
 
-function choose(dir: string): void {
+function chooseWorkspace(dir: string): void {
   cwd.value = dir
   menuOpen.value = false
 }
@@ -49,13 +46,13 @@ function choose(dir: string): void {
 function useTyped(): void {
   const dir = typed.value.trim()
   if (dir === "") return
-  choose(dir)
+  chooseWorkspace(dir)
   typed.value = ""
 }
 
 async function send(text: string): Promise<void> {
   if (cwd.value === "") throw new Error(t("newThread.workspaceRequired"))
-  const sessionId = await sessions.create(cwd.value, picked.value)
+  const sessionId = await sessions.create(cwd.value, preview.override)
   chat.open(sessionId)
   await chat.submit(sessionId, MAIN_BRANCH, text)
   await router.push({ name: "chat-session", params: { sessionId } })
@@ -69,7 +66,7 @@ async function send(text: string): Promise<void> {
       <h1 data-route-heading tabindex="-1">{{ t("newThread.title") }}</h1>
       <ExtensionMenu />
     </div>
-    <ComposerPanel class="is-new-thread" :running="false" :model="model" :model-selectable="true" :send="send" :attachments="false" :select-model="(next) => { picked = next }">
+    <ComposerPanel class="is-new-thread" :running="false" :model="preview.model" :model-preview="preview.menu" :model-selectable="true" :send="send" :attachments="false" :select-model="preview.choose">
       <template #status>
         <UPopover v-model:open="menuOpen" :content="{ side: 'top', align: 'start' }">
           <UTooltip :text="cwd || undefined" :disabled="!cwd">
@@ -111,7 +108,7 @@ async function send(text: string): Promise<void> {
                   role="option"
                   class="workspace-option"
                   :aria-selected="workspace.cwd === cwd"
-                  @click="choose(workspace.cwd)"
+                  @click="chooseWorkspace(workspace.cwd)"
                 >
                   <template #leading>
                     <UIcon name="i-lucide-folder" class="size-4 shrink-0 text-muted" aria-hidden="true" />

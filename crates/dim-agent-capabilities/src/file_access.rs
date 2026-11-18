@@ -657,8 +657,14 @@ impl Worktrees {
                 Ok(status) => status,
                 Err(_) => { tree.terminate().await.map_err(failed)?; return Err(HostError::failed("Git worktree discovery timed out")); }
             },
-            _ = self.stopping.cancelled() => { tree.terminate().await.map_err(failed)?; return Err(cancelled()); },
-            _ = self.lifecycle.closing() => { tree.terminate().await.map_err(failed)?; return Err(cancelled()); },
+            _ = self.stopping.cancelled() => {
+                tree.terminate().await.map_err(failed)?;
+                return Err(cancelled());
+            },
+            _ = self.lifecycle.closing() => {
+                tree.terminate().await.map_err(failed)?;
+                return Err(cancelled());
+            },
         };
         let status = match status {
             Ok(status) => status,

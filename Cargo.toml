@@ -49,6 +49,8 @@ axum = { version = "0.8", default-features = false, features = ["ws", "http1", "
 tokio-tungstenite = "0.29"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# The bundled tzdb keeps IANA zones available without host tzdata, as chrono-tz did (#1766).
+jiff = { version = "0.2.46", features = ["serde", "tzdb-bundle-always"] }
 
 [profile.dev]
 debug = "line-tables-only"

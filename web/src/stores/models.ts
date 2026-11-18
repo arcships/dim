@@ -1,5 +1,5 @@
 import { computed, getCurrentScope, onScopeDispose, reactive, ref } from "vue"
-import { readAck, readModelPage, readProviderSelection } from "../rpc/read"
+import { readAck, readModelPage, readModelPreview } from "../rpc/read"
 import type { ModelId, ProviderModel } from "../rpc/protocol"
 import { useConnectionStore } from "./connection"
 
@@ -53,9 +53,10 @@ export function useModels() {
     if (providers.value !== undefined || loading.value) await load(current)
   }
 
-  async function defaultFor(cwd: string): Promise<ModelId | undefined> {
-    if (!useConnectionStore().supports("provider.selection")) return undefined
-    return useConnectionStore().client.call("provider.selection", { cwd }, readProviderSelection).catch(() => undefined)
+  /** The model a new Session in `cwd` would adopt, resolved by creation's own owner. */
+  async function preview(cwd: string): Promise<ModelId | undefined> {
+    if (!useConnectionStore().supports("session.model.preview")) return undefined
+    return useConnectionStore().client.call("session.model.preview", { cwd }, readModelPreview)
   }
 
   function nameOf(model: ModelId): string {
@@ -64,5 +65,5 @@ export function useModels() {
 
   if (getCurrentScope()) onScopeDispose(clear)
 
-  return reactive({ providers, error, available, loading, next, load, loadMore: () => load(current, true), clear, refresh, defaultFor, nameOf })
+  return reactive({ providers, error, available, loading, next, load, loadMore: () => load(current, true), clear, refresh, preview, nameOf })
 }

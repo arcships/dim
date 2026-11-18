@@ -18,7 +18,10 @@ impl EchoModel {
         request.messages.iter().rev().map(AsRef::as_ref).find(|message: &&Message| {
             message.role != Role::User || !match &message.content {
                 MessageContent::Text(text) => crate::context_block::is_state_or_rule(text),
-                MessageContent::Parts(parts) => matches!(parts.as_slice(), [MessagePart::Text { text, .. }] if crate::context_block::is_state_or_rule(text)),
+                MessageContent::Parts(parts) => matches!(
+                    parts.as_slice(),
+                    [MessagePart::Text { text, .. }] if crate::context_block::is_state_or_rule(text)
+                ),
             }
         })
     }

@@ -304,54 +304,44 @@ fn right_takes_the_offer_into_the_draft_without_sending() {
     daemon.join().unwrap();
 }
 
-#[test]
-fn tab_takes_the_offer_in_scrollback() {
-    let home = Home::new();
-    let daemon = home.daemon(move |wire| {
-        opened(wire, &[], vec![]);
-        completed(wire, "turn-1");
-        accepts(wire, "turn-1");
-        offer(wire, "turn-1", "run the tests");
-        responds(wire, "turn-1", "accept");
-        wire.hold();
-    });
-    let mut terminal = Terminal::resume_tui(home.command());
-    terminal.until("run the tests");
-    terminal.raw(b"\t");
-    terminal.raw(b"\x03");
-    terminal.write(b"/exit\r");
-    terminal.until("Bye!");
-    assert!(terminal.wait().success());
-    daemon.join().unwrap();
-}
-
+/// Tab takes the offer in scrollback; in fullscreen it keeps the focus in the
+/// composer, so only Right takes it.
 #[test]
 fn tab_keeps_the_fullscreen_focus_and_right_still_takes_the_offer() {
-    let home = Home::new();
-    let (settled, settle) = std::sync::mpsc::channel();
-    let daemon = home.daemon(move |wire| {
-        opened(wire, &[], vec![]);
-        completed(wire, "turn-1");
-        accepts(wire, "turn-1");
-        offer(wire, "turn-1", "run the tests");
-        wire.quiet(Duration::from_millis(300));
-        settled.send(()).unwrap();
-        responds(wire, "turn-1", "accept");
-        wire.hold();
-    });
-    let mut command = home.command();
-    command.arg("--fullscreen");
-    sized(&mut command, 100, 32);
-    let mut terminal = Terminal::resume_tui(command);
-    terminal.until("run the tests");
-    terminal.raw(b"\t");
-    settle.recv_timeout(PATIENCE).unwrap();
-    terminal.raw(b"\x1b[C");
-    terminal.raw(b"\x03");
-    terminal.write(b"/exit\r");
-    terminal.until("Bye!");
-    assert!(terminal.wait().success());
-    daemon.join().unwrap();
+    for fullscreen in [false, true] {
+        let home = Home::new();
+        let (settled, settle) = std::sync::mpsc::channel();
+        let daemon = home.daemon(move |wire| {
+            opened(wire, &[], vec![]);
+            completed(wire, "turn-1");
+            accepts(wire, "turn-1");
+            offer(wire, "turn-1", "run the tests");
+            if fullscreen {
+                // Tab moves the composer's focus, so nothing answers the offer.
+                wire.quiet(Duration::from_millis(300));
+                settled.send(()).unwrap();
+            }
+            responds(wire, "turn-1", "accept");
+            wire.hold();
+        });
+        let mut command = home.command();
+        if fullscreen {
+            command.arg("--fullscreen");
+            sized(&mut command, 100, 32);
+        }
+        let mut terminal = Terminal::resume_tui(command);
+        terminal.until("run the tests");
+        terminal.raw(b"\t");
+        if fullscreen {
+            settle.recv_timeout(PATIENCE).unwrap();
+            terminal.raw(b"\x1b[C");
+        }
+        terminal.raw(b"\x03");
+        terminal.write(b"/exit\r");
+        terminal.until("Bye!");
+        assert!(terminal.wait().success());
+        daemon.join().unwrap();
+    }
 }
 
 #[test]

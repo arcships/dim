@@ -823,7 +823,10 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
                 )
                 .await?;
             }
-            let params = serde_json::json!({"providerId":provider});
+            let mut params = serde_json::json!({"providerId":provider});
+            if let Some(model) = &options.set_limits {
+                params["modelId"] = serde_json::json!(model);
+            }
             let catalog = if options.refresh {
                 Some(
                     client

@@ -349,6 +349,21 @@ async fn failed_writes_announce_nothing_and_dropped_calls_still_settle() {
             .unwrap();
         let failed = metadata.set(&sid, 1, title("Lost", "manual")).await;
         assert_eq!(code(&failed), "storage");
+        let native = server
+            .service::<dim_app_server::storage::SessionMetadataService>()
+            .unwrap();
+        let native_error = native
+            .set_title(
+                &sid,
+                1,
+                Some(dim_app_server::storage::Title {
+                    text: "Lost".into(),
+                    source: dim_app_server::storage::TitleSource::Manual,
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(failed["error"]["message"], native_error.to_string());
         assert!(
             failed["error"]["message"]
                 .as_str()
@@ -402,6 +417,34 @@ async fn failed_writes_announce_nothing_and_dropped_calls_still_settle() {
                 fields(Some(("Before", "auto")), 1),
                 fields(Some(("Dropped", "manual")), 2),
             ]
+        );
+        let mut native_write = hold_title_write(&sid);
+        let reply = native.set_title(
+            &sid,
+            2,
+            Some(dim_app_server::storage::Title {
+                text: "Unpolled".into(),
+                source: dim_app_server::storage::TitleSource::Manual,
+            }),
+        );
+        tokio::time::timeout(Duration::from_secs(10), native_write.arrived())
+            .await
+            .expect("set_title admits its write before the returned wait is polled");
+        drop(reply);
+        drop(native_write);
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if native.read(&sid).await.unwrap().revision == 3 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("an unpolled native wait cannot defer or cancel its admitted write");
+        assert_eq!(
+            metadata.read(&sid).await,
+            ok(serde_json::to_value(native.read(&sid).await.unwrap()).unwrap())
         );
         drop(client);
         server.shutdown();
@@ -608,6 +651,13 @@ async fn node_typescript_row_reads_and_sets_the_title_through_session_metadata()
         call(&mut client, "read", json!({})).await,
         ok(json!({"revision": 0, "title": null}))
     );
+    let native = server
+        .service::<dim_app_server::storage::SessionMetadataService>()
+        .unwrap();
+    assert_eq!(
+        call(&mut client, "read", json!({})).await,
+        ok(serde_json::to_value(native.read(&sid).await.unwrap()).unwrap())
+    );
     let typed = title("From TypeScript", "manual");
     assert_eq!(
         call(
@@ -640,6 +690,28 @@ async fn node_typescript_row_reads_and_sets_the_title_through_session_metadata()
     assert_eq!(
         listed_everywhere(&mut client, &sid).await,
         fields(Some(("From TypeScript", "manual")), 1)
+    );
+    assert_eq!(
+        native
+            .set_title(
+                &sid,
+                1,
+                Some(dim_app_server::storage::Title {
+                    text: "From Rust".into(),
+                    source: dim_app_server::storage::TitleSource::Manual,
+                })
+            )
+            .await
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        call(&mut client, "read", json!({})).await,
+        ok(serde_json::to_value(native.read(&sid).await.unwrap()).unwrap())
+    );
+    assert_eq!(
+        title_notices(&mut client, &sid).await,
+        vec![fields(Some(("From Rust", "manual")), 2)]
     );
     drop(client);
     server.shutdown();

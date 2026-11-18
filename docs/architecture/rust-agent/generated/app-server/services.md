@@ -87,7 +87,7 @@ flowchart LR
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p74
   p10 -->|"dim_app_server::methods::ManagementMethods"| p74
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p73
-  p18 -->|"dim_app_server::settings::SettingsService"| p73
+  p18 -->|"dim_app_server::settings::declared::Settings"| p73
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p72
   p3 -->|"dim_app_server::control::ProcessActivity"| p72
   p10 -->|"dim_app_server::methods::ManagementMethods"| p72
@@ -129,7 +129,7 @@ flowchart LR
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p48
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p47
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p46
-  p18 -->|"dim_app_server::settings::SettingsService"| p46
+  p18 -->|"dim_app_server::settings::declared::Settings"| p46
   p42 -->|"dim_app_server::connection::ConnectionHub"| p44
   p3 -->|"dim_app_server::control::ServerControl"| p44
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p44
@@ -151,6 +151,8 @@ flowchart LR
   p37 -->|"dim_app_server::agents::AgentDirectory"| p39
   p3 -->|"dim_app_server::control::ProcessActivity"| p39
   p18 -->|"dim_app_server::settings::SettingsService"| p39
+  p8 -->|"dim_app_server::storage::face::Store"| p39
+  p8 -->|"dim_app_server::storage::metadata::binding::SessionMetadata"| p39
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p39
   p8 -->|"dim_app_server::storage::timeline::SessionStore"| p39
   p2 -->|"rutis_loader::loader::Loader"| p39
@@ -178,10 +180,10 @@ flowchart LR
   p24 -->|"dim_agent_capabilities::execution_settings::ExecutionSettingsHost"| p28
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p28
   p25 -->|"dim_agent_capabilities::toolchain::ToolchainSourceHost"| p28
-  p18 -->|"dim_app_server::settings::SettingsService"| p27
-  p18 -->|"dim_app_server::settings::SettingsService"| p26
+  p18 -->|"dim_app_server::settings::declared::Settings"| p27
+  p18 -->|"dim_app_server::settings::declared::Settings"| p26
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p24
-  p18 -->|"dim_app_server::settings::SettingsService"| p24
+  p18 -->|"dim_app_server::settings::declared::Settings"| p24
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p23
   p1 -->|"dim_agent_capabilities::host::CredentialVariablesHost"| p23
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p23
@@ -191,9 +193,9 @@ flowchart LR
   p1 -->|"dim_agent_capabilities::host::CredentialVariablesHost"| p22
   p18 -->|"dim_app_server::settings::SettingsService"| p22
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p21
-  p18 -->|"dim_app_server::settings::SettingsService"| p21
+  p18 -->|"dim_app_server::settings::declared::Settings"| p21
   p45 -->|"dim_agent_runtime::parts::PartRegistry"| p20
-  p18 -->|"dim_app_server::settings::SettingsService"| p20
+  p18 -->|"dim_app_server::settings::declared::Settings"| p20
   p10 -->|"dim_app_server::methods::ManagementMethods"| p19
   p18 -->|"dim_app_server::settings::SettingsService"| p19
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p18
@@ -214,7 +216,7 @@ flowchart LR
   p59 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p9
-  p8 -->|"dim_app_server::storage::timeline::SessionStore"| p9
+  p8 -->|"dim_app_server::storage::face::Store"| p9
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p8
   p10 -->|"dim_app_server::methods::ManagementMethods"| p7
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p7

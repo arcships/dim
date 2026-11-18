@@ -82,6 +82,19 @@ Its role (main, tool line or host line) and its parent come from
 `TreeCommands.info`, which is filled from the parent's `branch/create` at
 creation and at restore.
 
+### Data face
+
+The branch-scoped `branchLine` face exposes the owner's existing read operations:
+`resolved()` returns `[role, parent]` or `null`, where role is `main`, `tool` or
+`host`; `ending()` reports whether the line committed its own `branch/end`;
+`cursor(target)` returns its latest successful read cursor for that target or
+`null`. Cursor read failures use the standard `AgentError` name, variant code
+and display message on the wire; native error source identity is not serialized.
+The native binding and foreign dispatcher call these same operations. Reads retain the current cached
+role/cursor behavior and load only the requested target's cursor when needed;
+they do not read or rebuild all history. Writer lifecycle and event settlement
+are unchanged. See [service faces](../../../design/service-faces.md).
+
 ### Dependencies
 
 | Service | Purpose |
@@ -158,6 +171,6 @@ BranchLine mounts at the committed Dispatcher cutoff without reading historical 
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle`、`S:TreeCommands` |
-| 提供 | `B:BranchLine` |
+| 提供 | `B:BranchLine`、`B:dyn HostDispatch#branchLine` |
 | 被注入于 | — |
 <!-- /generated -->

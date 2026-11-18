@@ -17,9 +17,9 @@ use crate::{
         loop_next_target, loop_start_request, loop_stop_target,
     },
 };
-use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
 use dim_agent_types::markup::escaped;
+use jiff::{SignedDuration, Timestamp};
 use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as BridgeValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -37,9 +37,9 @@ pub const MAX_EVERY_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MIN_NEXT_SECONDS: i64 = 60;
 pub const MAX_NEXT_SECONDS: i64 = 3600;
 /// How long a finished loop is kept for `list` (§12.5).
-const RETENTION_AFTER_TERMINAL: Duration = Duration::days(7);
+const RETENTION_AFTER_TERMINAL: SignedDuration = SignedDuration::from_hours(7 * 24);
 /// Creation + this is a loop's `expires_at`.
-const LIFETIME: Duration = Duration::days(7);
+const LIFETIME: SignedDuration = SignedDuration::from_hours(7 * 24);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,7 +99,7 @@ impl Cadence {
     /// missed windows is one round, never a burst (§12.2). Windows are counted
     /// in milliseconds, so a `now` a fraction of a second past a window is
     /// inside that window and the answer is the following one.
-    pub fn next_window_at(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    pub fn next_window_at(&self, now: Timestamp) -> Option<Timestamp> {
         let Self::Every {
             every_seconds,
             anchor,
@@ -112,9 +112,11 @@ impl Cadence {
             return Some(anchor);
         }
         let step_ms = i64::try_from(*every_seconds).ok()?.checked_mul(1_000)?;
-        let elapsed_ms = (now - anchor).num_milliseconds();
+        let elapsed_ms = i64::try_from(now.duration_since(anchor).as_millis()).ok()?;
         let windows = elapsed_ms.checked_div(step_ms)?.checked_add(1)?;
-        Some(anchor + Duration::milliseconds(step_ms.checked_mul(windows)?))
+        anchor
+            .checked_add(SignedDuration::from_millis(step_ms.checked_mul(windows)?))
+            .ok()
     }
 }
 
@@ -323,7 +325,7 @@ async fn update<R: Send + 'static>(
         .await?
 }
 
-fn stamp(instant: DateTime<Utc>) -> String {
+fn stamp(instant: Timestamp) -> String {
     format_instant(instant)
 }
 
@@ -457,7 +459,7 @@ impl Loops {
         let _activity = self.shared.activity.take_hold().ok_or_else(|| {
             SchedulerError::new("service_reloading", "Process admission is paused")
         })?;
-        let at = self.shared.now() + Duration::seconds(clamp_next(delay_seconds));
+        let at = self.shared.now() + SignedDuration::from_secs(clamp_next(delay_seconds));
         let (record, _) = self
             .change(session_id, loop_id, move |record| {
                 if !record.state.is_live() {
@@ -608,7 +610,7 @@ impl Change {
     /// waits for `next`; a fixed one is already due at its next window, and
     /// its delivered input is remembered so that window can check whether the
     /// round is still pending (design 12.2, 12.3).
-    fn delivered(record: &Loop, round: u64, input_id: Option<String>, now: DateTime<Utc>) -> Self {
+    fn delivered(record: &Loop, round: u64, input_id: Option<String>, now: Timestamp) -> Self {
         let done = round.saturating_add(1);
         let next_at = record.cadence.next_window_at(now);
         let state = if next_at.is_some() {
@@ -642,7 +644,7 @@ impl Change {
         }
     }
 
-    fn apply(self, record: &mut Loop, now: DateTime<Utc>) {
+    fn apply(self, record: &mut Loop, now: Timestamp) {
         if let Some(state) = self.state {
             record.state = state;
         }
@@ -1196,10 +1198,8 @@ impl HostDispatch for LoopsFace {
 mod tests {
     use super::*;
 
-    fn at(text: &str) -> DateTime<Utc> {
-        chrono::DateTime::parse_from_rfc3339(text)
-            .unwrap()
-            .with_timezone(&Utc)
+    fn at(text: &str) -> Timestamp {
+        text.parse::<Timestamp>().unwrap()
     }
 
     fn every_minute() -> Cadence {

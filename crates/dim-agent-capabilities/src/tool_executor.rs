@@ -421,7 +421,8 @@ impl DynPlugin for ToolExecutorPlugin {
                                         .unwrap_or(ToolConcurrency::Exclusive)
                                 });
                                 let (turn, segment_of, mut waiters) = Turn::new(classes, count);
-                                let calls = batch.calls.iter().cloned().enumerate().map(|(index, call)| {
+                                let calls = batch.calls.iter().cloned().enumerate().map(
+                                    |(index, call)| {
                                     let binding = binding.clone();
                                     let approval = approval.clone();
                                     let timeline = timeline.clone();
@@ -494,31 +495,64 @@ impl DynPlugin for ToolExecutorPlugin {
                                                     // its own admission is done and every
                                                     // earlier step settled. A sibling's
                                                     // admission is not one of them.
+                                                    let mut settle = |outcome| {
+                                                        settled(
+                                                            outcome,
+                                                            interrupt.is_cancelled(),
+                                                            &mut errors,
+                                                        )
+                                                    };
+                                                    let ahead = |head: &usize| *head >= segment;
                                                     if segment > 0 {
+                                                        let waited = barrier.wait_for(ahead);
                                                         let ready = tokio::select! {
                                                             biased;
                                                             _ = cancel.cancelled() => false,
-                                                            waited = barrier.wait_for(|head| *head > segment - 1) => waited.is_ok(),
+                                                            waited = waited => waited.is_ok(),
                                                         };
                                                         if !ready {
                                                             (ToolResult::error("Tool cancelled before execution"), "interrupted")
                                                         } else {
-                                                            let outcome = AssertUnwindSafe(run(admitted, context.clone(), cancel.clone()))
-                                                                .catch_unwind()
-                                                                .await;
-                                                            settled(outcome, interrupt.is_cancelled(), &mut errors)
-                                                        }
-                                                    } else {
-                                                        let outcome = AssertUnwindSafe(run(admitted, context.clone(), cancel.clone()))
+                                                            let outcome = AssertUnwindSafe(run(
+                                                                admitted,
+                                                                context.clone(),
+                                                                cancel.clone(),
+                                                            ))
                                                             .catch_unwind()
                                                             .await;
-                                                        settled(outcome, interrupt.is_cancelled(), &mut errors)
+                                                            settle(outcome)
+                                                        }
+                                                    } else {
+                                                        let outcome = AssertUnwindSafe(run(
+                                                            admitted,
+                                                            context.clone(),
+                                                            cancel.clone(),
+                                                        ))
+                                                        .catch_unwind()
+                                                        .await;
+                                                        settle(outcome)
                                                     }
                                                 }
                                                 Ok(Err(error)) => {
-                                                    let outcome = if matches!(error, HostError::Cancelled(_)) { "interrupted" } else { "failure" };
-                                                    let reloading = matches!(&error, HostError::Cancelled(reason) if reason == CAPABILITY_RELOADING);
-                                                    let result = if reloading { reload_cancelled() } else { ToolResult::error(error.to_string()) };
+                                                    let outcome = if matches!(
+                                                        error,
+                                                        HostError::Cancelled(_)
+                                                    ) {
+                                                        "interrupted"
+                                                    } else {
+                                                        "failure"
+                                                    };
+                                                    let reloading = match &error {
+                                                        HostError::Cancelled(reason) => {
+                                                            reason == CAPABILITY_RELOADING
+                                                        }
+                                                        _ => false,
+                                                    };
+                                                    let result = if reloading {
+                                                        reload_cancelled()
+                                                    } else {
+                                                        ToolResult::error(error.to_string())
+                                                    };
                                                     (result, outcome)
                                                 }
                                                 Err(panic) => {
@@ -583,7 +617,14 @@ impl DynPlugin for ToolExecutorPlugin {
                                     .filter(|item| item.result.effects.is_none())
                                     .map(|item| item.call_id.clone())
                                     .collect::<Vec<_>>();
-                                let mut children = match child_effects(&timeline, &parents, &batch.request_id, through).await {
+                                let mut children = match child_effects(
+                                    &timeline,
+                                    &parents,
+                                    &batch.request_id,
+                                    through,
+                                )
+                                .await
+                                {
                                     Ok(children) => children,
                                     Err(error) => {
                                         errors.push(error);

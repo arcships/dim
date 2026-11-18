@@ -13,8 +13,8 @@ use dim_agent_types::{
     ContentBlock, EventKind, InputBlock, Message, ModelId, Role, UserInput, markup::runtime_context,
 };
 use dim_app_server::{
-    settings::{SettingsScope, SettingsService, SourceDeclaration},
-    storage::{MetadataError, SessionStore, Title, TitleSource},
+    settings::{Settings, SettingsScope, SourceDeclaration},
+    storage::{MetadataError, SessionMetadataService, Title, TitleSource},
 };
 use regex::Regex;
 use rutis::Ctx;
@@ -31,7 +31,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const SOURCE: &str = "session-title";
 
-/// Installs SessionTitle in a host profile that provides Settings and SessionStore.
+/// Installs SessionTitle in a host profile that provides Settings and SessionMetadataService.
 pub fn install(builder: &mut AgentBuilder) {
     builder.plugin(|names| Ok(Box::new(SessionTitlePlugin::new(names)?)));
 }
@@ -81,7 +81,7 @@ struct Document {
 }
 
 pub(crate) struct SessionTitlePlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     parts: Key<PartRegistry>,
 }
 impl SessionTitlePlugin {
@@ -101,7 +101,7 @@ impl DynPlugin for SessionTitlePlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            ctx.require_at(&self.settings)?.register_declared(
+            ctx.require_at(&self.settings)?.register(
                 ctx,
                 SourceDeclaration {
                     source: SOURCE.into(),
@@ -136,9 +136,9 @@ impl DynPlugin for SessionTitlePlugin {
 }
 
 struct SessionTitle {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     tree: Key<TreeCommands>,
-    store: Key<SessionStore>,
+    store: Key<SessionMetadataService>,
     auxiliary: Key<AuxiliaryModel>,
     identity: Key<SessionIdentity>,
     config: Key<SessionConfig>,
@@ -284,9 +284,9 @@ struct State {
 struct Owner {
     ctx: Ctx,
     id: String,
-    settings: Arc<SettingsService>,
+    settings: Arc<Settings>,
     tree: Arc<TreeCommands>,
-    store: Arc<SessionStore>,
+    store: Arc<SessionMetadataService>,
     auxiliary: Arc<AuxiliaryModel>,
     state: Mutex<State>,
     stop: CancellationToken,
@@ -299,7 +299,7 @@ impl Owner {
     async fn document(&self) -> Result<Document, ()> {
         let snapshot = self
             .settings
-            .read_declared(SOURCE, SettingsScope::User, &self.stop)
+            .read(SOURCE, SettingsScope::User, &self.stop)
             .await
             .map_err(|_| ())?;
         serde_json::from_value(snapshot.document).map_err(|_| ())
@@ -309,7 +309,7 @@ impl Owner {
     /// `maxLength`, as the first manual title. A `Conflict` means another
     /// writer titled the Session first, and that title wins.
     async fn initial(&self, requested: String) {
-        let stored = self.store.metadata(&self.id).await;
+        let stored = self.store.read(&self.id).await;
         let Ok(stored) = stored else {
             tracing::info!(target: "session_title", outcome = "initial_failed", "the title record is unreadable");
             return;
@@ -343,7 +343,7 @@ impl Owner {
         let result: Result<&str, ()> = async {
             let document = self.document().await;
             if !self.current(epoch) || document.as_ref().is_ok_and(|d| !d.enabled) { return Ok("skipped"); }
-            let stored = self.store.metadata(&self.id).await;
+            let stored = self.store.read(&self.id).await;
             if !self.current(epoch) || stored.as_ref().is_ok_and(|m| m.title.is_some()) { return Ok("skipped"); }
             let kind = |value: &str| QueryFilter::In {
                 value: QueryOperand::Field { path: "kind".into() }, values: vec![value.into()],
@@ -565,7 +565,7 @@ impl Owner {
             return Err(RpcError::invalid("Invalid title length"));
         }
         for _ in 0..=3 {
-            let stored = self.store.metadata(&self.id).await;
+            let stored = self.store.read(&self.id).await;
             if self.stop.is_cancelled() || cancel.is_cancelled() {
                 return Err(reloading());
             }

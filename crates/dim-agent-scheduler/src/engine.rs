@@ -7,10 +7,10 @@ use crate::{
     runs,
     runs::{Delivery, DeliveryState, SchedulerError, SessionOrigin, stamp},
 };
-use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::settings::SettingsScope;
 use dim_agent_types::{InputMode, PermissionPolicy, PermissionPreset, markup::escaped};
 use dim_app_server::settings::SettingsError;
+use jiff::{SignedDuration, Timestamp};
 use rutis_bridge::session::{HostDispatch, settle};
 use serde_json::{Value, json};
 use std::{collections::HashSet, sync::Arc, time::Duration as StdDuration};
@@ -165,7 +165,7 @@ async fn record(
                 Target::Launch {
                     max_run_minutes, ..
                 },
-            ) => Some(stamp(now + Duration::minutes(i64::from(*max_run_minutes)))),
+            ) => Some(stamp(launch_deadline(now, *max_run_minutes)?)),
             _ => None,
         };
         let run = Delivery {
@@ -277,7 +277,7 @@ pub async fn tick(shared: &Arc<Shared>) -> Result<(), SchedulerError> {
                 .flatten()
                 .unwrap_or(due)
                 .max(due);
-            let missed = now - latest >= Duration::seconds(GRACE_SECONDS);
+            let missed = now.duration_since(latest) >= SignedDuration::from_secs(GRACE_SECONDS);
             record(shared, job, stamp(latest), missed).await?;
             continue;
         }
@@ -501,7 +501,15 @@ async fn finish(
 /// Whether a launch record's stop time has passed, so its stop timer has
 /// finished and its record is eligible for cleanup (§3.2, A.7). A `session`
 /// delivery has no stop time and nothing to wait for.
-fn stop_time_passed(run: &Delivery, now: DateTime<Utc>) -> bool {
+fn launch_deadline(now: Timestamp, max_run_minutes: u32) -> Result<Timestamp, SchedulerError> {
+    let seconds = i64::from(max_run_minutes).checked_mul(60).ok_or_else(|| {
+        SchedulerError::invalid_data("max_run_minutes is outside the supported range")
+    })?;
+    now.checked_add(SignedDuration::from_secs(seconds))
+        .map_err(|_| SchedulerError::invalid_data("max_run_minutes is outside the supported range"))
+}
+
+fn stop_time_passed(run: &Delivery, now: Timestamp) -> bool {
     match run.deadline_at.as_deref().and_then(canonical_instant) {
         Some(deadline) => now >= deadline,
         None => true,
@@ -514,25 +522,28 @@ fn stop_time_passed(run: &Delivery, now: DateTime<Utc>) -> bool {
 /// Sessions are deleted first, and their records stay when the delete fails,
 /// so the next pass retries.
 pub async fn prune(shared: Arc<Shared>) {
-    let Some(_activity) = shared.activity.take_hold() else {
+    {
+        let Some(_activity) = shared.activity.take_hold() else {
+            shared
+                .retention
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
+        };
+        let _pass = shared.pruning.lock().await;
+        let pending = match prune_once(&shared).await {
+            Ok(pending) => pending,
+            Err(error) => {
+                tracing::warn!(%error, "scheduler retention failed");
+                true
+            }
+        };
         shared
             .retention
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        return;
-    };
-    let _pass = shared.pruning.lock().await;
-    let pending = match prune_once(&shared).await {
-        Ok(pending) => pending,
-        Err(error) => {
-            tracing::warn!(%error, "scheduler retention failed");
-            true
-        }
-    };
-    shared
-        .retention
-        .store(pending, std::sync::atomic::Ordering::Relaxed);
+            .store(pending, std::sync::atomic::Ordering::Relaxed);
+    }
     // A pass that took no write still signals: a flow test that asserts a
-    // release did not happen waits on "the pass ended", not on a change.
+    // release did not happen waits on "the pass ended", not on a change. The
+    // signal follows the guards, so it also says the pass released admission.
     #[cfg(feature = "testing")]
     if let Some(signals) = &shared.signals {
         signals.retention_done();
@@ -702,7 +713,14 @@ pub fn recover(shared: &Arc<Shared>, launches: Vec<Delivery>) {
 /// minute while the call fails and the record still exists (§3.2, A.7). The
 /// delivery's state is not touched: a stop is a bound on the launched work,
 /// not a run outcome.
-async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadline: DateTime<Utc>) {
+async fn stop_at(shared: Arc<Shared>, run_id: String, session_id: String, deadline: Timestamp) {
+    #[cfg(feature = "testing")]
+    if let Some(signals) = &shared.signals {
+        signals.startup_waiting();
+    }
+    if !shared.activated().await {
+        return;
+    }
     #[cfg(feature = "testing")]
     if let Some(signals) = &shared.signals {
         signals.stop_parked(deadline);
@@ -972,14 +990,31 @@ async fn lookup_once(shared: &Arc<Shared>, run_id: &str) -> Result<(), Scheduler
                 // (Appendix F).
                 return settle_lost(shared, &run.run_id, "launch_reply_unknown".into()).await;
             };
-            let answer = match sessions(
+            #[cfg(feature = "testing")]
+            let lookup = if shared
+                .holds
+                .as_ref()
+                .is_some_and(|holds| holds.take_reloading_lookup())
+            {
+                Ok(Err("reloading".to_owned()))
+            } else {
+                sessions(
+                    shared.sessions.as_ref(),
+                    "lookup",
+                    json!({"sessionId": session_id, "branchId": branch_id,
+                        "submissionId": run.submission_id}),
+                )
+                .await
+            };
+            #[cfg(not(feature = "testing"))]
+            let lookup = sessions(
                 shared.sessions.as_ref(),
                 "lookup",
                 json!({"sessionId": session_id, "branchId": branch_id,
                     "submissionId": run.submission_id}),
             )
-            .await
-            {
+            .await;
+            let answer = match lookup {
                 Ok(Ok(value)) if value["status"] == json!("accepted") => {
                     let input_id = value["inputId"].as_str().ok_or_else(|| {
                         SchedulerError::invalid_data("lookup reply has no inputId")
@@ -1210,5 +1245,17 @@ async fn write_input(
 async fn lookup_now(shared: &Arc<Shared>, run_id: &str) {
     if let Err(error) = lookup_once(shared, run_id).await {
         tracing::warn!(%error, "scheduler lookup failed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_launch_deadline_beyond_the_timestamp_range_is_an_error() {
+        assert!(launch_deadline(Timestamp::MAX, 1).is_err());
+        let now: Timestamp = "2026-11-17T00:00:00Z".parse().unwrap();
+        assert!(launch_deadline(now, u32::MAX).is_err());
     }
 }

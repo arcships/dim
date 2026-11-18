@@ -1392,10 +1392,23 @@ impl FullScreen {
         );
         let focus = self.focus_rows();
         let card = self.card_focus_rows(doc);
+        let blank_rows = self.view_rows.saturating_sub(self.content_rows());
+        let compact_home;
+        let home = if frame.home.len() > blank_rows && blank_rows > 0 {
+            compact_home = [fg("DIM", &palette.accent)];
+            &compact_home[..]
+        } else {
+            &frame.home[..]
+        };
+        let home_top = (blank_rows.saturating_sub(home.len())) / 2;
+        let home_left = width.saturating_sub(home.first().map_or(0, |row| clip(row, width).1)) / 2;
         let mut screen: Vec<String> = Vec::with_capacity(rows);
         for y in 0..self.view_rows {
             let body = match self.at(y) {
-                None => String::new(),
+                None => y
+                    .checked_sub(home_top)
+                    .and_then(|row| home.get(row))
+                    .map_or_else(String::new, |row| format!("{}{row}", " ".repeat(home_left))),
                 Some(index) => {
                     let row = self.row(index).unwrap_or("");
                     match focus {
@@ -4011,15 +4024,12 @@ mod tests {
                             )
                         });
                         let frame = Frame {
-                            commits: Vec::new(),
                             live,
-                            task_rows: Vec::new(),
-                            thought_rows: Vec::new(),
-                            model_label: None,
                             cursor,
                             dock,
                             anchor: dock,
                             overlay,
+                            ..Frame::default()
                         };
                         screen.render(&frame, size, &palette, &doc);
                     }

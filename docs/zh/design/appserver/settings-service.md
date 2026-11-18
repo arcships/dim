@@ -101,8 +101,9 @@ Settings 不赋予任何字段特殊含义，只有一个例外：schema 带 JSO
 
 ### 3.1 来源登记
 
-每个所有者，不论是内置 Rust 还是 TypeScript，都在自己进程行的 `apply` 中登记来源：TypeScript 所有者
-用 `settings.register(declaration)`（§4.2），Rust 所有者用 `SettingsService::register::<D>`（§4.5）。
+每个所有者，不论是内置 Rust 还是 TypeScript，都在自己进程行的 `apply` 中登记来源。声明式来源
+通过对应语言绑定调用 `settings.register(declaration)`（§4.2、§4.5）；原生 `BusinessDocument` 来源
+使用 `SettingsService::register::<D>`（§4.5）。
 App Server 的装配和 PluginManager 都不声明来源。登记属于发起它的插件，在该插件卸载（关闭、移除或
 重载）时撤回；重载时由新一代重新登记。不论来源是否已登记，存储的文档都留在 home 中：未登记的来源
 在所有路径上都是 `unknown_source`，有所有者登记它后，其文档重新可用。
@@ -269,6 +270,15 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 不需要对变更做出反应的所有者仍可在使用时读取（F2 的 Permission 就是这样）。
 
 ### 4.5 Rust 绑定
+
+声明式来源的消费者使用公共 `settings` 数据面的 `Settings` 绑定，提供
+`register(ctx, declaration)`、`read(source, scope, cancel)`、
+`update(source, scope, expected, document, cancel)` 和 `projects()`。
+Dispatcher 调用这些相同操作；原生消费者直接调用，无需 JSON 转换。登记仍绑定调用者生命周期，
+更新仍是不能修改 user-only 字段的 owner 写入。来源注册、校验和持久化仍由同一个 Settings owner 承担。
+
+`SettingsService` 保留下述原生 `BusinessDocument` 和客户端管理路径。此绑定不使声明式操作可见
+原生来源，也不改变 §4.3 和 §7 的本地客户端边界。
 
 在 `dim-app-server::settings` 中（S8a 的类型，只在注明处改动）：
 

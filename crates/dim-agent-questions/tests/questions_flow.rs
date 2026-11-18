@@ -267,7 +267,9 @@ impl Fixture {
         let probe = Probe::default();
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
-            .timeline_store(Arc::new(MemoryTimelineStore::default()))
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+                MemoryTimelineStore::default(),
+            )))
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

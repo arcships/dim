@@ -657,7 +657,8 @@ fn tui_goal_reports_a_failed_read_and_sends_nothing() {
 #[test]
 fn tui_goal_reads_owner_state_while_the_transcript_window_is_loading() {
     let home = Home::new();
-    let daemon = home.daemon(|wire| {
+    let (inventory_done, wait_inventory) = std::sync::mpsc::channel();
+    let daemon = home.daemon(move |wire| {
         wire.hello(&["session.methods"]);
         let attach = wire.read("session.attach");
         wire.reply(&attach, attach_record(&attach));
@@ -677,6 +678,7 @@ fn tui_goal_reads_owner_state_while_the_transcript_window_is_loading() {
         wire.reply(&held, page(8, vec![]));
         let read = until_request(wire, "session.goal.get");
         wire.reply(&read, current);
+        inventory_done.send(()).unwrap();
         drained(wire);
     });
     let mut command = home.command();
@@ -686,6 +688,9 @@ fn tui_goal_reads_owner_state_while_the_transcript_window_is_loading() {
     terminal.write(b"/goal New objective\r");
     terminal.until("Goal edited on main · active");
     terminal.until("  New objective");
+    wait_inventory
+        .recv_timeout(HANG_GUARD)
+        .expect("the history inventory finishes before exiting");
     terminal.write(b"/exit\r");
     terminal.until("Bye!");
     assert!(terminal.wait().success());

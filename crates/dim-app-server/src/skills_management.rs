@@ -14,7 +14,7 @@ use dim_agent_capabilities::methods::{
 };
 use dim_agent_capabilities::skills::{
     InstallOutcome, RefreshTarget, Replace, SelectedSkill, SkillPreview, SkillStatus,
-    SkillsCatalog, SkillsError, selection_path, valid_installation_id,
+    SkillsCatalogBinding, SkillsError, selection_path, valid_installation_id,
 };
 use dim_agent_capabilities::{
     host_platform::HostPlatform,
@@ -454,22 +454,10 @@ fn installation(id: &str, record: &SkillInstallation) -> InstallationReply {
 }
 
 pub(crate) fn skills_error(error: SkillsError) -> RpcError {
-    let kind = match &error {
-        SkillsError::Closed => return RpcError::reloading(),
-        SkillsError::UnknownSkill(_) => "skill_unknown",
-        SkillsError::SettingsConflict => "skills_conflict",
-        SkillsError::SettingsWrite(_) => "skills_write_failed",
-        SkillsError::SettingsSync(_) => "skills_sync_failed",
-        SkillsError::SettingsRead(_) | SkillsError::RootUnreadable { .. } => "skills_unavailable",
-        SkillsError::InstallationExists(_) => "skills_install_exists",
-        SkillsError::UnknownInstallation(_) => "skills_install_unknown",
-        SkillsError::UnmanagedDirectory(_) => "skills_install_unmanaged",
-        SkillsError::StalePreview { .. } => "skills_preview_stale",
-        SkillsError::SelectionInvalid(_) => "skills_selection_invalid",
-        SkillsError::InstallConflict(_) => "skills_install_conflict",
-        SkillsError::InstallIo(_) => "skills_install_failed",
-        SkillsError::RemoveFailed(_) => "skills_remove_failed",
-    };
+    if matches!(error, SkillsError::Closed) {
+        return RpcError::reloading();
+    }
+    let kind = error.code();
     RpcError::app(-32000, kind, error.to_string())
 }
 
@@ -650,7 +638,13 @@ impl DynPlugin for SkillsCatalogPlugin {
                 (platform, settings),
             )
             .await?;
-            ctx.provide_as::<SkillsCatalog>(catalog.clone())?;
+            ctx.provide_at(dim_agent_capabilities::skills::owner_key(), catalog.clone())?;
+            let binding = Arc::new(SkillsCatalogBinding::new(catalog.clone()));
+            ctx.provide_as::<SkillsCatalogBinding>(binding.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("skillsCatalog"),
+                binding,
+            )?;
             dim_agent_capabilities::skills::register_parts(ctx, &parts)?;
             methods.register(
                 ctx,

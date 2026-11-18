@@ -273,6 +273,7 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
 body { background: var(--background); color: var(--foreground); font-size: var(--text-base); }
 @layer base {
   button, input, textarea, select { color: inherit; font: inherit; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 }
 button, a { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; text-decoration: none; }
@@ -299,7 +300,6 @@ code { font-family: var(--font-mono); }
 ):active:not(:disabled) {
   transform: scale(.98);
 }
-:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
 /* Route headings take focus only so screen readers announce the new page; they are not controls. */
 [data-route-heading]:focus-visible { outline: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }

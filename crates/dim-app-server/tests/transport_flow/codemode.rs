@@ -114,7 +114,9 @@ async fn launch_codemode_with_model(
     model: Arc<CodeModeModel>,
 ) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+        dim_agent_runtime::MemoryTimelineStore::default(),
+    )));
     defaults::install(&mut builder);
     builder
         .session_value(Arc::new(

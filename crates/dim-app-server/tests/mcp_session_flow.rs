@@ -661,7 +661,7 @@ impl Env {
         .await
         .unwrap();
         authorize_project(&agent, &home).await;
-        let directory = agent.root().get::<McpService>().unwrap();
+        let directory = agent.root().get_at(&mcp::owner_key()).unwrap();
         Self {
             home,
             agent,
@@ -2564,7 +2564,7 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             dim_agent_capabilities::model_provider::ModelProviderPlugin::process,
         );
         builder
-            .session_value(Arc::new(PromptHost(Arc::new(EmptyPromptHost))))
+            .session_data_value(Arc::new(PromptHost(Arc::new(EmptyPromptHost))))
             .session_value(Arc::new(
                 dim_agent_capabilities::prompt::InitialPromptConfiguration::fixed(Some(
                     ConfigureUpdate {
@@ -2579,7 +2579,7 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
                     },
                 )),
             ))
-            .session_value(Arc::new(dim_agent_capabilities::permission::CommandRulesHost(
+            .session_data_value(Arc::new(dim_agent_capabilities::permission::CommandRules(
                 Arc::new(dim_agent_capabilities::permission::NoCommandRules),
             )));
         dim_agent_aimux::install(&mut builder);

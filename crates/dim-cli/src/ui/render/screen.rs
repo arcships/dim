@@ -58,6 +58,8 @@ pub struct Frame {
     /// A box the fullscreen interface centres over the transcript (the
     /// command palette, pickers); the scrollback interface never gets one.
     pub overlay: Option<Overlay>,
+    /// Fullscreen home rows, drawn in the space above the transcript.
+    pub home: Vec<String>,
 }
 
 /// Rows drawn centred over the fullscreen transcript.
@@ -856,13 +858,8 @@ mod tests {
         Frame {
             commits: commits.iter().map(|s| s.to_string()).collect(),
             live: live.iter().map(|s| s.to_string()).collect(),
-            task_rows: Vec::new(),
-            thought_rows: Vec::new(),
-            model_label: None,
             cursor,
-            dock: 0,
-            anchor: 0,
-            overlay: None,
+            ..Frame::default()
         }
     }
 

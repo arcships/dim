@@ -6,7 +6,7 @@
 //! store's ownership lock so a late association cannot slip in between the
 //! re-check and the record deletion. Git is the fact; a record is a candidate.
 use crate::methods::ManagementMethods;
-use crate::storage::{PreparedWorktree, SessionStore, WorktreeDirectory, WorktreeDirectoryRecord};
+use crate::storage::{PreparedWorktree, Store, WorktreeDirectory, WorktreeDirectoryRecord};
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
 };
@@ -31,7 +31,7 @@ const ALLOCATION_ATTEMPTS: usize = 3;
 /// or branch state; the records belong to SessionStore and Git to the host.
 pub struct ManagedWorktrees {
     root: PathBuf,
-    sessions: Arc<SessionStore>,
+    sessions: Arc<Store>,
 }
 
 /// A worktree this call created, with what it needs to be reported or
@@ -139,7 +139,7 @@ impl From<AgentError> for WorktreeError {
 }
 
 impl ManagedWorktrees {
-    pub fn new(root: PathBuf, sessions: Arc<SessionStore>) -> Self {
+    pub fn new(root: PathBuf, sessions: Arc<Store>) -> Self {
         Self { root, sessions }
     }
 
@@ -1170,7 +1170,7 @@ impl CreatedWorktree {
 /// The `worktree` management namespace: host commands that never take part in
 /// Permission approval and are never served to a paired device.
 pub struct ManagedWorktreesPlugin {
-    sessions: Key<SessionStore>,
+    sessions: Key<Store>,
     methods: Key<ManagementMethods>,
     root: PathBuf,
 }

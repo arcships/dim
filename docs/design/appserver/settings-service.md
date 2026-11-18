@@ -118,8 +118,8 @@ owner depends on `settings`.
 ### 3.1 Source registration
 
 Every owner, built-in Rust and TypeScript alike, registers its sources from its own process row's
-`apply`, a TypeScript owner with `settings.register(declaration)` (§4.2) and a Rust owner with
-`SettingsService::register::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
+`apply`. Declared sources use `settings.register(declaration)` through their language binding
+(§4.2, §4.5); native `BusinessDocument` sources use `SettingsService::register::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
 declares sources. A registration belongs to the plugin that made it and is withdrawn when that
 plugin unloads (turned off, removed or reloaded); a reload registers again from the new
 generation. The stored documents stay in the home whether or not their source is registered: an
@@ -310,6 +310,18 @@ Reading at use time remains valid for owners that do not need to react to change
 Permission does).
 
 ### 4.5 Rust binding
+
+Declared-source consumers use the `Settings` binding of the public `settings` data face.
+It provides `register(ctx, declaration)`, `read(source, scope, cancel)`,
+`update(source, scope, expected, document, cancel)` and `projects()`.
+The dispatcher calls these same operations, and native consumers call them directly
+without JSON conversion. Registration retains the caller's lifetime; updates are owner
+writes and preserve user-only fields. The existing Settings owner still supplies the
+source registry, validation and persistence.
+
+`SettingsService` retains the native `BusinessDocument` and client management paths below.
+This binding does not make native sources visible through declared-source operations or
+change the local-client boundary in §4.3 and §7.
 
 In `dim-app-server::settings` (S8a types, changed only where noted):
 

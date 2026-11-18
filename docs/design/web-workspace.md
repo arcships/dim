@@ -104,6 +104,7 @@ For development against the repository checkout, and for a build that must carry
 | Version | `hello` v3 with `clientKind: "web"`; v1/v2 → `protocol_version` |
 | Methods | Rpc Session built-ins and execution Session methods on every Session of the host, plus the explicit settings methods in §4.3 and the management methods below. Other management methods, including `daemon.shutdown` and Web-entry controls, return `-32601 unknown_method` |
 | Model list | The read-only management methods `provider.list`, `provider.catalog`, `provider.selection` and `account.providers` are also served (decision Q1); their replies carry no credentials (`provider.list` reports only `credentialConfigured` and header names). Managed Provider discovery follows §4.2. Switching uses the Session method `session.model.update` |
+| New Session model | `session.model.preview` is served and advertised with the authority the entry's own `session.create` already implies ([model preview](model-configuration.md#model-preview-before-creation)): `{cwd, agentId?, model?, modelPreferences?}` resolves the model a new Session would adopt, creates no Session, saves no selection and returns no credential. `startup` is refused `local_transport_required`, because [model startup](model-startup.md) is a protected-local launch channel. The bare `/ws` serves neither |
 | UI directory | UiExtensions contributes `ui.extensions.list`, which is explicitly allowlisted and advertised in `hello.features` while available. Connection forwards `ui.extensions.changed` over the reliable control channel; clients refetch the directory on this notice |
 | Error-only reports | Report contributes `report.prepare`, `report.plan`, `report.generate` and `report.cancel`. The authenticated local Web entry explicitly admits these four methods and advertises them in `hello.features` while available. They take no Session or branch ID and use no Session data. [Report contract](plugins/Report.md#4-report-methods) |
 
@@ -889,8 +890,9 @@ or page by it. The consequences are deliberate:
   `withInternal`, `withAcpSessions` and `withAutomationSessions` belong to `session.catalog` — so the page lists the
   row of any origin this browser hid. [#557's](https://github.com/arcships/dim/issues/557) filters do not apply: archive
   is not a classification, and it writes no `origin` and selects none.
-- A row keeps the sidebar's fields — preview or id, workspace, last activity, model, running state — adds the `closed`
-  fact this read returns, and offers Restore, Open and Delete.
+- A row keeps the sidebar's fields — title, preview, workspace, last activity, model, running state — adds the `closed`
+  fact this read returns, and offers Restore, Open and Delete. With neither a title nor a preview, its heading is
+  localized as “Untitled session” (“未命名会话”), with the Session id below it as secondary text.
 
 **Closed Sessions.** A Session this daemon closed keeps its stored rows but is absent from a read without
 `includeClosed` ([session catalog §3.3](appserver/session-catalog.md#33-sessionsummaries)), and the closed fact lasts
@@ -1033,6 +1035,42 @@ message the run already adopted, recalled images in their own order, and an idle
 submit. The preference's own storage is `web/src/stores/composer.test.mjs`. The
 flows against a running entry are browser checks with an offline model that
 takes a while to answer.
+
+### 4.6 New Session model
+
+The new-Session page shows the model the Session would adopt, read from
+`session.model.preview` for the chosen directory (§2.5). It replaces the earlier
+saved-scope `provider.selection` read: that read returns only the saved default
+for one scope, so a user default, automatic fallback or Agent profile reached
+creation without being shown. The preview resolves through creation's own model
+owner, so the composer and `session.create` agree for unchanged configuration.
+The concrete model is named through the existing exact-model discovery
+(`provider.models.query` for that `{providerId, modelId}`); when that lookup
+finds no name, the model ID itself is shown.
+
+Following defaults and choosing are separate. Following sends no `model` in
+`session.create`; a model chosen here is that new Session's `model` only and
+never writes `provider.select`. The menu offers the way back, and that row names
+the model following restores, not the choice it clears. The composer
+distinguishes a pending resolution, a retryable failure and no usable model
+instead of naming all of them the default model, and a failure keeps its own
+label and a Retry. The
+preview is re-read when the directory changes and when the connection reattaches
+after a reconnect. A reply for an earlier directory is discarded, and a re-read
+never replaces a chosen model. After creation the attached Session's adopted
+configuration is authoritative: a preview is not a reservation against
+concurrent configuration changes.
+
+```text
+Composer:                 [Model name v] [Send]
+Model menu:
+  (*) Follow defaults - Model name
+  ( ) Another model
+```
+
+`web/tests/new-session-model.mjs` drives these composer and menu states, and
+`crates/dim-app-server/tests/transport_flow/web_entry.rs` holds the entry's
+authority over the read.
 
 ## 5. Build and release
 

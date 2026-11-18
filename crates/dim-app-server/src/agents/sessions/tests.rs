@@ -13,7 +13,7 @@ use deferred_inputs::DeferredInputs;
 async fn typed_input_retains_admitted_io_and_accepts_each_submission_once() {
     let (store, mut held) = DeferredInputs::new();
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     dim_agent_capabilities::defaults::install(&mut builder);
     dim_agent_capabilities::defaults::mock_model_hosts(&mut builder);
     dim_agent_capabilities::defaults::tool_host(

@@ -959,7 +959,10 @@ fn file_storage_flow() {
             if let Some(root_path) = std::env::var_os(PROBE_ROOT) {
                 let (root, _, storage) = mount(root_path.into()).await;
                 let auth = storage.path(0, "auth.json").unwrap();
-                assert!(matches!(storage.lock(&auth, &cancel).await, Err(FileStorageError::Locked)));
+                assert!(matches!(
+                    storage.lock(&auth, &cancel).await,
+                    Err(FileStorageError::Locked)
+                ));
                 root.shutdown().await.unwrap();
                 return;
             }
@@ -981,7 +984,10 @@ fn file_storage_flow() {
             assert!(matches!(storage.replace(&auth, b"conflict".to_vec(), None, &cancel).await, Err(FileStorageError::Locked)));
             if fs::metadata(root_path.join("AUTH.JSON.LOCK")).is_ok() {
                 let marker_alias = storage.path(0, "AUTH.JSON.LOCK").unwrap();
-                assert!(matches!(storage.read(&marker_alias, &cancel).await, Err(FileStorageError::Io(_))));
+                assert!(matches!(
+                    storage.read(&marker_alias, &cancel).await,
+                    Err(FileStorageError::Io(_))
+                ));
             }
             let settings = storage.path(0, "nested/Cargo.lock").unwrap();
             let mut unrelated = storage.lock(&settings, &cancel).await.unwrap();
@@ -993,14 +999,27 @@ fn file_storage_flow() {
                 let original = storage.path(0, name).unwrap();
                 if name != "auth.json" { storage.replace(&original, b"alias probe".to_vec(), None, &cancel).await.unwrap(); }
                 let aliased = storage.path(0, alias).unwrap();
-                let same = root_path.join(alias).exists() && same_file(&root_path.join(name), &root_path.join(alias));
+                let same = root_path.join(alias).exists()
+                    && same_file(&root_path.join(name), &root_path.join(alias));
                 if name == "auth.json" {
-                    assert!(matches!(storage.lock(&original, &cancel).await, Err(FileStorageError::Locked)));
-                    if same { assert!(matches!(storage.lock(&aliased, &cancel).await, Err(FileStorageError::Locked))); }
+                    assert!(matches!(
+                        storage.lock(&original, &cancel).await,
+                        Err(FileStorageError::Locked)
+                    ));
+                    if same {
+                        assert!(matches!(
+                            storage.lock(&aliased, &cancel).await,
+                            Err(FileStorageError::Locked)
+                        ));
+                    }
                 } else {
                     let first = storage.lock(&original, &cancel).await.unwrap();
                     let second = storage.lock(&aliased, &cancel).await;
-                    if same { assert!(matches!(second, Err(FileStorageError::Locked))); } else { drop(second.unwrap()); }
+                    if same {
+                        assert!(matches!(second, Err(FileStorageError::Locked)));
+                    } else {
+                        drop(second.unwrap());
+                    }
                     drop(first);
                 }
             }
@@ -1047,7 +1066,10 @@ fn file_storage_flow() {
                 assert!(matches!(storage.lock(&storage.path(0, "fresh/auth.json").unwrap(), &cancel).await, Err(FileStorageError::Locked)));
                 assert!(matches!(storage.lock(&storage.path(0, "AUTH.JSON.LOCK").unwrap(), &cancel).await, Err(FileStorageError::InvalidPath(_))));
                 let resources = storage.path(0, ".DIM-FILE-STORAGE-LOCKS/settings.json").unwrap();
-                assert!(matches!(storage.read(&resources, &cancel).await, Err(FileStorageError::Io(_))));
+                assert!(matches!(
+                    storage.read(&resources, &cancel).await,
+                    Err(FileStorageError::Io(_))
+                ));
                 let missing_resource = storage.path(0, ".DIM-FILE-STORAGE-LOCKS/new-name").unwrap();
                 assert!(matches!(storage.replace(&missing_resource, b"reserved".to_vec(), None, &cancel).await, Err(FileStorageError::Io(_))));
             }
@@ -1066,8 +1088,14 @@ fn file_storage_flow() {
                     match storage.path(0, alias) {
                         Err(FileStorageError::InvalidPath(_)) => {}
                         Ok(path) => {
-                            assert!(matches!(storage.read(&path, &cancel).await, Err(FileStorageError::Io(_))));
-                            assert!(matches!(storage.lock(&path, &cancel).await, Err(FileStorageError::Io(_))));
+                            assert!(matches!(
+                                storage.read(&path, &cancel).await,
+                                Err(FileStorageError::Io(_))
+                            ));
+                            assert!(matches!(
+                                storage.lock(&path, &cancel).await,
+                                Err(FileStorageError::Io(_))
+                            ));
                             assert!(matches!(storage.replace(&path, b"overwrite".to_vec(), None, &cancel).await, Err(FileStorageError::Io(_))));
                         }
                         Err(error) => panic!("unexpected resource path error: {error}"),
@@ -1082,7 +1110,10 @@ fn file_storage_flow() {
             let fresh_lock = storage.lock(&fresh_resource, &cancel).await;
             if fs::metadata(root_path.join(".dim-file-\u{17f}torage-locks")).is_ok() {
                 assert!(matches!(fresh_lock, Err(FileStorageError::InvalidPath(_))));
-                assert!(matches!(storage.read(&fresh_resource, &cancel).await, Err(FileStorageError::Io(_))));
+                assert!(matches!(
+                    storage.read(&fresh_resource, &cancel).await,
+                    Err(FileStorageError::Io(_))
+                ));
                 assert!(matches!(storage.replace(&fresh_resource, b"overwrite".to_vec(), None, &cancel).await, Err(FileStorageError::Io(_))));
             } else {
                 drop(fresh_lock.unwrap());
@@ -1090,9 +1121,21 @@ fn file_storage_flow() {
 
             let account_lock = root_path.join("auth.json.lock");
             let old = SystemTime::now() - Duration::from_secs(60);
-            let created_at = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_millis();
-            fs::write(&account_lock, format!("{}\n{created_at}\nexternal-live-owner\n", std::process::id())).unwrap();
-            fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
+            let created_at = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            fs::write(
+                &account_lock,
+                format!("{}\n{created_at}\nexternal-live-owner\n", std::process::id()),
+            )
+            .unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&account_lock)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(old))
+                .unwrap();
             #[cfg(any(target_os = "linux", target_os = "android"))]
             let original_name = fs::read("/proc/self/comm").unwrap();
             #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -1104,8 +1147,17 @@ fn file_storage_flow() {
             fs::write("/proc/self/comm", original_name.strip_suffix(b"\n").unwrap()).unwrap();
             assert!(matches!(held, Err(FileStorageError::Locked)));
             fs::remove_file(&account_lock).unwrap();
-            fs::write(&account_lock, format!("{}\n1\nreused-pid-owner\n", std::process::id())).unwrap();
-            fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
+            fs::write(
+                &account_lock,
+                format!("{}\n1\nreused-pid-owner\n", std::process::id()),
+            )
+            .unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&account_lock)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(old))
+                .unwrap();
             let recovered = storage.lock(&auth, &cancel).await;
             if cfg!(any(target_os = "macos", target_os = "linux", target_os = "android", windows)) {
                 drop(recovered.unwrap());
@@ -1119,13 +1171,23 @@ fn file_storage_flow() {
                 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
             {
                 fs::write(&account_lock, format!("1\n{created_at}\nforeign-owner\n")).unwrap();
-                fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(&account_lock)
+                    .unwrap()
+                    .set_times(FileTimes::new().set_modified(old))
+                    .unwrap();
                 let recovered = storage.lock(&auth, &cancel).await.unwrap();
                 drop(recovered);
                 assert!(!account_lock.exists());
             }
             fs::write(&account_lock, format!("{dead_pid}\n1\nexternal-dead-owner\n")).unwrap();
-            fs::OpenOptions::new().write(true).open(&account_lock).unwrap().set_times(FileTimes::new().set_modified(old)).unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&account_lock)
+                .unwrap()
+                .set_times(FileTimes::new().set_modified(old))
+                .unwrap();
             let recovered = storage.lock(&auth, &cancel).await.unwrap();
             let owner = fs::read_to_string(&account_lock).unwrap();
             let fields = owner.split('\n').collect::<Vec<_>>();
@@ -1169,7 +1231,12 @@ fn file_storage_flow() {
             let rejected_root = Ctx::root().unwrap();
             let rejected = rejected_root.plugin(FileStoragePlugin::new(vec![root_path.join("linked-parent")]));
             let mut status = rejected.watch();
-            while !matches!(status.borrow().state, FiberState::Failed | FiberState::Active) { status.changed().await.unwrap(); }
+            while !matches!(
+                status.borrow().state,
+                FiberState::Failed | FiberState::Active
+            ) {
+                status.changed().await.unwrap();
+            }
             assert_eq!(status.borrow().state, FiberState::Failed, "reparse or symlink root must be rejected");
             rejected_root.shutdown().await.unwrap();
 
@@ -1197,7 +1264,10 @@ fn file_storage_flow() {
 
             let cancelled = CancellationToken::new();
             cancelled.cancel();
-            assert!(matches!(storage.read(&auth, &cancelled).await, Err(FileStorageError::Cancelled)));
+            assert!(matches!(
+                storage.read(&auth, &cancelled).await,
+                Err(FileStorageError::Cancelled)
+            ));
             assert!(matches!(storage.replace(&auth, b"cancelled".to_vec(), None, &cancelled).await, Err(FileStorageError::Cancelled)));
             assert_eq!(storage.read(&auth, &cancel).await.unwrap(), b"first+second");
 
@@ -1225,7 +1295,10 @@ fn file_storage_flow() {
             assert!(matches!(storage.read(&auth, &cancel).await, Err(FileStorageError::Closed)));
 
             let (next_root, _, next) = mount(root_path.clone()).await;
-            assert!(matches!(next.read(&auth, &cancel).await, Err(FileStorageError::InvalidPath(_))));
+            assert!(matches!(
+                next.read(&auth, &cancel).await,
+                Err(FileStorageError::InvalidPath(_))
+            ));
             let next_auth = next.path(0, "auth.json").unwrap();
             let new_lease = next.lock(&next_auth, &cancel).await.unwrap();
             drop(new_lease);
@@ -1236,7 +1309,12 @@ fn file_storage_flow() {
 
             let threaded_root = root_path.clone();
             std::thread::spawn(move || {
-                let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).max_blocking_threads(2).enable_all().build().unwrap();
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .max_blocking_threads(2)
+                    .enable_all()
+                    .build()
+                    .unwrap();
                 runtime.block_on(async {
                     tokio::time::timeout(Duration::from_secs(10), async {
                         let (root, _, storage) = mount(threaded_root.clone()).await;
@@ -1247,7 +1325,12 @@ fn file_storage_flow() {
                         let bytes = vec![0x5a; 4 * 1024 * 1024];
                         let mut writing = Box::pin(lease.replace(bytes.clone(), None, &cancel));
                         loop {
-                            if let std::task::Poll::Ready(result) = futures_util::poll!(writing.as_mut()) { result.unwrap(); break; }
+                            if let std::task::Poll::Ready(result) =
+                                futures_util::poll!(writing.as_mut())
+                            {
+                                result.unwrap();
+                                break;
+                            }
                             if fs::read_dir(threaded_root.join(".dim-file-storage-locks/.dim-file-storage-temps")).unwrap().next().is_some() { break; }
                             tokio::task::yield_now().await;
                         }

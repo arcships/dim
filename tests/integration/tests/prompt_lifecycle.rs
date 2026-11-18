@@ -1481,7 +1481,7 @@ async fn a_restore_keeps_opening_while_dispatch_or_opening_receipts_advance() {
         let seen = completed.clone();
         let mut builder = builder(Arc::new(Prompts(Mutex::new(BTreeMap::new()))));
         builder
-            .timeline_store(store)
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store))
             .startup_timeout(Duration::from_millis(500));
         builder.require_feature(
             Feature::new("SlowOpening").branch("SlowOpening", move |names| {
@@ -1623,7 +1623,7 @@ async fn startup_opening_dispatch_is_free_and_close_or_deadline_joins_the_host()
                         model: Some(configuration("late-model")),
                     },
                 );
-                builder.timeline_store(store.clone());
+                builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
                 builder.startup_timeout(if timeout {
                     Duration::from_millis(300)
                 } else {
@@ -1755,7 +1755,7 @@ async fn child_opening_deadline_or_close_joins_before_recording_failure() {
                 model: Some(configuration("initial")),
             },
         );
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         builder.startup_timeout(if timeout {
             Duration::from_millis(300)
         } else {
@@ -1951,7 +1951,7 @@ async fn restoring_a_session_keeps_its_adopted_system_and_model() {
             model: Some(configuration("initial-model")),
         },
     );
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .restore_session("restored-prompt".into())
@@ -2139,7 +2139,7 @@ async fn restoring_a_never_started_session_starts_it() {
             model: Some(configuration("initial-model")),
         },
     );
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .restore_session("empty-prompt-restore".into())

@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
         ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules, Permission},
+    permission::{CommandRules, NoCommandRules, Permission},
     skill_settings::SkillSettingsHost,
     skills::{MemorySkillSettings, SkillsCatalogPlugin},
     workspace_tools::WorkspaceToolsConfig,
@@ -48,7 +48,7 @@ async fn product(dirs: &Dirs) -> Product {
         .process_value(Arc::new(ModelHost(model.clone())))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))))
+        .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

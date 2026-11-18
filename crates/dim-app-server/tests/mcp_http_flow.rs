@@ -38,14 +38,6 @@ struct Capture {
     service: Arc<OnceLock<Arc<McpService>>>,
     mcp: Key<McpService>,
 }
-impl Capture {
-    fn new(names: &Names<'_>, service: Arc<OnceLock<Arc<McpService>>>) -> rutis::Result<Self> {
-        Ok(Self {
-            service,
-            mcp: names.key()?,
-        })
-    }
-}
 impl DynPlugin for Capture {
     fn name(&self) -> &str {
         "McpHttpTest"
@@ -116,7 +108,10 @@ impl Fixture {
                     .unwrap(),
             ),
             root.plugin(McpPlugin::new(&names, 0).unwrap()),
-            root.plugin(Capture::new(&names, capture.clone()).unwrap()),
+            root.plugin(Capture {
+                service: capture.clone(),
+                mcp: dim_app_server::mcp::owner_key(),
+            }),
         ];
         wait_active(
             &root,

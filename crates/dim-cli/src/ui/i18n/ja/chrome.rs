@@ -320,7 +320,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Press Ctrl+C to stop the Web workspace." => "Ctrl+C で Web ワークスペースを停止。",
         "To resume this session:" => "セッションの再開：",
 
-        // composer/commands.rs: descriptions
+        // commands.rs: descriptions
         "start a new session" => "新規セッションを開始",
         "show or set the reasoning effort" => "推論強度を表示・設定",
         "show or set the priority service tier (on|off)" => {

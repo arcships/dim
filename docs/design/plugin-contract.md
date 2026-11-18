@@ -126,17 +126,16 @@ R4). This table says what each name Dim defines is for.
 
 The Rust host ports and registries (ToolRegistry, PromptRegistry, ToolHost, ModelHost,
 PrepareModelHost and the others in the [generated services](../architecture/rust-agent/generated/services.md))
-get names and scopes in phase 2. They stay Rust-only unless a foreign part needs them. So do
-`BranchOpening` (opening receipts are Rust futures) and the facades' state reads (`StateCell<S>`,
-`PublicService`), which are keyed by Rust type. A foreign part exposes its state through a service.
+get names and scopes in phase 2. Their public contract follows
+[service faces §2](service-faces.md), including opening receipts and state observations.
+Language bindings preserve the owning service's operations and lifecycle; a private implementation
+mechanism is not a public service merely because a Rust type has a key.
 
 Tools, tool sources, prompt sources and method namespaces are not names. A part registers each with
 its owner, and the registration ends when the part unloads
 ([rutis usage R6](rutis-usage.md#r6-contributions-register-with-their-owner)): `register` on
 ToolRegistry or PromptRegistry, or on the method table of its scope, `sessionMethods` (`session`) or
-`managementMethods` (process, served to protected-local v3 only), which Rpc reads per call. Tools
-and method namespaces register from any language; prompt and tool sources stay Rust-only until a
-foreign part needs one. All four register today.
+`managementMethods` (process, served to protected-local v3 only), which Rpc reads per call. Each contribution follows its owner's data-face contract and registration lifetime.
 
 Two mechanism contracts tie the facades to core parts: a branch is published only with a `LoopState`
 provider, and a Session only with a `TimelineTreeControl` provider. Loop and TimelineTree are therefore
@@ -296,6 +295,17 @@ Dim adds two phases between them, for Session and branch parts:
 | Closing | Stop admission, cancel its own work, release resources, write terminal facts | `closing()` resolves when close starts. A Session is closing from the moment its close begins |
 
 Dispatcher handlers can receive opening facts before activation.
+
+Process publication is host-wide, not a third per-part phase. The
+`processActivity` process data face exposes `activated()`: it resolves `true` once the
+host has opened after every required process row became Active, and `false` when
+startup fails or shutdown begins before that call observes publication. A new call
+after shutdown begins returns `false`, even if an earlier call returned `true`;
+a row reload does not reset publication. The shared catalog name, its `HostDispatch` and the native binding are the same
+operation with the same cancellation. A process part that must not act before the
+initial assembly — for example, before another required row has published its owner
+state — awaits it in its own tasks; `apply` still completes assembly and does not block
+on it. A part that does not depend on initial assembly is not required to await it.
 
 ### 7.2 Generations, reload and rebuild
 

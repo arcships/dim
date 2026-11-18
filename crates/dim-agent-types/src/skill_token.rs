@@ -2,7 +2,7 @@
 //! characters a name holds, and the spans a text carries. The Skills submit
 //! check, the CLI and web composers and the CLI, web and ACP transcript
 //! projections all read this definition, so every surface agrees on what loads
-//! and on what is drawn as one unit ([Skills §9](../../docs/design/plugins/Skills.md#9-references-load-with-the-operators-input)).
+//! and on what is drawn as one unit ([Skills §9](../../../docs/design/plugins/Skills.md#9-references-load-with-the-operators-input)).
 //!
 //! A token is `/skill:` and then one or more name characters, with no space
 //! after the colon. It starts a text or follows whitespace, so it may stand

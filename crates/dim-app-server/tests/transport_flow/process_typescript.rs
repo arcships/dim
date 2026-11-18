@@ -1,5 +1,5 @@
 use super::*;
-use dim_agent_runtime::testing::chain_events;
+use dim_agent_runtime::{TimelineStore, testing::chain_events};
 use dim_app_server::session_typescript::SessionTypeScriptConfig;
 use std::path::PathBuf;
 
@@ -1318,6 +1318,871 @@ async fn node_session_files_reuses_native_storage_and_ownership() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_store_preserves_repository_results_and_worktree_removal_exclusion() {
+    use dim_agent_runtime::{AgentError, SessionConfig};
+    use dim_app_server::{
+        protocol::SessionOrigin,
+        storage::{SessionStore, Store, WorktreeDirectory},
+    };
+    let home = std::fs::canonicalize(std::env::temp_dir())
+        .unwrap()
+        .join(format!("dim-store-{}", uuid::Uuid::new_v4()));
+    let workspace = home.join("worktree");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let directory = WorktreeDirectory {
+        repository: home.join("repo/.git"),
+        root: workspace.clone(),
+    };
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![
+        json!({"id":"store", "name":parts.anchor.parent().unwrap().join("fixtures/store.ts"),"provides":{},"config":{}}),
+    ];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    files_available(&mut client, "storefixture.status", json!({})).await;
+    let store = server.service::<Store>().unwrap();
+    let listed = client.rpc("agent.list", json!({})).await;
+    assert_ok(&listed);
+    let agent_id = listed["result"][0]["agentId"].as_str().unwrap().to_owned();
+    let config = SessionConfig {
+        cwd: workspace.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let protected = server
+        .service::<dim_agent_capabilities::host_platform::HostPlatform>()
+        .unwrap()
+        .exec_root()
+        .join("store-face-protected");
+    std::fs::create_dir_all(&protected).unwrap();
+    let marker = protected.join("keep");
+    std::fs::write(&marker, "untouched").unwrap();
+    for id in [
+        protected.to_str().unwrap(),
+        "../escape",
+        "nested/id",
+        "",
+        ".",
+        "..",
+    ] {
+        let refused = client
+            .rpc(
+                "storefixture.invalid_id",
+                json!({"create": {
+                    "sessionId":id, "config":config, "agentId":agent_id, "protocolVersion":3,
+                    "leaderSessionId":null, "origin":"client", "worktree":null
+                }}),
+            )
+            .await;
+        assert_ok(&refused);
+        assert_eq!(refused["result"]["errors"].as_array().unwrap().len(), 3);
+        assert!(!store.has_records(id).await.unwrap());
+        assert!(matches!(
+            store.delete_session(id).await,
+            Err(AgentError::InvalidInput(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "untouched");
+    }
+    let raw = server.service::<SessionStore>().unwrap().timeline_store();
+    raw.create_session(protected.to_str().unwrap(), &config)
+        .await
+        .unwrap();
+    let refused = client
+        .rpc(
+            "storefixture.invalid_id",
+            json!({"create": {
+                "sessionId":protected, "config":config, "agentId":agent_id, "protocolVersion":3,
+                "leaderSessionId":null, "origin":"client", "worktree":null
+            }}),
+        )
+        .await;
+    assert_ok(&refused);
+    assert!(
+        store
+            .has_records(protected.to_str().unwrap())
+            .await
+            .unwrap()
+    );
+    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "untouched");
+    raw.rollback_session(protected.to_str().unwrap())
+        .await
+        .unwrap();
+    let created = client.rpc("storefixture.create", json!({"create": {
+        "sessionId":"wire-source", "config":config, "agentId":agent_id, "protocolVersion":3,
+        "leaderSessionId":null, "origin":"client",
+        "worktree":{"repository":directory.repository,"root":directory.root,"subtree":workspace}
+    }})).await;
+    assert_ok(&created);
+    assert!(store.has_records("wire-source").await.unwrap());
+    let reply = client
+        .rpc(
+            "storefixture.cycle",
+            json!({"sessionId":"wire-source","forkId":"wire-fork","grant":workspace}),
+        )
+        .await;
+    assert_ok(&reply);
+    assert_eq!(
+        reply["result"]["grants"],
+        json!({"grants":[{"path":workspace,"kind":"dir","mode":"write"}]})
+    );
+    assert_eq!(
+        reply["result"]["config"]["configText"],
+        store
+            .session_config_text("wire-source")
+            .await
+            .unwrap()
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .session_config("wire-source")
+            .await
+            .unwrap()
+            .unwrap()
+            .language,
+        Some(dim_agent_runtime::ReplyLanguage::SimplifiedChinese)
+    );
+    assert!(
+        rutis_bridge::session::HostDispatch::invoke(
+            &*store,
+            "setSessionLanguage",
+            json!([{"sessionId":"wire-source"}]).into()
+        )
+        .is_err()
+    );
+    assert_eq!(
+        store
+            .session_config("wire-source")
+            .await
+            .unwrap()
+            .unwrap()
+            .language,
+        Some(dim_agent_runtime::ReplyLanguage::SimplifiedChinese)
+    );
+    assert!(store.grants("wire-source").await.unwrap().is_empty());
+    assert_eq!(
+        reply["result"]["origin"],
+        json!({"origin":"client","leaderSessionId":null})
+    );
+    assert_eq!(
+        reply["result"]["catalog"],
+        serde_json::to_value(
+            store
+                .catalog(
+                    serde_json::from_value(json!({})).unwrap(),
+                    None,
+                    3,
+                    vec![agent_id.clone()],
+                    Vec::new(),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        reply["result"]["owner"],
+        json!({"agentId":store.owner("wire-source").await.unwrap()})
+    );
+    assert_eq!(reply["result"]["fork"], json!({"exists":true}));
+    assert_eq!(reply["result"]["removed"], json!({"removed":true}));
+    assert_eq!(reply["result"]["absent"], json!({"exists":false}));
+    assert!(!store.has_records("wire-fork").await.unwrap());
+    let missing = store
+        .set_session_language("wire-missing", None)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        reply["result"]["missing"],
+        json!({"code":"closed","message":missing.to_string()})
+    );
+    store.delete_session("wire-source").await.unwrap();
+    let refused = client
+        .rpc(
+            "storefixture.refuse",
+            json!({"directory":{"repository":directory.repository,"root":directory.root}}),
+        )
+        .await;
+    assert_ok(&refused);
+    assert_eq!(refused["result"]["code"], "invalid");
+    assert!(workspace.exists());
+    assert_eq!(store.worktree_directories().await.unwrap().len(), 1);
+
+    let ready = home.join("removal-ready");
+    let removal = client.send("storefixture.remove", json!({"directory":{"repository":directory.repository,"root":directory.root},"ready":ready})).await;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&ready).unwrap(),
+        workspace.to_string_lossy()
+    );
+    let mut concurrent_creation = {
+        let store = store.clone();
+        tokio::spawn(async move {
+            store
+                .create_owned_session(
+                    "late",
+                    &config,
+                    &agent_id,
+                    3,
+                    None,
+                    SessionOrigin::Client,
+                    None,
+                )
+                .await
+        })
+    };
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut concurrent_creation)
+            .await
+            .is_err(),
+        "creation must remain excluded until the foreign removal settles"
+    );
+    assert_ok(&client.rpc("storefixture.release", json!({})).await);
+    let removed = client.response(removal).await;
+    assert_ok(&removed);
+    assert_eq!(removed["result"], json!({"removed":true}));
+    assert!(matches!(
+        concurrent_creation.await.unwrap(),
+        Err(AgentError::InvalidInput(_))
+    ));
+    assert!(!workspace.exists());
+    assert!(store.worktree_directories().await.unwrap().is_empty());
+    assert!(!store.has_records("late").await.unwrap());
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_timeline_store_observes_native_commits_without_blocking_other_sessions() {
+    let home = std::env::temp_dir().join(format!("dim-timeline-store-{}", uuid::Uuid::new_v4()));
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"timeline-store", "name":parts.anchor.parent().unwrap().join("fixtures/timeline-store.ts"),
+        "provides":{}, "config":{},
+    })];
+    let database = home.join("timeline.sqlite");
+    let mut options = config(&home, parts);
+    options.target_home = None;
+    options.database_path = Some(database.clone());
+    let (server, _requests, _) = session_typescript::start(options).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    select_model(&mut client).await;
+    let mut sessions = Vec::new();
+    let mut agents = Vec::new();
+    for mode in ["slow", "throw"] {
+        let agent = client.rpc("agent.create", json!({})).await;
+        assert_ok(&agent);
+        let agent_id = agent["result"]["agentId"].clone();
+        let mut params = create(json!([]));
+        params["agentId"] = agent_id.clone();
+        agents.push(agent_id);
+        let created = client.rpc("session.create", params).await;
+        assert_ok(&created);
+        let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        files_available(
+            &mut client,
+            "session.timeline_store_fixture.subscribe",
+            json!({"sessionId":id,"target":id,"mode":mode}),
+        )
+        .await;
+        sessions.push(id);
+    }
+    let mut observed_sessions = Vec::new();
+    for (index, id) in sessions.iter().enumerate() {
+        assert_ok(
+            &client
+                .rpc(
+                    "session.submit",
+                    json!({"sessionId":id,"branchId":"main","text":format!("observer {index}")}),
+                )
+                .await,
+        );
+        assert_ok(
+            &client
+                .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+                .await,
+        );
+        let native = server
+            .service::<dim_app_server::storage::SessionStore>()
+            .unwrap()
+            .timeline_store();
+        let key = dim_agent_runtime::TimelineKey {
+            session_id: id.clone(),
+            branch_id: "main".into(),
+        };
+        let completed_through = native.head(&key).await.unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let reply = client
+                    .rpc(
+                        "session.timeline_store_fixture.status",
+                        json!({"sessionId":id}),
+                    )
+                    .await;
+                assert_ok(&reply);
+                let completions = reply["result"]["completions"].as_array().unwrap();
+                if completions
+                    .last()
+                    .is_some_and(|item| item["through"] == completed_through)
+                {
+                    break completions.clone();
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(observed.iter().all(|item| item["result"] == "committed"));
+        observed_sessions.push(json!(observed));
+        let through: Vec<_> = observed
+            .iter()
+            .map(|item| item["through"].as_u64().unwrap())
+            .collect();
+        assert!(
+            through.windows(2).all(|pair| pair[0] < pair[1]),
+            "{observed:?}"
+        );
+        for item in &observed {
+            assert_eq!(
+                item["batchId"],
+                json!(["main", item["through"]]).to_string()
+            );
+        }
+        let read = client
+            .rpc(
+                "session.timeline_store_fixture.read",
+                json!({"sessionId":id,"target":id}),
+            )
+            .await;
+        assert_ok(&read);
+        let native = server
+            .service::<dim_app_server::storage::SessionStore>()
+            .unwrap()
+            .timeline_store();
+        let key = dim_agent_runtime::TimelineKey {
+            session_id: id.clone(),
+            branch_id: "main".into(),
+        };
+        let end = read["result"]["events"].as_array().unwrap().last().unwrap()["batchEnd"]
+            .as_u64()
+            .unwrap();
+        let expected = native.read(&key, 1..=end).await.unwrap();
+        assert_eq!(
+            read["result"]["events"],
+            serde_json::to_value(expected).unwrap()
+        );
+        let released = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.rpc(
+                "session.timeline_store_fixture.release",
+                json!({"sessionId":id,"target":id}),
+            ),
+        )
+        .await
+        .expect("observers must not gate durable release");
+        assert_ok(&released);
+    }
+    let first_after_second = client
+        .rpc(
+            "session.timeline_store_fixture.status",
+            json!({"sessionId":sessions[0]}),
+        )
+        .await;
+    assert_ok(&first_after_second);
+    assert_eq!(
+        first_after_second["result"]["completions"], observed_sessions[0],
+        "Session A must not observe Session B commits"
+    );
+    for id in &sessions {
+        let closed = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.rpc(
+                "session.timeline_store_fixture.close",
+                json!({"sessionId":id}),
+            ),
+        )
+        .await
+        .expect("closing observation must not wait for the observer business promise");
+        assert_ok(&closed);
+        assert_ok(
+            &client
+                .rpc(
+                    "session.timeline_store_fixture.unblock",
+                    json!({"sessionId":id}),
+                )
+                .await,
+        );
+        let before = client
+            .rpc(
+                "session.timeline_store_fixture.status",
+                json!({"sessionId":id}),
+            )
+            .await;
+        assert_ok(&before);
+        assert_ok(
+            &client
+                .rpc(
+                    "session.submit",
+                    json!({"sessionId":id,"branchId":"main","text":"after observer close"}),
+                )
+                .await,
+        );
+        assert_ok(
+            &client
+                .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+                .await,
+        );
+        let after = client
+            .rpc(
+                "session.timeline_store_fixture.status",
+                json!({"sessionId":id}),
+            )
+            .await;
+        assert_ok(&after);
+        assert_eq!(
+            after["result"], before["result"],
+            "closed observer received another completion"
+        );
+    }
+    let mut subscriptions = Vec::new();
+    for id in &sessions {
+        let subscribed = client
+            .rpc(
+                "session.timeline_store_fixture.subscribe",
+                json!({
+                    "sessionId":id,"target":sessions[1],"mode":"normal"
+                }),
+            )
+            .await;
+        assert_ok(&subscribed);
+        subscriptions.push(subscribed["result"]["subscriptionId"].clone());
+    }
+    for round in 0..2 {
+        assert_ok(&client.rpc("session.submit", json!({
+            "sessionId":sessions[1],"branchId":"main","text":format!("shared backend {round}")
+        })).await);
+        assert_ok(
+            &client
+                .rpc(
+                    "session.idle",
+                    json!({"sessionId":sessions[1],"branchId":"main"}),
+                )
+                .await,
+        );
+        let native = server
+            .service::<dim_app_server::storage::SessionStore>()
+            .unwrap()
+            .timeline_store();
+        let through = native
+            .head(&dim_agent_runtime::TimelineKey {
+                session_id: sessions[1].clone(),
+                branch_id: "main".into(),
+            })
+            .await
+            .unwrap();
+        let mut shared = Vec::new();
+        for index in round..2 {
+            let observed = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    let status = client
+                        .rpc(
+                            "session.timeline_store_fixture.status",
+                            json!({"sessionId":sessions[index]}),
+                        )
+                        .await;
+                    assert_ok(&status);
+                    let completions: Vec<_> = status["result"]["completions"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .filter(|value| value["subscriptionId"] == subscriptions[index])
+                        .cloned()
+                        .collect();
+                    if completions
+                        .last()
+                        .is_some_and(|value| value["through"] == through)
+                    {
+                        break completions;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("shared backend notifications survive another Agent closing");
+            shared.push(
+                observed
+                    .into_iter()
+                    .map(|mut value| {
+                        value.as_object_mut().unwrap().remove("subscriptionId");
+                        value
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        if round == 0 {
+            assert_eq!(
+                shared[0], shared[1],
+                "one backend must notify observers across Agents"
+            );
+            assert_ok(
+                &client
+                    .rpc("agent.close", json!({"agentId":agents[0]}))
+                    .await,
+            );
+        }
+    }
+    let native = server
+        .service::<dim_app_server::storage::SessionStore>()
+        .unwrap()
+        .timeline_store();
+    let mut terminal_subscriptions = Vec::new();
+    for failed in [true, false] {
+        let id = if failed {
+            "notice-failed"
+        } else {
+            "notice-panic"
+        };
+        native
+            .create_session(id, &dim_agent_runtime::SessionConfig::default())
+            .await
+            .unwrap();
+        let subscribed = client
+            .rpc(
+                "session.timeline_store_fixture.subscribe",
+                json!({
+                    "sessionId":sessions[1],"target":id,"mode":"normal"
+                }),
+            )
+            .await;
+        assert_ok(&subscribed);
+        let subscription = subscribed["result"]["subscriptionId"].clone();
+        terminal_subscriptions.push(subscription.clone());
+        if failed {
+            let connection = rusqlite::Connection::open(&database).unwrap();
+            connection.execute_batch("CREATE TRIGGER fail_notice BEFORE INSERT ON timeline_events WHEN NEW.session_id = 'notice-failed' BEGIN SELECT RAISE(ABORT, 'injected notice failure'); END").unwrap();
+        }
+        let key = dim_agent_runtime::TimelineKey {
+            session_id: id.into(),
+            branch_id: "main".into(),
+        };
+        let record = dim_agent_runtime::StoredEvent {
+            event: Arc::new(dim_agent_types::AgentEvent {
+                id: uuid::Uuid::new_v4().to_string(),
+                sequence: 1,
+                create_at: 1,
+                tags: None,
+                parent_call_id: None,
+                kind: dim_agent_types::EventKind::InputMessage(
+                    dim_agent_types::InputMessageData::text("notice", None),
+                ),
+            }),
+            trace: None,
+            batch_end: 1,
+        };
+        let (published, publication) = tokio::sync::oneshot::channel();
+        native
+            .append(
+                key.clone(),
+                vec![record.clone()],
+                Box::new(move |result| {
+                    published.send(result).unwrap();
+                    assert!(failed, "injected publication callback panic");
+                }),
+            )
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(5), publication)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.is_err(), failed);
+        if failed {
+            assert!(
+                native
+                    .append(
+                        key.clone(),
+                        vec![record],
+                        Box::new(|_| panic!("synchronous refusal must not publish"))
+                    )
+                    .is_err()
+            );
+        }
+        native.release_session(id).await.unwrap();
+        let observed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = client
+                    .rpc(
+                        "session.timeline_store_fixture.status",
+                        json!({"sessionId":sessions[1]}),
+                    )
+                    .await;
+                assert_ok(&status);
+                let completions: Vec<_> = status["result"]["completions"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|value| value["subscriptionId"] == subscription)
+                    .cloned()
+                    .collect();
+                if !completions.is_empty() {
+                    break completions;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("original publication must not suppress its storage completion");
+        assert_eq!(observed.len(), 1, "a batch produces one completion");
+        assert_eq!(observed[0]["through"], 1);
+        if let Err(error) = result {
+            assert_eq!(
+                observed[0]["result"],
+                json!({"code":"storage","message":error.to_string()})
+            );
+            assert_eq!(native.head(&key).await.unwrap(), 0);
+        } else {
+            assert_eq!(observed[0]["result"], "committed");
+            assert_eq!(native.head(&key).await.unwrap(), 1);
+        }
+        native.rollback_session(id).await.unwrap();
+    }
+    let terminal = client
+        .rpc(
+            "session.timeline_store_fixture.status",
+            json!({"sessionId":sessions[1]}),
+        )
+        .await;
+    assert_ok(&terminal);
+    for subscription in terminal_subscriptions {
+        assert_eq!(
+            terminal["result"]["completions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|value| value["subscriptionId"] == subscription)
+                .count(),
+            1,
+            "the later committed batch fences observation of the earlier synchronous refusal"
+        );
+    }
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_mcp_registration_uses_the_native_content_owner() {
+    use dim_app_server::mcp::{McpService, McpServiceBinding};
+    let home = home();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"mcp-service", "name":parts.anchor.parent().unwrap().join("fixtures/mcp-service.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "mcpprobe.read", json!({})).await,
+        json!({"plugins":[], "refusal":null})
+    );
+    assert!(server.service::<McpService>().is_none());
+    let mcp = server.service::<McpServiceBinding>().unwrap();
+    for method in ["resolved", "server", "catalog", "editable"] {
+        assert!(
+            rutis_bridge::session::HostDispatch::invoke(
+                mcp.as_ref(),
+                method,
+                rutis_bridge::session::Value::List(vec![json!({}).into()]),
+            )
+            .is_err()
+        );
+    }
+    let malformed = rutis_bridge::session::HostDispatch::invoke(
+        mcp.as_ref(),
+        "plugins",
+        rutis_bridge::session::Value::List(vec![json!({"extra":true}).into()]),
+    )
+    .unwrap_err();
+    assert_eq!(malformed.code(), Some("invalid_request"));
+    let document = json!({"mcpServers":{"fixture":{"command":"fixture-command"}}});
+    let registered = client
+        .rpc(
+            "mcpprobe.register",
+            json!({"dir":home, "document":document}),
+        )
+        .await;
+    assert_ok(&registered);
+    assert_eq!(
+        registered["result"]["plugins"],
+        json!(mcp.plugins(&CancellationToken::new()).await.unwrap())
+    );
+    let refused = client
+        .rpc(
+            "mcpprobe.register",
+            json!({"dir":home, "document":{"mcpServers":{"fixture":{"command":"fixture-command","cwd":"../outside"}}}}),
+        )
+        .await;
+    assert_eq!(
+        refused["error"]["data"]["appError"], "mcp_invalid_config",
+        "{refused}"
+    );
+    let read = files_available(&mut client, "mcpprobe.read", json!({})).await;
+    assert_eq!(
+        read,
+        json!({"plugins":[], "refusal":mcp.plugin_refusal("foreign-kit")})
+    );
+    assert!(mcp.plugin_refusal("foreign-kit").is_some());
+    mcp.register_plugin(
+        "foreign-kit".into(),
+        home.clone(),
+        document,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        files_available(&mut client, "mcpprobe.read", json!({})).await,
+        json!({"plugins":["foreign-kit"], "refusal":null})
+    );
+    server.restart("Mcp").await.unwrap();
+    assert_eq!(
+        files_available(&mut client, "mcpprobe.read", json!({})).await,
+        json!({"plugins":["foreign-kit"], "refusal":null})
+    );
+    assert!(matches!(
+        mcp.plugins(&CancellationToken::new()).await,
+        Err(dim_app_server::mcp::McpError::Closed)
+    ));
+    let mcp = server.service::<McpServiceBinding>().unwrap();
+    assert_ok(&client.rpc("mcpprobe.withdraw", json!({})).await);
+    assert!(
+        mcp.plugins(&CancellationToken::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_skills_registration_uses_the_native_catalog_owner() {
+    use dim_agent_capabilities::skills::{SkillsCatalog, SkillsCatalogBinding, SkillsError};
+    let home = home();
+    let package = home.join("foreign-kit");
+    let root = package.join("skills");
+    std::fs::create_dir_all(root.join("valid")).unwrap();
+    let root = root.canonicalize().unwrap();
+    #[cfg(target_os = "linux")]
+    let invalid = {
+        use std::os::unix::ffi::OsStringExt;
+        root.join(std::ffi::OsString::from_vec(b"invalid-\xff".to_vec()))
+    };
+    #[cfg(not(target_os = "linux"))]
+    let invalid = root.join("invalid-診断");
+    std::fs::create_dir_all(&invalid).unwrap();
+    std::fs::write(
+        root.join("valid/SKILL.md"),
+        "---\nname: valid\ndescription: fixture\n---\nValid body",
+    )
+    .unwrap();
+    std::fs::write(invalid.join("SKILL.md"), "---\nname: [\n---\nInvalid body").unwrap();
+    std::fs::write(
+        package.join("dim-plugin.json"),
+        json!({"name":"foreign-kit","skills":"skills"}).to_string(),
+    )
+    .unwrap();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"skills-catalog", "name":parts.anchor.parent().unwrap().join("fixtures/skills-catalog.ts"),
+        "provides":{}, "config":{}
+    })];
+    let mut configuration = config(&home, parts);
+    configuration.platform_home = Some(home.join("user"));
+    let (server, _, _) = session_typescript::start(configuration.clone()).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "skillprobe.read", json!({})).await,
+        json!({"plugins":[],"issues":[]})
+    );
+    assert!(server.service::<SkillsCatalog>().is_none());
+    let catalog = server.service::<SkillsCatalogBinding>().unwrap();
+    for method in ["query", "install", "preview", "refresh"] {
+        assert!(
+            rutis_bridge::session::HostDispatch::invoke(
+                catalog.as_ref(),
+                method,
+                rutis_bridge::session::Value::List(vec![json!({}).into()]),
+            )
+            .is_err()
+        );
+    }
+    let registered = client
+        .rpc("skillprobe.register", json!({"root":root}))
+        .await;
+    assert_ok(&registered);
+    let issues = catalog.plugin_issues("foreign-kit").await.unwrap();
+    assert_eq!(issues.len(), 1);
+    assert_eq!(registered["result"], json!(issues));
+    assert_eq!(registered["result"][0]["kind"], "invalidManifest");
+    assert_eq!(
+        registered["result"][0]["path"],
+        invalid.join("SKILL.md").display().to_string()
+    );
+    assert_eq!(
+        files_available(&mut client, "skillprobe.read", json!({})).await,
+        json!({"plugins":catalog.plugins().await.unwrap(),"issues":issues})
+    );
+    catalog.withdraw_plugin("foreign-kit").await.unwrap();
+    assert_eq!(
+        files_available(&mut client, "skillprobe.read", json!({})).await,
+        json!({"plugins":[],"issues":[]})
+    );
+    catalog.register_plugin("foreign-kit", root).await.unwrap();
+    assert_ok(
+        &client
+            .rpc("plugin.install", json!({"source":{"path":package}}))
+            .await,
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    let (server, _, _) = session_typescript::start(configuration).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "skillprobe.read", json!({})).await,
+        json!({"plugins":["foreign-kit"],"issues":issues})
+    );
+    assert!(matches!(catalog.plugins().await, Err(SkillsError::Closed)));
+    assert_ok(&client.rpc("skillprobe.withdraw", json!({})).await);
+    assert!(
+        server
+            .service::<SkillsCatalogBinding>()
+            .unwrap()
+            .plugins()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_reads_prompt_overrides_from_the_same_owner_as_native_consumers() {
     use dim_agent_capabilities::{
         prompt_sources::BasePromptSettingsHost, skills::SkillsInstructionsSettingsHost,
@@ -1369,6 +2234,87 @@ async fn node_reads_prompt_overrides_from_the_same_owner_as_native_consumers() {
             json!({"base":document["base"],"skills":document["skills"],"summary":document["summary"]})
         );
     }
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_hooks_registration_uses_the_native_content_owner() {
+    use dim_app_server::hooks_settings::HooksService;
+    let home = home();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"hooks-service", "name":parts.anchor.parent().unwrap().join("fixtures/hooks-service.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (server, _, _) = session_typescript::start(config(&home, parts)).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    assert_eq!(
+        files_available(&mut client, "hooksprobe.read", json!({})).await,
+        json!({"plugins":[], "refusal":null})
+    );
+    let hooks = server.service::<HooksService>().unwrap();
+    let document =
+        json!({"hooks":{"Stop":[{"hooks":[{"type":"command", "command":"fixture-guard"}]}]}});
+    let registered = client
+        .rpc(
+            "hooksprobe.register",
+            json!({"dir":home, "document":document}),
+        )
+        .await;
+    assert_ok(&registered);
+    assert_eq!(
+        registered["result"]["plugins"],
+        json!(hooks.plugins(&CancellationToken::new()).await.unwrap())
+    );
+    let catalog = client.rpc("hooks.catalog", json!({})).await;
+    assert_ok(&catalog);
+    assert!(
+        catalog["result"]["hooks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |hook| hook["source"] == "plugin:foreign-kit" && hook["command"] == "fixture-guard"
+            )
+    );
+    let refused = client
+        .rpc(
+            "hooksprobe.register",
+            json!({"dir":home, "document":{"hooks":[]}}),
+        )
+        .await;
+    assert!(refused.get("error").is_some(), "{refused}");
+    let read = files_available(&mut client, "hooksprobe.read", json!({})).await;
+    assert_eq!(
+        read,
+        json!({"plugins":[], "refusal":hooks.plugin_refusal("foreign-kit")})
+    );
+    assert!(hooks.plugin_refusal("foreign-kit").is_some());
+    hooks
+        .register_plugin(
+            "foreign-kit".into(),
+            home.clone(),
+            document,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        files_available(&mut client, "hooksprobe.read", json!({})).await,
+        json!({"plugins":["foreign-kit"], "refusal":null})
+    );
+    assert_ok(&client.rpc("hooksprobe.withdraw", json!({})).await);
+    assert!(
+        hooks
+            .plugins(&CancellationToken::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     drop(client);
     server.shutdown();
     server.join().await.unwrap();

@@ -5,11 +5,15 @@ import type { BranchEvent, Services } from '../../npm/plugin.js'
 export const part = definePlugin({
   name: 'BranchPartFixture',
   provides: {},
-  inject: ['dispatcher', 'timeline', 'timelineIdentity', 'treeCommands'],
+  inject: ['dispatcher', 'timeline', 'timelineIdentity', 'treeCommands', 'branchLine'],
   async apply(ctx) {
     const dispatcher = ctx.use<Services['dispatcher']>('dispatcher')
     const timeline = ctx.use<Services['timeline']>('timeline')
     const tree = ctx.use<Services['treeCommands']>('treeCommands')
+    const line = ctx.use<Services['branchLine']>('branchLine')
+    const lineState = async () => JSON.stringify({
+      resolved: await line.resolved(), ending: await line.ending(), cursor: await line.cursor('main'),
+    })
     const { branchId } = await ctx.use<Services['timelineIdentity']>('timelineIdentity').get()
     const seen: string[] = []
     let written = false
@@ -23,16 +27,16 @@ export const part = definePlugin({
       if (key === 'input/message' && JSON.stringify(event.data).includes('c5-rebuilt')) reported = true
       if (live && key === 'turn/end' && !written) {
         written = true
-        void tree.input(branchId, {
-          blocks: [{ type: 'raw', text: `<c5-marker branch="${branchId}" seen="${seen.join(',')}"/>` }],
+        void lineState().then(state => tree.input(branchId, {
+          blocks: [{ type: 'raw', text: `<c5-marker branch="${branchId}" seen="${seen.join(',')}"/>${state}` }],
           mode: 'queue',
-        })
+        }))
       } else if (live && key === 'turn/end' && replayingMarker && !reported) {
         reported = true
-        void tree.input(branchId, {
-          blocks: [{ type: 'raw', text: `<c5-rebuilt from="${cutoff}" folded="${seen.length}"/>` }],
+        void lineState().then(state => tree.input(branchId, {
+          blocks: [{ type: 'raw', text: `<c5-rebuilt from="${cutoff}" folded="${seen.length}"/>${state}` }],
           mode: 'queue',
-        })
+        }))
       }
     }
     await dispatcher.consume(

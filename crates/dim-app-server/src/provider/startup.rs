@@ -275,7 +275,10 @@ impl ProviderService {
                 capabilities: entry.capabilities.declared()
                     .ok_or_else(|| failure(format!("Model {model_id} declares no {}; supply DIM_MAX_CONTEXT_TOKENS and DIM_MAX_OUTPUT_TOKENS or configure the model descriptor", entry.capabilities.missing_limits().join(" or "))))?,
                 reasoning: entry.metadata.as_ref().and_then(|metadata| metadata.reasoning.clone()),
-                service_tier: entry.metadata.as_ref().and_then(|metadata| metadata.service_tier.clone()),
+                service_tier: entry
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.service_tier.clone()),
                 },
             };
             snapshot.target.provider_id = source.id.clone();

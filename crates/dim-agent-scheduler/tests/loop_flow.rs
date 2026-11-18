@@ -443,10 +443,8 @@ async fn next_clamps_its_delay_to_the_ceiling() {
     let record = &stored_loops(home.path())[0];
     assert_eq!(record["loop_id"], json!(loop_id));
     let next_at = record["next_at"].as_str().expect("an armed round");
-    let at = chrono::DateTime::parse_from_rfc3339(next_at)
-        .unwrap()
-        .with_timezone(&chrono::Utc);
-    let delta = (at - before).num_seconds();
+    let at = next_at.parse::<jiff::Timestamp>().unwrap();
+    let delta = at.duration_since(before).as_secs();
     assert!(
         (3590..=3610).contains(&delta),
         "100000 s is clamped to 3600 s, got {delta}"
@@ -473,12 +471,13 @@ async fn an_expired_loop_settles_expired() {
     // An hour out, so the expiry below is reached by the advance and by no real
     // wait the row could take.
     let past = (dim_agent_scheduler::testing::clock(home.path()).now()
-        + chrono::Duration::seconds(3600))
-    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        + jiff::SignedDuration::from_secs(3600))
+    .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+    .to_string();
     edit_loops(home.path(), |loops| {
         loops[0]["expires_at"] = json!(past);
     });
-    dim_agent_scheduler::testing::clock(home.path()).advance(chrono::Duration::seconds(3610));
+    dim_agent_scheduler::testing::clock(home.path()).advance(jiff::SignedDuration::from_secs(3610));
     dim_agent_scheduler::testing::step(home.path(), 1).await;
     wait_for("expiry", || {
         stored_loops(home.path())
@@ -513,15 +512,16 @@ async fn a_gone_branch_settles_stopped() {
     // A branch that does not exist answers `branch_missing`, as a deleted
     // target would. The window is an hour out, so only the advance reaches it.
     let at = (dim_agent_scheduler::testing::clock(home.path()).now()
-        + chrono::Duration::seconds(3600))
-    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        + jiff::SignedDuration::from_secs(3600))
+    .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+    .to_string();
     edit_loops(home.path(), |loops| {
         loops[0]["branch_id"] = json!("gone-branch");
         loops[0]["state"] = json!("running");
         loops[0]["next_at"] = json!(at);
         loops[0]["delivering_round"] = Value::Null;
     });
-    dim_agent_scheduler::testing::clock(home.path()).advance(chrono::Duration::seconds(3610));
+    dim_agent_scheduler::testing::clock(home.path()).advance(jiff::SignedDuration::from_secs(3610));
     dim_agent_scheduler::testing::step(home.path(), 1).await;
     wait_for("a stopped loop", || {
         stored_loops(home.path())
@@ -629,11 +629,13 @@ async fn a_restart_retries_an_unanswered_lookup_on_the_next_tick() {
     server.shutdown();
     server.join().await.unwrap();
 
+    let lookups = dim_agent_scheduler::testing::signals(home.path()).loop_lookups();
     let server = start_armed(home.path(), Arc::new(Script::default()), |holds| {
         holds.fail_lookups(1);
     })
     .await;
     let mut client = connect(&server).await;
+    dim_agent_scheduler::testing::loop_lookup(home.path(), lookups).await;
 
     // The startup pass's lookup was lost, so the round stays `delivering` and
     // the per-tick pass asks again. One crossed tick is that retry — far short
@@ -747,12 +749,13 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
     // the pass must skip it rather than queue a second round. The window is far
     // enough that only the advance below reaches it.
     let due = (dim_agent_scheduler::testing::clock(home.path()).now()
-        + chrono::Duration::seconds(3600))
-    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        + jiff::SignedDuration::from_secs(3600))
+    .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+    .to_string();
     edit_loops(home.path(), |loops| {
         loops[0]["next_at"] = json!(due);
     });
-    dim_agent_scheduler::testing::clock(home.path()).advance(chrono::Duration::seconds(3610));
+    dim_agent_scheduler::testing::clock(home.path()).advance(jiff::SignedDuration::from_secs(3610));
     wait_for("the skipped window", || {
         stored_loops(home.path()).first().is_some_and(|record| {
             record["next_at"]
@@ -776,9 +779,7 @@ async fn a_fixed_loop_skips_a_window_while_its_round_is_pending() {
     let clock = dim_agent_scheduler::testing::clock(home.path());
     let mut delivered = false;
     for _ in 0..10 {
-        let due = clock
-            .now()
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let due = clock.now().strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
         edit_loops(home.path(), |loops| {
             loops[0]["next_at"] = json!(due);
         });
@@ -837,8 +838,9 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
     // once the advance below brings it there, while the store's write
     // connection is held.
     let clock = dim_agent_scheduler::testing::clock(home.path());
-    let due = (clock.now() + chrono::Duration::seconds(3600))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let due = (clock.now() + jiff::SignedDuration::from_secs(3600))
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
     edit_loops(home.path(), |loops| {
         loops[0]["state"] = json!("running");
         loops[0]["next_at"] = json!(due);
@@ -851,7 +853,7 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
     lock.busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     lock.execute_batch("BEGIN IMMEDIATE").unwrap();
-    clock.advance(chrono::Duration::seconds(3610));
+    clock.advance(jiff::SignedDuration::from_secs(3610));
 
     // The pass marks the round delivering, then waits on the held connection
     // while it holds the loop lock.
@@ -886,12 +888,12 @@ async fn a_next_accepted_while_the_pass_holds_the_lock_keeps_its_deadline() {
     // first, so it cannot have replaced this deadline with the waiting state.
     let record = &stored_loops(home.path())[0];
     assert_eq!(record["state"], json!("running"), "{record}");
-    let at = chrono::DateTime::parse_from_rfc3339(
-        record["next_at"].as_str().expect("an armed deadline"),
-    )
-    .unwrap()
-    .with_timezone(&chrono::Utc);
-    let delta = (at - before).num_seconds();
+    let at = record["next_at"]
+        .as_str()
+        .expect("an armed deadline")
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let delta = at.duration_since(before).as_secs();
     assert!(
         (590..=610).contains(&delta),
         "the deadline is the 600 seconds the next chose, got {delta}"
@@ -950,10 +952,12 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
     // The second window is an hour out, so only the advance after the edit
     // brings the pass to it.
     let clock = dim_agent_scheduler::testing::clock(home.path());
-    let past = (clock.now() - chrono::Duration::seconds(5))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let due = (clock.now() + chrono::Duration::seconds(3600))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let past = (clock.now() - jiff::SignedDuration::from_secs(5))
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    let due = (clock.now() + jiff::SignedDuration::from_secs(3600))
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
     edit_loops(home.path(), |loops| {
         for record in loops.iter_mut() {
             if record["loop_id"] == json!(old) {
@@ -973,7 +977,7 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
     lock.busy_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     lock.execute_batch("BEGIN IMMEDIATE").unwrap();
-    clock.advance(chrono::Duration::seconds(3610));
+    clock.advance(jiff::SignedDuration::from_secs(3610));
 
     // The pass has read the snapshot with the loop lock taken, marked the
     // second loop's round delivering, and waits on the held connection with

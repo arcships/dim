@@ -1,6 +1,6 @@
 use super::*;
 use dim_agent_capabilities::approval::{AdmitCall, Approval};
-use dim_agent_capabilities::permission::{CommandRulesHost, ReadCommandRules};
+use dim_agent_capabilities::permission::{CommandRules, ReadCommandRules};
 use dim_agent_capabilities::tool_executor::ToolExecutor;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::{Dispatcher, Session, Timeline, TimelineKey, TimelineStore};
@@ -182,15 +182,15 @@ async fn setup_store(
 ) -> (RunningServer, Session, Client, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     builder
-        .session_value(Arc::new(dim_agent_capabilities::host::PromptHost(
+        .session_data_value(Arc::new(dim_agent_capabilities::host::PromptHost(
             Arc::new(dim_agent_capabilities::host::EmptyPromptHost),
         )))
         .session_value(Arc::new(
             dim_agent_capabilities::prompt::InitialPromptConfiguration::fixed(None),
         ))
-        .session_value(Arc::new(CommandRulesHost(probe.clone())));
+        .session_data_value(Arc::new(CommandRules(probe.clone())));
     defaults::install_with_prompt_capability(
         &mut builder,
         dim_agent_capabilities::model_provider::ModelProviderPlugin::new,

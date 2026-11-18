@@ -1267,7 +1267,8 @@ impl AgentLoop {
                         settings
                     }
                 };
-                settings.metadata.get_or_insert_default().session_id = Some(owner.session_id.clone());
+                settings.metadata.get_or_insert_default().session_id =
+                    Some(owner.session_id.clone());
                 Ok((ContextPrepareData {
                     turn_id: turn_id.clone(),
                     request_id: request_id.clone(),
@@ -1287,7 +1288,10 @@ impl AgentLoop {
                 _ = cancel.cancelled() => Ok(Err(AgentError::Cancelled("Context read cancelled".into()))),
                 result = work => result,
             };
-            let result: Result<(ContextPrepareData, Option<crate::history::StreamedContext>)> = match result {
+            let result: Result<(
+                ContextPrepareData,
+                Option<crate::history::StreamedContext>,
+            )> = match result {
                 Ok(result) => result,
                 Err(panic) => {
                     owner.dispatcher.fail(AgentError::fault(

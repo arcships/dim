@@ -8,7 +8,7 @@ use crate::{
     host::*,
     input_queue::InputQueuePlugin,
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules, PermissionPlugin},
+    permission::{CommandRules, NoCommandRules, PermissionPlugin},
     prompt::{InitialPromptConfiguration, PromptPlugin},
     session_broadcast::{SessionBroadcastEndPlugin, SessionBroadcastPlugin},
     summary_strategy::{ProductSummaryStrategyConfig, ProductSummaryStrategyPlugin},
@@ -72,15 +72,15 @@ fn install_profile(
     branch_text: BranchToolConfig,
 ) {
     builder
-        .session_value(Arc::new(PromptHost(host)))
+        .session_data_value(Arc::new(PromptHost(host)))
         .session_value(Arc::new(InitialPromptConfiguration::fixed(initial)))
-        .session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))));
+        .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))));
     install_with_prompt_capability_and_branch(builder, model, true, branch_text);
 }
 
 /// Installs the same capabilities without binding `PromptHost` or
 /// `InitialPromptConfiguration`: a Session capability such as PromptSources
-/// provides both. The host binds `CommandRulesHost`.
+/// provides both. The host binds `CommandRules`.
 pub fn install_with_prompt_capability(
     builder: &mut AgentBuilder,
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
@@ -225,7 +225,7 @@ fn install_with_prompt_capability_and_branch(
 
 /// Product profile of the minimal execution assembly: only `execute` as the
 /// local tool, with Skills and prompt sources. No workspace tools, no wait,
-/// no branch tool. The host binds `CommandRulesHost`. See
+/// no branch tool. The host binds `CommandRules`. See
 /// `docs/design/appserver/minimal-execution.md`.
 pub fn install_minimal_execution(
     builder: &mut AgentBuilder,
@@ -253,7 +253,7 @@ pub fn install_minimal_execution(
 /// Product profile of the local execution and context capabilities. The
 /// composition root also registers the process plugins `HostPlatformPlugin`
 /// and `SkillsCatalogPlugin`, plus the product
-/// `SkillSettingsHost`, and binds the Session `CommandRulesHost`. A new
+/// `SkillSettingsHost`, and binds the Session `CommandRules`. A new
 /// Session adopts `SessionConfig.model` with its prompt sources. `branch_text`
 /// is the branch tool's factory configuration: the product passes its
 /// defaults, and an evaluation passes a candidate description.

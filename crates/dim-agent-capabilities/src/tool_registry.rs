@@ -197,7 +197,8 @@ impl HostDispatch for ToolSourcesView {
                         result = async move {
                             loop {
                                 let snapshot = state.borrow_and_update().clone();
-                                let args = Value::List(vec![rutis_bridge::session::arg(&snapshot)?]);
+                                let args =
+                                    Value::List(vec![rutis_bridge::session::arg(&snapshot)?]);
                                 settle(callback.call_async(args).await?).await?;
                                 if state.changed().await.is_err() {
                                     return Ok(Value::Undefined);

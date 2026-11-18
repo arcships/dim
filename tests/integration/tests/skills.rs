@@ -1,6 +1,7 @@
 mod local_support;
 
 use dim_agent_capabilities::{
+    input_queue::{SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry},
     settings::{SettingsChanged, SettingsScope, settings_changes},
     skill_settings::{SOURCE, SkillInstallSource, SkillInstallation, SkillSettings},
     skills::{
@@ -61,8 +62,7 @@ fn layout(dirs: &Dirs) -> Layout {
     Layout { cwd, project }
 }
 
-async fn refresh(env: &Env, session: &Session, cwd: &Path) {
-    let before = view_version(session);
+async fn refresh(env: &Env, session: &Session, cwd: &Path, body: Option<&str>) {
     env.catalog()
         .refresh(RefreshTarget {
             user: true,
@@ -70,28 +70,66 @@ async fn refresh(env: &Env, session: &Session, cwd: &Path) {
         })
         .await
         .unwrap();
-    wait_view_change(session, &before).await;
+    if let Some(body) = body {
+        wait_skill_body(session, body).await;
+    } else {
+        for _ in 0..200 {
+            if listed_skills(session).iter().all(|skill| skill.name != "b") {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("removed Skill b remained in the public list");
+    }
 }
 
-fn view_version(session: &Session) -> String {
+fn listed_skills(session: &Session) -> Vec<dim_agent_capabilities::skills::SkillSummary> {
     session
         .service::<SkillsBranch>("main")
         .unwrap()
-        .session()
-        .current()
+        .list()
         .unwrap()
-        .version
-        .clone()
 }
 
-async fn wait_view_change(session: &Session, before: &str) {
+async fn wait_list_change(
+    session: &Session,
+    before: &[dim_agent_capabilities::skills::SkillSummary],
+) {
     for _ in 0..200 {
-        if view_version(session) != before {
+        if listed_skills(session) != before {
             return;
         }
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    panic!("Skill view did not change");
+    panic!("public Skill list did not change");
+}
+
+async fn wait_skill_body(session: &Session, body: &str) {
+    let checks = session.session_service::<SubmitChecks>().unwrap();
+    let request = SubmitCheckRequest {
+        entry: SubmitEntry::Submit,
+        branch_id: "main".into(),
+        user: Some(UserInput {
+            content: vec![ContentBlock::Text {
+                text: "/skill:b".into(),
+            }],
+        }),
+        mode: InputMode::Queue,
+    };
+    for _ in 0..200 {
+        let decision = checks.check(&request, &Default::default()).await.unwrap();
+        if let SubmitDecision::Proceed { blocks, warnings } = decision {
+            assert!(warnings.is_empty());
+            if blocks
+                .iter()
+                .any(|block| block.lines().any(|line| line == body))
+            {
+                return;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    panic!("the current Skill submission did not contain {body}");
 }
 
 async fn entered(env: &Env) {
@@ -293,7 +331,7 @@ async fn a_view_change_inside_a_turn_reaches_the_next_request() {
         .unwrap();
     entered(&env).await;
     dirs.write(&body, &skill_file("b", "project b", "BODY-B-2"));
-    refresh(&env, &session, &layout.cwd).await;
+    refresh(&env, &session, &layout.cwd, Some("BODY-B-2")).await;
     env.gate.release.notify_one();
     session.idle("main").await.unwrap();
     assert!(result_text(&last_skill_result(&session).await).contains("BODY-B-2"));
@@ -310,7 +348,7 @@ async fn a_view_change_inside_a_turn_reaches_the_next_request() {
         .unwrap();
     entered(&env).await;
     std::fs::remove_dir_all(layout.project.join("b")).unwrap();
-    refresh(&env, &session, &layout.cwd).await;
+    refresh(&env, &session, &layout.cwd, None).await;
     env.gate.release.notify_one();
     session.idle("main").await.unwrap();
     assert_eq!(
@@ -354,7 +392,7 @@ async fn skill_loads_the_latest_view_after_queue_and_steer_interleave() {
             ),
         );
         async move {
-            refresh(shared, session, cwd).await;
+            refresh(shared, session, cwd, Some(&format!("BODY-B-{version}"))).await;
             for _ in 0..200 {
                 if lists(session).await.len() == version {
                     return;
@@ -425,7 +463,7 @@ async fn enablement_changes_the_list_and_loading() {
     run(&session, "first").await;
     let b = format!("workspace:{}:b", layout.project.to_string_lossy());
 
-    let before = view_version(&session);
+    let before = listed_skills(&session);
     let (entry, version) = env
         .catalog()
         .set_enabled(&b, false, Some(&layout.cwd))
@@ -446,7 +484,7 @@ async fn enablement_changes_the_list_and_loading() {
         .unwrap()
         .disabled;
     assert!(persisted.contains(&b));
-    wait_view_change(&session, &before).await;
+    wait_list_change(&session, &before).await;
     assert_eq!(
         result_text(&load(&env, &session, "b").await),
         "Skill is disabled: b"
@@ -454,15 +492,15 @@ async fn enablement_changes_the_list_and_loading() {
     let listed = lists(&session).await.pop().unwrap().unwrap();
     assert!(listed.contains("- a: ") && !listed.contains("- b"));
 
-    let before = view_version(&session);
+    let before = listed_skills(&session);
     env.catalog()
         .set_enabled(&b, true, Some(&layout.cwd))
         .await
         .unwrap();
-    wait_view_change(&session, &before).await;
+    wait_list_change(&session, &before).await;
     assert!(result_text(&load(&env, &session, "b").await).contains("BODY-B-1"));
 
-    let before = view_version(&session);
+    let before = listed_skills(&session);
     let current = env.settings.skills(Default::default()).await.unwrap();
     let revision = env
         .settings
@@ -471,7 +509,7 @@ async fn enablement_changes_the_list_and_loading() {
         .await
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    assert_eq!(view_version(&session), before);
+    assert_eq!(listed_skills(&session), before);
     env.root
         .emit(SettingsChanged {
             name: settings_changes(SOURCE),
@@ -480,7 +518,7 @@ async fn enablement_changes_the_list_and_loading() {
             revision,
         })
         .unwrap();
-    wait_view_change(&session, &before).await;
+    wait_list_change(&session, &before).await;
     assert_eq!(
         result_text(&load(&env, &session, "b").await),
         "Skill is disabled: b"
@@ -498,12 +536,21 @@ async fn enablement_changes_the_list_and_loading() {
         "user:a".to_owned(),
         format!("workspace:{}:nested/d", layout.project.to_string_lossy()),
     ] {
-        let before = view_version(&session);
+        let before = listed_skills(&session);
         env.catalog()
             .set_enabled(&id, false, Some(&layout.cwd))
             .await
             .unwrap();
-        wait_view_change(&session, &before).await;
+        for _ in 0..200 {
+            if listed_skills(&session) != before
+                && (!listed_skills(&session).is_empty()
+                    || lists(&session).await.last() == Some(&None))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_ne!(listed_skills(&session), before);
     }
     assert_eq!(lists(&session).await.pop().unwrap(), None);
     env.agent.close().await.unwrap();
@@ -588,7 +635,7 @@ async fn invocation_flags_narrow_who_may_load_a_skill() {
         );
     }
 
-    let model = session.service::<SkillsBranch>("main").unwrap().session();
+    let model = session.service::<SkillsBranch>("main").unwrap();
     let summaries = model.list().unwrap();
     let invocable = |name: &str| {
         summaries
@@ -604,8 +651,7 @@ async fn invocation_flags_narrow_who_may_load_a_skill() {
     );
     assert!(invocable("null-flags"), "a null flag allows the invocation");
 
-    let view = model.current().unwrap();
-    let in_view = |name: &str| view.list.as_deref().is_some_and(|list| list.contains(name));
+    let in_view = |name: &str| summaries.iter().any(|skill| skill.name == name);
     assert!(
         !in_view("broken"),
         "an invalid manifest is not in the catalog"
@@ -740,9 +786,7 @@ impl SkillSettings for SlowFirstResponse {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_late_update_response_does_not_overwrite_a_newer_setting() {
     use dim_agent_capabilities::{
-        host_platform::HostPlatform,
-        skill_settings::SkillSettingsHost,
-        skills::{SkillsCatalog, SkillsCatalogPlugin},
+        host_platform::HostPlatform, skill_settings::SkillSettingsHost, skills::SkillsCatalogPlugin,
     };
     use std::sync::Arc;
     let dirs = Dirs::new();
@@ -768,7 +812,9 @@ async fn a_late_update_response_does_not_overwrite_a_newer_setting() {
     (&root.plugin(SkillsCatalogPlugin::new(&names).unwrap()))
         .await
         .unwrap();
-    let catalog = root.get::<SkillsCatalog>().unwrap();
+    let catalog = root
+        .get_at(&dim_agent_capabilities::skills::owner_key())
+        .unwrap();
     let b = format!("workspace:{}:b", layout.project.to_string_lossy());
 
     let disabling = tokio::spawn({
@@ -906,8 +952,24 @@ async fn unavailable_settings_isolate_skills_and_refresh_recovers_existing_sessi
         Err(SkillsError::SettingsRead(reason)) if reason.contains("injected")
     ));
     let session = env.session(&layout.cwd, "").await.unwrap();
-    let skills = session.service::<SkillsBranch>("main").unwrap().session();
-    assert!(matches!(skills.list(), Err(SkillsError::SettingsRead(_))));
+    let skills = session.service::<SkillsBranch>("main").unwrap();
+    let native_error = skills.list().unwrap_err();
+    assert!(matches!(native_error, SkillsError::SettingsRead(_)));
+    let wire_error = rutis_bridge::session::HostDispatch::invoke(
+        skills.as_ref(),
+        "list",
+        rutis_bridge::session::Value::List(vec![serde_json::json!({}).into()]),
+    )
+    .unwrap_err();
+    assert_eq!(wire_error.code(), Some(native_error.code()));
+    assert!(wire_error.to_string().contains(&native_error.to_string()));
+    let invalid = rutis_bridge::session::HostDispatch::invoke(
+        skills.as_ref(),
+        "list",
+        rutis_bridge::session::Value::List(vec![serde_json::json!({"extra":true}).into()]),
+    )
+    .unwrap_err();
+    assert_eq!(invalid.code(), Some("invalid_request"));
 
     env.model.push(Step::Tool("gate", serde_json::json!({})));
     env.gate.release.notify_one();
@@ -1000,9 +1062,7 @@ async fn unavailable_settings_isolate_skills_and_refresh_recovers_existing_sessi
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_read_back_is_reported_and_recovered_by_the_next_query() {
     use dim_agent_capabilities::{
-        host_platform::HostPlatform,
-        skill_settings::SkillSettingsHost,
-        skills::{SkillsCatalog, SkillsCatalogPlugin},
+        host_platform::HostPlatform, skill_settings::SkillSettingsHost, skills::SkillsCatalogPlugin,
     };
     use std::sync::Arc;
     let dirs = Dirs::new();
@@ -1026,7 +1086,9 @@ async fn a_failed_read_back_is_reported_and_recovered_by_the_next_query() {
     (&root.plugin(SkillsCatalogPlugin::new(&names).unwrap()))
         .await
         .unwrap();
-    let catalog = root.get::<SkillsCatalog>().unwrap();
+    let catalog = root
+        .get_at(&dim_agent_capabilities::skills::owner_key())
+        .unwrap();
     let b = format!("workspace:{}:b", layout.project.to_string_lossy());
 
     let failed = catalog.set_enabled(&b, false, Some(&layout.cwd)).await;
@@ -1073,13 +1135,12 @@ async fn content_instances_are_session_owned_and_only_changed_content_is_replace
     };
     let original = content_ids();
     assert_eq!(original.len(), 6);
-    let second_before = view_version(&second);
     dirs.write(
         &layout.project.join("b/SKILL.md"),
         &skill_file("b", "project b", "BODY-B-2"),
     );
-    refresh(&env, &first, &layout.cwd).await;
-    wait_view_change(&second, &second_before).await;
+    refresh(&env, &first, &layout.cwd, Some("BODY-B-2")).await;
+    wait_skill_body(&second, "BODY-B-2").await;
     let refreshed = content_ids();
     assert_eq!(refreshed.len(), 6);
     assert_eq!(original.intersection(&refreshed).count(), 4);
@@ -1101,12 +1162,12 @@ async fn content_instances_are_session_owned_and_only_changed_content_is_replace
     assert!(surviving.is_subset(&refreshed));
     assert!(result_text(&load(&env, &second, "b").await).contains("BODY-B-2"));
     let b = format!("workspace:{}:b", layout.project.to_string_lossy());
-    let before = view_version(&second);
+    let before = listed_skills(&second);
     env.catalog()
         .set_enabled(&b, false, Some(&layout.cwd))
         .await
         .unwrap();
-    wait_view_change(&second, &before).await;
+    wait_list_change(&second, &before).await;
     let disabled = content_ids();
     assert_eq!(disabled.len(), 2);
     assert!(disabled.is_subset(&surviving));
@@ -1114,12 +1175,12 @@ async fn content_instances_are_session_owned_and_only_changed_content_is_replace
         result_text(&load(&env, &second, "b").await),
         "Skill is disabled: b"
     );
-    let before = view_version(&second);
+    let before = listed_skills(&second);
     env.catalog()
         .set_enabled(&b, true, Some(&layout.cwd))
         .await
         .unwrap();
-    wait_view_change(&second, &before).await;
+    wait_list_change(&second, &before).await;
     let enabled = content_ids();
     assert_eq!(enabled.len(), 3);
     assert_eq!(enabled.intersection(&surviving).count(), 2);
@@ -1849,7 +1910,7 @@ async fn a_new_catalog_restores_installations_from_settings() {
         .await
         .unwrap();
     let restored = root
-        .get::<dim_agent_capabilities::skills::SkillsCatalog>()
+        .get_at(&dim_agent_capabilities::skills::owner_key())
         .unwrap();
     let installations = restored.installations().await.unwrap();
     assert_eq!(installations["acme-skills"].skills, ["writing/review"]);

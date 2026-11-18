@@ -48,14 +48,19 @@ impl DynPlugin for LoopMethodsPlugin {
                     if p.turn_id.is_some() && p.input_id.is_some() {
                         return Err(RpcError::invalid("turnId and inputId are mutually exclusive"));
                     }
-                    if p.turn_id.as_ref().is_some_and(String::is_empty) || p.input_id.as_ref().is_some_and(String::is_empty) {
+                    if p.turn_id.as_ref().is_some_and(String::is_empty)
+                        || p.input_id.as_ref().is_some_and(String::is_empty)
+                    {
                         return Err(RpcError::invalid("A turn or input identity must be nonempty"));
                     }
                     let mut through = p.through;
                     let mut turn_id = p.turn_id.clone();
                     if let Some(input_id) = &p.input_id {
                         let mut consumed = TimelineQuery {
-                            scope: TimelineQueryScope::Branch, from: None, through, include_publishing: false,
+                            scope: TimelineQueryScope::Branch,
+                            from: None,
+                            through,
+                            include_publishing: false,
                             query: QuerySpec {
                                 filter: Some(QueryFilter::And { conditions: vec![
                                     QueryFilter::In { value: QueryOperand::Field { path:"kind".into() }, values:vec![json!("input/consumed"),json!("input/deleted")] },
@@ -96,12 +101,23 @@ impl DynPlugin for LoopMethodsPlugin {
                         conditions.push(QueryFilter::In { value: QueryOperand::Field { path: "data.turn_id".into() }, values: vec![json!(id)] });
                     }
                     let query = TimelineQuery {
-                        scope: TimelineQueryScope::Branch, from: None, through, include_publishing: false,
+                        scope: TimelineQueryScope::Branch,
+                        from: None,
+                        through,
+                        include_publishing: false,
                         query: QuerySpec {
                             filter: Some(QueryFilter::And { conditions }),
-                            select: QuerySelect::Fields { fields: ["kind", "position.sequence", "data"].map(String::from).to_vec() },
-                            group_by: vec![], pick: None,
-                            order_by: vec![QueryOrder { key: QueryOrderKey::Position, direction: TimelineQueryDirection::Descending }],
+                            select: QuerySelect::Fields {
+                                fields: ["kind", "position.sequence", "data"]
+                                    .map(String::from)
+                                    .to_vec(),
+                            },
+                            group_by: vec![],
+                            pick: None,
+                            order_by: vec![QueryOrder {
+                                key: QueryOrderKey::Position,
+                                direction: TimelineQueryDirection::Descending,
+                            }],
                         },
                         page: Some(QueryPage { limit: NonZeroU64::MIN, after: None }),
                     };
@@ -123,12 +139,18 @@ impl DynPlugin for LoopMethodsPlugin {
                     let mut output = None;
                     if let Some(turn) = &turn && turn["ended"] == false && p.turn_id.is_none() && p.input_id.is_none() {
                         let mut request = TimelineQuery {
-                            scope: TimelineQueryScope::Branch, from: None, through: Some(result.through), include_publishing: false,
+                            scope: TimelineQueryScope::Branch,
+                            from: None,
+                            through: Some(result.through),
+                            include_publishing: false,
                             query: QuerySpec {
                                 filter: Some(QueryFilter::And { conditions: vec![
                                     QueryFilter::In { value: QueryOperand::Field { path: "kind".into() }, values: vec![json!("step/model-start")] },
                                     QueryFilter::In { value: QueryOperand::Field { path: "data.turn_id".into() }, values: vec![turn["turnId"].clone()] },
-                                    QueryFilter::Not { condition: Box::new(QueryFilter::Exists { condition: Box::new(QueryFilter::And { conditions: vec![
+                                    QueryFilter::Not {
+                                        condition: Box::new(QueryFilter::Exists {
+                                            condition: Box::new(QueryFilter::And {
+                                                conditions: vec![
                                         QueryFilter::In { value: QueryOperand::Field { path: "kind".into() }, values: vec![json!("step/model-output-end")] },
                                         QueryFilter::Compare { left: QueryOperand::Field { path: "data.request_id".into() }, comparison: QueryComparison::Eq, right: QueryOperand::Outer { path: "data.request_id".into() } },
                                     ] }) }) },
@@ -154,7 +176,8 @@ impl DynPlugin for LoopMethodsPlugin {
                                 request.page = None;
                                 let sum = tokio::select! {
                                     _ = cancel.cancelled() => return Err(RpcError::interrupted()),
-                                    result = tree.query(p.branch_id.clone(), request.clone()) => result?,
+                                    result = tree.query(p.branch_id.clone(), request.clone()) =>
+                                        result?,
                                 };
                                 let QueryOutput::Count { count: total } = sum.result else { unreachable!("character total") };
                                 *count = total;

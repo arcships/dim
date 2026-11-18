@@ -43,21 +43,30 @@ async fn ready(client: &mut Client) {
 }
 
 async fn settled(client: &mut Client, id: &Value) -> Value {
+    let mut last = Value::Null;
+    let mut polls = 0_u64;
+    let mut status_pending = false;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
+            status_pending = true;
             let reply = client.rpc("workflow.status", json!({"run_id":id})).await;
+            status_pending = false;
+            polls += 1;
             assert_ok(&reply);
+            last = reply;
             if matches!(
-                reply["result"]["state"].as_str(),
+                last["result"]["state"].as_str(),
                 Some("completed" | "failed" | "stopped" | "interrupted")
             ) {
-                return reply["result"].clone();
+                return last["result"].clone();
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
-    .expect("Workflow settles its owned stages")
+    .unwrap_or_else(|error| panic!(
+        "Workflow settles its owned stages: {error}; run={id}, completed status polls={polls}, status RPC pending={status_pending}, last reply={last}"
+    ))
 }
 
 fn stored(home: &Path) -> Value {

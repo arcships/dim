@@ -15,8 +15,8 @@ use dim_agent_capabilities::{
     methods::{MethodProvider, RpcError, SessionMethods},
     workspace_tools::{self, WorkspaceToolsConfig},
 };
-use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, SessionConfig, testing::MinimalHost};
+use dim_agent_runtime::{TimelineStore, testing::chain_events};
 use dim_agent_types::EventKind;
 use dim_app_server::{
     RunningServer, ServerConfig, serve,

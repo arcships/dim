@@ -1,6 +1,7 @@
 mod allocation;
 mod app_server;
 mod catalog;
+mod comment_links;
 mod modules;
 mod npm;
 mod plugins;
@@ -67,6 +68,7 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             catalog::check(&root()).await?;
             types::check(&root())?;
             npm::check(&root())?;
+            comment_links::check(&root())?;
         }
         Some("types") => types::write(&root())?,
         _ => {
@@ -107,7 +109,7 @@ async fn agent_with_store(store: Arc<dyn TimelineStore>) -> dim_agent_runtime::R
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     MinimalHost::start(&builder).await
 }
 fn root() -> PathBuf {

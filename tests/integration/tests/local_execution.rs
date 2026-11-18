@@ -356,7 +356,7 @@ impl Harness {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         platform(&mut builder);
         builder
-            .timeline_store(store.clone())
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

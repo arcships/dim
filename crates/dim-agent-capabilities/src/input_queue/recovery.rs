@@ -111,7 +111,8 @@ impl InputQueue {
                 return Err(error);
             }
             tokio::select! {
-                changed = publication.changed() => changed.map_err(|_| AgentError::Closed(self.timeline.branch_id()))?,
+                changed = publication.changed() =>
+                    changed.map_err(|_| AgentError::Closed(self.timeline.branch_id()))?,
                 _ = self.lifecycle.cancelled() => return Err(AgentError::Closed("InputQueue".into())),
             }
         }

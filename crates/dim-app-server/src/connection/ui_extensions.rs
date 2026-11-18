@@ -23,15 +23,40 @@ impl Connection {
                 tokio::select! {
                     _ = connection.closed.cancelled() => break,
                     result = availability.changed() => if result.is_err() { break; },
-                    _ = async { match &mut revisions { Some(revisions) => { let _ = revisions.changed().await; }, None => std::future::pending().await } } => {},
+                    _ = async {
+                        match &mut revisions {
+                            Some(revisions) => {
+                                let _ = revisions.changed().await;
+                            }
+                            None => std::future::pending().await,
+                        }
+                    } => {},
                 }
                 let current = ctx.get::<UiExtensions>();
-                let replaced = match (&owner, &current) { (Some(old), Some(new)) => !Arc::ptr_eq(old, new), (None, None) => false, _ => true };
-                if replaced { revisions = current.as_ref().map(|owner| owner.subscribe()); owner = current; }
-                let revision = match &mut revisions { Some(revisions) => *revisions.borrow_and_update(), None => 0 };
-                if !replaced && revision == last { continue; }
+                let replaced = match (&owner, &current) {
+                    (Some(old), Some(new)) => !Arc::ptr_eq(old, new),
+                    (None, None) => false,
+                    _ => true,
+                };
+                if replaced {
+                    revisions = current.as_ref().map(|owner| owner.subscribe());
+                    owner = current;
+                }
+                let revision = match &mut revisions {
+                    Some(revisions) => *revisions.borrow_and_update(),
+                    None => 0,
+                };
+                if !replaced && revision == last {
+                    continue;
+                }
                 last = revision;
-                if connection.sender.send(Outbound::notice(Notification::UiExtensionsChanged { revision }), false).is_err() { break; }
+                let send = connection.sender.send(
+                    Outbound::notice(Notification::UiExtensionsChanged { revision }),
+                    false,
+                );
+                if send.is_err() {
+                    break;
+                }
             }
             let _ = listener.dispose().await;
         });

@@ -2,9 +2,9 @@
 //! JSON document inside the host's `{version, text}` envelope, which
 //! [`PluginFileTransactions`] reads and writes.
 use crate::document::{canonical_instant, format_instant};
-use chrono::{DateTime, Utc};
 use dim_agent_types::PermissionPolicy;
 use dim_app_server::plugin_files::{PluginFileError, PluginFileTransactions};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 pub const RUNS_FILE: &str = "scheduler/runs.json";
@@ -397,7 +397,7 @@ pub fn retire_launch_ownership(
 }
 
 /// The timestamp field, rendered as the file stores it.
-pub fn stamp(instant: DateTime<Utc>) -> String {
+pub fn stamp(instant: Timestamp) -> String {
     format_instant(instant)
 }
 
