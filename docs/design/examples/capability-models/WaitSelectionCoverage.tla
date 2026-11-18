@@ -12,5 +12,5 @@ CoverageSpec == CoverageInit /\ [][CoverageNext]_vars
 FirstPendingNotice ==
     [][(Len(s.selections') > Len(s.selections) /\ s.target = 0)
        => s.selections'[Len(s.selections')].task =
-           Head(SelectSeq(order, LAMBDA i: i \in s.arrivals))]_vars
+           Head(SelectSeq(order, LAMBDA i: i \in Queue))]_vars
 =============================================================================

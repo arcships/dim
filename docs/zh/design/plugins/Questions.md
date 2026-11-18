@@ -82,7 +82,7 @@ stateDiagram-v2
 
 登记不得晚于展示它的那条 `step/tool-call`。这条事实由 Loop 写入，ToolExecutor 之后才消费它；在处理函数里登记就留下一个窗口：客户端拿着已发布的问题，`respond` 却以 `question_not_pending` 拒绝。因此 `ask_user` 在事实之前 claim：`ToolHandler::claim` 返回一个带 `Drop` 的守卫，`Drop` 删除表条目；Loop 在追加批次前立即创建 claims，ToolBinding 随该请求的工具快照持有它们。
 
-凡是到不了该调用派发的路径，都由守卫覆盖，不需要单独的释放步骤：追加被拒、派发前的 `stop/interrupt`、准入被拒、任务被取消、Loop 出错、能力重载，都随快照的 claims 一起释放。到达派发的 claim 由 ToolExecutor 取出，交给 `ToolClaim::dispatch` 消费；它收到的是解析并准入后的调用，并在回答或取消令牌结束等待前保持登记。没有 claim 的 `execute`——重载后的重建批次——自行 claim，所以处理函数在两种情况下只有一条登记路径。
+凡是到不了该调用派发的路径，都由守卫覆盖，不需要单独的释放步骤：追加被拒、派发前的 `stop/interrupt`、准入被拒、任务被取消、Loop 出错、能力重载，都随快照的 claims 一起释放。到达派发的 claim 由 ToolExecutor 取出，交给 `ToolClaim::dispatch` 消费；它收到的是解析并准入后的调用，并在回答或取消令牌结束等待前保持登记。实时调用中，没有保留 claim 的 `execute` 自行 claim，所以处理函数在两种情况下只有一条登记路径。
 
 在 claim 与拒绝之间被接受的回答会先投递、再随 claim 一起丢弃：该调用的结果是拒绝，问题不保持打开。
 

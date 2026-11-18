@@ -1,0 +1,125 @@
+{
+  "parent_commit": "eb6d38c1ae31d208da47024e51a86c4d3655adfb",
+  "hash_scope": "Every source_sha256 entry matches source_revision, including modified flow tests and Questions rustdoc. parent_commit is the experiment parent, not the revision for all hashes. main_integration is a separate later snapshot. No claim about later main.",
+  "java": "OpenJDK 17.0.18",
+  "tlc": "2.19 / tla2tools 1.7.4",
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "workers": 1,
+  "max_heap": "2g",
+  "state_constraints": false,
+  "runs": [
+    {
+      "config": "ModelReloadHandoff.cfg",
+      "module": "ModelReloadHandoff.tla",
+      "module_sha256": "fcfd84ef9ae9b423f12ace0733e0cd1808f4a1b454ea8552926e5a313e8a63f6",
+      "config_sha256": "8d7ba8f647419b59265cc75145813ccbeb73c39637285d2d1aed9187816502e8",
+      "generated": 21,
+      "distinct": 17,
+      "queue": 0,
+      "depth": 8,
+      "fingerprint": 15,
+      "seed": 672165289210371198,
+      "exit": 0,
+      "log_sha256": "b7da6134bc92f69594ca4116d2a8a30e3dee124a36e9566bdf60b90c9a90ca1c",
+      "witnesses": {
+        "recovered_without_invoke": "State 11:\ns = [ provider |-> \"live\",\n  call |-> 2,\n  cut |-> 2,\n  published |-> 1,\n  selected |-> TRUE,\n  invoked |-> 0,\n  seen |-> FALSE,\n  running |-> FALSE,\n  terminals |-> 1,\n  outcome |-> \"recovered\",\n  retried |-> FALSE ]",
+        "live_call": "State 30:\ns = [ provider |-> \"live\",\n  call |-> 2,\n  cut |-> 1,\n  published |-> 2,\n  selected |-> FALSE,\n  invoked |-> 1,\n  seen |-> TRUE,\n  running |-> FALSE,\n  terminals |-> 1,\n  outcome |-> \"live\",\n  retried |-> FALSE ]"
+      }
+    },
+    {
+      "config": "ModelReloadHandoff-Failure.cfg",
+      "module": "ModelReloadHandoff.tla",
+      "module_sha256": "fcfd84ef9ae9b423f12ace0733e0cd1808f4a1b454ea8552926e5a313e8a63f6",
+      "config_sha256": "5ae64bb9d5930364a7f0d9c74103dd857bf0ad894831a6d106e65c4eea3101a9",
+      "generated": 57,
+      "distinct": 41,
+      "queue": 0,
+      "depth": 11,
+      "fingerprint": 34,
+      "seed": 7449786766681427054,
+      "exit": 0,
+      "log_sha256": "586eba46d3112c8db0581cb028d4ef71bd92f690b7f8963ecb69574327c4bcc6",
+      "witnesses": {
+        "failed_read": "State 10:\ns = [ provider |-> \"failed\",\n  call |-> 0,\n  cut |-> 1,\n  published |-> 1,\n  selected |-> FALSE,\n  invoked |-> 0,\n  seen |-> FALSE,\n  running |-> FALSE,\n  terminals |-> 0,\n  outcome |-> \"none\",\n  retried |-> FALSE ]",
+        "retried_recovery": "State 53:\ns = [ provider |-> \"live\",\n  call |-> 2,\n  cut |-> 2,\n  published |-> 1,\n  selected |-> TRUE,\n  invoked |-> 0,\n  seen |-> FALSE,\n  running |-> FALSE,\n  terminals |-> 1,\n  outcome |-> \"recovered\",\n  retried |-> TRUE ]"
+      }
+    },
+    {
+      "config": "ExecWakeRecovery.cfg",
+      "module": "ExecWakeRecovery.tla",
+      "module_sha256": "ed214d06196b66a13258d8f0a9b0ad0444038679b816a442c347912bfab3d2c4",
+      "config_sha256": "b22ed2ed7b6e064da6d4bb94d678e920e752d164e47608f039c5d8d1a34ff387",
+      "generated": 79,
+      "distinct": 55,
+      "queue": 0,
+      "depth": 11,
+      "fingerprint": 124,
+      "seed": 8039694185315758358,
+      "exit": 0,
+      "log_sha256": "736b420c129b5419fd0e69000ea7f49eb574fa706b675c89fdf68cea91ada03b",
+      "witnesses": {
+        "fault": "State 12:\ns = [ log |-> <<1>>,\n  durable |-> 0,\n  todo |-> {2},\n  phase |-> \"posting\",\n  fault |-> TRUE,\n  generation |-> 0 ]",
+        "retried_both_committed": "State 54:\ns = [ log |-> <<1, 2>>,\n  durable |-> 2,\n  todo |-> {},\n  phase |-> \"reading\",\n  fault |-> FALSE,\n  generation |-> 1 ]"
+      }
+    }
+  ],
+  "source_sha256": {
+    "crates/dim-agent-capabilities/src/model_provider.rs": "32cb5ce6acb2064a08c26cd3a527701d8073c70c9b5108ccb09d595968706a64",
+    "crates/dim-agent-capabilities/src/context_preparation.rs": "f1adaa6e43af9f7d3e0a39c808700dd8a11195e3d5b3437a699a6a2ece8b2d8e",
+    "crates/dim-agent-capabilities/src/workspace_tools/background.rs": "fb0de37ff868a04157e6741f69ac6e0eb53a0499a203c0d7d96f112c39a144aa",
+    "crates/dim-agent-capabilities/tests/context_flow/context_reads.rs": "a57f90036e61be1489fb4163e3dce166eebfcf2916796bb444ab6a565b2a2f10",
+    "tests/integration/tests/local_execution.rs": "b8e4345434cf50be93b5fb034d868198f82a55d03ae3fabfa883794382d611a7",
+    "tests/integration/tests/local_support/task_store.rs": "0ee1395d62783c9c5f2d826d2019b7116d44dbbadd5ac7925d872f36ccea0e87",
+    "crates/dim-agent-questions/src/lib.rs": "a80d5b9a21b5d485372cde0547321c59aaa7049277670fc6a2a7019e5ea575d0"
+  },
+  "flow_tests": [
+    {
+      "name": "model_only_reload",
+      "result": "1 passed; 0 failed",
+      "log_sha256": "c509262500326fe4840c9a7bbc31802ac5c5171c6d8b6baadd527fca93d6ecfa"
+    },
+    {
+      "name": "model_cascading_reload",
+      "result": "1 passed; 0 failed",
+      "log_sha256": "92fc9e67c8c53897569bf6ad0b76029b8b0053180a25f7475d8643762558da60"
+    },
+    {
+      "name": "wake_failure_sync_and_async",
+      "result": "1 passed; 0 failed",
+      "log_sha256": "7336ca8d41897b4cc37af43eb1140f776f9abe7995fb535ed6574db1a5b65314"
+    },
+    {
+      "name": "wake_idle_unload",
+      "result": "1 passed; 0 failed",
+      "log_sha256": "b2a9524dc4a81f52fac56c2278b15e05ec8b7d13434ec5a77ec37d1684b5b517"
+    }
+  ],
+  "clippy": "Scoped context_flow and local_execution targets passed with -D warnings",
+  "main_integration": {
+    "main_commit": "543ae5204f94bc9bee73aacf27f2a3ea13840487",
+    "scope": "README conflict resolved by retaining both C and D entries. ModelProvider adds asynchronous image adaptation and optional SessionFiles; recovery and consume unchanged. No model/config changes.",
+    "source_sha256": {
+      "crates/dim-agent-capabilities/src/model_provider.rs": "9d457aed0ceda09d78b12397a5b41d59a002cd740a607b3653812b3d5b9a70a4",
+      "crates/dim-agent-capabilities/src/context_preparation.rs": "f1adaa6e43af9f7d3e0a39c808700dd8a11195e3d5b3437a699a6a2ece8b2d8e",
+      "crates/dim-agent-capabilities/src/workspace_tools/background.rs": "fb0de37ff868a04157e6741f69ac6e0eb53a0499a203c0d7d96f112c39a144aa",
+      "crates/dim-agent-capabilities/tests/context_flow/context_reads.rs": "a57f90036e61be1489fb4163e3dce166eebfcf2916796bb444ab6a565b2a2f10",
+      "tests/integration/tests/local_execution.rs": "b8e4345434cf50be93b5fb034d868198f82a55d03ae3fabfa883794382d611a7",
+      "tests/integration/tests/local_support/task_store.rs": "0ee1395d62783c9c5f2d826d2019b7116d44dbbadd5ac7925d872f36ccea0e87",
+      "crates/dim-agent-questions/src/lib.rs": "a80d5b9a21b5d485372cde0547321c59aaa7049277670fc6a2a7019e5ea575d0"
+    },
+    "tests": [
+      {
+        "command": "cargo test --locked -p dim-agent-capabilities --test context_flow model_",
+        "result": "7 passed; 0 failed"
+      },
+      {
+        "command": "cargo test --locked -p dim-agent-integration-tests --test local_execution recovery_wake",
+        "result": "1 passed; 0 failed; synchronous and asynchronous failures"
+      }
+    ],
+    "clippy": "context_flow and local_execution passed with -D warnings",
+    "tlc": "Unchanged models/configs: reuse recorded runs, not rerun.",
+    "source_revision": "4625f6aa3b27cd74508435838dfa23afb8cf76b7"
+  },
+  "source_revision": "e67db3d2c6017d1e47162c804445e57d840189f0"
+}

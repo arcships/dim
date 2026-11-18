@@ -30,6 +30,46 @@ folding names would break case-sensitive directories and their aliases.
 
 `read_limited(path, limit, cancel)` preserves the same authorized-handle traversal and cancellation as `read`. It checks the opened file's length before allocating contents, then checks each chunk before extending the buffer to cover concurrent growth. Exceeding the byte limit returns `Io(InvalidData)` without partial bytes or a write. The lease's own `read_limited(limit, cancel)` applies the same rule under the held lock; `read` is its unbounded case. The business caller chooses its byte limit.
 
+## Pinned-reader data face
+
+The process `fsHost` name provides the pinned-reader operations from
+[resource faces §4.1](../../../design/resource-faces.md#41-methods), using this
+same FileStorage generation and reader registry. `openRead` resolves the supplied
+absolute path through the existing authorized-root traversal and pins that exact
+file. Replacing the path afterwards does not change the reader's bytes.
+
+The wire `openRead` operation requires a calling row to own retention; `readAt`
+and `closeRead` require only the reader id. These are trusted-plugin operations:
+an id identifies a reader, not caller authorization, and a plugin that receives
+another row's id can read or close it. Readers opened through native
+`FileStorage::open_read` have no caller retention to release through this face; attempting to close such an id returns `invalid`
+without unregistering it.
+
+`readAt` keeps the existing maximum of 64 KiB and independent offsets. Zero limit
+or an offset at/past the pinned length returns empty bytes. The wire encodes bytes
+as base64; the native binding reads the same reader id directly. Unknown, closed
+or prior-generation ids are `invalid`; unavailable storage is `node_unavailable`,
+a missing file is `not_found`, cancellation is `cancelled`, and other existing
+I/O failures are `io`. No extra read or normalization follows the owner's result.
+
+The calling row retains an opened reader until `closeRead` or that row's unload;
+registration finishes before `openRead` returns. Close removes the id before
+releasing retention, while reads already accepted finish under the owner's
+existing operation tracking. Dropping close before it is polled does nothing;
+once close removes the id, the existing context cleanup continues even if its
+wait is dropped. FileStorage close drains those operations and
+releases the same pinned handles, including readers retained by a caller. There
+is one reader registry and no separate connection table or read queue.
+
+In the Rust binding, `FsHost::open_read` takes the calling part's `&Ctx` and
+cancellation token along with the path. The context supplies the same cleanup
+registration that the wire binding obtains from its calling row; it is not a
+request field. Both return only `OpenRead {read_id, size}`. The public `FsHost`
+binding has these three operations, no owner dereference or native file handle;
+its methods directly return the existing owner's operation futures. Native
+FileStorage readers outside this face retain their original weak-registry/RAII
+lifetime while sharing the same generation's shutdown.
+
 ## Leases and lock keys
 
 A lease locks a key file with the target's name in the reserved
@@ -290,7 +330,7 @@ public API cannot produce reliably.
 | --- | --- |
 | 作用域 | 进程 |
 | 注入 | — |
-| 提供 | `P:FileStorage` |
+| 提供 | `P:FileStorage`、`P:FsHost`、`P:dyn HostDispatch#fsHost` |
 | 被注入于 | `HostPlatform` |
 <!-- /generated -->
 

@@ -218,6 +218,7 @@ jobs:
       - name: Build native payload for target architecture
         env:
           LINUX_IMAGE: ${{ matrix.linux_image }}
+          REQUESTED_TAG: ${{ inputs.tag }}
           DIM_OAUTH_CLIENT_ID_CN: ${{ needs.preflight.outputs.preview == 'true' && 'preview-cn' || secrets.DIM_OAUTH_CLIENT_ID_CN }}
           DIM_OAUTH_CLIENT_ID_GLOBAL: ${{ needs.preflight.outputs.preview == 'true' && 'preview-global' || secrets.DIM_OAUTH_CLIENT_ID_GLOBAL }}
         shell: bash
@@ -226,21 +227,33 @@ jobs:
           : "${DIM_OAUTH_CLIENT_ID_CN:?Missing CN OAuth client ID}" "${DIM_OAUTH_CLIENT_ID_GLOBAL:?Missing global OAuth client ID}"
           unset RUSTC_WRAPPER
           rustup target add "$DIM_BUILD_TARGET"
+          bin_dir="target/$DIM_BUILD_TARGET/release"
+          if [[ "$DIM_BUILD_PLATFORM" == linux-x64 ]]; then
+            if [[ -n "$REQUESTED_TAG" && ! -f scripts/code-layout/build.py ]]; then
+              echo "Rebuilding a tag that predates Linux x64 function ordering"
+            else
+              bin_dir="target/release-layout"
+            fi
+          fi
           if [[ "$RUNNER_OS" == Linux ]]; then
             docker run --rm --user "$(id -u):$(id -g)" --workdir /src --entrypoint /bin/bash \
               --mount "type=bind,src=$PWD,dst=/src" \
               --mount "type=bind,src=$(rustc --print sysroot),dst=/opt/rust,readonly" \
               --env HOME=/tmp --env CARGO_INCREMENTAL --env CARGO_BUILD_JOBS --env CARGO_PROFILE_RELEASE_LTO \
-              --env DIM_RELEASE_BUILD=1 --env DIM_BUILD_TARGET \
+              --env DIM_RELEASE_BUILD=1 --env DIM_BUILD_TARGET --env BIN_DIR="$bin_dir" \
               --env DIM_OAUTH_CLIENT_ID_CN --env DIM_OAUTH_CLIENT_ID_GLOBAL "$LINUX_IMAGE" -ec '
                 export PATH="/opt/rust/bin:$PATH"
-                cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dimcode
-                "target/$DIM_BUILD_TARGET/release/dimcode" --version
+                if [[ "$BIN_DIR" == target/release-layout ]]; then
+                  /opt/python/cp311-cp311/bin/python scripts/code-layout/build.py --target "$DIM_BUILD_TARGET" --output "$BIN_DIR" --jobs "$CARGO_BUILD_JOBS"
+                else
+                  cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dimcode
+                fi
+                "$BIN_DIR/dimcode" --version
               '
           else
             DIM_RELEASE_BUILD=1 cargo build --release --locked --target "$DIM_BUILD_TARGET" -p dimcode
           fi
-          echo "DIM_BIN_DIR=$PWD/target/$DIM_BUILD_TARGET/release" >> "$GITHUB_ENV"
+          echo "DIM_BIN_DIR=$PWD/$bin_dir" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: rust-notices

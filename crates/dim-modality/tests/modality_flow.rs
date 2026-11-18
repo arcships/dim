@@ -939,7 +939,6 @@ async fn cancelling_target_reads_releases_only_the_callers_pending_work() {
     let targets = ctx.get::<ModalityTargets>().unwrap();
     let cancel = CancellationToken::new();
     let cancelled = cancel.clone();
-    fixture.on_pending(move || cancelled.cancel());
     let native = targets.resolve(
         TargetRequest {
             category: "ocr".into(),
@@ -948,6 +947,12 @@ async fn cancelling_target_reads_releases_only_the_callers_pending_work() {
         },
         cancel,
     );
+    tokio::pin!(native);
+    tokio::select! {
+        _ = &mut native => panic!("the target read answered instead of staying pending"),
+        () = wait_for_count(|| fixture.describes(), 1, "the caller's target read") => {}
+    }
+    cancelled.cancel();
     assert_eq!(
         tokio::time::timeout(Duration::from_secs(10), native)
             .await
@@ -962,7 +967,6 @@ async fn cancelling_target_reads_releases_only_the_callers_pending_work() {
         .get_at::<dyn HostDispatch>(&host_key("modalityTargets"))
         .unwrap();
     let (abort, registration) = AbortHandle::new_pair();
-    fixture.on_pending(move || abort.abort());
     let pending = face
         .invoke(
             "resolve",
@@ -972,6 +976,17 @@ async fn cancelling_target_reads_releases_only_the_callers_pending_work() {
         )
         .unwrap();
     let pending = Abortable::new(rutis_bridge::session::settle(pending), registration);
+    tokio::pin!(pending);
+    tokio::select! {
+        _ = &mut pending => panic!("the wire target read answered instead of staying pending"),
+        () = wait_for_count(|| fixture.describes(), 2, "the second caller's target read") => {}
+    }
+    assert_eq!(
+        fixture.dropped(),
+        1,
+        "the first caller's cancel left the second caller's read pending"
+    );
+    abort.abort();
     assert!(
         tokio::time::timeout(Duration::from_secs(10), pending)
             .await
@@ -4709,6 +4724,7 @@ async fn start_with_helper(home: std::path::PathBuf, helper: std::path::PathBuf)
     let config = ServerConfig {
         product_home: Some(home.clone()),
         target_home: Some(home.join("native")),
+        startup_timeout: Duration::from_secs(60),
         ..Default::default()
     };
     launch_with(
@@ -5373,8 +5389,6 @@ use rutis_bridge::session::{HostDispatch, Reply, Value as ServiceValue, host_key
 
 const PP_OCR_MODEL: &str = "pp-ocr";
 
-type PendingReadAction = Box<dyn FnOnce() + Send>;
-
 /// The fixture `ocrHelper` service: its `describe` returns the JSON the test
 /// set, or `null`, and counts the calls so a flow can tell a task read it.
 /// Past the replies it is allowed, it answers with a future that never
@@ -5389,7 +5403,6 @@ struct OcrHelperFixture {
     describes: Arc<AtomicUsize>,
     replies: Arc<AtomicUsize>,
     dropped: Arc<AtomicUsize>,
-    on_pending: Arc<Mutex<Option<PendingReadAction>>>,
 }
 impl OcrHelperFixture {
     fn new(description: Option<Value>) -> Self {
@@ -5404,7 +5417,6 @@ impl OcrHelperFixture {
             describes: Default::default(),
             replies: Arc::new(AtomicUsize::new(usize::MAX)),
             dropped: Default::default(),
-            on_pending: Default::default(),
         }
     }
     fn set(&self, description: Option<Value>) {
@@ -5425,11 +5437,10 @@ impl OcrHelperFixture {
     fn dropped(&self) -> usize {
         self.dropped.load(Ordering::SeqCst)
     }
-    fn on_pending(&self, action: impl FnOnce() + Send + 'static) {
-        *self.on_pending.lock().unwrap() = Some(Box::new(action));
-    }
 }
-/// Counts a pending `describe` answer dropped without one.
+/// Counts a pending `describe` answer dropped without one. `invoke` makes it
+/// and the answer future holds it, so giving up the read counts whether or not
+/// that future is ever polled.
 struct PendingRead(Arc<AtomicUsize>);
 impl Drop for PendingRead {
     fn drop(&mut self) {
@@ -5444,14 +5455,9 @@ impl HostDispatch for OcrHelperFixture {
         assert_eq!(method, "describe", "the fixture serves one method");
         let count = self.describes.fetch_add(1, Ordering::SeqCst) + 1;
         if count > self.replies.load(Ordering::SeqCst) {
-            let dropped = self.dropped.clone();
-            let on_pending = self.on_pending.clone();
+            let pending = PendingRead(self.dropped.clone());
             return Ok(ServiceValue::future(async move {
-                let _pending = PendingRead(dropped);
-                let action = on_pending.lock().unwrap().take();
-                if let Some(action) = action {
-                    action();
-                }
+                let _pending = pending;
                 std::future::pending::<Reply>().await
             }));
         }

@@ -6,6 +6,7 @@ use tokio::sync::{Notify, oneshot};
 #[derive(Default)]
 pub struct TaskStore {
     memory: MemoryTimelineStore,
+    pub fail_next_wake: std::sync::atomic::AtomicUsize,
     next_query: Mutex<Option<oneshot::Receiver<Result<()>>>>,
     pub entered: Notify,
 }
@@ -66,6 +67,31 @@ impl TimelineStore for TaskStore {
         events: Vec<StoredEvent>,
         publish: PublishCallback,
     ) -> Result<()> {
+        if events.iter().any(|stored| {
+            stored.event.tags.iter().flatten().any(|tag| {
+                tag.starts_with(
+                    dim_agent_capabilities::workspace_tools::background::WAKE_RESULT_TAG,
+                )
+            })
+        }) {
+            match self
+                .fail_next_wake
+                .swap(0, std::sync::atomic::Ordering::SeqCst)
+            {
+                0 => {}
+                1 => return Err(AgentError::Storage("injected exec wake failure".into())),
+                2 => {
+                    tokio::spawn(async move {
+                        tokio::task::yield_now().await;
+                        publish(Err(AgentError::Storage(
+                            "injected exec wake failure".into(),
+                        )));
+                    });
+                    return Ok(());
+                }
+                mode => panic!("unknown wake failure mode {mode}"),
+            }
+        }
         self.memory.append(key, events, publish)
     }
     fn read_segments<'a>(

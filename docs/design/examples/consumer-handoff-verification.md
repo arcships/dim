@@ -70,7 +70,7 @@ cut 的充分性也属于 owner 前提：本模型只允许在注册之后捕获
 
 本 PR 将该流程改为实际 `consume`，删除测试自己的 staged/read 状态；rebuild callback 做原来的精准查询，
 live callback 只记录所处理序号。保留未发布尾部/无尾部两个场景及全部原有序号、cut 和恰好一次断言。
-rebuild 入口先发注册完成信号，测试收到后才发布输入；无尾部场景等待 Dispatcher idle 后才放行查询，
+rebuild 入口先发注册完成信号，测试收到后才发布输入；无尾部场景等待 Session::idle（包含 Dispatcher 进度）后才放行查询，
 因而确定覆盖已暂存事件的 cut 过滤。注册/完成信号等待都有十秒上限；任务 panic 不再留下无界等待。
 不改运行时，不放宽业务断言，不重试失败。
 

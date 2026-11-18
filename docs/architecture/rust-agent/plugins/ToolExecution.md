@@ -111,9 +111,7 @@ and ToolBinding holds the claims with the request's tool snapshot. AgentLoop
 drops them with that snapshot, so a batch that never dispatches releases every
 claim without a separate step; a claim that reaches execution is taken from the
 binding and consumed by `ToolClaim::dispatch`, which runs the call as resolved
-and approved and keeps whatever the handler registered until it settles. An `execute` without a claim, which is the
-rebuilt batch after a reload, claims for itself through the same handler
-callback.
+and approved and keeps whatever the handler registered until it settles. A live call without a retained claim uses the handler's ordinary `execute` path.
 
 Before admitting a `write_filesystem` call, the pinned handler's `resolve_write`
 may resolve its target using metadata only. Approval and execution receive that
@@ -128,7 +126,7 @@ contract](Permission.md#write-targets-without-the-facts) decides whether the tar
 | `B:Approval` | Admit each call under permission/approval policy. |
 | `B:ToolBinding` | Resolve the request's pinned tools. |
 | `B:TimelineIdentity` | Construct the calling branch execution context; Session and branch ids of the `tool.execute` span. |
-| `B:Dispatcher` | Replay batches, receive batches/interrupts and report faults. |
+| `B:Dispatcher` | Register recovery/live handoff, receive batches/interrupts and report faults. |
 | `B:Timeline` | Commit progress/results. |
 
 ### Scheduling

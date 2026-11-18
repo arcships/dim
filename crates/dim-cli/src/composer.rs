@@ -6,7 +6,7 @@ use crate::{
     images,
     input::Input,
 };
-use dim_agent_types::{ContentBlock, UserInput};
+use dim_agent_types::{ContentBlock, ImageSourceType, UserInput};
 use serde::Deserialize;
 use serde_json::json;
 use std::{
@@ -534,8 +534,10 @@ impl Draft {
             let Part::File { content, .. } = part else {
                 continue;
             };
-            if !matches!(content, ContentBlock::Image { source } if source.source_type == dim_agent_types::ImageSourceType::Base64)
-            {
+            if !matches!(
+                content,
+                ContentBlock::Image { source } if source.source_type == ImageSourceType::Base64
+            ) {
                 continue;
             }
             let import = crate::images::import(client, session, std::slice::from_mut(content));

@@ -327,21 +327,54 @@ pub async fn chat(
         questions.start(client, &session_id).await?;
         display.failed = false;
         display.muted = false;
-        let mut code = wait_turn(client, &session_id, None, &mut display, &mut input, &mut interrupts, &mut questions, None).await?;
+        let mut code = wait_turn(
+            client,
+            &session_id,
+            None,
+            &mut display,
+            &mut input,
+            &mut interrupts,
+            &mut questions,
+            None,
+        )
+        .await?;
         if code != 0 || interactive && input.is_none() {
             return Ok(code);
         }
         if options.prompt.is_some() || !images.is_empty() {
-            let content = options.prompt.iter().filter(|text| !text.trim().is_empty()).map(|text| ContentBlock::Text { text: text.clone() })
-                .chain(images).collect();
-            return wait_turn(client, &session_id, Some(Submission::Message(UserInput { content })), &mut display, &mut input, &mut interrupts, &mut questions, None).await;
+            let content = options
+                .prompt
+                .iter()
+                .filter(|text| !text.trim().is_empty())
+                .map(|text| ContentBlock::Text { text: text.clone() })
+                .chain(images)
+                .collect();
+            return wait_turn(
+                client,
+                &session_id,
+                Some(Submission::Message(UserInput { content })),
+                &mut display,
+                &mut input,
+                &mut interrupts,
+                &mut questions,
+                None,
+            )
+            .await;
         }
         let mut draft = Draft::default();
         let mut notice = None;
         let mut listing = None;
         loop {
             let reader = input.as_mut().expect("interactive input");
-            if !composer::edit(reader, &mut draft, notice.take(), options.workspace().path(), &mut interrupts).await? {
+            if !composer::edit(
+                reader,
+                &mut draft,
+                notice.take(),
+                options.workspace().path(),
+                &mut interrupts,
+            )
+            .await?
+            {
                 break;
             }
             let text = draft.plain().map(str::to_owned);
@@ -353,10 +386,17 @@ pub async fn chat(
                 Some("/mcp") => {
                     let text = text.as_deref().expect("plain MCP command");
                     drop(interrupts);
-                    let cwd = session_cwd.as_deref().unwrap_or_else(|| options.workspace().as_str());
-                    let result = crate::mcp_command::command(client, cwd, reader, &session_id, text).await;
+                    let cwd = session_cwd
+                        .as_deref()
+                        .unwrap_or_else(|| options.workspace().as_str());
+                    let result =
+                        crate::mcp_command::command(client, cwd, reader, &session_id, text).await;
                     #[cfg(unix)]
-                    { interrupts = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?; }
+                    {
+                        interrupts = tokio::signal::unix::signal(
+                            tokio::signal::unix::SignalKind::interrupt(),
+                        )?;
+                    }
                     #[cfg(windows)]
                     { interrupts = tokio::signal::windows::ctrl_c()?; }
                     if let Err(error) = result {
@@ -381,7 +421,17 @@ pub async fn chat(
                 }
                 Some("/approvals" | "/permissions" | "/approval") => {
                     let text = text.as_deref().expect("plain approvals command");
-                    if let Err(error) = permission_command::command(client, reader, &mut interrupts, &session_id, text, &mut display, &mut listing).await {
+                    if let Err(error) = permission_command::command(
+                        client,
+                        reader,
+                        &mut interrupts,
+                        &session_id,
+                        text,
+                        &mut display,
+                        &mut listing,
+                    )
+                    .await
+                    {
                         display.record(&format!("Error: {error}"))?;
                     }
                     draft.clear();
@@ -389,8 +439,14 @@ pub async fn chat(
                 }
                 Some("/goal") => {
                     let text = text.as_deref().expect("plain goal command");
-                    if let Err(error) =
-                        goal_command::command(client, &session_id, text, &mut display, &mut interrupts).await
+                    if let Err(error) = goal_command::command(
+                        client,
+                        &session_id,
+                        text,
+                        &mut display,
+                        &mut interrupts,
+                    )
+                    .await
                     {
                         display.record(&format!("Error: {error}"))?;
                     }
@@ -436,7 +492,13 @@ pub async fn chat(
                             .ok_or("Usage: /export <markdown|json> PATH\nPATH is relative to the CLI current directory; ~ is literal.")?;
                         let path = path.trim_start();
                         let format: export::Format = format.parse()?;
-                        export::write(client, &session_id, format, Some(std::path::Path::new(path))).await?;
+                        export::write(
+                            client,
+                            &session_id,
+                            format,
+                            Some(std::path::Path::new(path)),
+                        )
+                        .await?;
                         eprintln!("Exported {}: {}", format.label(), crate::sanitize::safe(path));
                         Ok::<(), crate::Error>(())
                     };
@@ -496,7 +558,18 @@ pub async fn chat(
                 }
             };
             display.failed = false;
-            code = match wait_turn(client, &session_id, Some(submission), &mut display, &mut input, &mut interrupts, &mut questions, Some(&mut draft)).await {
+            code = match wait_turn(
+                client,
+                &session_id,
+                Some(submission),
+                &mut display,
+                &mut input,
+                &mut interrupts,
+                &mut questions,
+                Some(&mut draft),
+            )
+            .await
+            {
                 Ok(code) => code,
                 Err(error) if error.is::<RequestTooLarge>() => {
                     notice = Some(format!("{error}. Draft retained"));
@@ -836,7 +909,10 @@ async fn wait_turn(
                         continue;
                     }
                     if !display.json { println!(); }
-                    if let Some(run) = shell.as_mut().filter(|run| !prompted && !questions.asking() && !run.stopping) {
+                    if let Some(run) = shell
+                        .as_mut()
+                        .filter(|run| !prompted && !questions.asking() && !run.stopping)
+                    {
                         run.stop = Some(client.send("shell.stop", json!({"sessionId":session_id,"runId":run.run_id})).await?);
                         run.stopping = true;
                         display.record("[shell stopping] Waiting for command settlement")?;
@@ -854,10 +930,16 @@ async fn wait_turn(
                     continue;
                 }
                 line = async {
-                    match input.as_mut() { Some(reader) if stop.is_none() && rule_write.is_none() => reader.line().await, _ => pending().await }
+                    let ready = stop.is_none() && rule_write.is_none();
+                    match input.as_mut() {
+                        Some(reader) if ready => reader.line().await,
+                        _ => pending().await,
+                    }
                 } => {
                     let line = line?;
-                    if let (Some(text), Some(reader)) = (&line, input.as_mut()) && questions.asking() {
+                    if let (Some(text), Some(reader)) = (&line, input.as_mut())
+                        && questions.asking()
+                    {
                         questions.line(client, session_id, text, display, reader).await?;
                         continue;
                     }
@@ -884,14 +966,24 @@ async fn wait_turn(
                         let allow = !rule_stage && matches!(answer.as_deref(), Some("y" | "yes"));
                         if approval.call.name == dim_agent_types::MEMBER_APPROVAL_ALLOW {
                             if answer.as_deref() == Some("r") && matches!(&approval.member, Some(Err(error)) if error.retryable()) {
-                                approval.member = None; approvals.push_front(approval); prompted = false; continue;
+                                approval.member = None;
+                                approvals.push_front(approval);
+                                prompted = false;
+                                continue;
                             }
                             if allow {
                                 if !matches!(approval.member, Some(Ok(_))) {
                                     approvals.push_front(approval); prompted = false; continue;
                                 }
                                 let id = client.send(dim_agent_types::MEMBER_APPROVAL_GET, json!({"sessionId":session_id,"branchId":approval.branch_id,"requestId":approval.request_id})).await?;
-                                member_reads.insert(id, (approval.branch_id.clone(), approval.request_id.clone(), true));
+                                member_reads.insert(
+                                    id,
+                                    (
+                                        approval.branch_id.clone(),
+                                        approval.request_id.clone(),
+                                        true,
+                                    ),
+                                );
                                 approval.member = None;
                                 approvals.push_front(approval);
                                 input.as_mut().expect("approval input").prompt("Checking member action... [n deny] ")?;

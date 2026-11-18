@@ -84,9 +84,8 @@ input valid, interactive ──> insert entry ──> wait ─┬─ respond rem
 
 A batch that is never dispatched (the append is refused, `stop/interrupt` arrives
 first, the turn ends, the capability reloads) never reaches the wait: the claim
-is dropped with the request's tool snapshot and the entry goes with it. An
-`execute` without a claim, which is the rebuilt batch after a reload, claims for
-itself before waiting. [Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact)
+is dropped with the request's tool snapshot and the entry goes with it. A
+live `execute` without a retained claim registers for itself before waiting. [Questions §2.1](../../../design/plugins/Questions.md#21-the-claim-before-the-fact)
 states the order.
 
 `respond` sends under the lock, so a cancel that finds no entry receives the

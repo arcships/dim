@@ -372,8 +372,7 @@ impl Questions {
             waiters: self.waiters.clone(),
         })
     }
-    /// A claim for a call of a published batch this part did not claim, as a
-    /// batch rebuilt after a reload raises.
+    /// Claims a live call that has no retained claim.
     fn claimed(
         &self,
         call: &ToolCall,

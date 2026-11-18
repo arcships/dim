@@ -1,6 +1,6 @@
 //! Managed-provider login stays in the provider; the host supplies browser I/O policy.
 use crate::rpc::Rpc;
-use agent_client_protocol::{Error, RequestCancellation};
+use agent_client_protocol::{Error, RequestCancellation, schema::v1 as acp};
 use dim_client::{Client, callback::Capture};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -32,11 +32,16 @@ pub(crate) struct Method {
     name: String,
 }
 impl Method {
-    pub(crate) fn value(&self) -> Value {
+    pub(crate) fn value(&self) -> acp::AuthMethod {
         if let Some(args) = &self.terminal {
-            json!({"type":"terminal","id":self.id,"name":self.name,"args":args})
+            acp::AuthMethod::Terminal(
+                acp::AuthMethodTerminal::new(self.id.clone(), self.name.clone()).args(args.clone()),
+            )
         } else {
-            json!({"id":self.id,"name":self.name})
+            acp::AuthMethod::Agent(acp::AuthMethodAgent::new(
+                self.id.clone(),
+                self.name.clone(),
+            ))
         }
     }
 }
@@ -138,7 +143,7 @@ pub(crate) async fn authenticate(
     method: Method,
     cancel: RequestCancellation,
     stop: CancellationToken,
-) -> Result<Value, Error> {
+) -> Result<acp::AuthenticateResponse, Error> {
     #[derive(Deserialize)]
     struct Account {
         account: Option<Value>,
@@ -155,7 +160,7 @@ pub(crate) async fn authenticate(
         .typed("account.status", json!({"providerId":provider}))
         .await?;
     if account.account.is_some() {
-        return Ok(json!({}));
+        return Ok(acp::AuthenticateResponse::new());
     }
     let capture = Capture::bind(&login.redirect_uri)
         .await
@@ -163,9 +168,18 @@ pub(crate) async fn authenticate(
     let browser: Browser = rpc.typed("account.login.browser.begin",json!({"providerId":provider,"directory":login.directory,"redirectUri":login.redirect_uri})).await?;
     let mut completing = false;
     let result = async {
-        if !login.open_browser.is_some_and(|open|open(&browser.authorization_url)) { return Err(failed("Cannot open the login browser")); }
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_|Error::internal_error())?.as_millis() as u64;
-        let deadline = tokio::time::sleep(Duration::from_millis(browser.expires_at.saturating_sub(now)));
+        if !login
+            .open_browser
+            .is_some_and(|open| open(&browser.authorization_url))
+        {
+            return Err(failed("Cannot open the login browser"));
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| Error::internal_error())?
+            .as_millis() as u64;
+        let remaining = browser.expires_at.saturating_sub(now);
+        let deadline = tokio::time::sleep(Duration::from_millis(remaining));
         tokio::pin!(deadline);
         let callback = capture.receive();
         tokio::pin!(callback);
@@ -186,7 +200,11 @@ pub(crate) async fn authenticate(
                     let _ = stream.write_all(response).await;
                     result?;
                     let account: Account = rpc.typed("account.status",json!({"providerId":provider})).await?;
-                    return if account.account.is_some() { Ok(json!({})) } else { Err(failed("Login did not produce an authenticated account")) };
+                    return if account.account.is_some() {
+                        Ok(acp::AuthenticateResponse::new())
+                    } else {
+                        Err(failed("Login did not produce an authenticated account"))
+                    };
                 }
                 () = tokio::time::sleep(Duration::from_secs(1)) => {
                     let state = tokio::select! {
@@ -199,7 +217,11 @@ pub(crate) async fn authenticate(
                         Some("pending")=>{},
                         Some("completed") => {
                             let account: Account = rpc.typed("account.status",json!({"providerId":provider})).await?;
-                            return if account.account.is_some() { Ok(json!({})) } else { Err(failed("Login completed without an account")) };
+                            return if account.account.is_some() {
+                                Ok(acp::AuthenticateResponse::new())
+                            } else {
+                                Err(failed("Login completed without an account"))
+                            };
                         }
                         Some("cancelled"|"expired"|"failed")=>return Err(failed("Login ended without an account")),
                         _ => return Err(Error::internal_error()),

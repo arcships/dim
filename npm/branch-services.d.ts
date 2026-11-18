@@ -670,6 +670,7 @@ export interface BranchLine {
 export type WaitResult =
   | { reason: "notification"; taskIds: string[]; waitedMs: number | bigint }
   | { reason: "user_steer"; waitedMs: number | bigint }
+  | /** The model already read this task's wake notice in this turn, so the call returned at once instead of waiting for a second notice. */ { reason: "already_notified"; taskIds: string[]; waitedMs: number | bigint }
   | { reason: "timeout"; waitedMs: number | bigint }
   | { reason: "interrupted"; waitedMs: number | bigint }
 

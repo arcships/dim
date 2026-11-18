@@ -1034,7 +1034,8 @@ fn tui_task_stop_all_keeps_its_finite_targets_and_waits_only_for_replies() {
         wire.reply(&providers, json!([]));
         wire.send(json!({"jsonrpc":"2.0","id":observe["id"],"error":{"code":-32000,"message":"observation refused"}}));
         state(wire, "child");
-        child_inventory(wire, "child", json!([pending_command("child-command",1,10000,"child running command")]));
+        child_inventory(wire, "child", json!([]));
+        event(wire, "child", command("child-command",9,10000,"child running command"));
         let first = wire.read("session.exec.stop");
         assert_eq!(first["params"], json!({"sessionId":"session","branchId":"main","taskId":"main-command"}));
         event(wire, "main", fact("leader-notice",9,9000,"input","message",json!({"mode":"append","user":{"content":[{"type":"text","text":"leader notification while stop waits"}]}})));

@@ -702,6 +702,13 @@ export interface TimelineStore {
   latestSnapshot(request: { sessionId: string; branchId: string; through: number; interpreter: string }): Promise<{ snapshot: TimelineRecoverySnapshot | null }>;
 }
 
+/** Pinned reads on the filesystem owner; see resource-faces §4.1. */
+export interface FsHost {
+  openRead(request: { path: string }): Promise<{ readId: string; size: number }>;
+  readAt(request: { readId: string; offset: number; limit: number }): Promise<{ bytes: string }>;
+  closeRead(request: { readId: string }): Promise<Record<string, never>>;
+}
+
 /** One enabled Skill in the current Session view. */
 export type SkillSummary = { id: string; name: string; description: string; userInvocable: boolean };
 /** Branch service backed by its Session Skills owner. */

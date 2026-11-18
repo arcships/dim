@@ -1620,6 +1620,12 @@ async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
     assert!(ended(&before).is_empty());
     session.idle("main").await.unwrap();
     let plugins = session.branch_diagnostics("main").unwrap().plugins;
+    let shell = plugins
+        .iter()
+        .find(|plugin| plugin.name == "ShellSession")
+        .unwrap();
+    let shell_generation = shell.generation;
+    let mut shell_state = harness.agent.root().view(shell.id).unwrap().watch();
     let recovery = plugins
         .iter()
         .find(|plugin| plugin.name == "BackgroundExec")
@@ -1640,6 +1646,23 @@ async fn restarting_exec_recovery_settles_the_live_shell_before_rebuilding() {
         text(&ended(&after)[0].1.result).contains("shell was reset"),
         "the live shell must settle before recovery inspects history"
     );
+    {
+        let ready = tokio::time::timeout(
+            Duration::from_secs(10),
+            shell_state.wait_for(|state| {
+                state.generation > shell_generation
+                    && matches!(
+                        state.state,
+                        rutis::host::FiberState::Active | rutis::host::FiberState::Failed
+                    )
+            }),
+        )
+        .await
+        .expect("the dependent ShellSession completes its new generation")
+        .expect("the dependent ShellSession remains mounted");
+        assert_eq!(ready.state, rutis::host::FiberState::Active, "{ready:?}");
+    }
+    session.idle("main").await.unwrap();
     harness
         .run(
             &session,

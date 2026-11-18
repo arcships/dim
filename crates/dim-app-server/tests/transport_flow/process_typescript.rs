@@ -1979,6 +1979,121 @@ async fn node_timeline_store_observes_native_commits_without_blocking_other_sess
     std::fs::remove_dir_all(home).unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_fs_readers_share_pinned_files_and_release_with_the_caller() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use dim_agent_capabilities::file_storage::{FileStorage, FileStorageError, FsHost};
+
+    let home = home();
+    let mut parts = session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"fs-reader", "name":parts.anchor.parent().unwrap().join("fixtures/fs-reader.ts"),
+        "provides":{}, "config":{}
+    })];
+    std::fs::create_dir_all(&home).unwrap();
+    let mut config = config(&home, parts);
+    config.file_roots = vec![home.clone()];
+    let (server, _, _) = session_typescript::start(config).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let status = files_available(&mut client, "fsreader.status", json!({})).await;
+    let pid = i32::try_from(status["pid"].as_i64().unwrap()).unwrap();
+    let storage = server.service::<FileStorage>().unwrap();
+    let face = server.service::<FsHost>().unwrap();
+    let path = storage.root_path(0).unwrap().join("pinned-reader.bin");
+    let bytes = Vec::from_fn(200_000, |index| (index % 251) as u8);
+    std::fs::write(&path, &bytes).unwrap();
+    let opened = client.rpc("fsreader.open", json!({"path":path})).await;
+    assert_ok(&opened);
+    assert_eq!(opened["result"]["size"], bytes.len());
+    let id = opened["result"]["readId"].as_str().unwrap().to_owned();
+    let cancel = CancellationToken::new();
+    assert_eq!(
+        face.read_at(id.clone(), 199_995, 30, &cancel)
+            .await
+            .unwrap(),
+        bytes[199_995..]
+    );
+    storage
+        .replace(
+            &storage.resolve(&path).unwrap(),
+            b"new".to_vec(),
+            None,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let read = client
+        .rpc(
+            "fsreader.read",
+            json!({"readId":id,"offset":100,"limit":200_000}),
+        )
+        .await;
+    assert_ok(&read);
+    assert_eq!(
+        STANDARD
+            .decode(read["result"]["bytes"].as_str().unwrap())
+            .unwrap(),
+        bytes[100..100 + 64 * 1024]
+    );
+    let closed = client.rpc("fsreader.close", json!({"readId":id})).await;
+    assert_ok(&closed);
+    assert!(matches!(
+        face.read_at(id, 0, 1, &cancel).await,
+        Err(FileStorageError::InvalidPath(_))
+    ));
+
+    let native_caller = rutis::Ctx::root().unwrap();
+    let native = face
+        .open_read(&native_caller, path.to_string_lossy().into_owned(), &cancel)
+        .await
+        .unwrap();
+    let read = client
+        .rpc(
+            "fsreader.read",
+            json!({"readId":native.read_id,"offset":0,"limit":64}),
+        )
+        .await;
+    assert_ok(&read);
+    assert_eq!(
+        STANDARD
+            .decode(read["result"]["bytes"].as_str().unwrap())
+            .unwrap(),
+        b"new"
+    );
+    let retained = client.rpc("fsreader.open", json!({"path":path})).await;
+    assert_ok(&retained);
+    let retained = retained["result"]["readId"].as_str().unwrap().to_owned();
+    // SAFETY: this is the Node fixture process started by this test.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match face.read_at(retained.clone(), 0, 1, &cancel).await {
+                Err(FileStorageError::InvalidPath(_)) => break,
+                Ok(_) => tokio::task::yield_now().await,
+                result => panic!("caller unload changed the filesystem owner: {result:?}"),
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        face.read_at(native.read_id.clone(), 0, 64, &cancel)
+            .await
+            .unwrap(),
+        b"new"
+    );
+    native_caller.shutdown().await.unwrap();
+    assert!(matches!(
+        face.read_at(native.read_id, 0, 1, &cancel).await,
+        Err(FileStorageError::InvalidPath(_))
+    ));
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_mcp_registration_uses_the_native_content_owner() {

@@ -2786,6 +2786,341 @@ fn lody_projection(version: u32) {
     daemon.join().unwrap();
 }
 
+/// A client that declares `session.compaction` gets the protocol's compaction
+/// entity; one that does not keeps the tool call Dim sent before.
+#[test]
+fn acp_stdio_sends_context_compaction_as_the_protocol_entity_only_when_declared() {
+    for declared in [true, false] {
+        let home = Home::new();
+        let cwd = home.0.clone();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(METHODS);
+            wire.created();
+            let attach = wire.read("session.attach");
+            wire.reply(&attach, json!({}));
+            let history = wire.read("session.history");
+            wire.reply(
+                &history,
+                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            );
+            let fact = |wire: &mut Wire, value: Value| {
+                wire.notice(
+                    "session.event",
+                    json!({"sessionId":"session","branchId":"main","event":value}),
+                )
+            };
+            let submit = wire.read("session.submit");
+            let input = event(
+                9,
+                "input",
+                "input",
+                "message",
+                json!({"submission_id":submit["params"]["submissionId"],"user":submit["params"]["user"],"mode":"queue"}),
+            );
+            wire.reply(&submit, json!({"event":input}));
+            fact(wire, input);
+            fact(wire, event(10, "start", "turn", "start", json!({"turn_id":"turn"})));
+            fact(wire, event(11, "consumed", "input", "consumed", json!({"input_id":"input"})));
+            fact(wire, event(12, "compacting", "context", "compaction-start", json!({"turn_id":"turn","through":11,"trigger":"manual","strategy":"summary"})));
+            fact(wire, event(13, "compacted", "context", "compaction", json!({"turn_id":"turn","through":11,"start":12,"status":"failed","error":"summary unavailable"})));
+            fact(wire, event(20, "cancel-start", "context", "compaction-start", json!({"turn_id":"turn","through":11,"trigger":"manual","strategy":"summary"})));
+            fact(wire, event(21, "cancelled", "context", "compaction", json!({"turn_id":"turn","through":11,"start":20,"status":"cancelled","reason":"Stopped by user"})));
+            fact(wire, event(30, "skip-start", "context", "compaction-start", json!({"turn_id":"turn","through":11,"trigger":"threshold","strategy":"summary"})));
+            fact(wire, event(31, "skipped", "context", "compaction", json!({"turn_id":"turn","through":11,"start":30,"status":"skipped","reason":"insufficient history","diagnostics":{"reason":"manual","trigger":"manual","estimatedInputTokens":0.0,"entriesReplaced":0,"modelCallCount":0,"durationMs":0,"strategy":{"kind":"summary"}}})));
+            fact(wire, event(40, "summary-start", "context", "compaction-start", json!({"turn_id":"turn","through":11,"trigger":"manual","strategy":"summary"})));
+            fact(wire, event(41, "display", "display", "compaction", json!({"start":40,"strategy":"summary"})));
+            fact(wire, event(50, "end", "turn", "end", json!({"turn_id":"turn","status":"completed","reason":"end_turn"})));
+            if declared {
+                let attach = wire.read("session.attach");
+                assert_eq!(attach["params"]["expectedCwd"], json!(cwd));
+                wire.reply(&attach, json!({}));
+                let history = wire.read("session.history");
+                wire.reply(
+                    &history,
+                    json!({"events":[
+                        event(60,"replayed-start","context","compaction-start",json!({"through":11,"trigger":"manual","strategy":"summary"})),
+                        event(70,"replayed-display","display","compaction",json!({"start":71,"strategy":"summary"}))
+                    ],"through":71,"nextAfter":71,"done":true}),
+                );
+                fact(wire, event(72, "live-terminal", "context", "compaction", json!({"through":11,"start":60,"status":"cancelled","reason":"Stopped by user"})));
+                fact(wire, event(73, "after", "step", "text", json!({"turn_id":"turn","request_id":"later","delta":"after"})));
+            }
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        let capabilities = if declared {
+            json!({"session":{"compaction":{}}})
+        } else {
+            json!({})
+        };
+        peer.send(
+            1,
+            "initialize",
+            json!({"protocolVersion":1,"clientCapabilities":capabilities}),
+        );
+        assert_eq!(peer.response(1)["result"]["protocolVersion"], 1);
+        peer.send(2, "session/new", json!({"cwd":home.0,"mcpServers":[]}));
+        peer.response(2);
+        peer.send(
+            3,
+            "session/prompt",
+            json!({"sessionId":"session","prompt":[{"type":"text","text":"Compact this"}]}),
+        );
+        assert_eq!(peer.response(3)["result"]["stopReason"], "end_turn");
+        let compactions: Vec<_> = peer
+            .updates
+            .iter()
+            .map(|frame| &frame["params"]["update"])
+            .filter(|update| {
+                update["sessionUpdate"] == "compaction_update"
+                    || update["_meta"]["lody"]["activity"]["kind"] == "context_compaction"
+            })
+            .collect();
+        let id = |start: u64| json!(["compaction", start]).to_string();
+        if declared {
+            let entity = |update: &&Value| {
+                (
+                    update["sessionUpdate"].clone(),
+                    update["compactionId"].clone(),
+                    update["status"].clone(),
+                )
+            };
+            assert_eq!(
+                compactions.iter().map(entity).collect::<Vec<_>>(),
+                vec![
+                    (
+                        json!("compaction_update"),
+                        json!(id(12)),
+                        json!("in_progress")
+                    ),
+                    (json!("compaction_update"), json!(id(12)), json!("failed")),
+                    (
+                        json!("compaction_update"),
+                        json!(id(20)),
+                        json!("in_progress")
+                    ),
+                    (
+                        json!("compaction_update"),
+                        json!(id(20)),
+                        json!("cancelled")
+                    ),
+                    (
+                        json!("compaction_update"),
+                        json!(id(30)),
+                        json!("in_progress")
+                    ),
+                    (
+                        json!("compaction_update"),
+                        json!(id(30)),
+                        json!("completed")
+                    ),
+                    (
+                        json!("compaction_update"),
+                        json!(id(40)),
+                        json!("in_progress")
+                    ),
+                    (
+                        json!("compaction_update"),
+                        json!(id(40)),
+                        json!("completed")
+                    ),
+                ],
+                "each compaction is one entity under its own start: {compactions:?}"
+            );
+            assert_eq!(
+                compactions[1]["error"], "summary unavailable",
+                "the protocol's own error field carries the failure"
+            );
+            assert_eq!(
+                compactions[3]["error"], "Cancelled: Stopped by user",
+                "a cancellation keeps its own status and its real reason"
+            );
+            assert!(
+                compactions[5].get("error").is_none(),
+                "a skipped compaction ends as completed and states no error: {:?}",
+                compactions[5]
+            );
+            assert_eq!(
+                compactions[7]["status"], "completed",
+                "the display summary closes the compaction its start opened"
+            );
+            assert!(
+                !peer
+                    .updates
+                    .iter()
+                    .any(|frame| frame["params"]["update"]["title"] == "Context compaction"),
+                "a client that asked for the entity gets no compaction tool call"
+            );
+
+            // A loaded session replays the compaction it kept, and a terminal
+            // fact that arrives after the replay patches that same entity.
+            peer.updates.clear();
+            peer.send(
+                4,
+                "session/load",
+                json!({"sessionId":"session","cwd":home.0,"mcpServers":[]}),
+            );
+            let loaded = peer.response(4);
+            assert!(loaded.get("error").is_none(), "{loaded}");
+            let replayed: Vec<_> = peer
+                .updates
+                .iter()
+                .map(|frame| &frame["params"]["update"])
+                .filter(|update| update["sessionUpdate"] == "compaction_update")
+                .collect();
+            assert_eq!(
+                replayed
+                    .iter()
+                    .map(|update| (update["compactionId"].clone(), update["status"].clone(),))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (json!(id(60)), json!("in_progress")),
+                    (json!(id(71)), json!("completed")),
+                ],
+                "a loaded session replays the compaction it kept: {replayed:?}"
+            );
+            // Every frame between the reply and the marker that ends the live
+            // window is checked, so a duplicate or extra terminal cannot pass.
+            let mut after = Vec::new();
+            loop {
+                let update = peer.frame()["params"]["update"].clone();
+                if update["sessionUpdate"] == "agent_message_chunk" {
+                    break;
+                }
+                after.push(update);
+            }
+            assert_eq!(
+                after
+                    .iter()
+                    .map(|update| (
+                        update["sessionUpdate"].clone(),
+                        update["compactionId"].clone(),
+                        update["status"].clone(),
+                    ))
+                    .collect::<Vec<_>>(),
+                vec![(
+                    json!("compaction_update"),
+                    json!(id(60)),
+                    json!("cancelled"),
+                )],
+                "a terminal fact after the replay patches the replayed start's entity, once: {after:?}"
+            );
+            assert_eq!(
+                after[0]["error"], "Cancelled: Stopped by user",
+                "the live terminal keeps its reason"
+            );
+        } else {
+            assert_eq!(
+                compactions
+                    .iter()
+                    .map(|update| (update["toolCallId"].clone(), update["status"].clone(),))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (json!(id(12)), json!("in_progress")),
+                    (json!(id(12)), json!("failed")),
+                    (json!(id(20)), json!("in_progress")),
+                    (json!(id(20)), json!("failed")),
+                    (json!(id(30)), json!("in_progress")),
+                    (json!(id(30)), json!("completed")),
+                    (json!(id(40)), json!("in_progress")),
+                    (json!(id(40)), json!("completed")),
+                ],
+                "without the capability every compaction stays the tool call it was: {compactions:?}"
+            );
+            assert!(
+                compactions[1]["content"][0]["content"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("summary unavailable")
+            );
+            assert_eq!(
+                compactions[3]["content"][0]["content"]["text"], "Cancelled: Stopped by user",
+                "a cancelled compaction keeps its own reason"
+            );
+            assert_eq!(
+                compactions[5]["content"][0]["content"]["text"], "Skipped: insufficient history",
+                "the skipped reason is the text an undeclared client reads"
+            );
+            let automatic =
+                |index: usize| compactions[index]["_meta"]["lody"]["activity"]["automatic"].clone();
+            assert_eq!(
+                (automatic(0), automatic(1)),
+                (json!(false), json!(false)),
+                "a manual compaction reports automatic false at its start and at its terminal"
+            );
+            assert_eq!(
+                (automatic(4), automatic(5)),
+                (json!(true), json!(true)),
+                "a threshold compaction reports automatic true at its start and at its terminal"
+            );
+            assert!(
+                !peer
+                    .updates
+                    .iter()
+                    .any(|frame| frame["params"]["update"]["sessionUpdate"] == "compaction_update"),
+                "a client that declared nothing must not receive the entity"
+            );
+        }
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
+#[test]
+fn acp_stdio_initialize_names_every_capability_it_reports() {
+    for mcp in [false, true] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            let mut methods = METHODS.to_vec();
+            if mcp {
+                methods.push("mcp.temporary.capabilities");
+            }
+            wire.hello(&methods);
+            detached_eof(wire);
+        });
+        let mut peer = Peer::start(&home);
+        peer.send(
+            1,
+            "initialize",
+            json!({"protocolVersion":1,"clientCapabilities":{}}),
+        );
+        let result = peer.response(1)["result"].clone();
+        let version = result["agentInfo"]["version"].as_str().unwrap().to_owned();
+        assert!(
+            version.starts_with(env!("CARGO_PKG_VERSION")),
+            "the build reports its own version: {version}"
+        );
+        // Every field the protocol crate serializes into this result, including
+        // the ones the old literals omitted because they hold a default value:
+        // `promptCapabilities.audio`, `auth`, and the MCP pair when MCP is
+        // unavailable.
+        assert_eq!(
+            result,
+            json!({
+                "protocolVersion":1,
+                "agentInfo":{"name":"dimcode","version":version},
+                "authMethods":[],
+                "agentCapabilities":{
+                    "loadSession":true,
+                    "promptCapabilities":{"image":true,"audio":false,"embeddedContext":true},
+                    "mcpCapabilities":{"http":mcp,"sse":mcp},
+                    "sessionCapabilities":{"resume":{},"list":{},"close":{}},
+                    "auth":{},
+                    "_meta":{"lody":{
+                        "sessionHistory":{"version":2},
+                        "compaction":{"version":1},
+                        "tasks":{"version":1,"background":true},
+                        "subagentEvents":{"version":1}
+                    }}
+                }
+            }),
+            "mcp={mcp}: the whole initialize result, field presence included"
+        );
+        peer.close();
+        daemon.join().unwrap();
+    }
+}
+
 #[test]
 fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_writes() {
     let home = Home::new();

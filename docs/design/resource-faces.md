@@ -386,7 +386,9 @@ tool semantics: no line numbers, no images, no effects.
   `"privateReadOnly"` for a newly written Session file (Unix mode `0400`, Windows read-only
   attribute).
 - `openRead` pins a file for several bounded random reads (`readAt`) and is closed by `closeRead`
-  or the caller's connection. UI resource streaming uses these bounded reads. Plugin-file
+  or the caller's connection. `readAt` retains the existing 64 KiB maximum per
+  call; a larger requested limit is clamped, zero or an offset at/past the pinned
+  length returns empty bytes. UI resource streaming uses these bounded reads. Plugin-file
   uploads and work directories stay with the host-local
   [PluginFiles service](../../crates/dim-app-server/README.md#trusted-plugin-storage).
 - `stat` is one path, never a traversal: existence and kind for configuration discovery (a

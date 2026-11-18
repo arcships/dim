@@ -91,7 +91,7 @@ The guard covers every path that does not reach the call's dispatch, without a s
 a refused append, `stop/interrupt` before dispatch, a refused admission, a cancelled task, a Loop error
 and a capability reload all drop the snapshot's claims. A claim that reaches dispatch is taken by
 ToolExecutor and consumed by `ToolClaim::dispatch`, which receives the call as resolved and approved
-and keeps the registration until the answer or the cancel token ends the wait. `execute` called without a claim — the rebuilt batch after a reload —
+and keeps the registration until the answer or the cancel token ends the wait. A live `execute` called without a retained claim
 claims for itself, so the handler has one registration path in both cases.
 
 An answer accepted between the claim and a refusal is delivered and then dropped with the claim: the

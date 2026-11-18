@@ -21,6 +21,7 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
+    time::Duration,
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -142,6 +143,11 @@ pub async fn serve_product(
 /// `home/rust`, the layout `dimcode` starts the daemon with. `run` selects the
 /// model profile and the overrides a run adds; the product path passes
 /// [`RunSettings::default`].
+///
+/// A served profile allows 60 s for a process row to become Active instead of
+/// the product's 10 s: it is assembled on a loaded CI host, where `Provider`
+/// loading can leave no progress for 10 s, and the 60 s is the value the
+/// scheduler flows serve with.
 pub async fn serve_home(
     home: &Path,
     cwd: &Path,
@@ -178,6 +184,7 @@ pub async fn serve_home(
         // Sessions can declare, members included. The product path and the
         // other evaluations keep the tool.
         plugin_tools: run.plugin_tools,
+        startup_timeout: Duration::from_secs(60),
         ..Default::default()
     };
     config.session_defaults.cwd = cwd.to_string_lossy().into_owned();

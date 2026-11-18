@@ -66,14 +66,32 @@ impl Bindings {
         let worker = owner.clone();
         tasks.spawn(async move {
             loop {
-                tokio::select! { ()=worker.stop.cancelled()=>break, ()=tokio::time::sleep(Duration::from_secs(10))=>{} }
-                let entries:Vec<_>=worker.entries.lock().unwrap().iter().map(|(id,b)|(id.clone(),b.clone())).collect();
-                for (id,binding) in entries {
-                    let renew=async {
-                        let mut generation=binding.generation.lock().await;
+                tokio::select! {
+                    () = worker.stop.cancelled() => break,
+                    () = tokio::time::sleep(Duration::from_secs(10)) => {}
+                }
+                let entries: Vec<_> = worker
+                    .entries
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(id, binding)| (id.clone(), binding.clone()))
+                    .collect();
+                for (id, binding) in entries {
+                    let renew = async {
+                        let mut generation = binding.generation.lock().await;
                         if generation.is_some() && worker.rpc.ready() {
-                            let result=tokio::time::timeout(Duration::from_secs(5),worker.rpc.call("session.mcp_temporary.renew",json!({"sessionId":id,"bindingId":binding.id}))).await;
-                            if !matches!(result,Ok(Ok(_))) { *generation=None; }
+                            let result = tokio::time::timeout(
+                                Duration::from_secs(5),
+                                worker.rpc.call(
+                                    "session.mcp_temporary.renew",
+                                    json!({"sessionId":id,"bindingId":binding.id}),
+                                ),
+                            )
+                            .await;
+                            if !matches!(result, Ok(Ok(_))) {
+                                *generation = None;
+                            }
                         }
                     };
                     tokio::select! { ()=worker.stop.cancelled()=>return, ()=renew=>{} }
@@ -156,7 +174,10 @@ impl Bindings {
             *generation = Some(current);
             Ok(())
         };
-        tokio::select! { ()=self.stop.cancelled()=>Err(rpc::unavailable()),result=operation=>result }
+        tokio::select! {
+            () = self.stop.cancelled() => Err(rpc::unavailable()),
+            result = operation => result,
+        }
     }
     pub(crate) fn forget(&self, id: &str) {
         self.entries.lock().unwrap().remove(id);

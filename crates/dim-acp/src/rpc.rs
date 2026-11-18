@@ -163,31 +163,39 @@ async fn drive(
                 () = stop.cancelled() => break 'connection,
                 call = calls.recv(), if pending.len() < 128 => {
                     let Some(call) = call else { break 'connection };
-                if call.generation != state.read().unwrap().generation { let _ = call.reply.send(Err(unavailable())); continue; }
-                    if let Some(id) = call.params.get("sessionId").and_then(Value::as_str) {
-                        if call.method == "session.attach" { attached.insert(id.to_owned()); }
-                        if call.method == "session.detach" { attached.remove(id); }
+                    if call.generation != state.read().unwrap().generation {
+                        let _ = call.reply.send(Err(unavailable()));
+                        continue;
                     }
-                let sent = tokio::select! {
-                    biased;
-                    () = stop.cancelled()=>{ usable = false; let _ = call.reply.send(Err(unavailable())); break 'connection; },
-                    sent = client.send(call.method, call.params)=>sent,
-                };
-                match sent {
-                        Ok(id) => { pending.insert(id, call.reply); }
-                        Err(error) if error.downcast_ref::<dim_client::RequestTooLarge>().is_some() => {
-                            let _ = call.reply.send(Err(Error::new(-32602, "App Server request exceeds the 16 MiB frame limit").data(json!({"code":"request_too_large"}))));
+                    track(&mut attached, &call);
+                    let sent = tokio::select! {
+                        biased;
+                        () = stop.cancelled() => {
+                            usable = false;
+                            let _ = call.reply.send(Err(unavailable()));
+                            break 'connection;
                         }
-                        Err(error) => { let _ = call.reply.send(Err(boundary(error))); break; }
+                        sent = client.send(call.method, call.params) => sent,
+                    };
+                    match sent {
+                        Ok(id) => { pending.insert(id, call.reply); }
+                        Err(error) => {
+                            let oversized = error
+                                .downcast_ref::<dim_client::RequestTooLarge>()
+                                .is_some();
+                            let _ = call.reply.send(Err(send_error(error)));
+                            if !oversized { break; }
+                        }
                     }
                 }
                 message = client.next() => match message {
                     Ok(Message::Response { id, result }) => {
-                        let Some(reply) = pending.remove(&id) else { break 'connection; };
+                        let Some(reply) = pending.remove(&id) else { break 'connection };
                         let _ = reply.send(result.map_err(|error| boundary(Box::new(error))));
                     }
                     Ok(Message::Notice { method, params }) => {
-                        if notices.try_send(Native::Notice { method, params }).is_err() { break 'connection; }
+                        let notice = Native::Notice { method, params };
+                        if notices.try_send(notice).is_err() { break 'connection; }
                     }
                     Err(error) if error.downcast_ref::<std::io::Error>().is_some() => break,
                     Err(_) => break 'connection,
@@ -224,17 +232,27 @@ async fn drive(
         tokio::pin!(timeout);
         loop {
             tokio::select! {
-                () = stop.cancelled()=>break 'connection,
-                () = &mut timeout=>break 'connection,
-                restored = &mut reconnect=>{
+                () = stop.cancelled() => break 'connection,
+                () = &mut timeout => break 'connection,
+                restored = &mut reconnect => {
                     client = restored;
                     usable = true;
-                    { let mut state = state.write().unwrap(); state.ready = true; state.features = client.features().to_vec(); }
-                    if notices.try_send(Native::Restored { same_instance:client.instance_id() == instance,generation:state.read().unwrap().generation,deadline }).is_err() { break 'connection; }
+                    {
+                        let mut state = state.write().unwrap();
+                        state.ready = true;
+                        state.features = client.features().to_vec();
+                    }
+                    let restored = Native::Restored {
+                        same_instance: client.instance_id() == instance,
+                        generation: state.read().unwrap().generation,
+                        deadline,
+                    };
+                    if notices.try_send(restored).is_err() { break 'connection; }
                     break;
                 }
-                call = calls.recv()=>{
-                    let Some(call) = call else { break 'connection; }; let _ = call.reply.send(Err(unavailable()));
+                call = calls.recv() => {
+                    let Some(call) = call else { break 'connection };
+                    let _ = call.reply.send(Err(unavailable()));
                 }
             }
         }
@@ -252,4 +270,34 @@ async fn drive(
         .await;
     }
     let _ = notices.try_send(Native::Closed);
+}
+
+/// Records the Session a call binds, so a graceful close detaches every one.
+fn track(attached: &mut HashSet<String>, call: &Call) {
+    let Some(id) = call.params.get("sessionId").and_then(Value::as_str) else {
+        return;
+    };
+    match call.method {
+        "session.attach" => {
+            attached.insert(id.to_owned());
+        }
+        "session.detach" => {
+            attached.remove(id);
+        }
+        _ => {}
+    }
+}
+
+/// Why a call could not be sent: an oversized request is the caller's fault
+/// and the connection survives it, anything else is the connection's.
+fn send_error(error: dim_client::Error) -> Error {
+    if error
+        .downcast_ref::<dim_client::RequestTooLarge>()
+        .is_some()
+    {
+        Error::new(-32602, "App Server request exceeds the 16 MiB frame limit")
+            .data(json!({"code":"request_too_large"}))
+    } else {
+        boundary(error)
+    }
 }

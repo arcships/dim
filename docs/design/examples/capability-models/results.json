@@ -662,7 +662,11 @@
         "SlotTracked TakenAbsent ClosedTurnEmpty RestoredNoNotifications SelectionMatches"
       ],
       "fingerprint": 41,
-      "seed": -2459936910605880541
+      "seed": -2459936910605880541,
+      "superseded_by": {
+        "record": "coverage-fill-results.json",
+        "reason": "Historical run of the pre-#1821 model; the current WaitRuntime result is that record's entry."
+      }
     },
     {
       "config": "docs/design/examples/approval-model/ApprovalOrdering.cfg",

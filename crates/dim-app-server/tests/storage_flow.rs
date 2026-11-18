@@ -163,8 +163,10 @@ async fn append(
         .unwrap()
 }
 /// How long a flow waits for the writer to publish a write before it fails
-/// instead of hanging.
-const PUBLISHED: Duration = Duration::from_secs(30);
+/// instead of hanging. A hang guard, not a performance bound: the largest
+/// append a flow makes (14,336 records) takes about 2 s on a quiet machine,
+/// almost all of it the writer's own per-record work.
+const PUBLISHED: Duration = Duration::from_secs(180);
 /// Queues `records` and returns their publish result, which fails the test
 /// after `PUBLISHED`.
 fn queue(

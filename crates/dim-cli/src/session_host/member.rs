@@ -122,7 +122,15 @@ impl Members {
         self.observations.iter().find_map(|(id, observation)| {
             matches!(
                 observation.pending,
-                Some(Pending::Attach(at) | Pending::History(at) | Pending::Detach(at) | Pending::Turn(at) | Pending::Methods(at) | Pending::Goal(at) | Pending::Tool(at, _, _)) if at == request_id
+                Some(
+                    Pending::Attach(at)
+                        | Pending::History(at)
+                        | Pending::Detach(at)
+                        | Pending::Turn(at)
+                        | Pending::Methods(at)
+                        | Pending::Goal(at)
+                        | Pending::Tool(at, _, _)
+                ) if at == request_id
             )
             .then(|| id.clone())
         })

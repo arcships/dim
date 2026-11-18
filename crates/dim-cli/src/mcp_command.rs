@@ -49,7 +49,12 @@ async fn settle<T>(
                 interrupted = true;
                 eprintln!("Waiting for the MCP operation to settle...");
             }
-            _ = async { match deadline { Some(deadline) => tokio::time::sleep_until(deadline).await, None => std::future::pending().await } }, if !interrupted => {
+            _ = async {
+                match deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending().await,
+                }
+            }, if !interrupted => {
                 interrupted = true;
                 eprintln!("Sign-in expired; waiting for the submitted operation to settle...");
             }

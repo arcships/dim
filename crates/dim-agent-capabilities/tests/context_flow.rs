@@ -1635,6 +1635,15 @@ async fn restoring_each_preparation_handoff_settles_without_replaying_work() {
         ) {
             assert!(events.iter().any(|event| matches!(&event.kind, EventKind::ModelOutputEnd(data) if matches!(&data.outcome, ModelOutputOutcome::Failed { error, .. } if error == CAPABILITY_RELOADING))));
         }
+        let request_ends = events.iter().filter(|event| matches!(
+            &event.kind,
+            EventKind::ModelOutputEnd(data) if data.turn_id == "turn" && data.request_id == "request"
+        )).count();
+        assert_eq!(
+            request_ends,
+            usize::from(boundary != "input-consumed"),
+            "each accepted request has exactly one terminal across recovery owners at {boundary}"
+        );
         if matches!(
             boundary,
             "tool-use-start" | "tool-use" | "tool-call" | "undispatched-tool"

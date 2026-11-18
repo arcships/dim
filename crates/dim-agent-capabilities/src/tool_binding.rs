@@ -236,8 +236,8 @@ impl ToolBinding {
     /// release of that snapshot drops them.
     ///
     /// A call whose handler takes nothing, or whose handler is not in the
-    /// request's snapshot, takes nothing here; `execute` then claims for
-    /// itself, as it does for a batch rebuilt after a reload.
+    /// request's snapshot, takes nothing here. This does not admit execution:
+    /// ToolExecutor still checks the pinned handler and approval for a live call.
     pub fn claim(&self, request_id: &str, calls: &[ToolCall], context: &ToolExecutionContext) {
         let mut state = self.state.lock().unwrap();
         let Some(snapshot) = state.snapshots.get_mut(request_id) else {

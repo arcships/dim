@@ -40,8 +40,11 @@ any." states the call shape. Its result texts are protocol too.
 `wait ended: notification (<task ids>)` names the tasks that finished, and those
 ids are the task handles the model passes back to `wait` or `exec_stop`; `read`
 takes the output path from the `exec` result's `Output: <path>`. `wait ended:
-steer`, `wait ended: interrupted` and `wait ended: timeout` state the other ways
-a wait ends. The refusals — `wait taskId must be a string.`,
+notification (<task ids>) was already delivered above.` answers a call naming a
+task whose notice the model already read in this turn, so that call does not wait
+for a notice which will not come again. `wait ended: steer`, `wait ended:
+interrupted` and `wait ended: timeout` state the other ways a wait ends. The
+refusals — `wait taskId must be a string.`,
 `wait timeoutMs must be less than or equal to <limit>.`,
 `wait timeoutMs must be a positive integer.` and
 `wait is already running in this session.` — are protocol too: each names the
@@ -52,6 +55,9 @@ input it refused and how the input is wrong.
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs):
 `wait_ends_on_the_matching_completion_not_on_the_input_that_started_the_turn`,
 `wait_ends_on_a_steer_or_a_stop_and_refuses_a_second_wait`,
+`a_steer_the_model_read_does_not_end_a_later_wait`,
+`a_background_notice_the_model_read_does_not_end_a_later_wait`,
+`wait_reports_a_task_whose_notice_the_model_already_read`,
 `wait_reload_settles_the_tool_call_without_a_user_stop`,
 `wait_service_reload_ends_native_and_face_calls_and_refuses_old_handles`.
 
@@ -84,7 +90,8 @@ Provides branch-local wait state recording eligible arrivals during an open turn
 ```text
 wait.wait(taskId: string | null, timeoutMs: number, cancelled: () => void | Promise<void>)
   -> {reason: "notification", taskIds, waitedMs}
-   | {reason: "user_steer", waitedMs} | {reason: "timeout", waitedMs} | {reason: "interrupted", waitedMs}
+   | {reason: "user_steer", waitedMs} | {reason: "already_notified", taskIds, waitedMs}
+   | {reason: "timeout", waitedMs} | {reason: "interrupted", waitedMs}
   -> error {code: "AlreadyWaiting" | "Reloading", message}
 ```
 
@@ -98,11 +105,15 @@ does not cancel the wait. The Rust error binding is `WaitCallError`, with `Alrea
 
 ### Events and lifetime
 
-Consumes `input/message`, `turn/start`, `turn/end`; produces no events directly.
-Tagged background notices and steer inputs can end a wait; the input opening a
-turn does not. Turn end clears pending arrivals. It registers with
-`Dispatcher::consume` and rebuilds by selecting only the kind of the last
-`turn/start` or `turn/end` at the committed head, including its unpublished tail.
+Consumes `input/message`, `input/applied`, `input/consumed`, `input/deleted`,
+`turn/start`, `turn/end`; produces no events directly. A steer or a tagged
+notice counts from its `input/applied` and stops counting once the model reads it
+(`input/consumed`) or it is deleted, so only an input the model has not read yet
+can end a wait; the input opening a turn is released before `turn/start`, so it
+never ends a wait. Turn end clears pending arrivals and the tasks whose notice
+the model read in that turn. It registers with `Dispatcher::consume` and rebuilds
+by selecting only the kind of the last `turn/start` or `turn/end` at the
+committed head, including its unpublished tail.
 Reload rebuilds only open-turn status, not old arrival notifications. Wait futures are caller-owned,
 but remain bound to their service generation. Unload closes
 admission, ends active calls with `Reloading` (`capability reloading`) and waits for those calls
@@ -135,6 +146,9 @@ business error; retired face handles remain subject to framework availability er
 [local_execution.rs](../../../../tests/integration/tests/local_execution.rs):
 `wait_ends_on_the_matching_completion_not_on_the_input_that_started_the_turn`,
 `wait_ends_on_a_steer_or_a_stop_and_refuses_a_second_wait`,
+`a_steer_the_model_read_does_not_end_a_later_wait`,
+`a_background_notice_the_model_read_does_not_end_a_later_wait`,
+`wait_reports_a_task_whose_notice_the_model_already_read`,
 `wait_reload_settles_the_tool_call_without_a_user_stop`,
 `wait_service_reload_ends_native_and_face_calls_and_refuses_old_handles`.
 

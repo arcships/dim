@@ -414,6 +414,8 @@ cancel 到达 submit reply 之前时保留 cancel 标志，等拿到 input id �
 
 ## 7. 输出投影
 
+出站 ACP 消息只用协议 crate 的类型（response 类型、`SessionUpdate`），字段在序列化前设好；不在序列化后再按 JSON Pointer 回读补字段。`_meta.lody` 走类型的 `meta`，`_meta["dim/history"]` 走 session response 的 `meta`。session update 只在 `projection::notification` 这一处变成 wire JSON：crate 会省略等于自身默认值的字段，而 tool call 的 `kind`/`status` 一直是客户端能读到的，所以这里把两者写全。
+
 | 原生数据 | ACP 输出 / 首版处理 |
 | --- | --- |
 | main `session.model.progress` 与 `step/text` / `step/thinking` | agent message/thought chunks；每 request 维护已发 Unicode scalar 区间。committed delta 是事实，progress 是可替换预览；重放、重连及 emoji 不重复、不截断。每个 chunk 带 `messageId`：assistant 文本/思考用产生它的 model request id，实时流与 `session/load` 重放同一条消息得到同一个 id |
@@ -425,7 +427,7 @@ cancel 到达 submit reply 之前时保留 cancel 标志，等拿到 input id �
 | `approval.request`、`approval.resolved`、`approval.cancelled` | permission 请求和本地 waiter 结算；all branches 的审批均转交。显式保留 branchId/requestId，不能用 callId 单独关联 |
 | `SessionStore` title notice / native list metadata | 标准 session_info_update；按 revision 更新。manual 可映射 explicit；auto 不足以区分 generated/fallback，省略不可靠的 titleSource |
 | `session.context.usage` | 有值时 `usage_update {used:ceil(estimatedInputTokens),size:floor(contextWindow)}`，两个字段按 ACP 的 `u64` 输出 JSON 整数。这是估算上下文量。缺数据时不发送，未知 cost 省略，不能写 cost:0。不要把累计 token 消耗当上下文占用 |
-| `context/compaction-start`、`context/compaction`、完成压缩显示摘要 | 真正的 compaction activity；start/terminal 配对，completed/skipped/failed/cancelled 区分。显示摘要按 start（缺省时按终态 sequence）完成同一活动并释放开始记录；只透传真实 diagnostics，摘要不补造节省量/耗时。回放与实时重复事实不重复发送活动 |
+| `context/compaction-start`、`context/compaction`、完成压缩显示摘要 | 客户端在 initialize 声明 `session.compaction` 时走标准 `compaction_update`：`in_progress` 从 `compaction-start` 发出，终态从 `context/compaction` 或完成显示摘要发出，`compactionId` 由 start sequence 决定、两者相同；`failed`/`cancelled` 各自映射协议状态，真实原因放进 `error`。skipped 没有对应的协议状态，按 `completed` 结束且不带 `error`，也不带未声明客户端看到的 `Skipped: <reason>` 内容。不发 `summary` 字段：终态 `context/compaction` 的 `replacement` 是模型的新上下文，按产出原样保存，`replacement_parts` 定位其策略文本、digest 与 pinned 部分，它不是为用户写的摘要；完成显示摘要只有 start、strategy 与 insufficient_space，不带文本。未声明的客户端保持原工具活动：`tool_call`/`tool_call_update`，title `Context compaction`，`_meta.lody.activity` 带 automatic、diagnostics 与 failureReason；skipped 的原因作为该次活动的文本内容出现。两种形态都按 start/terminal 配对，回放与实时重复事实不重复发送 |
 | `exec/started`、`exec/ended` | 后台任务的真实开始/终态，按 §8.3 生成独立 tool lifecycle + task metadata；不把原 exec 工具返回当后台结束 |
 | `collaboration/request`、`collaboration/delivered`、`collaboration/result` | 按 §8.3 投影最小 subagent snapshot 流；执行身份是 request，不能把可复用的 member Session 当作一次执行 |
 | child branch 普通内容 | 首版不混入主线 assistant 输出，也不借状态流声明已经接入 child 输出流 |
@@ -453,7 +455,7 @@ Core README 在 capability catalog 中提到 sessionConfig，但固定版本的 
 | --- | --- | --- |
 | `_lody/session/history/read` / sessionHistory | 有 history | 已登记 Session；请求必须指定 version:2；拒绝本连接 prompt 在途。一次只输出一个有界展示页，返回 through/before/complete；不累积完整历史，旧完整读取合同明确报错。其他客户端仍可能运行，按固定头处理，不假定 Session 全局静止 |
 | `_meta.lody.forkAtTurn` / forkAtTurn | 有 native turn id、turn/end、session.fork | 只接有终态的真实 main turn，按 §4.3 调用；锚点未知、非 main、未结束均报错。标准更新带真实 turnId；不拿 tool call id 或 request id 冒充 turnId |
-| compaction / `_meta.lody.activity` | 有完整 compaction facts | §7；metadata 只增强标准工具活动，普通 ACP 仍可显示 |
+| compaction / `_meta.lody.activity` | 有完整 compaction facts | §7；声明了 `session.compaction` 的客户端收标准 `compaction_update`，其余收 §7 的 `_meta.lody.activity` 工具活动 |
 | `_lody/session/usage_update` / usage / usageScopeId | 有 model/usage；aimux 保留输入/输出总量、可选 cache，丢失 reasoning/text 分区，cost/currency 为 None | 首版不支持。costUSD、reasoningOutputTokens、cacheCreationInputTokens 是可选，不因缺费用而禁用。实际缺口是必填 outputTokens 必须排除 reasoning，cacheReadInputTokens 也必填；上游未知分区不能补零或把总 completion 当文本。后续按 §8.4 从真实事实投影，无需新累计 RPC |
 | `_lody/rate_limits/get`、`_lody/rate_limits/update` / rateLimits | 有 account.usage；窗口能表达部分 quota，credits 是单位而非货币，完整 account/model 过滤尚未定义 | 首版暂不接，属于接线/交付范围，不能宣称 App Server 没有额度能力。以后复用真实 usage windows，cap>0 才算百分比，durationHours 转秒，过期时间转 epoch 秒；同长度窗口保留各自项，wallet 缺币种/金额时省略。get 是非 Session 绑定读取，不能强制要求 sessionId；不得造空列表掩盖读取失败 |
 | `_lody/session/steer`、`_lody/session/steer_applied`、prompt steer / steering | mode=steer 存在，但不能原子限定目标活跃 turn；空闲 steer 可驱动新 turn | 首版不支持。Core 允许 request/prompt、same/handoff、active/apply，不能把仅缺 same-turn 当作整个协议绝对不可实现。当前也没有已接入的“原生换 turn、同一 ACP prompt 继续承接并确认 injected”的 handoff 路径；不能把下一次 Queue 或闲时新 turn 冒充 handoff。请求报 method-not-found，prompt steer 控制在提交前报 unsupported |

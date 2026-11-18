@@ -1,0 +1,109 @@
+{
+  "code_base": "c8e4edd5b6cf01936ec1478b8d000f5476da7a1f",
+  "java": "OpenJDK 17.0.18",
+  "tools_release": "1.7.4",
+  "tlc_version": "2.19 (2024-08-08, rev 5a47802)",
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "workers": 1,
+  "max_heap": "2g",
+  "source_sha256": {
+    "crates/dim-agent-capabilities/src/agent_loop.rs": "51e7b0fa452a851de6eef96237bf8b0cde919e352723f7212935460a612f3940",
+    "crates/dim-agent-capabilities/src/context_preparation.rs": "f1adaa6e43af9f7d3e0a39c808700dd8a11195e3d5b3437a699a6a2ece8b2d8e",
+    "crates/dim-agent-capabilities/src/model_provider.rs": "32cb5ce6acb2064a08c26cd3a527701d8073c70c9b5108ccb09d595968706a64",
+    "docs/architecture/rust-agent/plugins/ContextPreparation.md": "9b1d6ab047684c71c2b23acbf569780d237d42fb13e44c6854823e843bbec5f3",
+    "docs/architecture/rust-agent/plugins/ModelProvider.md": "b5d51c1cb0e48d5d9dc2b1c6242ce0f6fc73cb43e531596362613a6b461e537a",
+    "docs/architecture/rust-agent/single-tree.md": "d86c533fa7c87f056d92a7e64f6e01c09ba8345eb47bc55f69f77899e439929c"
+  },
+  "runs": [
+    {
+      "module": "RequestRecovery.tla",
+      "config": "RequestRecovery.cfg",
+      "module_sha256": "e121537fae60c14fff67248d47a888c17e3cd0b89b239abaf543b645bcbb8933",
+      "config_sha256": "3f0822b67d92bfbca78f53150442e65afc403d560fbcd83770f2e55b7b84f959",
+      "exit": 0,
+      "generated": 8316,
+      "distinct": 2442,
+      "queue_remaining": 0,
+      "depth": 8,
+      "fingerprint": 112,
+      "seed": 1896171399170290308
+    },
+    {
+      "module": "RequestRecovery.tla",
+      "config": "RequestRecovery-Failure.cfg",
+      "module_sha256": "e121537fae60c14fff67248d47a888c17e3cd0b89b239abaf543b645bcbb8933",
+      "config_sha256": "769991038e2cc19ca2324d294804fb9c98d0b083e547c246226caaf852ded200",
+      "exit": 0,
+      "generated": 18964,
+      "distinct": 5568,
+      "queue_remaining": 0,
+      "depth": 8,
+      "fingerprint": 53,
+      "seed": 2036452993354896409
+    }
+  ],
+  "witnesses": [
+    {
+      "name": "loop_alone_settles",
+      "state": 2185,
+      "values": {
+        "log": "<< [turn |-> 1, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"prepare\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"call\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"end\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"end\", writer |-> \"loop\"] >>",
+        "initialStage": "1",
+        "published": "0",
+        "phase": "[loop |-> \"done\", prepare |-> \"done\", model |-> \"done\"]",
+        "cut": "[loop |-> 5, prepare |-> 6, model |-> 6]",
+        "selected": "[loop |-> TRUE, prepare |-> FALSE, model |-> FALSE]",
+        "fault": "FALSE"
+      }
+    },
+    {
+      "name": "prepare_alone_settles",
+      "state": 2249,
+      "values": {
+        "log": "<< [turn |-> 1, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"prepare\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"call\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"end\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"prepare\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"end\", writer |-> \"prepare\"] >>",
+        "initialStage": "2",
+        "published": "0",
+        "phase": "[loop |-> \"done\", prepare |-> \"done\", model |-> \"done\"]",
+        "cut": "[loop |-> 6, prepare |-> 6, model |-> 7]",
+        "selected": "[loop |-> FALSE, prepare |-> TRUE, model |-> FALSE]",
+        "fault": "FALSE"
+      }
+    },
+    {
+      "name": "model_alone_settles",
+      "state": 2321,
+      "values": {
+        "log": "<< [turn |-> 1, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"prepare\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"call\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"end\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"prepare\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"call\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"end\", writer |-> \"model\"] >>",
+        "initialStage": "3",
+        "published": "0",
+        "phase": "[loop |-> \"done\", prepare |-> \"done\", model |-> \"done\"]",
+        "cut": "[loop |-> 7, prepare |-> 7, model |-> 7]",
+        "selected": "[loop |-> FALSE, prepare |-> FALSE, model |-> TRUE]",
+        "fault": "FALSE"
+      }
+    },
+    {
+      "name": "different_cuts_with_unpublished_terminal",
+      "state": 2185,
+      "values": {
+        "log": "<< [turn |-> 1, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"prepare\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"call\", writer |-> \"old\"], [turn |-> 1, request |-> 2, kind |-> \"end\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"start\", writer |-> \"old\"], [turn |-> 2, request |-> 2, kind |-> \"end\", writer |-> \"loop\"] >>",
+        "initialStage": "1",
+        "published": "0",
+        "phase": "[loop |-> \"done\", prepare |-> \"done\", model |-> \"done\"]",
+        "cut": "[loop |-> 5, prepare |-> 6, model |-> 6]",
+        "selected": "[loop |-> TRUE, prepare |-> FALSE, model |-> FALSE]",
+        "fault": "FALSE"
+      }
+    }
+  ],
+  "scope": "Quiescent request recovery by three independent owners; one current request and one completed unrelated identity. No live old tasks, arbitrary histories, SQL refinement, assembly success or liveness claim.",
+  "modified_flow_test": {
+    "path": "crates/dim-agent-capabilities/tests/context_flow.rs",
+    "sha256": "cdd9cf1feb25902646b4c1f8b17ab903aaabe3d26d231b47637a62137177ffbd",
+    "command": "cargo test --locked -p dim-agent-capabilities --test context_flow restoring_each_preparation_handoff_settles_without_replaying_work -- --exact",
+    "result": "1 passed; 0 failed; nine persisted boundaries",
+    "clippy": "passed: cargo clippy --locked -p dim-agent-capabilities --test context_flow -- -D warnings"
+  },
+  "evidence_revision": "eb6d38c1ae31d208da47024e51a86c4d3655adfb",
+  "hash_scope": "Historical experiment snapshot, not the latest PR tree. Source and test hashes identify the files inspected or run for this record; later runs have separate records."
+}

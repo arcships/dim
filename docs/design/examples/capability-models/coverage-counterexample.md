@@ -1,6 +1,6 @@
 # Wait selection coverage counterexample
 
-Historical run at `5a78b2ed2`: the expanded WaitRuntime now passes the same observation probe; see [the follow-up](coverage-fill.md). The trace and original hashes below are preserved.
+Historical run at `5a78b2ed2`: the expanded WaitRuntime passes the observation probe as restated for #1821's pending set; see [the follow-up](coverage-fill.md). The trace and original hashes below are preserved.
 
 This is a model-coverage counterexample, not an implementation defect. The probe observes the existing WaitRuntime transitions without restricting them. See [the coverage analysis](coverage-audit.md).
 

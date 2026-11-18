@@ -66,7 +66,11 @@ pub(super) struct StopBatch {
 impl HistoryRequest {
     pub(super) fn is_tool_origin(&self, branch: &str, request: &str, call: &str) -> bool {
         self.branch_id == branch
-            && matches!(&self.stage, ReadStage::ToolOrigin { request_id, call_id } if request_id == request && call_id == call)
+            && matches!(
+                &self.stage,
+                ReadStage::ToolOrigin { request_id, call_id }
+                    if request_id == request && call_id == call
+            )
     }
 }
 
@@ -322,10 +326,31 @@ impl Worker {
             ) {
                 return Ok(());
             }
-            match self.client.send("session.tool.get", json!({"sessionId":self.session_id,"branchId":branch_id,"requestId":request_id,"callId":call_id})).await {
-                Ok(id) => self.task_history_request = Some(HistoryRequest { id, session_id:self.session_id.clone(), branch_id, current:true, stage:ReadStage::ToolOrigin { request_id,call_id } }),
+            let params = json!({
+                "sessionId": self.session_id,
+                "branchId": branch_id,
+                "requestId": request_id,
+                "callId": call_id,
+            });
+            match self.client.send("session.tool.get", params).await {
+                Ok(id) => {
+                    self.task_history_request = Some(HistoryRequest {
+                        id,
+                        session_id: self.session_id.clone(),
+                        branch_id,
+                        current: true,
+                        stage: ReadStage::ToolOrigin {
+                            request_id,
+                            call_id,
+                        },
+                    })
+                }
                 Err(error) => {
-                    if let Some(projection) = transcript_mut(&mut self.projection,&mut self.lines,&branch_id) { projection.tool_lookup(&request_id,&call_id,None); }
+                    if let Some(projection) =
+                        transcript_mut(&mut self.projection, &mut self.lines, &branch_id)
+                    {
+                        projection.tool_lookup(&request_id, &call_id, None);
+                    }
                     self.send(Update::Notice(format!("Tool origin: {error}")));
                     self.changed();
                 }

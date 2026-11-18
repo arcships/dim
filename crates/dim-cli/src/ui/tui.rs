@@ -73,8 +73,8 @@ use crate::ui::transcript::commit::CommitState;
 use crate::ui::transcript::reveal::Reveal;
 use crate::ui::transcript::stream::{StreamPlanner, TextBlock, render_open};
 use crate::ui::transcript::tool_group::{
-    Detail, ToolGroup, action_at, card_actions, card_rows, disclosure_at, disclosure_rows,
-    group_id, project_fullscreen_group, project_group, render_group,
+    Detail, State as GroupState, ToolGroup, action_at, card_actions, card_rows, disclosure_at,
+    disclosure_rows, group_id, project_fullscreen_group, project_group, render_group,
 };
 use crate::ui::upgrade_dialog::UpgradeDialog;
 use crate::usage::format_tokens;
@@ -2214,10 +2214,18 @@ impl App {
             if beat != self.last_pulse {
                 self.last_pulse = beat;
                 if self.fullscreen {
-                    let running: Vec<_> = self.history.iter().enumerate().filter_map(|(at, block)| {
-                        matches!(block, Block::ToolGroup(group) if group.state == crate::ui::transcript::tool_group::State::Running)
+                    let running: Vec<_> = self
+                        .history
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(at, block)| {
+                            matches!(
+                                block,
+                                Block::ToolGroup(group) if group.state == GroupState::Running
+                            )
                             .then_some(self.dropped + at)
-                    }).collect();
+                        })
+                        .collect();
                     for id in running {
                         self.mark_rewritten(id);
                     }
@@ -7476,7 +7484,10 @@ impl App {
         self.history
             .iter()
             .rposition(|block| {
-                matches!(block, Block::User { text, cut, .. } if *cut == row.cut && *text == row.text)
+                matches!(
+                    block,
+                    Block::User { text, cut, .. } if *cut == row.cut && *text == row.text
+                )
             })
             .map(|index| self.dropped + index)
     }
@@ -9274,6 +9285,8 @@ fn termux_height_only(previous_columns: u16, size: (u16, u16), termux: bool) -> 
 
 #[cfg(test)]
 mod tests {
+    use dim_agent_types::ContentBlock;
+
     use super::*;
 
     #[test]
@@ -9304,9 +9317,10 @@ mod tests {
                         .collect();
                     assert_eq!(shown, draft, "{cols} columns, fullscreen={fullscreen}");
                     drawn.key(KeyCode::Enter);
-                    assert!(
-                        matches!(sent.borrow().last(), Some(Command::Submit(text, _)) if text == draft)
-                    );
+                    assert!(matches!(
+                        sent.borrow().last(),
+                        Some(Command::Submit(text, _)) if text == draft
+                    ));
                 }
             }
         }
@@ -16740,7 +16754,10 @@ mod tests {
                 typed(&mut app, words);
                 press(&mut app, KeyCode::Enter);
                 assert!(
-                    matches!(sent.borrow().as_slice(), [Command::Loop(request)] if *request == expected),
+                    matches!(
+                        sent.borrow().as_slice(),
+                        [Command::Loop(request)] if *request == expected
+                    ),
                     "{words:?} dispatches {expected:?}"
                 );
                 assert!(app.composer.is_empty());
@@ -17204,8 +17221,10 @@ mod tests {
                     [Command::SubmitDraft(parts, SubmitMode::Queue)]
                         if matches!(
                             parts.as_slice(),
-                            [DraftPart::Text(all), DraftPart::Block(dim_agent_types::ContentBlock::Image { .. })]
-                                if all == "first\nand then "
+                            [
+                                DraftPart::Text(all),
+                                DraftPart::Block(ContentBlock::Image { .. })
+                            ] if all == "first\nand then "
                         )
                 ),
                 "{label}: the recalled text, the draft and its image: {}",
@@ -17263,8 +17282,10 @@ mod tests {
                 [Command::SubmitDraft(parts, SubmitMode::Queue)]
                     if matches!(
                         parts.as_slice(),
-                        [DraftPart::Text(all), DraftPart::Block(dim_agent_types::ContentBlock::Image { .. })]
-                            if all == "first\nand then "
+                        [
+                            DraftPart::Text(all),
+                            DraftPart::Block(ContentBlock::Image { .. })
+                        ] if all == "first\nand then "
                     )
             ),
             "one submit carries the recalled message, the text and its image: {}",
@@ -17535,6 +17556,11 @@ mod tests {
             } else {
                 "see [Image] here\nand then"
             };
+            let suffix = if draft.is_empty() {
+                " here"
+            } else {
+                " here\nand then"
+            };
             assert_eq!(
                 app.composer.text(),
                 expected,
@@ -17548,8 +17574,11 @@ mod tests {
                     [Command::SubmitDraft(parts, SubmitMode::Queue)]
                         if matches!(
                             parts.as_slice(),
-                            [DraftPart::Text(see), DraftPart::Block(dim_agent_types::ContentBlock::Image { .. }), DraftPart::Text(here)]
-                                if see == "see " && here == if draft.is_empty() { " here" } else { " here\nand then" }
+                            [
+                                DraftPart::Text(see),
+                                DraftPart::Block(ContentBlock::Image { .. }),
+                                DraftPart::Text(here)
+                            ] if see == "see " && here == suffix
                         )
                 ),
                 "the submitted message is the text, the image, then the text: {}",
@@ -18064,9 +18093,10 @@ mod tests {
             "restoring never submits automatically"
         );
         press(&mut app, KeyCode::Enter);
-        assert!(
-            matches!(sent.borrow().as_slice(), [Command::SubmitDraft(restored, _)] if restored == &parts)
-        );
+        assert!(matches!(
+            sent.borrow().as_slice(),
+            [Command::SubmitDraft(restored, _)] if restored == &parts
+        ));
     }
 
     /// A withdrawn message returns as the operator's own words: a block the
@@ -18542,8 +18572,13 @@ mod tests {
             assert_eq!(selection(&app), Some(answer));
             assert!(matches!(
                 sent.borrow().last(),
-                Some(Command::Report(Request { action: Action::Cancel { draft, generation: false }, .. }))
-                    if draft.report_id == "r1"
+                Some(Command::Report(Request {
+                    action: Action::Cancel {
+                        draft,
+                        generation: false,
+                    },
+                    ..
+                })) if draft.report_id == "r1"
             ));
         }
     }
@@ -18602,8 +18637,14 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::Report(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
-                if draft.report_id == "r1" && instructions == "omit timeline"
+            Some(Command::Report(Request {
+                action: Action::Plan {
+                    draft,
+                    redact: false,
+                    instructions,
+                },
+                ..
+            })) if draft.report_id == "r1" && instructions == "omit timeline"
         ));
         app.apply(Update::ReportReply {
             panel,
@@ -18629,8 +18670,16 @@ mod tests {
         });
         assert!(matches!(
             sent.borrow().last(),
-            Some(Command::Report(Request { action: Action::Plan { draft, redact: false, instructions }, .. }))
-                if draft.report_id == "r2" && draft.session.as_deref() == Some("s1") && instructions == "omit timeline"
+            Some(Command::Report(Request {
+                action: Action::Plan {
+                    draft,
+                    redact: false,
+                    instructions,
+                },
+                ..
+            })) if draft.report_id == "r2"
+                && draft.session.as_deref() == Some("s1")
+                && instructions == "omit timeline"
         ));
     }
 
@@ -19587,7 +19636,12 @@ mod tests {
                 .app
                 .apply(Update::Snapshot(Box::new(snapshot.clone())));
             drawn.draw();
-            assert!(commands.borrow().iter().all(|command| !matches!(command, Command::CompactionDetails { targets, .. } if !targets.is_empty())));
+            assert!(commands.borrow().iter().all(|command| {
+                !matches!(
+                    command,
+                    Command::CompactionDetails { targets, .. } if !targets.is_empty()
+                )
+            }));
             let block = drawn.app.dropped
                 + drawn
                     .app
@@ -19611,16 +19665,22 @@ mod tests {
             drawn.app.apply(Update::Snapshot(Box::new(loaded)));
             drawn.draw();
             assert!(drawn_text(&mut drawn).contains("Loaded compaction body"));
-            assert!(drawn.app.history.iter().any(|block| matches!(block, Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body))));
+            assert!(drawn.app.history.iter().any(|block| {
+                matches!(
+                    block,
+                    Block::Compaction { text, .. } if std::sync::Arc::ptr_eq(text, &body)
+                )
+            }));
             drop(body);
             if fullscreen {
                 drawn.app.set_fullscreen(false);
             } else {
                 assert!(drawn.app.click(Some(block), 1, 100));
             }
-            assert!(
-                matches!(commands.borrow().last(), Some(Command::CompactionDetails { targets, .. }) if targets.is_empty())
-            );
+            assert!(matches!(
+                commands.borrow().last(),
+                Some(Command::CompactionDetails { targets, .. }) if targets.is_empty()
+            ));
             drawn
                 .app
                 .apply(Update::Snapshot(Box::new(snapshot.clone())));

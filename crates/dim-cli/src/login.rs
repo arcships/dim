@@ -264,7 +264,11 @@ pub async fn login(
         .as_millis() as u64;
     let callback = tokio::select! {
         signal = tokio::signal::ctrl_c() => {
-            signal?; drop(echo); println!(); cancel(client, &provider, &browser.attempt_id).await?; return Ok(130);
+            signal?;
+            drop(echo);
+            println!();
+            cancel(client, &provider, &browser.attempt_id).await?;
+            return Ok(130);
         }
         result = input.line() => result?,
         _ = tokio::time::sleep(Duration::from_millis(browser.expires_at.saturating_sub(now))) => {
@@ -369,7 +373,11 @@ async fn poll(client: &mut Client, provider: &Described, attempt_id: &str) -> Re
             State::Expired => return Err("Login expired; start login again".into()),
         }
         tokio::select! {
-            signal = tokio::signal::ctrl_c() => { signal?; cancel(client, provider, attempt_id).await?; return Ok(130); }
+            signal = tokio::signal::ctrl_c() => {
+                signal?;
+                cancel(client, provider, attempt_id).await?;
+                return Ok(130);
+            }
             _ = tokio::time::sleep(Duration::from_secs(1)) => {},
         }
     }

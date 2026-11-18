@@ -95,6 +95,84 @@ async fn streaming_reads_pin_files_and_end_with_storage() {
     let path = storage.resolve(&source).unwrap();
     let reader = storage.open_read(&path, &cancel).await.unwrap();
     assert_eq!(reader.len(), bytes.len() as u64);
+    let face = root
+        .get::<dim_agent_capabilities::file_storage::FsHost>()
+        .unwrap();
+    use dim_agent_capabilities::file_storage::testing;
+    let native_id = testing::reader_id(&reader);
+    assert!(matches!(
+        face.close_read(native_id.clone()).await,
+        Err(FileStorageError::InvalidPath(_))
+    ));
+    assert_eq!(
+        face.read_at(native_id.clone(), 0, 10, &cancel)
+            .await
+            .unwrap(),
+        bytes[..10]
+    );
+    let caller = Ctx::root().unwrap();
+    let dropped = face
+        .open_read(&caller, source.to_string_lossy().into_owned(), &cancel)
+        .await
+        .unwrap();
+    let released = testing::reader_released(&storage, &dropped.read_id);
+    drop(face.close_read(dropped.read_id.clone()));
+    assert_eq!(
+        face.read_at(dropped.read_id.clone(), 0, 10, &cancel)
+            .await
+            .unwrap(),
+        bytes[..10]
+    );
+    let mut close = Box::pin(face.close_read(dropped.read_id.clone()));
+    assert!(
+        close
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            .is_pending()
+    );
+    drop(close);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !released() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(matches!(
+        face.read_at(dropped.read_id, 0, 1, &cancel).await,
+        Err(FileStorageError::InvalidPath(_))
+    ));
+    let opened = face
+        .open_read(&caller, source.to_string_lossy().into_owned(), &cancel)
+        .await
+        .unwrap();
+    assert_eq!(opened.size, bytes.len() as u64);
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use rutis_bridge::session::{HostDispatch, settle};
+    let reply = settle(
+        face.invoke(
+            "readAt",
+            serde_json::json!([{
+                "readId":opened.read_id,"offset":100,"limit":200_000
+            }])
+            .into(),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap()
+    .json()
+    .unwrap();
+    assert_eq!(
+        STANDARD.decode(reply["bytes"].as_str().unwrap()).unwrap(),
+        bytes[100..100 + 64 * 1024]
+    );
+    assert_eq!(
+        face.read_at(opened.read_id.clone(), 199_995, 30, &cancel)
+            .await
+            .unwrap(),
+        bytes[199_995..]
+    );
     assert!(!reader.is_empty());
     let (first, second) = tokio::join!(
         reader.read_at(100, usize::MAX, &cancel),
@@ -108,6 +186,34 @@ async fn streaming_reads_pin_files_and_end_with_storage() {
         .unwrap();
     assert_eq!(reader.read_at(0, 10, &cancel).await.unwrap(), bytes[..10]);
     assert_eq!(storage.read(&path, &cancel).await.unwrap(), b"new");
+    assert_eq!(
+        face.read_at(opened.read_id.clone(), 0, 10, &cancel)
+            .await
+            .unwrap(),
+        bytes[..10]
+    );
+    settle(
+        face.invoke(
+            "closeRead",
+            serde_json::json!([{"readId":opened.read_id}]).into(),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        face.read_at(opened.read_id, 0, 1, &cancel).await,
+        Err(FileStorageError::InvalidPath(_))
+    ));
+    let retained = face
+        .open_read(&caller, source.to_string_lossy().into_owned(), &cancel)
+        .await
+        .unwrap();
+    caller.shutdown().await.unwrap();
+    assert!(matches!(
+        face.read_at(retained.read_id, 0, 1, &cancel).await,
+        Err(FileStorageError::InvalidPath(_))
+    ));
     assert!(
         storage
             .resolve(&directory.0.join("outside/secret"))
@@ -134,7 +240,25 @@ async fn streaming_reads_pin_files_and_end_with_storage() {
         reader.read_at(0, 1, &stopped).await,
         Err(FileStorageError::Cancelled)
     ));
+    let surviving_caller = Ctx::root().unwrap();
+    let owned = face
+        .open_read(
+            &surviving_caller,
+            source.to_string_lossy().into_owned(),
+            &cancel,
+        )
+        .await
+        .unwrap();
     root.shutdown().await.unwrap();
+    assert!(matches!(
+        face.read_at(owned.read_id, 0, 1, &cancel).await,
+        Err(FileStorageError::Closed)
+    ));
+    surviving_caller.shutdown().await.unwrap();
+    assert!(matches!(
+        face.read_at(native_id, 0, 1, &cancel).await,
+        Err(FileStorageError::Closed)
+    ));
     assert!(matches!(
         reader.read_at(0, 1, &cancel).await,
         Err(FileStorageError::Closed)

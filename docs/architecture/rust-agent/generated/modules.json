@@ -651,6 +651,15 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::file_storage::face",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::file_storage",
+      "file": "crates/dim-agent-capabilities/src/file_storage/face.rs",
+      "unexpandedMacros": [
+        "serde_json::json"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::file_storage::native",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities::file_storage",
@@ -662,6 +671,13 @@
         "matches",
         "unreachable"
       ]
+    },
+    {
+      "id": "dim_agent_capabilities::file_storage::testing",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::file_storage",
+      "file": "crates/dim-agent-capabilities/src/file_storage.rs",
+      "unexpandedMacros": []
     },
     {
       "id": "dim_agent_capabilities::file_storage::unsupported",
@@ -7936,7 +7952,12 @@
       "to": "dim_agent_types::permission",
       "references": [
         "path PermissionPolicy",
-        "use dim_agent_types::PermissionPolicy"
+        "path PermissionPreset",
+        "path PermissionPreset::FullAccess",
+        "path PermissionPreset::ReadOnly",
+        "path PermissionPreset::WorkspaceWrite",
+        "use dim_agent_types::PermissionPolicy",
+        "use dim_agent_types::PermissionPreset"
       ]
     },
     {
@@ -8006,6 +8027,7 @@
       "from": "dim_acp::gateway",
       "to": "dim_acp::commands",
       "references": [
+        "path crate::commands::available",
         "path crate::commands::parse",
         "path crate::commands::run"
       ]
@@ -8016,6 +8038,7 @@
       "references": [
         "path Config",
         "path Config::read",
+        "path crate::config::mode",
         "path crate::config::models",
         "use crate::config::Config"
       ]
@@ -8042,6 +8065,7 @@
       "to": "dim_acp::lody",
       "references": [
         "path crate::lody::Subagents",
+        "path crate::lody::capabilities",
         "path crate::lody::controls"
       ]
     },
@@ -8070,6 +8094,8 @@
       "references": [
         "path Projection",
         "path Projection::new",
+        "path crate::projection::notice_id",
+        "path crate::projection::notification",
         "use crate::projection::Projection"
       ]
     },
@@ -8376,6 +8402,7 @@
       "from": "dim_acp::projection",
       "to": "dim_agent_types::model",
       "references": [
+        "path CompactionTrigger",
         "use dim_agent_types::CompactionTrigger"
       ]
     },
@@ -8445,6 +8472,7 @@
         "path Client",
         "path Client::connect",
         "path dim_client::Error",
+        "path dim_client::RequestTooLarge",
         "path dim_client::RpcError",
         "use dim_client::Client",
         "use dim_client::Message"
@@ -12521,6 +12549,17 @@
     },
     {
       "from": "dim_agent_capabilities::file_storage",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "mod face",
+        "path FsHost",
+        "path FsHost::new",
+        "use face::FsHost",
+        "use face::OpenRead"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::file_storage",
       "to": "dim_agent_capabilities::file_storage::native",
       "references": [
         "mod native",
@@ -12554,6 +12593,13 @@
         "path native::sync_directory",
         "path native::sync_replacement",
         "path native::target_name"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::file_storage",
+      "to": "dim_agent_capabilities::file_storage::testing",
+      "references": [
+        "mod testing"
       ]
     },
     {
@@ -12634,6 +12680,26 @@
       ]
     },
     {
+      "from": "dim_agent_capabilities::file_storage::face",
+      "to": "dim_agent_capabilities::file_storage",
+      "references": [
+        "path FileReader",
+        "path FileStorage",
+        "path FileStorageError",
+        "path FileStorageError::Cancelled",
+        "path FileStorageError::Closed",
+        "path FileStorageError::InvalidPath",
+        "path FileStorageError::Io",
+        "path FileStorageError::Locked",
+        "path FileStorageError::Unsupported",
+        "path Result",
+        "use super::FileReader",
+        "use super::FileStorage",
+        "use super::FileStorageError",
+        "use super::Result"
+      ]
+    },
+    {
       "from": "dim_agent_capabilities::file_storage::native",
       "to": "dim_agent_capabilities::file_storage",
       "references": [
@@ -12650,6 +12716,16 @@
         "path Tree::Business",
         "path Tree::Leftover",
         "path account_lock"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::file_storage::testing",
+      "to": "dim_agent_capabilities::file_storage",
+      "references": [
+        "path FileReader",
+        "path FileStorage",
+        "use super::FileReader",
+        "use super::FileStorage"
       ]
     },
     {
@@ -18847,6 +18923,9 @@
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
+        "path EventKind::InputApplied",
+        "path EventKind::InputConsumed",
+        "path EventKind::InputDeleted",
         "path EventKind::InputMessage",
         "path EventKind::TurnEnd",
         "path EventKind::TurnStart",
@@ -37511,7 +37590,8 @@
         "path ContentBlock",
         "path ContentBlock::Image",
         "path ContentBlock::Text",
-        "use dim_agent_types::ContentBlock"
+        "use dim_agent_types::ContentBlock",
+        "use dim_agent_types::ImageSourceType"
       ]
     },
     {
@@ -50797,6 +50877,7 @@
         "path project_group",
         "path render_group",
         "use crate::ui::transcript::tool_group::Detail",
+        "use crate::ui::transcript::tool_group::State",
         "use crate::ui::transcript::tool_group::ToolGroup",
         "use crate::ui::transcript::tool_group::action_at",
         "use crate::ui::transcript::tool_group::card_actions",
@@ -50863,6 +50944,13 @@
       "to": "dim_agent_capabilities::prompt_suggestion",
       "references": [
         "path dim_agent_capabilities::prompt_suggestion::PromptSuggestionSettings"
+      ]
+    },
+    {
+      "from": "dim_cli::ui::tui::tests",
+      "to": "dim_agent_types::content",
+      "references": [
+        "use dim_agent_types::ContentBlock"
       ]
     },
     {
@@ -51324,6 +51412,7 @@
         "path Prompt::Tasks",
         "path QUEUE_HINT",
         "path QUEUE_HINT_MORE",
+        "path STARTUP_LOGO",
         "path TASK_FADE",
         "path WebOpened",
         "path apply_jump",

@@ -15,8 +15,8 @@
 //! prefix below. A replacement writes a temporary file named after its key in
 //! that physically protected namespace, so only the key's holder touches it.
 //! Listing hides those resources; removing a directory removes them with it.
-use rutis::host::ErrorKind;
-use rutis::{Ctx, Plugin};
+use rutis::host::{CtxHost, ErrorKind};
+use rutis::{Ctx, Disposer, Plugin};
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
@@ -29,6 +29,25 @@ use std::{
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+mod face;
+pub use face::{FsHost, OpenRead};
+
+/// Read-only reader lifetime observations for filesystem flow tests.
+#[cfg(feature = "testing")]
+pub mod testing {
+    use super::{FileReader, FileStorage};
+
+    pub fn reader_id(reader: &FileReader) -> String {
+        reader.0.id.to_string()
+    }
+
+    pub fn reader_released(storage: &FileStorage, id: &str) -> impl Fn() -> bool + use<> {
+        let id = uuid::Uuid::parse_str(id).unwrap();
+        let reader = storage.state.lock().unwrap().readers[&id].reader.clone();
+        move || reader.strong_count() == 0
+    }
+}
 
 const RESOURCE_PREFIX: &str = ".dim-file-storage-";
 const LOCK_DIRECTORY: &str = ".dim-file-storage-locks";
@@ -103,8 +122,13 @@ struct State {
     roots: Vec<File>,
     active: usize,
     leases: HashMap<Uuid, Weak<Lease>>,
-    readers: HashMap<Uuid, Weak<ReadFile>>,
+    readers: HashMap<Uuid, ReaderEntry>,
     cleanup_errors: Vec<io::Error>,
+}
+
+struct ReaderEntry {
+    reader: Weak<ReadFile>,
+    release: Option<Disposer>,
 }
 
 pub struct FileStorage {
@@ -156,7 +180,8 @@ struct ReadFile {
 impl Drop for ReadFile {
     fn drop(&mut self) {
         if let Some(owner) = self.owner.upgrade() {
-            owner.state.lock().unwrap().readers.remove(&self.id);
+            let entry = owner.state.lock().unwrap().readers.remove(&self.id);
+            drop(entry);
         }
     }
 }
@@ -375,7 +400,13 @@ impl FileStorage {
             });
             let mut state = owner.state.lock().unwrap();
             owner.check(&cancel)?;
-            state.readers.insert(reader.id, Arc::downgrade(&reader));
+            state.readers.insert(
+                reader.id,
+                ReaderEntry {
+                    reader: Arc::downgrade(&reader),
+                    release: None,
+                },
+            );
             drop(state);
             Ok(FileReader(reader))
         })
@@ -660,7 +691,7 @@ impl FileStorage {
                         state
                             .readers
                             .drain()
-                            .filter_map(|(_, reader)| reader.upgrade())
+                            .map(|(_, entry)| entry)
                             .collect::<Vec<_>>(),
                     ))
                 } else {
@@ -671,8 +702,10 @@ impl FileStorage {
                 for lease in leases {
                     lease.resources.lock().unwrap().take();
                 }
-                for reader in readers {
-                    reader.file.lock().unwrap().take();
+                for entry in readers {
+                    if let Some(reader) = entry.reader.upgrade() {
+                        reader.file.lock().unwrap().take();
+                    }
                 }
                 let errors = std::mem::take(&mut self.state.lock().unwrap().cleanup_errors);
                 return if errors.is_empty() {
@@ -1441,6 +1474,12 @@ impl Plugin for FileStoragePlugin {
                 .await
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))
         })?;
+        let binding = Arc::new(FsHost::new(storage.clone()));
+        ctx.provide_as::<FsHost>(binding.clone())?;
+        ctx.provide_at(
+            rutis_bridge::session::host_key("fsHost"),
+            binding as Arc<dyn rutis_bridge::session::HostDispatch>,
+        )?;
         ctx.provide_as::<FileStorage>(storage)?;
         Ok(())
     }

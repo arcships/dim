@@ -2503,6 +2503,168 @@ async fn wait_ends_on_a_steer_or_a_stop_and_refuses_a_second_wait() {
     harness.shutdown().await;
 }
 
+/// A steer the model read in an earlier request of the turn has already
+/// reached it: a later `wait` in the same turn waits for what comes next.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_steer_the_model_read_does_not_end_a_later_wait() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    let ready = harness.cwd.join("steer-read-ready");
+    harness
+        .model
+        .push(&[("exec", json!({"command": "sleep 1; echo one"}))]);
+    harness.model.push(&[(
+        "exec",
+        json!({"command": format!("while [ ! -f '{}' ]; do sleep 0.01; done; echo two", ready.display()), "runInBackground": true}),
+    )]);
+    harness
+        .run(&session, &[("wait", json!({"timeoutMs": 20000}))])
+        .await;
+    until(&session, "the foreground command", |events| {
+        count(events, "step/tool-call") == 1
+    })
+    .await;
+    session
+        .submit("clean up instead".into(), InputMode::Steer, "main")
+        .await
+        .unwrap();
+    let events = until(&session, "the background task and the wait", |events| {
+        count(events, "step/tool-call") == 3
+    })
+    .await;
+    assert_eq!(
+        count(&events, "input/consumed"),
+        2,
+        "the model read the steer before it waited: {:#?}",
+        events
+            .iter()
+            .map(|event| event.kind.key())
+            .collect::<Vec<_>>()
+    );
+    std::fs::write(ready, "").unwrap();
+    let events = until(&session, "the wait", |events| wait_texts(events).len() == 1).await;
+    let task = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) => Some(data.task_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        wait_texts(&events),
+        vec![format!("wait ended: notification ({task})")]
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// A background notice the model read in an earlier request of the turn no
+/// longer wakes a later `wait` without a `taskId`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_background_notice_the_model_read_does_not_end_a_later_wait() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    let first = harness.cwd.join("notice-read-first");
+    let second = harness.cwd.join("notice-read-second");
+    harness.model.push(&[(
+        "exec",
+        json!({"command": format!("while [ ! -f '{}' ]; do sleep 0.01; done; echo one", first.display()), "runInBackground": true}),
+    )]);
+    harness
+        .model
+        .push(&[("exec", json!({"command": "sleep 1; echo two"}))]);
+    harness.model.push(&[(
+        "exec",
+        json!({"command": format!("while [ ! -f '{}' ]; do sleep 0.01; done; echo three", second.display()), "runInBackground": true}),
+    )]);
+    harness
+        .run(&session, &[("wait", json!({"timeoutMs": 20000}))])
+        .await;
+    until(&session, "the running command", |events| {
+        count(events, "step/tool-call") == 2
+    })
+    .await;
+    std::fs::write(first, "").unwrap();
+    let events = until(&session, "the second task and the wait", |events| {
+        count(events, "step/tool-call") == 4
+    })
+    .await;
+    assert_eq!(
+        count(&events, "input/consumed"),
+        2,
+        "the model read the first notice before it waited: {:#?}",
+        events
+            .iter()
+            .map(|event| event.kind.key())
+            .collect::<Vec<_>>()
+    );
+    std::fs::write(second, "").unwrap();
+    let events = until(&session, "the wait", |events| wait_texts(events).len() == 1).await;
+    let task = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) => Some(data.task_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        wait_texts(&events),
+        vec![format!("wait ended: notification ({task})")]
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
+/// `wait(taskId)` whose notice the model already read answers at once and
+/// says so, instead of waiting for a notice that will not come again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wait_reports_a_task_whose_notice_the_model_already_read() {
+    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let session = harness.session().await;
+    let ready = harness.cwd.join("notice-read-task");
+    harness.model.push(&[(
+        "exec",
+        json!({"command": format!("while [ ! -f '{}' ]; do sleep 0.01; done; echo one", ready.display()), "runInBackground": true}),
+    )]);
+    harness
+        .model
+        .push(&[("wait", json!({"taskId": "$TASK", "timeoutMs": 20000}))]);
+    harness
+        .run(
+            &session,
+            &[("wait", json!({"taskId": "$TASK", "timeoutMs": 1500}))],
+        )
+        .await;
+    until(&session, "the first wait", |events| {
+        count(events, "step/tool-call") == 2
+    })
+    .await;
+    std::fs::write(ready, "").unwrap();
+    let events = until(&session, "the second wait", |events| {
+        wait_texts(events).len() == 2
+    })
+    .await;
+    let task = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) => Some(data.task_id.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        wait_texts(&events),
+        vec![
+            format!("wait ended: notification ({task})"),
+            format!("wait ended: notification ({task}) was already delivered above.")
+        ]
+    );
+    session.close().await.unwrap();
+    harness.shutdown().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn wait_reload_settles_the_tool_call_without_a_user_stop() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
@@ -3101,4 +3263,108 @@ async fn a_batch_that_edits_then_runs_a_command_sees_the_edit() {
         results[2].contains("after"),
         "the command sees the edit: {results:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_recovery_wake_faults_the_session_and_is_posted_once_on_retry() {
+    for failure in [1, 2] {
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let harness = Harness::new(platform(&[]).await, Hook::None).await;
+            let session = harness.session().await;
+            let id = session.id().to_owned();
+            unload_once_released(&session).await;
+            let ids = stored(
+                &harness,
+                &id,
+                vec![
+                    EventKind::ExecStarted(ExecStartedData {
+                        turn_id: "old-turn".into(),
+                        request_id: "old-request".into(),
+                        call_id: "old-call".into(),
+                        task_id: "owed-task".into(),
+                        description: "owed task".into(),
+                        title: None,
+                        output_path: harness
+                            .output_root
+                            .join("owed.log")
+                            .to_string_lossy()
+                            .into_owned(),
+                    }),
+                    EventKind::ExecEnded(ExecEndedData {
+                        task_id: "owed-task".into(),
+                        status: ExecStatus::Completed,
+                        result: ToolResult::text("already finished"),
+                    }),
+                ],
+            )
+            .await;
+            harness
+                .store
+                .fail_next_wake
+                .store(failure, Ordering::SeqCst);
+            match harness.agent.restore_session(id.clone()).await {
+                Err(error) => assert!(
+                    error.to_string().contains("injected exec wake failure"),
+                    "{error}"
+                ),
+                Ok(failed) => {
+                    let error = failed.idle("main").await.unwrap_err();
+                    assert!(
+                        error.to_string().contains("injected exec wake failure"),
+                        "{error}"
+                    );
+                    if let Err(error) = failed.close().await {
+                        assert!(
+                            error.to_string().contains("injected exec wake failure"),
+                            "{error}"
+                        );
+                    }
+                }
+            }
+            assert!(
+                harness.store.fail_next_wake.load(Ordering::SeqCst) == 0,
+                "the recovery attempted the owed wake"
+            );
+            let key = TimelineKey {
+                session_id: id.clone(),
+                branch_id: "main".into(),
+            };
+            let head = harness.store.head(&key).await.unwrap();
+            let persisted: Vec<_> = harness
+                .store
+                .read(&key, 1..=head)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|r| r.event)
+                .collect();
+            assert!(
+                notifications(&persisted).is_empty(),
+                "failed wake was not committed"
+            );
+            assert_eq!(ended(&persisted).len(), 1);
+            let recovered = harness.agent.restore_session(id.clone()).await.unwrap();
+            recovered.idle("main").await.unwrap();
+            let events = local_events(&recovered).await;
+            assert_eq!(
+                notifications(&events),
+                vec![("owed-task".into(), ids[1].clone())]
+            );
+            assert_eq!(
+                ended(&events).len(),
+                1,
+                "recovery must not rerun or re-end the process"
+            );
+            unload_once_released(&recovered).await;
+            let repeated = harness.agent.restore_session(id).await.unwrap();
+            repeated.idle("main").await.unwrap();
+            assert_eq!(
+                notifications(&local_events(&repeated).await),
+                vec![("owed-task".into(), ids[1].clone())]
+            );
+            harness.shutdown().await;
+        })
+        .await
+        .expect("failed wake recovery completes without losing its obligation");
+    }
 }

@@ -161,6 +161,21 @@ done
 及按有限 ID 集合自动成立的“压缩次数上限”，因为它们不能提供实现证据。保留分开的协议模型，是为了不把
 一个巨型模型的状态爆炸或一个小模型的通过误当成整个插件已验证。未增加运行时抽象、CI 门槛或证明平台。
 
+## Owner 交接
+
+[Owner 前提与交接对应表](../owner-handoff-verification.md)核对生产 `consume` 调用的 cut 来源，
+并用 [InterruptHandoff](InterruptHandoff.tla) 和 [GenerationHandoff](GenerationHandoff.tla)
+检查中断后的迟到请求、旧工作终态与新代接续。范围和复现见
+[运行记录](owner-handoff-results.md)；这两个有限交接不代表全部 owner 组合已经验证。
+
+[RequestRecovery](RequestRecovery.tla)补充旧任务停止后的 Loop → ContextPreparation → ModelProvider
+结算责任，区分三个独立 cut、未发布终态和查询/写入失败；[运行记录](request-recovery-results.md)
+与 [owner 对应](../owner-handoff-verification.md#6-loop--preparation--model-的恢复结算责任)说明范围。
+
+[ModelReloadHandoff](ModelReloadHandoff.tla) 与 [ExecWakeRecovery](ExecWakeRecovery.tla)
+补充上游仍运行的独立重启、恢复查询失败，以及补通知失败后的持久义务。
+[运行记录](live-handoff-results.md)对应真实流程及明确的成功重试前提。
+
 ## 查询范围补充实验
 
 #1732 的查询范围补充见[范围、实现和模型对应](../query-range-verification.md)与

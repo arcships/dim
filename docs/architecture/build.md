@@ -34,7 +34,7 @@ preserves the build environment, including account build settings and the
 `CARGO_PROFILE_RELEASE_LTO` selection used by the release workflow. Every
 platform uses the same compiler selection: `RUSTC`, then `CARGO_BUILD_RUSTC`,
 then `rustc` from PATH; Cargo configuration's `build.rustc` is superseded. Use a new output directory for the initial build. A failed build never produces its final executable.
-The release workflow uses its existing packaging command.
+The release workflow packages the ordered executable on Linux x64 and the regular Cargo executable on other targets.
 
 ```sh
 python3 scripts/code-layout/build.py --output /tmp/dim-layout-build --jobs 2
@@ -98,9 +98,7 @@ follow the final order, treating symbols at the same address as aliases, and at
 least one selected address must move. An unchanged or unordered candidate fails
 before publication; movement alone does not establish an RSS or CPU gain.
 
-The current release workflow remains unchanged. Enabling this in Linux
-packaging requires validation in the existing manylinux 2.28 build environment;
-the tool does not raise the shipped executable's libc baseline. The candidate
+Linux x64 releases build and validate the ordered executable in the pinned manylinux 2.28 container. The candidate
 then runs all three flows without the probe, plus CLI help/version checks. Only
 after they pass does the command produce `dimcode`.
 

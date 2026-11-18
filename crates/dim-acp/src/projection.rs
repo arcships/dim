@@ -64,18 +64,27 @@ impl TextCursor {
 pub(crate) struct Projection {
     pub(crate) through: u64,
     cwd: PathBuf,
+    compaction_updates: bool,
     pub(crate) turn: Option<String>,
     pub(crate) silent_inputs: HashSet<String>,
     inputs: HashMap<String, UserInput>,
     texts: HashMap<String, TextCursor>,
     thoughts: HashMap<String, TextCursor>,
     calls: HashMap<String, Call>,
-    compactions: HashMap<u64, bool>,
+    /// Each open compaction start with the trigger it carried; the undeclared
+    /// path reports at its terminal whether that trigger was automatic.
+    compactions: HashMap<u64, CompactionTrigger>,
     closed_requests: HashSet<String>,
 }
 
 pub(crate) fn tool_id(branch: &str, request: &str, call: &str) -> String {
     json!([branch, request, call]).to_string()
+}
+
+/// A compaction's protocol identity: the `context/compaction-start` it began at,
+/// which names it both when it starts and when it ends.
+fn compaction_id(start: u64) -> String {
+    json!(["compaction", start]).to_string()
 }
 
 /// The message a gateway notice belongs to: the operation that produced it,
@@ -123,12 +132,12 @@ fn image(source: &ImageSource) -> Option<acp::ContentBlock> {
     Some(acp::ContentBlock::Image(image))
 }
 
-/// The messages one fact produces, each serialized once with the turn that
-/// produced it already in `_meta`.
+/// The messages one fact produces, each carrying the turn that produced it in
+/// its `_meta`.
 #[derive(Default)]
 struct Messages {
     turn: Option<String>,
-    updates: Vec<Value>,
+    updates: Vec<acp::SessionUpdate>,
 }
 
 impl Messages {
@@ -140,15 +149,7 @@ impl Messages {
     }
 
     fn push(&mut self, update: acp::SessionUpdate) {
-        self.updates
-            .push(serde_json::to_value(update).expect("an ACP session update is JSON"));
-    }
-
-    /// A new tool call: the crate omits a field holding that field's own
-    /// default while the literal always wrote both, so `call_message` spells
-    /// them out. It is the only write a serialized message still takes.
-    fn push_call(&mut self, call: acp::ToolCall) {
-        self.updates.push(call_message(call));
+        self.updates.push(update);
     }
 
     fn meta(&self, lody: Option<Value>) -> Option<acp::Meta> {
@@ -266,20 +267,25 @@ fn preview(content: &ToolContent) -> String {
     result
 }
 
-/// A tool call message: the crate omits a field holding that field's own
-/// default, and the gateway spells out both so a client reads the same
-/// message it read before the projection was typed. A call always states both
-/// fields, so this is the one write a serialized message still takes.
-fn call_message(call: acp::ToolCall) -> Value {
-    let mut message = serde_json::to_value(acp::SessionUpdate::ToolCall(call))
-        .expect("an ACP session update is JSON");
-    if message.get("kind").is_none() {
-        message["kind"] = json!("other");
+/// A `session/update` notification: the one place a session update becomes
+/// wire JSON. The crate omits a field holding that field's own default while
+/// every client has always read a tool call's `kind` and `status`, so a tool
+/// call states both.
+pub(crate) fn notification(session: &str, update: acp::SessionUpdate) -> Value {
+    let call = matches!(update, acp::SessionUpdate::ToolCall(_));
+    let mut params =
+        serde_json::to_value(acp::SessionNotification::new(session.to_owned(), update))
+            .expect("an ACP session notification is JSON");
+    if call {
+        let update = &mut params["update"];
+        if update.get("kind").is_none() {
+            update["kind"] = json!(acp::ToolKind::Other);
+        }
+        if update.get("status").is_none() {
+            update["status"] = json!(acp::ToolCallStatus::Pending);
+        }
     }
-    if message.get("status").is_none() {
-        message["status"] = json!("pending");
-    }
-    message
+    params
 }
 
 /// What a tool message says besides its status: the content it produced, the
@@ -485,9 +491,12 @@ fn replacements(input: &Value) -> Vec<(&str, &str)> {
 
 impl Projection {
     /// `cwd` is the session directory a relative tool path resolves against.
-    pub(crate) fn new(cwd: impl Into<PathBuf>) -> Self {
+    /// `compaction_updates` says the client declared `session.compaction`, so a
+    /// compaction is sent as the standard entity rather than as a tool call.
+    pub(crate) fn new(cwd: impl Into<PathBuf>, compaction_updates: bool) -> Self {
         Self {
             cwd: cwd.into(),
+            compaction_updates,
             ..Self::default()
         }
     }
@@ -511,7 +520,10 @@ impl Projection {
         }
     }
 
-    pub(crate) fn pending_exec(&mut self, task: &dim_agent_types::PendingExec) -> Value {
+    pub(crate) fn pending_exec(
+        &mut self,
+        task: &dim_agent_types::PendingExec,
+    ) -> acp::SessionUpdate {
         let id = json!(["background", task.task_id]).to_string();
         let mut messages = Messages::default();
         self.tool(
@@ -551,7 +563,7 @@ impl Projection {
             )
             .is_some();
         if !announced {
-            messages.push_call(
+            messages.push(acp::SessionUpdate::ToolCall(
                 acp::ToolCall::new(id, presentation.title)
                     .name(name)
                     .kind(presentation.kind)
@@ -561,7 +573,7 @@ impl Projection {
                     .raw_input(input)
                     .raw_output(fields.raw_output)
                     .meta(meta),
-            );
+            ));
             return;
         }
         let mut update = acp::ToolCallUpdateFields::new()
@@ -578,6 +590,27 @@ impl Projection {
         messages.push(acp::SessionUpdate::ToolCallUpdate(
             acp::ToolCallUpdate::new(id, update).meta(meta),
         ));
+    }
+
+    /// A compaction as the protocol's own entity, keyed by the start it belongs
+    /// to; the client declared `session.compaction`. It sends no `summary` by
+    /// choice: the replacement the completed fact carries is the model's new
+    /// context, stored exactly as produced, with `replacement_parts` locating
+    /// its strategy text, digest and pinned parts; it is not a summary written
+    /// for a user. The display compaction carries no text at all.
+    fn compaction(
+        &mut self,
+        start: u64,
+        status: acp::CompactionStatus,
+        error: Option<String>,
+        messages: &mut Messages,
+    ) {
+        let meta = messages.meta(None);
+        let mut update = acp::CompactionUpdate::new(compaction_id(start), status).meta(meta);
+        if let Some(error) = error {
+            update = update.error(error);
+        }
+        messages.push(acp::SessionUpdate::CompactionUpdate(update));
     }
 
     fn tool_update(
@@ -612,7 +645,7 @@ impl Projection {
         content
     }
 
-    pub(crate) fn event(&mut self, event: &Event) -> Vec<Value> {
+    pub(crate) fn event(&mut self, event: &Event) -> Vec<acp::SessionUpdate> {
         let turn = match &event.content {
             EventContent::TurnStart(data) => Some(data.turn_id.clone()),
             EventContent::Text(data) => Some(data.turn_id.clone()),
@@ -791,36 +824,57 @@ impl Projection {
             }
             EventContent::CompactionStart(data) => {
                 let automatic = !matches!(data.trigger, CompactionTrigger::Manual);
-                self.compactions.insert(event.sequence, automatic);
-                self.tool(
-                    json!(["compaction", event.sequence]).to_string(),
-                    "Context compaction",
-                    Value::Null,
-                    acp::ToolCallStatus::InProgress,
-                    ToolFields::default().lody(json!({"activity":{"version":1,"kind":"context_compaction","automatic":automatic}})),
-                    &mut messages,
-                );
+                self.compactions.insert(event.sequence, data.trigger);
+                if self.compaction_updates {
+                    self.compaction(
+                        event.sequence,
+                        acp::CompactionStatus::InProgress,
+                        None,
+                        &mut messages,
+                    );
+                } else {
+                    self.tool(
+                        compaction_id(event.sequence),
+                        "Context compaction",
+                        Value::Null,
+                        acp::ToolCallStatus::InProgress,
+                        ToolFields::default().lody(json!({"activity":{"version":1,"kind":"context_compaction","automatic":automatic}})),
+                        &mut messages,
+                    );
+                }
             }
             EventContent::CompactionSummary(data) => {
-                let automatic = data.start.and_then(|start| self.compactions.remove(&start));
+                let start = data.start.unwrap_or(event.sequence);
+                let automatic = data
+                    .start
+                    .and_then(|start| self.compactions.remove(&start))
+                    .map(|trigger| !matches!(trigger, CompactionTrigger::Manual));
                 let mut activity = json!({"version":1,"kind":"context_compaction"});
                 if let Some(automatic) = automatic {
                     activity["automatic"] = json!(automatic);
                 }
-                self.tool(
-                    json!(["compaction", data.start.unwrap_or(event.sequence)]).to_string(),
-                    "Context compaction",
-                    Value::Null,
-                    acp::ToolCallStatus::Completed,
-                    ToolFields::default().lody(json!({"activity":activity})),
-                    &mut messages,
-                );
+                if self.compaction_updates {
+                    self.compaction(start, acp::CompactionStatus::Completed, None, &mut messages);
+                } else {
+                    self.tool(
+                        compaction_id(start),
+                        "Context compaction",
+                        Value::Null,
+                        acp::ToolCallStatus::Completed,
+                        ToolFields::default().lody(json!({"activity":activity})),
+                        &mut messages,
+                    );
+                }
             }
             EventContent::Compaction(data) => {
-                let automatic = data.start.and_then(|start| self.compactions.remove(&start));
-                let (status, diagnostics, reason) = match &data.outcome {
+                let automatic = data
+                    .start
+                    .and_then(|start| self.compactions.remove(&start))
+                    .map(|trigger| !matches!(trigger, CompactionTrigger::Manual));
+                let (status, terminal, diagnostics, reason) = match &data.outcome {
                     ContextCompactionResult::Completed { diagnostics, .. } => (
                         acp::ToolCallStatus::Completed,
+                        acp::CompactionStatus::Completed,
                         Some(diagnostics.as_ref()),
                         None,
                     ),
@@ -829,16 +883,19 @@ impl Projection {
                         diagnostics,
                     } => (
                         acp::ToolCallStatus::Completed,
+                        acp::CompactionStatus::Completed,
                         Some(diagnostics.as_ref()),
                         Some(format!("Skipped: {reason}")),
                     ),
                     ContextCompactionResult::Failed { error, diagnostics } => (
                         acp::ToolCallStatus::Failed,
+                        acp::CompactionStatus::Failed,
                         diagnostics.as_deref(),
                         Some(error.clone()),
                     ),
                     ContextCompactionResult::Cancelled { reason } => (
                         acp::ToolCallStatus::Failed,
+                        acp::CompactionStatus::Cancelled,
                         None,
                         Some(format!("Cancelled: {reason}")),
                     ),
@@ -856,20 +913,31 @@ impl Projection {
                     activity["durationMs"] = json!(diagnostics.duration_ms);
                     fields = fields.raw_output(json!(diagnostics));
                 }
-                if let Some(reason) = reason {
+                if let Some(reason) = &reason {
                     if status == acp::ToolCallStatus::Failed {
                         activity["failureReason"] = json!(reason);
                     }
-                    fields = fields.content(vec![text_content(&reason)]);
+                    fields = fields.content(vec![text_content(reason)]);
                 }
-                self.tool(
-                    json!(["compaction", data.start.unwrap_or(event.sequence)]).to_string(),
-                    "Context compaction",
-                    Value::Null,
-                    status,
-                    fields.lody(json!({"activity":activity})),
-                    &mut messages,
-                );
+                let start = data.start.unwrap_or(event.sequence);
+                if self.compaction_updates {
+                    let error = match terminal {
+                        acp::CompactionStatus::Failed | acp::CompactionStatus::Cancelled => {
+                            reason.clone()
+                        }
+                        _ => None,
+                    };
+                    self.compaction(start, terminal, error, &mut messages);
+                } else {
+                    self.tool(
+                        compaction_id(start),
+                        "Context compaction",
+                        Value::Null,
+                        status,
+                        fields.lody(json!({"activity":activity})),
+                        &mut messages,
+                    );
+                }
             }
             EventContent::TurnEnd(_) => self.turn = None,
             EventContent::ModelEnd(data) => {
@@ -881,7 +949,7 @@ impl Projection {
         messages.updates
     }
 
-    pub(crate) fn progress(&mut self, progress: Progress) -> Vec<Value> {
+    pub(crate) fn progress(&mut self, progress: Progress) -> Vec<acp::SessionUpdate> {
         let mut messages = Messages::new(self.turn.clone());
         if let Some(id) = progress.request_id {
             if self.closed_requests.contains(&id) {
@@ -916,6 +984,7 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    /// The messages an input replays, as the wire carries them.
     fn replay(blocks: Value) -> Vec<Value> {
         let mut projection = Projection::default();
         assert!(
@@ -927,11 +996,15 @@ mod tests {
                 })))
                 .is_empty()
         );
-        projection.event(&event(json!({
+        let updates = projection.event(&event(json!({
             "id":"consumed-1","sequence":10,"create_at":2,
             "type":"input","name":"consumed",
             "data":{"input_id":"input-1"},
-        })))
+        })));
+        updates
+            .into_iter()
+            .map(|update| serde_json::to_value(update).expect("an ACP session update is JSON"))
+            .collect()
     }
 
     #[test]

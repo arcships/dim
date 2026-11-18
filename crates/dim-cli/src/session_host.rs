@@ -485,7 +485,12 @@ async fn run(
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 if worker.session_id.is_empty()
-                    && matches!(command, Command::Submit(..) | Command::SubmitDraft(..) | Command::ShellRun { .. })
+                    && matches!(
+                        command,
+                        Command::Submit(..)
+                            | Command::SubmitDraft(..)
+                            | Command::ShellRun { .. }
+                    )
                     && let Err(error) = worker.start_session().await
                 {
                     if !worker.session_id.is_empty() {
@@ -495,21 +500,31 @@ async fn run(
                         });
                         break;
                     }
-                    let error = if worker.options.startup.is_some() || worker.model_session.is_some() {
-                        error.to_string()
-                    } else {
-                        no_session(&error)
-                    };
+                    let error =
+                        if worker.options.startup.is_some() || worker.model_session.is_some() {
+                            error.to_string()
+                        } else {
+                            no_session(&error)
+                        };
                     worker.send(match command {
-                        Command::ShellRun { run_id, .. } => Update::ShellDone { run_id, result: Err(error) },
+                        Command::ShellRun { run_id, .. } => Update::ShellDone {
+                            run_id,
+                            result: Err(error),
+                        },
                         _ => Update::SubmitNotSent(error),
                     });
                     continue;
                 }
                 if matches!(command, Command::Submit(..) | Command::SubmitDraft(..))
-                    && worker.task_history.get(&worker.focus).is_some_and(|history| history.error.is_some())
+                    && worker
+                        .task_history
+                        .get(&worker.focus)
+                        .is_some_and(|history| history.error.is_some())
                 {
-                    worker.send(Update::SubmitNotSent("Conversation state could not be read; retry the read before submitting".into()));
+                    worker.send(Update::SubmitNotSent(
+                        "Conversation state could not be read; retry the read before submitting"
+                            .into(),
+                    ));
                     continue;
                 }
                 if let Err(error) = worker.command(command).await {
@@ -531,7 +546,9 @@ async fn run(
                 }
             }
             Some(callback) = worker.mcp_callbacks.1.recv() => worker.mcp_callback(callback).await,
-            Some(callback) = worker.login_callbacks.1.recv() => worker.login_callback(callback).await,
+            Some(callback) = worker.login_callbacks.1.recv() => {
+                worker.login_callback(callback).await
+            },
             _ = tokio::time::sleep_until(output_poll.unwrap_or_else(tokio::time::Instant::now)),
                 if output_poll.is_some() => {
                     if let Err(error) = worker.poll_task_output().await {
@@ -543,7 +560,9 @@ async fn run(
                 if login_poll.is_some() => worker.poll_login().await,
             _ = tokio::time::sleep_until(workflow_poll.unwrap_or_else(tokio::time::Instant::now)),
                 if workflow_poll.is_some() => {},
-            _ = tokio::time::sleep_until(worker.publish_at.unwrap_or_else(tokio::time::Instant::now)),
+            _ = tokio::time::sleep_until(
+                worker.publish_at.unwrap_or_else(tokio::time::Instant::now),
+            ),
                 if worker.publish_at.is_some() => worker.publish(),
         }
     }
@@ -3417,14 +3436,46 @@ impl Worker {
             models: Vec<serde_json::Value>,
         }
         let result: crate::Result<String> = async {
-            if let Some(existing) = self.provider_summaries().await?.into_iter().find(|provider| provider.provider_id == provider_id) {
-                return Err(format!("Provider {} already exists; review the retained draft and press Apply again", existing.display_name).into());
+            if let Some(existing) = self
+                .provider_summaries()
+                .await?
+                .into_iter()
+                .find(|provider| provider.provider_id == provider_id)
+            {
+                return Err(format!(
+                    "Provider {} already exists; review the retained draft and press Apply again",
+                    existing.display_name
+                )
+                .into());
             }
-            let connection = json!({"driverKind":"openai-compatible", "auth":{"type":"bearer"}, "baseUrl":base_url, "credential":{"action":"set", "value":api_key}});
-            let probed: Probed = self.client.typed("provider.probe", json!({"providerId":provider_id,"connection":connection})).await?;
-            self.client.rpc("provider.create", json!({"providerId":provider_id,"displayName":name,"connection":connection,"models":probed.models,"enabled":true})).await?;
+            let connection = json!({
+                "driverKind": "openai-compatible",
+                "auth": {"type": "bearer"},
+                "baseUrl": base_url,
+                "credential": {"action": "set", "value": api_key},
+            });
+            let probed: Probed = self
+                .client
+                .typed(
+                    "provider.probe",
+                    json!({"providerId": provider_id, "connection": connection}),
+                )
+                .await?;
+            self.client
+                .rpc(
+                    "provider.create",
+                    json!({
+                        "providerId": provider_id,
+                        "displayName": name,
+                        "connection": connection,
+                        "models": probed.models,
+                        "enabled": true,
+                    }),
+                )
+                .await?;
             Ok(format!("Added {name}"))
-        }.await;
+        }
+        .await;
         result.map_err(|error| error.to_string())
     }
 

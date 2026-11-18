@@ -20,8 +20,11 @@ enum Action {
     TaskB,
     Steer,
     Plain,
+    Consume,
+    Delete,
     Reload,
     TakeA,
+    TakeB,
 }
 
 struct IdleLoop(tokio::sync::watch::Sender<LoopSnapshot>);
@@ -63,75 +66,201 @@ impl DynPlugin for Probe {
     }
 }
 
-fn expected(history: &[Action], taken: &[usize], task: Option<&str>) -> Option<usize> {
-    let candidates: Vec<_> = history
+/// The input id a trace action appends, so a later `Consume` or `Delete`
+/// names it.
+fn input_id(position: usize) -> String {
+    format!("input-{position}")
+}
+
+/// The task a notice carries; a steer carries none.
+fn task(action: Action) -> Option<&'static str> {
+    match action {
+        Action::TaskA => Some("a"),
+        Action::TaskB => Some("b"),
+        _ => None,
+    }
+}
+
+/// What the recorded actions leave on the branch: the arrivals still released
+/// and unread, in release order, and those the model read in this turn.
+#[derive(Default)]
+struct Record {
+    live: Vec<usize>,
+    read: Vec<usize>,
+}
+
+/// Replays the record the actions leave. `Start` opens the turn and `End`
+/// closes and clears it; `Reload` clears the arrivals but keeps the turn. An
+/// input released during an open turn arrives, and `Consume` or `Delete`
+/// retires the latest arrival still on record, as the test writer's own action
+/// does; only `Consume` records its task as read.
+fn replay(history: &[Action]) -> Record {
+    let mut record = Record::default();
+    let mut open = false;
+    for (position, action) in history.iter().enumerate() {
+        match action {
+            Action::Start => open = true,
+            Action::End => {
+                open = false;
+                record = Record::default();
+            }
+            Action::Reload => record = Record::default(),
+            Action::TaskA | Action::TaskB | Action::Steer => {
+                if open {
+                    record.live.push(position);
+                }
+            }
+            Action::Consume | Action::Delete => {
+                if let Some(position) = record.live.pop()
+                    && *action == Action::Consume
+                {
+                    record.read.push(position);
+                }
+            }
+            Action::Plain | Action::TakeA | Action::TakeB => {}
+        }
+    }
+    record
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reason {
+    Steer,
+    Notification,
+    AlreadyNotified,
+    Timeout,
+}
+
+/// How many calls returned each reason, so the run shows every trace family
+/// reached the branch it exercises.
+#[derive(Default)]
+struct Cover {
+    steer: usize,
+    notification: usize,
+    already_notified: usize,
+    timeout: usize,
+}
+
+impl Cover {
+    fn add(&mut self, reason: Reason) {
+        let count = match reason {
+            Reason::Steer => &mut self.steer,
+            Reason::Notification => &mut self.notification,
+            Reason::AlreadyNotified => &mut self.already_notified,
+            Reason::Timeout => &mut self.timeout,
+        };
+        *count += 1;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Expected {
+    reason: Reason,
+    /// The history position the call spends, if it takes an arrival.
+    position: Option<usize>,
+    /// The task the result names, if it names one.
+    task: Option<&'static str>,
+}
+
+/// The result the contract requires after `history`, given the positions
+/// earlier calls returned.
+fn expected(history: &[Action], taken: &[usize], task_id: Option<&str>) -> Expected {
+    let record = replay(history);
+    let available: Vec<usize> = record
+        .live
         .iter()
-        .enumerate()
-        .filter(|(i, action)| {
-            matches!(action, Action::TaskA | Action::TaskB | Action::Steer)
-                && !taken.contains(i)
-                && history[..*i]
-                    .iter()
-                    .rev()
-                    .find(|a| matches!(a, Action::Start | Action::End))
-                    == Some(&Action::Start)
-                && !history[i + 1..]
-                    .iter()
-                    .any(|a| matches!(a, Action::End | Action::Reload))
-        })
+        .copied()
+        .filter(|position| !taken.contains(position))
         .collect();
-    candidates
+    if let Some(position) = available
         .iter()
-        .find(|(_, a)| **a == Action::Steer)
-        .or_else(|| {
-            candidates.iter().find(|(_, a)| match a {
-                Action::TaskA => task.is_none_or(|id| id == "a"),
-                Action::TaskB => task.is_none_or(|id| id == "b"),
-                _ => false,
-            })
-        })
-        .map(|(i, _)| *i)
+        .copied()
+        .find(|position| history[*position] == Action::Steer)
+    {
+        return Expected {
+            reason: Reason::Steer,
+            position: Some(position),
+            task: None,
+        };
+    }
+    if let Some(position) = available.iter().copied().find(|position| {
+        task(history[*position]).is_some_and(|id| task_id.is_none_or(|task| task == id))
+    }) {
+        return Expected {
+            reason: Reason::Notification,
+            position: Some(position),
+            task: task(history[position]),
+        };
+    }
+    if let Some(position) = record
+        .read
+        .iter()
+        .copied()
+        .find(|position| task_id.is_some_and(|id| task(history[*position]) == Some(id)))
+    {
+        return Expected {
+            reason: Reason::AlreadyNotified,
+            position: None,
+            task: task(history[position]),
+        };
+    }
+    Expected {
+        reason: Reason::Timeout,
+        position: None,
+        task: None,
+    }
+}
+
+/// The single task id a result names.
+fn one(task_ids: &[String], history: &[Action]) -> Option<String> {
+    assert_eq!(
+        task_ids.len(),
+        1,
+        "history={history:?}, task ids={task_ids:?}"
+    );
+    task_ids.first().cloned()
 }
 
 async fn compare(
     session: &Session,
     history: &[Action],
     taken: &mut Vec<usize>,
-    task: Option<&str>,
+    task_id: Option<&str>,
+    cover: &mut Cover,
 ) {
-    let expected = expected(history, taken, task);
+    let expected = expected(history, taken, task_id);
     let result = session
         .service::<Wait>("main")
         .unwrap()
         .wait(
-            task.map(str::to_owned),
+            task_id.map(str::to_owned),
             0,
             Arc::new(|| Box::pin(std::future::pending())),
         )
         .await
         .unwrap();
-    let actual = match result {
-        WaitResult::Notification { task_ids, .. } => {
-            assert_eq!(task_ids.len(), 1);
-            Some(if task_ids[0] == "a" {
-                Action::TaskA
-            } else {
-                assert_eq!(task_ids[0], "b");
-                Action::TaskB
-            })
+    let (reason, named) = match &result {
+        WaitResult::Notification { task_ids, .. } => (Reason::Notification, one(task_ids, history)),
+        WaitResult::UserSteer { .. } => (Reason::Steer, None),
+        WaitResult::AlreadyNotified { task_ids, .. } => {
+            (Reason::AlreadyNotified, one(task_ids, history))
         }
-        WaitResult::UserSteer { .. } => Some(Action::Steer),
-        WaitResult::Timeout { .. } => None,
+        WaitResult::Timeout { .. } => (Reason::Timeout, None),
         other => panic!("unexpected result for {history:?}: {other:?}"),
     };
     assert_eq!(
-        actual,
-        expected.map(|i| history[i]),
-        "history={history:?}, taken={taken:?}, task={task:?}"
+        reason, expected.reason,
+        "history={history:?}, taken={taken:?}, task={task_id:?}, result={result:?}"
     );
-    if let Some(i) = expected {
-        taken.push(i);
+    assert_eq!(
+        named.as_deref(),
+        expected.task,
+        "history={history:?}, taken={taken:?}, task={task_id:?}, result={result:?}"
+    );
+    if let Some(position) = expected.position {
+        taken.push(position);
     }
+    cover.add(reason);
 }
 
 #[tokio::test]
@@ -168,7 +297,9 @@ async fn wait_timeline_traces_match_the_notification_contract() {
             },
         ));
     let host = MinimalHost::start(&builder).await.unwrap();
-    let alphabet = [Start, End, TaskA, TaskB, Steer, Plain, Reload, TakeA];
+    let alphabet = [
+        Start, End, TaskA, TaskB, Steer, Plain, Consume, Delete, Reload, TakeA, TakeB,
+    ];
     let mut traces = Vec::new();
     for a in alphabet {
         for b in alphabet {
@@ -182,13 +313,24 @@ async fn wait_timeline_traces_match_the_notification_contract() {
         vec![Start, TaskA, Reload, TaskB, TakeA],
         vec![Start, TaskA, End, Start, TaskB],
         vec![Start, TaskA, TakeA, TaskA, TakeA],
+        vec![Start, TaskA, Steer, Consume, Consume, TakeA],
+        vec![Start, TaskB, TaskA, Consume, TakeA, TakeA],
+        vec![Start, TaskA, Consume, TakeA, TakeA],
+        vec![Start, TaskB, Consume, TakeB, TakeB],
+        vec![Start, TaskB, Delete, TakeB, TakeB],
+        vec![Start, TaskB, Consume, End, TakeB],
+        vec![Start, TaskB, Consume, Reload, TakeB],
+        vec![Start, TaskA, TakeA, Consume, TakeA],
+        vec![Start, TaskA, TaskB, Consume, TakeB],
+        vec![Start, TaskB, Consume, TaskB, TakeB, TakeB],
     ]);
+    let mut cover = Cover::default();
     for trace in &traces {
         let session = host.create_session(SessionConfig::default()).await.unwrap();
         let (timeline, ctx) = seen.lock().unwrap().clone().unwrap();
         let mut history = Vec::new();
         let mut taken = Vec::new();
-        for action in trace {
+        for (position, action) in trace.iter().enumerate() {
             match action {
                 Reload => {
                     let id = session
@@ -201,7 +343,24 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                         .id;
                     ctx.view(id).unwrap().restart().await.unwrap();
                 }
-                TakeA => compare(&session, &history, &mut taken, Some("a")).await,
+                TakeA => compare(&session, &history, &mut taken, Some("a"), &mut cover).await,
+                TakeB => compare(&session, &history, &mut taken, Some("b"), &mut cover).await,
+                Consume | Delete => {
+                    let latest = replay(&history).live.last().copied();
+                    if let Some(latest) = latest {
+                        let kind = if *action == Consume {
+                            EventKind::InputConsumed(InputConsumedData {
+                                input_id: input_id(latest),
+                            })
+                        } else {
+                            EventKind::InputDeleted(InputDeletedData {
+                                input_id: input_id(latest),
+                            })
+                        };
+                        timeline.append(kind.into()).unwrap();
+                        session.idle("main").await.unwrap();
+                    }
+                }
                 _ => {
                     let draft = match action {
                         Start => EventKind::TurnStart(TurnStartData {
@@ -224,7 +383,8 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                                     } else {
                                         InputMode::Steer
                                     }),
-                                )));
+                                )))
+                                .with_id(input_id(position));
                             if matches!(action, TaskA | TaskB) {
                                 let task = if *action == TaskA { "a" } else { "b" };
                                 draft.tags = Some(vec![format!("{WAKE_TASK_TAG}{task}")]);
@@ -235,13 +395,25 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                     };
                     timeline.append(draft).unwrap();
                     session.idle("main").await.unwrap();
+                    if matches!(action, TaskA | TaskB | Steer | Plain) {
+                        timeline
+                            .append(
+                                EventKind::InputApplied(InputAppliedData {
+                                    input_id: input_id(position),
+                                    mode: None,
+                                })
+                                .into(),
+                            )
+                            .unwrap();
+                        session.idle("main").await.unwrap();
+                    }
                 }
             }
             history.push(*action);
         }
-        compare(&session, &history, &mut taken, Some("a")).await;
+        compare(&session, &history, &mut taken, Some("a"), &mut cover).await;
         for _ in 0..=history.len() {
-            compare(&session, &history, &mut taken, None).await;
+            compare(&session, &history, &mut taken, None, &mut cover).await;
         }
         session.close().await.unwrap();
     }
@@ -286,12 +458,18 @@ async fn wait_timeline_traces_match_the_notification_contract() {
             })
         };
         timeline.append(boundary.into()).unwrap();
+        let steer = EventDraft::from(EventKind::InputMessage(InputMessageData::text(
+            "during recovery",
+            Some(InputMode::Steer),
+        )))
+        .with_id(input_id(0));
+        timeline.append(steer).unwrap();
         timeline
             .append(
-                EventKind::InputMessage(InputMessageData::text(
-                    "during recovery",
-                    Some(InputMode::Steer),
-                ))
+                EventKind::InputApplied(InputAppliedData {
+                    input_id: input_id(0),
+                    mode: None,
+                })
                 .into(),
             )
             .unwrap();
@@ -304,13 +482,35 @@ async fn wait_timeline_traces_match_the_notification_contract() {
             vec![Reload, Start, Steer]
         };
         let mut taken = Vec::new();
-        compare(&session, &history, &mut taken, None).await;
-        compare(&session, &history, &mut taken, None).await;
+        let mut recovery_cover = Cover::default();
+        compare(&session, &history, &mut taken, None, &mut recovery_cover).await;
+        compare(&session, &history, &mut taken, None, &mut recovery_cover).await;
+        let outcomes = (recovery_cover.steer, recovery_cover.timeout);
+        assert_eq!(
+            outcomes,
+            if initially_open { (0, 2) } else { (1, 1) },
+            "the post-cut boundary decides whether the released steer can end a wait"
+        );
         session.close().await.unwrap();
     }
     host.close().await.unwrap();
     println!(
-        "checked {} real Timeline/Dispatcher/Wait traces",
-        traces.len()
+        "checked {} real Timeline/Dispatcher/Wait traces: {} steer, {} \
+         notification, {} already notified, {} timeout",
+        traces.len(),
+        cover.steer,
+        cover.notification,
+        cover.already_notified,
+        cover.timeout
+    );
+    assert_eq!(
+        [
+            cover.steer > 0,
+            cover.notification > 0,
+            cover.already_notified > 0,
+            cover.timeout > 0,
+        ],
+        [true; 4],
+        "every trace family must reach its outcome"
     );
 }

@@ -3308,6 +3308,12 @@
         "removing": false
       },
       {
+        "service": "dim_agent_capabilities::file_storage::face::FsHost",
+        "provider": 4,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_agent_capabilities::host::AuxiliaryModel",
         "provider": 17,
         "generation": 1,
@@ -3712,6 +3718,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#executionSettingsHost",
         "provider": 24,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#fsHost",
+        "provider": 4,
         "generation": 1,
         "removing": false
       },

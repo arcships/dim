@@ -1,12 +1,21 @@
 use crate::rpc::Rpc;
-use agent_client_protocol::Error;
-use dim_agent_types::{ModelId, PermissionPolicy};
+use agent_client_protocol::{Error, schema::v1 as acp};
+use dim_agent_types::{ModelId, PermissionPolicy, PermissionPreset};
 use dim_client::wire::{Configuration, Event, EventContent};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) const MODES: [&str; 3] = ["read-only", "workspace-write", "full-access"];
+/// A permission preset as the ACP mode id that names it: the same spelling
+/// `MODES` lists and `session/set_mode` accepts.
+pub(crate) fn mode(preset: PermissionPreset) -> &'static str {
+    match preset {
+        PermissionPreset::ReadOnly => "read-only",
+        PermissionPreset::WorkspaceWrite => "workspace-write",
+        PermissionPreset::FullAccess => "full-access",
+    }
+}
 /// The `effort` value that says the Session sends no reasoning effort, so the
 /// model's own default stays in force. It is not a native effort name, and
 /// choosing it clears the Session's effort.
@@ -22,6 +31,13 @@ pub(crate) struct Model {
     pub provider: String,
     pub id: String,
     pub name: String,
+}
+/// The configuration part of a session response: the options every response
+/// states, and the modes a Session with a permission policy has.
+#[derive(Clone, Default)]
+pub(crate) struct ConfigResponse {
+    pub config_options: Vec<acp::SessionConfigOption>,
+    pub modes: Option<acp::SessionModeState>,
 }
 #[derive(Default, Clone)]
 pub(crate) struct Config {
@@ -155,10 +171,54 @@ impl Config {
         }
     }
 
-    pub(crate) fn options(&self) -> Vec<Value> {
+    /// The Session's configuration options and, when it has a permission
+    /// policy, its modes: what `session/new`, `session/load`, `session/resume`
+    /// and `session/set_config_option` answer, and what an update carries when
+    /// the configuration changes.
+    pub(crate) fn response(&self) -> ConfigResponse {
+        let modes = self.policy.as_ref().map(|policy| {
+            acp::SessionModeState::new(
+                mode(policy.policy.preset),
+                MODES
+                    .iter()
+                    .map(|mode| acp::SessionMode::new(*mode, *mode))
+                    .collect(),
+            )
+        });
+        ConfigResponse {
+            config_options: self.options(),
+            modes,
+        }
+    }
+
+    pub(crate) fn options(&self) -> Vec<acp::SessionConfigOption> {
+        fn choice(value: &str, name: &str) -> acp::SessionConfigSelectOption {
+            acp::SessionConfigSelectOption::new(value.to_owned(), name.to_owned())
+        }
+        fn select(
+            id: &str,
+            name: &str,
+            category: acp::SessionConfigOptionCategory,
+            current: &str,
+            choices: Vec<acp::SessionConfigSelectOption>,
+        ) -> acp::SessionConfigOption {
+            acp::SessionConfigOption::select(
+                id.to_owned(),
+                name.to_owned(),
+                current.to_owned(),
+                choices,
+            )
+            .category(category)
+        }
         let mut options = Vec::new();
         if let Some(policy) = &self.policy {
-            options.push(json!({"id":"mode","name":"Permission mode","category":"mode","type":"select","currentValue":policy.policy.preset,"options":MODES.map(|mode| json!({"value":mode,"name":mode}))}));
+            options.push(select(
+                "mode",
+                "Permission mode",
+                acp::SessionConfigOptionCategory::Mode,
+                mode(policy.policy.preset),
+                MODES.iter().map(|mode| choice(mode, mode)).collect(),
+            ));
         }
         if let Some(current) = &self.model
             && self
@@ -166,7 +226,16 @@ impl Config {
                 .iter()
                 .any(|model| model.id == current.model_id && model.provider == current.provider_id)
         {
-            options.push(json!({"id":"model","name":"Model","category":"model","type":"select","currentValue":current.model_id,"options":self.models.iter().map(|model| json!({"value":model.id,"name":model.name})).collect::<Vec<_>>()}));
+            options.push(select(
+                "model",
+                "Model",
+                acp::SessionConfigOptionCategory::Model,
+                &current.model_id,
+                self.models
+                    .iter()
+                    .map(|model| choice(&model.id, &model.name))
+                    .collect(),
+            ));
         }
         if let Some((choices, current)) = self.effort() {
             let current = current.unwrap_or(PROVIDER_DEFAULT);
@@ -176,7 +245,13 @@ impl Config {
             if !values.iter().any(|value| value == current) {
                 values.push(current.to_owned());
             }
-            options.push(json!({"id":"effort","name":"Reasoning effort","category":"thought_level","type":"select","currentValue":current,"options":values.into_iter().map(|value| json!({"value":value,"name":value})).collect::<Vec<_>>()}));
+            options.push(select(
+                "effort",
+                "Reasoning effort",
+                acp::SessionConfigOptionCategory::ThoughtLevel,
+                current,
+                values.iter().map(|value| choice(value, value)).collect(),
+            ));
         }
         options
     }
@@ -207,14 +282,6 @@ impl Config {
             .as_ref()
             .and_then(|preferences| preferences.reasoning_effort.as_deref());
         Some((choices, adopted))
-    }
-
-    pub(crate) fn response(&self) -> Value {
-        let mut value = json!({"configOptions":self.options()});
-        if let Some(policy) = &self.policy {
-            value["modes"] = json!({"currentModeId":policy.policy.preset,"availableModes":MODES.map(|mode|json!({"id":mode,"name":mode}))});
-        }
-        value
     }
 
     pub(crate) async fn set(

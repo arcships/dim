@@ -12,26 +12,33 @@
     {
       "config": "docs/design/examples/capability-models/WaitRuntime.cfg",
       "module": "docs/design/examples/capability-models/WaitRuntime.tla",
-      "module_sha256": "7653dfcd2d976996130b3fac8cedee1f4c991827f33d3e5f65f7a7c618ae934d",
-      "config_sha256": "3bad95a01f79158fb3f71c5e289f86560a1eb1a3ef0a5537fd70ae94f9350e32",
+      "module_sha256": "17590f4de41f258ee9b98b478f5dd3f0dcb1affd6ac1c52c5a72eeb977dd3bbe",
+      "config_sha256": "0975f55054ed300191e340893221171a3ef5a0fe009909002d91046a9fb96752",
       "exit": 0,
       "expected_exit": 0,
-      "generated": 16173887,
-      "distinct": 2665908,
+      "seconds": 1691,
+      "generated": 83033273,
+      "distinct": 12521808,
       "queue_remaining": 0,
-      "depth": 25,
-      "fingerprint": 77,
-      "seed": 1634465224171348137,
-      "finished": "Finished in 04min 03s at (2026-11-15 23:53:49)",
+      "depth": 29,
+      "fingerprint": 12,
+      "seed": -3167114362044335681,
+      "finished": "Finished in 28min 10s at (2026-11-18 18:18:12)",
+      "note": "Re-run on 2026-11-18 of the model as revised by #1821, on code base 678b000d7 with Java 17.0.21; the header records the 2026-11-15 first-fill batch. This entry replaces that batch's earlier run of WaitRuntime (7653dfcd / 3bad95a0).",
       "invariants": [
         "SlotTracked",
-        "TakenAbsent",
+        "PendingRegistered",
+        "TakenRegistered",
+        "AdoptedNotPending",
+        "AdoptedNotRegistered",
+        "TakenNotPending",
+        "QueueMatchesSet",
         "ClosedTurnEmpty",
         "RestoredNoNotifications",
         "SelectionMatches",
-        "QueueMatchesSet",
         "OneOutcomePerCall",
-        "NoLostArrival"
+        "NoLostArrival",
+        "NotifiedInTurn"
       ],
       "properties": [
         "NoAdmissionAfterClose",
@@ -40,23 +47,29 @@
         "CloseDrains",
         "SteerPriority",
         "RejectPreservesCall",
-        "PendingSurvivesOtherEnd"
+        "PendingSurvivesOtherEnd",
+        "ReadRecordsTask",
+        "DeleteRecordsNothing",
+        "EndClearsNotified",
+        "RestoreClearsNotified",
+        "AlreadyNotifiedOnlyRead"
       ]
     },
     {
       "config": "docs/design/examples/capability-models/WaitSelectionCoverage.cfg",
       "module": "docs/design/examples/capability-models/WaitSelectionCoverage.tla",
-      "module_sha256": "26dbb9b272fc93bb37a1f2ab1f75ee5477b8fb12eac4fa82751799c2510aa12c",
+      "module_sha256": "2c39bb9de20ffba21d59ee9da12d6c9baf3caa311084031e987772a7e0ac133a",
       "config_sha256": "1938ab1ccbfa29d9fd57a955b9b5ca8c114d90b5d064ede6404c3c0b9f41ca1f",
       "exit": 0,
       "expected_exit": 0,
-      "generated": 17902873,
-      "distinct": 2981180,
+      "seconds": 370,
+      "generated": 115175163,
+      "distinct": 17532380,
       "queue_remaining": 0,
-      "depth": 25,
-      "fingerprint": 59,
-      "seed": 342233108249595330,
-      "finished": "Finished in 01min 00s at (2026-11-15 23:54:50)",
+      "depth": 29,
+      "fingerprint": 22,
+      "seed": 9187552297684158024,
+      "finished": "Finished in 06min 09s at (2026-11-18 18:36:08)",
       "invariants": [],
       "properties": [
         "FirstPendingNotice"
@@ -64,9 +77,10 @@
       "dependencies": [
         {
           "module": "docs/design/examples/capability-models/WaitRuntime.tla",
-          "sha256": "7653dfcd2d976996130b3fac8cedee1f4c991827f33d3e5f65f7a7c618ae934d"
+          "sha256": "17590f4de41f258ee9b98b478f5dd3f0dcb1affd6ac1c52c5a72eeb977dd3bbe"
         }
-      ]
+      ],
+      "note": "Re-run on 2026-11-18 against the model as revised by #1821, on code base 678b000d7 with Java 17.0.21. FirstPendingNotice now compares with the first item of Queue, the pending set, because s.arrivals also holds notices a wait already took until the model reads them. The first run against the revised model, with the comparison still on s.arrivals, failed with exit 13 after 2,695,227 generated and 562,272 distinct states, depth 12, on a taken-but-unread notice still at the head."
     },
     {
       "config": "docs/design/examples/capability-models/WaitHandoff.cfg",

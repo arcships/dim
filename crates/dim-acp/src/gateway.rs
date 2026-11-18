@@ -36,7 +36,7 @@ pub(crate) enum Work {
     Authenticated {
         reply: Responder,
         provider: String,
-        result: Result<Value, Error>,
+        result: Result<acp::AuthenticateResponse, Error>,
     },
     Created {
         reply: Responder,
@@ -69,6 +69,7 @@ pub(crate) enum Work {
     },
     Removed {
         id: String,
+        method: &'static str,
         reply: Responder,
         result: Result<Value, Error>,
     },
@@ -124,6 +125,19 @@ pub(crate) struct SessionInfo {
     updated_at: Option<u64>,
 }
 
+/// What `_lody/session/history/read` answers: the window's committed head, the
+/// cursor the client continues from, and whether that window ended.
+#[derive(serde::Serialize)]
+pub(crate) struct HistoryPage {
+    through: u64,
+    before: Option<u64>,
+    complete: bool,
+}
+
+/// How long a recovering Session waits between lookups of the input a client
+/// submitted before the connection was lost.
+const RETRY: std::time::Duration = std::time::Duration::from_millis(250);
+
 pub(crate) struct RecoveredSession {
     prepared: Prepared,
     input: Option<Event>,
@@ -171,7 +185,7 @@ struct Prompt {
     turn: Option<String>,
     cancelled: bool,
     cancelling: bool,
-    terminal: Option<Result<Value, Error>>,
+    terminal: Option<Result<acp::PromptResponse, Error>>,
     uploading: CancellationToken,
     cancel_uncertain: bool,
     consumed: HashMap<String, String>,
@@ -179,7 +193,7 @@ struct Prompt {
     deleted: HashSet<String>,
 }
 impl Prompt {
-    fn accepted(&mut self, input: String) -> Option<Result<Value, Error>> {
+    fn accepted(&mut self, input: String) -> Option<Result<acp::PromptResponse, Error>> {
         let deleted = self.deleted.remove(&input);
         self.deleted.clear();
         if self.turn.is_none() {
@@ -190,28 +204,43 @@ impl Prompt {
         let outcome = self.turn.as_ref().and_then(|turn| self.ended.remove(turn));
         self.ended.clear();
         if deleted {
-            Some(Ok(json!({"stopReason":"cancelled"})))
+            Some(Ok(cancelled_prompt(false)))
         } else {
             outcome.map(|outcome| prompt_outcome(self.cancelled, &outcome))
         }
     }
 }
-fn prompt_outcome(cancelled: bool, outcome: &TurnOutcome) -> Result<Value, Error> {
+fn prompt_outcome(cancelled: bool, outcome: &TurnOutcome) -> Result<acp::PromptResponse, Error> {
     if cancelled {
-        return Ok(json!({"stopReason":"cancelled"}));
+        return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
     }
     // The turn's own end decides: an output-limit stop completes with that
     // reason, and a turn whose earlier step hit the limit but then continued
     // to a normal end did not stop at its limit.
     match outcome {
         TurnOutcome::Completed { reason } if reason == "output_limit" => {
-            Ok(json!({"stopReason":"max_tokens"}))
+            Ok(acp::PromptResponse::new(acp::StopReason::MaxTokens))
         }
-        TurnOutcome::Completed { .. } => Ok(json!({"stopReason":"end_turn"})),
-        TurnOutcome::Cancelled { .. } => Ok(json!({"stopReason":"cancelled"})),
+        TurnOutcome::Completed { .. } => Ok(acp::PromptResponse::new(acp::StopReason::EndTurn)),
+        TurnOutcome::Cancelled { .. } => Ok(acp::PromptResponse::new(acp::StopReason::Cancelled)),
         TurnOutcome::Failed { error } => {
             Err(Error::new(-32001, error.clone()).data(json!({"code":"turn_failed"})))
         }
+    }
+}
+
+/// A prompt that ends because the client cancelled it; `unconfirmed` says the
+/// App Server did not confirm the stop, so the client must not assume it did.
+fn cancelled_prompt(unconfirmed: bool) -> acp::PromptResponse {
+    let response = acp::PromptResponse::new(acp::StopReason::Cancelled);
+    if unconfirmed {
+        let mut meta = acp::Meta::new();
+        let mut dim = serde_json::Map::new();
+        dim.insert("nativeCancellation".into(), json!("unconfirmed"));
+        meta.insert("dim".into(), Value::Object(dim));
+        response.meta(meta)
+    } else {
+        response
     }
 }
 struct Interaction {
@@ -272,6 +301,7 @@ pub(crate) struct Gateway {
     auth_methods: Vec<crate::auth::Method>,
     authenticating: std::collections::HashSet<String>,
     subagent_events: bool,
+    compaction_updates: bool,
     recovering: bool,
     recovering_sessions: usize,
     outbox: Outbox,
@@ -284,6 +314,25 @@ fn busy() -> Error {
 }
 fn params<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, Error> {
     serde_json::from_value(value).map_err(|_| Error::invalid_params())
+}
+
+/// The bounded history a session response or a configuration update states in
+/// its `_meta["dim/history"]`: the branch's committed head, the cursor the
+/// client continues from, and whether the client replaces what it holds.
+fn history(through: u64, before: Option<u64>, replace: bool) -> acp::Meta {
+    let mut history = serde_json::Map::new();
+    history.insert("through".into(), json!(through));
+    history.insert(
+        "before".into(),
+        before.map_or(Value::Null, |before| json!(before)),
+    );
+    history.insert("complete".into(), json!(before.is_none()));
+    if replace {
+        history.insert("replace".into(), json!(true));
+    }
+    let mut meta = acp::Meta::new();
+    meta.insert("dim/history".into(), Value::Object(history));
+    meta
 }
 
 fn establishment(cwd: &Path, roots: usize) -> Result<(), Error> {
@@ -300,6 +349,40 @@ fn establishment(cwd: &Path, roots: usize) -> Result<(), Error> {
 }
 
 impl Gateway {
+    /// What this build advertises at initialize: the session lifecycle it
+    /// implements, the prompt content it accepts, and the `lody` extensions the
+    /// connected App Server supports.
+    fn capabilities(&self) -> acp::AgentCapabilities {
+        let fork = self.rpc.supports("session.fork") && self.rpc.supports("session.turn.get");
+        let mut lody = acp::Meta::new();
+        lody.insert("lody".into(), crate::lody::capabilities(fork));
+        acp::AgentCapabilities::new()
+            .load_session(true)
+            .prompt_capabilities(
+                acp::PromptCapabilities::new()
+                    .image(true)
+                    .embedded_context(true),
+            )
+            .session_capabilities(
+                acp::SessionCapabilities::new()
+                    .resume(acp::SessionResumeCapabilities::default())
+                    .list(acp::SessionListCapabilities::default())
+                    .close(acp::SessionCloseCapabilities::default())
+                    .fork(fork.then(acp::SessionForkCapabilities::default))
+                    .delete(
+                        self.rpc
+                            .supports("session.delete")
+                            .then(acp::SessionDeleteCapabilities::default),
+                    ),
+            )
+            .mcp_capabilities(
+                acp::McpCapabilities::new()
+                    .http(self.mcp.supported())
+                    .sse(self.mcp.supported()),
+            )
+            .meta(lody)
+    }
+
     // Keep the owned connection, task and host inputs explicit at composition.
     #[expect(
         clippy::too_many_arguments,
@@ -335,6 +418,7 @@ impl Gateway {
             auth_methods: Vec::new(),
             authenticating: std::collections::HashSet::new(),
             subagent_events: false,
+            compaction_updates: false,
             recovering: false,
             recovering_sessions: 0,
             outbox,
@@ -357,71 +441,125 @@ impl Gateway {
         self.tasks.spawn(async move {
             tokio::select! {
                 () = stop.cancelled() => {},
-                result = future => { let _ = incoming.send(Incoming::Work(generation,Box::new(result))).await; },
+                result = future => {
+                    let work = Incoming::Work(generation, Box::new(result));
+                    let _ = incoming.send(work).await;
+                }
             }
         });
     }
 
-    async fn update(&self, id: &str, mut update: Value) -> Result<(), Error> {
-        let paths = match update.get("content").and_then(Value::as_array) {
-            Some(blocks) => (0..blocks.len())
-                .map(|index| format!("/content/{index}/content"))
-                .collect::<Vec<_>>(),
-            None => vec!["/content".into()],
-        };
-        for path in paths {
-            if let Some(file_id) = update
-                .pointer(&format!("{path}/_meta/fileId"))
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-            {
-                use base64::{Engine, engine::general_purpose::STANDARD};
-                #[derive(Deserialize)]
-                struct Chunk {
-                    data: String,
-                    eof: bool,
-                }
-                let mut bytes = Vec::new();
-                loop {
-                    let chunk: Chunk = self
-                        .rpc
-                        .typed(
-                            "attachment.read",
-                            json!({"sessionId":id,"fileId":file_id,"offset":bytes.len()}),
-                        )
-                        .await?;
-                    if chunk.eof {
-                        break;
-                    }
-                    bytes.extend(
-                        STANDARD
-                            .decode(chunk.data)
-                            .map_err(|_| Error::internal_error())?,
-                    );
-                    if bytes.len() > 16 * 1024 * 1024 {
-                        return Err(Error::internal_error());
-                    }
-                }
-                let content = update
-                    .pointer_mut(&path)
-                    .and_then(Value::as_object_mut)
-                    .ok_or_else(Error::internal_error)?;
-                let meta = content
-                    .get_mut("_meta")
-                    .and_then(Value::as_object_mut)
-                    .ok_or_else(Error::internal_error)?;
-                meta.remove("fileId");
-                if meta.is_empty() {
-                    content.remove("_meta");
-                }
-                content.insert("data".into(), Value::String(STANDARD.encode(bytes)));
+    /// Sends one `session/update` for `id`, reading every image the session keeps
+    /// as an attachment into the block that carries it.
+    async fn update(&self, id: &str, update: acp::SessionUpdate) -> Result<(), Error> {
+        let update = match update {
+            acp::SessionUpdate::UserMessageChunk(mut chunk) => {
+                self.attach(id, &mut chunk.content).await?;
+                acp::SessionUpdate::UserMessageChunk(chunk)
             }
-        }
+            acp::SessionUpdate::AgentMessageChunk(mut chunk) => {
+                self.attach(id, &mut chunk.content).await?;
+                acp::SessionUpdate::AgentMessageChunk(chunk)
+            }
+            acp::SessionUpdate::AgentThoughtChunk(mut chunk) => {
+                self.attach(id, &mut chunk.content).await?;
+                acp::SessionUpdate::AgentThoughtChunk(chunk)
+            }
+            acp::SessionUpdate::ToolCall(mut call) => {
+                self.attach_all(id, &mut call.content).await?;
+                acp::SessionUpdate::ToolCall(call)
+            }
+            acp::SessionUpdate::ToolCallUpdate(mut call) => {
+                if let Some(content) = &mut call.fields.content {
+                    self.attach_all(id, content).await?;
+                }
+                acp::SessionUpdate::ToolCallUpdate(call)
+            }
+            update => update,
+        };
         self.outbox.notify(
             &self.cx,
             "session/update",
-            json!({"sessionId":id,"update":update}),
+            crate::projection::notification(id, update),
         )
+    }
+
+    async fn attach_all(
+        &self,
+        id: &str,
+        content: &mut Vec<acp::ToolCallContent>,
+    ) -> Result<(), Error> {
+        for content in content {
+            if let acp::ToolCallContent::Content(block) = content {
+                self.attach(id, &mut block.content).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// An update carrying the Session's whole configuration.
+    async fn update_configured(
+        &self,
+        id: &str,
+        options: Vec<acp::SessionConfigOption>,
+    ) -> Result<(), Error> {
+        self.update(
+            id,
+            acp::SessionUpdate::ConfigOptionUpdate(acp::ConfigOptionUpdate::new(options)),
+        )
+        .await
+    }
+
+    /// An image block naming an attachment: its bytes replace the empty `data`,
+    /// and the id it named is dropped from the block's `_meta`.
+    async fn attach(&self, id: &str, block: &mut acp::ContentBlock) -> Result<(), Error> {
+        let acp::ContentBlock::Image(image) = block else {
+            return Ok(());
+        };
+        let Some(file_id) = image
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("fileId"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+        else {
+            return Ok(());
+        };
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        #[derive(Deserialize)]
+        struct Chunk {
+            data: String,
+            eof: bool,
+        }
+        let mut bytes = Vec::new();
+        loop {
+            let chunk: Chunk = self
+                .rpc
+                .typed(
+                    "attachment.read",
+                    json!({"sessionId":id,"fileId":file_id,"offset":bytes.len()}),
+                )
+                .await?;
+            if chunk.eof {
+                break;
+            }
+            bytes.extend(
+                STANDARD
+                    .decode(chunk.data)
+                    .map_err(|_| Error::internal_error())?,
+            );
+            if bytes.len() > 16 * 1024 * 1024 {
+                return Err(Error::internal_error());
+            }
+        }
+        if let Some(meta) = &mut image.meta {
+            meta.remove("fileId");
+            if meta.is_empty() {
+                image.meta = None;
+            }
+        }
+        image.data = STANDARD.encode(bytes);
+        Ok(())
     }
 
     fn prepare(&mut self, id: String, cwd: String, waiter: Waiter, mcp_added: bool) {
@@ -482,6 +620,11 @@ impl Gateway {
                 .elicitation
                 .as_ref()
                 .is_some_and(|capabilities| capabilities.supports_form());
+            self.compaction_updates = initialize
+                .client_capabilities
+                .session
+                .as_ref()
+                .is_some_and(|capabilities| capabilities.compaction.is_some());
             if ![
                 "session.create",
                 "session.attach",
@@ -713,7 +856,11 @@ impl Gateway {
                         if !replay && session.cwd == cwd && !self.mcp.supported() {
                             let response = session.config.response();
                             self.commands(&id)?;
-                            return reply.respond(response);
+                            return reply.respond(
+                                acp::ResumeSessionResponse::new()
+                                    .modes(response.modes)
+                                    .config_options(response.config_options),
+                            );
                         }
                         let added = match self.mcp.plan(&id, servers) {
                             Ok(added) => added,
@@ -964,7 +1111,9 @@ impl Gateway {
                     let mut sent = false;
                     let result = async {
                         mcp.ensure(&id).await?;
-                        if let Some(provider) = provider { crate::auth::ensure(&rpc,&provider,&managed).await?; }
+                        if let Some(provider) = provider {
+                            crate::auth::ensure(&rpc, &provider, &managed).await?;
+                        }
                         let user = tokio::select! {
                             () = uploading.cancelled() => return Err(Error::new(-32800, "Request cancelled before submission")),
                             user = crate::content::upload(&rpc, &id, parts) => user?,
@@ -1007,7 +1156,12 @@ impl Gateway {
                                     Ok(result)
                                 }
                             });
-                        Work::Removed { id, reply, result }
+                        Work::Removed {
+                            id,
+                            method,
+                            reply,
+                            result,
+                        }
                     });
                     return Ok(());
                 }
@@ -1271,19 +1425,19 @@ impl Gateway {
                     Ok(methods) => {
                         self.auth_methods = methods;
                         self.initialized = true;
-                        let mut capabilities = json!({"loadSession":true,"promptCapabilities":{"image":true,"embeddedContext":true},"sessionCapabilities":{"resume":{},"list":{},"close":{}},"_meta":{"lody":crate::lody::capabilities(self.rpc.supports("session.fork") && self.rpc.supports("session.turn.get"))}});
-                        if self.mcp.supported() {
-                            capabilities["mcpCapabilities"] = json!({"http":true,"sse":true});
-                        }
-                        if self.rpc.supports("session.fork")
-                            && self.rpc.supports("session.turn.get")
-                        {
-                            capabilities["sessionCapabilities"]["fork"] = json!({});
-                        }
-                        if self.rpc.supports("session.delete") {
-                            capabilities["sessionCapabilities"]["delete"] = json!({});
-                        }
-                        reply.respond(json!({"protocolVersion":1,"agentInfo":{"name":"dimcode","version":self.version},"authMethods":self.auth_methods.iter().map(|method|method.value()).collect::<Vec<_>>(),"agentCapabilities":capabilities}))?;
+                        reply.respond(
+                            acp::InitializeResponse::new(
+                                agent_client_protocol::schema::ProtocolVersion::LATEST,
+                            )
+                            .agent_info(acp::Implementation::new("dimcode", &self.version))
+                            .auth_methods(
+                                self.auth_methods
+                                    .iter()
+                                    .map(|method| method.value())
+                                    .collect(),
+                            )
+                            .agent_capabilities(self.capabilities()),
+                        )?;
                     }
                     Err(error) => reply.respond_with_error(error)?,
                 }
@@ -1341,15 +1495,17 @@ impl Gateway {
                         let next = page
                             .next(before, through)
                             .map_err(|_| Error::internal_error())?;
-                        let mut projection = Projection::new(cwd);
+                        let mut projection = Projection::new(cwd, self.compaction_updates);
                         for event in page.events {
                             for update in projection.event(&decode_native(event)?) {
                                 self.update(&id, update).await?;
                             }
                         }
-                        reply.respond(
-                            json!({"through":page.through,"before":next,"complete":next.is_none()}),
-                        )?;
+                        reply.respond(HistoryPage {
+                            through: page.through,
+                            before: next,
+                            complete: next.is_none(),
+                        })?;
                     }
                     Err(error) => reply.respond_with_error(error)?,
                 }
@@ -1359,8 +1515,11 @@ impl Gateway {
                 preparation,
                 result,
             } => {
-                if !matches!(self.sessions.get(&id),Some(Slot::Loading(loading)) if loading.preparation == preparation)
-                {
+                let current = matches!(
+                    self.sessions.get(&id),
+                    Some(Slot::Loading(loading)) if loading.preparation == preparation
+                );
+                if !current {
                     return Ok(());
                 }
                 let Some(Slot::Loading(mut loading)) = self.sessions.remove(&id) else {
@@ -1382,7 +1541,7 @@ impl Gateway {
                         });
                         let mut session = Session {
                             cwd: loading.cwd.clone(),
-                            projection: Projection::new(loading.cwd),
+                            projection: Projection::new(loading.cwd, self.compaction_updates),
                             prompt: None,
                             command: None,
                             config: prepared.config,
@@ -1481,14 +1640,29 @@ impl Gateway {
                                     .respond_with_error(Error::request_cancelled())?;
                                 continue;
                             }
-                            let mut response = state.clone();
-                            if matches!(waiter.kind, Preparation::New) {
-                                response["sessionId"] = json!(id);
+                            let meta = prepared
+                                .before
+                                .map(|before| history(prepared.through, Some(before), false));
+                            match waiter.kind {
+                                Preparation::New => waiter.reply.respond(
+                                    acp::NewSessionResponse::new(id.clone())
+                                        .modes(state.modes.clone())
+                                        .config_options(state.config_options.clone())
+                                        .meta(meta),
+                                )?,
+                                Preparation::Load => waiter.reply.respond(
+                                    acp::LoadSessionResponse::new()
+                                        .modes(state.modes.clone())
+                                        .config_options(state.config_options.clone())
+                                        .meta(meta),
+                                )?,
+                                Preparation::Resume => waiter.reply.respond(
+                                    acp::ResumeSessionResponse::new()
+                                        .modes(state.modes.clone())
+                                        .config_options(state.config_options.clone())
+                                        .meta(meta),
+                                )?,
                             }
-                            if let Some(before) = prepared.before {
-                                response["_meta"]["dim/history"] = json!({"through":prepared.through,"before":before,"complete":false});
-                            }
-                            waiter.reply.respond(response)?;
                         }
                         for (method, params) in loading.buffered {
                             self.notice(method, params).await?;
@@ -1602,7 +1776,7 @@ impl Gateway {
                                         )
                                 });
                             if prompt.cancelled {
-                                prompt.reply.respond(json!({"stopReason":"cancelled"}))?;
+                                prompt.reply.respond(cancelled_prompt(false))?;
                             } else if !rejected {
                                 prompt.reply.respond_with_error(Error::new(-32001,"Submission outcome is unknown; load this Session before sending again").data(json!({"code":"submission_unknown","sessionId":id,"submissionId":prompt.submission})))?;
                             } else if error
@@ -1612,16 +1786,17 @@ impl Gateway {
                             {
                                 // A submit check's block is a refusal, and its
                                 // message is the reason the user sees.
-                                self.update(
-                                    &id,
-                                    json!({
-                                        "sessionUpdate":"agent_message_chunk",
-                                        "messageId":crate::projection::notice_id("refusal", &prompt.submission),
-                                        "content":{"type":"text","text":error.message},
-                                    }),
-                                )
-                                .await?;
-                                prompt.reply.respond(json!({"stopReason":"refusal"}))?;
+                                let message =
+                                    crate::projection::notice_id("refusal", &prompt.submission);
+                                let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(
+                                    acp::TextContent::new(error.message),
+                                ))
+                                .message_id(message.as_str());
+                                self.update(&id, acp::SessionUpdate::AgentMessageChunk(chunk))
+                                    .await?;
+                                prompt
+                                    .reply
+                                    .respond(acp::PromptResponse::new(acp::StopReason::Refusal))?;
                             } else {
                                 prompt.reply.respond_with_error(error)?;
                             }
@@ -1653,29 +1828,37 @@ impl Gateway {
                             .is_ok_and(|result| result["status"] == "deleted")
                     {
                         let prompt = session.prompt.take().unwrap();
-                        let mut value = json!({"stopReason":"cancelled"});
-                        if result.is_err() {
-                            value["_meta"] = json!({"dim":{"nativeCancellation":"unconfirmed"}});
-                        }
-                        prompt.reply.respond(value)?;
+                        prompt.reply.respond(cancelled_prompt(result.is_err()))?;
                     }
                 }
                 self.remove(&id);
             }
-            Work::Removed { id, reply, result } => match result {
+            Work::Removed {
+                id,
+                method,
+                reply,
+                result,
+            } => match result {
                 Ok(_) => {
                     self.mcp.forget(&id);
                     self.release_interactions(&id);
                     if let Some(Slot::Ready(mut session)) = self.sessions.remove(&id) {
                         if let Some(command) = session.command.take() {
                             command.cancelled.cancel();
-                            command.reply.respond(json!({"stopReason":"cancelled"}))?;
+                            command
+                                .reply
+                                .respond(acp::PromptResponse::new(acp::StopReason::Cancelled))?;
                         }
                         if let Some(prompt) = session.prompt.take() {
-                            prompt.reply.respond(json!({"stopReason":"cancelled"}))?;
+                            prompt
+                                .reply
+                                .respond(acp::PromptResponse::new(acp::StopReason::Cancelled))?;
                         }
                     }
-                    reply.respond(json!({}))?;
+                    match method {
+                        "session.close" => reply.respond(acp::CloseSessionResponse::new())?,
+                        _ => reply.respond(acp::DeleteSessionResponse::new())?,
+                    }
                 }
                 Err(error) => {
                     if let Some(Slot::Ready(session)) = self.sessions.get_mut(&id) {
@@ -1714,20 +1897,20 @@ impl Gateway {
                             .policy
                             .as_ref()
                             .map(|policy| policy.policy.preset);
-                        reply.respond(if mode {
-                            json!({})
+                        if mode {
+                            reply.respond(acp::SetSessionModeResponse::new())?;
                         } else {
-                            json!({"configOptions":options})
-                        })?;
-                        self.update(
-                            &id,
-                            json!({"sessionUpdate":"config_option_update","configOptions":options}),
-                        )
-                        .await?;
+                            reply.respond(acp::SetSessionConfigOptionResponse::new(
+                                options.clone(),
+                            ))?;
+                        }
+                        self.update_configured(&id, options).await?;
                         if mode && let Some(mode) = current_mode {
                             self.update(
                                 &id,
-                                json!({"sessionUpdate":"current_mode_update","currentModeId":mode}),
+                                acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                                    crate::config::mode(mode),
+                                )),
                             )
                             .await?;
                         }
@@ -1745,7 +1928,7 @@ impl Gateway {
                             session.config = config;
                             let options = session.config.options();
                             reply.respond_with_error(error)?;
-                            self.update(&id,json!({"sessionUpdate":"config_option_update","configOptions":options})).await?;
+                            self.update_configured(&id, options).await?;
                         } else {
                             reply.respond_with_error(error)?;
                         }
@@ -1804,19 +1987,21 @@ impl Gateway {
                     },
                 };
                 if let Some(text) = text {
-                    self.update(
-                        &id,
-                        json!({
-                            "sessionUpdate":"agent_message_chunk",
-                            "messageId":crate::projection::notice_id("command", &command_id.to_string()),
-                            "content":{"type":"text","text":text},
-                        }),
-                    )
-                    .await?;
+                    let message = crate::projection::notice_id("command", &command_id.to_string());
+                    let chunk = acp::ContentChunk::new(acp::ContentBlock::Text(
+                        acp::TextContent::new(text),
+                    ))
+                    .message_id(message.as_str());
+                    self.update(&id, acp::SessionUpdate::AgentMessageChunk(chunk))
+                        .await?;
                 }
                 command
                     .reply
-                    .respond(json!({"stopReason":if cancelled {"cancelled"} else {"end_turn"}}))?;
+                    .respond(acp::PromptResponse::new(if cancelled {
+                        acp::StopReason::Cancelled
+                    } else {
+                        acp::StopReason::EndTurn
+                    }))?;
             }
             Work::Usage { id, result } => {
                 if let Some(Slot::Ready(session)) = self.sessions.get_mut(&id) {
@@ -1837,7 +2022,14 @@ impl Gateway {
                         && usage.context_window.is_finite()
                         && usage.context_window > 0.0
                     {
-                        self.update(&id,json!({"sessionUpdate":"usage_update","used":usage.estimated_input_tokens.ceil() as u64,"size":usage.context_window.floor() as u64})).await?;
+                        self.update(
+                            &id,
+                            acp::SessionUpdate::UsageUpdate(acp::UsageUpdate::new(
+                                usage.estimated_input_tokens.ceil() as u64,
+                                usage.context_window.floor() as u64,
+                            )),
+                        )
+                        .await?;
                     }
                 }
             }
@@ -1865,7 +2057,8 @@ impl Gateway {
                         prompt_turn,
                     }) => {
                         let previous_through = session.projection.through;
-                        session.projection = Projection::new(session.cwd.clone());
+                        session.projection =
+                            Projection::new(session.cwd.clone(), self.compaction_updates);
                         session.questions = dim_client::question::Pending::default();
                         session.question_through.clear();
                         let title = prepared.title;
@@ -1901,7 +2094,7 @@ impl Gateway {
                             && let Some(read) = prompt_turn
                         {
                             if read.input_deleted {
-                                prompt.terminal = Some(Ok(json!({"stopReason":"cancelled"})));
+                                prompt.terminal = Some(Ok(cancelled_prompt(false)));
                             } else if let Some(turn) = read.turn {
                                 prompt.turn = Some(turn.turn_id.clone());
                                 if let Some(outcome) = turn.outcome {
@@ -1953,7 +2146,7 @@ impl Gateway {
                                 self.outbox.notify(
                                     &self.cx,
                                     "session/update",
-                                    json!({"sessionId":id,"update":update}),
+                                    crate::projection::notification(&id, update),
                                 )?;
                             }
                             session.projection.through = prepared.through;
@@ -1971,7 +2164,7 @@ impl Gateway {
                             {
                                 let prompt = session.prompt.take().unwrap();
                                 if prompt.cancelled {
-                                    prompt.reply.respond(json!({"stopReason":"cancelled","_meta":{"dim":{"nativeCancellation":"unconfirmed"}}}))?;
+                                    prompt.reply.respond(cancelled_prompt(true))?;
                                 } else {
                                     prompt.reply.respond_with_error(Error::new(-32001,"Submission outcome is unknown; load this Session before sending again").data(json!({"code":"submission_unknown","sessionId":id,"submissionId":prompt.submission})))?;
                                 }
@@ -1981,19 +2174,26 @@ impl Gateway {
                                 .is_some_and(|prompt| prompt.cancel_uncertain)
                             {
                                 let prompt = session.prompt.take().unwrap();
-                                prompt.reply.respond(json!({"stopReason":"cancelled","_meta":{"dim":{"nativeCancellation":"unconfirmed"}}}))?;
+                                prompt.reply.respond(cancelled_prompt(true))?;
                             }
                         }
                         self.title(&id, title, title_revision).await?;
                         self.commands(&id)?;
                         if let Some(Slot::Ready(session)) = self.sessions.get(&id) {
-                            self.update(&id,json!({"sessionUpdate":"config_option_update","configOptions":session.config.options(),"_meta":{"dim/history":{"through":prepared.through,"before":prepared.before,"complete":prepared.before.is_none(),"replace":true}}})).await?;
+                            self.update(
+                                &id,
+                                acp::SessionUpdate::ConfigOptionUpdate(
+                                    acp::ConfigOptionUpdate::new(session.config.options())
+                                        .meta(history(prepared.through, prepared.before, true)),
+                                ),
+                            )
+                            .await?;
                         }
                     }
                     Err(error) => {
                         if let Some(prompt) = session.prompt.take() {
                             if prompt.cancelled {
-                                prompt.reply.respond(json!({"stopReason":"cancelled","_meta":{"dim":{"nativeCancellation":"unconfirmed"}}}))?;
+                                prompt.reply.respond(cancelled_prompt(true))?;
                             } else {
                                 prompt.reply.respond_with_error(error)?;
                             }
@@ -2029,27 +2229,26 @@ impl Gateway {
             }
             Work::Listed { reply, result } => match result {
                 Ok(sessions) => {
-                    let sessions: Vec<Value> = sessions
+                    let sessions = sessions
                         .into_iter()
                         .map(|session| {
-                            let mut row = json!({"sessionId":session.session_id,"cwd":session.cwd});
-                            if let Some(title) = session.title {
-                                row["title"] = json!(title);
-                            }
-                            if let Some(timestamp) = session.updated_at {
-                                let date = time::OffsetDateTime::from_unix_timestamp_nanos(
-                                    i128::from(timestamp) * 1_000_000,
-                                )
-                                .map_err(|_| Error::internal_error())?;
-                                row["updatedAt"] = json!(
-                                    date.format(&time::format_description::well_known::Rfc3339)
-                                        .map_err(|_| Error::internal_error())?
-                                );
-                            }
-                            Ok(row)
+                            let updated_at = session
+                                .updated_at
+                                .map(|timestamp| {
+                                    time::OffsetDateTime::from_unix_timestamp_nanos(
+                                        i128::from(timestamp) * 1_000_000,
+                                    )
+                                    .map_err(|_| Error::internal_error())?
+                                    .format(&time::format_description::well_known::Rfc3339)
+                                    .map_err(|_| Error::internal_error())
+                                })
+                                .transpose()?;
+                            Ok(acp::SessionInfo::new(session.session_id, session.cwd)
+                                .title(session.title)
+                                .updated_at(updated_at))
                         })
-                        .collect::<Result<_, Error>>()?;
-                    reply.respond(json!({"sessions":sessions}))?;
+                        .collect::<Result<Vec<_>, Error>>()?;
+                    reply.respond(acp::ListSessionsResponse::new(sessions))?;
                 }
                 Err(error) => reply.respond_with_error(error)?,
             },
@@ -2072,7 +2271,9 @@ impl Gateway {
                 Some(Slot::Ready(mut session)) => {
                     if let Some(command) = session.command.take() {
                         command.cancelled.cancel();
-                        command.reply.respond(json!({"stopReason":"cancelled"}))?;
+                        command
+                            .reply
+                            .respond(acp::PromptResponse::new(acp::StopReason::Cancelled))?;
                     }
                     if let Some(prompt) = session.prompt.take() {
                         if !prompt.cancelled
@@ -2082,11 +2283,17 @@ impl Gateway {
                                 Error::new(-32001, reason).data(json!({"code":"session_closed"})),
                             )?;
                         } else {
-                            prompt.reply.respond(json!({"stopReason":"cancelled"}))?;
+                            prompt
+                                .reply
+                                .respond(acp::PromptResponse::new(acp::StopReason::Cancelled))?;
                         }
                     }
-                    if let Some((_, reply)) = session.pending_remove.take() {
-                        reply.respond(json!({}))?;
+                    if let Some((method, reply)) = session.pending_remove.take() {
+                        if method == "session.close" {
+                            reply.respond(acp::CloseSessionResponse::new())?;
+                        } else {
+                            reply.respond(acp::DeleteSessionResponse::new())?;
+                        }
                     }
                 }
                 Some(Slot::Loading(loading)) => {
@@ -2284,7 +2491,7 @@ impl Gateway {
                     }
                     if let Some(prompt) = session.prompt.take() {
                         if prompt.cancelled {
-                            prompt.reply.respond(json!({"stopReason":"cancelled","_meta":{"dim":{"nativeCancellation":"unconfirmed"}}}))?;
+                            prompt.reply.respond(cancelled_prompt(true))?;
                         } else {
                             prompt.reply.respond_with_error(rpc::unavailable())?;
                         }
@@ -2313,7 +2520,7 @@ impl Gateway {
             session.title_revision = Some(revision);
             self.update(
                 id,
-                json!({"sessionUpdate":"session_info_update","title":title}),
+                acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().title(title)),
             )
             .await?;
         }
@@ -2421,37 +2628,73 @@ impl Gateway {
         for (id, cwd, submission, accepted_input, turn_id) in sessions {
             let rpc = self.rpc.clone();
             let mcp = self.mcp.clone();
-            self.spawn_generation(generation,async move {
-                let result = tokio::time::timeout_at(deadline,async {
+            self.spawn_generation(generation, async move {
+                let result = tokio::time::timeout_at(deadline, async {
                     let mut input = None;
                     if let Some(submission) = submission {
-                        #[derive(Deserialize)] #[serde(tag="status",rename_all="lowercase")]
-                        enum Lookup { Accepted { event: Box<Event> },Unknown }
+                        #[derive(Deserialize)]
+                        #[serde(tag = "status", rename_all = "lowercase")]
+                        enum Lookup {
+                            Accepted { event: Box<Event> },
+                            Unknown,
+                        }
                         loop {
-                            match rpc.typed("session.input_lookup",json!({"sessionId":id,"branchId":"main","submissionId":submission})).await? {
-                                Lookup::Accepted { event }=>{ input = Some(*event); break; }
-                                Lookup::Unknown if tokio::time::Instant::now()+std::time::Duration::from_millis(250) < deadline=>tokio::time::sleep(std::time::Duration::from_millis(250)).await,
-                                Lookup::Unknown=>break,
+                            let query = json!({
+                                "sessionId":id,
+                                "branchId":"main",
+                                "submissionId":submission,
+                            });
+                            match rpc.typed("session.input_lookup", query).await? {
+                                Lookup::Accepted { event } => {
+                                    input = Some(*event);
+                                    break;
+                                }
+                                Lookup::Unknown
+                                    if tokio::time::Instant::now() + RETRY < deadline =>
+                                {
+                                    tokio::time::sleep(RETRY).await;
+                                }
+                                Lookup::Unknown => break,
                             }
                         }
                     }
-                    let prepared = read_history(&rpc,&id,Some(cwd)).await?;
-                    let input_id = input.as_ref().map(|event| event.id.clone()).or(accepted_input);
+                    let prepared = read_history(&rpc, &id, Some(cwd)).await?;
+                    let input_id = input
+                        .as_ref()
+                        .map(|event| event.id.clone())
+                        .or(accepted_input);
                     let prompt_turn = if turn_id.is_some() || input_id.is_some() {
-                        let mut query = json!({"sessionId":id,"branchId":"main","through":prepared.through});
-                        if let Some(turn) = turn_id { query["turnId"] = json!(turn); }
-                        else if let Some(input) = input_id {
+                        let mut query =
+                            json!({"sessionId":id,"branchId":"main","through":prepared.through});
+                        if let Some(turn) = turn_id {
+                            query["turnId"] = json!(turn);
+                        } else if let Some(input) = input_id {
                             if !rpc.supports("session.turn.get.inputId") {
-                                return Err(Error::new(-32001,"App Server lacks selected input turn lookup").data(json!({"code":"input_turn_lookup_unavailable"})));
+                                return Err(Error::new(
+                                    -32001,
+                                    "App Server lacks selected input turn lookup",
+                                )
+                                .data(json!({"code":"input_turn_lookup_unavailable"})));
                             }
                             query["inputId"] = json!(input);
                         }
-                        Some(rpc.typed("session.turn.get",query).await?)
-                    } else { None };
+                        Some(rpc.typed("session.turn.get", query).await?)
+                    } else {
+                        None
+                    };
                     mcp.ensure(&id).await?;
-                    Ok(RecoveredSession { prepared,input,prompt_turn })
-                }).await.unwrap_or_else(|_|Err(rpc::unavailable()));
-                Work::Recovered { id,result: Box::new(result) }
+                    Ok(RecoveredSession {
+                        prepared,
+                        input,
+                        prompt_turn,
+                    })
+                })
+                .await
+                .unwrap_or_else(|_| Err(rpc::unavailable()));
+                Work::Recovered {
+                    id,
+                    result: Box::new(result),
+                }
             });
         }
     }
@@ -2525,7 +2768,7 @@ impl Gateway {
                 EventContent::InputDeleted(data)
                     if prompt.input.as_deref() == Some(&data.input_id) =>
                 {
-                    finish = Some(Ok(json!({"stopReason":"cancelled"})))
+                    finish = Some(Ok(cancelled_prompt(false)))
                 }
                 EventContent::InputDeleted(data) if prompt.input.is_none() => {
                     prompt.deleted.insert(data.input_id.clone());
@@ -2576,17 +2819,15 @@ impl Gateway {
             }
         }
         if let Some(options) = config_update {
-            self.update(
-                &notice.session_id,
-                json!({"sessionUpdate":"config_option_update","configOptions":options}),
-            )
-            .await?;
+            self.update_configured(&notice.session_id, options).await?;
             self.commands(&notice.session_id)?;
         }
         if let Some(mode) = mode_update {
             self.update(
                 &notice.session_id,
-                json!({"sessionUpdate":"current_mode_update","currentModeId":mode}),
+                acp::SessionUpdate::CurrentModeUpdate(acp::CurrentModeUpdate::new(
+                    crate::config::mode(mode),
+                )),
             )
             .await?;
         }
@@ -2618,6 +2859,7 @@ impl Gateway {
             Work::Removed {
                 result: rpc.call(method, json!({"sessionId":id})).await,
                 id,
+                method,
                 reply,
             }
         });
@@ -2669,7 +2911,12 @@ impl Gateway {
             self.outbox.notify(
                 &self.cx,
                 "session/update",
-                json!({"sessionId":id,"update":{"sessionUpdate":"available_commands_update","availableCommands":crate::commands::available(&session.config)}}),
+                crate::projection::notification(
+                    id,
+                    acp::SessionUpdate::AvailableCommandsUpdate(acp::AvailableCommandsUpdate::new(
+                        crate::commands::available(&session.config),
+                    )),
+                ),
             )?;
         }
         Ok(())

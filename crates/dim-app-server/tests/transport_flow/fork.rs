@@ -16,6 +16,11 @@ const WORK: [&str; 6] = [
     "collaboration/request",
 ];
 
+/// How long a flow waits for one `session.fork` to answer before it fails
+/// instead of hanging. A hang guard, not a performance bound: the largest
+/// fixture a flow forks (2,050 turns) copies in about 4 s on a quiet machine.
+const FORK_ANSWER: Duration = Duration::from_secs(120);
+
 async fn branch(client: &mut Client, session: &str, at: u64, prompt: &str) -> String {
     let created = client
         .rpc(
@@ -30,9 +35,10 @@ async fn branch(client: &mut Client, session: &str, at: u64, prompt: &str) -> St
         .to_owned()
 }
 async fn fork(client: &mut Client, session: &str, at: u64) -> Value {
-    client
-        .rpc("session.fork", json!({"sessionId":session,"at":at}))
-        .await
+    let request = client
+        .send("session.fork", json!({"sessionId":session,"at":at}))
+        .await;
+    client.response_with_timeout(request, FORK_ANSWER).await
 }
 fn forked(reply: &Value) -> String {
     assert_ok(reply);
@@ -769,14 +775,7 @@ async fn fork_checks_rest_points_without_scanning_completed_history() {
         }
         costs.push(scenario_costs);
 
-        let request = client
-            .send("session.fork", json!({"sessionId":sid,"at":rested_at}))
-            .await;
-        let fid = forked(
-            &client
-                .response_with_timeout(request, Duration::from_secs(120))
-                .await,
-        );
+        let fid = forked(&fork(&mut client, &sid, rested_at).await);
         let target = agent.get_session(&fid).unwrap();
         let copied = history(&target, "main").await;
         assert_eq!(

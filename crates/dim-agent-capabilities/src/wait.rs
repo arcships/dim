@@ -2,10 +2,13 @@
 //! and content copy TS `packages/agent/src/tool/wait-plugin.ts`.
 //!
 //! `WaitPlugin` (Session) contributes the tool; `WaitBranchPlugin` provides
-//! `B:Wait`, which records the background completion notifications and
-//! steers dispatched on its branch between `turn/start` and `turn/end` (the
-//! input that opened the turn comes before `turn/start`, so it never ends a
-//! wait, as TS only commits inputs of a running turn).
+//! `B:Wait`, which records the steers and background completion notices that
+//! were released on its branch during an open turn and that the model has not
+//! read yet: `input/message` stages the kind by input id, `input/applied`
+//! registers it, and `input/consumed` or `input/deleted` retires it, so an
+//! input the model has already read never ends a later wait. The input that
+//! opened the turn is released before `turn/start`, so it never ends a wait,
+//! as TS only commits inputs of a running turn.
 use crate::{
     host::{CancelledFn, HostError, HostFuture, ToolExecutionContext, call_until_cancelled},
     timeline_tree::TreeCommands,
@@ -22,7 +25,7 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     num::NonZeroU64,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -67,6 +70,12 @@ pub enum WaitResult {
     UserSteer {
         waited_ms: u64,
     },
+    /// The model already read this task's wake notice in this turn, so the
+    /// call returned at once instead of waiting for a second notice.
+    AlreadyNotified {
+        task_ids: Vec<String>,
+        waited_ms: u64,
+    },
     Timeout {
         waited_ms: u64,
     },
@@ -86,10 +95,32 @@ pub enum WaitCallError {
 
 #[derive(Default)]
 struct State {
-    pending: VecDeque<Arrival>,
+    /// The arrival a steer or tagged input would be, by input id, until its
+    /// release. The wake tag is on `input/message`, so the release reads it
+    /// from here.
+    staged: HashMap<String, Arrival>,
+    /// The arrival of each input that can still end a wait, by input id, from
+    /// its release until the model reads it or it is deleted. A notice taken by
+    /// a wait stays here, so reading it afterwards still records the task.
+    arrivals: HashMap<String, Arrival>,
+    /// The input ids released and not taken yet, in release order.
+    pending: VecDeque<String>,
+    /// Tasks whose wake notice the model read in this turn.
+    notified: HashSet<String>,
     waiting: bool,
     /// Between a dispatched `turn/start` and its `turn/end`.
     open: bool,
+}
+
+impl State {
+    /// Retires an input the model read or that was deleted, returning the
+    /// arrival it carried.
+    fn retire(&mut self, input_id: &str) -> Option<Arrival> {
+        self.pending.retain(|pending| pending != input_id);
+        self.arrivals
+            .remove(input_id)
+            .or_else(|| self.staged.remove(input_id))
+    }
 }
 
 pub struct Wait {
@@ -175,21 +206,36 @@ impl Wait {
             EventKind::TurnStart(_) => state.open = true,
             EventKind::TurnEnd(_) => {
                 state.open = false;
+                state.staged.clear();
+                state.arrivals.clear();
                 state.pending.clear();
+                state.notified.clear();
             }
             EventKind::InputMessage(_) if !state.open => {}
             EventKind::InputMessage(data) => {
-                if let Some(task_id) = tagged(event, WAKE_TASK_TAG) {
-                    state
-                        .pending
-                        .push_back(Arrival::BackgroundTask(task_id.to_owned()));
-                } else if data.effective_mode() == InputMode::Steer {
-                    state.pending.push_back(Arrival::Steer);
-                } else {
+                let arrival = match tagged(event, WAKE_TASK_TAG) {
+                    Some(task_id) => Arrival::BackgroundTask(task_id.to_owned()),
+                    None if data.effective_mode() == InputMode::Steer => Arrival::Steer,
+                    None => return,
+                };
+                state.staged.insert(event.id.clone(), arrival);
+            }
+            EventKind::InputApplied(data) => {
+                let Some(arrival) = state.staged.remove(&data.input_id) else {
                     return;
-                }
+                };
+                state.arrivals.insert(data.input_id.clone(), arrival);
+                state.pending.push_back(data.input_id.clone());
                 drop(state);
                 self.arrived.notify_waiters();
+            }
+            EventKind::InputConsumed(data) => {
+                if let Some(Arrival::BackgroundTask(task_id)) = state.retire(&data.input_id) {
+                    state.notified.insert(task_id);
+                }
+            }
+            EventKind::InputDeleted(data) => {
+                state.retire(&data.input_id);
             }
             _ => {}
         }
@@ -204,14 +250,28 @@ impl Wait {
         let index = state
             .pending
             .iter()
-            .position(|arrival| *arrival == Arrival::Steer)
+            .position(|id| state.arrivals.get(id) == Some(&Arrival::Steer))
             .or_else(|| {
-                state.pending.iter().position(|arrival| match arrival {
-                    Arrival::BackgroundTask(id) => task_id.is_none_or(|task_id| task_id == id),
-                    Arrival::Steer => false,
-                })
+                state
+                    .pending
+                    .iter()
+                    .position(|id| match state.arrivals.get(id) {
+                        Some(Arrival::BackgroundTask(id)) => {
+                            task_id.is_none_or(|task_id| task_id == id)
+                        }
+                        Some(Arrival::Steer) | None => false,
+                    })
             });
-        Ok(index.and_then(|index| state.pending.remove(index)))
+        let Some(index) = index else {
+            return Ok(None);
+        };
+        let input_id = state.pending.remove(index).expect("a found position");
+        Ok(state.arrivals.get(&input_id).cloned())
+    }
+
+    /// Whether the model already read a wake notice for `task_id` this turn.
+    fn notified(&self, task_id: &str) -> bool {
+        self.state.lock().unwrap().notified.contains(task_id)
     }
 
     /// Waits for the next matching arrival, the timeout or `cancel`.
@@ -257,6 +317,12 @@ impl Wait {
                         task_ids: vec![id],
                         waited_ms: waited(),
                     },
+                });
+            }
+            if let Some(id) = task_id.filter(|id| self.notified(id)) {
+                return Ok(WaitResult::AlreadyNotified {
+                    task_ids: vec![id.to_owned()],
+                    waited_ms: waited(),
                 });
             }
             let result = tokio::select! {
@@ -360,6 +426,10 @@ impl WaitTool {
                 format!("wait ended: notification ({})", task_ids.join(", "))
             }
             WaitResult::UserSteer { .. } => "wait ended: steer".into(),
+            WaitResult::AlreadyNotified { task_ids, .. } => format!(
+                "wait ended: notification ({}) was already delivered above.",
+                task_ids.join(", ")
+            ),
             WaitResult::Interrupted { .. } => "wait ended: interrupted".into(),
             WaitResult::Timeout { .. } => "wait ended: timeout".into(),
         };
@@ -471,9 +541,16 @@ impl DynPlugin for WaitBranchPlugin {
                 .consume(
                     ctx,
                     "Wait".into(),
-                    ["input/message", "turn/start", "turn/end"]
-                        .map(String::from)
-                        .to_vec(),
+                    [
+                        "input/message",
+                        "input/applied",
+                        "input/consumed",
+                        "input/deleted",
+                        "turn/start",
+                        "turn/end",
+                    ]
+                    .map(String::from)
+                    .to_vec(),
                     Arc::new(move || {
                         let rebuild = rebuild.clone();
                         let timeline = timeline.clone();
