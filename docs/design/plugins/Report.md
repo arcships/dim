@@ -112,24 +112,6 @@ Build `report.md` and versioned `diagnostics.json` from the same approved conten
 
 The client keeps the completed preview and bytes when a share action fails. The plugin cannot publish an issue or upload an archive. The browser flow is sufficient without an authenticated `gh`. [GitHub's attachment flow](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files).
 
-### 6.1 Private feedback during the internal pilot
-
-The TUI can also send a bounded sample to a private feedback inbox ([#1729](https://github.com/arcships/dim/issues/1729)). This is a separate client action, not an extension to either report RPC namespace or ZIP schema. It is disabled without explicit operator configuration. A participant does not have to generate a ZIP, classify a failure or upload an attachment.
-
-```
-/report in an attached Session
-  |-- Generate ordinary report -> Save ZIP -> optional GitHub / Discord
-  `-- Review private feedback (configured pilot only)
-         |  fixed transcript excerpt + optional note
-         |  [ ] also allow private regression evaluation
-         |-- Back / Close: nothing sent
-         `-- Send -> authenticated intake -> case ID after durable receipt
-```
-
-When opening the report, the pilot fixes its own sample from the native TUI's already loaded view of the focused conversation. It makes no additional history reads, reads no workspace files and never calls a model. It is not a full Timeline, a workspace snapshot or a reconstruction of the model's prompt. If a tool already returned file content, it can be in the excerpt. Common credential indicators are filtered before review; this cannot guarantee removal of confidential information. The participant can inspect the proposed payload and abandon the submission. No private feedback is attached to the ordinary report's public share targets.
-
-Sending authorizes diagnosis; the separate, initially unchecked permission authorizes internal use of that sample to make a regression test. No automatic enrollment or model training. The client sends the reviewed bytes only on confirmation. The receiver records the consent and deduplicates byte-identical retries by case ID. No feedback goes into the source Session's Timeline. The pilot is for authorized internal participants using trusted workstations and a team-operated intake, not a publicly reachable collection service. See the [pilot runbook](../../eval/private-feedback-pilot.md) for setup, retention, withdrawal and the sample-to-test exercise.
-
 ## 7. Requirements raised to mechanism owners
 
 | Blocker and existing alternatives | Required capability and ordering | Owner |

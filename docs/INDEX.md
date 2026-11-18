@@ -83,7 +83,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [CLI commands, conversation export and JSONL execution](design/cli-commands.md)（[中文](zh/design/cli-commands.md)）
 - [TUI 思考摘录与正文收起](design/tui-thinking-excerpts.md)（中文，#1658）：有界原文摘取、刷新合并、正文单击与文本选择边界
 - [CLI attachment input and paste handling](design/cli-attachment-input.md)
-- [Session and error reports](design/plugins/Report.md) ([#1319](https://github.com/arcships/dim/issues/1319)); [private feedback pilot runbook](eval/private-feedback-pilot.md)
+- [Session and error reports](design/plugins/Report.md) ([#1319](https://github.com/arcships/dim/issues/1319))
 - [Read-only member conversations in the CLI](design/member-conversation.md) (#300, #333, #324, #263)
 - [Subagent model policy](design/subagent-model-policy.md) (#263)
 - [Subagent tool approval and permission inheritance](design/subagent-tool-approval.md): requesting-branch policy, leader decision tools, user review, cancellation and recovery (#19, #29, #257)
