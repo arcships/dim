@@ -30,22 +30,30 @@ pub struct Env {
     pub initial: Option<Initial>,
 }
 
-/// A path with the user's home directory written `~`.
+/// A path label with the user's home directory written `~` and Windows
+/// extended-length drive and UNC paths shown in their usual form.
 pub(crate) fn tilde(path: &str) -> String {
     let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
-    let Some(home) = home else {
-        return path.to_owned();
-    };
-    let home = home.to_string_lossy();
-    if home.is_empty() {
-        return path.to_owned();
+    if let Some(home) = home.as_deref().filter(|home| !home.is_empty())
+        && let Some(rest) = path.strip_prefix(home.to_string_lossy().as_ref())
+        && (rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
+    {
+        return format!("~{rest}");
     }
-    match path.strip_prefix(home.as_ref()) {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\') => {
-            format!("~{rest}")
+    if cfg!(windows)
+        && let Some(tail) = path.strip_prefix(r"\\?\")
+    {
+        if let Some(unc) = tail.strip_prefix(r"UNC\") {
+            return format!(r"\\{unc}");
         }
-        _ => path.to_owned(),
+        if matches!(
+            tail.as_bytes(),
+            [b'A'..=b'Z' | b'a'..=b'z', b':', b'\\', ..]
+        ) {
+            return tail.to_owned();
+        }
     }
+    path.to_owned()
 }
 
 pub mod approvals_panel;

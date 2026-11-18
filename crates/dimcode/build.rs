@@ -1,7 +1,9 @@
 //! Names the commit a source build was made from, so two checkouts of the same
-//! committed version are distinguishable. This is the final binary crate on
-//! purpose: a new commit changes this environment only, so it recompiles
-//! `dimcode` alone and never the crates that print the label.
+//! committed version are distinguishable, and stamps the artifact a build
+//! produces, so two builds of the same version are distinguishable too. This is
+//! the final binary crate on purpose: a new commit or stamp changes this
+//! environment only, so it recompiles `dimcode` alone and never the crates that
+//! print the label.
 
 use std::{
     path::{Path, PathBuf},
@@ -12,14 +14,30 @@ use std::{
 /// otherwise replay another checkout's answer.
 const FROM_CALLER: &str = "DIM_BUILD_COMMIT";
 
-/// The variable `dimcode` hands to `dim-cli`; absent when nothing named a
-/// commit or when this is a release build, whose output must not change.
+/// The artifact stamp: a packaging caller resolves it, and it reaches the crate
+/// as a compile-time value of the same name, so a build cache that replays
+/// another build's result is told to re-run this script when it changes.
+const BUILD_ID: &str = "DIM_BUILD_ID";
+
+/// The commit `dimcode` reads as a compile-time value; absent when nothing
+/// named a commit or when this is a release build, whose output must not change.
 const COMMIT: &str = "DIM_GIT_COMMIT";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=DIM_RELEASE_BUILD");
     println!("cargo:rerun-if-env-changed={FROM_CALLER}");
+    println!("cargo:rerun-if-env-changed={BUILD_ID}");
+    let stamp = std::env::var(BUILD_ID)
+        .ok()
+        .map(|stamp| stamp.trim().to_owned())
+        .filter(|stamp| !stamp.is_empty());
     if std::env::var_os("DIM_RELEASE_BUILD").is_some_and(|value| !value.is_empty()) {
+        // A released build carries no source identity, but the artifact stamp a
+        // packaging caller resolved still distinguishes two builds of one
+        // version.
+        if let Some(stamp) = stamp {
+            println!("cargo:rustc-env={BUILD_ID}={stamp}");
+        }
         return;
     }
     watch_refs();
@@ -33,11 +51,17 @@ fn main() {
         .map(|commit| commit.trim().to_owned())
         .filter(|commit| !commit.is_empty())
         .or_else(|| git(&["rev-parse", "--short=8", "HEAD"]));
-    match commit {
+    match &commit {
         Some(commit) => println!("cargo:rustc-env={COMMIT}={commit}"),
         None => println!(
             "cargo:warning=git could not resolve HEAD, so this build reports the bare version"
         ),
+    }
+    // Only a packaging caller stamps the artifact it produces. A source build
+    // stays unstamped on purpose: it is not a distributable artifact, and a
+    // client that cannot name its own build has nothing to compare.
+    if let Some(stamp) = stamp {
+        println!("cargo:rustc-env={BUILD_ID}={stamp}");
     }
 }
 

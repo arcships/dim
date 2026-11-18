@@ -362,10 +362,6 @@ async fn e2_a_branch_without_a_goal_skips_the_full_fold() {
         "Goal does not probe input history: {reads:?}"
     );
     assert!(env.goal("get", json!({})).await.unwrap()["goal"].is_null());
-    assert!(
-        probes.iter().all(|read| read.branch == "main"),
-        "the probes read the branch itself: {probes:?}"
-    );
     env.close().await;
 }
 

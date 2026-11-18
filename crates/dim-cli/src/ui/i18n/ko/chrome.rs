@@ -627,6 +627,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server가 아직 {server}입니다. 다른 클라이언트가 사용 중입니다(연결: {connections}, 연결된 세션: {attached}, 실행 중인 턴: {running}). 이 {client} 클라이언트도 그것을 사용합니다. 끝나면 `dimcode daemon stop`을 실행하세요. 다음 시작에서는 {client}가 실행됩니다."
         }
+        "The App Server is still using a different build of {server}. Some features may be unavailable. After active work finishes, exit this client, run `{command}`, then reopen it." => {
+            "App Server가 아직 {server}의 다른 빌드를 사용하고 있습니다. 일부 기능을 사용할 수 없을 수 있습니다. 작업이 끝나면 이 클라이언트를 종료하고 `{command}`를 실행한 뒤 다시 여십시오."
+        }
+        "The App Server's build could not be verified as this client's. If features are missing after an update, wait for active work to finish, exit this client, run `{command}`, then reopen it." => {
+            "App Server의 빌드가 이 클라이언트와 같은지 확인하지 못했습니다. 업데이트 후 기능이 빠져 있다면 작업이 끝날 때까지 기다렸다가 이 클라이언트를 종료하고 `{command}`를 실행한 뒤 다시 여십시오."
+        }
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "로컬 저장소를 포맷 v{from}에서 v{to}(으)로 업그레이드하는 중입니다. 큰 저장소에서는 시간이 걸릴 수 있습니다."
         }

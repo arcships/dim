@@ -215,6 +215,12 @@ jobs:
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         shell: bash
         run: node scripts/alpha-version.mjs "$RELEASE_VERSION"
+      - name: Stamp the build
+        shell: bash
+        run: |
+          stamp="$(node -p 'require("node:crypto").randomUUID()')"
+          : "${stamp:?Failed to generate a build ID}"
+          printf 'DIM_BUILD_ID=%s\n' "$stamp" >> "$GITHUB_ENV"
       - name: Build native payload for target architecture
         env:
           LINUX_IMAGE: ${{ matrix.linux_image }}
@@ -240,7 +246,7 @@ jobs:
               --mount "type=bind,src=$PWD,dst=/src" \
               --mount "type=bind,src=$(rustc --print sysroot),dst=/opt/rust,readonly" \
               --env HOME=/tmp --env CARGO_INCREMENTAL --env CARGO_BUILD_JOBS --env CARGO_PROFILE_RELEASE_LTO \
-              --env DIM_RELEASE_BUILD=1 --env DIM_BUILD_TARGET --env BIN_DIR="$bin_dir" \
+              --env DIM_RELEASE_BUILD=1 --env DIM_BUILD_TARGET --env DIM_BUILD_ID --env BIN_DIR="$bin_dir" \
               --env DIM_OAUTH_CLIENT_ID_CN --env DIM_OAUTH_CLIENT_ID_GLOBAL "$LINUX_IMAGE" -ec '
                 export PATH="/opt/rust/bin:$PATH"
                 if [[ "$BIN_DIR" == target/release-layout ]]; then

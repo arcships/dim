@@ -98,16 +98,6 @@ mod tests {
     }
 
     #[test]
-    fn a_token_never_starts_inside_a_word() {
-        assert_eq!(names("a/skill:x"), [] as [&str; 0]);
-        assert_eq!(names("https://host/skill:y"), [] as [&str; 0]);
-        assert_eq!(names("/skill:"), [] as [&str; 0]);
-        assert_eq!(names("/skill: "), [] as [&str; 0]);
-        assert_eq!(names("/skill"), [] as [&str; 0]);
-        assert_eq!(names("/skills:x"), [] as [&str; 0]);
-    }
-
-    #[test]
     fn a_name_is_the_run_of_name_characters() {
         assert_eq!(names("/skill:a-b_c.d1"), ["a-b_c.d1"]);
         assert_eq!(
@@ -136,6 +126,12 @@ mod tests {
             "a lone full stop is no name"
         );
         assert_eq!(names("/skill:naïve"), ["na"]);
+        assert_eq!(
+            names("/skills:x"),
+            [] as [&str; 0],
+            "another slash command is not a Skill reference"
+        );
+        assert_eq!(names("/skill"), [] as [&str; 0]);
         assert_eq!(names("/skill:<dim-skill>"), [] as [&str; 0]);
         assert!(names_a_token("a-b_c.d1"));
         assert!(!names_a_token("two words"));

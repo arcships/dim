@@ -1,4 +1,4 @@
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawn} from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -225,6 +225,32 @@ export class TmuxCase {
       cwd,
       env: {...process.env, ...this.environment(env)},
       stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  }
+
+  /// The same command without blocking this process. A command that reaches
+  /// the model would deadlock a synchronous spawn, because the fixture answers
+  /// on this event loop.
+  runCommandAsync(args, {env = {}, cwd, timeout = 60_000} = {}) {
+    this.log(`# command: ${this.binary} ${args.join(' ')}${cwd ? ` (cwd ${cwd})` : ''}`);
+    return new Promise((resolve, reject) => {
+      const child = spawn(this.binary, args, {
+        cwd,
+        env: {...process.env, ...this.environment(env)},
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (chunk) => (stdout += chunk));
+      child.stderr.on('data', (chunk) => (stderr += chunk));
+      const timer = setTimeout(() => child.kill('SIGKILL'), timeout);
+      child.on('error', reject);
+      child.on('exit', (code, signal) => {
+        clearTimeout(timer);
+        const line = `${this.binary} ${args.join(' ')} ended ${code ?? signal}`;
+        if (code === 0) resolve(stdout);
+        else reject(new Error(`${line}\n${stderr}\n${stdout}`));
+      });
     });
   }
 

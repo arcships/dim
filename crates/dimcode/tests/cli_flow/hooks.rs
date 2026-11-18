@@ -1284,8 +1284,16 @@ fn tui_hooks_panel_offers_no_edit_without_a_user_document() {
         terminal.until("test / model");
         shown.send(()).unwrap();
         terminal.write(b"/hooks\r");
-        terminal.until("The user's own document; always in effect.");
+        terminal.wait_for("Hooks details and closing hint", |tail| {
+            let plain = strip_ansi(tail);
+            let (_, footer) = plain.split_once("The user's own document; always in effect.")?;
+            footer.contains("Esc close").then_some(tail.len())
+        });
         let opened = terminal.transcript.clone();
+        assert!(
+            opened.contains("The user's own document; always in effect."),
+            "{opened}"
+        );
         assert!(opened.contains("Ctrl+R"), "{opened}");
         assert!(!opened.contains("Ctrl+E"), "no edit is offered: {opened}");
         terminal.raw(b"\x05");

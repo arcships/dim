@@ -118,6 +118,8 @@ daemon. `--keep` leaves the home and raw streams in place for inspection.
 | suggestions | `prompt_suggestion_offers_and_takes_the_next_message` | Every completed turn draws its own numbered offer; `Tab` takes it in scrollback, `Tab` keeps the focus in fullscreen (and `Enter` sends nothing) while `Right` takes it there, and `Escape` withdraws it without asking again |
 | suggestions | `suggestion_asks_nothing_while_a_draft_exists` | A draft withdraws the offer, no suggestion request follows it, and the next completed turn asks again |
 | daemon | `daemon_stop_reports_disconnect_and_resume_replays_history` | A stopped daemon keeps the draft in the same process and shows it, names `dimcode --resume`, exits cleanly with the terminal restored; the resumed session replays history and then answers a distinct new prompt, which only a new turn can produce (the draft is not restored across processes) |
+| daemon | `daemon_build_mismatch_notice_scrollback` | A daemon stamped as another build of the same version is kept: scrollback shows the notice and the exact command that stops it, once on Home and once on a direct resume, and a client of the daemon's own build gets no notice |
+| daemon | `daemon_build_mismatch_notice_fullscreen` | The same other-build notice on Home and on a direct resume in fullscreen, and no notice for an explicit `--server`, whose separate artifact is expected to carry another stamp |
 | launcher | `npm_launcher_streams_and_passes_interrupts` | The npm launcher copies the native binary into its platform package, starts the TUI, streams an answer, shows the interrupt confirmation, and a second `Ctrl+C` exits 130 with the terminal restored |
 
 ## Effects pane text cannot show
@@ -165,6 +167,7 @@ CI (#1810).
 | Task and subagent controls | `background_task_row_and_tasks_panel`, `member_conversation_and_stop_all` | `tui_tasks_panel_stops_the_selected_command_or_member` (CI: the scenario stops the selected command, this case also selects a member row and stops it); `tasks::native_tui_stop_all_…` (moved); member cards (CI) |
 | Provider and account panels | `provider_panel_adds_and_keeps_a_custom_provider` | `tui_provider_management_uses_the_production_daemon_and_survives_restart` (moved); the account and model panels (CI) |
 | Daemon disconnect/restart | `daemon_stop_reports_disconnect_and_resume_replays_history` | `tui_stays_up_when_the_daemon_leaves_and_restores_the_terminal_on_exit` (CI: the interface staying up, raw mode and a resize while disconnected need a daemon that leaves without shutting down); `daemon_replace::*` (CI) |
+| Embedded daemon of another build | `daemon_build_mismatch_notice_scrollback`, `daemon_build_mismatch_notice_fullscreen` | `daemon_replace::build_identity::*` (CI: reuse for each stamp case, the pasted stop command with shell metacharacters and a launch-only `DIMCODE_HOME`, and an explicit `--server` outside the notice) |
 | Production launcher and App Server | `npm_launcher_streams_and_passes_interrupts`; every scenario runs the production daemon | `unix_npm_wrapper_…` (moved); the 12 production flows the CI `--ignored` step names |
 
 ## Per-gap outcome

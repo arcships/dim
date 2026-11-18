@@ -530,7 +530,6 @@ async fn d6_compaction_steps_decide_nothing() {
     let env3 = Env::start().await;
     let set = env3.set("ship it").await;
     env3.turn("main", &[&set]);
-    env3.wait_for("main", r#"kind="continuation""#).await;
     let first = env3.wait_for("main", r#"kind="continuation""#).await;
     let before = env3.settled("main").await.len();
     for _ in 0..2 {

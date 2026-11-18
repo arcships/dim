@@ -99,7 +99,7 @@ impl Search<'_> {
         loop {
             let reply = tokio::select! {
                 _ = self.cancel.cancelled() => return Err(HostError::Cancelled("recall".into())),
-                reply = self.branch.query(query.clone()) => reply.map_err(RecallTool::facade_error)?,
+                reply = self.branch.query(query.clone()) => reply.map_err(HostError::from_agent)?,
             };
             let QueryOutput::Events { events } = reply.result else {
                 unreachable!("Recall joins select events")
@@ -125,7 +125,7 @@ impl Search<'_> {
             .branch
             .query(query.clone())
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("anchor properties")
         };
@@ -142,7 +142,7 @@ impl Search<'_> {
                     .branch
                     .query(query)
                     .await
-                    .map_err(RecallTool::facade_error)?;
+                    .map_err(HostError::from_agent)?;
                 let QueryOutput::Rows { rows } = reply.result else {
                     unreachable!("consumption anchor")
                 };
@@ -211,7 +211,7 @@ impl Search<'_> {
                 .branch
                 .query(query.clone())
                 .await
-                .map_err(RecallTool::facade_error)?;
+                .map_err(HostError::from_agent)?;
             let QueryOutput::Rows { rows } = reply.result else {
                 unreachable!("key consumption identities")
             };
@@ -227,7 +227,7 @@ impl Search<'_> {
                     .branch
                     .query(origins)
                     .await
-                    .map_err(RecallTool::facade_error)?;
+                    .map_err(HostError::from_agent)?;
                 let QueryOutput::Rows { rows } = reply.result else {
                     unreachable!("key fields")
                 };
@@ -282,7 +282,7 @@ impl Search<'_> {
             .branch
             .query(end_query)
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("turn end")
         };
@@ -327,7 +327,7 @@ impl Search<'_> {
                 .branch
                 .query(query.clone())
                 .await
-                .map_err(RecallTool::facade_error)?;
+                .map_err(HostError::from_agent)?;
             let QueryOutput::Rows { rows } = reply.result else {
                 unreachable!("turn candidates")
             };
@@ -443,7 +443,7 @@ impl Search<'_> {
             .branch
             .query(compaction)
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("compaction identity")
         };
@@ -581,7 +581,7 @@ impl Search<'_> {
                 .branch
                 .query(boundary)
                 .await
-                .map_err(RecallTool::facade_error)?;
+                .map_err(HostError::from_agent)?;
             let QueryOutput::Rows { rows } = reply.result else {
                 unreachable!("turn boundary")
             };
@@ -686,7 +686,7 @@ pub(super) async fn run(
     let mut chain = vec![branch_id.to_owned()];
     while let Some(parent) = tree
         .info(chain.last().unwrap().clone())
-        .map_err(RecallTool::facade_error)?
+        .map_err(HostError::from_agent)?
         .parent
     {
         chain.push(parent);
@@ -757,7 +757,7 @@ pub(super) async fn run(
         let reply = branch
             .query(query.clone())
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("Recall candidates")
         };
@@ -886,7 +886,7 @@ pub(super) async fn open(
     let mut chain = vec![branch_id.to_owned()];
     while let Some(parent) = tree
         .info(chain.last().unwrap().clone())
-        .map_err(RecallTool::facade_error)?
+        .map_err(HostError::from_agent)?
         .parent
     {
         chain.push(parent);
@@ -917,7 +917,7 @@ pub(super) async fn open(
     let reply = branch
         .query(query.clone())
         .await
-        .map_err(RecallTool::facade_error)?;
+        .map_err(HostError::from_agent)?;
     let QueryOutput::Rows { mut rows } = reply.result else {
         unreachable!("Recall origin fields")
     };
@@ -932,10 +932,7 @@ pub(super) async fn open(
                 kinds(&["input/consumed"]),
                 one_of("data.input_id", [json!(id)]),
             ]));
-            let reply = branch
-                .query(query)
-                .await
-                .map_err(RecallTool::facade_error)?;
+            let reply = branch.query(query).await.map_err(HostError::from_agent)?;
             let QueryOutput::Rows { rows: consumed } = reply.result else {
                 unreachable!("Recall consumption")
             };
@@ -1045,7 +1042,7 @@ impl Search<'_> {
             .branch
             .query(query)
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("input properties")
         };
@@ -1111,7 +1108,7 @@ pub(super) async fn index(
     let mut chain = vec![branch_id.to_owned()];
     while let Some(parent) = tree
         .info(chain.last().unwrap().clone())
-        .map_err(RecallTool::facade_error)?
+        .map_err(HostError::from_agent)?
         .parent
     {
         chain.push(parent);
@@ -1146,10 +1143,7 @@ pub(super) async fn index(
     );
     turns.query.order_by[0].direction = TimelineQueryDirection::Descending;
     turns.page.as_mut().unwrap().limit = NonZeroU64::new((PAGE_ENTRIES + 1) as u64).unwrap();
-    let reply = branch
-        .query(turns)
-        .await
-        .map_err(RecallTool::facade_error)?;
+    let reply = branch.query(turns).await.map_err(HostError::from_agent)?;
     let QueryOutput::Rows { rows } = reply.result else {
         unreachable!("turn positions")
     };
@@ -1188,7 +1182,7 @@ pub(super) async fn index(
         let reply = branch
             .query(boundary)
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("turn boundary")
         };
@@ -1240,7 +1234,7 @@ pub(super) async fn index(
         let reply = branch
             .query(query.clone())
             .await
-            .map_err(RecallTool::facade_error)?;
+            .map_err(HostError::from_agent)?;
         let QueryOutput::Rows { rows } = reply.result else {
             unreachable!("index properties")
         };

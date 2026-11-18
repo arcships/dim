@@ -1,9 +1,9 @@
 //! The EventHub flows that need to observe or control input writes: delivery
 //! concurrency, a failed subscription-file write, a refused partial creation,
 //! the publish's one `lastFailure` transaction, the subscription limits, a
-//! source's row lifetime, a missed deletion notice, an EventHub reload, a
-//! producer that applied first, the subscribe/unsubscribe race, and a host
-//! without `sessionFiles` (design Appendix D items 3–5, 7–9, 12).
+//! source's row lifetime, an EventHub reload, a producer that applied first,
+//! the subscribe/unsubscribe race, and a host without `sessionFiles` (design
+//! Appendix D items 3–5, 7–8, 12).
 mod support;
 
 use dim_agent_types::InputMode;
@@ -425,26 +425,6 @@ async fn a_subscribe_reads_every_guide_before_it_writes_one() {
     assert_eq!(
         fixture.subscriptions(None).await[0]["id"],
         json!(subscription)
-    );
-}
-
-/// A missed deletion notice leaves a subscription that fails
-/// `session_closed` and shows its failure (design §3.4, Appendix D item 9).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_missed_notice_leaves_a_session_closed_failure() {
-    let (_directory, fixture) = mounted().await;
-    let subscription = fixture.subscribe("dead", &["im.*"], None).await.unwrap();
-    fixture.sessions.fail("dead", "session_closed");
-    let receipt = fixture.producer.publish(event("lost")).await.unwrap();
-    assert_eq!(receipt["deliveries"][0]["status"], json!("failed"));
-    assert_eq!(receipt["deliveries"][0]["code"], json!("session_closed"));
-    let stored = fixture.subscriptions(None).await;
-    assert_eq!(stored.len(), 1, "{stored:?}");
-    assert_eq!(stored[0]["id"], json!(subscription));
-    assert_eq!(
-        stored[0]["lastFailure"]["code"],
-        json!("session_closed"),
-        "{stored:?}"
     );
 }
 

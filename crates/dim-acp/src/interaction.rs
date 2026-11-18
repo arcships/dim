@@ -1,5 +1,5 @@
 use crate::projection::tool_id;
-use agent_client_protocol::{Client, ConnectionTo, UntypedMessage};
+use agent_client_protocol::{Client, ConnectionTo, schema::v1 as acp};
 use dim_agent_types::{
     ApprovalCallData, MEMBER_APPROVAL_ALLOW, MEMBER_APPROVAL_GET, MemberApprovalDetail,
 };
@@ -66,26 +66,51 @@ pub(crate) async fn approval(
                 true,
             ),
         };
-        let mut call = json!({"toolCallId":key("approval",&approval.session_id,&approval.branch_id,&approval.request_id,""),"title":title,"kind":"other","status":"pending","rawInput":input});
+        // `kind` and `status`: the rule `projection::notification` states.
+        let mut fields = acp::ToolCallUpdateFields::new()
+            .kind(acp::ToolKind::Other)
+            .status(acp::ToolCallStatus::Pending)
+            .title(title);
         if member {
-            call["content"] = json!([{"type":"content","content":{"type":"text","text":serde_json::to_string_pretty(&input).ok()?}}]);
+            let detail = serde_json::to_string_pretty(&input).ok()?;
+            fields = fields.content(vec![acp::ToolCallContent::from(acp::ContentBlock::Text(
+                acp::TextContent::new(detail),
+            ))]);
         }
-        let mut options =
-            vec![json!({"optionId":"reject_once","name":"Reject once","kind":"reject_once"})];
+        let tool_call = acp::ToolCallUpdate::new(
+            key(
+                "approval",
+                &approval.session_id,
+                &approval.branch_id,
+                &approval.request_id,
+                "",
+            ),
+            fields.raw_input(input),
+        );
+        let mut options = vec![acp::PermissionOption::new(
+            "reject_once",
+            "Reject once",
+            acp::PermissionOptionKind::RejectOnce,
+        )];
         if can_allow {
             options.insert(
                 0,
-                json!({"optionId":"allow_once","name":"Allow once","kind":"allow_once"}),
+                acp::PermissionOption::new(
+                    "allow_once",
+                    "Allow once",
+                    acp::PermissionOptionKind::AllowOnce,
+                ),
             );
         }
-        let message = UntypedMessage::new(
-            "session/request_permission",
-            json!({"sessionId":approval.session_id,"toolCall":call,"options":options}),
-        )
+        let params = serde_json::to_value(acp::RequestPermissionRequest::new(
+            acp::SessionId::new(approval.session_id.as_str()),
+            tool_call,
+            options,
+        ))
         .ok()?;
         let result = tokio::select! {
             () = stop.cancelled() => return None,
-            result = outbox.request(&cx,&message.method,message.params) => match result {
+            result = outbox.request(&cx,"session/request_permission",params) => match result {
                 Ok(result) => result,
                 Err(_) => return member.then(|| args("deny")),
             },
@@ -119,32 +144,95 @@ pub(crate) async fn question(
     session: &str,
     call: &Call,
 ) -> Option<Value> {
-    let mut properties = Map::new();
-    let mut required = Vec::new();
+    let mut schema = acp::ElicitationSchema::new();
     for (index, question) in call.questions.iter().enumerate() {
-        let name = format!("q{index}");
-        let choices: Vec<_> = question.options.iter().map(|choice|json!({"const":choice.label,"title":choice.label,"description":choice.description})).collect();
-        let mut schema = if question.multi_select {
-            json!({"type":"array","items":{"anyOf":choices},"minItems":1,"maxItems":question.options.len()})
+        let choices: Vec<_> = question
+            .options
+            .iter()
+            .map(|choice| {
+                acp::EnumOption::new(choice.label.as_str(), choice.label.as_str())
+                    .description(choice.description.clone())
+            })
+            .collect();
+        let title = question.header.as_deref().unwrap_or(&question.question);
+        let property = if question.multi_select {
+            acp::ElicitationPropertySchema::Array(
+                acp::MultiSelectPropertySchema::titled(choices)
+                    .title(title)
+                    .description(question.question.as_str())
+                    .min_items(1)
+                    .max_items(question.options.len() as u64),
+            )
         } else {
-            json!({"type":"string","oneOf":choices})
+            acp::ElicitationPropertySchema::String(
+                acp::StringPropertySchema::new()
+                    .title(title)
+                    .description(question.question.as_str())
+                    .one_of(choices),
+            )
         };
-        schema["title"] = json!(question.header.as_deref().unwrap_or(&question.question));
-        schema["description"] = json!(question.question);
-        properties.insert(name.clone(), schema);
+        schema = schema.property(format!("q{index}"), property, !question.allow_custom);
         if question.allow_custom {
-            properties.insert(
+            schema = schema.property(
                 format!("custom{index}"),
-                json!({"type":"string","title":format!("Custom answer: {}",question.question)}),
+                acp::StringPropertySchema::new()
+                    .title(format!("Custom answer: {}", question.question)),
+                false,
             );
-        } else {
-            required.push(name);
         }
     }
-    let message = UntypedMessage::new("elicitation/create",json!({"mode":"form","sessionId":session,"toolCallId":tool_id(&call.branch_id,&call.request_id,&call.call_id),"message":"Answer the agent's questions","requestedSchema":{"type":"object","properties":properties,"required":required}})).ok()?;
+    // The request has always carried `required`, empty included; the crate
+    // omits it when no property is required.
+    schema.required.get_or_insert_default();
+    let mut params = serde_json::to_value(acp::CreateElicitationRequest::new(
+        acp::ElicitationFormMode::new(
+            acp::ElicitationSessionScope::new(acp::SessionId::new(session)).tool_call_id(
+                acp::ToolCallId::new(tool_id(&call.branch_id, &call.request_id, &call.call_id)),
+            ),
+            schema,
+        ),
+        "Answer the agent's questions",
+    ))
+    .ok()?;
+    // `ElicitationSchema` stores `properties` in a sorted map, while the form
+    // has always listed them in question order, each custom answer right after
+    // its question: a client renders the fields in the order the schema lists.
+    // `serde_json/preserve_order`, which the build enables, keeps that order.
+    let serialized = params["requestedSchema"]["properties"]
+        .as_object_mut()
+        .expect("a serialized schema carries its properties as an object");
+    let mut ordered = Map::new();
+    for (index, question) in call.questions.iter().enumerate() {
+        let name = format!("q{index}");
+        let mut property = serialized
+            .remove(&name)
+            .expect("the schema carries every question it was built from");
+        // `EnumOption` omits a description holding null while the form has
+        // always stated it: the rule `projection::notification` states for a
+        // tool call's `kind` and `status`, at the boundary that serializes.
+        let choices = if question.multi_select {
+            &mut property["items"]["anyOf"]
+        } else {
+            &mut property["oneOf"]
+        };
+        for choice in choices.as_array_mut().into_iter().flatten() {
+            if let Some(choice) = choice.as_object_mut() {
+                choice.entry("description").or_insert(Value::Null);
+            }
+        }
+        ordered.insert(name, property);
+        if question.allow_custom {
+            let name = format!("custom{index}");
+            let custom = serialized
+                .remove(&name)
+                .expect("the schema carries every custom answer it was built from");
+            ordered.insert(name, custom);
+        }
+    }
+    params["requestedSchema"]["properties"] = Value::Object(ordered);
     let result: Option<Value> = tokio::select! {
         () = stop.cancelled() => return None,
-        result = outbox.request(&cx,&message.method,message.params) => result.ok(),
+        result = outbox.request(&cx,"elicitation/create",params) => result.ok(),
     };
     let answers: Option<Vec<_>> = result
         .as_ref()

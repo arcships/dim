@@ -10101,6 +10101,52 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn composer_shows_conventional_windows_workspace_paths() {
+        use std::path::{Component, Prefix};
+
+        let home = tempfile::tempdir().unwrap();
+        let canonical = home.path().canonicalize().unwrap();
+        let cwd = canonical.to_str().unwrap();
+        let local = match canonical.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::VerbatimDisk(_) => cwd[4..].to_owned(),
+                Prefix::VerbatimUNC(..) => format!(r"\\{}", &cwd[8..]),
+                _ => cwd.to_owned(),
+            },
+            _ => cwd.to_owned(),
+        };
+        let theme = test_theme();
+        for (cwd, expected) in [
+            (cwd, local.as_str()),
+            (r"\\?\d:\项目\code", r"d:\项目\code"),
+            (
+                r"\\?\UNC\localhost\dim-test-nonexistent-share\project",
+                r"\\localhost\dim-test-nonexistent-share\project",
+            ),
+            (
+                r"\\?\Volume{00000000-0000-0000-0000-000000000000}\project",
+                r"\\?\Volume{00000000-0000-0000-0000-000000000000}\project",
+            ),
+        ] {
+            let mut app = App::new(
+                Box::new(Idle),
+                MarkdownRenderer::new(&theme),
+                theme.palette.clone(),
+                home.path().to_path_buf(),
+                cwd.to_owned(),
+            );
+            for fullscreen in [false, true] {
+                app.fullscreen = fullscreen;
+                let frame = app.frame(((width_of(expected) + 80) as u16, 30));
+                let border = frame.live.iter().rfind(|row| row.contains('╰')).unwrap();
+                let border = crate::ui::render::panel::strip_escapes(border);
+                assert!(border.contains(&format!("─ {expected} ─")), "{border:?}");
+            }
+        }
+    }
+
     /// The branch label follows the workspace the interface shows.
     #[test]
     fn composer_tracks_git_switches_in_repositories_and_worktrees() {

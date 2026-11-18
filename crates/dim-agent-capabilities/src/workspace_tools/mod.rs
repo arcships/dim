@@ -26,8 +26,8 @@ use crate::{
 };
 use background::BackgroundExecPlugin;
 use dim_agent_runtime::{
-    AgentBuilder, AgentError, CAPABILITY_RELOADING, CollaborationRole, Names, PartRegistry,
-    PartScope, SessionConfig, SessionIdentity,
+    AgentBuilder, CAPABILITY_RELOADING, CollaborationRole, Names, PartRegistry, PartScope,
+    SessionConfig, SessionIdentity,
 };
 use dim_agent_types::*;
 use file_reads::{FileReads, FileReadsPlugin};
@@ -164,13 +164,6 @@ pub(crate) struct WorkspaceTools {
     calls: TaskTracker,
 }
 
-fn host_error(error: AgentError) -> HostError {
-    match error {
-        AgentError::Reloading(_) => HostError::Cancelled(CAPABILITY_RELOADING.into()),
-        error => HostError::failed(error.to_string()),
-    }
-}
-
 /// The ordering class of each workspace tool. Every name outside the three
 /// reads orders, including the ones this product does not mount today.
 fn tool_concurrency(name: &str) -> ToolConcurrency {
@@ -191,7 +184,10 @@ impl WorkspaceTools {
         if self.lifecycle.is_cancelled() {
             return Err(HostError::Cancelled(CAPABILITY_RELOADING.into()));
         }
-        let branch = self.tree.get(&context.branch_id).map_err(host_error)?;
+        let branch = self
+            .tree
+            .get(&context.branch_id)
+            .map_err(HostError::from_agent)?;
         let combined = self.lifecycle.child_token();
         let link = async {
             cancel.cancelled().await;
@@ -204,7 +200,9 @@ impl WorkspaceTools {
             } else if call.name == "exec_stop" {
                 exec::stop(&branch, &call, &combined).await
             } else if FileTools::handles(&call.name) {
-                let reads = branch.service::<FileReads>().map_err(host_error)?;
+                let reads = branch
+                    .service::<FileReads>()
+                    .map_err(HostError::from_agent)?;
                 self.files.execute(&call, &reads, combined.clone()).await
             } else {
                 Ok(ToolResult::error(format!("Unknown tool: {}", call.name)))

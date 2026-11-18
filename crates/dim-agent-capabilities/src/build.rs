@@ -25,13 +25,39 @@ const SOURCE: &str = "-source";
 /// with no git to answer, which reports the bare `SOURCE` mark.
 static COMMIT: OnceLock<Option<&'static str>> = OnceLock::new();
 
-/// Hands this build the commit the final binary crate read at build time. The
-/// binary calls this once before it serves either role, so every label in the
-/// process — the client's, the daemon's reports and its MCP identity — names
-/// the commit it runs. Nothing here reads git or the environment, so a new
-/// commit never recompiles this crate. The first call wins.
-pub fn install(commit: Option<&'static str>) {
+/// The stamp the final binary crate embedded, which names the artifact rather
+/// than the source; `None` when the build left none.
+static BUILD_ID: OnceLock<Option<String>> = OnceLock::new();
+
+/// Hands this build the commit and the artifact stamp the final binary crate
+/// read at build time. The binary calls this once before it serves either
+/// role, so every label in the process — the client's, the daemon's reports
+/// and its MCP identity — names the commit it runs. Nothing in this crate reads
+/// git or a build environment, so a new commit never recompiles it. The first
+/// call wins.
+pub fn install(commit: Option<&'static str>, build_id: Option<&'static str>) {
     let _ = COMMIT.set(commit);
+    let _ = BUILD_ID.set(stamp(build_id));
+}
+
+/// The stamp this build carries. A debug build takes `DIM_TEST_BUILD_ID`
+/// instead, so a flow can stand a client and a daemon of different builds
+/// beside each other; an empty value there means no stamp.
+fn stamp(build_id: Option<&'static str>) -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Some(value) = std::env::var_os("DIM_TEST_BUILD_ID") {
+        return value
+            .to_str()
+            .map(str::to_owned)
+            .filter(|value| !value.is_empty());
+    }
+    build_id.map(str::to_owned)
+}
+
+/// The artifact stamp this build reported, or `None` when its build left
+/// none: an unstamped build names its source but not its artifact.
+pub fn build_id() -> Option<&'static str> {
+    BUILD_ID.get().and_then(|build_id| build_id.as_deref())
 }
 
 /// `version` for a released build; otherwise the same version marked `SOURCE`,

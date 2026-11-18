@@ -98,6 +98,29 @@ function entries(archive) {
   return names;
 }
 
+test('the release workflow writes a build stamp only when generation succeeds',{skip:process.platform==='win32'},(t)=>{
+  const workflow=readFileSync(path.join(root,'.github/workflows/release.yml'),'utf8');
+  const step=/^      - name: Stamp the build\n        shell: bash\n        run: \|\n((?:^ {10}[^\n]*\n)+)/m.exec(workflow);
+  assert.ok(step,'the release workflow runs the stamp step with bash');
+  const script=step[1].replace(/^ {10}/gm,'');
+  const envFile=path.join(fixture(t),'github-env');
+  const runStamp=(setup='')=>spawnSync('bash',['--noprofile','--norc','-eo','pipefail','-c',setup+script],{
+    encoding:'utf8',
+    env:{...process.env,GITHUB_ENV:envFile},
+  });
+
+  for(const setup of ['node() { return 0; }\n','node() { echo partial; return 1; }\n']) {
+    const failed=runStamp(setup);
+    assert.equal(failed.error,undefined);
+    assert.notEqual(failed.status,0);
+    assert.ok(!existsSync(envFile),'a failed stamp must leave GITHUB_ENV untouched');
+  }
+
+  const stamped=runStamp();
+  assert.equal(stamped.status,0,stamped.stderr);
+  assert.match(readFileSync(envFile,'utf8'),/^DIM_BUILD_ID=[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\n$/);
+});
+
 test('workflow actions use immutable commits',()=>{
   const workflows=path.join(root,'.github/workflows');
   for (const file of readdirSync(workflows).filter(file=>/\.ya?ml(?:\.disabled)?$/.test(file))) {

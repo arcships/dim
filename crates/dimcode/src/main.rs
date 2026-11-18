@@ -55,11 +55,21 @@ const GIT_COMMIT: Option<&str> = match option_env!("DIM_GIT_COMMIT") {
     _ => None,
 };
 
+/// The stamp of the artifact this build produced, which `build.rs` reads from a
+/// packaging caller. Two builds of one version carry different stamps; a source
+/// build nobody stamped carries none.
+const BUILD_ID: Option<&str> = match option_env!("DIM_BUILD_ID") {
+    Some(build_id) if !build_id.is_empty() => Some(build_id),
+    _ => None,
+};
+
 fn main() {
     // Both roles this executable serves read one installed identity: the CLI's
     // `--version`, the daemon's report `Dim` line and its MCP client
-    // declaration, so a log, a report and a screenshot name one commit.
-    dim_agent_capabilities::build::install(GIT_COMMIT);
+    // declaration, so a log, a report and a screenshot name one commit. The
+    // client and the daemon also compare their stamps, so a client that meets a
+    // daemon of another build of the same version can say so.
+    dim_agent_capabilities::build::install(GIT_COMMIT, BUILD_ID);
     #[cfg(target_os = "linux")]
     unsafe {
         unsafe extern "C" {

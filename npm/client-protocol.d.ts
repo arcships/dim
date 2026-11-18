@@ -20,6 +20,8 @@ export type SessionTitle = {
 export type HelloResult = {
   instanceId: string
   serverVersion: string
+  /** The daemon's artifact stamp; absent when its build left none. */
+  buildId?: string
   protocolVersion: number
   /** Methods and capabilities this connection may use (v3 always sends the list). */
   features: string[]

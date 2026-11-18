@@ -311,7 +311,7 @@ Permission does).
 
 ### 4.5 Rust binding
 
-Declared-source consumers use the `Settings` binding of the public `settings` data face.
+The `Settings` binding exposes the owner operations of the public `settings` data face.
 It provides `register(ctx, declaration)`, `read(source, scope, cancel)`,
 `update(source, scope, expected, document, cancel)` and `projects()`.
 The dispatcher calls these same operations, and native consumers call them directly
@@ -320,6 +320,7 @@ writes and preserve user-only fields. The existing Settings owner still supplies
 source registry, validation and persistence.
 
 `SettingsService` retains the native `BusinessDocument` and client management paths below.
+PluginManager's declared-source tools also use it for reads and owner writes.
 This binding does not make native sources visible through declared-source operations or
 change the local-client boundary in §4.3 and §7.
 

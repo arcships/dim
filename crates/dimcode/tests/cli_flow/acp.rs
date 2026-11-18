@@ -1571,6 +1571,8 @@ struct Peer {
     input: UnixStream,
     output: BufReader<std::process::ChildStdout>,
     updates: Vec<Value>,
+    /// The line `frame` last read, for assertions about how it is spelled.
+    received: String,
 }
 
 impl Peer {
@@ -1601,6 +1603,7 @@ impl Peer {
             input,
             output,
             updates: Vec::new(),
+            received: String::new(),
         }
     }
 
@@ -1669,7 +1672,8 @@ impl Peer {
                 .unwrap();
             panic!("ACP closed before a frame: {stderr}");
         }
-        serde_json::from_str(&line).expect("stdout must contain only ACP")
+        self.received = line;
+        serde_json::from_str(&self.received).expect("stdout must contain only ACP")
     }
 
     fn answer(&mut self, request: &Value, result: Value) {
@@ -1763,6 +1767,109 @@ fn acp_stdio_cancels_a_held_input_after_a_late_submit_reply() {
     daemon.join().unwrap();
 }
 
+/// One question the flow asks: `(multi_select, allow_custom)`.
+type Shape = (bool, bool);
+
+/// The questions one `ask_user` call asks, `choice0`, `choice1` and so on.
+fn ask_user_input(shapes: &[Shape]) -> Value {
+    let questions: Vec<Value> = shapes
+        .iter()
+        .enumerate()
+        .map(|(index, &(multi_select, allow_custom))| {
+            json!({
+                "id":format!("choice{index}"),
+                "question":"Choose",
+                "options":[{"label":"A"},{"label":"B"}],
+                "multiSelect":multi_select,
+                "allowCustom":allow_custom
+            })
+        })
+        .collect();
+    json!({"questions":questions})
+}
+
+/// The question shapes the flow's forms ask, by reply index. Reply 9 answers a
+/// form of two optional single-select questions that each allow a custom
+/// answer, so its form lists `q0, custom0, q1, custom1`; every other reply
+/// answers one question.
+fn flow_shapes(index: usize) -> Vec<Shape> {
+    match index {
+        9 => vec![(false, true), (false, true)],
+        _ => vec![(index != 3 && index != 7, index != 6)],
+    }
+}
+
+/// Asserts the order the received form lists its fields in, reading the line as
+/// it stands: each question, then the custom answer beside it, in question
+/// order.
+///
+/// A `Value` compares members without their order, and a client renders the
+/// fields in the schema's order, so the order has to be read from the line
+/// itself. No field name this form writes appears as a value in it, so the
+/// first `"q0":` in the line is the member.
+fn assert_property_order(line: &str, shapes: &[Shape]) {
+    let expected: Vec<String> = shapes
+        .iter()
+        .enumerate()
+        .flat_map(|(index, &(_, allow_custom))| {
+            let mut names = vec![format!("q{index}")];
+            names.extend(allow_custom.then(|| format!("custom{index}")));
+            names
+        })
+        .collect();
+    let mut listed: Vec<(usize, &str)> = expected
+        .iter()
+        .map(|name| {
+            let key = format!("\"{name}\":");
+            let at = line
+                .find(&key)
+                .unwrap_or_else(|| panic!("the form asks {name}: {line}"));
+            (at, name.as_str())
+        })
+        .collect();
+    listed.sort();
+    let listed: Vec<&str> = listed.into_iter().map(|(_, name)| name).collect();
+    let expected: Vec<&str> = expected.iter().map(String::as_str).collect();
+    assert_eq!(
+        listed, expected,
+        "the form lists its fields in this order: {line}"
+    );
+}
+
+/// The `elicitation/create` params a question form of these shapes is expected
+/// to carry, spelled out here rather than built from the gateway's own code.
+fn question_form(request: &str, shapes: &[Shape]) -> Value {
+    let choices = json!([
+        {"const":"A","title":"A","description":null},
+        {"const":"B","title":"B","description":null},
+    ]);
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for (index, &(multi_select, allow_custom)) in shapes.iter().enumerate() {
+        let property = if multi_select {
+            json!({"type":"array","title":"Choose","description":"Choose","minItems":1,"maxItems":2,"items":{"anyOf":choices}})
+        } else {
+            json!({"type":"string","title":"Choose","description":"Choose","oneOf":choices})
+        };
+        properties.insert(format!("q{index}"), property);
+        if allow_custom {
+            properties.insert(
+                format!("custom{index}"),
+                json!({"type":"string","title":"Custom answer: Choose"}),
+            );
+        } else {
+            required.push(format!("q{index}"));
+        }
+    }
+    json!({
+        "mode":"form",
+        "sessionId":"session",
+        "toolCallId":format!("[\"main\",\"{request}\",\"question\"]"),
+        "message":"Answer the agent's questions",
+        "requestedSchema":{"type":"object","properties":properties,"required":required}
+    })
+}
+
 #[test]
 fn acp_stdio_routes_modes_permissions_and_question_forms_through_native_owners() {
     let home = Home::new();
@@ -1776,6 +1883,7 @@ fn acp_stdio_routes_modes_permissions_and_question_forms_through_native_owners()
         json!({"action":"accept","content":{"q0":[]}}),
         json!({"action":"accept","content":{"q0":"A","custom0":"C"}}),
         json!({"error":{"code":-32601,"message":"Unsupported form"}}),
+        json!({"action":"accept","content":{"q0":"A","custom1":"second"}}),
     ];
     let additional_questions = replies.len();
     let daemon = home.daemon(move |wire| {
@@ -1818,21 +1926,26 @@ fn acp_stdio_routes_modes_permissions_and_question_forms_through_native_owners()
         assert_eq!(approval["params"]["decision"],"deny");
         wire.reply(&approval,json!({}));
         wire.notice("approval.resolved",json!({"sessionId":"session","branchId":"child","requestId":"approval","decision":"deny"}));
-        fact(wire,event(12,"ask","step","tool-call",json!({"turn_id":"turn","request_id":"model","calls":[{"id":"question","name":"ask_user","input":{"questions":[{"id":"choice","question":"Choose","options":[{"label":"A"},{"label":"B"}],"multiSelect":true,"allowCustom":true}]}}]})));
+        fact(wire,event(12,"ask","step","tool-call",json!({"turn_id":"turn","request_id":"model","calls":[{"id":"question","name":"ask_user","input":ask_user_input(&[(true,true)])}]})));
         let answer = wire.read("session.question.respond");
         assert_eq!(answer["params"]["requestId"],"model");
-        assert_eq!(answer["params"]["answers"],json!([{"questionId":"choice","selected":["A","B"],"custom":"C"}]));
+        assert_eq!(answer["params"]["answers"],json!([{"questionId":"choice0","selected":["A","B"],"custom":"C"}]));
         wire.reply(&answer,json!({}));
         fact(wire,event(13,"result","step","tool-result",json!({"turn_id":"turn","request_id":"model","call_event_id":"ask","results":[{"call_id":"question","result":{"content":"answered"}}]})));
         for index in 0..additional_questions {
             let sequence = 14 + index as u64 * 2;
             let request = format!("model-{index}");
             let ask = format!("ask-{index}");
-            fact(wire,event(sequence,&ask,"step","tool-call",json!({"turn_id":"turn","request_id":request,"calls":[{"id":"question","name":"ask_user","input":{"questions":[{"id":"choice","question":"Choose","options":[{"label":"A"},{"label":"B"}],"multiSelect":index != 3 && index != 7,"allowCustom":index != 6}]}}]})));
+            fact(wire,event(sequence,&ask,"step","tool-call",json!({"turn_id":"turn","request_id":request,"calls":[{"id":"question","name":"ask_user","input":ask_user_input(&flow_shapes(index))}]})));
             let answer = wire.read("session.question.respond");
             assert_eq!(answer["params"]["requestId"], request);
             if index == 3 {
-                assert_eq!(answer["params"]["answers"], json!([{"questionId":"choice","selected":[],"custom":"Custom only"}]));
+                assert_eq!(answer["params"]["answers"], json!([{"questionId":"choice0","selected":[],"custom":"Custom only"}]));
+            } else if index == 9 {
+                assert_eq!(answer["params"]["answers"], json!([
+                    {"questionId":"choice0","selected":["A"]},
+                    {"questionId":"choice1","selected":[],"custom":"second"}
+                ]));
             } else {
                 assert_eq!(answer["params"]["declined"], true);
                 assert!(answer["params"].get("answers").is_none());
@@ -1875,24 +1988,39 @@ fn acp_stdio_routes_modes_permissions_and_question_forms_through_native_owners()
     loop {
         let frame = peer.frame();
         match frame["method"].as_str() {
-            Some("session/request_permission") => peer.answer(
-                &frame,
-                json!({"outcome":{"outcome":"selected","optionId":"reject_once"}}),
-            ),
+            Some("session/request_permission") => {
+                assert_eq!(
+                    frame["params"],
+                    json!({
+                        "sessionId":"session",
+                        "toolCall":{
+                            "toolCallId":"[\"approval\",\"session\",\"child\",\"approval\",\"\"]",
+                            "title":"Run command?",
+                            "kind":"other",
+                            "status":"pending",
+                            "rawInput":{"command":"echo test"}
+                        },
+                        "options":[
+                            {"optionId":"allow_once","name":"Allow once","kind":"allow_once"},
+                            {"optionId":"reject_once","name":"Reject once","kind":"reject_once"}
+                        ]
+                    }),
+                    "{frame}"
+                );
+                peer.answer(
+                    &frame,
+                    json!({"outcome":{"outcome":"selected","optionId":"reject_once"}}),
+                )
+            }
             Some("elicitation/create") => {
                 let _: acp::CreateElicitationRequest =
                     serde_json::from_value(frame["params"].clone()).unwrap();
-                let schema = &frame["params"]["requestedSchema"];
-                if schema["properties"]["q0"]["type"] == "array" {
-                    assert_eq!(schema["properties"]["q0"]["minItems"], 1);
-                }
-                assert_eq!(
-                    schema["required"]
-                        .as_array()
-                        .unwrap()
-                        .contains(&json!("q0")),
-                    elicitation == 7
-                );
+                let (request, shapes) = match elicitation {
+                    0 => ("model".to_owned(), flow_shapes(0)),
+                    index => (format!("model-{}", index - 1), flow_shapes(index - 1)),
+                };
+                assert_property_order(&peer.received, &shapes);
+                assert_eq!(frame["params"], question_form(&request, &shapes), "{frame}");
                 if elicitation == 0 {
                     peer.answer(
                         &frame,

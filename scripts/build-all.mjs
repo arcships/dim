@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { chmodSync, copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import path from 'node:path';
 
@@ -22,6 +23,9 @@ for (let index = 0; index < args.length; index += 1) {
 for (const name of chosen) assert(name in targets, `Unknown target ${name}; use one of ${Object.keys(targets).join(', ')}`);
 const platforms = chosen.length > 0 ? chosen : Object.keys(targets);
 const repo = path.resolve(import.meta.dirname, '..');
+// One stamp for this build: the artifacts differ from any other build of the
+// same source, which is what a client compares with its daemon.
+const buildId = randomUUID();
 
 const failed = [];
 for (const platform of platforms) {
@@ -32,7 +36,7 @@ for (const platform of platforms) {
     command, '--locked', ...(profile === 'release' ? ['--release'] : []),
     '--target', glibc ? `${triple}.${glibc}` : triple,
     '-p', 'dimcode',
-  ], { cwd: repo, stdio: 'inherit' });
+  ], { cwd: repo, stdio: 'inherit', env: { ...process.env, DIM_BUILD_ID: buildId } });
   if (result.status !== 0) {
     failed.push(platform);
     continue;

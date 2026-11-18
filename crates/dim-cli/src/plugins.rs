@@ -111,9 +111,9 @@ impl Plugin for Tui {
         let client = connection
             .take()
             .ok_or_else(|| rutis::Error::from(ErrorKind::PluginFailed(CONNECTION_TAKEN.into())))?;
-        let notice = connection
-            .take_notice()
-            .map(|notice| crate::daemon_notice(&notice));
+        let notice = connection.take_notice().map(|notice| {
+            crate::daemon_notice(ui::i18n::interface_locale(&self.options.home), &notice)
+        });
         let leave = self
             .leave
             .lock()

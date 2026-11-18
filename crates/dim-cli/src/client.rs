@@ -639,11 +639,33 @@ pub struct Link {
 }
 
 /// A kept daemon of another build, as its client reports it.
-pub struct DaemonNotice {
-    /// The daemon's build, from `hello`.
-    pub server: String,
-    /// The counts a `daemon_busy` refusal carried, when it sent them.
-    pub counts: Option<BusyCounts>,
+pub enum DaemonNotice {
+    /// A daemon of another version, or of a lower protocol, that stayed in use
+    /// because its clients are not done with it.
+    Kept {
+        /// The daemon's version, from `hello`.
+        server: String,
+        /// The counts a `daemon_busy` refusal carried, when it sent them.
+        counts: Option<BusyCounts>,
+    },
+    /// A daemon of this same version and protocol whose artifact stamp says
+    /// another build, or none.
+    Build {
+        /// The version both report: the same on both sides, from `hello`.
+        server: String,
+        kind: BuildKind,
+        /// The command that stops this home's daemon, for the user's shell.
+        command: String,
+    },
+}
+
+/// How the daemon's stamp compares with this client's.
+#[derive(Clone, Copy)]
+pub enum BuildKind {
+    /// Both are known and they differ.
+    Different,
+    /// The daemon reported no stamp, so nothing proves it is this build.
+    Unverified,
 }
 
 /// What a refused `daemon.shutdown {ifIdle}` reported in use.
@@ -720,11 +742,14 @@ async fn daemon_in_use(client: &mut Client) -> bool {
 }
 
 /// Uses the daemon behind `client` when it is this build at this protocol,
-/// stops it when it is another build or a lower protocol and idle, and keeps
-/// it with a notice when it is in use. `None` means the daemon stopped and the
-/// caller may start its own. Every client that reaches a serving daemon goes
-/// through here, whether the first attempt found it or a startup wait
-/// connected to it, and it has already greeted the daemon.
+/// stops it when it is another version or a lower protocol and idle, and keeps
+/// it with a notice when it is in use. A daemon of this version and protocol
+/// whose stamp names another build is kept too, whatever it is doing: the
+/// client reports the difference and the user decides when to switch builds.
+/// `None` means the daemon stopped and the caller may start its own. Every
+/// client that reaches a serving daemon goes through here, whether the first
+/// attempt found it or a startup wait connected to it, and it has already
+/// greeted the daemon.
 async fn adopt(
     mut client: Client,
     start: bool,
@@ -732,17 +757,48 @@ async fn adopt(
     startup_note: &Path,
     desired: u32,
     locale: crate::locale::Locale,
+    home: &Path,
 ) -> Result<Option<Link>> {
     let version = client.server_version().to_owned();
     let protocol = client.connection_config().protocol_version;
-    if !(start && server.embedded && (version != env!("CARGO_PKG_VERSION") || protocol < desired)) {
+    if !(start && server.embedded) {
         let _ = std::fs::remove_file(startup_note);
         return Ok(Some(Link {
             client,
             notice: None,
         }));
     }
-    // A daemon of another build or of a lower protocol is replaced only while
+    if version == env!("CARGO_PKG_VERSION") && protocol >= desired {
+        let _ = std::fs::remove_file(startup_note);
+        // One version and one protocol: only the artifact stamp tells two
+        // builds apart. A client without one of its own has nothing to compare,
+        // and a source build names its tree in the version it reports already.
+        let kind = match (dim_agent_capabilities::build::build_id(), client.build_id()) {
+            (Some(ours), Some(daemon)) if ours == daemon => {
+                return Ok(Some(Link {
+                    client,
+                    notice: None,
+                }));
+            }
+            (Some(_), Some(_)) => BuildKind::Different,
+            (Some(_), None) => BuildKind::Unverified,
+            (None, _) => {
+                return Ok(Some(Link {
+                    client,
+                    notice: None,
+                }));
+            }
+        };
+        return Ok(Some(Link {
+            client,
+            notice: Some(DaemonNotice::Build {
+                server: version,
+                kind,
+                command: daemon_stop_command(&server.program, home),
+            }),
+        }));
+    }
+    // A daemon of another version or of a lower protocol is replaced only while
     // it is idle: one that serves other clients is kept, and the client says
     // so. `hello` proved that this negotiated version is usable and offered
     // the required methods, which is not the same as the daemon being ours;
@@ -761,21 +817,40 @@ async fn adopt(
         return Ok(None);
     };
     let _ = std::fs::remove_file(startup_note);
-    let notice = DaemonNotice {
-        server: version,
-        counts,
-    };
     // The daemon is still there: it refused the idle replacement, or it cannot
     // be asked as well as this client needs. A Session created over it would
     // be stored at its protocol and hidden from builds of this one, so a start
     // that agreed on a lower protocol ends here instead.
     if protocol < desired {
-        return Err(crate::daemon_too_old(locale, &notice, protocol).into());
+        return Err(crate::daemon_too_old(locale, &version, counts, protocol).into());
     }
     Ok(Some(Link {
         client,
-        notice: Some(notice),
+        notice: Some(DaemonNotice::Kept {
+            server: version,
+            counts,
+        }),
     }))
+}
+
+/// The command that stops the selected home's daemon in a POSIX shell.
+fn daemon_stop_command(executable: &Path, home: &Path) -> String {
+    let program = shell_word(&crate::update::entry(executable));
+    let home = shell_word(&home.display().to_string());
+    format!("{program} --home {home} daemon stop")
+}
+
+/// `word` as a POSIX shell takes it whole.
+fn shell_word(word: &str) -> String {
+    if !word.is_empty()
+        && word
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_./-".contains(&byte))
+    {
+        word.to_owned()
+    } else {
+        format!("'{}'", word.replace('\'', "'\\''"))
+    }
 }
 
 /// Opens the endpoint and greets the daemon; `None` when no daemon answers at
@@ -857,7 +932,8 @@ pub async fn connect_inner(
             None => DaemonProfile::Product,
         })
     };
-    let native_home = options.home.join("rust");
+    let home = std::path::absolute(options.home.join("."))?;
+    let native_home = home.join("rust");
     if start {
         let mut builder = std::fs::DirBuilder::new();
         builder.recursive(true);
@@ -940,7 +1016,16 @@ pub async fn connect_inner(
     };
     let found = connect_negotiating(&connection, false, negotiate, &mut wait).await?;
     if let Some(client) = found
-        && let Some(link) = adopt(client, start, &server, &startup_note, desired, locale).await?
+        && let Some(link) = adopt(
+            client,
+            start,
+            &server,
+            &startup_note,
+            desired,
+            locale,
+            &home,
+        )
+        .await?
     {
         return Ok(Some(link));
     }
@@ -1054,7 +1139,17 @@ pub async fn connect_inner(
     let mut poll = Duration::from_millis(5);
     loop {
         if let Some(client) = connect_negotiating(&connection, true, negotiate, &mut wait).await? {
-            match adopt(client, start, &server, &startup_note, desired, locale).await? {
+            match adopt(
+                client,
+                start,
+                &server,
+                &startup_note,
+                desired,
+                locale,
+                &home,
+            )
+            .await?
+            {
                 Some(link) => return Ok(Some(link)),
                 // The daemon behind the endpoint was another build's; it is
                 // stopped now. A child this client already spawned may have

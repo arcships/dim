@@ -16,9 +16,9 @@ use crate::{
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{
-    AgentBuilder, AgentError, CAPABILITY_RELOADING, Feature, Names, QueryEvent, QueryFilter,
-    QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QuerySelect, QuerySpec,
-    TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
+    AgentBuilder, Feature, Names, QueryEvent, QueryFilter, QueryOperand, QueryOrder, QueryOrderKey,
+    QueryOutput, QueryPage, QuerySelect, QuerySpec, TimelineQuery, TimelineQueryDirection,
+    TimelineQueryScope,
 };
 use dim_agent_types::*;
 use jiff::Timestamp;
@@ -130,20 +130,16 @@ impl DynPlugin for RecallPlugin {
 struct RecallTool(Arc<TreeCommands>);
 
 impl RecallTool {
-    fn facade_error(error: AgentError) -> HostError {
-        match error {
-            AgentError::Reloading(_) => HostError::Cancelled(CAPABILITY_RELOADING.into()),
-            error => HostError::failed(error.to_string()),
-        }
-    }
-
     async fn run(
         &self,
         call: ToolCall,
         context: ToolExecutionContext,
         cancel: CancellationToken,
     ) -> Result<ToolResult, HostError> {
-        let branch = self.0.get(&context.branch_id).map_err(Self::facade_error)?;
+        let branch = self
+            .0
+            .get(&context.branch_id)
+            .map_err(HostError::from_agent)?;
         let arguments = match Arguments::parse(&call.input) {
             Ok(arguments) => arguments,
             Err(message) => return Ok(ToolResult::error(message)),

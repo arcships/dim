@@ -683,6 +683,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "O App Server continua a ser {server} porque outros clientes o estão a utilizar (ligações: {connections}, sessões associadas: {attached}, turnos em execução: {running}); este cliente {client} também o utiliza. Execute `dimcode daemon stop` quando terminarem; o próximo arranque executa {client}."
         }
+        "The App Server is still using a different build of {server}. Some features may be unavailable. After active work finishes, exit this client, run `{command}`, then reopen it." => {
+            "O App Server continua a usar outra compilação de {server}. Algumas funcionalidades podem não estar disponíveis. Quando o trabalho em curso terminar, saia deste cliente, execute `{command}` e volte a abri-lo."
+        }
+        "The App Server's build could not be verified as this client's. If features are missing after an update, wait for active work to finish, exit this client, run `{command}`, then reopen it." => {
+            "Não foi possível confirmar que a compilação do App Server é a deste cliente. Se faltarem funcionalidades após uma atualização, aguarde o fim do trabalho em curso, saia deste cliente, execute `{command}` e volte a abri-lo."
+        }
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "A atualizar o armazenamento local do formato v{from} para v{to}; isto pode demorar algum tempo num armazenamento grande."
         }

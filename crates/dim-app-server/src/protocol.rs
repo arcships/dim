@@ -1206,6 +1206,9 @@ pub struct UiShutdownNotice {
 pub struct HelloResult {
     pub instance_id: String,
     pub server_version: &'static str,
+    /// The stamp of the artifact this daemon runs, absent for unstamped builds.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
     pub protocol_version: u32,
     pub daemon_profile: DaemonProfile,
     #[serde(skip_serializing_if = "Option::is_none")]

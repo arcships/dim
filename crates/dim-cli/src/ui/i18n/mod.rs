@@ -483,6 +483,8 @@ mod tests {
         const COUNTS: &str = crate::DAEMON_BUSY_COUNTS;
         const TOO_OLD: &str = crate::DAEMON_TOO_OLD;
         const TOO_OLD_COUNTS: &str = crate::DAEMON_TOO_OLD_COUNTS;
+        const BUILD_DIFFERENT: &str = crate::DAEMON_BUILD_DIFFERENT;
+        const BUILD_UNVERIFIED: &str = crate::DAEMON_BUILD_UNVERIFIED;
         const UPGRADING: &str = crate::DAEMON_UPGRADING;
         const UPGRADING_PROGRESS: &str = crate::DAEMON_UPGRADING_PROGRESS;
         let previous = active();
@@ -495,6 +497,8 @@ mod tests {
                 COUNTS,
                 TOO_OLD,
                 TOO_OLD_COUNTS,
+                BUILD_DIFFERENT,
+                BUILD_UNVERIFIED,
                 UPGRADING,
                 UPGRADING_PROGRESS,
                 crate::UPGRADE_STAGE_LINES[0],
@@ -547,6 +551,17 @@ mod tests {
                     ],
                 ),
                 (UPGRADING, vec![("from", "33"), ("to", "34")]),
+                (
+                    BUILD_DIFFERENT,
+                    vec![
+                        ("server", "9.9.9"),
+                        ("command", "fixture-client daemon stop"),
+                    ],
+                ),
+                (
+                    BUILD_UNVERIFIED,
+                    vec![("command", "fixture-client daemon stop")],
+                ),
                 (
                     UPGRADING_PROGRESS,
                     vec![("seconds", "12"), ("stage", "fixture-stage")],

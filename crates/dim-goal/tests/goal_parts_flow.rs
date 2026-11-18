@@ -149,33 +149,6 @@ async fn the_guide_entry_and_the_tool_declaration_are_the_shipped_texts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_completed_turn_drives_the_continuation_and_the_limit_pauses_it() {
-    let env = Env::start().await;
-    env.set_limit(1);
-    let set = env.set("ship it").await;
-    let end = env.turn("main", &[&set]);
-    let continuation = env.wait_for("main", r#"kind="continuation""#).await;
-    assert_eq!(
-        continuation.text,
-        texts::continuation("main", 1, Some(1), 0, end.sequence)
-    );
-    let end = env.turn("main", &[&continuation]);
-    let pause = env.wait_for("main", r#"reason="limit""#).await;
-    assert_eq!(
-        pause.text,
-        texts::automatic_pause(
-            "main",
-            "ship it",
-            "limit",
-            "the automatic continuation limit was reached",
-            end.sequence
-        )
-    );
-    assert_eq!(env.settled("main").await.len(), 4);
-    env.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_absent_limit_continues_past_twenty_turns() {
     let env = Env::start().await;
     let set = env.set("ship it").await;

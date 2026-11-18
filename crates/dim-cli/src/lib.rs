@@ -187,7 +187,7 @@ async fn hold_web(
 ) -> Result<i32> {
     let (_, connection) = daemon_link(root, options, true, locale).await?;
     if let Some(notice) = connection.take_notice() {
-        eprintln!("{}", daemon_notice(&notice));
+        eprintln!("{}", daemon_notice(locale, &notice));
     }
     let (done, held) = tokio::sync::oneshot::channel();
     let hold = root.plugin(plugins::WebHold {
@@ -252,6 +252,13 @@ pub(crate) const DAEMON_BUSY_COUNTS: &str = "The App Server is still {server} be
 pub(crate) const DAEMON_TOO_OLD: &str = "The App Server is still {server} because other clients are using it, and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
 /// [`DAEMON_TOO_OLD`] with the counts a `daemon_busy` refusal carried.
 pub(crate) const DAEMON_TOO_OLD_COUNTS: &str = "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}), and it speaks protocol v{protocol}, which this {client} client cannot use. No Session was started. Run `dimcode daemon stop` when they are done, and the next start runs {client}.";
+/// The line a client prints when the daemon it reused reports this same version
+/// and protocol but a different artifact stamp: the two builds cannot be
+/// compared beyond that, and the daemon keeps serving whatever it already runs.
+pub(crate) const DAEMON_BUILD_DIFFERENT: &str = "The App Server is still using a different build of {server}. Some features may be unavailable. After active work finishes, exit this client, run `{command}`, then reopen it.";
+/// The line a client prints when the same-version daemon reports no artifact
+/// stamp at all, so nothing proves it is this build.
+pub(crate) const DAEMON_BUILD_UNVERIFIED: &str = "The App Server's build could not be verified as this client's. If features are missing after an update, wait for active work to finish, exit this client, run `{command}`, then reopen it.";
 
 /// The line a client prints once when a daemon reports a store upgrade while
 /// it starts; both waits then follow the daemon's progress instead of a fixed
@@ -353,15 +360,35 @@ impl UpgradeLine {
 
 /// The notice for a kept daemon of another build, with the refusal's counts
 /// when it sent them.
-pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
-    let server = sanitize::safe(&notice.server);
+pub(crate) fn daemon_notice(locale: locale::Locale, notice: &client::DaemonNotice) -> String {
+    let (server, counts) = match notice {
+        client::DaemonNotice::Kept { server, counts } => (server, counts),
+        client::DaemonNotice::Build {
+            server,
+            kind,
+            command,
+        } => {
+            let server = sanitize::safe(server);
+            let command = sanitize::safe(command);
+            return crate::ui::i18n::tf_in(
+                locale,
+                match kind {
+                    client::BuildKind::Different => DAEMON_BUILD_DIFFERENT,
+                    client::BuildKind::Unverified => DAEMON_BUILD_UNVERIFIED,
+                },
+                &[("server", &server), ("command", &command)],
+            );
+        }
+    };
+    let server = sanitize::safe(server);
     let client_version = env!("CARGO_PKG_VERSION");
-    match &notice.counts {
+    match counts {
         Some(counts) => {
             let connections = counts.connections.to_string();
             let attached = counts.attached_sessions.to_string();
             let running = counts.running.to_string();
-            crate::ui::i18n::tf(
+            crate::ui::i18n::tf_in(
+                locale,
                 DAEMON_BUSY_COUNTS,
                 &[
                     ("server", &server),
@@ -372,7 +399,8 @@ pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
                 ],
             )
         }
-        None => crate::ui::i18n::tf(
+        None => crate::ui::i18n::tf_in(
+            locale,
             DAEMON_BUSY,
             &[("server", &server), ("client", client_version)],
         ),
@@ -384,13 +412,14 @@ pub(crate) fn daemon_notice(notice: &client::DaemonNotice) -> String {
 /// speaks and with the refusal's counts when it sent them.
 pub(crate) fn daemon_too_old(
     locale: locale::Locale,
-    notice: &client::DaemonNotice,
+    server: &str,
+    counts: Option<client::BusyCounts>,
     protocol: u32,
 ) -> String {
-    let server = sanitize::safe(&notice.server);
+    let server = sanitize::safe(server);
     let client_version = env!("CARGO_PKG_VERSION");
     let protocol = protocol.to_string();
-    match &notice.counts {
+    match counts {
         Some(counts) => {
             let connections = counts.connections.to_string();
             let attached = counts.attached_sessions.to_string();
@@ -599,7 +628,7 @@ async fn run_acp(
         .await?
         .ok_or("App Server did not start")?;
     if let Some(notice) = &linked.notice {
-        eprintln!("{}", daemon_notice(notice));
+        eprintln!("{}", daemon_notice(locale, notice));
     }
     let client = linked.client;
     let (gateway, finished) = dim_acp::AcpGateway::new(
@@ -679,7 +708,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
             .await?
             .ok_or("App Server did not start")?;
         if let Some(notice) = &linked.notice {
-            eprintln!("{}", daemon_notice(notice));
+            eprintln!("{}", daemon_notice(locale, notice));
         }
         let mut client = linked.client;
         let (provider, device) = dim_acp::auth::terminal_method(&mut client, method).await?;
@@ -755,7 +784,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         return client::stop(connection.take()).await;
     }
     if let Some(notice) = connection.take_notice() {
-        eprintln!("{}", daemon_notice(&notice));
+        eprintln!("{}", daemon_notice(locale, &notice));
     }
     let mut client = connection.take().ok_or("App Server did not start")?;
     match &options.action {

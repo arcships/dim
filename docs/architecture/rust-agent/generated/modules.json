@@ -2163,15 +2163,6 @@
       ]
     },
     {
-      "id": "dim_agent_scheduler::loops::tests",
-      "crate": "dim_agent_scheduler",
-      "parent": "dim_agent_scheduler::loops",
-      "file": "crates/dim-agent-scheduler/src/loops.rs",
-      "unexpandedMacros": [
-        "assert_eq"
-      ]
-    },
-    {
       "id": "dim_agent_scheduler::methods",
       "crate": "dim_agent_scheduler",
       "parent": "dim_agent_scheduler",
@@ -5326,7 +5317,8 @@
       "file": "crates/dim-cli/src/ui/mod.rs",
       "unexpandedMacros": [
         "cfg",
-        "format"
+        "format",
+        "matches"
       ]
     },
     {
@@ -8228,6 +8220,7 @@
       "from": "dim_acp::interaction",
       "to": "dim_acp::projection",
       "references": [
+        "path tool_id",
         "use crate::projection::tool_id"
       ]
     },
@@ -13611,7 +13604,18 @@
       "from": "dim_agent_capabilities::host",
       "to": "dim_agent_runtime::error",
       "references": [
+        "path AgentError",
+        "path AgentError::Reloading",
+        "use dim_agent_runtime::AgentError",
         "use dim_agent_runtime::panic_message"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host",
+      "to": "dim_agent_runtime::lifecycle",
+      "references": [
+        "path CAPABILITY_RELOADING",
+        "use dim_agent_runtime::CAPABILITY_RELOADING"
       ]
     },
     {
@@ -16062,8 +16066,7 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
-        "path HostError::Cancelled",
-        "path HostError::failed",
+        "path HostError::from_agent",
         "path HostFuture",
         "path ToolExecutionContext",
         "use crate::host::HostError",
@@ -16116,23 +16119,6 @@
       "references": [
         "path AgentBuilder",
         "use dim_agent_runtime::AgentBuilder"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::recall",
-      "to": "dim_agent_runtime::error",
-      "references": [
-        "path AgentError",
-        "path AgentError::Reloading",
-        "use dim_agent_runtime::AgentError"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::recall",
-      "to": "dim_agent_runtime::lifecycle",
-      "references": [
-        "path CAPABILITY_RELOADING",
-        "use dim_agent_runtime::CAPABILITY_RELOADING"
       ]
     },
     {
@@ -16293,7 +16279,8 @@
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
-        "path HostError::failed"
+        "path HostError::failed",
+        "path HostError::from_agent"
       ]
     },
     {
@@ -16307,7 +16294,6 @@
         "path Narrative::fold",
         "path PAGE_ENTRIES",
         "path PAGE_EVENTS",
-        "path RecallTool::facade_error",
         "path date",
         "path line_write",
         "path page",
@@ -18777,7 +18763,7 @@
         "path CancelledFn",
         "path HostError",
         "path HostError::Cancelled",
-        "path HostError::failed",
+        "path HostError::from_agent",
         "path HostFuture",
         "path ToolExecutionContext",
         "path call_until_cancelled",
@@ -18851,9 +18837,7 @@
       "from": "dim_agent_capabilities::wait",
       "to": "dim_agent_runtime::error",
       "references": [
-        "path AgentError::Reloading",
-        "path dim_agent_runtime::Result",
-        "use dim_agent_runtime::AgentError"
+        "path dim_agent_runtime::Result"
       ]
     },
     {
@@ -18958,6 +18942,7 @@
         "path HostError",
         "path HostError::Cancelled",
         "path HostError::failed",
+        "path HostError::from_agent",
         "path HostFuture",
         "path SessionFiles",
         "path ToolDriver",
@@ -19129,15 +19114,6 @@
         "use dim_agent_runtime::CollaborationRole",
         "use dim_agent_runtime::SessionConfig",
         "use dim_agent_runtime::SessionIdentity"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::workspace_tools",
-      "to": "dim_agent_runtime::error",
-      "references": [
-        "path AgentError",
-        "path AgentError::Reloading",
-        "use dim_agent_runtime::AgentError"
       ]
     },
     {
@@ -19374,6 +19350,7 @@
       "references": [
         "path HostError",
         "path HostError::Cancelled",
+        "path HostError::from_agent",
         "path ToolExecutionContext",
         "use crate::host::HostError",
         "use crate::host::ToolExecutionContext"
@@ -19425,7 +19402,6 @@
       "to": "dim_agent_capabilities::workspace_tools",
       "references": [
         "path WorkspaceTools",
-        "path super::host_error",
         "use super::WorkspaceTools"
       ]
     },
@@ -22649,13 +22625,6 @@
     },
     {
       "from": "dim_agent_scheduler::loops",
-      "to": "dim_agent_scheduler::loops::tests",
-      "references": [
-        "mod tests"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler::loops",
       "to": "dim_agent_scheduler::methods",
       "references": [
         "path Shared",
@@ -22712,14 +22681,6 @@
       "to": "dim_app_server::plugin_files",
       "references": [
         "path dim_app_server::plugin_files::PluginFileTransactions"
-      ]
-    },
-    {
-      "from": "dim_agent_scheduler::loops::tests",
-      "to": "dim_agent_scheduler::loops",
-      "references": [
-        "path Cadence",
-        "path Cadence::Every"
       ]
     },
     {
@@ -24415,13 +24376,6 @@
         "path settings::SettingsPlugin::native",
         "path settings::SettingsPlugin::new",
         "path settings::SettingsService"
-      ]
-    },
-    {
-      "from": "dim_app_server",
-      "to": "dim_app_server::settings::declared",
-      "references": [
-        "path settings::Settings"
       ]
     },
     {
@@ -35626,6 +35580,13 @@
     },
     {
       "from": "dim_app_server::transport",
+      "to": "dim_agent_capabilities::build",
+      "references": [
+        "path dim_agent_capabilities::build::build_id"
+      ]
+    },
+    {
+      "from": "dim_app_server::transport",
       "to": "dim_agent_capabilities::environment_clients",
       "references": [
         "path ClientChannel::declared",
@@ -36656,7 +36617,12 @@
       "references": [
         "mod client",
         "path client",
+        "path client::BuildKind::Different",
+        "path client::BuildKind::Unverified",
+        "path client::BusyCounts",
         "path client::DaemonNotice",
+        "path client::DaemonNotice::Build",
+        "path client::DaemonNotice::Kept",
         "path client::NewerStore",
         "path client::StoreUpgrade",
         "path client::UpgradeStage",
@@ -37313,7 +37279,8 @@
       "from": "dim_cli::client",
       "to": "dim_agent_capabilities::build",
       "references": [
-        "path dim_agent_capabilities::build::RELEASE"
+        "path dim_agent_capabilities::build::RELEASE",
+        "path dim_agent_capabilities::build::build_id"
       ]
     },
     {
@@ -37373,6 +37340,13 @@
       "to": "dim_cli::locale",
       "references": [
         "path crate::locale::Locale"
+      ]
+    },
+    {
+      "from": "dim_cli::client",
+      "to": "dim_cli::update",
+      "references": [
+        "path crate::update::entry"
       ]
     },
     {
@@ -44544,6 +44518,8 @@
       "from": "dim_cli::ui::i18n::tests",
       "to": "dim_cli",
       "references": [
+        "path crate::DAEMON_BUILD_DIFFERENT",
+        "path crate::DAEMON_BUILD_UNVERIFIED",
         "path crate::DAEMON_BUSY",
         "path crate::DAEMON_BUSY_COUNTS",
         "path crate::DAEMON_TOO_OLD",
@@ -57259,6 +57235,10 @@
     },
     {
       "module": "dim_cli::ui::tui::tests",
+      "path": "Component::Prefix"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
       "path": "ManagementView::default"
     },
     {
@@ -57328,6 +57308,14 @@
     {
       "module": "dim_cli::ui::tui::tests",
       "path": "PluginAction::Enable"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "Prefix::VerbatimDisk"
+    },
+    {
+      "module": "dim_cli::ui::tui::tests",
+      "path": "Prefix::VerbatimUNC"
     },
     {
       "module": "dim_cli::ui::tui::tests",

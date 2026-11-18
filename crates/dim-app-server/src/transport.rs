@@ -773,6 +773,8 @@ async fn run_connection(
                             Ok(Reply::Hello(HelloResult {
                                 instance_id,
                                 server_version: SERVER_VERSION,
+                                build_id: dim_agent_capabilities::build::build_id()
+                                    .map(str::to_owned),
                                 protocol_version: params.protocol_version,
                                 daemon_profile: hub.config().daemon_profile.clone(),
                                 features: (params.protocol_version >= 3).then(|| {

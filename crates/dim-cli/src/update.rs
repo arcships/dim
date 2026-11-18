@@ -415,6 +415,18 @@ fn entry_point(package: &str) -> &str {
     }
 }
 
+/// The command word that runs this copy, for a shell: the installation's own
+/// entry point when `exe` is inside an npm package, else its path.
+pub(crate) fn entry(exe: &std::path::Path) -> String {
+    let Ok(package) = package() else {
+        return exe.display().to_string();
+    };
+    match installer(exe, &package, dim_agent_capabilities::build::VERSION) {
+        Some(_) => entry_point(&package).to_owned(),
+        None => exe.display().to_string(),
+    }
+}
+
 /// The command that updates this installation: its own entry point, which the
 /// operator runs once every client has exited and the server stopped.
 fn update_command(package: &str) -> String {

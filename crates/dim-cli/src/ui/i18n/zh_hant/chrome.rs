@@ -612,6 +612,12 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "The App Server is still {server} because other clients are using it (connections: {connections}, attached Sessions: {attached}, running turns: {running}); this {client} client uses it too. Run `dimcode daemon stop` when they are done, and the next start runs {client}." => {
             "App Server 仍是 {server}，因為其他用戶端正在使用它（連線：{connections}，已附加工作階段：{attached}，執行中的回合：{running}）；這個 {client} 用戶端也使用它。等它們結束後執行 `dimcode daemon stop`，下次啟動就會執行 {client}。"
         }
+        "The App Server is still using a different build of {server}. Some features may be unavailable. After active work finishes, exit this client, run `{command}`, then reopen it." => {
+            "App Server 仍在執行 {server} 的另一個建置。部分功能可能無法使用。目前工作結束後，請結束此用戶端，執行 `{command}`，然後重新開啟。"
+        }
+        "The App Server's build could not be verified as this client's. If features are missing after an update, wait for active work to finish, exit this client, run `{command}`, then reopen it." => {
+            "無法確認 App Server 的建置與此用戶端一致。如果更新後缺少功能，請等目前工作結束後結束此用戶端，執行 `{command}`，然後重新開啟。"
+        }
         "Upgrading the local store from format v{from} to v{to}; this can take a while on a large store." => {
             "正在把本機資料庫從格式 v{from} 升級到 v{to}；大型資料庫可能需要一段時間。"
         }

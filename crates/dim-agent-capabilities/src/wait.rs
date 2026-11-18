@@ -16,8 +16,8 @@ use crate::{
     workspace_tools::background::{WAKE_TASK_TAG, tagged},
 };
 use dim_agent_runtime::{
-    AgentBuilder, AgentError, CAPABILITY_RELOADING, Dispatcher, Names, QueryFilter, QueryOperand,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline, TimelineQuery,
+    AgentBuilder, CAPABILITY_RELOADING, Dispatcher, Names, QueryFilter, QueryOperand, QueryOutput,
+    QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline, TimelineQuery,
     TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -401,10 +401,7 @@ impl WaitTool {
             .0
             .get(&context.branch_id)
             .and_then(|branch| branch.service::<Wait>())
-            .map_err(|error| match error {
-                AgentError::Reloading(_) => HostError::Cancelled(CAPABILITY_RELOADING.into()),
-                error => HostError::failed(error.to_string()),
-            })?;
+            .map_err(HostError::from_agent)?;
         let result = match wait
             .arrival(
                 task_id.as_deref(),

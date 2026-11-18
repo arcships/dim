@@ -95,6 +95,91 @@ function afterLastWorking(raw) {
   return at === -1 ? '' : raw.slice(at + marker.length);
 }
 
+/// The notice a TUI of one build shows when the daemon it reached is another
+/// build of the same version.
+const OTHER_BUILD_NOTICE = 'still using a different build of';
+
+/// Runs as the older build, so the daemon it starts is stamped as that build
+/// and reports one Session for the resumes that follow.
+function startDaemonAsOlderBuild(tui) {
+  return tui
+    .runCommandAsync(
+      ['--home', tui.home, '--model-config', tui.modelFile, 'exec', '--json', '-p', 'seed'],
+      {env: {DIM_TEST_BUILD_ID: 'build-2026-11-16'}},
+    )
+    .then((output) => {
+      const session = output
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => JSON.parse(line).params?.sessionId)
+        .find(Boolean);
+      assert(session, `exec named the Session it created: ${output}`);
+      return session;
+    });
+}
+
+/// One TUI mode's view of a kept daemon of another build: the notice and the
+/// command that stops it, once on Home and once on a direct resume, and
+/// nothing when the stamps match. Returns the matching terminal for the caller
+/// to close or extend.
+async function otherBuildNotice(tui, {fullscreen = false} = {}) {
+  const mode = fullscreen ? ['--fullscreen'] : [];
+  // The renderer breaks a long row at its width, inside a word when it must, so
+  // the command is compared without the whitespace the break leaves behind.
+  const squeeze = (text) => text.replace(/\s+/g, '');
+  const command = squeeze(`${tui.binary} --home ${tui.home} daemon stop`);
+  const nextStep = (screen) => squeeze(screen).includes(command);
+  await tui.setup({respond: () => ({text: ANSWER})});
+  const session = await startDaemonAsOlderBuild(tui);
+
+  const home = await tui.launch(mode, {waitForComposer: true, env: {DIM_TEST_BUILD_ID: 'build-2026-11-18'}});
+  const screen = await home.waitFor(OTHER_BUILD_NOTICE);
+  assert(nextStep(screen), `the notice names the command that switches builds: ${screen}`);
+  await exitWith(home);
+
+  const resumed = await tui.launch([...mode, '--resume', session], {
+    waitForComposer: true,
+    env: {DIM_TEST_BUILD_ID: 'build-2026-11-18'},
+  });
+  await resumed.waitFor('seed', {history: true, describe: 'the resumed transcript'});
+  const resumedScreen = await resumed.waitFor(OTHER_BUILD_NOTICE);
+  assert(nextStep(resumedScreen), `a direct resume names the same next step: ${resumedScreen}`);
+  await exitWith(resumed);
+
+  const matched = await tui.launch([...mode, '--resume', session], {
+    waitForComposer: true,
+    env: {DIM_TEST_BUILD_ID: 'build-2026-11-16'},
+  });
+  await matched.waitFor('seed', {history: true, describe: 'the resumed transcript'});
+  assert(
+    !matched.capture({history: true}).includes(OTHER_BUILD_NOTICE),
+    'a daemon of this same build is reused without a notice',
+  );
+  return matched;
+}
+
+/// A daemon whose build left no stamp cannot be verified by a client that has
+/// one: the client says that before any command can surface a missing method.
+async function unverifiedBuildNotice(tui) {
+  const squeeze = (text) => text.replace(/\s+/g, '');
+  tui.stopDaemon();
+  await tui.runCommandAsync(
+    ['--home', tui.home, '--model-config', tui.modelFile, 'exec', '--json', '-p', 'seed'],
+    {env: {DIM_TEST_BUILD_ID: ''}},
+  );
+  const terminal = await tui.launch([], {
+    waitForComposer: true,
+    env: {DIM_TEST_BUILD_ID: 'build-2026-11-18'},
+  });
+  const screen = await terminal.waitFor('could not be verified as this client');
+  assert(
+    squeeze(screen).includes(squeeze(`${tui.binary} --home ${tui.home} daemon stop`)),
+    `the unverified notice names the command that switches builds: ${screen}`,
+  );
+  await exitWith(terminal);
+}
+
 const scenarios = [
   {
     name: 'scrollback_streams_and_exits_cleanly',
@@ -1064,6 +1149,39 @@ const scenarios = [
       await terminal.waitFor('draft offer #2', {timeout: 30_000});
       assert.equal(predictions(), 2, 'the next completed turn asked again');
       await exitWith(terminal);
+    },
+  },
+  {
+    name: 'daemon_build_mismatch_notice_scrollback',
+    area: 'daemon',
+    title: 'Scrollback says the kept daemon is another build of this version, on Home and on a direct resume, names the command that stops it, stays silent for a matching build, and calls an unmarked daemon unverified',
+    async run(tui) {
+      const matched = await otherBuildNotice(tui);
+      await exitWith(matched);
+      await unverifiedBuildNotice(tui);
+    },
+  },
+  {
+    name: 'daemon_build_mismatch_notice_fullscreen',
+    area: 'daemon',
+    title: 'Fullscreen shows the same other-build notice on Home and on a direct resume, and an explicit --server never gets it',
+    async run(tui) {
+      const matched = await otherBuildNotice(tui, {fullscreen: true});
+      await exitWith(matched);
+      // The managed server is a separate artifact with a product profile of its
+      // own, so the fixture daemon leaves first.
+      tui.stopDaemon();
+      const served = await tui.launch([], {
+        waitForComposer: true,
+        server: true,
+        env: {DIM_TEST_BUILD_ID: 'build-2026-11-18'},
+      });
+      const screen = served.capture({history: true});
+      assert(
+        !screen.includes(OTHER_BUILD_NOTICE) && !screen.includes('could not be verified'),
+        `an explicit --server gets no embedded-build notice: ${screen}`,
+      );
+      await exitWith(served);
     },
   },
   {

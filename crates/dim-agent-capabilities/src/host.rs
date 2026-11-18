@@ -1,5 +1,5 @@
 use crate::history::HistoryEntry;
-use dim_agent_runtime::PromptSourceTarget;
+use dim_agent_runtime::{AgentError, CAPABILITY_RELOADING, PromptSourceTarget};
 use dim_agent_types::*;
 use futures_util::Stream;
 use rutis::Ctx;
@@ -104,6 +104,14 @@ impl HostError {
             kind,
             model: None,
             presentation: None,
+        }
+    }
+    /// A reloading capability reads as cancelled with the reload reason, and
+    /// anything else as a failure carrying the error's text.
+    pub(crate) fn from_agent(error: AgentError) -> Self {
+        match error {
+            AgentError::Reloading(_) => Self::Cancelled(CAPABILITY_RELOADING.into()),
+            error => Self::failed(error.to_string()),
         }
     }
 }

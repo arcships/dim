@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdirSync, readdirSync, rmSync, statfsSync } from 'node:fs';
 import path from 'node:path';
 import { currentVersion, nextAlphaVersion, setAlphaVersion } from './alpha-version.mjs';
@@ -60,6 +61,9 @@ const account = ids === 2;
 console.log(`\ndimcode ${currentVersion} → ${version} (dimcode-alpha on npm tag alpha${dryRun ? ', dry run' : ''}, ${account ? 'with' : 'without'} Dim account, ${platforms.join(' ')})\n`);
 
 const sourceCommit = output('git', ['rev-parse', 'HEAD']).stdout.trim();
+// The artifact stamp: a rebuilt binary of the same version and commit is still
+// another build, and a client must be able to tell the daemon apart from it.
+const buildId = randomUUID();
 const bumped = version !== currentVersion;
 try {
   if (bumped) setAlphaVersion(version);
@@ -83,7 +87,7 @@ try {
     run('rustup', ['target', 'add', triple], { stdio: ['ignore', 'ignore', 'inherit'] });
     run('cargo', [zig === undefined ? 'build' : 'zigbuild', '--release', '--locked',
       '--target', `${triple}${zig ?? ''}`, '-p', 'dimcode'],
-    { cwd: repo, env: { ...process.env, DIM_RELEASE_BUILD: '1' } });
+    { cwd: repo, env: { ...process.env, DIM_RELEASE_BUILD: '1', DIM_BUILD_ID: buildId } });
     run('node', ['scripts/stage-release.mjs', path.join(repo, 'target', triple, 'release'),
       path.join(staging, 'stage', platform), version, sourceCommit, ...(account ? ['--account'] : []),
       '--plugins', plugins, '--rust-notices', rustNotices],

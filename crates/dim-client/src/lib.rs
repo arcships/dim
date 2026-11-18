@@ -21,6 +21,9 @@ const FRAME_LIMIT: usize = 16 * 1024 * 1024;
 struct Hello {
     instance_id: String,
     server_version: String,
+    /// The daemon's artifact stamp; absent from a daemon whose build left none.
+    #[serde(default)]
+    build_id: Option<String>,
     protocol_version: u32,
     features: Vec<String>,
     daemon_profile: DaemonProfile,
@@ -115,6 +118,7 @@ pub struct Client {
     _bridge: tokio::process::Child,
     instance_id: String,
     server_version: String,
+    build_id: Option<String>,
 }
 impl Client {
     /// Opens the protected transport. Only a host that just started its daemon
@@ -206,6 +210,7 @@ impl Client {
             features: Vec::new(),
             instance_id: String::new(),
             server_version: String::new(),
+            build_id: None,
             #[cfg(windows)]
             _bridge: bridge,
         })
@@ -393,6 +398,7 @@ impl Client {
         self.features = hello.features;
         self.instance_id = hello.instance_id;
         self.server_version = hello.server_version;
+        self.build_id = hello.build_id;
         Ok(self.server_version.clone())
     }
 
@@ -411,6 +417,11 @@ impl Client {
     /// The version the daemon's hello reported, empty before the hello.
     pub fn server_version(&self) -> &str {
         &self.server_version
+    }
+    /// The artifact stamp the daemon's hello reported, `None` when its build
+    /// left none.
+    pub fn build_id(&self) -> Option<&str> {
+        self.build_id.as_deref()
     }
     /// Reconnects without starting or replacing a daemon.
     pub async fn connect(config: &ConnectionConfig) -> Result<Self> {

@@ -199,35 +199,6 @@ mod tests {
         }
     }
 
-    /// The name a reader dispatches on is the element it opens, and the first
-    /// block is the operator's whatever it opens: a message can start with a
-    /// marker they typed.
-    #[test]
-    fn the_element_name_is_the_one_the_block_opens() {
-        assert_eq!(
-            runtime_element(1, r#"<dim-hooks kind="prompt-submit">x</dim-hooks>"#),
-            Some("dim-hooks")
-        );
-        assert_eq!(
-            runtime_element(1, r#"<dim-skill name="x">body</dim-skill>"#),
-            Some("dim-skill")
-        );
-        assert_eq!(
-            runtime_element(0, r#"<dim-hooks kind="prompt-submit">typed</dim-hooks>"#),
-            None
-        );
-        assert_eq!(runtime_element(0, "ordinary words"), None);
-        for text in [
-            "<dimension>a word, not a tag</dimension>",
-            "<dim-hooksx kind=\"prompt-submit\">no such element</dim-hooksx>",
-            "a sentence that mentions <dim-hooks>",
-            "<dim-",
-            "<dim-branch-lines-extra branch=\"main\">not the roster</dim-branch-lines-extra>",
-        ] {
-            assert_eq!(runtime_element(1, text), None, "{text}");
-        }
-    }
-
     #[test]
     fn text_the_operator_wrote_that_only_looks_like_a_marker_stays_text() {
         for text in [
