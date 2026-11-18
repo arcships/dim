@@ -301,9 +301,73 @@ fn run_terminal(host: Box<dyn SessionPort>, surroundings: Env) -> i32 {
     let mut dirty = true;
     let mut last_frame: Option<Instant> = None;
     let mut resize: Option<PendingResize> = None;
+    let mut private_screen = None;
     let code = loop {
         for update in app.host.drain() {
             app.apply(update);
+            dirty = true;
+        }
+        if let Some(Prompt::Report(report)) = &mut app.prompt
+            && report.reviewing()
+        {
+            // Never draw the private review into native scrollback, including
+            // when a resize or asynchronous transcript update arrives.
+            let size = terminal.size();
+            if private_screen.is_none() {
+                if full.is_none() && terminal.set_fullscreen(true).is_err() {
+                    app.host.shutdown();
+                    return terminal.lost();
+                }
+                private_screen = Some(FullScreen::new(size, synchronized));
+            }
+            let private = private_screen.as_mut().expect("private screen");
+            report.poll_feedback();
+            let frame = Frame {
+                overlay: Some(Overlay {
+                    rows: report.render(
+                        usize::from(size.0).saturating_sub(2).min(100),
+                        usize::from(size.1),
+                        &app.palette,
+                    ),
+                    cursor: report.cursor().map(|(row, col)| (row as u16, col as u16)),
+                }),
+                ..Frame::default()
+            };
+            if terminal
+                .write(&private.render(&frame, size, &app.palette, &app))
+                .is_err()
+                || terminal.write_failed()
+            {
+                app.host.shutdown();
+                return terminal.lost();
+            }
+            match terminal.next_event(SESSION_POLL) {
+                Wait::Lost => {
+                    app.host.shutdown();
+                    return terminal.lost();
+                }
+                Wait::Event(InputEvent::Key(key)) => {
+                    app.handle(InputEvent::Key(key));
+                }
+                Wait::Event(InputEvent::Paste(text)) => {
+                    app.handle(InputEvent::Paste(text));
+                }
+                Wait::Event(InputEvent::Mouse(event)) => match event.kind {
+                    crate::ui::terminal::MouseKind::WheelUp => app.scroll_overlay(-3),
+                    crate::ui::terminal::MouseKind::WheelDown => app.scroll_overlay(3),
+                    _ => {}
+                },
+                _ => {}
+            }
+            continue;
+        }
+        if private_screen.take().is_some() {
+            if let Some(full) = &mut full {
+                full.invalidate();
+            } else if terminal.set_fullscreen(false).is_err() {
+                app.host.shutdown();
+                return terminal.lost();
+            }
             dirty = true;
         }
         if full.is_some() && app.shows_member() != leader_full.is_some() {
@@ -1694,6 +1758,15 @@ impl App {
         self.snapshot
             .as_ref()
             .is_some_and(|s| s.rows.iter().any(|r| r.kind == RowKind::UserMessage))
+    }
+
+    fn feedback_snapshot(&self) -> Option<&ViewSnapshot> {
+        self.snapshot.as_ref().filter(|snapshot| {
+            self.failure.is_none()
+                && !self.session_id.is_empty()
+                && snapshot.session_id == self.session_id
+                && snapshot.history_complete
+        })
     }
 
     /// No prompt, panel or palette owns the keys.
@@ -5445,11 +5518,16 @@ impl App {
                     self.set_notice(t("No session to report."));
                     return Outcome::Continue;
                 };
+                let feedback = self.feedback_snapshot().and_then(|snapshot| {
+                    let intake = crate::feedback_transport::Intake::configured()?;
+                    crate::ui::private_feedback::Feedback::capture(snapshot, intake)
+                });
                 self.report_sequence += 1;
                 let panel = self.report_sequence;
                 self.open_prompt(Prompt::Report(Box::new(report_panel::Panel::new(
                     panel,
                     target.clone(),
+                    feedback,
                 ))));
                 self.host.send(Command::Report(crate::report::Request {
                     panel,

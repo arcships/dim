@@ -8,6 +8,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use crate::report::{Action, Draft, EvidenceUnavailable, GeneratedReport, Plan, Reply, Target};
 use crate::ui::i18n::t;
 use crate::ui::line_input::LineInput;
+use crate::ui::private_feedback::Feedback;
 use crate::ui::render::panel::{bordered, follow_window, wrap};
 use crate::ui::terminal::{KeyCode, KeyEvent};
 use crate::ui::text::truncate_cells;
@@ -36,6 +37,8 @@ pub struct Panel {
     focus: usize,
     caret: Cell<Option<(usize, usize)>>,
     saved: Option<PathBuf>,
+    feedback: Option<Feedback>,
+    reviewing: bool,
 }
 
 pub enum Input {
@@ -45,7 +48,7 @@ pub enum Input {
 }
 
 impl Panel {
-    pub fn new(id: u64, target: Target) -> Self {
+    pub(super) fn new(id: u64, target: Target, feedback: Option<Feedback>) -> Self {
         Self {
             id,
             draft: None,
@@ -62,7 +65,24 @@ impl Panel {
             focus: 0,
             caret: Cell::new(None),
             saved: None,
+            feedback,
+            reviewing: false,
         }
+    }
+
+    pub fn reviewing(&self) -> bool {
+        self.reviewing
+    }
+
+    pub(super) fn clear_feedback(&mut self) {
+        if self.feedback.take().is_some() {
+            self.focus = 0;
+        }
+        self.reviewing = false;
+    }
+
+    pub(super) fn poll_feedback(&mut self) -> bool {
+        self.feedback.as_mut().is_some_and(Feedback::poll)
     }
 
     pub fn reply(&mut self, reply: Reply) -> Option<Action> {
@@ -107,6 +127,7 @@ impl Panel {
     }
 
     pub fn disconnected(&mut self, message: &str) {
+        self.clear_feedback();
         self.target = None;
         self.draft = None;
         self.busy = None;
@@ -118,7 +139,11 @@ impl Panel {
     }
 
     pub fn paste(&mut self, text: &str) {
-        if self.editing {
+        if self.reviewing {
+            if let Some(feedback) = &mut self.feedback {
+                feedback.paste(text);
+            }
+        } else if self.editing {
             self.options.paste(text);
         }
     }
@@ -142,6 +167,14 @@ impl Panel {
     }
 
     pub fn key(&mut self, key: KeyEvent, workspace: &Path) -> Input {
+        if self.reviewing {
+            if let Some(feedback) = &mut self.feedback
+                && feedback.key(key)
+            {
+                self.reviewing = false;
+            }
+            return Input::None;
+        }
         if key.code == KeyCode::Esc {
             if self.editing {
                 self.editing = false;
@@ -177,6 +210,12 @@ impl Panel {
             KeyCode::BackTab => self.focus = (self.focus + count - 1) % count,
             KeyCode::Up => self.focus = self.focus.saturating_sub(1),
             KeyCode::Down => self.focus = (self.focus + 1).min(count - 1),
+            KeyCode::Enter if self.feedback.is_some() && self.focus == count - 1 => {
+                if let Some(feedback) = &mut self.feedback {
+                    feedback.open();
+                }
+                self.reviewing = true;
+            }
             KeyCode::Enter if self.generated.is_some() => return self.generated_key(workspace),
             KeyCode::Enter if self.focus == 4 || self.target.is_none() => {
                 return Input::Close;
@@ -261,7 +300,7 @@ impl Panel {
     }
 
     fn controls(&self) -> Vec<&str> {
-        if self.generated.is_some() {
+        let mut controls = if self.generated.is_some() {
             if self.saved.is_some() {
                 vec![t("Save ZIP"), "GitHub", "Discord", t("Close")]
             } else {
@@ -287,14 +326,28 @@ impl Panel {
                 },
                 t("Cancel"),
             ]
+        };
+        if self.feedback.is_some() {
+            controls.push(t("Review private feedback"));
         }
+        controls
     }
 
     pub fn cursor(&self) -> Option<(usize, usize)> {
+        if self.reviewing
+            && let Some(feedback) = &self.feedback
+        {
+            return feedback.cursor();
+        }
         self.caret.get()
     }
 
     pub fn render(&self, width: usize, budget: usize, p: &Palette) -> Vec<String> {
+        if self.reviewing
+            && let Some(feedback) = &self.feedback
+        {
+            return feedback.render(width, budget, p);
+        }
         self.caret.set(None);
         let title = if self.generated.is_some() {
             t("Report ready")

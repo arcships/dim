@@ -65,6 +65,7 @@ pub mod models_panel;
 pub mod notify;
 pub mod oauth_view;
 pub mod plugins_panel;
+mod private_feedback;
 pub mod progress;
 pub mod prompts;
 pub mod providers_panel;

@@ -350,6 +350,38 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Report this session" => "上报当前会话",
         "Report this error" => "上报此错误",
         "Report ready" => "报告已生成",
+        "Review private feedback" => "预览私密反馈",
+        "Private feedback" => "私密反馈",
+        "Optional note" => "补充说明（可选）",
+        "Note must fit within 1 KiB" => "说明不得超过 1 KiB",
+        "Back to report" => "返回报告",
+        "Reuse for private evaluation [x]" => "另外允许用于私有评测 [x]",
+        "Reuse for private evaluation [ ]" => "另外允许用于私有评测 [ ]",
+        "Confirm and send privately" => "确认并私密发送",
+        "Retry the same submission" => "重试同一份提交",
+        "Sending private feedback…" => "正在发送私密反馈…",
+        "No receipt confirmed. Retry sends the same bytes with the same ID." => {
+            "尚未确认收到。重试会使用同一编号发送完全相同的内容。"
+        }
+        "Private feedback received: {receipt}" => "私密反馈已收到，编号：{receipt}",
+        "To the Dim team via {host}" => "发给 Dim 团队，接收地址：{host}",
+        "Sensitive: this session sample may contain code or private information. Review every field before sending." => {
+            "敏感内容：会话片段可能含有代码或私密信息，发送前请逐项检查。"
+        }
+        "Default: diagnosis only. Separately opt in to reuse as a private evaluation case. Never public or used for model training." => {
+            "默认仅用于问题诊断；可另外允许用作私有评测案例。不会公开，也不用于模型训练。"
+        }
+        "Raw samples are kept for 30 days. Save your case ID and contact the pilot operator to withdraw; derived private tests are disabled within 48 hours." => {
+            "原始片段保留 30 天。请保存编号，凭编号联系试点负责人撤回；衍生的私有测试会在 48 小时内停用。"
+        }
+        "Exact JSON to send:" => "将发送的完整 JSON（转义显示不可见字符）：",
+        "Could not prepare private feedback. Nothing was sent." => {
+            "无法准备私密反馈，尚未发送任何内容。"
+        }
+        "Enlarge terminal to review/send · Esc back" => "请放大终端后预览/发送 · Esc 返回",
+        "↑↓/PgUp/PgDn scroll · Tab move · Enter select · Esc back" => {
+            "↑↓/PgUp/PgDn 滚动 · Tab 切换 · Enter 选择 · Esc 返回"
+        }
         "ZIP contents: report.md, diagnostics.json" => "ZIP 内容：report.md、diagnostics.json",
         "Model · Generate locally" => "模型 · 本地生成",
         "Local generation makes zero model requests." => "本地生成不会调用模型。",
