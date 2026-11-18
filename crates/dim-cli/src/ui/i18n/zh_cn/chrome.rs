@@ -353,6 +353,19 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "ZIP contents: report.md, diagnostics.json" => "ZIP 内容：report.md、diagnostics.json",
         "Model · Generate locally" => "模型 · 本地生成",
         "Local generation makes zero model requests." => "本地生成不会调用模型。",
+        "Default: current-session diagnostics only." => "默认只打包当前会话的诊断信息。",
+        "Redact is off. The ZIP may contain sensitive text from recent messages." => {
+            "脱敏已关闭。ZIP 可能包含近期对话中的敏感内容。"
+        }
+        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data." => {
+            "只有主动关闭脱敏，才会将近期用户和助手正文附加到 ZIP；可能含敏感信息。"
+        }
+        "Error diagnostics only; no session text is available." => {
+            "仅打包错误诊断信息；没有可收集的会话正文。"
+        }
+        "Generate/save never uploads. Share manually after saving." => {
+            "生成和保存均不上传。保存后再手动分享。"
+        }
         "Session model" => "会话模型",
         "Redact [x]" => "脱敏 [x]",
         "Redact [ ]" => "脱敏 [ ]",

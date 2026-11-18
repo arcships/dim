@@ -47489,7 +47489,9 @@
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
-        "use crate::ui::i18n::t"
+        "path tf",
+        "use crate::ui::i18n::t",
+        "use crate::ui::i18n::tf"
       ]
     },
     {
@@ -47506,6 +47508,7 @@
       "to": "dim_cli::ui::render::panel",
       "references": [
         "path bordered",
+        "path crate::ui::render::panel::wrap_words",
         "path follow_window",
         "path wrap",
         "use crate::ui::render::panel::bordered",
@@ -51153,6 +51156,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::report",
       "references": [
+        "path crate::report::EvidenceUnavailable::NoReference",
         "path crate::report::EvidenceUnavailable::Omitted",
         "path crate::report::Prepared"
       ]
@@ -55311,6 +55315,7 @@
         "path ErrorReference",
         "path Snapshot",
         "path Snapshot::capture_session",
+        "path crate::evidence::capture_conversation",
         "use crate::evidence::ErrorReference",
         "use crate::evidence::Snapshot"
       ]
@@ -55357,6 +55362,7 @@
       "to": "dim_agent_runtime::branch",
       "references": [
         "path Branch",
+        "path Branch::sequence",
         "use dim_agent_runtime::Branch"
       ]
     },
@@ -55410,6 +55416,16 @@
     },
     {
       "from": "dim_report::evidence",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ContentBlock::Text",
+        "path MessagePart::Text",
+        "use dim_agent_types::ContentBlock",
+        "use dim_agent_types::MessagePart"
+      ]
+    },
+    {
+      "from": "dim_report::evidence",
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
@@ -55421,8 +55437,12 @@
         "path EventKind::BranchEnded",
         "path EventKind::BranchResume",
         "path EventKind::BranchStart",
+        "path EventKind::InputConsumed",
+        "path EventKind::InputMessage",
+        "path EventKind::ModelContent",
         "path EventKind::ModelOutputEnd",
         "path EventKind::ModelStart",
+        "path EventKind::Text",
         "path EventKind::ToolCompleted",
         "path EventKind::ToolStart",
         "path EventKind::TurnEnd",
@@ -55436,8 +55456,17 @@
         "use dim_agent_types::AgentEvent",
         "use dim_agent_types::BranchCreateFailedData",
         "use dim_agent_types::EventKind",
+        "use dim_agent_types::FinishReason",
         "use dim_agent_types::ModelOutputOutcome",
         "use dim_agent_types::TurnOutcome"
+      ]
+    },
+    {
+      "from": "dim_report::evidence",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path runtime_context",
+        "use dim_agent_types::markup::runtime_context"
       ]
     },
     {
@@ -55480,6 +55509,7 @@
       "to": "dim_report::evidence",
       "references": [
         "path CapturedError",
+        "path ConversationExcerpt",
         "path Missing",
         "path Missing::FailureUnavailable",
         "path Missing::NoReference",
@@ -55490,6 +55520,7 @@
         "path TimelineEvidence::Failure",
         "path TimelineEvidence::Recent",
         "use crate::evidence::CapturedError",
+        "use crate::evidence::ConversationExcerpt",
         "use crate::evidence::Missing",
         "use crate::evidence::Snapshot",
         "use crate::evidence::TimelineEvidence"

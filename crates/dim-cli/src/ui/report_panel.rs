@@ -348,8 +348,8 @@ impl Panel {
             rows.extend(
                 crate::sanitize::safe(&self.summary())
                     .lines()
-                    .take(body_rows.saturating_sub(rows.len()))
-                    .map(|line| truncate_cells(line, inner)),
+                    .flat_map(|line| crate::ui::render::panel::wrap_words(line, inner))
+                    .take(body_rows.saturating_sub(rows.len())),
             );
             rows.truncate(body_rows);
             for (index, label) in controls.into_iter().enumerate().skip(first).take(visible) {
@@ -372,12 +372,36 @@ impl Panel {
     fn summary(&self) -> String {
         let mut body = if let Some(report) = &self.generated {
             format!(
-                "{}\n{}",
+                "{}\n{}\n{}",
+                t("Generate/save never uploads. Share manually after saving."),
                 crate::sanitize::safe_line(&report.title),
                 t("ZIP contents: report.md, diagnostics.json")
             )
         } else {
-            let mut body = String::new();
+            let mut body = match &self.target {
+                Some(Target::Session(_)) if !self.redact => format!(
+                    "{}\n",
+                    t("Redact is off. The ZIP may contain sensitive text from recent messages.")
+                ),
+                Some(Target::Session(_)) => format!(
+                    "{}\n{}\n",
+                    t("Default: current-session diagnostics only."),
+                    t(
+                        "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data."
+                    )
+                ),
+                Some(Target::Error(_)) => {
+                    format!(
+                        "{}\n",
+                        t("Error diagnostics only; no session text is available.")
+                    )
+                }
+                None => String::new(),
+            };
+            body.push_str(t(
+                "Generate/save never uploads. Share manually after saving.",
+            ));
+            body.push('\n');
             if let Some(Target::Error(error)) = &self.target {
                 body.push_str(&crate::sanitize::safe_line(&error.message));
                 body.push('\n');

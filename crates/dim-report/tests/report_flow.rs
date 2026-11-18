@@ -10,7 +10,10 @@ use dim_agent_capabilities::{
     },
 };
 use dim_agent_runtime::{AgentBuilder, AgentConfig, ConfigureUpdate, testing::branch_events};
-use dim_agent_types::{EventKind, ModelOutputOutcome, ModelRequest, ModelSelection};
+use dim_agent_types::{
+    ContentBlock, EventKind, InputMessageData, InputMode, ModelOutputOutcome, ModelRequest,
+    ModelSelection, markup::runtime_context,
+};
 use dim_app_server::{RunningServer, ServerConfig, serve};
 use dim_client::{Client, ConnectionConfig, Server, app_error};
 use futures_util::{SinkExt, StreamExt};
@@ -289,7 +292,7 @@ async fn report_rpc_captures_a_session_without_an_error_at_a_fixed_cutoff() {
     let plan = owner
         .rpc(
             "session.report.plan",
-            json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false}),
+            json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":true}),
         )
         .await
         .unwrap();
@@ -622,6 +625,248 @@ async fn report_rpc_keeps_evidence_private_and_returns_the_reviewed_zip() {
     drop(web);
     drop(owner);
     drop(other);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_excludes_unconsumed_inputs_and_multiline_runtime_context() {
+    let home = report_home();
+    let mut builder = report_builder();
+    defaults::mock_hosts_with_model(
+        &mut builder,
+        HistoryRenderer::default(),
+        Arc::new(FailedModel::default()),
+    );
+    let server = serve(
+        builder,
+        ServerConfig {
+            platform_home: Some(home.path().into()),
+            unix_path: Some(home.path().join("server.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut owner = connect(&server).await;
+    let created = owner
+        .rpc("session.create", json!({"cwd":home.path(),"tools":[]}))
+        .await
+        .unwrap();
+    let id = &created["sessionId"];
+    let session = server
+        .agent()
+        .unwrap()
+        .get_session(id.as_str().unwrap())
+        .unwrap();
+    let visible = "Operator-visible sentence.";
+    let hidden = "<dim-hooks kind=\"prompt-submit\">\nHIDDEN-MULTILINE-CONTEXT\nAnother private instruction.\n</dim-hooks>";
+    let mut input = InputMessageData::text(visible, Some(InputMode::Queue));
+    input
+        .user
+        .as_mut()
+        .unwrap()
+        .content
+        .push(ContentBlock::Text {
+            text: hidden.into(),
+        });
+    let submitted = session.input(input, "main").await.unwrap();
+    session.idle("main").await.unwrap();
+    let pending = session
+        .input(
+            InputMessageData::text("PENDING-NOT-CONVERSATION", Some(InputMode::Append)),
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    let events = branch_events(&session, "main", ..).await.unwrap();
+    let EventKind::InputMessage(input) = &submitted.kind else {
+        panic!("expected input")
+    };
+    assert!(input.user.as_ref().unwrap().content.iter().enumerate().any(|(index, block)| matches!(block, ContentBlock::Text { text } if runtime_context(index, text) && text.contains("HIDDEN-MULTILINE-CONTEXT"))));
+    assert!(events.iter().any(|event| matches!(&event.kind, EventKind::InputConsumed(data) if data.input_id == submitted.id)));
+    assert!(!events.iter().any(
+        |event| matches!(&event.kind, EventKind::InputConsumed(data) if data.input_id == pending.id)
+    ));
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let excerpts = plan["evidence"]["conversation"].as_array().unwrap();
+    assert!(
+        excerpts
+            .iter()
+            .any(|entry| entry["role"] == "user" && entry["text"] == visible)
+    );
+    for forbidden in [
+        "PENDING-NOT-CONVERSATION",
+        "HIDDEN-MULTILINE-CONTEXT",
+        "Another private instruction.",
+        "dim-hooks",
+    ] {
+        assert!(
+            !excerpts.iter().any(|entry| entry["role"] == "user"
+                && entry["text"].as_str().unwrap().contains(forbidden))
+        );
+    }
+    let generated = owner
+        .rpc(
+            "session.report.generate",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]}),
+        )
+        .await
+        .unwrap();
+    archive(&generated);
+    for forbidden in [
+        "PENDING-NOT-CONVERSATION",
+        "HIDDEN-MULTILINE-CONTEXT",
+        "Another private instruction.",
+        "dim-hooks",
+    ] {
+        assert!(!plan.to_string().contains(forbidden));
+        assert!(!generated.to_string().contains(forbidden));
+    }
+    drop(owner);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
+    let home = report_home();
+    let mut builder = report_builder();
+    defaults::mock_hosts(&mut builder);
+    let server = serve(
+        builder,
+        ServerConfig {
+            platform_home: Some(home.path().into()),
+            unix_path: Some(home.path().join("server.sock")),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut owner = connect(&server).await;
+    let created = owner
+        .rpc("session.create", json!({"cwd":home.path(),"tools":[]}))
+        .await
+        .unwrap();
+    let id = &created["sessionId"];
+    let submit = async |owner: &mut Client, text: &str| {
+        owner
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":"main","text":text}),
+            )
+            .await
+            .unwrap();
+        owner
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await
+            .unwrap();
+    };
+    let prompt = "Explain why the sky is blue in one sentence.";
+    submit(&mut owner, prompt).await;
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    assert!(!prepared.to_string().contains(prompt));
+    let default = owner.rpc("session.report.generate", json!({"sessionId":id,"reportId":prepared["reportId"],"planId":prepared["plan"]["planId"]})).await.unwrap();
+    archive(&default);
+    assert!(!default.to_string().contains(prompt));
+
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    submit(&mut owner, "LATER-BEFORE-PLAN").await;
+    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let excerpts = plan["evidence"]["conversation"].as_array().unwrap();
+    assert!(
+        excerpts
+            .iter()
+            .any(|entry| entry["role"] == "user" && entry["text"] == prompt)
+    );
+    assert!(excerpts.iter().any(|entry| entry["role"] == "assistant" && entry["text"] == format!("Echo: {prompt}")));
+    assert!(!plan.to_string().contains("LATER-BEFORE-PLAN"));
+    submit(&mut owner, "LATER-BEFORE-GENERATE").await;
+    let generated = owner
+        .rpc(
+            "session.report.generate",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]}),
+        )
+        .await
+        .unwrap();
+    archive(&generated);
+    let report = generated["files"]["report.md"].as_str().unwrap();
+    assert!(report.contains(prompt));
+    assert!(report.contains(&format!("Echo: {prompt}")));
+    assert!(!report.contains("LATER-"));
+    for value in [
+        &generated["files"]["diagnostics.json"],
+        &generated["sharing"],
+        &generated["body"],
+    ] {
+        assert!(!value.to_string().contains(prompt));
+        assert!(!value.to_string().contains("Echo:"));
+    }
+
+    submit(&mut owner, "Why did /report return 2/3?\nAuthorization: Bearer fixture-not-a-real-credential\napi_key=fixture-value").await;
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let preview = plan.to_string();
+    assert!(preview.contains("Why did /report return 2/3?"));
+    for forbidden in ["fixture-not-a-real-credential", "fixture-value"] {
+        assert!(!preview.contains(forbidden));
+    }
+    let hidden = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":true})).await.unwrap();
+    assert!(hidden["evidence"].get("conversation").is_none());
+    let omitted = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"instructions":"omit timeline"})).await.unwrap();
+    assert!(omitted["evidence"].get("conversation").is_none());
+    let long = "合成可见文本".repeat(3000);
+    for _ in 0..4 {
+        submit(&mut owner, &long).await;
+    }
+    let prepared = owner
+        .rpc("session.report.prepare", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+    let excerpts = plan["evidence"]["conversation"].as_array().unwrap();
+    assert!(!excerpts.is_empty());
+    assert!(excerpts.len() <= 6);
+    let mut total = 0;
+    let cutoff = server
+        .agent()
+        .unwrap()
+        .get_session(id.as_str().unwrap())
+        .unwrap()
+        .sequence("main")
+        .unwrap();
+    for entry in excerpts {
+        let text = entry["text"].as_str().unwrap();
+        assert!(text.len() <= 2048);
+        total += text.len();
+        assert!(
+            (cutoff.saturating_sub(31)..=cutoff).contains(&entry["sequence"].as_u64().unwrap())
+        );
+    }
+    assert!(total <= 8 * 1024);
+    let generated = owner
+        .rpc(
+            "session.report.generate",
+            json!({"sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]}),
+        )
+        .await
+        .unwrap();
+    archive(&generated);
+    drop(owner);
     server.shutdown();
     server.join().await.unwrap();
 }

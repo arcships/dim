@@ -1,4 +1,4 @@
-use crate::evidence::{CapturedError, Missing, Snapshot, TimelineEvidence};
+use crate::evidence::{CapturedError, ConversationExcerpt, Missing, Snapshot, TimelineEvidence};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::{
     build,
@@ -39,6 +39,8 @@ pub(super) struct Reviewed {
     #[serde(flatten)]
     evidence: Evidence,
     unavailable: Option<Missing>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(super) conversation: Vec<ConversationExcerpt>,
 }
 
 #[derive(Serialize)]
@@ -139,12 +141,17 @@ pub(super) fn review(
                 },
             },
             unavailable,
+            conversation: Vec::new(),
         },
         status,
     )
 }
 
 impl Reviewed {
+    pub(super) fn includes_timeline(&self) -> bool {
+        self.evidence.timeline.is_some()
+    }
+
     pub(super) fn generate(self) -> Result<Value, RpcError> {
         let (title, version, mut body) = match &self.evidence.captured_error {
             Some(error) => (
@@ -212,7 +219,21 @@ impl Reviewed {
             };
             writeln!(body, "\n{message}").expect("writing to a string");
         }
-        let report = format!("# {title}\n\n{body}");
+        let mut report = format!("# {title}\n\n{body}");
+        if !self.conversation.is_empty() {
+            report.push_str("\n## Conversation excerpts\n\nExplicitly included with redaction off. Bounded excerpts; not guaranteed to be sanitized.\n");
+            for excerpt in &self.conversation {
+                writeln!(
+                    report,
+                    "\n### {} (sequence {})\n",
+                    excerpt.role, excerpt.sequence
+                )
+                .expect("writing to a string");
+                for line in excerpt.text.lines() {
+                    writeln!(report, "    {line}").expect("writing to a string");
+                }
+            }
+        }
         let diagnostics = serde_json::to_string_pretty(&json!({
             "version": version,
             "evidence": self.evidence,

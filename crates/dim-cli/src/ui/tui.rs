@@ -18499,7 +18499,7 @@ mod tests {
                 ),
                 show_error: true,
             });
-            open_test_report(&mut app);
+            let panel = open_test_report(&mut app);
             assert!(matches!(
                 sent.borrow().last(),
                 Some(Command::Report(Request {
@@ -18507,6 +18507,37 @@ mod tests {
                     ..
                 }))
             ));
+            let mut prepared = prepared_report("error", "p1");
+            prepared.plan.evidence.timeline = None;
+            prepared.plan.evidence.unavailable =
+                Some(crate::report::EvidenceUnavailable::NoReference);
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Prepared(None, prepared),
+            });
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel")
+            };
+            let screen = report.render(110, 20, &app.palette).join("\n");
+            assert!(screen.contains(t("Error diagnostics only; no session text is available.")));
+            assert!(!screen.contains(t("Default: current-session diagnostics only.")));
+            assert!(!screen.contains(t("Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data.")));
+            for _ in 0..3 {
+                press(&mut app, KeyCode::Down);
+            }
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::Report(Request { action: Action::Generate(draft), .. }))
+                    if draft.session.is_none() && draft.plan_id == "p1"
+            ));
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Failed {
+                    message: "Generation cancelled".into(),
+                    draft_missing: false,
+                },
+            });
             press(&mut app, KeyCode::Esc);
 
             app.apply(Update::Switched {
@@ -18534,6 +18565,63 @@ mod tests {
             let screen = report.render(90, 20, &app.palette).join("\n");
             assert!(screen.contains(t("Report this session")));
             assert!(screen.contains(t("Evidence · No recent session activity")));
+            assert!(screen.contains(t("Redact [x]")));
+            for (width, budget) in [(110, 20), (36, 20)] {
+                let screen = report.render(width, budget, &app.palette);
+                assert!(screen.len() <= budget);
+                assert!(
+                    screen
+                        .iter()
+                        .all(|line| { crate::ui::render::panel::visible_width(line) <= width })
+                );
+                let text: String = screen
+                    .iter()
+                    .flat_map(|line| {
+                        crate::ui::render::panel::strip_escapes(line)
+                            .chars()
+                            .filter(|c| !c.is_whitespace() && *c != '│')
+                            .collect::<Vec<_>>()
+                    })
+                    .collect();
+                for notice in [
+                    "Default: current-session diagnostics only.",
+                    "Turn Redact off to attach recent user/assistant text to ZIP; it may contain sensitive data.",
+                    "Generate/save never uploads. Share manually after saving.",
+                ] {
+                    let notice: String = t(notice).chars().filter(|c| !c.is_whitespace()).collect();
+                    assert!(
+                        text.contains(&notice),
+                        "missing notice at {width}x{budget}: {text}"
+                    );
+                }
+            }
+            for _ in 0..3 {
+                press(&mut app, KeyCode::Down);
+            }
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel")
+            };
+            let compact = report.render(36, 8, &app.palette);
+            assert!(compact.len() <= 8);
+            assert!(
+                compact
+                    .iter()
+                    .all(|line| { crate::ui::render::panel::visible_width(line) <= 36 })
+            );
+            assert!(compact.join("\n").contains(t("Generate report")));
+            press(&mut app, KeyCode::Enter);
+            assert!(matches!(
+                sent.borrow().last(),
+                Some(Command::Report(Request { action: Action::Generate(draft), .. }))
+                    if draft.plan_id == "p1"
+            ));
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Failed {
+                    message: "Generation cancelled".into(),
+                    draft_missing: false,
+                },
+            });
             press(&mut app, KeyCode::Esc);
 
             app.apply(Update::Switched {
@@ -18596,6 +18684,22 @@ mod tests {
         });
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            sent.borrow().last(),
+            Some(Command::Report(Request {
+                action: Action::Plan { redact: false, .. },
+                ..
+            }))
+        ));
+        let Some(Prompt::Report(report)) = &app.prompt else {
+            panic!("expected report panel")
+        };
+        let notice = report.render(110, 20, &app.palette).join("\n");
+        assert!(notice.contains(t("Redact [ ]")));
+        assert!(notice.contains(t(
+            "Redact is off. The ZIP may contain sensitive text from recent messages."
+        )));
+        assert!(!notice.contains(t("Default: current-session diagnostics only.")));
         app.apply(Update::ReportReply {
             panel,
             reply: Reply::Plan(prepared_report("r1", "p2").plan),
@@ -18684,6 +18788,46 @@ mod tests {
     }
 
     #[test]
+    fn report_close_before_save_never_activates_a_share_destination() {
+        use crate::report::{Archive, GeneratedReport, Reply, Sharing};
+        use base64::{Engine, engine::general_purpose::STANDARD};
+
+        for fullscreen in [false, true] {
+            let (mut app, _sent, home) = asked();
+            app.fullscreen = fullscreen;
+            app.session_id = "s1".into();
+            app.cwd_key = home.path().display().to_string();
+            let panel = open_test_report(&mut app);
+            app.apply(Update::ReportReply {
+                panel,
+                reply: Reply::Generated(GeneratedReport {
+                    title: "Test report".into(),
+                    archive: Archive {
+                        base64: STANDARD.encode(b"PK\x03\x04fixture"),
+                    },
+                    sharing: Sharing {
+                        github_issue_url: "https://github.com/arcships/dim/issues/new".into(),
+                        discord_url: "https://discord.gg/ds35K3TadP".into(),
+                        description: "Diagnostic summary".into(),
+                    },
+                }),
+            });
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel")
+            };
+            let screen = report.render(90, 20, &app.palette).join("\n");
+            assert!(!screen.contains(t("Draft a GitHub issue")));
+            assert!(!screen.contains(t("Give feedback on Discord")));
+            assert!(!screen.contains("feedback@arcships.ai"));
+            assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+            press(&mut app, KeyCode::Tab);
+            press(&mut app, KeyCode::Enter);
+            assert!(!matches!(app.prompt, Some(Prompt::Report(_))));
+            assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
     fn report_saves_only_bounded_zip_bytes_after_disconnect() {
         use crate::report::{Archive, GeneratedReport, Reply, Sharing};
         use base64::{Engine, engine::general_purpose::STANDARD};
@@ -18733,6 +18877,16 @@ mod tests {
             assert_eq!(screen.contains("feedback@arcships.ai"), should_save);
             assert_eq!(screen.contains(t("Draft a GitHub issue")), should_save);
             assert_eq!(screen.contains(t("Give feedback on Discord")), should_save);
+            if !should_save {
+                press(&mut app, KeyCode::Tab);
+                press(&mut app, KeyCode::Enter);
+                assert!(
+                    !matches!(app.prompt, Some(Prompt::Report(_))),
+                    "after a failed save, the second action is Close, not Share"
+                );
+                assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+                continue;
+            }
             if let Some(path) = report.saved_path() {
                 assert_eq!(path.parent(), Some(home.path()));
                 assert!(

@@ -200,7 +200,7 @@ impl Reports {
 
         match method.rsplit('.').next() {
             Some("prepare") => self.prepare(caller, value).await,
-            Some("plan") => self.plan(caller.id(), value),
+            Some("plan") => self.plan(caller.id(), value).await,
             Some("generate") => self.generate(caller.id(), params(value)?),
             Some("cancel") => self.cancel(caller.id(), params(value)?),
             _ => unreachable!("registered report method"),
@@ -279,7 +279,7 @@ impl Reports {
         Ok(answer)
     }
 
-    fn plan(&self, caller: &str, value: Value) -> Result<Value, RpcError> {
+    async fn plan(&self, caller: &str, value: Value) -> Result<Value, RpcError> {
         if let Some(model) = value
             .pointer("/generation/model")
             .and_then(Value::as_object)
@@ -292,8 +292,6 @@ impl Reports {
         if instructions.len() > INPUT_LIMIT {
             return Err(RpcError::invalid("Instructions exceed 1 KiB"));
         }
-        let mut drafts = self.drafts.lock().unwrap();
-        let draft = get(&mut drafts, caller, request.report_id)?;
         if let Generation::Model { model } = request.generation {
             if model.provider_id.is_empty() || model.model_id.is_empty() {
                 return Err(RpcError::invalid("Invalid model identity"));
@@ -303,10 +301,36 @@ impl Reports {
                 "Model-assisted reports are unavailable",
             ));
         }
+        let (mut plan, through, previous) = {
+            let mut drafts = self.drafts.lock().unwrap();
+            let draft = get(&mut drafts, caller, request.report_id)?;
+            if draft.running.is_some() {
+                return Err(busy());
+            }
+            (
+                Plan::local(&draft.snapshot, request.redact, instructions),
+                draft.snapshot.conversation_through,
+                draft.plan.as_ref().map(|plan| plan.plan_id),
+            )
+        };
+        if !request.redact
+            && plan.evidence.includes_timeline()
+            && let (Some(session), Some(through)) = (&self.session, through)
+        {
+            plan.evidence.conversation =
+                crate::evidence::capture_conversation(&session.tree, through).await;
+        }
+        let mut drafts = self.drafts.lock().unwrap();
+        let draft = get(&mut drafts, caller, request.report_id)?;
         if draft.running.is_some() {
             return Err(busy());
         }
-        let plan = Plan::local(&draft.snapshot, request.redact, instructions);
+        if draft.plan.as_ref().map(|plan| plan.plan_id) != previous {
+            return Err(RpcError::service(
+                "report_plan_stale",
+                "The report plan has changed or was consumed",
+            ));
+        }
         let response = reply(&plan)?;
         draft.plan = Some(plan);
         Ok(response)

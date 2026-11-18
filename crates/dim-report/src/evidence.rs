@@ -6,8 +6,8 @@ use dim_agent_runtime::{
     QuerySpec, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
-    AgentEvent, BranchCreateFailedData, EventKind, ModelId, ModelOutputOutcome, TimelinePosition,
-    TurnOutcome,
+    AgentEvent, BranchCreateFailedData, ContentBlock, EventKind, FinishReason, MessagePart,
+    ModelId, ModelOutputOutcome, TimelinePosition, TurnOutcome, markup::runtime_context,
 };
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,7 @@ impl ErrorReference {
                 error: Some(observed.into()),
                 timeline,
                 client_version,
+                conversation_through: None,
             },
             default_model,
         ))
@@ -180,13 +181,15 @@ pub(super) struct Snapshot {
     /// The label the reporting client sent for itself, when it sent one: a
     /// comparison with the daemon's own label is what a report shows.
     pub(super) client_version: Option<String>,
+    pub(super) conversation_through: Option<u64>,
 }
 
 impl Snapshot {
     pub(super) async fn capture_session(tree: &TreeCommands) -> (Self, Option<ModelId>) {
         let branch = tree.get("main").ok();
-        let timeline = match &branch {
-            Some(branch) => read_window(tree, "main", branch.sequence(), ACTIVITY_KINDS)
+        let conversation_through = branch.as_ref().map(Branch::sequence);
+        let timeline = match conversation_through {
+            Some(through) => read_window(tree, "main", through, ACTIVITY_KINDS)
                 .await
                 .map(|(events, truncated)| {
                     let (recent, truncated) = excerpt(&events, truncated, true);
@@ -201,10 +204,179 @@ impl Snapshot {
                 error: None,
                 timeline,
                 client_version: None,
+                conversation_through,
             },
             model,
         )
     }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ConversationExcerpt {
+    pub(super) role: &'static str,
+    pub(super) sequence: u64,
+    pub(super) text: String,
+}
+
+pub(super) async fn capture_conversation(
+    tree: &TreeCommands,
+    through: u64,
+) -> Vec<ConversationExcerpt> {
+    let Ok((events, _)) = read_window(
+        tree,
+        "main",
+        through,
+        &[
+            "input/message",
+            "input/consumed",
+            "step/model-start",
+            "step/text",
+            "step/model-content",
+        ],
+    )
+    .await
+    else {
+        return Vec::new();
+    };
+    let mut excerpts = Vec::new();
+    let mut pending = std::collections::HashMap::new();
+    let mut output: Option<(String, String)> = None;
+    for row in events {
+        let event = row.event;
+        if event.parent_call_id.is_some() {
+            continue;
+        }
+        let selected = match &event.kind {
+            EventKind::InputMessage(input) => {
+                if let Some(user) = &input.user {
+                    let mut text = String::new();
+                    for (index, block) in user.content.iter().enumerate() {
+                        if let ContentBlock::Text { text: value } = block
+                            && !runtime_context(index, value)
+                        {
+                            append_visible(&mut text, value);
+                        }
+                        if text.len() == 2048 {
+                            break;
+                        }
+                    }
+                    pending.insert(event.id.clone(), text);
+                }
+                None
+            }
+            EventKind::InputConsumed(data) => {
+                pending.remove(&data.input_id).map(|text| ("user", text))
+            }
+            EventKind::ModelStart(data) => {
+                output = Some((data.request_id.clone(), String::new()));
+                None
+            }
+            EventKind::Text(data) => {
+                if let Some((request, text)) = &mut output
+                    && *request == data.request_id
+                {
+                    append_bounded(text, &data.delta, 2048);
+                }
+                None
+            }
+            EventKind::ModelContent(data) => {
+                let mut text = String::new();
+                for part in &data.content {
+                    if let MessagePart::Text { text: value, .. } = part {
+                        append_bounded(&mut text, value, 2048);
+                    }
+                }
+                output = Some((data.request_id.clone(), text));
+                None
+            }
+            EventKind::ModelOutputEnd(data) => output.take().and_then(|(request, text)| {
+                (request == data.request_id
+                    && matches!(
+                        data.outcome,
+                        ModelOutputOutcome::Completed {
+                            finish_reason: FinishReason::EndTurn | FinishReason::StopSequence
+                        }
+                    ))
+                .then_some(("assistant", text))
+            }),
+            _ => None,
+        };
+        if let Some((role, text)) = selected {
+            let mut selected = String::new();
+            append_visible(&mut selected, &text);
+            if !selected.trim().is_empty() {
+                excerpts.push(ConversationExcerpt {
+                    role,
+                    sequence: event.sequence,
+                    text: selected,
+                });
+            }
+        }
+    }
+    let mut budget = 8 * 1024;
+    let mut recent = Vec::new();
+    for mut excerpt in excerpts.into_iter().rev().take(6) {
+        if budget == 0 {
+            break;
+        }
+        let mut text = String::new();
+        append_bounded(&mut text, &excerpt.text, budget);
+        excerpt.text = text;
+        budget -= excerpt.text.len();
+        recent.push(excerpt);
+    }
+    recent.reverse();
+    recent
+}
+
+fn append_bounded(target: &mut String, text: &str, limit: usize) {
+    let mut end = text.len().min(limit.saturating_sub(target.len()));
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    target.push_str(&text[..end]);
+}
+
+fn append_visible(target: &mut String, text: &str) {
+    for line in text.lines() {
+        if target.len() == 2048 {
+            break;
+        }
+        let mut bounded = String::new();
+        append_bounded(&mut bounded, line, 2048);
+        if eligible_line(&bounded) {
+            if !target.is_empty() {
+                append_bounded(target, "\n", 2048);
+            }
+            append_bounded(target, &bounded, 2048);
+        }
+    }
+}
+
+fn eligible_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    ![
+        "bearer ",
+        "authorization",
+        "api_key",
+        "api-key",
+        "apikey",
+        "password",
+        "secret",
+        "token=",
+        "token:",
+        "sk-",
+        "ghp_",
+        "github_pat_",
+        "xoxb-",
+        "xoxp-",
+        "-----begin",
+        "akia",
+        "eyj",
+    ]
+    .iter()
+    .any(|pattern| lower.contains(pattern))
 }
 
 fn adopted_model(branch: &Branch) -> Option<ModelId> {
