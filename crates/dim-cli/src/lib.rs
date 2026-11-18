@@ -7,6 +7,8 @@ mod composer;
 mod configure;
 mod display;
 mod export;
+mod feedback;
+mod feedback_transport;
 mod goal;
 mod goal_command;
 mod images;
