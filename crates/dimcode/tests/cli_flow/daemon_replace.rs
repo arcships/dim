@@ -12,7 +12,7 @@ const DAEMON_LOG_TAIL_LINES: usize = 40;
 /// The facts a non-zero exit needs: `success()` is false for a signal as
 /// well as for an exit code, and a client that ends without a word on stderr
 /// leaves its evidence in stdout and the daemon log (#1577).
-fn describe_client(home: &Home, output: &Output) -> String {
+pub(super) fn describe_client(home: &Home, output: &Output) -> String {
     let status = match output.status.signal() {
         Some(signal) => format!("{:?} (signal: {signal})", output.status),
         None => format!("{:?}", output.status),

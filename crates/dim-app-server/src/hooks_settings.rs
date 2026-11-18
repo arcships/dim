@@ -412,16 +412,130 @@ fn reader(
     })
 }
 
+/// A refused plugin document's error and optional credential-safe reason.
+pub type HookRefusal = (String, Option<&'static str>);
+
 /// Hooks' owner operations (PluginManager §3.7): PluginManager registers and
 /// withdraws a plugin's hook document here, and Hooks keeps it in
 /// `hooks-plugins`.
+#[derive(Clone)]
 pub struct HooksService {
     settings: Arc<SettingsService>,
     /// Why the last registration of a plugin was refused, by plugin id: the
     /// raw error, and its static reason when the cause has one
     /// (PluginManager A.2).
-    refused: Mutex<BTreeMap<String, (String, Option<&'static str>)>>,
+    refused: Arc<Mutex<BTreeMap<String, HookRefusal>>>,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegisterPlugin {
+    plugin: String,
+    dir: String,
+    document: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PluginRequest {
+    plugin: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NoArguments {}
+
+fn face_request<T: serde::de::DeserializeOwned>(
+    args: rutis_bridge::session::Value,
+) -> Result<T, rutis_bridge::session::Error> {
+    let invalid = || {
+        rutis_bridge::exports::failure(
+            "hooksService",
+            "invalid_request",
+            "expected one hooksService request object".into(),
+            None,
+        )
+    };
+    let args = args.list().map_err(|_| invalid())?;
+    let [value] = args.as_slice() else {
+        return Err(invalid());
+    };
+    let value = value.clone().json().map_err(|_| invalid())?;
+    if !value.is_object() {
+        return Err(invalid());
+    }
+    serde_json::from_value(value).map_err(|_| invalid())
+}
+
+fn face_reply<T: Serialize>(result: crate::settings::Result<T>) -> rutis_bridge::session::Reply {
+    match result {
+        Ok(value) => rutis_bridge::session::arg(&value),
+        Err(error) => Err(rutis_bridge::exports::failure(
+            "hooksService",
+            error.code(),
+            error.to_string(),
+            error
+                .reason()
+                .map(|reason| serde_json::json!({"reason": reason})),
+        )),
+    }
+}
+
+impl rutis_bridge::session::HostDispatch for HooksService {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(
+            serde_json::json!({"register":"async", "withdraw":"async", "plugins":"async", "refusal":"sync"}),
+        )
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        use rutis_bridge::session::Value;
+        let owner = self.clone();
+        let cancel = CancellationToken::new();
+        match method {
+            "register" => {
+                let RegisterPlugin {
+                    plugin,
+                    dir,
+                    document,
+                } = face_request(args)?;
+                Ok(Value::future(async move {
+                    let _cancel = cancel.clone().drop_guard();
+                    face_reply(
+                        owner
+                            .register_plugin(plugin, dir.into(), document, &cancel)
+                            .await,
+                    )
+                }))
+            }
+            "withdraw" => {
+                let PluginRequest { plugin } = face_request(args)?;
+                Ok(Value::future(async move {
+                    let _cancel = cancel.clone().drop_guard();
+                    face_reply(owner.withdraw_plugin(plugin, &cancel).await)
+                }))
+            }
+            "plugins" => {
+                let NoArguments {} = face_request(args)?;
+                Ok(Value::future(async move {
+                    let _cancel = cancel.clone().drop_guard();
+                    face_reply(owner.plugins(&cancel).await)
+                }))
+            }
+            "refusal" => {
+                let PluginRequest { plugin } = face_request(args)?;
+                rutis_bridge::session::arg(&self.plugin_refusal(&plugin))
+            }
+            _ => Err(rutis_bridge::session::Error::Value(format!(
+                "unknown hooksService method {method}"
+            ))),
+        }
+    }
+}
+
 impl HooksService {
     /// Adds or replaces the hook document of `plugin` (a plugin id, §3.7),
     /// whose commands read `dir` as `DIM_PLUGIN_ROOT` (Hooks A.2, A.3). The
@@ -482,7 +596,7 @@ impl HooksService {
     /// error, and its static reason when the cause has one (PluginManager
     /// A.2). Both under one lock, so a registration between two reads cannot
     /// pair one cause's error with another's reason.
-    pub fn plugin_refusal(&self, plugin: &str) -> Option<(String, Option<&'static str>)> {
+    pub fn plugin_refusal(&self, plugin: &str) -> Option<HookRefusal> {
         self.refused.lock().unwrap().get(plugin).cloned()
     }
 
@@ -580,9 +694,13 @@ impl DynPlugin for HooksSettingsPlugin {
             settings.register::<HooksPlugins>(ctx)?;
             let service = Arc::new(HooksService {
                 settings: settings.clone(),
-                refused: Mutex::default(),
+                refused: Arc::default(),
             });
-            ctx.provide_as::<HooksService>(service)?;
+            ctx.provide_as::<HooksService>(service.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("hooksService"),
+                service,
+            )?;
             let reader = reader(&settings, &files, self.product_home.clone());
             methods.register(
                 ctx,

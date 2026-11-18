@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
         ExecShellRuntime, HostPlatform, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules},
+    permission::{CommandRules, NoCommandRules},
     prompt_sources,
     skill_settings::{SkillSettings, SkillSettingsHost},
     skills::{self, MemorySkillSettings, SkillsCatalog, SkillsCatalogPlugin},
@@ -358,7 +358,9 @@ pub struct Env {
 }
 impl Env {
     pub fn catalog(&self) -> Arc<SkillsCatalog> {
-        self.root.get::<SkillsCatalog>().unwrap()
+        self.root
+            .get_at(&dim_agent_capabilities::skills::owner_key())
+            .unwrap()
     }
     pub async fn session(&self, cwd: &Path, system_prompt: &str) -> Result<Session> {
         self.agent
@@ -470,7 +472,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     let gate = Arc::new(Gate::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     if let Some(store) = options.store {
-        builder.timeline_store(store);
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     }
     if options.missing_settings_hosts {
         dim_agent_runtime::names::register::<
@@ -506,7 +508,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
         .session_value(Arc::new(ToolHost(Arc::new(GateTools(gate.clone())))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))))
+        .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

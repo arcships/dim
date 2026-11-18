@@ -7,7 +7,7 @@ fn builder(store: &Arc<SqliteTimelineStore>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
     defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     builder
 }
 

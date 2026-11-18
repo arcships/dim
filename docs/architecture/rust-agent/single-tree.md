@@ -103,7 +103,7 @@ profile 未要求的已登记部件由可选挂载器挂载，宿主通过现有
 
 因此，ShellInput、Attachments 等由安装函数要求的第一方 Rust 部件属于必需成员：它们不能 Active，Session 就不能发布。当前接受这一后果，因为这些部件的启动失败主要属于实现错误，其依赖是核心服务。依赖可能长期不可用的服务的 Rust 功能，以 `AgentBuilder::feature` 加入而不要求其部件，由可选挂载器挂载。
 
-必需部件在 `apply` 中登记的子插件仍由该部件等待，等待指子插件 `Active` 而不是 settle：`(&view).await` 在子插件的依赖尚未就绪时也会返回，此时子插件仍是 `Pending`。部件用 `mount_active` 挂载子插件，等待本身没有期限：创建期间整次打开的无进展期限覆盖它，到期时报告子插件的名字和它缺的依赖，创建随之失败；创建之后，该部件与任何缺依赖的行一样保持 `Loading` 直到子插件 `Active`（rutis D22），其代被取消时结束等待；返回因此意味着其服务和订阅已就绪。创建只等待自己的必需行和已挂载的必需部件，不再做全进程检查；`Agent::check_assembly()` 在测试创建 Session 与分支之后跑一次，检查必需行和作用域交出的必需视图及其子树的 Active 状态，发现未等待的子插件就报告；仅可选行及其子树不参加此 Active 校验。两者仍参加依赖读取和实例键审计。release 与 debug 创建因此相同，每次创建都不做全进程诊断扫描。
+必需部件在 `apply` 中登记的子插件仍由该部件等待，等待指子插件 `Active` 而不是 settle：`(&view).await` 在子插件的依赖尚未就绪时也会返回，此时子插件仍是 `Pending`。部件用 `mount_active` 挂载子插件，等待本身没有期限：创建期间整次打开的无进展期限覆盖它，到期时报告子插件的名字和它缺的依赖，创建随之失败；创建之后，该部件与任何缺依赖的行一样保持 `Loading` 直到子插件 `Active`（rutis D22），其代被取消时结束等待；返回因此意味着其服务和订阅已就绪。创建只等待自己的必需行和已挂载的必需部件，不再做全进程检查；`Agent::check_assembly()` 在测试创建 Session 与分支之后跑一次，检查必需行和作用域交出的必需视图及其子树的 Active 状态，发现未等待的子插件就报告；仅可选行及其子树不参加此 Active 校验。两者仍参加必需读取和实例键审计。release 与 debug 创建因此相同，每次创建都不做全进程诊断扫描。
 
 这修正装配自身的等待范围（[#132](https://github.com/arcships/dim/issues/132)，[ADR 002 D3](../../adr/002-plugin-scope.md#d3-dependencies-follow-scope-and-point-from-extensions-to-the-core)、[Session access §9.4](../../design/contracts/session-access.md#94-optional-parts-per-enabled-plugin)、[规则 §4.8](principles.md#4-通过时间线扩展行为)）。输入仍经原有分支初始化、ToolBinding 取样和 BranchOpening；不增加发布阶段或工具专用接线。顺序、批次、Timeline 及重载语义均不变。
 
@@ -136,20 +136,20 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `ServerControlPlugin` | 就绪门闩、正常/强制关闭意图、监听器故障 | `ServerControl` | — |
 | `FileStoragePlugin` | 文件操作准入、锁租约、在途 I/O 和原子替换清理 | `FileStorage` | — |
 | `SqliteStoragePlugin` | 共享数据库连接、事务、原生 schema 门禁、文件维护锁与关停 | `SqliteStorage` | —；启动参数固定数据库路径 |
-| `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `SessionStore`、`TimelineStore` 持久化端口 | `SqliteStorage` |
+| `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `store` 数据接口、`sessionFiles`、`sessionMetadata`、`worktreeAssociations`，以及原生 `SessionStore` / `TimelineStore` 绑定 | `SqliteStorage` |
 | `SettingsPlugin` | Generic BusinessDocument sources and per-source CAS; no domain interpretation, approvals, connections or discovery | `SettingsService` | `FileStorage`, `When<SqliteStorage>` |
 | `OpenAICodexOAuthPlugin` / `GrokOAuthPlugin` | 各自账号字段、登录、刷新与终态 | `OpenAICodexOAuthService` / `GrokOAuthService` | `FileStorage` |
 | `ManagedProvidersPlugin` | managed provider 的当前绑定代次与在途操作；无绑定时请求明确失败；每个 server 装配 | `managedSearch`；有 product home 时注册 `account` | 有 product home 时依赖 `ManagementMethods`；owner 保留在私有 key |
 | `ProviderPlugin` | catalog、连接与选择管理、账号变更后的非秘密 binding | `ProviderService`、`ProviderConnectionResolver`、`ModelSelectionHost` | `SqliteStorage`、managed provider 私有 owner key、Codex/Grok 账号服务；可选秘密宿主 |
 | `AimuxPlugin`（进程级） | 共享 HTTP 资源、请求/流转换及取消桥接 | `ModelHost`：接收最终请求、已解析连接与取消信号的 request 对象 | 无业务服务依赖；不注入 Provider、ToolRegistry 或 Session |
 | `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录、resolver 与 `auxiliaryModel` 操作 | 开发目录与 resolver、`AuxiliaryModel` 与具名 `auxiliaryModel` 绑定 | `ModelHost` |
-| `McpPublication` | Source selection, including project enablement from the user's record, and retirement across Session-owned instances; no root reconciliation | `Publication` | `SettingsService`、`CredentialVariablesHost` |
+| `McpPublication` | Source selection, including project enablement from the user's record, and retirement across Session-owned instances; no root reconciliation | 私有 typed key `Publication` | `SettingsService`、`CredentialVariablesHost` |
 | `McpPlugin` | MCP 目录、连接租约与项目条目的用户启用记录；不拥有已配置行 | `McpService` | `SettingsService`、`Publication`、`CredentialVariablesHost` |
 | `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FileStorage>` |
-| `SkillsCatalogPlugin` | Skill discovery/catalog and business settings; privately supplies the reusable catalog's SkillSettingsHost | `SkillsCatalog`, Skills management contribution | `HostPlatform`, `SettingsService` |
-| `AgentDirectoryPlugin` | `AgentDirectory`：Agent 表与实例、Session 协议版本与占用、不可用记录、默认 agentId、serverInstanceId；不可重启 | `AgentDirectory` | — |
+| `SkillsCatalogPlugin` | Skill discovery/catalog and business settings; privately supplies the reusable catalog's SkillSettingsHost | `skillsCatalog` (`SkillsCatalogBinding`), private typed owner key, Skills management contribution | `HostPlatform`, `SettingsService` |
+| `AgentDirectoryPlugin` | `AgentDirectory`：Agent 表与实例、Session 协议版本与占用、不可用记录、默认 agentId、serverInstanceId；不可重启 | 私有 typed key `AgentDirectory`；公共 `sessions` | — |
 | `rutis-loader` | 进程装配的配置行与 `agent` / `session` / `branch` instanced 分组的实例 | `Loader` | — |
-| `AgentsPlugin` | `AgentIndex`：目录逻辑、Session 准入、经 loader 创建与关闭 Agent、默认及恢复 Agent 装载入口；进程 builder | `AgentIndex` | `AgentDirectory`、`Loader`；`--database` 另注入 `SqliteStorage`、`SessionStore`，产品 profile 另注入 `SettingsService`；受保护 profile 每次调用时读取 `ModelSelectionHost`，不依赖其提供方（方法合同 §3.2） |
+| `AgentsPlugin` | `AgentIndex`：目录逻辑、Session 准入、经 loader 创建与关闭 Agent、默认及恢复 Agent 装载入口；进程 builder | `AgentIndex` | `AgentDirectory`、`Loader`；`--database` 另注入 `SqliteStorage`、`store`、`sessionMetadata`（`SessionMetadataService`），并从原生 `SessionStore` 装配 TimelineStore，产品 profile 另注入 `SettingsService`；受保护 profile 每次调用时读取 `ModelSelectionHost`，不依赖其提供方（方法合同 §3.2） |
 | `AgentScope`（`agent` 实例中的行） | 一个 `Agent`（Session 建在同一 Agent 实例里）与承载监听的子插件 `Sessions`；`AgentHost`（agent、agentId、default、profile、承载监听的 ctx）；apply 登记进目录 | 经 `AgentDirectory` 登记 | `AgentDirectory`、`Loader`；`TimelineStore` 由已配置的 AgentBuilder 传入 |
 | `CollaborationDirectoryPlugin` | Team 关系与临时 Agent 归属的目录 | `CollaborationDirectory` | — |
 | `CollaborationPlugin` | 成员关系、临时 Agent 归属、参与 Session 的关闭观察任务 | `Collaboration` | `AgentIndex`、`CollaborationDirectory` |
@@ -246,9 +246,9 @@ Feature::new(name).session(..).branch(..)          不持有进程状态的插�
 
 门面（`Session::session_service::<T>()`、`Session::service::<T>(branch)`、`Branch::service::<T>()`）只读取 `PublicService` 类型，并拒绝未在对应组（`session` 或 `branch`）注册的名字。
 
-插件在 `apply` 中直接读取服务时使用 `Ctx::require` / `require_as` 的严格读取。`ServiceReadError` 保留服务键、插件、实例、调用位置和原因，包括 `Undeclared`、`OutOfScope`、`Inactive`、`TypeMismatch`、`Unavailable` 及拦截失败；不统一降为“服务不存在”。该检查在 debug 与 release 都执行。
+插件在 `apply` 中读取必需服务时使用 `Ctx::require` / `require_as` 的严格读取。`ServiceReadError` 保留服务键、插件、实例、调用位置和原因，包括 `Undeclared`、`OutOfScope`、`Inactive`、`TypeMismatch`、`Unavailable` 及拦截失败；不统一降为“服务不存在”。该检查在 debug 与 release 都执行。
 
-rutis 严格读取允许自身提供的服务，也允许可见范围相同的祖先声明；项目仍要求每个 Plugin 在自己的 `Deps` 列全必需外部依赖，以保证自身重载关系。插件外的门面查询和作用域发布使用 `get_as`，缺失按对应公开接口返回构建错误或 `service_reloading`；不能用它绕过插件内的依赖声明。`Agent::check_assembly()` 另在快照上报告插件内直接 `get_as` 的未声明外部访问、读取代次不在已解析依赖中和无实例键提供；创建不运行它，测试对每个装配在创建 Session 与分支后调用一次。
+rutis 严格读取允许自身提供的服务，也允许可见范围相同的祖先声明；项目仍要求每个 Plugin 在自己的 `Deps` 列全必需外部依赖，以保证自身重载关系。插件外的门面查询和作用域发布使用 `get_as`，缺失按对应公开接口返回构建错误或 `service_reloading`；不能用它绕过插件内的依赖声明。`Agent::check_assembly()` 另在快照上报告未声明的必需读取（包括查找提供者前以 `Undeclared` 拒绝的读取）、读取代次不在已解析依赖中和无实例键提供；[可选读取](../../design/rutis-usage.md#35-how-each-runtime-resolves-a-name)不要求依赖声明；创建不运行它，测试对每个装配在创建 Session 与分支后调用一次。
 
 ## 事件
 

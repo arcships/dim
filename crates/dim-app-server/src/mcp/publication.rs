@@ -986,7 +986,7 @@ mod tests {
             wait_active(&root, &views, Duration::from_secs(5), &stop)
                 .await
                 .unwrap();
-            let service = root.get::<McpService>().unwrap();
+            let service = root.get_at(&crate::mcp::owner_key()).unwrap();
             Self {
                 root,
                 loader,
@@ -1033,7 +1033,7 @@ mod tests {
         assert_eq!(old.state(), McpServerState::Closed);
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(service) = fixture.root.get::<McpService>()
+                if let Some(service) = fixture.root.get_at(&crate::mcp::owner_key())
                     && !Arc::ptr_eq(&service, &fixture.service)
                 {
                     fixture.service = service;
@@ -1053,7 +1053,7 @@ mod tests {
         assert_eq!(replacement.state(), McpServerState::Closed);
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                if let Some(service) = fixture.root.get::<McpService>()
+                if let Some(service) = fixture.root.get_at(&crate::mcp::owner_key())
                     && !Arc::ptr_eq(&service, &fixture.service)
                 {
                     fixture.service = service;

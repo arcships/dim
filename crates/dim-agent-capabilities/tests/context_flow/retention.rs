@@ -385,7 +385,7 @@ async fn recovery_compares_the_provider_baseline_estimate_with_the_input_budget(
                 .await
                 .unwrap();
             let mut profile = builder(Arc::new(ReportedPrompt(prompt)));
-            profile.timeline_store(store);
+            profile.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
             let agent = MinimalHost::start(&profile).await.unwrap();
             let session = agent
                 .restore_session("provider-recovery".into())

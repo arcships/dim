@@ -2,7 +2,7 @@
 //! (`docs/design/appserver/model-log.md`). The recording itself is aimux's
 //! RFC-0023 format, written under the home root.
 use crate::settings::{
-    SettingsChanged, SettingsScope, SettingsService, SourceDeclaration, settings_changes,
+    Settings, SettingsChanged, SettingsScope, SourceDeclaration, settings_changes,
 };
 use dim_agent_capabilities::file_storage::FileStorage;
 use dim_agent_runtime::Names;
@@ -39,7 +39,7 @@ struct Document {
 }
 
 pub struct ModelLogPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     files: Key<FileStorage>,
     home: usize,
     /// Serializes the read and the recorder swap, so an older document
@@ -71,7 +71,7 @@ impl DynPlugin for ModelLogPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let files = ctx.require_at(&self.files)?;
-            settings.register_declared(ctx, source_declaration())?;
+            settings.register(ctx, source_declaration())?;
             if let Err(error) = apply(&settings, &files, self.home, &self.order).await {
                 return Err(rutis::Error::from(ErrorKind::PluginFailed(error)));
             }
@@ -107,7 +107,7 @@ impl DynPlugin for ModelLogPlugin {
 /// Reads the source and starts or stops the recorder. Off when the document
 /// is missing or disabled; the home root holds `model-log/recordings.jsonl`.
 async fn apply(
-    settings: &SettingsService,
+    settings: &Settings,
     files: &FileStorage,
     home: usize,
     order: &Mutex<()>,
@@ -115,9 +115,7 @@ async fn apply(
     let _order = order.lock().await;
     let root = files.root_path(home)?;
     let cancel = CancellationToken::new();
-    let snapshot = settings
-        .read_declared(SOURCE, SettingsScope::User, &cancel)
-        .await?;
+    let snapshot = settings.read(SOURCE, SettingsScope::User, &cancel).await?;
     let document: Document = serde_json::from_value(snapshot.document)?;
     let directory = document.enabled.then(|| root.join("model-log"));
     dim_agent_aimux::recording::set_request_recording(directory.as_deref())?;

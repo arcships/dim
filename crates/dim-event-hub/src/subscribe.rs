@@ -10,8 +10,8 @@ use crate::{
     store::Subscription,
     text::{digest, stamp},
 };
-use chrono::Utc;
 use dim_agent_types::markup::escaped;
+use jiff::Timestamp;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -67,7 +67,7 @@ pub(crate) async fn subscribe(
         target: target.clone(),
         mode: request.mode,
         origin,
-        created_at: stamp(Utc::now()),
+        created_at: stamp(Timestamp::now()),
         last_failure: None,
     };
     let sources = named_sources(&subscription);

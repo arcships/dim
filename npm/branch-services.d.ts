@@ -13,7 +13,7 @@ export type BranchSource =
 
 export interface ApprovalCallData {
   name: string
-  input: Record<string, unknown>
+  input: import('./plugin.js').BridgeJsonObject
 }
 
 export interface ApprovalRequestData {
@@ -280,6 +280,159 @@ export interface Permission {
   check(call: ApprovalCallData, risk: string | null, cancelled: () => void | Promise<void>): Promise<Decision>
 }
 
+export type PromptScope =
+  | { kind: "branch"; timeline: string }
+  | { kind: "turn"; timeline: string; id: string }
+  | { kind: "task"; timeline: string; id: string }
+
+export interface PromptSourceTarget {
+  source: string
+  scope: PromptScope
+}
+
+export interface ModelId {
+  providerId: string
+  modelId: string
+}
+
+/**
+ * The adopted capabilities of a model: an exact value a Session carries and
+ * ContextCompaction reads. Both limits are required and positive; absence is
+ * a property of the catalog, which carries [`CatalogCapabilities`] and
+ * converts through [`CatalogCapabilities::declared`].
+ */
+export interface ModelCapabilities {
+  modalities: string[]
+  toolCalling: boolean
+  streaming: boolean
+  structuredOutput: boolean
+  vision: boolean
+  audio: boolean
+  reasoning: boolean
+  contextWindow: number | bigint
+  maxOutputTokens: number | bigint
+  providerState?: import('./plugin.js').BridgeJsonObject | null
+}
+
+export interface ReasoningBudget {
+  min?: number | null
+  max?: number | null
+  default?: number | null
+  unit?: string | null
+}
+
+export type ReasoningOff =
+  | { kind: "thinking_type"; value: string }
+  | { kind: "thinking_budget"; value: number | bigint }
+  | { kind: "enable_thinking"; value: boolean }
+  | { kind: "chat_template_kwargs"; keys: string[] }
+
+export interface ModelReasoning {
+  supported: boolean
+  defaultEnabled?: boolean | null
+  mode?: string | null
+  effort?: string | null
+  effortOptions?: string[] | null
+  level?: string | null
+  levelOptions?: string[] | null
+  verbosity?: string | null
+  verbosityOptions?: string[] | null
+  interleaved?: boolean | null
+  summaries?: boolean | null
+  visibility?: string | null
+  continuation?: string[] | null
+  budget?: ReasoningBudget | null
+  notes?: string[] | null
+  off?: ReasoningOff | null
+}
+
+export interface ModelServiceTier {
+  supported: boolean
+  default?: string | null
+  options?: string[]
+}
+
+export interface ModelCapabilitySnapshot {
+  target: ModelId
+  capabilities: ModelCapabilities
+  reasoning?: ModelReasoning | null
+  serviceTier?: ModelServiceTier | null
+}
+
+export type ModelProtocol =
+  | "openai-chat"
+  | "openai-compatible"
+  | "openai-responses"
+  | "xai"
+  | "xai-responses"
+  | "anthropic"
+  | "gemini"
+  | "bedrock"
+
+export type StartupAuth = "anonymous" | "apiKey" | "bearer"
+
+/**
+ * Non-secret connection declaration. Credentials are rebound in Provider
+ * memory; this identity remains valid across Session unload and restore.
+ */
+export interface StartupConnectionSource {
+  id: string
+  apiFormat: ModelProtocol
+  baseUrl: string
+  auth: StartupAuth
+  headerNames: string[]
+}
+
+/**
+ * Adopted startup policy, copied with the model at a branch cut and into
+ * newly created native members and summary requests. Contains no secrets.
+ */
+export interface ModelStartup {
+  connection?: StartupConnectionSource | null
+  autoCompactWindow?: number | bigint | null
+}
+
+export type RequestMetadata = {
+  sessionId?: string | null
+  runId?: string | null
+  traceId?: string | null
+  turnId?: string | null
+  startup?: ModelStartup | null
+  /**
+   * The Agent profile whose prompt the branch runs: the profile it last
+   * adopted. An adoption from a profile records it; a model selection and a
+   * preference update carry it into the new configuration, and only
+   * another adoption replaces it.
+   */
+  agentId?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+/**
+ * The model-owned part of configuration. Tool declarations and system content
+ * are adopted by their own capabilities, not supplied by a provider.
+ */
+export interface ModelSelection {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
+}
+
+export interface ConfigureUpdate {
+  sources: PromptSourceTarget[]
+  model?: ModelSelection | null
+}
+
+/**
+ * What a branch adopts when it opens: the Session's prompt sources, and the
+ * model a new Session adopts. Read when the branch opens, so it holds the
+ * sources registered then.
+ */
+export interface InitialPromptConfiguration {
+  get(): Promise<ConfigureUpdate | null>
+}
+
 /**
  * The operator's reply-language choices, by their stable wire codes. The
  * names are the ones the operator selects, named in English for the prompt
@@ -349,13 +502,13 @@ export type QueryOperand =
   | { kind: "root"; path: string }
   | { kind: "concat"; parts: QueryOperand[] }
   | { kind: "element"; path: string }
-  | { kind: "value"; value: unknown }
+  | { kind: "value"; value: import('./plugin.js').BridgeJsonValue }
 
 export type QueryComparison = "eq" | "ne" | "lt" | "le" | "gt" | "ge"
 
 export type QueryFilter =
   | { op: "compare"; left: QueryOperand; comparison: QueryComparison; right: QueryOperand }
-  | { op: "in"; value: QueryOperand; values: unknown[] }
+  | { op: "in"; value: QueryOperand; values: import('./plugin.js').BridgeJsonValue[] }
   | { op: "present"; value: QueryOperand }
   | { op: "prefix"; value: QueryOperand; prefix: string }
   | { op: "contains"; value: QueryOperand; text: string }
@@ -398,7 +551,7 @@ export interface QuerySpec {
 /** Missing properties and array projections retain their shape independently of JSON null. */
 export type QueryValue =
   | { kind: "missing" }
-  | { kind: "value"; value: unknown }
+  | { kind: "value"; value: import('./plugin.js').BridgeJsonValue }
   | { kind: "elements"; values: QueryValue[] }
 
 /** Continuation data bound to the query and logical scope, without server-side state. */
@@ -498,6 +651,20 @@ export interface TreeCommands {
    * @throws {AgentErrorThrown}
    */
   create(parent: string, at: number | bigint, options: BranchOptions, cancelled: () => void | Promise<void>): Promise<string>
+}
+
+export type LineRole = "main" | "tool" | "host"
+
+export interface BranchLine {
+  /** The line committed its own `branch/end`. */
+  ending(): Promise<boolean>
+  /**
+   * The `nextCursor` of the line's latest successful read of `target`.
+   * @throws {AgentErrorThrown}
+   */
+  cursor(target: string): Promise<number | bigint | null>
+  /** The line's role and parent, from its directory record. */
+  resolved(): Promise<[LineRole, string | null] | null>
 }
 
 export type WaitResult =
@@ -602,11 +769,6 @@ export interface BackgroundExec {
    * @throws {TaskErrorThrown}
    */
   stop(taskId: string): Promise<ExecEndedData>
-}
-
-export interface ModelId {
-  providerId: string
-  modelId: string
 }
 
 export interface AgentConfig2 {
@@ -877,8 +1039,16 @@ export interface CollaborationDirectory {
 /**
  * Admission for process-owned work, including work accepted before a Session
  * exists. A hold starts before acceptance and ends after the last owned effect.
+ * It also observes the host's initial publication.
  */
 export interface ProcessActivity {
+  /**
+   * Resolves once the host has opened after every required process row
+   * became Active. Resolves false when startup fails or shutdown begins
+   * before that observation. A row reload does not reset it.
+   * Calls after shutdown begins return false, even after an earlier true.
+   */
+  activated(): Promise<boolean>
   /**
    * Admits work unless admission is paused. Release the returned id after
    * settlement. A lost owner leaves admission busy until process shutdown;
@@ -921,9 +1091,9 @@ export type JsonSchema = {
   properties?: Record<string, JsonSchema> | null
   items?: JsonSchema | null
   required?: string[] | null
-  enum?: unknown[] | null
+  enum?: import('./plugin.js').BridgeJsonValue[] | null
   description?: string | null
-} & Record<string, unknown>
+} & import('./plugin.js').BridgeJsonObject
 
 /**
  * The mount read's reply (MCP Apps §4.1). `text` and `blob` are exclusive;
@@ -938,7 +1108,7 @@ export interface McpWidgetResult {
   mimeType: string
   text?: string | null
   blob?: string | null
-  app?: Record<string, unknown> | null
+  app?: import('./plugin.js').BridgeJsonObject | null
 }
 
 export type ToolContent = string | ContentBlock[]
@@ -949,9 +1119,9 @@ export type ToolContent = string | ContentBlock[]
  */
 export interface McpAppCallResult {
   content: ToolContent
-  structuredContent?: Record<string, unknown> | null
+  structuredContent?: import('./plugin.js').BridgeJsonObject | null
   isError?: boolean | null
-  meta?: Record<string, unknown> | null
+  meta?: import('./plugin.js').BridgeJsonObject | null
 }
 
 /** Management view, without credentials, transport handles or registry access. */
@@ -984,7 +1154,7 @@ export interface McpSession {
    * server request.
    * @throws {McpAppErrorThrown}
    */
-  call(server: string, tool: string, arguments: Record<string, unknown>): Promise<McpAppCallResult>
+  call(server: string, tool: string, arguments: import('./plugin.js').BridgeJsonObject): Promise<McpAppCallResult>
 }
 
 export type WorkflowRoot = { project: string } | { package: string }
@@ -1158,9 +1328,11 @@ export interface Services {
   inputQueue: InputQueue
   reservedMethods: ReservedMethods
   permission: Permission
+  initialPromptConfiguration: InitialPromptConfiguration
   sessionLanguage: SessionLanguage
   skillsConfig: SkillsConfig
   treeCommands: TreeCommands
+  branchLine: BranchLine
   wait: Wait
   backgroundExec: BackgroundExec
   agentConfig: AgentConfig

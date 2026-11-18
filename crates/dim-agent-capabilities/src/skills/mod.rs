@@ -4,14 +4,17 @@
 mod catalog;
 pub(crate) mod content;
 mod discovery;
+mod face;
+pub use face::SkillsCatalog as SkillsCatalogBinding;
 mod install;
 mod session;
 
 pub use catalog::{
     CatalogChanged, MemorySkillSettings, SkillsCatalog, SkillsCatalogPlugin, catalog_changes,
+    owner_key,
 };
 pub use install::selection_path;
-pub use session::{SessionSkills, SkillsBranch, SkillsBranchPlugin, SkillsPlugin};
+pub use session::{SkillsBranch, SkillsBranchPlugin, SkillsPlugin};
 
 use crate::host::HostFuture;
 use crate::skill_settings::SkillInstallation;
@@ -182,12 +185,35 @@ pub struct CatalogEntry {
     pub status: SkillStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum SkillIssue {
-    InvalidManifest { path: PathBuf, reason: String },
-    Unreadable { path: PathBuf, reason: String },
-    RootUnreadable { root: PathBuf, reason: String },
-    ScanLimitReached { root: PathBuf },
+    InvalidManifest {
+        #[serde(serialize_with = "issue_path")]
+        path: PathBuf,
+        reason: String,
+    },
+    Unreadable {
+        #[serde(serialize_with = "issue_path")]
+        path: PathBuf,
+        reason: String,
+    },
+    RootUnreadable {
+        #[serde(serialize_with = "issue_path")]
+        root: PathBuf,
+        reason: String,
+    },
+    ScanLimitReached {
+        #[serde(serialize_with = "issue_path")]
+        root: PathBuf,
+    },
+}
+
+fn issue_path<S: serde::Serializer>(
+    path: &std::path::Path,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(&path.display())
 }
 
 /// Monotonic within the process; changes when a snapshot is replaced or the
@@ -311,6 +337,28 @@ pub enum SkillsError {
     SettingsSync(String),
     #[error("Skill root is unreadable: {reason}")]
     RootUnreadable { root: PathBuf, reason: String },
+}
+
+impl SkillsError {
+    /// Stable data-face error code; client management maps `closed` to its reload error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::UnknownSkill(_) => "skill_unknown",
+            Self::SettingsConflict => "skills_conflict",
+            Self::SettingsWrite(_) => "skills_write_failed",
+            Self::SettingsSync(_) => "skills_sync_failed",
+            Self::SettingsRead(_) | Self::RootUnreadable { .. } => "skills_unavailable",
+            Self::InstallationExists(_) => "skills_install_exists",
+            Self::UnknownInstallation(_) => "skills_install_unknown",
+            Self::UnmanagedDirectory(_) => "skills_install_unmanaged",
+            Self::StalePreview { .. } => "skills_preview_stale",
+            Self::SelectionInvalid(_) => "skills_selection_invalid",
+            Self::InstallConflict(_) => "skills_install_conflict",
+            Self::InstallIo(_) => "skills_install_failed",
+            Self::RemoveFailed(_) => "skills_remove_failed",
+        }
+    }
 }
 
 /// Which roots an explicit refresh rescans.

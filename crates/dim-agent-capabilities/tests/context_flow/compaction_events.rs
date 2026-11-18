@@ -35,7 +35,7 @@ async fn snapshot_codecs_preserve_completed_compaction_even_when_saving_fails() 
                 ..Context::default()
             },
         );
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent
             .create_session(SessionConfig::default())

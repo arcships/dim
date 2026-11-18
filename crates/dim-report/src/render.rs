@@ -5,6 +5,7 @@ use dim_agent_capabilities::{
     methods::{RpcError, reply},
 };
 use dim_app_server::protocol::PROTOCOL_VERSION;
+use jiff::Timestamp;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -15,6 +16,22 @@ use url::Url;
 use zip::{ZipWriter, write::SimpleFileOptions};
 
 const ZIP_LIMIT: usize = 64 * 1024;
+
+/// The RFC 3339 form reports carry: UTC with `+00:00` and 0, 3, 6 or 9
+/// fractional digits, never a bare trimmed fraction.
+fn rfc3339(instant: Timestamp) -> String {
+    let nanos = instant.subsec_nanosecond();
+    let format = if nanos == 0 {
+        "%Y-%m-%dT%H:%M:%S%:z"
+    } else if nanos % 1_000_000 == 0 {
+        "%Y-%m-%dT%H:%M:%S%.3f%:z"
+    } else if nanos % 1_000 == 0 {
+        "%Y-%m-%dT%H:%M:%S%.6f%:z"
+    } else {
+        "%Y-%m-%dT%H:%M:%S%.9f%:z"
+    };
+    instant.strftime(format).to_string()
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,7 +153,7 @@ impl Reviewed {
                 format!(
                     "## Error\n\n{}.\n\n- Observed at {}\n",
                     error.summary,
-                    error.observed_at.to_rfc3339()
+                    rfc3339(error.observed_at)
                 ),
             ),
             None => ("Session report", 2, "## Session\n\n".to_owned()),

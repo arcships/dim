@@ -45,12 +45,15 @@ fn validate_entry(target: &PromptSourceTarget, entry: &PromptEntry) -> Result<()
 /// model a new Session adopts. Read when the branch opens, so it holds the
 /// sources registered then.
 pub struct InitialPromptConfiguration(Box<dyn Fn() -> Option<ConfigureUpdate> + Send + Sync>);
+#[rutis::service]
 impl InitialPromptConfiguration {
     /// The same configuration for every branch; `None` adopts nothing.
+    #[service(skip)]
     pub fn fixed(update: Option<ConfigureUpdate>) -> Self {
         Self(Box::new(move || update.clone()))
     }
     /// The configuration `read` returns when a branch opens.
+    #[service(skip)]
     pub fn read(read: impl Fn() -> Option<ConfigureUpdate> + Send + Sync + 'static) -> Self {
         Self(Box::new(read))
     }
@@ -243,7 +246,7 @@ impl Prompt {
                 self.report_panic(panic)
             };
             let future = catch_unwind(AssertUnwindSafe(|| {
-                self.host.0.load(target.clone(), cancel.clone())
+                self.host.load(target.clone(), cancel.clone())
             }))
             .map_err(defect)?;
             let value = AssertUnwindSafe(future)

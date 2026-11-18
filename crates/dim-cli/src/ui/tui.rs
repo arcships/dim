@@ -5699,7 +5699,9 @@ impl App {
         let cols = size.0 as usize;
         let width = cols.saturating_sub(2 + MARGIN).max(1);
         let mut frame = Frame::default();
-        if !self.banner_committed {
+        let fullscreen_home_visible =
+            self.fullscreen && self.session_id.is_empty() && self.failure.is_none();
+        if !self.banner_committed && !fullscreen_home_visible {
             let text = banner(
                 cols,
                 &self.palette,
@@ -6435,6 +6437,9 @@ impl App {
             }),
         };
         frame.live = live;
+        if fullscreen_home_visible {
+            frame.home = fullscreen_home(cols, p);
+        }
         self.sync_compaction_details();
         if self.shows_member() {
             self.project_member(cols);
@@ -8780,6 +8785,58 @@ fn pad_block(rows: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         + "\n"
+}
+
+fn fullscreen_home(cols: usize, p: &Palette) -> Vec<String> {
+    let cols = cols.saturating_sub(1).min(72);
+    let inner = cols.saturating_sub(6 + MARGIN);
+    if inner < 13 {
+        return vec![fg("DIM", &p.accent)];
+    }
+    let logo = inner >= 56;
+    let text_width = if logo {
+        inner - STARTUP_LOGO_WIDTH - STARTUP_LOGO_GAP
+    } else {
+        inner
+    };
+    let heading = tf(
+        "Welcome to DIM {version}!",
+        &[("version", env!("CARGO_PKG_VERSION"))],
+    );
+    let heading = if width_of(&heading) <= text_width {
+        heading
+    } else {
+        "DIM".to_owned()
+    };
+    let mut rows = vec![heading, String::new()];
+    rows.extend(
+        [
+            (t("Commands"), "Ctrl+O"),
+            (t("Sessions"), "/resume"),
+            (t("Models"), "/models"),
+            (t("scrollback"), "/tui"),
+            (t("Exit"), "/exit"),
+        ]
+        .into_iter()
+        .map(|(label, key)| {
+            let (label, cells) = clip(label, text_width - key.len() - 1);
+            format!(
+                "{label}{:padding$}{key}",
+                "",
+                padding = text_width - cells - key.len()
+            )
+        }),
+    );
+    if logo {
+        rows = startup_header(&rows, inner);
+    }
+    boxed(
+        &rows,
+        cols,
+        &|edge| fg(edge, &p.border),
+        &|index, body| fg(body, if index == 0 { &p.accent } else { &p.text }),
+        None,
+    )
 }
 
 fn banner(cols: usize, p: &Palette, branch: &str) -> String {
@@ -12370,6 +12427,7 @@ mod tests {
 
     #[test]
     fn permissions_focus_tracks_hints_and_survives_policy_updates_and_submenus() {
+        use crate::ui::render::panel::strip_escapes;
         use dim_agent_types::{PermissionPolicy, PermissionPreset};
 
         for fullscreen in [false, true] {
@@ -12392,20 +12450,13 @@ mod tests {
                     }
                     let render = |drawn: &mut Drawn| {
                         let frame = drawn.app.frame(size);
-                        let bytes = if fullscreen {
-                            FullScreen::new(size, true).render(
-                                &frame,
-                                size,
-                                &drawn.app.palette,
-                                &drawn.app,
-                            )
-                        } else {
-                            Screen::new(size, true).render(&frame, size)
-                        };
-                        let mut emu =
-                            crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
-                        emu.feed(&bytes);
-                        emu.rows_text()
+                        frame
+                            .overlay
+                            .as_ref()
+                            .map_or(&frame.live, |overlay| &overlay.rows)
+                            .iter()
+                            .map(|row| strip_escapes(row))
+                            .collect::<Vec<_>>()
                             .join("\n")
                             .replace('│', " ")
                             .split_whitespace()
@@ -16053,6 +16104,50 @@ mod tests {
         drawn.key(KeyCode::Up);
         drawn.key(KeyCode::Char('e'));
         assert_eq!(drawn.app.composer.text(), "check the build");
+    }
+
+    #[test]
+    fn fullscreen_home_adapts_to_the_viewport_and_yields_to_the_session() {
+        let mut drawn = Drawn::new((92, 22), None, true);
+        assert!(drawn.app.frame(drawn.size).home.is_empty());
+        drawn.app.set_fullscreen(true);
+        drawn.app.set_notice("fixture notice");
+        let render_frame = |app: &mut App, size: (u16, u16)| {
+            let frame = app.frame(size);
+            let mut screen = FullScreen::new(size, true);
+            let mut emu = crate::ui::render::testterm::Emu::new(size.0.into(), size.1.into());
+            emu.feed(&screen.render(&frame, size, &app.palette, app));
+            emu.rows_text()
+        };
+        let wide = render_frame(&mut drawn.app, drawn.size).join("\n");
+        assert!(
+            wide.contains("Welcome to DIM") && wide.contains("Ctrl+O"),
+            "{wide}"
+        );
+        assert!(wide.contains("fixture notice"), "{wide}");
+        let narrow = render_frame(&mut drawn.app, (32, 22)).join("\n");
+        assert!(
+            narrow.contains("DIM") && narrow.contains("/resume"),
+            "{narrow}"
+        );
+        assert!(!narrow.contains(STARTUP_LOGO[0]), "{narrow}");
+        let short = render_frame(&mut drawn.app, (92, 9));
+        assert!(short.iter().any(|row| row.trim() == "DIM"), "{short:?}");
+        assert!(
+            short.iter().all(|row| !row.contains("/resume")),
+            "{short:?}"
+        );
+
+        drawn.app.apply(Update::Switched {
+            session_id: "s1".into(),
+            kind: SwitchKind::Resumed,
+            cwd: None,
+        });
+        drawn.show(&[("m1", "session transcript")], "main", true);
+        assert!(drawn.app.frame(drawn.size).home.is_empty());
+        let attached = render_frame(&mut drawn.app, drawn.size).join("\n");
+        assert!(attached.contains("session transcript"), "{attached}");
+        assert!(!attached.contains("/resume"), "{attached}");
     }
 
     /// Entering fullscreen lays out only the shown Session's transcript,

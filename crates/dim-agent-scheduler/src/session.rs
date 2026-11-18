@@ -15,6 +15,7 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::{CollaborationRole, Names, SessionConfig, SessionIdentity};
 use dim_agent_types::{ToolCall, ToolDefinition, ToolResult, ToolSource};
+use jiff::Timestamp;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::Deserialize;
@@ -69,7 +70,55 @@ fn declaration(description: &str) -> ToolDefinition {
                     "additionalProperties": false,
                     "properties": {
                         "name": {"type": "string"},
-                        "schedule": {"type": "object"},
+                        "schedule": {
+                            "type": "object",
+                            "description": "Exactly one schedule form; do not combine fields from different forms.",
+                            "anyOf": [
+                                {
+                                    "type": "object",
+                                    "required": ["cron"],
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "cron": {
+                                            "type": "string",
+                                            "description": "Five-field cron: minute hour day-of-month month day-of-week; supports lists, ranges and steps. Example: */30 * * * *."
+                                        },
+                                        "tz": {
+                                            "type": "string",
+                                            "description": "Optional IANA time zone, e.g. Asia/Shanghai. Omit to use the host's local time zone, not UTC."
+                                        }
+                                    },
+                                    "examples": [{"cron": "*/30 * * * *", "tz": "Asia/Shanghai"}]
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["every_minutes"],
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "every_minutes": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": u32::MAX,
+                                            "description": "Repeat every this many minutes, anchored at the job's enable time. Use 30 for a 30-minute interval."
+                                        }
+                                    },
+                                    "examples": [{"every_minutes": 30}]
+                                },
+                                {
+                                    "type": "object",
+                                    "required": ["at"],
+                                    "additionalProperties": false,
+                                    "properties": {
+                                        "at": {
+                                            "type": "string",
+                                            "format": "date-time",
+                                            "description": "One RFC 3339 instant with Z or an explicit UTC offset. Example: 2030-01-01T00:00:00Z."
+                                        }
+                                    },
+                                    "examples": [{"at": "2030-01-01T00:00:00Z"}]
+                                }
+                            ]
+                        },
                         "prompt": {"type": "string"},
                         "input_mode": {"type": "string", "enum": ["queue", "steer", "append"]}
                     }
@@ -273,9 +322,8 @@ fn prompt_size(prompt: &str) -> Result<(), String> {
 
 /// Parses the RFC 3339 `at` instant; the canonical UTC millisecond form is
 /// stored (A.1's timestamp form).
-fn parse_at(at: &str) -> Result<chrono::DateTime<chrono::Utc>, RpcError> {
-    chrono::DateTime::parse_from_rfc3339(at)
-        .map(|instant| instant.with_timezone(&chrono::Utc))
+fn parse_at(at: &str) -> Result<Timestamp, RpcError> {
+    at.parse::<Timestamp>()
         .map_err(|_| RpcError::invalid("at must be an RFC 3339 timestamp"))
 }
 
@@ -630,8 +678,8 @@ impl ToolHandler for WakeupTool {
                     "wakeup: invalid_params\n{message}"
                 )));
             }
-            let at = match chrono::DateTime::parse_from_rfc3339(&args.at) {
-                Ok(instant) => instant.with_timezone(&chrono::Utc),
+            let at = match args.at.parse::<Timestamp>() {
+                Ok(instant) => instant,
                 Err(_) => {
                     return Ok(ToolResult::error(
                         "wakeup: invalid_params\nat must be an RFC 3339 timestamp",

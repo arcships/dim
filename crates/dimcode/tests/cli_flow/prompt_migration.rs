@@ -12,12 +12,10 @@ fn builder(store: &Arc<dim_app_server::storage::SqliteTimelineStore>) -> AgentBu
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::mock_hosts(&mut builder);
     defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     builder
 }
 
-/// The store of `database` twice: the concrete handle whose `close` this
-/// flow calls, and the trait object an `AgentBuilder` takes.
 fn open(
     database: &Path,
 ) -> (

@@ -680,6 +680,26 @@ async fn model_pages_survive_refresh_removal_and_an_unbound_empty_account() {
         let cancel = CancellationToken::new();
         let initial = provider.refresh("fixture".into(), &cancel).await.unwrap();
         assert_eq!(initial.models.len(), 1);
+        let target = initial.models[0].id.clone();
+        let version = provider
+            .set_model_enabled(
+                "fixture".into(),
+                initial.version,
+                target.clone(),
+                false,
+                &cancel,
+            )
+            .await
+            .unwrap();
+        let disabled = provider
+            .management("fixture".into(), Some(target.clone()), &cancel)
+            .await
+            .unwrap();
+        assert!(!disabled.providers[0].models.as_ref().unwrap()[0].enabled);
+        provider
+            .set_model_enabled("fixture".into(), version, target, true, &cancel)
+            .await
+            .unwrap();
         fixture.pause_status.store(true, Ordering::SeqCst);
         let reader = provider.clone();
         let query = tokio::spawn(async move {

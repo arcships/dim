@@ -2,7 +2,7 @@
 //! (methods contract A.1). The value lives in the Session's config record and
 //! in PromptSources' live cell; this part reads both and changes both, then
 //! has Prompt adopt the `dim/language` source.
-use crate::storage::SessionStore;
+use crate::storage::Store;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     prompt_sources::{self, PromptSourcesBranch},
@@ -25,14 +25,14 @@ pub(crate) struct SessionLanguagePlugin {
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
     /// Native storage, when the assembly has it: the record carries the value.
-    store: Option<Key<SessionStore>>,
+    store: Option<Key<Store>>,
 }
 impl SessionLanguagePlugin {
     pub(crate) fn new(names: &Names<'_>, stored: bool) -> Result<Self, Error> {
         Ok(Self {
             tree: names.key()?,
             methods: names.key()?,
-            store: stored.then(|| names.key::<SessionStore>()).transpose()?,
+            store: stored.then(|| names.key()).transpose()?,
         })
     }
 }
@@ -91,7 +91,7 @@ async fn read(tree: &TreeCommands) -> Result<Value, RpcError> {
 /// has Prompt adopt the source, all under the Session's language gate.
 async fn change(
     tree: &TreeCommands,
-    store: Option<&SessionStore>,
+    store: Option<&Store>,
     value: Value,
     cancel: CancellationToken,
 ) -> Result<Value, RpcError> {

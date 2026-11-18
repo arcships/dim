@@ -7,7 +7,7 @@ use dim_agent_runtime::wait_active;
 use dim_app_server::{
     methods::{ManagementMethods, ManagementMethodsPlugin},
     settings::{
-        BusinessDocument, ProjectAuthorized, Result, SettingsChanged, SettingsError,
+        BusinessDocument, ProjectAuthorized, Result, Settings, SettingsChanged, SettingsError,
         SettingsPlugin, SettingsScope, SettingsService, SourceDeclaration, Writer,
         project_authorizations, settings_changes, without_write_only,
     },
@@ -1004,7 +1004,18 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
         let mut changes = listen::<SettingsChanged>(&root, &settings_changes("example"));
         let user = json!({"source": "example", "scope": "user"});
 
+        let binding = root.get::<Settings>().unwrap();
         let first = owner_call(&owner, "read", user.clone()).await;
+        assert_eq!(
+            first["value"],
+            serde_json::to_value(
+                binding
+                    .read("example", SettingsScope::User, &cancel)
+                    .await
+                    .unwrap()
+            )
+            .unwrap()
+        );
         assert_eq!(first["ok"], true);
         assert_eq!(first["value"]["document"], json!({"maxResults": 5}));
         let first = first["value"]["revision"].as_str().unwrap().to_owned();
@@ -1026,7 +1037,18 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
             (json!([]), "invalid_document"),
         ] {
             let revision = if code == "conflict" { &first } else { &second };
+            let native_error = binding
+                .update(
+                    "example",
+                    SettingsScope::User,
+                    revision,
+                    document.clone(),
+                    &cancel,
+                )
+                .await
+                .unwrap_err();
             let rejected = owner_call(&owner, "update", update(revision, document)).await;
+            assert_eq!(rejected["error"]["message"], native_error.to_string());
             assert_eq!(rejected["ok"], false);
             assert_eq!(rejected["error"]["code"], code, "{rejected}");
         }
@@ -1054,15 +1076,23 @@ async fn declared_source_owner_and_client_writes_in_both_profiles() {
         )
         .await;
         assert_eq!(changed["error"]["code"], "user_only_field");
-        let kept = owner_call(
-            &owner,
-            "update",
-            update(&third, json!({"searchService": service})),
-        )
-        .await;
+        let kept = binding
+            .update(
+                "example",
+                SettingsScope::User,
+                &third,
+                json!({"searchService": service}),
+                &cancel,
+            )
+            .await
+            .unwrap();
         let stored = json!({"maxResults": 5, "searchService": service});
-        assert_eq!(kept["value"]["document"], stored);
-        let fourth = kept["value"]["revision"].as_str().unwrap().to_owned();
+        assert_eq!(kept.document, stored);
+        assert_eq!(
+            owner_call(&owner, "read", user.clone()).await["value"],
+            serde_json::to_value(&kept).unwrap()
+        );
+        let fourth = kept.revision;
         saw(&mut changes, change(SettingsScope::User, &fourth)).await;
         let announced: Vec<_> = changes
             .borrow()

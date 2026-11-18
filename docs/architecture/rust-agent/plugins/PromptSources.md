@@ -21,7 +21,7 @@ No events, worker tasks or I/O ownership. A part registers a source with
 `register(ctx, name, source)` from its own `apply`; the registration is
 withdrawn when that part unloads, and a name registered already fails
 ([rutis usage R6](../../../design/rutis-usage.md#r6-contributions-register-with-their-owner)).
-Sources stay Rust-only until a part of another language needs one. Loads forward
+Loads forward
 target and caller cancellation to the registered source; a name nothing
 registers now fails explicitly. The initial configuration is read when a branch
 opens: it targets every source registered then, in name order, with main's
@@ -30,7 +30,47 @@ register with it, so a reloaded registry reloads the parts registered with it.
 Registry construction is not adoption and does not independently refresh
 branch context.
 
+### Data faces
+
+The same Session owner provides `promptRegistry`, `promptHost` and
+`initialPromptConfiguration` as [data faces](../../../design/service-faces.md).
+
+| Face | Operation | Result |
+| --- | --- | --- |
+| `promptRegistry` | `names()` | Current source names in name order |
+| `promptRegistry` | `register(name, load)` | Register the calling row's source until withdrawal; a duplicate fails |
+| `promptHost` | `load(target, cancelled)` | The source's `PromptEntry` or `null`; an unknown source fails |
+| `initialPromptConfiguration` | `get()` | Current source targets and the selected model, or `null` for a host with no initial adoption |
+
+A target is `{source, scope}`. `scope` is the existing branch, turn or task
+scope. An entry carries the same target identity plus `version`, `body`,
+`delivery` and `order`; `null` means that source has no entry for the target.
+The load callback accepts the same target and a `cancelled()` function that
+settles when the caller cancels. Only the explicit cancellation function or
+caller-row unload cancels the load; abandoning its returned Promise does not.
+Cancellation notifies an accepted load and waits for that load's own result. Source withdrawal removes future lookups;
+it does not cancel or discard an already accepted load. Its retained callback
+settles normally, including when the source row has unloaded. A source remains
+responsible for how its own lifecycle affects its I/O.
+
+`PromptLoadError` carries `{code, message}`, with `failed` or `cancelled`.
+Registration failures carry `PromptRegistrationError` with `failed`. Invalid
+wire argument shapes fail before calling the owner. Callbacks run outside the
+registration and Prompt commit locks. These operations do not adopt text or
+write Timeline facts.
+
+The native loading binding calls the same source directly and preserves
+synchronous future construction and cancellation tokens. Registry registration
+uses the same `Registrations` lifetime for native sources and foreign callbacks;
+there is no second registry or generation cancellation rule.
+
 ### Tests
+
+The Node Prompt source flow in
+[session_typescript.rs](../../../../crates/dim-app-server/tests/transport_flow/session_typescript.rs)
+checks native/wire load parity, current initial targets, duplicate and unknown
+sources, cancellation followed by settlement, source withdrawal during a held
+callback, and isolation between two Sessions.
 
 [skills.rs](../../../../tests/integration/tests/skills.rs) verifies list
 injection; [prompt_sources.rs](../../../../tests/integration/tests/prompt_sources.rs)
@@ -41,7 +81,7 @@ checks `system_is_static_and_instructions_and_environment_arrive_as_inputs`.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:SessionConfig` |
-| 提供 | `S:InitialPromptConfiguration`、`S:PromptHost`、`S:PromptRegistry` |
+| 提供 | `S:InitialPromptConfiguration`、`S:PromptHost`、`S:PromptRegistry`、`S:dyn HostDispatch#initialPromptConfiguration`、`S:dyn HostDispatch#promptHost`、`S:dyn HostDispatch#promptRegistry` |
 | 被注入于 | `Prompt`、`PromptSources`、`PromptSourcesBranch`、`Skills` |
 <!-- /generated -->
 

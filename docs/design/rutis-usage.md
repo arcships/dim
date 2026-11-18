@@ -130,7 +130,7 @@ name-bound (#391, #392, #396–#398, #400).
   registers its parts from the row that holds it: Mcp, Collaboration, Agents, SkillsCatalog and
   WorkspaceTools, which holds the file-write coordinator. ConfiguredModels and ConfiguredModel, and
   PermissionRules and CommandRules, stay two plugins: the profile chooses which part binds the
-  Session's `PrepareModelHost` or `CommandRulesHost`, whether or not the process row runs. The
+  Session's `PrepareModelHost` or `CommandRules`, whether or not the process row runs. The
   minimal host starts its plugins when it starts.
 - Tools, tool sources and prompt sources register with ToolRegistry and PromptRegistry, and Session
   and management method namespaces with the Session's `sessionMethods` and the process's
@@ -157,7 +157,7 @@ name-bound (#391, #392, #396–#398, #400).
 
 | Element | Form |
 | --- | --- |
-| Methods | A name, `sync` or `async`. Callers in other languages always get a Promise |
+| Methods | A name, `sync` or `async`. TypeScript callers receive a direct value for `sync` and a Promise for `async` |
 | Requests and replies | serde data, described as field tables or JSON shapes |
 | Errors | Data, `{code, message}`, with the codes documented by the service. A forwarding part rethrows the error it received, and the wire boundary maps it ([plugin contract](plugin-contract.md#9-requirements-raised-to-mechanism-owners) R3) |
 | Cancellation | A protocol action: a cancel callback or promise in the request, or the consumer dropping the call |
@@ -221,8 +221,10 @@ writes names only.
   Otherwise other instances see the service, and a second copy that provides it fails with rutis's
   duplicate-provider error.
 - **Required and optional.** A required dependency is injected and gates the part. An optional one is
-  read when used, without injecting it: Cordis `ctx.get(name)`, rutis `ctx.get_at(&key)`. A dependency
-  the configuration chooses is included in the copy's names or not.
+  read when used, without injecting it: Cordis `ctx.get(name)`, rutis `ctx.get_at(&key)`. A required
+  service is never read that way: an optional read gates nothing, is not reloaded with its provider and
+  is not checked against the declaration. A dependency the configuration chooses is included in the
+  copy's names or not.
 - **Cordis.** An unmodified plugin for rutis's Cordis 4 (`@deepseek-ai/cordis`) runs as a Node row and
   gets the same resolution. Cordis 3 plugins are not a target.
 
@@ -323,8 +325,7 @@ These requirements concern how Dim uses rutis. They follow
     another language as a callable reference (`RemoteFunction`).
 - **Needed:** each owner exposes `register` for its contributions: ToolRegistry for tools and tool
   sources, PromptRegistry for prompt sources, Rpc for Session and management method namespaces.
-  Tools and method namespaces register from any language; prompt and tool sources stay Rust-only
-  until a foreign part needs one.
+  The public registration operations are data faces under [service faces §2](service-faces.md). Each owner defines its contribution shape and callback lifetime.
   - A registration belongs to its caller. In Rust the caller passes its ctx; from another language
     the bridge ties the registration to the calling row, and the handler is the caller's function,
     called back through the bridge. It is withdrawn when the caller unloads.
@@ -394,10 +395,10 @@ P3 deleted the old forms ([#375](https://github.com/arcships/dim/issues/375)); t
 A Rust part with no named dependency is a plain rutis `Plugin` (`type Deps` by type). A part that
 depends on names is a rutis `host::DynPlugin`, the form rutis gives for dependencies by key: the part
 keeps the keys of its copy, which its factory takes from `Names`, lists them in `injects`, and reads
-them with `require_at` in `apply` (`get_at` for one read only when present, which is not listed).
-Dim adds no trait or adapter of its own. A strict read of a listed key that finds the provider gone
-returns its own error, and rutis puts the part back to Pending (A.3). The binding carries out §3.5
-for Rust:
+them with `require_at` in `apply`. `get_at` reads only a service the part works without, which is not
+listed (§3.5). Dim adds no trait or adapter of its own. A strict read of a listed key that finds the
+provider gone returns its own error, and rutis puts the part back to Pending (A.3). The binding carries
+out §3.5 for Rust:
 
 - It names a type as `#[rutis::service]` does: `Timeline` is `timeline`, `dyn LoopState`
   `loopState` (`names::name_of`). One Rust type is one name, so a type provided in two groups
@@ -482,6 +483,13 @@ A value the host configures for a process name, such as a scripted `ModelHost`, 
 isolates the name per Agent instance, so neither Agents sharing a host nor the host's own provider of the
 name collide with it. The host places that row in its loader, whose catalog is the builder's. `session_value` stays for Session names.
 
+For a host-configured Session value that implements `HostDispatch` directly,
+`AgentBuilder::session_data_value` provides the same `Arc` at its native type key and
+`host_key_in(name, session_instance)`. Its catalog name must already be shared in the
+Session group. Both bindings belong to SessionScope and are withdrawn with it;
+`session_value` retains its existing native/marked-value behavior. This introduces no
+additional part or owner state. The value's operations own their cancellation contract.
+
 ### A.3 Settled questions
 
 Carried from [#6](https://github.com/arcships/dim/issues/6):
@@ -492,7 +500,7 @@ Carried from [#6](https://github.com/arcships/dim/issues/6):
   Nothing is added.
 - **Optional and configuration-chosen dependencies.** As §3.5: a dependency the configuration chooses
   gates when chosen (an `Option<Key<T>>` the factory fills), and the composition check covers it then;
-  one used only if present is read with `get_at` and not listed in `injects`. Its name must still be
+  one the part works without is read with `get_at` and not listed in `injects`. Its name must still be
   registered.
 - **Startup progress.** `startup_timeout` bounds an interval without progress, across loader startup,
   reconcile, required rows becoming Active and opening replay. A row's first activation during the

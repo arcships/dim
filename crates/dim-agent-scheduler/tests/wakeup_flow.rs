@@ -193,8 +193,9 @@ async fn create_session(
 }
 
 fn instant_after(home: &Path, seconds: i64) -> String {
-    (clock(home).now() + chrono::Duration::seconds(seconds))
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    (clock(home).now() + jiff::SignedDuration::from_secs(seconds))
+        .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
 }
 
 async fn history(client: &mut Client, session_id: &str) -> Vec<Value> {
@@ -225,22 +226,23 @@ fn wakeup_inputs(events: &[Value]) -> Vec<&Value> {
         .collect()
 }
 
-/// Polls until the session's `main` branch has recorded a finished turn.
-async fn wait_turn_end(client: &mut Client, session_id: &str) {
+/// Waits for `count` completed turns in the Session's `main` branch.
+async fn wait_turn_ends(client: &mut Client, session_id: &str, count: usize) {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let ended = history(client, session_id)
                 .await
                 .iter()
-                .any(|event| event["type"] == "turn" && event["name"] == "end");
-            if ended {
+                .filter(|event| event["type"] == "turn" && event["name"] == "end")
+                .count();
+            if ended >= count {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("the turn ends");
+    .unwrap_or_else(|_| panic!("session {session_id} did not finish {count} turns"));
 }
 
 /// The wakeup id a delivered input's marker names.
@@ -347,11 +349,7 @@ async fn a_wakeup_fires_one_turn_on_the_same_session() {
 
     // The instant is an hour out, so the advance crosses it and one tick runs
     // the pass that fires it.
-    clock(home.path()).advance_to(
-        chrono::DateTime::parse_from_rfc3339(&at)
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
+    clock(home.path()).advance_to(at.parse::<jiff::Timestamp>().unwrap());
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
 
@@ -523,7 +521,7 @@ async fn a_restart_fires_a_window_still_inside_the_grace() {
     // The downtime is an advance of 3612 s: past the instant by 12 s, which is
     // still inside the 60 s grace, so the restart fires the wakeup once. Real
     // time cannot cross an hour, so the row cannot pass without the clock.
-    clock(home.path()).advance(chrono::Duration::seconds(3612));
+    clock(home.path()).advance(jiff::SignedDuration::from_secs(3612));
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
@@ -562,7 +560,7 @@ async fn a_restart_expires_a_window_past_the_grace_and_never_replays() {
     // sees a `scheduled` record the real path expired, not an edited one. No
     // real wait in this row can cross an hour.
     let clock = clock(home.path());
-    clock.advance(chrono::Duration::seconds(3670));
+    clock.advance(jiff::SignedDuration::from_secs(3670));
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
@@ -593,13 +591,13 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
     let wakeup_id = created["wakeupId"].as_str().unwrap().to_owned();
     // The instant is an hour out, so the fire below is the clock's doing: the
     // advance reaches it and one tick runs the pass that delivers it.
-    let at = chrono::DateTime::parse_from_rfc3339(&instant_after(home.path(), 3600))
-        .unwrap()
-        .with_timezone(&chrono::Utc);
+    let at = instant_after(home.path(), 3600)
+        .parse::<jiff::Timestamp>()
+        .unwrap();
     clock(home.path()).advance_to(at);
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
-    wait_turn_end(&mut client, &session).await;
+    wait_turn_ends(&mut client, &session, 1).await;
     let events = history(&mut client, &session).await;
     assert_eq!(wakeup_inputs(&events).len(), 1, "{events:?}");
 
@@ -618,7 +616,7 @@ async fn a_delivered_wakeup_past_the_grace_is_fired_after_a_restart() {
         record.insert("state".into(), json!("scheduled"));
         record.remove("settled_at");
     });
-    clock(home.path()).advance(chrono::Duration::seconds(240));
+    clock(home.path()).advance(jiff::SignedDuration::from_secs(240));
 
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
@@ -675,7 +673,7 @@ async fn a_failed_lookup_leaves_a_record_past_the_grace_scheduled() {
     // advance must clear the instant *and* the 60 s grace: 3670 s leaves the
     // record 70 s past its instant, which is the stale band the pass classifies.
     let clock = clock(home.path());
-    clock.advance(chrono::Duration::seconds(3670));
+    clock.advance(jiff::SignedDuration::from_secs(3670));
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
@@ -737,7 +735,7 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
     // instant named, so the pass's lookup answers `session_closed`: a definite
     // answer, settled `cancelled` instead of repeating a lookup that can never
     // succeed. Only the advance reaches an hour; real time cannot.
-    clock(home.path()).advance(chrono::Duration::seconds(3670));
+    clock(home.path()).advance(jiff::SignedDuration::from_secs(3670));
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     assert_eq!(model.count(), 0, "a gone target starts no turn");
@@ -746,8 +744,9 @@ async fn a_stale_record_whose_target_is_gone_settles_cancelled_and_is_pruned() {
     // removes it by its settle time.
     edit_wakeups(home.path(), |wakeups| {
         wakeups[0]["settled_at"] = json!(
-            (clock(home.path()).now() - chrono::Duration::days(8))
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+            (clock(home.path()).now() - jiff::SignedDuration::from_hours(8 * 24))
+                .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string()
         );
     });
     wait_for("the cancelled record to be pruned", || {
@@ -785,7 +784,7 @@ async fn a_record_past_the_grace_with_no_accepted_input_is_expired_once() {
     // its instant, beyond the 60 s grace: the same verdict the real path
     // reaches after that much downtime, with the record untouched.
     let clock = clock(home.path());
-    clock.advance(chrono::Duration::seconds(3670));
+    clock.advance(jiff::SignedDuration::from_secs(3670));
     let server = start(home.path(), model.clone()).await;
     let mut client = connect(&server).await;
     wait_state(home.path(), &wakeup_id, "expired").await;
@@ -859,7 +858,7 @@ async fn an_ended_branch_cancels_its_record_and_never_retries() {
     // one whose Session is gone instead of retrying until the grace expires.
     // The advance reaches the hour the record names, so the pass really
     // classifies it rather than the row waiting for time.
-    clock(home.path()).advance(chrono::Duration::seconds(3610));
+    clock(home.path()).advance(jiff::SignedDuration::from_secs(3610));
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     let events = history(&mut client, &session).await;
@@ -901,11 +900,12 @@ async fn overdue_wakeups_fire_in_at_order_with_a_stable_tie_breaker() {
     // instants are an hour out, so only the advance below reaches them.
     edit_wakeups(home.path(), |wakeups| {
         wakeups[0]["at"] = json!(instant_after(home.path(), 3600));
-        wakeups[1]["at"] = json!(instant_after(home.path(), 3560));
-        wakeups[2]["at"] = json!(instant_after(home.path(), 3560));
+        let tied_at = instant_after(home.path(), 3560);
+        wakeups[1]["at"] = json!(tied_at);
+        wakeups[2]["at"] = json!(tied_at);
         wakeups[3]["at"] = json!(instant_after(home.path(), 3580));
     });
-    clock(home.path()).advance(chrono::Duration::seconds(3610));
+    clock(home.path()).advance(jiff::SignedDuration::from_secs(3610));
 
     let model = Arc::new(Script::default());
     let server = start(home.path(), model.clone()).await;
@@ -959,8 +959,9 @@ async fn terminal_records_are_pruned_after_their_retention_age() {
     // second was created eight days ago and has been terminal for one. Both
     // contrasts make `settled_at`, not `created_at`, the cutoff.
     let days = |days: i64| {
-        (clock(home.path()).now() - chrono::Duration::days(days))
-            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        (clock(home.path()).now() - jiff::SignedDuration::from_hours(days * 24))
+            .strftime("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string()
     };
     edit_wakeups(home.path(), |wakeups| {
         wakeups[0]["state"] = json!("fired");
@@ -1038,11 +1039,7 @@ async fn an_unloaded_target_is_restored_before_the_input() {
     .await
     .expect("the idle Session unloads");
 
-    clock(home.path()).advance_to(
-        chrono::DateTime::parse_from_rfc3339(&at)
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
+    clock(home.path()).advance_to(at.parse::<jiff::Timestamp>().unwrap());
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
     wait_for("the restored Session's turn", || model.count() >= 2).await;
@@ -1079,11 +1076,7 @@ async fn a_deleted_target_cancels_its_record_and_never_relaunches() {
         .await
         .unwrap();
 
-    clock(home.path()).advance_to(
-        chrono::DateTime::parse_from_rfc3339(&at)
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
+    clock(home.path()).advance_to(at.parse::<jiff::Timestamp>().unwrap());
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "cancelled").await;
     assert_eq!(model.count(), 0, "a deleted target starts no turn");
@@ -1339,14 +1332,11 @@ async fn the_tool_schedules_a_wakeup_for_the_caller_and_refuses_elsewhere() {
     assert_eq!(stored[0]["session_id"], json!(session), "{stored:?}");
     assert_eq!(stored[0]["prompt"], json!("Tool wake."), "{stored:?}");
     let wakeup_id = stored[0]["wakeup_id"].as_str().unwrap().to_owned();
-    clock(home.path()).advance_to(
-        chrono::DateTime::parse_from_rfc3339(&at)
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
+    clock(home.path()).advance_to(at.parse::<jiff::Timestamp>().unwrap());
     step(home.path(), 1).await;
     wait_state(home.path(), &wakeup_id, "fired").await;
     wait_for("the wakeup turn", || model.count() >= 2).await;
+    wait_turn_ends(&mut client, &session, 2).await;
 
     // A non-interactive Session gets the same refusal the `schedule` tool
     // gives; the member-role check is the same configuration test.
@@ -1466,11 +1456,7 @@ async fn wakeup_changes_reach_an_attached_client_as_session_notices() {
     // without assuming which arrives first. The advance crosses the hour and
     // the step crosses the pass it wakes, so the fire is over before the
     // notices are read.
-    clock(home.path()).advance_to(
-        chrono::DateTime::parse_from_rfc3339(&at)
-            .unwrap()
-            .with_timezone(&chrono::Utc),
-    );
+    clock(home.path()).advance_to(at.parse::<jiff::Timestamp>().unwrap());
     step(home.path(), 1).await;
     let mut input_event = None;
     let fired = wait_notice(

@@ -116,7 +116,17 @@ pub fn home() -> tempfile::TempDir {
 pub use dim_agent_scheduler::testing::*;
 
 pub async fn start(home: &Path, model: Arc<Script>) -> RunningServer {
-    start_with(home, model, SessionConfig::default()).await
+    start_impl(home, model, SessionConfig::default(), None).await
+}
+
+/// [`start`] with the host held between required-row readiness and opening
+/// publication. The returned future resolves only after `hold` releases.
+pub async fn start_held(
+    home: &Path,
+    model: Arc<Script>,
+    hold: Arc<dim_app_server::PublicationHold>,
+) -> RunningServer {
+    start_impl(home, model, SessionConfig::default(), Some(hold)).await
 }
 
 /// The hooks of each started server, by home, newest last.
@@ -138,6 +148,15 @@ pub fn holds(home: &Path) -> Arc<dim_agent_scheduler::testing::Holds> {
 /// [`start`] with the host's Session defaults, so a flow can set the role or
 /// the authority bound a Session is created under.
 pub async fn start_with(home: &Path, model: Arc<Script>, defaults: SessionConfig) -> RunningServer {
+    start_impl(home, model, defaults, None).await
+}
+
+async fn start_impl(
+    home: &Path,
+    model: Arc<Script>,
+    defaults: SessionConfig,
+    publication_hold: Option<Arc<dim_app_server::PublicationHold>>,
+) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     defaults::mock_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
@@ -161,6 +180,7 @@ pub async fn start_with(home: &Path, model: Arc<Script>, defaults: SessionConfig
             product_home: Some(home.to_owned()),
             session_defaults: defaults,
             unix_path: Some(home.join("native.sock")),
+            publication_hold,
             ..Default::default()
         },
     )

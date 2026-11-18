@@ -783,7 +783,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::permission::CommandRulesHost@session",
+            "service": "dim_agent_capabilities::permission::CommandRules@session",
             "scope": null,
             "status": "Ready"
           },
@@ -810,7 +810,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::permission::CommandRulesHost@session",
+            "service": "dim_agent_capabilities::permission::CommandRules@session",
             "scope": null,
             "provider": 33,
             "generation": 1
@@ -842,7 +842,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::permission::CommandRulesHost@session",
+            "service": "dim_agent_capabilities::permission::CommandRules@session",
             "provider": 33,
             "declared": true,
             "external": true
@@ -2201,6 +2201,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#branchLine@main",
+        "provider": 65,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#dispatcher@main",
         "provider": 60,
         "generation": 1,
@@ -2215,6 +2221,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#permission@main",
         "provider": 73,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#skillsBranch@main",
+        "provider": 77,
         "generation": 1,
         "removing": false
       },
@@ -2428,7 +2440,13 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog",
+        "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog#dim/skills/catalog-owner",
+        "provider": 28,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_capabilities::skills::face::SkillsCatalog",
         "provider": 28,
         "generation": 1,
         "removing": false
@@ -2454,6 +2472,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
         "provider": 2,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#skillsCatalog",
+        "provider": 28,
         "generation": 1,
         "removing": false
       },
@@ -2934,7 +2958,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog",
+            "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog#dim/skills/catalog-owner",
             "scope": null,
             "status": "Ready"
           },
@@ -2979,7 +3003,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog",
+            "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog#dim/skills/catalog-owner",
             "scope": null,
             "provider": 28,
             "generation": 1
@@ -3029,7 +3053,7 @@
             "external": false
           },
           {
-            "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog",
+            "service": "dim_agent_capabilities::skills::catalog::SkillsCatalog#dim/skills/catalog-owner",
             "provider": 28,
             "declared": true,
             "external": true
@@ -3981,7 +4005,7 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::permission::CommandRulesHost@session",
+        "service": "dim_agent_capabilities::permission::CommandRules@session",
         "provider": 33,
         "generation": 1,
         "removing": false
@@ -4113,8 +4137,32 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#commandRules@session",
+        "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#guideEntries@session",
         "provider": 42,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#initialPromptConfiguration@session",
+        "provider": 43,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#promptHost@session",
+        "provider": 43,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#promptRegistry@session",
+        "provider": 43,
         "generation": 1,
         "removing": false
       },
@@ -4150,6 +4198,12 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#skillsConfig@session",
+        "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#timelineStore@session",
         "provider": 33,
         "generation": 1,
         "removing": false

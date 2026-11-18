@@ -425,3 +425,147 @@ async fn skills_startup_removes_a_staging_root_an_abnormal_end_left() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_skill_lists_share_the_session_view_with_native_calls() {
+    use dim_agent_capabilities::skills::SkillsBranch;
+    let home = home();
+    let mut config = skills_config(&home);
+    let root = user_root(&home).join("common");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("SKILL.md"),
+        skill_doc("common", "Common fixture", "COMMON"),
+    )
+    .unwrap();
+    let first = home.join("first");
+    let second = home.join("second");
+    let private = first.join(".agents/skills/private");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::create_dir_all(&second).unwrap();
+    std::fs::write(
+        private.join("SKILL.md"),
+        skill_doc("private", "First project", "PRIVATE"),
+    )
+    .unwrap();
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"skills-list", "name":parts.anchor.parent().unwrap().join("fixtures/skills-list.ts"),
+        "provides":{}, "config":{}
+    })];
+    config.session_typescript = Some(parts);
+    let server = serve(product_builder(), config).await.unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    super::process_typescript::select_model(&mut client).await;
+    let catalog = when_served(&mut client, "skills.catalog", json!({"cwd":first})).await;
+    assert_ok(&catalog);
+    let private_id = catalog["result"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "private")
+        .unwrap()["id"]
+        .clone();
+    assert_ok(
+        &client
+            .rpc(
+                "skills.set_enabled",
+                json!({"cwd":first,"id":private_id,"enabled":true}),
+            )
+            .await,
+    );
+    let mut sessions = Vec::new();
+    for cwd in [&first, &second] {
+        let created = client.rpc("session.create", json!({"cwd":cwd})).await;
+        assert_ok(&created);
+        let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+        let session = server.agent().unwrap().get_session(&id).unwrap();
+        let native = session.service::<SkillsBranch>("main").unwrap();
+        let reply = when_served(
+            &mut client,
+            "session.skillface.main.list",
+            json!({"sessionId":id,"branchId":"main"}),
+        )
+        .await;
+        assert_ok(&reply);
+        assert_eq!(
+            reply["result"]["skills"],
+            serde_json::to_value(native.list().unwrap()).unwrap()
+        );
+        let client_list = client
+            .rpc("session.skills", json!({"sessionId":id,"branchId":"main"}))
+            .await;
+        assert_eq!(client_list["result"], reply["result"]);
+        sessions.push((id, native));
+    }
+    assert_eq!(
+        sessions[0]
+            .1
+            .list()
+            .unwrap()
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        ["common", "private"]
+    );
+    assert_eq!(
+        sessions[1]
+            .1
+            .list()
+            .unwrap()
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>(),
+        ["common"]
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "skills.set_enabled",
+                json!({"cwd":first,"id":private_id,"enabled":false}),
+            )
+            .await,
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let reply = client
+                .rpc(
+                    "session.skillface.main.list",
+                    json!({"sessionId":sessions[0].0,"branchId":"main"}),
+                )
+                .await;
+            assert_ok(&reply);
+            if reply["result"]["skills"].as_array().unwrap().len() == 1 {
+                assert_eq!(
+                    reply["result"]["skills"],
+                    serde_json::to_value(sessions[0].1.list().unwrap()).unwrap()
+                );
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the foreign list follows the owner's enablement update");
+    assert_ok(
+        &client
+            .rpc("session.close", json!({"sessionId":sessions[0].0}))
+            .await,
+    );
+    let surviving = client
+        .rpc(
+            "session.skillface.main.list",
+            json!({"sessionId":sessions[1].0,"branchId":"main"}),
+        )
+        .await;
+    assert_ok(&surviving);
+    assert_eq!(
+        surviving["result"]["skills"],
+        serde_json::to_value(sessions[1].1.list().unwrap()).unwrap()
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

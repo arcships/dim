@@ -1,6 +1,6 @@
 # Release packaging
 
-PR checks use self-hosted runners. Release preparation, packaging, npm publication and acceptance use standard GitHub-hosted runners. The [project release skill](../../.agents/skills/dim-release/SKILL.md) covers version preparation, PRs, tags, draft inspection and recovery. [Rust alpha release](alpha.html) covers the alpha channels and local publication alternative (Chinese).
+The main PR checks use self-hosted runners; the separate code-layout workflow uses GitHub-hosted runners. Release preparation, packaging, npm publication and acceptance use standard GitHub-hosted runners. The [project release skill](../../.agents/skills/dim-release/SKILL.md) covers version preparation, PRs, tags, draft inspection and recovery. [Rust alpha release](alpha.html) covers the alpha channels and local publication alternative (Chinese).
 
 The source, including the Dim account plugin, uses MIT. An account-enabled distribution differs from the API-key one only by the OAuth client IDs compiled in from repository secrets.
 
@@ -144,6 +144,13 @@ The platform-independent `changes` and `ci-ok` jobs can run on any eligible self
 
 ## GitHub workflows
 
+`code-layout.yml` runs the Linux native-artifact test on hosted Ubuntu for changes
+to the layout tool, its test/workflow, `rust-toolchain.toml` or `.node-version`,
+and on manual dispatch. It checks real native linking, Rust fat-LTO capture and
+replay, function ordering and executable behavior. It does not build or publish
+release packages; the opt-in command is documented in the
+[build environment](../architecture/build.md#native-linux-executable-layout).
+
 `ci.yml` runs on pull requests, pushes to `main`, and manual dispatch. A pull request runs the groups its changed paths need, as decided by `scripts/ci-changes.mjs`. A push to `main` runs only `changes` and `ci-ok` when its entire push range changes only documentation paths that select no check group. Architecture pages checked by `xtask` and the native storage format document retain the full main run, as do mixed pushes and pushes whose base cannot be compared. Manual dispatch selects every group. A documentation-only run leaves in-progress main build and test jobs running.
 
 CI builds the workspace, checks formatting and Clippy, runs workspace tests and boundary checks, runs the packaging/development script tests, and exercises the ignored actual CLI profile and public Node-backed flows. `ci-ok` passes when every selected job passed, so it is the check to require. CI builds without debug info (`CARGO_PROFILE_DEV_DEBUG=0`). The [build environment](../architecture/build.md) describes test artifact reuse, concurrency limits, and target deadlines. Cargo runs documentation tests with the same features, and ignored CLI and Node flows reuse the recorded binaries without package-scoped recompilation. Node-backed checks run for runtime, binding and service-contract paths, and CLI-only changes retain their ordinary and actual-profile flows. Evaluation tests use `xtask/eval-tests` for `xtask/` changes, and the wall-clock handoff runs for execution-related changes. The `web` job runs on self-hosted Windows x64 alongside macOS `verify` when both are selected. It stages the frontend package, verifies generated declarations and bundled dependency notices, and runs the Web tests.
@@ -154,7 +161,7 @@ The `Verify downloaded Node runtime` step runs on full `main` push checks and ma
 
 ### Action pins and updates
 
-External Actions in `ci.yml`, `release.yml`, `npm-publish.yml` and `image-publish.yml` use full commit SHAs. PR checks use the same policy because their Actions execute on persistent self-hosted runners. Pinning does not change the [CI trust boundary](#ci-trust-model).
+External Actions in every workflow use full commit SHAs, including `code-layout.yml`. This policy covers both persistent self-hosted runners and GitHub-hosted runners. Pinning does not change the [CI trust boundary](#ci-trust-model).
 
 Update an Action in a normal pull request:
 
@@ -174,8 +181,8 @@ The protocol matrix reports unsupported optional methods separately; its process
 
 ### Rust dependency checks
 
-The `dependencies` job installs the fixed `cargo-deny` version declared in
-[`ci.yml`](../../.github/workflows/ci.yml) and runs:
+The `dependencies` job uses the `cargo-deny` version pinned in
+[`ci.yml`](../../.github/workflows/ci.yml) on a self-hosted Windows x64 runner.
 
 ```sh
 cargo deny --locked check advisories licenses

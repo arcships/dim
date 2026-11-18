@@ -253,7 +253,7 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
     }));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .timeline_store(store.clone())
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
@@ -823,7 +823,7 @@ async fn reads() -> std::result::Result<(), Error> {
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
         builder
-            .timeline_store(store.clone())
+            .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .require_feature(
                 Feature::new("measurement.tree").session("measurement.tree", move |names| {
                     Ok(Box::new(CaptureTree::new(names, target.clone())?))

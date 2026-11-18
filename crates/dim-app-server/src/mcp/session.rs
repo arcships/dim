@@ -446,7 +446,7 @@ impl McpSessionPlugin {
             identity: names.key()?,
             session: names.instance(SESSION_GROUP)?,
             mcp: names.key()?,
-            directory: names.key()?,
+            directory: super::owner_key(),
             config: names.key()?,
             loader: names.key()?,
             lifecycle: names.key()?,

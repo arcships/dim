@@ -2,17 +2,20 @@
 import { computed, nextTick, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import type { ModelId } from "../../rpc/protocol"
+import type { ModelMenuPreview } from "./new-session-model"
 import { useModels } from "../../stores/models"
 
 /**
  * Provider and model picker: a popover with search, a provider pane and a model
  * pane. When the model cannot be changed (no provider methods, or no
  * `session.model.update` on this connection) it only names the current model.
+ * On a new Session it also states what the preview resolved and offers the way
+ * back to following the defaults.
  */
 type Option = { providerId: string; providerName: string; modelId: string; name: string }
 
-const props = defineProps<{ model: ModelId | undefined; selectable: boolean; disabled: boolean }>()
-const emit = defineEmits<{ select: [model: ModelId] }>()
+const props = defineProps<{ model: ModelId | undefined; preview?: ModelMenuPreview; selectable: boolean; disabled: boolean }>()
+const emit = defineEmits<{ select: [model: ModelId]; follow: []; retry: [] }>()
 const { t } = useI18n()
 const models = useModels()
 const adopted = useModels()
@@ -42,7 +45,19 @@ const paneOptions = computed(() => {
   if (!searching.value) return allOptions.value.filter((option) => option.providerId === currentProvider.value)
   return allOptions.value
 })
-const triggerLabel = computed(() => props.model === undefined ? t("composer.notConfigured") : adopted.nameOf(props.model))
+const triggerLabel = computed(() => {
+  if (props.model !== undefined) return adopted.nameOf(props.model)
+  switch (props.preview?.state) {
+    case "loading": return t("composer.modelResolving")
+    case "failed": return t("composer.modelUnavailable")
+    case "none": return t("composer.noModels")
+    default: return t("composer.notConfigured")
+  }
+})
+const triggerHint = computed(() => {
+  if (props.preview?.state === "failed") return props.preview.message
+  return props.model === undefined ? undefined : `${triggerLabel.value} · ${props.model.providerId}`
+})
 
 function isCurrent(option: Option): boolean {
   return option.providerId === props.model?.providerId && option.modelId === props.model.modelId
@@ -110,14 +125,34 @@ defineExpose({ open: () => {
     <span class="model-trigger-label">{{ triggerLabel }}</span>
   </span>
   <UPopover v-else v-model:open="open" :content="{ side: 'top', align: 'end' }">
-    <UTooltip :text="model ? `${triggerLabel} · ${model.providerId}` : undefined" :disabled="!model">
-      <UButton ref="triggerRef" color="neutral" variant="ghost" size="sm" class="model-trigger" :disabled="disabled">
+    <UTooltip :text="triggerHint" :disabled="!triggerHint">
+      <UButton ref="triggerRef" color="neutral" variant="ghost" size="sm" class="model-trigger" :disabled="disabled" :loading="preview?.state === 'loading'">
         <span v-if="model" class="provider-badge" aria-hidden="true">{{ initial(model.providerId) }}</span>
         <span class="model-trigger-label">{{ triggerLabel }}</span>
       </UButton>
     </UTooltip>
     <template #content>
       <div class="model-content">
+        <p v-if="preview?.state === 'failed'" class="preview-failure" role="alert">
+          <UIcon name="i-lucide-triangle-alert" class="size-4 shrink-0" aria-hidden="true" />
+          <span class="model-name">{{ preview.message }}</span>
+          <UButton color="error" variant="soft" size="sm" @click="emit('retry')">{{ t("composer.modelRetry") }}</UButton>
+        </p>
+        <UButton
+          v-if="preview"
+          color="neutral"
+          :variant="preview.following ? 'soft' : 'ghost'"
+          size="sm"
+          block
+          role="option"
+          class="menu-option"
+          :aria-selected="preview.following"
+          @click="!preview.following && emit('follow')"
+        >
+          <span class="model-check"><UIcon v-if="preview.following" name="i-lucide-check" class="size-3.5" aria-hidden="true" /></span>
+          <span class="model-name">{{ t("composer.followDefaults") }}</span>
+          <span v-if="preview.resolved" class="follow-name">— {{ models.nameOf(preview.resolved) }}</span>
+        </UButton>
         <UInput
           ref="searchInput"
           v-model="query"
@@ -192,4 +227,6 @@ defineExpose({ open: () => {
 .model-pane { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; overflow-y: auto; padding-left: var(--space-2); }
 .menu-option { justify-content: flex-start; text-align: left; }
 .model-check { display: flex; width: 14px; height: 14px; flex: none; align-items: center; justify-content: center; color: var(--primary-ink); }
+.preview-failure { display: flex; align-items: center; gap: var(--space-1); margin: 0; padding: var(--space-1) var(--space-2); border-radius: var(--radius); background: var(--danger-soft); color: var(--foreground); }
+.follow-name { min-width: 0; overflow: hidden; color: var(--muted-foreground); text-overflow: ellipsis; white-space: nowrap; }
 </style>

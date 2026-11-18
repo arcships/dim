@@ -80,7 +80,12 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
 
 ### 4.2 Rust
 
-Rust 使用方用 `ctx.get::<SessionStore>()` 取得 `SessionStore`，调用 `metadata` 和 `set_title`（附录 A）。命名服务只解码请求、调用它们、编码回复，不附加规则。
+Rust 使用方注入 `sessionMetadata` 的原生绑定 `SessionMetadataService`，调用 `read` 和 `set_title`。
+此绑定就是原 dispatcher，同一实例提供在类型键和 `host_key("sessionMetadata")` 上，两条路径直接调用
+同一个 SessionStore owner；既有回复类型 `SessionMetadata` 不变。
+
+`set_title` 是返回 owner 等待 future 的普通函数。调用时就接纳写入，无需先轮询 future；丢弃 future
+只丢弃回复。绑定不在接纳前增加异步包装，也不增加取消点、读取或第二个标题写入者。
 
 ## 5. setTitle 时序
 
@@ -293,7 +298,7 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 | D5 | 通知 `data` 为 `{title, titleSource, titleRevision}` | A.2 的 `{sessionId, title, titleSource, revision}` | 频道已经代表 Session（C6 D4）；列表条目和通知用同一组字段，客户端合并时无需映射 |
 | D6 | v3 列表条目带 `titleRevision` | 只带 `title` 与 `titleSource` | 没有它，客户端无法给列表回复和通知排序（§8） |
 | D7 | 列表字段只用于协议 v3 | 所有协议版本 | v1 与 v2 没有 Session 列表，也收不到标题通知 |
-| D8 | 服务 `sessionMetadata`，方法 `read` 与 `setTitle`；Rust 保留 `metadata` 与 `set_title` | A.2 的方法名 `metadata` | `sessionMetadata.metadata` 重复；`read` 与 `settings.read` 一致 |
+| D8 | 服务 `sessionMetadata`，方法 `read` 与 `setTitle`；Rust binding 使用 `read` 与 `set_title` | A.2 的方法名 `metadata` | `sessionMetadata.metadata` 重复；`read` 与 `settings.read` 一致 |
 | D9 | 错误 `conflict`、`not_found`、`storage` 作为数据；格式错误的调用是桥接错误 | 像 `sessions` 那样的 `rejected` 代码 | 三个代码是写入的结果；格式错误是编程错误，与 `settings` 相同 |
 | D10 | 存储里没有的 Session 返回 `not_found` | `session_closed` | 维护者的决定；这是 SessionStore 的用语，SessionTitle 把它映射为 `session_not_found` |
 | D11 | SessionStore 原样保存文本 | 校验长度和字符 | 标题规则属于 SessionTitle，由它校验；再查一次会重复合同 |
@@ -319,8 +324,8 @@ pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct TitleFields { pub title: Option<String>, pub title_source: Option<TitleSource>, pub title_revision: u64 }
 pub enum MetadataError { Conflict, NotFound, Storage(String) }
 
-impl SessionStore {
-    pub async fn metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+impl SessionMetadataService {
+    pub async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
     /// 被调用时就接纳并启动写入；SessionStore 正在关闭时失败为 `Storage`：
     /// 调用即交接。放弃返回的 future 只丢掉回复。
     pub fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)

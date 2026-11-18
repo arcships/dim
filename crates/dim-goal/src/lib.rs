@@ -13,7 +13,7 @@ mod text;
 pub use text::GoalTexts;
 
 use dim_agent_runtime::{AgentBuilder, Names, PartRegistry, PartScope};
-use dim_app_server::settings::{SettingsService, SourceDeclaration};
+use dim_app_server::settings::{Settings, SourceDeclaration};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::json;
@@ -40,7 +40,7 @@ pub fn install_with(builder: &mut AgentBuilder, texts: GoalTexts) {
 }
 
 pub(crate) struct GoalPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     parts: Key<PartRegistry>,
     texts: Arc<GoalTexts>,
 }
@@ -64,7 +64,7 @@ impl DynPlugin for GoalPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            ctx.require_at(&self.settings)?.register_declared(
+            ctx.require_at(&self.settings)?.register(
                 ctx,
                 SourceDeclaration {
                     source: SOURCE.into(),

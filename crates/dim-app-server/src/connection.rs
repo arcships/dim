@@ -735,12 +735,23 @@ impl Connection {
                 }
                 (None, None)
             }
-            Call::ModelPreview(_) => {
-                if self.entry != Entry::Local {
+            // The authenticated Web entry creates Sessions, so it may preview the
+            // model its own creation would adopt. The startup channel stays local:
+            // a browser holds no launch inputs, and it carries a connection
+            // admission.
+            Call::ModelPreview(p) => {
+                if self.entry == Entry::Bare {
                     return Err(RpcError::app(
                         -32000,
                         "local_transport_required",
                         "Model preview requires a protected local connection",
+                    ));
+                }
+                if p.startup.is_some() && self.entry != Entry::Local {
+                    return Err(RpcError::app(
+                        -32000,
+                        "local_transport_required",
+                        "Model startup preview requires a protected local connection",
                     ));
                 }
                 (None, None)
@@ -1525,7 +1536,6 @@ impl Connection {
             Call::SessionSkills(p) => {
                 let skills = session
                     .service::<SkillsBranch>(&p.branch_id)?
-                    .session()
                     .list()
                     .map_err(skills_error)?;
                 Reply::SessionSkills(SessionSkillsResult { skills })
@@ -1958,8 +1968,7 @@ async fn clear_worktree_record(
     rpc: &RpcService,
     worktree: Option<&crate::worktrees::CreatedWorktree>,
 ) {
-    let (Some(created), Some(store)) = (worktree, rpc.ctx.get::<crate::storage::SessionStore>())
-    else {
+    let (Some(created), Some(store)) = (worktree, rpc.ctx.get::<crate::storage::Store>()) else {
         return;
     };
     let _ = store
@@ -2504,7 +2513,7 @@ impl RpcPlugin {
             control: names.key()?,
             loader: names.key()?,
             management: names.key()?,
-            callers: names.key()?,
+            callers: Key::of(),
         })
     }
 }
@@ -2583,16 +2592,7 @@ fn session_candidate(rpc: &RpcService, method: &str, params: &Value) -> bool {
 /// (methods contract A.2) and the caller index Rpc records into. It depends
 /// on no other row, so a row that names `callChannel` does not reload when
 /// Rpc or the Agent index reloads.
-pub(crate) struct CallChannelPlugin {
-    callers: Key<Callers>,
-}
-impl CallChannelPlugin {
-    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self {
-            callers: names.key()?,
-        })
-    }
-}
+pub(crate) struct CallChannelPlugin;
 impl DynPlugin for CallChannelPlugin {
     fn name(&self) -> &str {
         "CallChannel"
@@ -2609,7 +2609,7 @@ impl DynPlugin for CallChannelPlugin {
                     callers: callers.clone(),
                 }),
             )?;
-            ctx.provide_at(self.callers.clone(), callers)?;
+            ctx.provide_as::<Callers>(callers)?;
             Ok(Effect::Done)
         })
     }

@@ -5,7 +5,7 @@
 //! the port at process preparation.
 use crate::methods::ManagementMethods;
 use crate::protocol::Empty;
-use crate::settings::{SettingsScope, SettingsService, SourceDeclaration};
+use crate::settings::{Settings, SettingsScope, SourceDeclaration};
 use dim_agent_capabilities::execution_settings::{
     ExecutionSettingsError, ExecutionSettingsHost, SOURCE,
 };
@@ -18,7 +18,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 pub struct ExecutionSettingsPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     parts: Key<PartRegistry>,
 }
 
@@ -42,7 +42,7 @@ impl DynPlugin for ExecutionSettingsPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let parts = ctx.require_at(&self.parts)?;
-            settings.register_declared(
+            settings.register(
                 ctx,
                 SourceDeclaration {
                     source: SOURCE.into(),
@@ -63,7 +63,7 @@ impl DynPlugin for ExecutionSettingsPlugin {
                 let settings = settings.clone();
                 Box::pin(async move {
                     let snapshot = settings
-                        .read_declared(SOURCE, SettingsScope::User, &cancel)
+                        .read(SOURCE, SettingsScope::User, &cancel)
                         .await
                         .map_err(|error| ExecutionSettingsError::Failed {
                             message: error.to_string(),

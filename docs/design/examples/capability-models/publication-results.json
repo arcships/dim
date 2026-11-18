@@ -1,0 +1,603 @@
+{
+  "java": "OpenJDK 17.0.18 (Homebrew)",
+  "tools_release": "1.7.4",
+  "tlc_version": "2.19 (2024-08-08, rev 5a47802)",
+  "jar_sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+  "workers": 1,
+  "max_heap": "2g",
+  "date": "2026-11-17",
+  "code_base": "c8e4edd5b6cf01936ec1478b8d000f5476da7a1f",
+  "source_sha256": {
+    "crates/dim-agent-runtime/src/core/timeline.rs": "f3ed27f622c443eb4f19436c103a43dd4121019dea3d7a6d36082d2333c1860a",
+    "crates/dim-agent-runtime/src/core/dispatcher.rs": "0ae70eba3c562430957a8f2405563d004457155bcdbe5350012f86cdc6f4e6f4",
+    "crates/dim-agent-runtime/src/timeline_store.rs": "7f196197cc3aac2e57ce323debe37c30382682811191795b6256010aa848ecbf",
+    "crates/dim-app-server/src/storage/timeline.rs": "0df94352efe2ac339044385ff268d28bfc2a4b89869a3f2494a975d070577c6a",
+    "docs/architecture/rust-agent/time-bus.md": "be2e57f18089420719c6cf8a9eadbfe29b42a5b9eb8e8e0d860cf28bd4e61e27",
+    "docs/architecture/rust-agent/principles.md": "5ea164050368bb3c61100ebc22b49aee87406c17b568729b72581753040ed660",
+    "docs/architecture/rust-agent/timeline-storage.md": "44b351bbd997120b93856090e7d55eb29fc6a7a6ff31178b76f7e27da689d150",
+    "docs/design/plugin-contract.md": "334911368d203a57ee516323e7e56e84b0155d863c5c3a5343e5179263db3656",
+    "docs/design/timeline-property-query.md": "84845af955b6e3ab66b0b959d1df034ac5a993a6105f4f521c969b938b096f75"
+  },
+  "scope": "Single-branch finite write/publication model; storage semantics are explicit premises. No Rust refinement or complete Timeline proof. Witnesses are reachable states, not counterexamples.",
+  "runs": [
+    {
+      "config": "docs/design/examples/capability-models/TimelinePublication.cfg",
+      "module": "docs/design/examples/capability-models/TimelinePublication.tla",
+      "module_sha256": "f2c46a7552c2c01469420b18450161a97f2c1b5b1d72a6097dd62d0fccb8a7be",
+      "config_sha256": "cf93596c5b937ba15760cb765ca9f3479ccaf70d7c862110347f98f6a57632ae",
+      "exit": 0,
+      "generated": 285028,
+      "distinct": 95138,
+      "queue_remaining": 0,
+      "depth": 16,
+      "fingerprint": 53,
+      "seed": -5492692231141998680,
+      "seconds": 10,
+      "witnesses": {
+        "mixed_transform_results": {
+          "state": 16,
+          "accepted": 0,
+          "resolved": 0,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "transformed"
+          ]
+        },
+        "both_writers": {
+          "state": 64,
+          "accepted": 1,
+          "resolved": 0,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            2
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "durable_before_publication": {
+          "state": 107,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 0,
+          "durable": 1,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1
+          ],
+          "writers": [
+            1
+          ],
+          "modes": [
+            "failed"
+          ]
+        },
+        "closing_waits_for_tail": {
+          "state": 108,
+          "accepted": 1,
+          "resolved": 0,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": true,
+          "closed": false,
+          "ends": [
+            1
+          ],
+          "writers": [
+            1
+          ],
+          "modes": [
+            "failed"
+          ]
+        },
+        "asynchronous_storage_failure": {
+          "state": 1352,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": true,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "late_callback_after_sync_rejection": {
+          "state": 1353,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 0,
+          "durable": 1,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "multi_batch_round": {
+          "state": 1367,
+          "accepted": 2,
+          "resolved": 2,
+          "callbacks": 0,
+          "durable": 2,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "publication_before_consumption": {
+          "state": 1595,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 1,
+          "durable": 1,
+          "published": 1,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1
+          ],
+          "writers": [
+            1
+          ],
+          "modes": [
+            "failed"
+          ]
+        },
+        "inflight_delivery_can_outlive_fault": {
+          "state": 20262,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 1,
+          "durable": 1,
+          "published": 1,
+          "consumed": 0,
+          "inflight": 1,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "inside_batch_delivery": {
+          "state": 24510,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 1,
+          "durable": 2,
+          "published": 2,
+          "consumed": 1,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "older_read_snapshot": {
+          "state": 36515,
+          "accepted": 2,
+          "resolved": 2,
+          "callbacks": 2,
+          "durable": 2,
+          "published": 2,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 1,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        }
+      }
+    },
+    {
+      "config": "docs/design/examples/capability-models/TimelinePublication-ThreeBatches.cfg",
+      "module": "docs/design/examples/capability-models/TimelinePublication.tla",
+      "module_sha256": "f2c46a7552c2c01469420b18450161a97f2c1b5b1d72a6097dd62d0fccb8a7be",
+      "config_sha256": "602665b629afa5e1e88edb0a692d051f7ef352de1a77fdc776d0e4ddff61ee44",
+      "exit": 0,
+      "generated": 302722,
+      "distinct": 93734,
+      "queue_remaining": 0,
+      "depth": 16,
+      "fingerprint": 32,
+      "seed": -3973379144565238067,
+      "seconds": 9,
+      "witnesses": {
+        "mixed_transform_results": {
+          "state": 24,
+          "accepted": 1,
+          "resolved": 0,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "transformed"
+          ]
+        },
+        "both_writers": {
+          "state": 28,
+          "accepted": 1,
+          "resolved": 0,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            2
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "durable_before_publication": {
+          "state": 35,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 0,
+          "durable": 1,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1
+          ],
+          "writers": [
+            1
+          ],
+          "modes": [
+            "failed"
+          ]
+        },
+        "closing_waits_for_tail": {
+          "state": 36,
+          "accepted": 1,
+          "resolved": 0,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": true,
+          "closed": false,
+          "ends": [
+            1
+          ],
+          "writers": [
+            1
+          ],
+          "modes": [
+            "failed"
+          ]
+        },
+        "asynchronous_storage_failure": {
+          "state": 128,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 0,
+          "durable": 0,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": true,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "late_callback_after_sync_rejection": {
+          "state": 129,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 0,
+          "durable": 1,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "multi_batch_round": {
+          "state": 155,
+          "accepted": 2,
+          "resolved": 2,
+          "callbacks": 0,
+          "durable": 2,
+          "published": 0,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "publication_before_consumption": {
+          "state": 263,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 1,
+          "durable": 1,
+          "published": 1,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1
+          ],
+          "writers": [
+            1
+          ],
+          "modes": [
+            "failed"
+          ]
+        },
+        "inflight_delivery_can_outlive_fault": {
+          "state": 6186,
+          "accepted": 1,
+          "resolved": 1,
+          "callbacks": 1,
+          "durable": 1,
+          "published": 1,
+          "consumed": 0,
+          "inflight": 1,
+          "readCut": 0,
+          "storeFailed": false,
+          "failed": true,
+          "closing": false,
+          "closed": true,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        },
+        "older_read_snapshot": {
+          "state": 13595,
+          "accepted": 2,
+          "resolved": 2,
+          "callbacks": 2,
+          "durable": 2,
+          "published": 2,
+          "consumed": 0,
+          "inflight": 0,
+          "readCut": 1,
+          "storeFailed": false,
+          "failed": false,
+          "closing": false,
+          "closed": false,
+          "ends": [
+            1,
+            2
+          ],
+          "writers": [
+            1,
+            1
+          ],
+          "modes": [
+            "failed",
+            "failed"
+          ]
+        }
+      }
+    }
+  ]
+}

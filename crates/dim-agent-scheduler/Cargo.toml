@@ -22,13 +22,14 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 uuid = { workspace = true, features = ["v4"] }
-chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-chrono-tz = "0.10"
-croner = "4"
+jiff.workspace = true
+# The jiff backend keeps chrono out of the graph (#1766).
+croner = { version = "4", default-features = false, features = ["jiff"] }
 
 [features]
-# Flow tests hold a target-gone disable between its read and its write.
-testing = []
+# Flow tests hold a target-gone disable between its read and its write, and
+# hold the host's publication.
+testing = ["dim-app-server/testing"]
 
 [dev-dependencies]
 dim-agent-scheduler = { path = ".", features = ["testing"] }

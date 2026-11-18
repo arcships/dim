@@ -103,7 +103,7 @@ flowchart LR
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p74
   p33 -->|"dim_agent_runtime::lifecycle::FaultReporter@session"| p74
   p60 -->|"dim_agent_runtime::timeline_context::BranchOpening@main"| p74
-  p33 -->|"dim_agent_capabilities::permission::CommandRulesHost@session"| p73
+  p33 -->|"dim_agent_capabilities::permission::CommandRules@session"| p73
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p73
   p33 -->|"dim_agent_runtime::config::SessionIdentity@session"| p73
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p73
@@ -189,7 +189,7 @@ flowchart LR
   p39 -->|"dim_agent_capabilities::input_queue::SubmitChecks@session"| p51
   p43 -->|"dim_agent_capabilities::prompt_registry::PromptRegistry@session"| p51
   p33 -->|"dim_agent_capabilities::skills::SkillsConfig@session"| p51
-  p28 -->|"dim_agent_capabilities::skills::catalog::SkillsCatalog"| p51
+  p28 -->|"dim_agent_capabilities::skills::catalog::SkillsCatalog#dim/skills/catalog-owner"| p51
   p54 -->|"dim_agent_capabilities::tool_registry::ToolRegistry@session"| p51
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p51
   p33 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p51

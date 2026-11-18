@@ -15,6 +15,40 @@ in every branch. The App Server's
 plugin of the same name mounts this catalog, adds its management methods and
 registers the same parts.
 
+### Plugin content data face
+
+`skillsCatalog` is the process data face for the existing plugin-content operations.
+Each method accepts one object: `register({plugin, root})` returns the scan's
+`SkillIssue[]`, `withdraw({plugin})` returns `null`, `plugins({})` returns the
+registered plugin ids, and `issues({plugin})` returns that plugin's current issues.
+The Rust binding calls the same catalog operations directly. The embedding host
+and the Skills Session parts retain a private binding to this same owner for
+query, content and management work; no second catalog or scan is introduced.
+
+Rust consumers use `SkillsCatalogBinding` under this name. The binding exposes only these four
+owner operations, has no dereference or owner accessor, and shares one Arc with its dispatcher.
+Its static constructor lets an embedding host bind the catalog it already owns; it does not
+publish services or change `SkillsCatalogPlugin::mount`'s lifetime. The raw `SkillsCatalog` type
+is provided only at the private owner key. PluginManager keeps a public binding dependency.
+
+The wire root is a string converted at the filesystem input boundary. Native
+paths remain lossless. Diagnostic issues are tagged by `kind`:
+`invalidManifest {path, reason}`, `unreadable {path, reason}`,
+`rootUnreadable {root, reason}` and `scanLimitReached {root}`. Diagnostic paths
+use their existing display representation; they are not file identities.
+Errors retain the owner's code and message (`closed`, `skills_write_failed`,
+`skills_unavailable`); malformed requests return `invalid_request`.
+
+These operations have no caller cancellation argument. Once an asynchronous
+wire operation starts, abandoning its wait does not cancel or roll it back.
+Settings work uses the existing owner closing token. Completed registrations
+remain in Settings and are restored when the catalog reloads.
+
+The plugin identifier is a content key, not authorization. Product registration retains the
+existing Settings validation of a nonblank plugin string and an absolute root. A registration
+is persisted independently of the caller row; callers explicitly withdraw it when needed.
+Caller unload does not automatically remove registered content.
+
 ### Dependencies
 
 | Service | Purpose |
@@ -108,7 +142,7 @@ settings mutation was durably saved.
 | --- | --- |
 | 作用域 | 进程 |
 | 注入 | `P:HostPlatform`、`P:PartRegistry`、`P:SkillSettingsHost` |
-| 提供 | `P:SkillsCatalog` |
+| 提供 | `P:SkillsCatalog`、`P:SkillsCatalog#dim/skills/catalog-owner`、`P:dyn HostDispatch#skillsCatalog` |
 | 被注入于 | `Skills` |
 <!-- /generated -->
 
@@ -147,7 +181,7 @@ protocol, and the loaded body is the skill author's own text.
 
 | Service | Purpose |
 | --- | --- |
-| `P:SkillsCatalog` | Query user/project skills; its `skills.catalog_changed` events drive replacement. |
+| `P:SkillsCatalog#dim/skills/catalog-owner` | Query user/project skills; its `skills.catalog_changed` events drive replacement. |
 | `S:SessionConfig` | Select the Session working directory. |
 | `S:SessionLoader` | Lock-free creation of Session-owned content instances. |
 | `S:SessionLifecycle` | Start catalog-driven replacement only after the Session is published. |
@@ -236,7 +270,7 @@ The `skills` check is covered by `crates/dim-app-server/tests/transport_flow/ski
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:SkillsCatalog`、`S:PromptRegistry`、`S:SessionConfig`、`S:SessionLifecycle`、`S:SessionLoader`、`S:SkillsConfig`、`S:SubmitChecks`、`S:ToolRegistry` |
+| 注入 | `P:SkillsCatalog#dim/skills/catalog-owner`、`S:PromptRegistry`、`S:SessionConfig`、`S:SessionLifecycle`、`S:SessionLoader`、`S:SkillsConfig`、`S:SubmitChecks`、`S:ToolRegistry` |
 | 提供 | `S:SessionSkills` |
 | 被注入于 | `SkillsBranch` |
 <!-- /generated -->
@@ -244,14 +278,35 @@ The `skills` check is covered by `crates/dim-app-server/tests/transport_flow/ski
 ## SkillsBranch
 
 Owner: [skills/session.rs](../../../../crates/dim-agent-capabilities/src/skills/session.rs).
-Exposes the Session skill view from a branch and requests adoption of a changed
-skill list through `ConfigureControl`; initial adoption belongs to Prompt.
+Provides `skillsBranch`, the read-only Session skill list reached through a branch, and
+requests adoption of a changed list through `ConfigureControl`; initial adoption belongs to Prompt.
+
+### Data face
+
+`skillsBranch.list({})` is synchronous and returns the existing ordered list of enabled Skills:
+`[{id, name, description, userInvocable}]`. A Skill with `userInvocable: false` remains in the
+reply; input palettes use that field to omit it. The request must be one empty object; malformed
+requests fail with `invalid_request`. Owner failures retain the existing Skills error code and
+message; the management client boundary still maps owner `closed` to its reload error.
+
+Rust `SkillsBranch::list` and the dispatcher read the same Session-owned view once. The call
+performs no scan, reload, subscription or asynchronous work, so it has no retained wait to cancel.
+The branch's service is withdrawn with the branch. Session view updates and prompt adoption keep
+their existing lifetimes below.
+
+`SessionSkills` is private Skills owner state. The Session part and branch parts share its typed
+key in the Session instance; it has no public catalog name. Its content, prompt loader and change
+watch remain with Skills. The public face returns data without exposing that owner object.
+
+TypeScript callers import the `SkillsBranch` binding from `dimcode/plugin` (declared in
+`npm/plugin.d.ts`). This manually
+dispatched face is not an entry in the generated `Services` map.
 
 ### Dependencies
 
 | Service | Purpose |
 | --- | --- |
-| `S:SessionSkills` | Current skill view and change watch. |
+| `S:SessionSkills` | Private typed key for the current view and change watch within the Skills owner. |
 | `B:BranchLifecycle` | Wait for activation; stop on closing. |
 | `B:dyn ConfigureControl` | Adopt the changed list as prompt configuration. |
 
@@ -274,7 +329,7 @@ Failed adoption is logged; a later view change can retry.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:dyn ConfigureControl`、`S:SessionSkills` |
-| 提供 | `B:SkillsBranch` |
+| 提供 | `B:SkillsBranch`、`B:dyn HostDispatch#skillsBranch` |
 | 被注入于 | — |
 <!-- /generated -->
 

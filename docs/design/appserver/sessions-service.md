@@ -130,6 +130,8 @@ The call path from a consumer to a Session (a call path, not an assembly graph):
 | Session facade, Permission, Loop | Session, branch | Unchanged; read through public calls |
 | InputQueue withdrawal service | Branch | Added by S1 |
 
+`AgentDirectory` is private owner state shared by the Agents directory, index and Agent scope through a typed key. It has no public catalog name; public Session operations use `sessions`. The private dependency still controls assembly and cleanup ordering.
+
 ## 5. Service shape
 
 | Item | Content |

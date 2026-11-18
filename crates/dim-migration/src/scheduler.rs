@@ -3,7 +3,7 @@ use crate::{
     native::{Native, failure},
     source::{ScheduledJob, Source, fingerprint},
 };
-use chrono::{DateTime, Datelike, Local, SecondsFormat, Timelike, Utc};
+use jiff::{Timestamp, Zoned, tz::TimeZone};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -85,7 +85,7 @@ pub(crate) async fn import(
                 let schedule=recurrence(&job)?;
                 if job.prompt.len()>32768 || job.prompt.is_empty()||job.name.is_empty()||job.cwd.is_empty(){return Err(Error::Object("Legacy schedule fields are invalid".into()));}
                 let mut native=json!({"id":source_id,"name":job.name,"schedule":schedule,"prompt":job.prompt,"cwd":job.cwd,"model":job.model,"mode":if job.session_mode=="new"{"create"}else{"reuse"},"max_run_minutes":60,"enabled":job.enabled,"policy_cap":{"preset":"read-only","allowedTools":[],"disallowedTools":[]},"created_by":"user","revision":1});
-                if job.enabled {native["enabled_at"]=json!(Utc::now().to_rfc3339_opts(SecondsFormat::Millis,true));}
+                if job.enabled {native["enabled_at"]=json!(stamp(Timestamp::now()));}
                 if let Some(bound)=job.bound_session {
                     let imported=sessions.get(&bound).filter(|s|matches!(s.outcome,Outcome::Imported|Outcome::AlreadyImported)).and_then(|s|s.target_id.as_ref()).ok_or_else(||Error::Deferred("Bound Session is unavailable; job retained in source".into()))?;
                     native["session_id"]=json!(imported);
@@ -129,12 +129,16 @@ pub(crate) async fn import(
     Ok(())
 }
 
+fn stamp(instant: Timestamp) -> String {
+    instant.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
 fn recurrence(job: &ScheduledJob) -> Result<Value> {
     let invalid =
         || Error::Unsupported("Legacy recurrence has no exact native calendar equivalent".into());
-    let created = DateTime::parse_from_rfc3339(&job.created_at)
+    let created: Zoned = dim_agent_capabilities::timestamp::parse_civil(&job.created_at)
         .map_err(|_| invalid())?
-        .with_timezone(&Local);
+        .to_zoned(TimeZone::system());
     let mut fields = BTreeMap::new();
     let upper = job.rrule.trim().to_uppercase();
     let rule = upper.trim_prefix("RRULE:");
@@ -187,7 +191,7 @@ fn recurrence(job: &ScheduledJob) -> Result<Value> {
         return Err(invalid());
     }
     let interval = number("INTERVAL", 1, 999, 1)?;
-    let hour = number("BYHOUR", 0, 23, created.hour())?;
+    let hour = number("BYHOUR", 0, 23, created.hour() as u32)?;
     let minute = number(
         "BYMINUTE",
         0,
@@ -195,11 +199,11 @@ fn recurrence(job: &ScheduledJob) -> Result<Value> {
         if freq == "HOURLY" {
             0
         } else {
-            created.minute()
+            created.minute() as u32
         },
     )?;
-    let month = number("BYMONTH", 1, 12, created.month())?;
-    let day = number("BYMONTHDAY", 1, 31, created.day())?;
+    let month = number("BYMONTH", 1, 12, created.month() as u32)?;
+    let day = number("BYMONTHDAY", 1, 31, created.day() as u32)?;
     if freq == "YEARLY"
         && day > [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month as usize - 1]
     {
@@ -230,10 +234,8 @@ fn recurrence(job: &ScheduledJob) -> Result<Value> {
                 None
             })
             .ok_or_else(invalid)?;
-        let at = DateTime::parse_from_rfc3339(occurrence).map_err(|_| invalid())?;
-        return Ok(
-            json!({"at":at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis,true)}),
-        );
+        let at = dim_agent_capabilities::timestamp::parse(occurrence).map_err(|_| invalid())?;
+        return Ok(json!({"at": stamp(at)}));
     }
     let slots = |first: u32, end: u32, step: u32| {
         (first..end)
@@ -245,11 +247,11 @@ fn recurrence(job: &ScheduledJob) -> Result<Value> {
     let cron = match freq {
         "MINUTELY" if 60 % interval == 0 => format!(
             "{} * * * *",
-            slots(created.minute() % interval, 60, interval)
+            slots(created.minute() as u32 % interval, 60, interval)
         ),
         "HOURLY" if 24 % interval == 0 => format!(
             "{minute} {} * * *",
-            slots(created.hour() % interval, 24, interval)
+            slots(created.hour() as u32 % interval, 24, interval)
         ),
         "DAILY" if interval == 1 => format!("{minute} {hour} * * *"),
         "WEEKLY" if interval == 1 => format!(
@@ -262,7 +264,7 @@ fn recurrence(job: &ScheduledJob) -> Result<Value> {
         ),
         "MONTHLY" if 12 % interval == 0 => format!(
             "{minute} {hour} {day} {} *",
-            slots(created.month0() % interval + 1, 13, interval)
+            slots((created.month() as u32 - 1) % interval + 1, 13, interval)
         ),
         "YEARLY" if interval == 1 => format!("{minute} {hour} {day} {month} *"),
         _ => return Err(invalid()),

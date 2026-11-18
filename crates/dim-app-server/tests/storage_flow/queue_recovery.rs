@@ -6,7 +6,7 @@ fn builder(store: &Arc<SqliteTimelineStore>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     builder
 }
 
@@ -306,7 +306,7 @@ async fn queue_decisions_commit_and_resume_once_after_a_failed_commit() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .create_session(SessionConfig::default())
@@ -376,7 +376,7 @@ async fn queue_decisions_commit_and_resume_once_after_a_failed_commit() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let restored = settled(
         "the queue restores its saved state",
@@ -417,7 +417,7 @@ async fn obsolete_queue_result_versions_do_not_control_recovery() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .create_session(SessionConfig::default())

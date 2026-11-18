@@ -1,7 +1,7 @@
 //! The flow tests' seams (feature `testing`): holds that keep an operation at
 //! a known point, a clock a test can move, and the signals a pass emits.
 use crate::clock::Clock;
-use chrono::{DateTime, Utc};
+use jiff::{SignedDuration, Timestamp};
 use rutis::host::BoxFuture;
 use std::{
     collections::HashMap,
@@ -34,6 +34,9 @@ pub struct Holds {
     /// Fails the armed number of `sessions.lookup` replies with a transient
     /// transport error, so a lookup pass can meet one that answers nothing.
     lookup_failures: AtomicUsize,
+    /// Answers the armed number of `sessions.lookup` replies `reloading`, as a
+    /// published owner generation's stop or load does.
+    reloading_lookups: AtomicUsize,
 }
 
 /// A hold between a disable's document read and its CAS write. Every disable
@@ -114,6 +117,21 @@ impl Holds {
             .is_ok()
     }
 
+    /// Answers the next `count` `sessions.lookup` replies `reloading`, as a
+    /// published owner generation's stop or load does.
+    pub fn reloading_lookups(&self, count: usize) {
+        self.reloading_lookups.store(count, Ordering::SeqCst);
+    }
+
+    /// Whether this lookup reply is to answer `reloading`, counting down.
+    pub(crate) fn take_reloading_lookup(&self) -> bool {
+        self.reloading_lookups
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+    }
+
     pub(crate) async fn before_disable_write(&self) {
         let hold = self.disable.lock().unwrap().clone();
         if let Some(hold) = hold {
@@ -142,7 +160,7 @@ impl Holds {
 /// on a real tick and a real wait keep today's timing; a test that advances
 /// moves only this Scheduler's deadline, never another timer of the runtime.
 pub struct ManualClock {
-    offset: Mutex<chrono::Duration>,
+    offset: Mutex<SignedDuration>,
     /// Bumped by every advance, so a parked waiter re-reads `now`.
     moved: tokio::sync::watch::Sender<u64>,
 }
@@ -150,7 +168,7 @@ pub struct ManualClock {
 impl Default for ManualClock {
     fn default() -> Self {
         Self {
-            offset: Mutex::new(chrono::Duration::zero()),
+            offset: Mutex::new(SignedDuration::ZERO),
             moved: tokio::sync::watch::channel(0).0,
         }
     }
@@ -159,13 +177,13 @@ impl Default for ManualClock {
 impl ManualClock {
     /// The instant this clock reads. Concrete, so a test never names the
     /// crate's private `Clock` trait.
-    pub fn now(&self) -> DateTime<Utc> {
+    pub fn now(&self) -> Timestamp {
         Clock::now(self)
     }
 
     /// Moves this clock `by` forward (or back, for a negative span) and wakes
     /// every waiter the new instant has reached.
-    pub fn advance(&self, by: chrono::Duration) {
+    pub fn advance(&self, by: SignedDuration) {
         *self.offset.lock().unwrap() += by;
         self.moved.send_modify(|generation| *generation += 1);
     }
@@ -173,22 +191,22 @@ impl ManualClock {
     /// Moves this clock to `at` and wakes every waiter the instant reaches. An
     /// instant real time has already passed moves nothing, so racing a real
     /// second can never rewind the clock.
-    pub fn advance_to(&self, at: DateTime<Utc>) {
-        let by = at.signed_duration_since(self.now());
-        if by > chrono::Duration::zero() {
+    pub fn advance_to(&self, at: Timestamp) {
+        let by = at.duration_since(self.now());
+        if by > SignedDuration::ZERO {
             self.advance(by);
         }
     }
 }
 
 impl Clock for ManualClock {
-    fn now(&self) -> DateTime<Utc> {
-        Utc::now() + *self.offset.lock().unwrap()
+    fn now(&self) -> Timestamp {
+        Timestamp::now() + *self.offset.lock().unwrap()
     }
 
     fn wait_until<'a>(
         &'a self,
-        until: DateTime<Utc>,
+        until: Timestamp,
         stop: &'a CancellationToken,
     ) -> BoxFuture<'a, bool> {
         Box::pin(async move {
@@ -198,7 +216,7 @@ impl Clock for ManualClock {
                 if now >= until {
                     return true;
                 }
-                let sleep = (until - now).to_std().unwrap_or_default();
+                let sleep = Duration::try_from(until.duration_since(now)).unwrap_or_default();
                 tokio::select! {
                     _ = stop.cancelled() => return false,
                     _ = tokio::time::sleep(sleep) => return true,
@@ -212,23 +230,25 @@ impl Clock for ManualClock {
 /// A waiter's park: the ticks finished when it parked, and the instant it waits
 /// for. One value, because a reader that took the count and the instant apart
 /// could advance a wait the timer had already left.
-pub type TimerWait = (u64, DateTime<Utc>);
+pub type TimerWait = (u64, Timestamp);
 
 /// The signals a Scheduler pass emits for the flow tests.
 #[derive(Default)]
 pub struct Signals {
     /// `(stop timers that parked, the instant the newest one waits for)`.
-    stop_parks: watch::Sender<(u64, Option<DateTime<Utc>>)>,
+    stop_parks: watch::Sender<(u64, Option<Timestamp>)>,
     stopped: watch::Sender<u64>,
     retained: watch::Sender<u64>,
     ticked: watch::Sender<u64>,
     timer: watch::Sender<Option<TimerWait>>,
+    startup: watch::Sender<u64>,
+    loop_lookups: watch::Sender<u64>,
 }
 
 impl Signals {
     /// Publishes the ticks finished and the instant the timer will wait for,
     /// before that wait.
-    pub(crate) fn timer_wait(&self, done: u64, until: DateTime<Utc>) {
+    pub(crate) fn timer_wait(&self, done: u64, until: Timestamp) {
         self.timer.send_replace(Some((done, until)));
     }
 
@@ -248,7 +268,7 @@ impl Signals {
     }
 
     /// Publishes the instant a stop timer is about to wait for.
-    pub(crate) fn stop_parked(&self, until: DateTime<Utc>) {
+    pub(crate) fn stop_parked(&self, until: Timestamp) {
         self.stop_parks.send_modify(|(parks, wait)| {
             *parks += 1;
             *wait = Some(until);
@@ -262,7 +282,8 @@ impl Signals {
         self.stopped.send_modify(|ended| *ended += 1);
     }
 
-    /// Publishes one finished retention pass, after its last write.
+    /// Publishes one finished retention pass, after the pass released its
+    /// admission hold and pass lock.
     pub(crate) fn retention_done(&self) {
         self.retained.send_modify(|passes| *passes += 1);
     }
@@ -270,6 +291,26 @@ impl Signals {
     /// The retention passes this generation has finished.
     pub fn retention(&self) -> u64 {
         *self.retained.borrow()
+    }
+
+    /// Publishes that a Scheduler task reached its pre-publication wait.
+    pub(crate) fn startup_waiting(&self) {
+        self.startup.send_modify(|waits| *waits += 1);
+    }
+
+    /// The pre-publication waits this generation has reached.
+    pub fn startup_waits(&self) -> u64 {
+        *self.startup.borrow()
+    }
+
+    /// Publishes a completed loop lookup pass after its retry cadence is recorded.
+    pub(crate) fn loop_lookup_done(&self) {
+        self.loop_lookups.send_modify(|passes| *passes += 1);
+    }
+
+    /// The loop lookup passes completed by this home's Scheduler generations.
+    pub fn loop_lookups(&self) -> u64 {
+        *self.loop_lookups.borrow()
     }
 }
 
@@ -399,4 +440,30 @@ pub async fn retention(home: &Path, before: u64) {
     })
     .await
     .expect("the retention pass ends");
+}
+
+/// Waits for a loop lookup pass after the count taken before its host starts.
+pub async fn loop_lookup(home: &Path, before: u64) {
+    let mut passes = signals(home).loop_lookups.subscribe();
+    tokio::time::timeout(BOUND, async {
+        let _ = passes.wait_for(|passes| *passes > before).await;
+    })
+    .await
+    .expect("the loop lookup pass ends");
+}
+
+/// The Scheduler tasks that reached their pre-publication wait.
+pub fn startup_waits(home: &Path) -> u64 {
+    signals(home).startup_waits()
+}
+
+/// Waits for one more Scheduler task to reach its pre-publication wait, with
+/// the count taken before the start that spawns it.
+pub async fn startup_waiting(home: &Path, before: u64) {
+    let mut waits = signals(home).startup.subscribe();
+    tokio::time::timeout(BOUND, async {
+        let _ = waits.wait_for(|waits| *waits > before).await;
+    })
+    .await
+    .expect("the Scheduler reaches its publication wait");
 }

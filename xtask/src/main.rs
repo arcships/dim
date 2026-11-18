@@ -107,7 +107,7 @@ async fn agent_with_store(store: Arc<dyn TimelineStore>) -> dim_agent_runtime::R
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     MinimalHost::start(&builder).await
 }
 fn root() -> PathBuf {

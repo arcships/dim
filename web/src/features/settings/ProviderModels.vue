@@ -3,20 +3,20 @@ import { computed, ref, watch } from "vue"
 import { useI18n } from "vue-i18n"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import { settingsMessages } from "../../i18n/settings"
-import { readManagement, type ManagementModel, type ManagementProvider } from "../../rpc/management"
-import { readAck } from "../../rpc/read"
+import { readModelWrite, readManagement, type ManagementModel, type ManagementProvider } from "../../rpc/management"
 import { useConnectionStore } from "../../stores/connection"
 import { messageFrom } from "./context"
 
 const INHERIT = "__inherit__"
-const props = defineProps<{ provider: ManagementProvider }>()
-const emit = defineEmits<{ updated: [provider: ManagementProvider] }>()
+const props = defineProps<{ provider: ManagementProvider; next?: string | null }>()
+const emit = defineEmits<{ updated: [provider: ManagementProvider]; load: [more: boolean, query: string] }>()
 const dirty = defineModel<boolean>("dirty", { default: false })
 const { t } = useI18n({ messages: settingsMessages })
 const connection = useConnectionStore()
 const query = ref("")
 const editing = ref(false)
 const original = ref<ManagementModel>()
+const originalPreferences = ref<ManagementProvider["preferences"][string]>()
 const modelId = ref("")
 const name = ref("")
 const context = ref("")
@@ -34,7 +34,8 @@ const error = ref("")
 const expectedVersion = ref<number | null>(null)
 const baseline = ref("")
 const confirm = ref<InstanceType<typeof ConfirmDialog>>()
-const models = computed(() => (props.provider.models ?? []).filter((m) => `${m.model.modelId} ${m.model.displayName}`.toLowerCase().includes(query.value.toLowerCase())))
+const models = computed(() => props.provider.models ?? [])
+watch(query, value => emit("load", false, value))
 const allowedEfforts = computed(() => original.value?.model.metadata?.reasoning?.effortOptions ?? [])
 const tiers = computed(() => original.value?.model.metadata?.serviceTier?.options ?? [])
 /// What identification made of one entry's id, as the row's suffix. The
@@ -64,25 +65,41 @@ const tierItems = computed(() => [
 function fromInherit(value: unknown): string { return value === INHERIT ? "" : String(value ?? "") }
 function snapshot(): string { return JSON.stringify([modelId.value, name.value, context.value, output.value, tools.value, vision.value, reasoning.value, efforts.value, effort.value, tier.value, endpoint.value, alias.value]) }
 watch(() => editing.value && snapshot() !== baseline.value, (value) => { dirty.value = value }, { flush: "sync" })
-function open(model?: ManagementModel): void {
-  original.value = model
-  modelId.value = model?.model.modelId ?? ""
-  name.value = model?.model.displayName ?? ""
-  context.value = model?.model.capabilities.contextWindow?.toString() ?? ""
-  output.value = model?.model.capabilities.maxOutputTokens?.toString() ?? ""
-  tools.value = model?.model.capabilities.toolCalling ?? true
-  vision.value = model?.model.capabilities.vision ?? false
-  reasoning.value = model?.model.capabilities.reasoning ?? false
-  efforts.value = (model?.model.metadata?.reasoning?.effortOptions ?? []).join(", ")
-  const preferences = model && props.provider.preferences[model.model.modelId]
-  effort.value = preferences?.reasoningEffort ?? ""
-  tier.value = preferences?.serviceTier ?? ""
-  endpoint.value = model?.endpointOverride ?? ""
-  alias.value = model?.alias ?? ""
-  expectedVersion.value = props.provider.version
+async function open(model?: ManagementModel): Promise<void> {
+  if (busy.value) return
+  busy.value = true
   error.value = ""
-  baseline.value = snapshot()
-  editing.value = true
+  try {
+    let provider = props.provider
+    if (model) {
+      const view = await connection.client.call("provider.management", { providerId: provider.providerId, modelId: model.model.modelId }, readManagement)
+      const current = view.providers.find(p => p.providerId === provider.providerId)
+      const currentModel = current?.models?.find(m => m.model.modelId === model!.model.modelId)
+      if (!current || !currentModel) throw new Error(view.errors[0]?.message ?? t("unavailable"))
+      provider = current
+      model = currentModel
+    }
+    original.value = model
+    modelId.value = model?.model.modelId ?? ""
+    name.value = model?.model.displayName ?? ""
+    context.value = model?.model.capabilities.contextWindow?.toString() ?? ""
+    output.value = model?.model.capabilities.maxOutputTokens?.toString() ?? ""
+    tools.value = model?.model.capabilities.toolCalling ?? true
+    vision.value = model?.model.capabilities.vision ?? false
+    reasoning.value = model?.model.capabilities.reasoning ?? false
+    efforts.value = (model?.model.metadata?.reasoning?.effortOptions ?? []).join(", ")
+    const preferences = model && provider.preferences[model.model.modelId]
+    originalPreferences.value = preferences
+    effort.value = preferences?.reasoningEffort ?? ""
+    tier.value = preferences?.serviceTier ?? ""
+    endpoint.value = model?.endpointOverride ?? ""
+    alias.value = model?.alias ?? ""
+    expectedVersion.value = provider.version
+    error.value = ""
+    baseline.value = snapshot()
+    editing.value = true
+  } catch (cause) { error.value = messageFrom(cause) }
+  finally { busy.value = false }
 }
 async function close(): Promise<void> {
   if (busy.value) return
@@ -90,22 +107,42 @@ async function close(): Promise<void> {
   editing.value = false
   dirty.value = false
 }
-async function mutate(method: string, params: Record<string, unknown>, version = props.provider.version): Promise<ManagementProvider> {
+async function mutate(method: string, target: string, params: Record<string, unknown>, version = props.provider.version): Promise<number> {
   const providerId = props.provider.providerId
-  await connection.client.call(method, { providerId, expectedVersion: version, ...params }, readAck)
-  const view = await connection.client.call("provider.management", { providerId }, readManagement)
-  const updated = view.providers.find((p) => p.providerId === providerId)
-  if (!updated) throw new Error(view.errors[0]?.message ?? t("unavailable"))
+  const reply = method === "provider.model.set_enabled" ? {} : { reply: "summary" }
+  const ack = await connection.client.call(method, { providerId, expectedVersion: version, ...reply, ...params }, readModelWrite)
+  if (query.value) {
+    emit("load", false, query.value)
+    return ack.version
+  }
+  let updated: ManagementProvider
+  if (method === "provider.models.delete") {
+    const preferences = { ...props.provider.preferences }
+    delete preferences[target]
+    updated = { ...props.provider, version: ack.version, models: models.value.filter(m => m.model.modelId !== target), preferences }
+  } else {
+    const view = await connection.client.call("provider.management", { providerId, modelId: target }, readManagement)
+    const row = view.providers.find(p => p.providerId === providerId)
+    if (!row) throw new Error(view.errors[0]?.message ?? t("unavailable"))
+    const nextModels = [...models.value]
+    for (const model of row.models ?? []) {
+      const index = nextModels.findIndex(m => m.model.modelId === model.model.modelId)
+      if (index < 0) nextModels.push(model)
+      else nextModels[index] = model
+    }
+    const preferences = { ...props.provider.preferences }
+    delete preferences[target]
+    updated = { ...row, models: nextModels, preferences: { ...preferences, ...row.preferences } }
+  }
   emit("updated", updated)
-  return updated
+  return ack.version
 }
 async function toggle(model: ManagementModel): Promise<void> {
   if (busy.value) return
   busy.value = true
   error.value = ""
   try {
-    const enabledIds = (props.provider.models ?? []).filter((m) => m.enabled !== (m.model.modelId === model.model.modelId)).map((m) => m.model.modelId)
-    await mutate("provider.models.set_enabled", { modelIds: enabledIds })
+    await mutate("provider.model.set_enabled", model.model.modelId, { modelId: model.model.modelId, enabled: !model.enabled })
   } catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
@@ -113,7 +150,7 @@ async function remove(model: ManagementModel, reset: boolean): Promise<void> {
   if (busy.value || !await confirm.value?.open(t(reset ? "resetConfirm" : "modelDeleteConfirm"), { confirmLabel: t(reset ? "reset" : "remove") })) return
   busy.value = true
   error.value = ""
-  try { await mutate(reset ? "provider.models.reset" : "provider.models.delete", { modelId: model.model.modelId }) }
+  try { await mutate(reset ? "provider.models.reset" : "provider.models.delete", model.model.modelId, { modelId: model.model.modelId }) }
   catch (cause) { error.value = messageFrom(cause) }
   finally { busy.value = false }
 }
@@ -136,18 +173,16 @@ async function save(): Promise<void> {
     // beside the descriptor fields rather than as one of them.
     if (existing && alias.value !== (existing.alias ?? "")) edit.alias = alias.value ? { action: "set", value: alias.value } : { action: "clear" }
     const model = { modelId: modelId.value, displayName: name.value, status: "active", capabilities: { modalities: ["text"], toolCalling: tools.value, streaming: true, structuredOutput: true, vision: vision.value, audio: false, reasoning: reasoning.value, ...(context.value ? { contextWindow: Number(context.value) } : {}), ...(output.value ? { maxOutputTokens: Number(output.value) } : {}) }, ...(reasoning.value ? { metadata: { reasoning: { supported: true, effortOptions: efforts.value.split(",").map((s) => s.trim()).filter(Boolean) } } } : {}) }
-    const currentPreferences = props.provider.preferences[modelId.value]
+    const currentPreferences = originalPreferences.value
     if (!existing || Object.keys(edit).length) {
-      const updated = await mutate(existing ? "provider.models.edit" : "provider.models.create", existing ? { modelId: modelId.value, edit } : { model }, expectedVersion.value)
-      expectedVersion.value = updated.version
+      expectedVersion.value = await mutate(existing ? "provider.models.edit" : "provider.models.create", modelId.value, existing ? { modelId: modelId.value, edit } : { model }, expectedVersion.value)
     }
     if (existing && props.provider.actions.includes("preferences.update")) {
       const patch: Record<string, unknown> = {}
       if (effort.value !== (currentPreferences?.reasoningEffort ?? "")) patch.reasoningEffort = effort.value ? { action: "set", value: effort.value } : { action: "clear" }
       if (tier.value !== (currentPreferences?.serviceTier ?? "")) patch.serviceTier = tier.value ? { action: "set", value: tier.value } : { action: "clear" }
       if (Object.keys(patch).length) {
-        const updated = await mutate("provider.preferences.update", { modelId: modelId.value, patch }, expectedVersion.value)
-        expectedVersion.value = updated.version
+        expectedVersion.value = await mutate("provider.preferences.update", modelId.value, { modelId: modelId.value, patch }, expectedVersion.value)
       }
     }
     editing.value = false
@@ -237,6 +272,7 @@ async function save(): Promise<void> {
         </div>
       </div>
       <p v-if="!models.length" class="settings-empty">{{ t(query ? "noResults" : provider.actions.includes("refresh") ? "noModelsRefresh" : provider.actions.includes("models.create") ? "noModelsAdd" : "noProviderModels") }}</p>
+      <UButton v-if="next" color="neutral" variant="outline" :disabled="busy" @click="emit('load', true, query)">{{ t("loadMore") }}</UButton>
     </template>
   </section>
 </template>

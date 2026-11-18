@@ -109,7 +109,10 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 
 可选：`session.list` / `session.summaries`、`session.close`、`session.delete`、`session.fork`、`session.permission.get/update`、`approval.respond`；临时 MCP 使用 `mcp.temporary.capabilities`、`session.mcp_temporary.attach/renew/detach`；每 Session 用 `session.methods` 发现 `session.input.withdraw`、`session.question.respond`、`session.context.usage` 和 `attachment.put`。缺少撤回时取消直接走现有 `session.stop`，并披露已接收输入可能保留的限制。
 
-模型选择只读取 `provider.list`、`provider.catalog`、`provider.selection` 的安全投影。Provider 管理已有独立插件和公开读写接口，接线及尚未满足的 ACP 合同见 §4.5；首版不通过这些接口写入共享产品配置。账户认证只允许 §4.4 列出的 `account.providers/status` 和属于当前连接的 login attempt 调用；§4.7 的 `/usage` 额外允许当前模型 provider 的 `account.usage` 安全读取。不开放 `account.*` 代理、recover/logout、settings、持久 MCP 配置、插件管理或凭据接口。也不把 ACP 方法名直接转成原生 RPC 方法名。
+模型选择通过 `provider.models.query` 的 `selectableOnly:true` 获取可用模型页，按 `next` 继续读取，组成 ACP 要求的完整选项列表；过滤条件由 Provider 拥有方执行。Provider 管理已有独立插件和公开读写接口，接线及尚未满足的 ACP 合同见 §4.5；首版不通过这些接口写入共享产品配置。账户认证只允许 §4.4 列出的 `account.providers/status` 和属于当前连接的 login attempt 调用；§4.7 的 `/usage` 额外允许当前模型 provider 的 `account.usage` 安全读取。不开放 `account.*` 代理、recover/logout、settings、持久 MCP 配置、插件管理或凭据接口。也不把 ACP 方法名直接转成原生 RPC 方法名。
+
+模型和 effort 配置选项需要 `provider.models.query` 与 `session.model.update`；
+仅提供 `provider.catalog` 不满足该功能的依赖。版本边界沿用 §2，不增加全目录查询回退。
 
 ## 4. 稳定 ACP v1 方法逐项映射
 

@@ -8,6 +8,10 @@
 
 Scheduler 把计划任务(用户书写的配置)存于 Settings 业务来源 `schedule`，把投递记录存于 [`pluginFiles`](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)。每个到期窗口，进程部分经 `sessions.input`([session-access](../contracts/session-access.md))写入一条带自身标记的输入，目标为保存该任务的分支，或该任务启动的 Session。`queue` 是默认接线；任务可以存 `steer` 或 `append`。Session 部分在每个 Session 中声明 `schedule` 与 `wakeup` 工具(风险 `persistent_configuration`)，只有交互式 leader Session 能使用它们。运维方使用本文规定的 `schedule.*` 管理方法。合同语言中立([ADR 002 D5](../../adr/002-plugin-scope.md#d5-合同语言中立))；Rust 绑定限制见[附录 G](#附录-g-rust-绑定)。Scheduler 不写自己的 Timeline 事件：它的投递是写给其他所有者分支的普通输入，记录存放在自己的存储里。
 
+Scheduler 还声明进程范围的 [`processActivity`](../../../../crates/dim-app-server/README.md#process-activity) 数据服务。它从投递持久接受之前一直持有准入，直到其终态记录，覆盖不确定查询之间与行重载期间；这些在线持有在行被禁用后仍存在，新进程在恢复前从 `delivering` 记录重建它们，惰性遗留记录保留其兼容行为(A.7)。到期的定时器、唤醒、停止与保留期通道在执行期间持有准入；仅有未来期限不算活动工作。被暂停的定时器通道不消耗其期限。这不新增 Scheduler 事件或记录字段。
+
+在宿主发布进程之前，Scheduler 不启动任何后台业务：启动投递与循环恢复、主定时器(任务窗口、唤醒与循环)、启动保留期通道以及恢复的停止定时器，各自在自身任务中等待 `processActivity.activated()`。该操作在宿主于所有必需进程行 Active 后开放时完成为 `true`；启动失败或在观察到该状态之前开始关闭时为 `false`；行重载不会重置它。这样使第一次 `sessions.lookup` 不会发生在稳定门面因 `AgentIndex` 尚未发布而回答 `reloading` 的区间；A.6 的回答计数与查询上限不变。每次等待也会因本代次的停止令牌结束，因此等待期间卸载会结束自有任务且不消耗尝试。
+
 ## 1. 结构
 
 ```mermaid
@@ -41,11 +45,11 @@ flowchart LR
   class Sched,MM,Tool new
 ```
 
-任务与窗口跨 Session，所以归进程([ADR 002](../../adr/002-plugin-scope.md) D1)；向 Session 提供工具是 Session 部分的职责(D2)。进程部分声明既有的 `sessions`、`settings`、`pluginFiles` 与 `managementMethods` 服务。Agents 的稳定目录提供 `sessions`，并在每次调用时查找当前索引：索引重载使调用以 `reloading` 失败，而不重载 Scheduler 或任何 Session([S2 D1](../appserver/sessions-service.md#3-决定)、[#35](https://github.com/arcships/dim/issues/35))。Session 工具按已接受的绑定声明其 `scheduleJobs` 依赖(§1.1)；未声明的 `ctx.use` 不是通用的可选原生查找。C3 让核心工具消费者不依赖可选行。不引入从 ToolRegistry、Loop 或 Session 就绪到 Scheduler 的依赖。任务编辑使用 Settings 的所有者写入与变更事件，绝不做结构重载。
+任务与窗口跨 Session，所以归进程([ADR 002](../../adr/002-plugin-scope.md) D1)；向 Session 提供工具是 Session 部分的职责(D2)。进程部分声明既有的 `sessions`、`settings`、`pluginFiles` 与 `managementMethods` 服务，以及 `processActivity` 的发布与准入数据面。Agents 的稳定目录提供 `sessions`，并在每次调用时查找当前索引：索引重载使调用以 `reloading` 失败，而不重载 Scheduler 或任何 Session([S2 D1](../appserver/sessions-service.md#3-决定)、[#35](https://github.com/arcships/dim/issues/35))。Session 工具按已接受的绑定声明其 `scheduleJobs` 依赖(§1.1)；未声明的 `ctx.use` 不是通用的可选原生查找。C3 让核心工具消费者不依赖可选行。不引入从 ToolRegistry、Loop 或 Session 就绪到 Scheduler 的依赖。任务编辑使用 Settings 的所有者写入与变更事件，绝不做结构重载。
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `Scheduler` | 进程(控制节点) | 稳定的 `sessions`、`settings`、`pluginFiles`、`managementMethods` | 任务访问、定时器、投递记录；规定的 `scheduleJobs` 与管理命名空间 `schedule` |
+| `Scheduler` | 进程(控制节点) | 稳定的 `sessions`、`settings`、`pluginFiles`、`managementMethods`；`processActivity` | 任务访问、定时器、投递记录；规定的 `scheduleJobs` 与管理命名空间 `schedule` |
 | `SchedulerSession` | Session，Scheduler 启用时安装 | 既有 C4 工具合同；创建配置；已声明的 `scheduleJobs` 依赖(§1.1) | 把 `schedule` 与 `wakeup` 注册到 `toolRegistry`，把 `session.wakeup` 注册到 `sessionMethods`；`interactive === false` 或 Session 是 Collaboration 成员时处理函数拒绝 |
 
 **依赖的合同：** [C4 工具](../../../design/session-typescript.md)、[Settings](../appserver/settings-service.md)、[S2 sessions](../appserver/sessions-service.md)、[方法准入](../contracts/session-boundary.md) 与 [pluginFiles](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)。**本文规定的插件自有合同：** 任务与投递数据、`schedule` 与 `wakeup` 工具、`scheduleJobs.call`、管理命名空间 `schedule`、`session.wakeup` 命名空间、来源 `schedule`、标记 `dim-scheduler` 与提交 id `scheduler:<run_id>`。风险 `persistent_configuration` 在 Permission 中仍未分类；不新增类别。
@@ -79,7 +83,7 @@ flowchart LR
 | `id` | `Scheduler` |
 | `name` | `Scheduler` |
 | `config` | `{}` |
-| `inject` | `settings`、`pluginFiles`、`managementMethods`、`partRegistry`、`sessions` |
+| `inject` | `settings`、`pluginFiles`、`managementMethods`、`partRegistry`、`sessions`、`processActivity` |
 | `provides` | `scheduleJobs`；apply 把 `schedule` 注册到 `managementMethods`，把 `SchedulerSession` 部分注册到 `partRegistry` |
 | `settings` | §7.1 的完整 `schedule` 来源，含其 schema |
 
@@ -401,7 +405,15 @@ Settings 在边界处应用这些默认值并校验外部文档一次。非法�
 
 ## 9. 向机制所有者提出的需求
 
-无。绑定使用的运行时装配入口(`AgentBuilder::optional_plugin`、`PluginRows` 与 `PartRegistry::register`)就是 §1.2 记录的既有入口。既有 C3/C4、S2、Settings 与 pluginFiles 机制仍是基线。另有两处命名了 Scheduler 旧归属的句子因本次变更而随之不成立，在同一变更中一并修正：[sessions 服务 §8.7](../appserver/sessions-service.md#87-删除运行用的-session) 与 [EventHub §10](EventHub.md#10-不在本设计内)。不新增 App Server 方法、服务、事件或基础设施需求。
+绑定使用的运行时装配入口(`AgentBuilder::optional_plugin`、`PluginRows` 与 `PartRegistry::register`)就是 §1.2 记录的既有入口。既有 C3/C4、S2、Settings 与 pluginFiles 机制仍是基线。另有两处命名了 Scheduler 旧归属的句子因本次变更而随之不成立，在同一变更中一并修正：[sessions 服务 §8.7](../appserver/sessions-service.md#87-删除运行用的-session) 与 [EventHub §10](EventHub.md#10-不在本设计内)。
+
+### R1. 初始进程发布
+
+- **受阻：** 启动恢复、定时器与恢复的停止定时器都是进程后台工作。[插件契约 §7.1](../plugin-contract.md#71-阶段)只为 Session 与分支部件定义了 Activated，因此 Scheduler 可能在 `AgentIndex` 仍在安装时调用 `sessions.lookup`。稳定门面回答 `reloading`；一次持久化尝试被消耗，健康的存储投递可能结算为 `lost`(A.6)，与 [S2 §17.1](../appserver/sessions-service.md#171-先装载持久所有权再发布索引) 的存储所有权验收相悖。
+- **考虑过的既有机制：** `ServerControl` 持有确切就绪状态但属于 `internal(control)`；`AgentIndex` 属于 `internal(owner-api)`，`KeyedGate` 会让 Scheduler 随索引重载(S2 D1)；两阶段行装配改变每个可选行的启动；阻塞式或新的 `sessions` 回答改变 S2。它们都不能在不引入新消费者依赖或重试策略的情况下暴露进程发布。
+- **需要：** 一个进程范围的数据面方法 `processActivity.activated() -> boolean`：每次宿主启动在必需进程行 Active 后开放时完成一次；启动失败或在观察前开始关闭时完成 `false`；行重载不重置。其共享服务目录名、`HostDispatch` 与原生绑定是同一操作、同一取消语义。它不携带业务含义、重试策略或存储。
+- **影响：** 不改变 Timeline、事件、存储格式、Session 输入或 `sessions`；新增一个由既有就绪 watch 支撑的数据面方法。`hold`/`release` 准入合同不变。
+- **所有者：** App Server 装配/生命周期(`ServerControl`)，由 Scheduler 消费，也可供有同样需求的其他进程部件使用。
 
 ## 10. Session 作用域的一次性唤醒
 
@@ -623,13 +635,13 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | --- | --- | --- |
 | `action` | `list` \| `get` \| `create` \| `update` \| `delete` \| `set_enabled` \| `run_now` \| `history` | 必需 |
 | `job_id` | string | 除 `list`、`create` 外都需要 |
-| `job` | 对象：`name`、`schedule`、`prompt`、`input_mode?` | `create`、`update`(部分) |
+| `job` | 对象：`name`、`schedule`、`prompt`、`input_mode?` | `create`、`update`(部分)；`schedule` 必须是 A.4 的一种形式 |
 | `enabled` | bool | `set_enabled` |
 | `limit` | integer ≤ 50 | `history` |
 
 `create` 在调用方 Session 与分支保存一个 `session` 目标：工具不能命名目标、不能设置 `launch` 目标，也不能选择模型、Agent 或策略。一个 Session 通过工具创建的任务至多 16 条(A13)；之后的 create 为 `schedule_invalid`。上限计的是任务条数，且没有最小间隔。保存是持久配置，因此在除 FullAccess 外的每种预设下，用户都批准了该任务、它的调度与提示词；此后每个窗口投递的正是这份已保存的提示词，模型不经另一次获批的保存无法改变它；该任务有未结算的投递时窗口被跳过(§3.1)，因此一个任务永远不会同时有两次未结写入；而每分钟一次的任务是用户有意提出的请求，最小间隔会拒绝它，只是把数字挪个位置。在 FullAccess 下，用户已对所有工具放弃审批，这个工具也不例外(E1)。`update` 只改动 `job` 中的字段并保留存储的目标，因此它可以编辑客户端保存的任务，但不能重定向它。`input_mode` 默认 `queue`。保存时不捕获权限：投递的输入在目标分支自己的 Permission 状态下端运行(§3.3)。
 
-把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
+把任务与投递 id、以及模型后续动作所需的全部记录放进 `ToolResult.content`。`structuredContent` 只用于持久化/UI。校验失败返回 `isError`，不把服务/协议失败伪装成成功结果。声明展示 A.4 的三种调度形状、必需字段及示例。调度形状错误时返回 `schedule: schedule_invalid`，并在 `content` 中给出期望形状及示例；cron、时区和间隔值非法时说明相应要求。被拒绝的创建和更新不写入任何内容。工具列表省略提示词正文。其他任务结果使用至多 4 KiB 的 UTF-8 提示词预览与显式 `prompt_truncated` 标志；任务名至多 256 字节，运行原因至多 512 字节。任务与投递身份留在 `content`，管理与结构化记录保留完整数据。这些是逐字段上限；列表输出仍随任务数量增长。
 
 `scheduleJobs`、`wakeups`、`loops` 数据面接收位置参数中的请求及可选取消信号或 Promise，格式错误返回约定的数据错误。取消或丢弃读取会结束其等待。已交接的修改操作在进程 owner 的任务跟踪器中完成结算及通知，调用方离开后仍完成，已提交的写入保持提交。交接前取消返回 `cancelled`，不写入。原生绑定共用 owner 操作，直接保留类型化结果。
 
@@ -660,6 +672,18 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | `cron` | `{cron: "m h dom mon dow", tz?: IANA}` | 五字段，支持列表、区间、步长；`tz` 缺省为控制节点时区；DST 空档时刻跳过，重复时刻只触发一次 |
 | `every` | `{every_minutes: n}` | `n` ≥ 1；窗口在 `anchor + k·n`，锚点为 `Job.enabled_at`(A.1) |
 | `at` | `{at: RFC 3339 时刻}` | 一个窗口；触发或错过之后任务被禁用 |
+
+调度必须恰为上述对象中的一种；拒绝混合形式和未知字段。例如：
+
+```json
+{"cron": "*/30 * * * *", "tz": "Asia/Shanghai"}
+{"every_minutes": 30}
+{"at": "2030-01-01T00:00:00Z"}
+```
+
+`every_minutes` 是正整数。cron 形式省略 `tz` 时使用宿主本地时区，而非 UTC。`at` 值包含 UTC 偏移量（`Z` 或显式偏移量）。
+
+固定分钟间隔优先使用 `every_minutes`，所选时区中的日历时间使用 `cron`，特定时刻的一次投递使用 `at`。
 
 粒度一分钟(A1)。间隔之后只考虑最近的到期窗口：在其实刻 60 s 内被观察到就触发(A2)；否则一条 `missed` 记录概括这一段。更早的窗口永不重放。定时器在每次节拍与唤醒时求值墙钟，因此挂起的时间永不补做。
 
@@ -695,6 +719,8 @@ Scheduler 不向任何 Session 投递运行结果、不写报告输入，也不�
 | 守护进程错过了窗口 | `missed` | 不启动、不写输入 |
 
 恢复绝不重写已结算记录，也绝不重发窗口。在持久化 `delivering` 与输入回复之间崩溃，由下次启动时的 `sessions.lookup` 结算；在 launch Session 已创建、其身份尚未记录时崩溃，会留下一条没有记录命名的 Session(附录 F 的已知限制)，而它的记录不命名任何 Session，因此没有查询能到它，它以 `detail: launch_reply_unknown` 结算为 `lost`。查询总是以该趟开始时其记录持有的身份为目标，因此 launch 回复在调用方自己的快照过期之后才到达的投递，会对 launch 出的 Session 对账，而不是凭过期的副本结算为 `lost`。携带其 Session 的 launch 记录以任何状态恢复其停止定时器，`delivered`、`lost` 或 `failed` 皆可：定时器就是记录携带的 `deadline_at`，它属于被 launch 的 Session，直到保留期移除该记录为止(A.7)。每条 `delivering` 记录每个定时器节拍查询一次，总共至多五次，跨重启累计。`accepted` 回答把它结算为 `delivered`；第五次不带事实的回答把它结算为 `lost`(§3.1)。恢复会在查询任何东西之前，把存储的 `attempts` 已达上限的记录结算为带 `detail: lookup_budget_exhausted` 的 `lost`。每个节拍在查询之前持久化递增后的 `attempts`，因此在两次尝试之间崩溃不会重新开始计数。“未结期间永不被清理”因此仍然成立，同时有了上限：目标持续失败的任务，既不会无界增长记录，也不会写两次。
+
+初始进程发布不是查询回答。在 `processActivity.activated()` 完成之前，恢复不发送查询，也不持久化尝试，因此存储记录保持原样。发布之后，来自所有者代次停止或加载的 `reloading` 回答是真实回答：它按本节所述计入上限，包括第五次回答结算为 `lost`。
 
 ### A.7 运行存储与保留期
 
@@ -787,6 +813,7 @@ Scheduler 不向任何 Session 投递运行结果、不写报告输入，也不�
 19. **缺少 attempts 读作零。** 存储的 `delivering` 记录没有 `attempts` 时读作零次尝试，重启后的第一个查询通道就是第一次尝试。
 20. **在途写入不会被 `unknown` 结算。** 查询回答 `unknown`，记录保持 `delivering` 且该次尝试计入；之后的查询回答 `accepted`，记录结算为 `delivered`，且没有写入第二条输入。
 21. **查询预算耗尽。** 存储的 `delivering` 记录 `attempts` 已达上限，在重启后读取时结算为带 `detail: lookup_budget_exhausted` 的 `lost`；不为其发送任何查询，也不写输入。
+22. **初始发布。** 宿主未发布进程期间，Scheduler 不发送 `sessions.lookup`，也不持久化尝试；释放发布后执行一次真实尝试。存储的计数上限在发布后结算且不发送查询。等待期间宿主关闭或代次卸载保持记录与尝试不变，留给下次启动。恢复的过期停止定时器在发布后执行，不产生 60 秒重试。
 
 ## 附录 E. 假设
 
@@ -847,7 +874,7 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | `settings`、`pluginFiles` | 用 `names.key()` 键入的 App Server 类型化服务(`SettingsService`、`PluginFileTransactions`)；该 crate 依赖 `dim-app-server`，`xtask check` 允许 |
 | `sessions` | 共享的宿主分发名称，以其 JSON 信封调用；其原生请求类型对 App Server 私有 |
 | 进程存储 | App Server 的类型化 `PluginFileTransactions` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |
-| 定时器、投递写入与停止定时器 | 由进程部分拥有：定时器、投递任务与保留期在其任务跟踪器中运行，并在其方法与服务注册之后启动。卸载时(`ctx.cancellation_token()`)，新工作停止、等待结束，清理在关闭存储作用域之前等待跟踪器；已准入的 `sessions` 调用先结算。仍为 `delivering` 的记录留在文件中，交给下一代的恢复。Session 工具返回 §1.3 的卸载结果及其自己的 `schedule: cancelled before handover` 或 `wakeup: cancelled before handover`。 |
+| 定时器、投递写入与停止定时器 | 由进程部分拥有：定时器、投递任务与保留期在其任务跟踪器中运行，并在其方法与服务注册之后、进程发布之后启动(§9 R1)。卸载时(`ctx.cancellation_token()`)，新工作停止、等待结束，清理在关闭存储作用域之前等待跟踪器；已准入的 `sessions` 调用先结算。仍为 `delivering` 的记录留在文件中，交给下一代的恢复。Session 工具返回 §1.3 的卸载结果及其自己的 `schedule: cancelled before handover` 或 `wakeup: cancelled before handover`。 |
 | 策略文本 | `install_with(builder, SchedulerTexts {description})`；`install` 使用内置文本。描述只含协议，因此不携带评估成员，也不需要校验。 |
 | guide 条目 | Session 部分取得 `GuideEntries` 并注册 §5.2 的条目，作用域为 Session，order 110 |
 | 可选行 | `AgentBuilder::optional_plugin`：宿主不等待该行，因此缺失依赖或不可读的投递存储只使 Scheduler 失败(附录 D 第 14 项) |

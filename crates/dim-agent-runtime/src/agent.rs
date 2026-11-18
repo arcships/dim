@@ -250,9 +250,11 @@ impl Agent {
     /// for every Session and branch this Agent hosts, that its profile's
     /// required rows and the required views its scope handed, with the plugins
     /// below them, are `Active`, that no plugin
-    /// reads an external service it does not declare, that every declared read
+    /// requires a service it does not declare (including reads rejected
+    /// before provider lookup), that every declared read
     /// is among the reader's resolved dependencies, and that no scoped service
-    /// is provided without an instance key. Each plugin is checked once, by the
+    /// is provided without an instance key. Optional reads do not require a
+    /// dependency declaration. Each plugin is checked once, by the
     /// innermost scope that contains it, and names the Session it belongs to
     /// and, for a branch plugin, the branch. It reports every finding rather
     /// than the first, and nothing for a sound assembly. The loader's rows are

@@ -57,7 +57,7 @@ struct Fixture {
 
 async fn start(store: Arc<dyn TimelineStore>) -> Fixture {
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     defaults::mock_hosts(&mut builder);
     defaults::install(&mut builder);
     let host = MinimalHost::start(&builder).await.unwrap();

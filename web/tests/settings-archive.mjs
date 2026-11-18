@@ -111,6 +111,24 @@ test("lists only archived rows, including closed ones, and filters them on the c
   assert.match(text(root), /Alpha/)
 })
 
+test("archived headings prefer the stored title, then preview, with unnamed Session IDs shown separately", async t => {
+  const { root } = mount(t, async () => [
+    row({ sessionId: "titled", title: "Investigate cache invalidation", titleSource: "manual", titleRevision: 3, preview: "Old opening message" }),
+    row({ sessionId: "preview-only", preview: "Review deployment changes" }),
+    row({ sessionId: "empty-session" }),
+  ], { hidden: ["titled", "preview-only", "empty-session"] })
+  await flush()
+
+  assert.deepEqual(all(root).filter(element => element.type === "h3").map(text), [
+    "Investigate cache invalidation", "Review deployment changes", "Untitled session",
+  ])
+  assert.match(text(card(root, "Untitled session")), /empty-session/)
+  assert.doesNotMatch(text(card(root, "Review deployment changes")), /preview-only/, "a preview names the row, so the ID line stays hidden")
+  search(root).props["onUpdate:modelValue"]("cache invalidation")
+  await flush()
+  assert.deepEqual(all(root).filter(element => element.type === "h3").map(text), ["Investigate cache invalidation"])
+})
+
 test("restoring and opening remove the marker without a server call, and Remove unavailable deletes no Session", async t => {
   const calls = []
   const { root, harness } = mount(t, async (method, params) => {

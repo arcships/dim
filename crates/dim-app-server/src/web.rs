@@ -3,7 +3,7 @@ mod network;
 
 use crate::{
     managed_provider::{ManagedSearch, ManagedSearchError, WebSearchRequest},
-    settings::{SettingsScope, SettingsService, SourceDeclaration},
+    settings::{Settings, SettingsScope, SourceDeclaration},
 };
 use content::{convert, plain_text, redact};
 use dim_agent_capabilities::{
@@ -133,7 +133,7 @@ pub fn source_declaration() -> SourceDeclaration {
 }
 
 pub struct WebPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     parts: Key<PartRegistry>,
 }
 
@@ -159,7 +159,7 @@ impl DynPlugin for WebPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let parts = ctx.require_at(&self.parts)?;
-            settings.register_declared(ctx, source_declaration())?;
+            settings.register(ctx, source_declaration())?;
             PartRegistry::register(&parts, ctx, PartScope::Session, "Web", |mount| {
                 Ok(Some(Box::new(WebSessionPlugin::new(mount.names)?)))
             })?;
@@ -176,7 +176,7 @@ fn now_ms() -> u64 {
 }
 
 pub struct WebSessionPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     tools: Key<ToolRegistry>,
     managed: Key<ManagedSearch>,
 }
@@ -356,7 +356,7 @@ struct Hit {
 }
 
 struct SessionState {
-    settings: Arc<SettingsService>,
+    settings: Arc<Settings>,
     managed: Arc<ManagedSearch>,
     cache: Mutex<PageCache>,
     closing: CancellationToken,
@@ -420,7 +420,7 @@ impl SessionState {
             res = tokio::time::timeout(timeout_duration, async {
                 let snapshot = self
                     .settings
-                    .read_declared("web", SettingsScope::User, &call_cancel)
+                    .read("web", SettingsScope::User, &call_cancel)
                     .await
                     .map_err(|_| {
                         WebError::new("settings_unavailable", "Web settings could not be read.")

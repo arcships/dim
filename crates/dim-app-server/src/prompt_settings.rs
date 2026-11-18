@@ -5,7 +5,7 @@
 //! owns its text and reads only its field through the host port it declares.
 //! The factory configuration of every owner outranks this setting, so a
 //! candidate assembly keeps the text it was built with.
-use crate::settings::{SettingsScope, SettingsService, SourceDeclaration};
+use crate::settings::{Settings, SettingsScope, SourceDeclaration};
 use dim_agent_capabilities::{
     host::{HostError, HostFuture},
     prompt_sources::{BasePromptSettings, BasePromptSettingsHost},
@@ -35,14 +35,14 @@ struct PromptDocument {
 }
 
 struct Storage {
-    settings: Arc<SettingsService>,
+    settings: Arc<Settings>,
 }
 
 impl Storage {
     async fn read(&self, cancel: &CancellationToken) -> Result<PromptDocument, HostError> {
         let snapshot = self
             .settings
-            .read_declared(SOURCE, SettingsScope::User, cancel)
+            .read(SOURCE, SettingsScope::User, cancel)
             .await
             .map_err(|error| HostError::failed(format!("prompts settings: {error}")))?;
         serde_json::from_value(snapshot.document)
@@ -69,7 +69,7 @@ impl SummaryPromptSettings for Storage {
 }
 
 pub struct PromptSettingsPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
 }
 
 impl PromptSettingsPlugin {
@@ -90,7 +90,7 @@ impl DynPlugin for PromptSettingsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
-            settings.register_declared(
+            settings.register(
                 ctx,
                 SourceDeclaration {
                     source: SOURCE.into(),

@@ -2,6 +2,8 @@
 mod auth;
 pub mod config;
 mod discovery;
+mod face;
+pub use face::McpService as McpServiceBinding;
 mod import;
 pub(crate) mod management;
 mod publication;
@@ -13,7 +15,6 @@ pub use import::testing as import_testing;
 pub mod server;
 mod session;
 mod temporary;
-pub(crate) use publication::Publication;
 pub use publication::{McpApplication, McpOwner, McpPublication};
 pub use session::{
     McpAppCallResult, McpAppError, McpSession, McpSessionPlugin, McpSessionState, McpSourceState,
@@ -448,18 +449,26 @@ fn resolved_entry(
     })
 }
 
+/// A plugin document's last refusal message and optional stable reason.
+pub type McpPluginRefusal = (String, Option<&'static str>);
+
 pub struct McpService {
     settings: Arc<SettingsService>,
     credentials: Arc<CredentialVariablesHost>,
     /// Why the last registration of a plugin was refused, by plugin id: the
     /// raw error, and its static reason when the cause has one
     /// (PluginManager A.2).
-    refused: Mutex<BTreeMap<String, (String, Option<&'static str>)>>,
+    refused: Mutex<BTreeMap<String, McpPluginRefusal>>,
     publication: Arc<publication::Publication>,
     stopping: CancellationToken,
     gate: Mutex<()>,
     tasks: TaskTracker,
 }
+/// The private native key for MCP owner parts and embedding hosts.
+pub fn owner_key() -> Key<McpService> {
+    Key::named("dim/mcp/owner")
+}
+
 impl McpService {
     /// The credential variable names the daemon owns now.
     pub(crate) fn protected(&self) -> BTreeSet<String> {
@@ -512,7 +521,7 @@ impl McpService {
     /// fails validation is refused: the plugin then has no entries, and
     /// [`Self::plugin_refusal`] reports why.
     pub async fn register_plugin(
-        self: &Arc<Self>,
+        &self,
         plugin: String,
         dir: std::path::PathBuf,
         document: serde_json::Value,
@@ -570,11 +579,7 @@ impl McpService {
 
     /// Withdraws the MCP document of `plugin` and retires its entries in
     /// every Session; nothing when it registered none.
-    pub async fn withdraw_plugin(
-        self: &Arc<Self>,
-        plugin: String,
-        cancel: &CancellationToken,
-    ) -> Result<()> {
+    pub async fn withdraw_plugin(&self, plugin: String, cancel: &CancellationToken) -> Result<()> {
         self.refused.lock().unwrap().remove(&plugin);
         self.set_plugin(plugin, None, cancel).await
     }
@@ -583,7 +588,7 @@ impl McpService {
     /// and its static reason when the cause has one (PluginManager A.2).
     /// Both under one lock, so a registration between two reads cannot pair
     /// one cause's error with another's reason.
-    pub fn plugin_refusal(&self, plugin: &str) -> Option<(String, Option<&'static str>)> {
+    pub fn plugin_refusal(&self, plugin: &str) -> Option<McpPluginRefusal> {
         self.refused.lock().unwrap().get(plugin).cloned()
     }
 
@@ -602,7 +607,7 @@ impl McpService {
     }
 
     async fn set_plugin(
-        self: &Arc<Self>,
+        &self,
         plugin: String,
         registration: Option<McpPluginDocument>,
         cancel: &CancellationToken,
@@ -1785,7 +1790,7 @@ impl McpPlugin {
         Ok(Self {
             home_root,
             settings: names.key()?,
-            publication: names.key()?,
+            publication: Key::of(),
             files: names.key()?,
             methods: names.key()?,
             parts: names.key()?,
@@ -1826,7 +1831,7 @@ impl DynPlugin for McpPlugin {
                 refused: Mutex::default(),
                 publication,
                 stopping: ctx.cancellation_token(),
-                gate: Mutex::new(()),
+                gate: Mutex::default(),
                 tasks: TaskTracker::new(),
             });
             let (owner, closing) = (service.clone(), auth.clone());
@@ -1847,7 +1852,13 @@ impl DynPlugin for McpPlugin {
                 auth.clone(),
             )?;
             ctx.provide_as::<McpAuth>(auth)?;
-            ctx.provide_as::<McpService>(service)?;
+            ctx.provide_at(owner_key(), service.clone())?;
+            let binding = Arc::new(McpServiceBinding(service));
+            ctx.provide_as::<McpServiceBinding>(binding.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("mcpService"),
+                binding,
+            )?;
             parts.register(
                 ctx,
                 dim_agent_runtime::PartScope::Session,

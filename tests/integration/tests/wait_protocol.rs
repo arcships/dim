@@ -153,7 +153,7 @@ async fn wait_timeline_traces_match_the_notification_contract() {
                     Ok(Box::new(TreeTimelinePlugin::new(names)?))
                 }),
         )
-        .timeline_store(store.clone())
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
         .require_feature(Feature::new("Wait").branch("WaitBranch", |names| {
             Ok(Box::new(WaitBranchPlugin::new(names)?))
         }))

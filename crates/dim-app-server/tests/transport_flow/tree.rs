@@ -49,7 +49,9 @@ impl rutis::host::DynPlugin for FailChildBuild {
 async fn failed_branch_build_keeps_private_details_off_both_transports() {
     for ws in [false, true] {
         let mut builder = AgentBuilder::new(AgentConfig::default());
-        builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+            dim_agent_runtime::MemoryTimelineStore::default(),
+        )));
         defaults::install(&mut builder);
         defaults::mock_model_hosts(&mut builder);
         dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(MockTools));

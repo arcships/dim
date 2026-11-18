@@ -11,9 +11,9 @@ use crate::{
     runs::SchedulerError,
     session::{CancelParams, CreateParams, ListParams, nonempty, wakeup_request, wire_scheduled},
 };
-use chrono::{DateTime, Duration, Utc};
 use dim_agent_capabilities::session_broadcast::{SessionNotice, notify};
 use dim_agent_types::markup::escaped;
+use jiff::{SignedDuration, Timestamp};
 use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value as BridgeValue};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -25,7 +25,7 @@ const FORMAT_VERSION: u32 = 1;
 /// A terminal record is removed once it has been terminal for this long
 /// (§10.4): its only reader is `list`, and a record nobody listed is already
 /// unrecoverable, so the bound costs no information the design promises.
-const RETENTION_AFTER_TERMINAL: Duration = Duration::days(7);
+const RETENTION_AFTER_TERMINAL: SignedDuration = SignedDuration::from_hours(7 * 24);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -178,7 +178,7 @@ async fn update<R: Send + 'static>(
         .await?
 }
 
-fn stamp(instant: DateTime<Utc>) -> String {
+fn stamp(instant: Timestamp) -> String {
     format_instant(instant)
 }
 
@@ -186,7 +186,7 @@ fn stamp(instant: DateTime<Utc>) -> String {
 pub struct WakeupRequest {
     pub session_id: String,
     pub branch_id: String,
-    pub at: DateTime<Utc>,
+    pub at: Timestamp,
     pub prompt: String,
 }
 
@@ -230,7 +230,7 @@ impl Wakeups {
             holds.wakeup_create.notify_one();
         }
         let now = self.shared.now();
-        let expired = now - request.at >= Duration::seconds(GRACE_SECONDS);
+        let expired = now.duration_since(request.at) >= SignedDuration::from_secs(GRACE_SECONDS);
         let created = Wakeup {
             wakeup_id: uuid::Uuid::new_v4().to_string(),
             session_id: request.session_id,
@@ -349,7 +349,7 @@ impl Wakeups {
         let _hold = self.shared.wakeups.lock().await;
         let now = self.shared.now();
         let snapshot = read(&self.shared.files).await?;
-        let grace = Duration::seconds(GRACE_SECONDS);
+        let grace = SignedDuration::from_secs(GRACE_SECONDS);
         // Overdue records reach one Session in `at` order, which is the order
         // their prompts were due, with the record id as the stable tie-breaker
         // between records sharing an instant; the file's order is not a
@@ -358,7 +358,8 @@ impl Wakeups {
             .iter()
             .filter(|wakeup| wakeup.state == WakeupState::Scheduled)
             .filter(|wakeup| {
-                canonical_instant(&wakeup.at).is_some_and(|at| at <= now && now - at < grace)
+                canonical_instant(&wakeup.at)
+                    .is_some_and(|at| at <= now && now.duration_since(at) < grace)
             })
             .cloned()
             .collect();
@@ -367,7 +368,8 @@ impl Wakeups {
             .iter()
             .filter(|wakeup| wakeup.state == WakeupState::Scheduled)
             .filter(|wakeup| {
-                canonical_instant(&wakeup.at).is_some_and(|at| at <= now && now - at >= grace)
+                canonical_instant(&wakeup.at)
+                    .is_some_and(|at| at <= now && now.duration_since(at) >= grace)
             })
             .cloned()
             .collect();

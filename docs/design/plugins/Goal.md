@@ -13,7 +13,7 @@ Goal 属于一条分支。Session 部件注册命令和工具，branch 部件拥
 | 部件 | 依赖和职责 |
 | --- | --- |
 | GoalSession | TreeCommands、ToolRegistry、SessionMethods、GuideEntries、SessionIdentity；注册 goal_update、session.goal 和模型 guide。入口按 Session 与 branch 身份路由本插件拥有的 branch 处理句柄，不持有分支业务状态。 |
-| GoalBranch | Dispatcher、Timeline、TimelineIdentity、BranchLifecycle、SessionLifecycle、TreeCommands、SettingsService；拥有状态、决定、业务事件和自己的任务。 |
+| GoalBranch | Dispatcher、Timeline、TimelineIdentity、BranchLifecycle、SessionLifecycle、TreeCommands、Settings；拥有状态、决定、业务事件和自己的任务。 |
 
 分支内写业务状态用声明的 timeline；普通 continuation 和评估分支操作沿用原输入/TreeCommands 服务。没有新公共分支服务、Store 依赖或恢复协调模块。部件在 apply 注册清理及服务，实际消费和任务遵守 activated/closing；关闭完成必要终态后才移除服务。
 
@@ -271,4 +271,4 @@ active 协议文本与 guide 的变更必须用产品请求验证：重载后普
 
 ## Appendix G. Rust binding
 
-沿用 GoalSession/GoalBranch、原 Changes 身份路由、TypedPlugin、ctx.effect、TaskTracker、CancellationToken、SettingsService、Dispatcher::consume 和现有 TimelineQuery。一个 Goal 业务状态定义用于生产与读取；text.rs 负责唯一模型文本转换。append_batch 构造的内部输入在 Goal 边界校验并赋予 submission ID，不新增通用写入包装或数据库能力。具体文件拆分不构成新增需求。
+沿用 GoalSession/GoalBranch、原 Changes 身份路由、TypedPlugin、ctx.effect、TaskTracker、CancellationToken、Settings、Dispatcher::consume 和现有 TimelineQuery。一个 Goal 业务状态定义用于生产与读取；text.rs 负责唯一模型文本转换。append_batch 构造的内部输入在 Goal 边界校验并赋予 submission ID，不新增通用写入包装或数据库能力。具体文件拆分不构成新增需求。

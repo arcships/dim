@@ -1364,24 +1364,21 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
     use std::os::unix::{ffi::OsStringExt, fs::DirBuilderExt};
 
     async fn skills_posted(session: &dim_agent_runtime::Session, enabled: bool) {
+        let mut observed = None;
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
-                let Ok(view) = session
+                let Ok(skills) = session
                     .service::<dim_agent_capabilities::skills::SkillsBranch>("main")
                     .unwrap()
-                    .session()
-                    .current()
+                    .list()
                 else {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     continue;
                 };
-                let current = match &view.list {
-                    Some(list) => {
-                        format!("<dim-state source=\"dim/skills/list\">{list}</dim-state>")
-                    }
-                    None => {
-                        "<dim-state source=\"dim/skills/list\" cleared=\"true\"></dim-state>".into()
-                    }
+                let current = if enabled {
+                    "<dim-state source=\"dim/skills/list\">\n- product-check: Product fixture\n</dim-state>"
+                } else {
+                    "<dim-state source=\"dim/skills/list\" cleared=\"true\"></dim-state>"
                 };
                 let events = chain_events(session, "main", ..).await.unwrap();
                 let delivered = events.iter().rev().find_map(|event| match &event.kind {
@@ -1392,16 +1389,17 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
                     }),
                     _ => None,
                 });
-                if view.skills.contains_key("product-check") == enabled
-                    && delivered.as_ref() == Some(&current)
-                {
+                let fixture_enabled = skills.iter().any(|skill| skill.name == "product-check");
+                let adopted = delivered.as_deref() == Some(current);
+                observed = Some((skills.len(), fixture_enabled, adopted));
+                if fixture_enabled == enabled && adopted {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
-        .expect("the changed skill list is adopted into branch history");
+        .unwrap_or_else(|_| panic!("expected enabled={enabled}; (list length, fixture enabled, exact adoption)={observed:?}"));
     }
 
     let home = std::path::PathBuf::from("/tmp").join(format!("dp-{}", uuid::Uuid::new_v4()));
@@ -1410,6 +1408,7 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
         .mode(0o700)
         .create(&home)
         .unwrap();
+    std::fs::create_dir_all(home.join("user/.agents/skills")).unwrap();
     let native = home.join("rust");
     let work = home.join("work");
     std::fs::create_dir_all(&work).unwrap();
@@ -1445,6 +1444,7 @@ async fn local_product_operations_use_real_tools_and_survive_rpc_reload() {
         builder,
         ServerConfig {
             product_home: Some(home.clone()),
+            platform_home: Some(home.join("user")),
             target_home: Some(native.clone()),
             unix_path: Some(native.join("daemon.sock")),
             session_defaults: SessionConfig {

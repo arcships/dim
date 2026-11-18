@@ -85,7 +85,7 @@ const entry = (modelId, metadata, extra = {}) => ({
 })
 
 const reply = {
-  drivers: [], errors: [],
+  next: null, drivers: [], errors: [],
   providers: [{
   providerId: "relay", displayName: "Relay", source: "custom", credentialAuthority: "static",
   version: 1, enabled: true, actions: [],
@@ -114,4 +114,44 @@ test("a model row says how its id was identified, and an ambiguous one names the
   assert.match(screen, /identifiedInferred gpt-5\.5 openai/, screen)
   assert.match(screen, /identifiedAmbiguous ark-code\/ark-code-latest, byteplus-coding-plan\/ark-code-latest/, screen)
   assert.match(screen, /identifiedNone/, screen)
+})
+
+test("model management searches on the server, loads more and rereads only a changed model", async t => {
+  const calls = [], loads = [], updates = []
+  const shown = { ...provider, models: [entry("visible", undefined, { actions: ["set_enabled", "edit"] }), entry("other", undefined, { actions: ["delete"] })] }
+  globalThis.modelsConnection = reactive({ phase: "connected", supports: () => true, client: { call: async (method, params, read) => {
+    calls.push([method, params])
+    if (method === "provider.model.set_enabled") return read({ version: 2 })
+    if (method === "provider.models.delete") return read({ version: 3 })
+    if (method === "provider.management") return read({ drivers: [], errors: [], next: null, providers: [{ ...shown, version: 2, models: [entry("visible", undefined, { enabled: false, actions: ["set_enabled", "edit"] })] }] })
+    throw new Error(`unexpected ${method}`)
+  } } })
+  const root = node("root")
+  const app = renderer.createApp(ProviderModels, { provider: shown, next: "other", onLoad: (...args) => loads.push(args), onUpdated: value => updates.push(value) }).use(nuxtUiTestPlugin)
+  app.mount(root)
+  t.after(() => { app.unmount(); delete globalThis.modelsConnection })
+  await flush()
+  all(root).find(n => n.props.type === "search").props["onUpdate:modelValue"]("later-page")
+  await flush()
+  assert.deepEqual(loads[0], [false, "later-page"])
+  all(root).find(n => n.type === "button" && text(n) === "loadMore").props.onClick()
+  assert.deepEqual(loads[1], [true, "later-page"])
+  all(root).find(n => n.props.type === "search").props["onUpdate:modelValue"]("")
+  await flush()
+  all(root).find(n => n.type === "input" && n.props["aria-label"] === "enabled visible").props["onUpdate:modelValue"](false)
+  await flush()
+  assert.deepEqual(calls, [
+    ["provider.model.set_enabled", { providerId: "relay", expectedVersion: 1, modelId: "visible", enabled: false }],
+    ["provider.management", { providerId: "relay", modelId: "visible" }],
+  ])
+  assert.equal(updates[0].models.length, 2)
+  assert.equal(updates[0].models.find(m => m.model.modelId === "visible").enabled, false)
+  assert.equal(updates[0].models.find(m => m.model.modelId === "other").enabled, true)
+  all(root).find(n => n.type === "button" && text(n) === "remove").props.onClick()
+  await flush()
+  assert.deepEqual(calls.at(-1), ["provider.models.delete", { providerId: "relay", expectedVersion: 1, modelId: "other", reply: "summary" }])
+  all(root).find(n => n.type === "button" && text(n) === "edit").props.onClick()
+  await flush()
+  assert.deepEqual(calls.at(-1), ["provider.management", { providerId: "relay", modelId: "visible" }])
+  assert.ok(all(root).some(n => n.type === "form"))
 })

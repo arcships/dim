@@ -599,16 +599,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "chrono-tz"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
-dependencies = [
- "chrono",
- "phf",
-]
-
-[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -750,8 +740,8 @@ version = "4.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26d09284075f5c87675790d1ad74212a7863eb8bdf228cdbd364f08a152fc62d"
 dependencies = [
- "chrono",
  "derive_builder",
+ "jiff",
  "strum 0.27.2",
 ]
 
@@ -925,37 +915,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
-name = "defmt"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4a0795ac740cb54d7b3775c9c17345f6aaecf884c01733b39d6017738e0e3e1"
-dependencies = [
- "bitflags 1.3.2",
- "defmt-macros",
-]
-
-[[package]]
-name = "defmt-macros"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "840bb056bd99c495c9188198a258ab787c79f306d864db3e6e8451442d6d8366"
-dependencies = [
- "defmt-parser",
- "proc-macro2",
- "quote",
- "syn 3.0.6",
-]
-
-[[package]]
-name = "defmt-parser"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71958f69fb2de856c5dd51ac9377e986ca1aa5919f931bf5395a807277f889a0"
-dependencies = [
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1109,7 +1068,6 @@ name = "dim-agent-capabilities"
 version = "0.1.0-alpha.25"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "dim-agent-capabilities",
  "dim-agent-runtime",
  "dim-agent-types",
@@ -1122,6 +1080,7 @@ dependencies = [
  "iana-time-zone",
  "ignore",
  "image",
+ "jiff",
  "libc",
  "portable-pty",
  "regex",
@@ -1197,8 +1156,6 @@ dependencies = [
 name = "dim-agent-scheduler"
 version = "0.1.0-alpha.25"
 dependencies = [
- "chrono",
- "chrono-tz",
  "croner",
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1207,6 +1164,7 @@ dependencies = [
  "dim-app-server",
  "dim-client",
  "futures-util",
+ "jiff",
  "rusqlite",
  "rutis",
  "rutis-bridge",
@@ -1295,7 +1253,6 @@ version = "0.1.0-alpha.25"
 dependencies = [
  "anstyle",
  "base64 0.22.1",
- "chrono",
  "crossterm",
  "dim-acp",
  "dim-agent-capabilities",
@@ -1305,6 +1262,7 @@ dependencies = [
  "flate2",
  "ignore",
  "image",
+ "jiff",
  "libc",
  "objc2",
  "objc2-app-kit",
@@ -1367,13 +1325,13 @@ dependencies = [
 name = "dim-event-hub"
 version = "0.1.0-alpha.25"
 dependencies = [
- "chrono",
  "dim-agent-capabilities",
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",
  "dim-client",
  "futures-util",
+ "jiff",
  "rusqlite",
  "rutis",
  "rutis-bridge",
@@ -1436,7 +1394,6 @@ name = "dim-migration"
 version = "0.1.0-alpha.25"
 dependencies = [
  "base64 0.23.1",
- "chrono",
  "crossterm",
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1445,6 +1402,7 @@ dependencies = [
  "dim-app-server",
  "dim-client",
  "dim-oauth",
+ "jiff",
  "reqwest 0.12.28",
  "rusqlite",
  "rutis",
@@ -1465,13 +1423,13 @@ name = "dim-modality"
 version = "0.1.0-alpha.25"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "dim-agent-capabilities",
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",
  "dim-ocr",
  "futures-util",
+ "jiff",
  "jsonschema",
  "libc",
  "rutis",
@@ -1497,7 +1455,6 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
- "chrono",
  "dim-agent-aimux",
  "dim-agent-capabilities",
  "dim-agent-runtime",
@@ -1569,13 +1526,13 @@ name = "dim-report"
 version = "0.1.0-alpha.25"
 dependencies = [
  "base64 0.22.1",
- "chrono",
  "dim-agent-capabilities",
  "dim-agent-runtime",
  "dim-agent-types",
  "dim-app-server",
  "dim-client",
  "futures-util",
+ "jiff",
  "reqwest 0.12.28",
  "rutis",
  "serde",
@@ -2698,13 +2655,13 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "jiff"
-version = "0.2.38"
+version = "0.2.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2b005715dcbeb0089a3c0dab99f2ff1cc3b2525323552703d648585d342a383"
+checksum = "175dc66334db3b9ab9985bf8b61cfed50dc16d20964bb47f9e479adcae984a7f"
 dependencies = [
- "defmt",
  "jiff-core",
  "jiff-static",
+ "jiff-tzdb",
  "jiff-tzdb-platform",
  "log",
  "portable-atomic",
@@ -2715,19 +2672,18 @@ dependencies = [
 
 [[package]]
 name = "jiff-core"
-version = "0.1.1"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e52fe76043ccecc9005d2305ebaadf7d7fc0cc89ca6baa10a94d6bc68c7128c"
+checksum = "e599b80292e597019b8b3e392de3f4bea2959ddfb8c7dff60e035e9e311a2c1b"
 dependencies = [
- "defmt",
  "log",
 ]
 
 [[package]]
 name = "jiff-static"
-version = "0.2.38"
+version = "0.2.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc9817253cf7c7ee4684451bd327e88d6f3658014e54a29198625590650695c"
+checksum = "c7b1af7547d47354bc438d797e3854601bde8f8d185780c5ba4ab27afa54f1ba"
 dependencies = [
  "jiff-core",
  "proc-macro2",
@@ -2737,9 +2693,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-tzdb"
-version = "0.1.9"
+version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa8377070c6bae868759445e5a77f66d84f0b72f3a054bfb00e6d038b8282da7"
+checksum = "0980fca2cc272465bd60e82397607ba9f33add9e48defd77923301bbd03808f2"
 
 [[package]]
 name = "jiff-tzdb-platform"
@@ -3446,24 +3402,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "phf"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "913273894cec178f401a31ec4b656318d95473527be05c0752cc41cdc32be8b7"
-dependencies = [
- "phf_shared",
-]
-
-[[package]]
-name = "phf_shared"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "06005508882fb681fd97892ecff4b7fd0fee13ef1aa569f8695dae7ab9099981"
-dependencies = [
- "siphasher",
-]
 
 [[package]]
 name = "pin-project"
@@ -4754,12 +4692,6 @@ name = "similar"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
-
-[[package]]
-name = "siphasher"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 
 [[package]]
 name = "slab"

@@ -1319,7 +1319,7 @@ async fn output_block_start_id_roundtrips_through_the_merged_row() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session("session".into()).await.unwrap();
     let restored = chain_events(&session, "main", ..=2).await.unwrap();
@@ -1936,7 +1936,7 @@ async fn extension_events_keep_their_own_rows_and_restore_unchanged() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session("session".into()).await.unwrap();
     let restored = chain_events(&session, "main", ..=3).await.unwrap();
@@ -2072,7 +2072,7 @@ async fn conditional_steer_recovers_checked_candidates_once_and_preserves_old_in
         let mut builder = AgentBuilder::new(AgentConfig::default());
         dim_agent_capabilities::defaults::mock_hosts(&mut builder);
         dim_agent_capabilities::defaults::install(&mut builder);
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent.restore_session("session".into()).await.unwrap();
         tokio::time::timeout(PUBLISHED, session.idle("main"))
@@ -2285,7 +2285,7 @@ async fn branch_end_events_restore_unchanged_and_the_line_stays_ended() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session("session".into()).await.unwrap();
     let restored = chain_events(&session, "main", ..=5).await.unwrap();
@@ -3339,7 +3339,7 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
         let mut builder = AgentBuilder::new(AgentConfig::default());
         dim_agent_capabilities::defaults::mock_hosts(&mut builder);
         dim_agent_capabilities::defaults::install(&mut builder);
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let mut agent = MinimalHost::start(&builder).await.unwrap();
         let bad = agent
             .create_session(SessionConfig::default())
@@ -3432,7 +3432,7 @@ async fn failed_output_commit_closes_only_its_session_and_recovery_settles_the_o
             let mut builder = AgentBuilder::new(AgentConfig::default());
             dim_agent_capabilities::defaults::mock_hosts(&mut builder);
             dim_agent_capabilities::defaults::install(&mut builder);
-            builder.timeline_store(store.clone());
+            builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
             agent = MinimalHost::start(&builder).await.unwrap();
             good = agent.restore_session(good_id).await.unwrap();
         }
@@ -4910,7 +4910,7 @@ async fn a_v21_store_upgrades_in_place_once_and_restores_typeless_tool_schemas()
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session("schema".into()).await.unwrap();
     let restored = chain_events(&session, "main", ..=2).await.unwrap();
@@ -5018,7 +5018,7 @@ async fn a_type_array_tool_schema_round_trips_on_the_current_store_without_an_up
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session("schema".into()).await.unwrap();
     let restored = chain_events(&session, "main", ..=2).await.unwrap();
@@ -6116,7 +6116,7 @@ async fn recovery_ignores_disposable_snapshots_but_preserves_and_validates_facts
         let mut builder = AgentBuilder::new(AgentConfig::default());
         dim_agent_capabilities::defaults::mock_hosts(&mut builder);
         dim_agent_capabilities::defaults::install(&mut builder);
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         agent.restore_session("session".into()).await.unwrap();
         agent.close().await.unwrap();
@@ -6531,7 +6531,7 @@ async fn a_cold_read_failure_preserves_the_record_and_other_session_progress() {
         let mut builder = dim_agent_runtime::AgentBuilder::new(dim_agent_runtime::AgentConfig::default());
         dim_agent_capabilities::defaults::mock_hosts(&mut builder);
         dim_agent_capabilities::defaults::install(&mut builder);
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         let agent = MinimalHost::start(&builder).await.unwrap();
         let bad = agent.create_session(SessionConfig::default()).await.unwrap();
         let good = agent.create_session(SessionConfig::default()).await.unwrap();
@@ -6711,7 +6711,7 @@ async fn directory_history_pages_keep_a_fixed_head() {
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     let sessions =
         dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
-    let store = sessions.timeline_store();
+    let store: Arc<dyn TimelineStore> = sessions.timeline_store();
     store
         .create_session("paged", &SessionConfig::default())
         .await

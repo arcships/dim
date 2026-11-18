@@ -599,7 +599,7 @@ impl Gateway {
                             args["permissionPolicy"] = json!({"preset":mode});
                         }
                         let explicit = if let Some(model) = controls.startup {
-                            if !rpc.supports("provider.catalog") {
+                            if !rpc.supports("provider.models.query") {
                                 return Err(Error::invalid_params());
                             }
                             let choices = crate::config::models(&rpc).await?;

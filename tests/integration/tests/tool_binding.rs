@@ -215,7 +215,7 @@ async fn env_named(
     let model = Arc::new(ScriptedModel::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     if let Some(store) = store {
-        builder.timeline_store(store);
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     }
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
@@ -886,7 +886,7 @@ async fn contributors_are_current_for_the_first_request_without_initial_configur
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         add_optional(
             &mut builder,
             generations.clone(),
@@ -1592,7 +1592,7 @@ async fn a_persisted_contributed_version_names_one_generation_across_restores() 
                 model: Some(selection("scripted")),
             }),
         );
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         add_optional(
             &mut builder,
             generations.clone(),

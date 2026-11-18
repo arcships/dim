@@ -16,7 +16,7 @@ use dim_agent_capabilities::{
     },
     methods::{RpcError, SessionMethods},
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, ReadCommandRules},
+    permission::{CommandRules, ReadCommandRules},
     skill_settings::SkillSettingsHost,
     skills::{MemorySkillSettings, SkillsCatalogPlugin},
     tool_registry::{ToolContribution, ToolHandler, ToolProvider, ToolRegistry, ToolSourceSet},
@@ -561,13 +561,13 @@ impl Env {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder.startup_timeout(startup_timeout);
         let store = Arc::new(MemoryTimelineStore::default());
-        builder.timeline_store(store.clone());
+        builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(context_model)))
-            .session_value(Arc::new(CommandRulesHost(rules.clone())))
+            .session_data_value(Arc::new(CommandRules(rules.clone())))
             .session_value(Arc::new(CompactionStrategyHost(compaction)))
             .session_value(Arc::new(HookSourcesHost(sources.clone())))
             .require_feature(Feature::new("PrepareModelHost").session(

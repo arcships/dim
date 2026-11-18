@@ -25,7 +25,7 @@ export type ManagementProvider = ManagementInfo & {
   models: ManagementModel[] | null
   preferences: Record<string, { reasoningEffort?: string; serviceTier?: string }>
 }
-export type ManagementView = { drivers: { driverKind: string; authTypes: string[]; remoteModelList: boolean }[]; providers: ManagementProvider[]; errors: { providerId: string; message: string }[] }
+export type ManagementView = { next: string | null; drivers: { driverKind: string; authTypes: string[]; remoteModelList: boolean }[]; providers: ManagementProvider[]; errors: { providerId: string; message: string }[] }
 export type ManagementPage = Omit<ManagementView, "providers"> & { providers: ManagementInfo[]; next: string | null }
 export type LoginAttempt = { attemptId: string; expiresAt: number; authorizationUrl?: string; verificationUri?: string; verificationUriComplete?: string; userCode?: string }
 export type AccountUsage = {
@@ -129,6 +129,7 @@ export function readManagementProvider(value: unknown): ManagementProvider {
 export function readManagement(value: unknown): ManagementView {
   const v = object(value)
   return {
+    next: v.next === null ? null : string(v.next),
     drivers: list(v.drivers, (item) => { const d = object(item); return { driverKind: string(d.driverKind), authTypes: list(d.authTypes, string), remoteModelList: boolean(d.remoteModelList) } }),
     providers: list(v.providers, readManagementProvider),
     errors: list(v.errors, (item) => { const e = object(item); return { providerId: string(e.providerId), message: string(e.message) } }),
@@ -172,4 +173,9 @@ export function readResetBatches(value: unknown): { window: ResetBatch[]; monthl
   const v = object(value)
   const read = (item: unknown): ResetBatch => { const b = object(item); return { grantId: number(b.grantId), remaining: number(b.remaining), expiresAt: string(b.expiresAt), scopeType: string(b.scopeType), subscriptionId: optional(b.subscriptionId, number), sourceType: string(b.sourceType) } }
   return { window: list(v.window, read), monthlyFull: list(v.monthlyFull, read) }
+}
+
+export function readModelWrite(value: unknown): { version: number } {
+  const v = object(value)
+  return { version: number(v.version) }
 }

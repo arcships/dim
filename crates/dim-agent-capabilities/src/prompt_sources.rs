@@ -137,7 +137,7 @@ pub fn session_entry(body: String, scope: PromptScope) -> Option<PromptEntry> {
 
 /// Mirrors TS `formatCurrentDate`.
 pub fn local_today() -> String {
-    chrono::Local::now().format("%Y-%m-%d").to_string()
+    jiff::Zoned::now().strftime("%Y-%m-%d").to_string()
 }
 
 pub(crate) fn sha256_version(text: &str) -> String {
@@ -684,7 +684,7 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                     for target in targets(CHECKED).into_iter().filter(|target| target.source != LANGUAGE) {
                         let current = tokio::select! {
                             _ = lifecycle.cancelled() => return,
-                            loaded = host.0.load(target.clone(), lifecycle.child_token()) => loaded,
+                            loaded = host.load(target.clone(), lifecycle.child_token()) => loaded,
                         };
                         match current {
                             Ok(current) if current.as_ref() != prompts.borrow().entries.get(&(target.source.clone(), target.scope.clone())) => changed.push((target, current)),
@@ -696,7 +696,7 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                     let target = targets([LANGUAGE]).pop().expect("language target");
                     let current = tokio::select! {
                         _ = lifecycle.cancelled() => return,
-                        loaded = host.0.load(target.clone(), lifecycle.child_token()) => loaded,
+                        loaded = host.load(target.clone(), lifecycle.child_token()) => loaded,
                     };
                     let mut language_changed = false;
                     match current {

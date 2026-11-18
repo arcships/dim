@@ -213,7 +213,14 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
         modality
     );
     assert_eq!(modality.models, vec![declared()]);
-    // The request object is the contract: a wrong one is the caller's error.
+    let refused = call(
+        &face(&root, "selectableModelsHost"),
+        "selectableModels",
+        json!([]),
+    )
+    .await
+    .expect_err("a positional array is not the documented request object");
+    assert_eq!(refused.code(), Some("invalid_request"));
     let refused = call(
         &face(&root, "selectableModelsHost"),
         "selectableModels",
@@ -441,6 +448,71 @@ fn the_port_errors_cross_as_code_and_message() {
     })
     .unwrap();
     assert_eq!(failed, json!({"code": "failed", "message": "no document"}));
+}
+
+#[tokio::test]
+async fn command_rule_reads_cancel_the_same_owner_work_through_native_and_wire_calls() {
+    use dim_agent_capabilities::{
+        host::HostFuture,
+        permission::{CommandRules, ReadCommandRules},
+    };
+    use dim_agent_types::CommandRule;
+    struct Rules(tokio::sync::mpsc::UnboundedSender<CancellationToken>);
+    impl ReadCommandRules for Rules {
+        fn rules(&self, cancel: CancellationToken) -> HostFuture<'_, Vec<CommandRule>> {
+            self.0.send(cancel).unwrap();
+            Box::pin(std::future::pending())
+        }
+    }
+    for mode in ["native_cancel", "native_drop", "wire_drop"] {
+        let (started, mut reads) = tokio::sync::mpsc::unbounded_channel();
+        let binding = Arc::new(CommandRules(Arc::new(Rules(started))));
+        let caller = CancellationToken::new();
+        let task = if mode == "wire_drop" {
+            let face: Arc<dyn HostDispatch> = binding.clone();
+            tokio::spawn(async move {
+                call(&face, "read", json!({}))
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+        } else {
+            let owner = binding.clone();
+            let cancel = caller.clone();
+            tokio::spawn(async move {
+                owner
+                    .read(cancel)
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+            })
+        };
+        let owner_cancel = tokio::time::timeout(std::time::Duration::from_secs(5), reads.recv())
+            .await
+            .expect("the command rules owner receives the read")
+            .unwrap();
+        if mode == "native_cancel" {
+            caller.cancel();
+            assert!(task.await.unwrap().is_err());
+        } else {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+            assert!(
+                !caller.is_cancelled(),
+                "dropping a read must preserve its caller token"
+            );
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(5), owner_cancel.cancelled())
+            .await
+            .expect("ending the read cancels its owner's work");
+        let cancelled = CancellationToken::new();
+        cancelled.cancel();
+        assert!(binding.read(cancelled).await.is_err());
+        assert!(
+            reads.try_recv().is_err(),
+            "a pre-cancelled read never enters the owner"
+        );
+    }
 }
 
 struct PromptRead {

@@ -115,13 +115,13 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 
 Rust 宿主端口和注册表（ToolRegistry、PromptRegistry、ToolHost、ModelHost、PrepareModelHost，
 以及[生成的服务](../../architecture/rust-agent/generated/services.md)中的其他项）在阶段 2 获得名称和组。
-除非外来部件需要它们，它们保持仅限 Rust。`BranchOpening`（开启回执是 Rust future）和门面的状态读取
-（`StateCell<S>`、`PublicService`）同样如此，它们以 Rust 类型为 key。外来部件通过服务暴露自己的状态。
+它们的公开契约遵循[服务面 §2](../../design/service-faces.md)，包括开启回执和状态观察。
+语言绑定保留所属服务的操作及生命周期；私有实现机制不会因为 Rust 类型有一个 key 就成为公开服务。
 
 工具、工具来源、提示词来源和方法命名空间不是名字。部件向它们的所有者登记，部件卸载时登记结束
 （[rutis 使用 R6](rutis-usage.md#r6-贡献向所有者登记)）：ToolRegistry 或 PromptRegistry 上的 `register`，或其作用域方法表上的
 `register`，即 `sessionMethods`（`session`）或 `managementMethods`（进程，仅向 protected-local v3 提供），Rpc 每次调用时读取方法表。
-工具和方法命名空间可以从任何语言登记；提示词来源和工具来源在有外来部件需要之前仍只限 Rust。这四种现在都已经登记。
+每种贡献遵循所属 owner 的数据面契约和登记生命周期。
 
 两条机制契约把门面绑定到核心部件：分支只在有 `LoopState` 提供者时发布，Session 只在有
 `TimelineTreeControl` 提供者时发布。因此 Loop 和 TimelineTree 是核心部件，用 Rust 编写。
@@ -258,6 +258,8 @@ Dim 在它们之间为 Session 部件和分支部件增加两个阶段：
 | 关闭（`closing`） | 停止准入、取消自己的工作、释放资源、写终态事实 | 关闭开始时 `closing()` 完成。Session 从开始关闭的那一刻起就处于关闭中 |
 
 Dispatcher 处理函数可能在发布（`activated`）之前收到开启阶段的事实。
+
+进程发布是宿主范围的，不是第三个逐部件阶段。`processActivity` 进程数据面提供 `activated()`：当宿主在所有必需的进程行变为 Active 之后开放时，它完成为 `true`；启动失败或在本次调用观察到发布之前开始关闭时为 `false`。关闭开始后的新调用返回 `false`，即使先前的调用曾返回 `true`；行重载不会重置发布状态。共享的服务目录名、其 `HostDispatch` 与原生绑定是同一个操作，取消语义相同。不得在初始装配完成前行动的进程部件（例如在另一个必需行发布其所有者状态之前）在自己的任务中等待它；`apply` 仍完成装配，不在其上阻塞。不依赖初始装配的部件无须等待。
 
 ### 7.2 代次、重载与重建
 

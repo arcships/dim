@@ -1,9 +1,9 @@
 import { definePlugin } from '@arcships/rutis'
 import { partRow } from './part-row.ts'
 import provides from './session-metadata.json' with { type: 'json' }
-import type { SessionMethods } from '../../npm/plugin.js'
+import type { JsonValue, SessionMethods } from '../../npm/plugin.js'
 
-type Envelope = { ok: boolean; value?: unknown; error?: { code: string; message: string } }
+type Envelope = { ok: boolean; value?: JsonValue; error?: { code: string; message: string } }
 type SessionMetadata = { read(request: unknown): Promise<Envelope>; setTitle(request: unknown): Promise<Envelope> }
 type MethodCall = { method: string; params: { sessionId: string; [key: string]: unknown } }
 

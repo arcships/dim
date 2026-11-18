@@ -9,6 +9,9 @@
 [第二轮缺项对应表](coverage-completion.md)及[运行记录](coverage-completion-results.md)接续第一轮，逐条对应原审计的具体场景。
 下表是最初的检查清单；WaitRuntime、NestedSettlement 已扩展，以补充实验和新运行记录为准。
 
+#1732 的公共机制补充见[合同—实现—模型对应表](../timeline-contract-coverage.md)和
+[写入/发布运行记录](publication-results.md)；它们有独立源码基线与结果，不改变以下旧记录。
+
 ## 如何读结论
 
 每项先确定使用场景和承诺，再确定模型动作与代码入口，最后检查性质。下表里的“检查”指 `.cfg` 声明的

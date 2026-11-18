@@ -31,7 +31,7 @@ pub(crate) struct Config {
     pub model: Option<Configuration>,
     pub models: Vec<Model>,
     /// Whether the Session offers `session.model.update` and the daemon
-    /// advertises the model catalog, which only the product provider assembles.
+    /// advertises the selectable-model query, which only the product provider assembles.
     /// Effort choices come from the adopted declaration, so the option needs no
     /// catalog read, but a preference write needs a product provider.
     pub catalog: bool,
@@ -39,72 +39,37 @@ pub(crate) struct Config {
 
 pub(crate) async fn models(rpc: &Rpc) -> Result<Vec<Model>, Error> {
     #[derive(Deserialize)]
-    struct Providers {
-        providers: Vec<Provider>,
+    struct Page {
+        models: Vec<Row>,
+        next: Option<ModelId>,
     }
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
-    struct Provider {
+    struct Row {
         provider_id: String,
-        enabled: bool,
+        model: Entry,
     }
     #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Managed {
-        provider_id: String,
-    }
-    #[derive(Deserialize)]
-    struct Snapshot {
-        catalog: Option<Catalog>,
-    }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Catalog {
-        models: Vec<Entry>,
-        disabled_model_ids: Vec<String>,
-    }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
     struct Entry {
         id: String,
         name: String,
-        unavailable_reason: Option<String>,
-    }
-    let mut providers = Vec::new();
-    if rpc.supports("provider.list") {
-        let listed: Providers = rpc.typed("provider.list", json!({})).await?;
-        providers.extend(
-            listed
-                .providers
-                .into_iter()
-                .filter(|p| p.enabled)
-                .map(|p| p.provider_id),
-        );
-    }
-    if rpc.supports("account.providers") {
-        let managed: Vec<Managed> = rpc.typed("account.providers", json!({})).await?;
-        providers.extend(managed.into_iter().map(|p| p.provider_id));
     }
     let mut choices = Vec::new();
-    for provider in providers {
-        let snapshot: Snapshot = rpc
-            .typed("provider.catalog", json!({"providerId":provider}))
-            .await?;
-        if let Some(catalog) = snapshot.catalog {
-            choices.extend(
-                catalog
-                    .models
-                    .into_iter()
-                    .filter(|m| {
-                        m.unavailable_reason.is_none()
-                            && !catalog.disabled_model_ids.contains(&m.id)
-                    })
-                    .map(|m| Model {
-                        provider: provider.clone(),
-                        id: m.id,
-                        name: m.name,
-                    }),
-            );
+    let mut after = None;
+    loop {
+        let mut params = json!({"selectableOnly":true,"limit":128});
+        if let Some(cursor) = after {
+            params["after"] = json!(cursor);
+        }
+        let page: Page = rpc.typed("provider.models.query", params).await?;
+        choices.extend(page.models.into_iter().map(|row| Model {
+            provider: row.provider_id,
+            id: row.model.id,
+            name: row.model.name,
+        }));
+        after = page.next;
+        if after.is_none() {
+            break;
         }
     }
     // ACP model values retain native IDs. Ambiguous IDs cannot select a provider.
@@ -158,7 +123,8 @@ impl Config {
                 .await?,
             );
         }
-        if config.methods.contains("session.model.update") && rpc.supports("provider.catalog") {
+        if config.methods.contains("session.model.update") && rpc.supports("provider.models.query")
+        {
             config.catalog = true;
             config.models = models(rpc).await?;
         }

@@ -12,10 +12,10 @@ use crate::{
     subscribe::{refresh_submission, write_live_guide},
     text::{digest, preview, stamp},
 };
-use chrono::Utc;
 use dim_agent_capabilities::host::{SessionFiles, StoredSessionFile};
 use dim_agent_types::{InputMode, markup::escaped};
 use futures_util::{StreamExt, stream};
+use jiff::Timestamp;
 use rutis::Ctx;
 use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, settle};
@@ -671,7 +671,7 @@ async fn apply_changes(
     if removed.is_empty() && cleared.is_empty() && failed.is_empty() && refreshes.is_empty() {
         return Ok(());
     }
-    let now = stamp(Utc::now());
+    let now = stamp(Timestamp::now());
     let refreshes = refreshes.to_vec();
     shared
         .store

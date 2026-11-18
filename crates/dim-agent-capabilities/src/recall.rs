@@ -15,13 +15,13 @@ use crate::{
     timeline_tree::TreeCommands,
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
-use chrono::{DateTime, TimeZone, Utc};
 use dim_agent_runtime::{
     AgentBuilder, AgentError, CAPABILITY_RELOADING, Feature, Names, QueryEvent, QueryFilter,
     QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QuerySelect, QuerySpec,
     TimelineQuery, TimelineQueryDirection, TimelineQueryScope,
 };
 use dim_agent_types::*;
+use jiff::Timestamp;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
@@ -1772,18 +1772,16 @@ fn preset(preset: &PermissionPreset) -> &'static str {
     }
 }
 
-fn time(millis: u64) -> DateTime<Utc> {
-    Utc.timestamp_millis_opt(millis as i64)
-        .single()
-        .unwrap_or_default()
+fn time(millis: u64) -> Timestamp {
+    Timestamp::from_millisecond(millis as i64).unwrap_or(Timestamp::UNIX_EPOCH)
 }
 
 fn clock(millis: u64) -> String {
-    time(millis).format("%H:%M").to_string()
+    time(millis).strftime("%H:%M").to_string()
 }
 
 fn date(millis: u64) -> String {
-    time(millis).format("%Y-%m-%d").to_string()
+    time(millis).strftime("%Y-%m-%d").to_string()
 }
 
 /// The projection behind `recall`, for flow tests that answer recorded

@@ -145,7 +145,9 @@ async fn launch(
 ) -> (RunningServer, dim_agent_runtime::Agent, Arc<Recording>) {
     let model = Arc::new(Recording::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+        dim_agent_runtime::MemoryTimelineStore::default(),
+    )));
     defaults::install(&mut builder);
     defaults::mock_model_hosts_with_model(
         &mut builder,

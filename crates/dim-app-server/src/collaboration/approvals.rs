@@ -85,6 +85,55 @@ impl Source {
 
 impl dim_agent_runtime::PublicService for CollaborationSession {}
 
+/// The active delegation destination and its immutable approval capability flags.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApprovalDestination {
+    pub branch_id: String,
+    pub delegation_id: String,
+    pub agent_id: String,
+    pub interactive: bool,
+    pub approval_tools: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct DestinationRequest {
+    member_session_id: String,
+}
+
+impl rutis_bridge::session::HostDispatch for CollaborationSession {
+    fn methods(&self) -> Option<Value> {
+        Some(json!({"approvalDestination": "sync"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        if method != "approvalDestination" {
+            return Err(rutis_bridge::session::Error::Value(format!(
+                "collaborationSession has no method {method}"
+            )));
+        }
+        let invalid = |message: String| {
+            rutis_bridge::exports::failure("collaborationSession", "invalid_request", message, None)
+        };
+        let Value::Array(args) = args.json().map_err(|error| invalid(error.to_string()))? else {
+            return Err(invalid("expected one request object".into()));
+        };
+        let [request] = <[Value; 1]>::try_from(args)
+            .map_err(|_| invalid("expected one request object".into()))?;
+        if !request.is_object() {
+            return Err(invalid("expected one request object".into()));
+        }
+        let request: DestinationRequest =
+            serde_json::from_value(request).map_err(|error| invalid(error.to_string()))?;
+        rutis_bridge::session::arg(&self.approval_destination(&request.member_session_id))
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Answer {
@@ -115,7 +164,8 @@ impl CollaborationSession {
         }
     }
 
-    fn approval_destination(&self, member: &str) -> Option<(String, String, String)> {
+    /// Returns the current live delegation destination, or `None` when it is absent or closing.
+    pub fn approval_destination(&self, member: &str) -> Option<ApprovalDestination> {
         let state = self.state.lock().unwrap();
         let request = state
             .requests
@@ -125,11 +175,13 @@ impl CollaborationSession {
             .branches
             .get(&request.branch)
             .filter(|branch| !branch.closing)?;
-        Some((
-            request.branch.clone(),
-            request.op.clone(),
-            request.agent_id.clone(),
-        ))
+        Some(ApprovalDestination {
+            branch_id: request.branch.clone(),
+            delegation_id: request.op.clone(),
+            agent_id: request.agent_id.clone(),
+            interactive: self.interactive,
+            approval_tools: self.approval_tools,
+        })
     }
 
     /// Forwards each of the member branch's own approval asks to the leader
@@ -179,14 +231,12 @@ impl CollaborationSession {
             self.deny(branch_id, &request.approval_id);
             return;
         };
-        let Some((leader_branch, delegation_id, agent_id)) =
-            leader_service.approval_destination(&self.session_id)
-        else {
+        let Some(destination) = leader_service.approval_destination(&self.session_id) else {
             self.deny(branch_id, &request.approval_id);
             return;
         };
-        if !leader_service.interactive || !leader_service.approval_tools {
-            let reason = if !leader_service.interactive {
+        if !destination.interactive || !destination.approval_tools {
+            let reason = if !destination.interactive {
                 "the leader Session is non-interactive"
             } else {
                 "the leader's approval decision tools are not mounted"
@@ -210,10 +260,11 @@ impl CollaborationSession {
             });
             return;
         }
+        let leader_branch = destination.branch_id;
         let source = Source::new(MemberApprovalDescriptor {
-            delegation_id,
+            delegation_id: destination.delegation_id,
             member: MemberApprovalTarget {
-                agent_id,
+                agent_id: destination.agent_id,
                 session_id: self.session_id.clone(),
                 branch_id: branch_id.into(),
             },
@@ -295,11 +346,10 @@ impl CollaborationSession {
         };
         let source = Source::parse(input, false)?;
         let descriptor = &source.descriptor;
-        let (owner, delegation, agent) =
-            self.approval_destination(&descriptor.member.session_id)?;
-        if owner != branch_id
-            || delegation != descriptor.delegation_id
-            || agent != descriptor.member.agent_id
+        let destination = self.approval_destination(&descriptor.member.session_id)?;
+        if destination.branch_id != branch_id
+            || destination.delegation_id != descriptor.delegation_id
+            || destination.agent_id != descriptor.member.agent_id
         {
             return None;
         }

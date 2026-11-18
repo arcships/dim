@@ -86,13 +86,15 @@ pub trait LoopState: Send + Sync + 'static {
     fn watch(&self) -> watch::Receiver<LoopSnapshot>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PromptSourceTarget {
     pub source: String,
     pub scope: PromptScope,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ConfigureUpdate {
     pub sources: Vec<PromptSourceTarget>,
     pub model: Option<ModelSelection>,

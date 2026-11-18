@@ -269,17 +269,20 @@ async fn handover(tail: bool) -> (u64, u64) {
     dim_agent_capabilities::defaults::mock_hosts(&mut builder);
     dim_agent_capabilities::defaults::install(&mut builder);
     let part = shared.clone();
-    builder.timeline_store(store.clone()).require_feature(
-        Feature::new("test.tail-handover").branch("test.tail-handover", move |names| {
-            Ok(Box::new(TailPart::new(
-                names,
-                part.clone(),
-                read_now.clone(),
-                done_tx.clone(),
-                started_tx.clone(),
-            )?))
-        }),
-    );
+    builder
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
+        .require_feature(Feature::new("test.tail-handover").branch(
+            "test.tail-handover",
+            move |names| {
+                Ok(Box::new(TailPart::new(
+                    names,
+                    part.clone(),
+                    read_now.clone(),
+                    done_tx.clone(),
+                    started_tx.clone(),
+                )?))
+            },
+        ));
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent
         .create_session(SessionConfig::default())

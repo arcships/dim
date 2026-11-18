@@ -2147,7 +2147,7 @@ fn acp_stdio_advertises_effort_from_the_adopted_configuration() {
             let mut methods = METHODS.to_vec();
             methods.extend([
                 "session.methods",
-                "provider.catalog",
+                "provider.models.query",
                 "session.model.update",
             ]);
             wire.hello(&methods);
@@ -2172,15 +2172,11 @@ fn acp_stdio_advertises_effort_from_the_adopted_configuration() {
                 &methods,
                 json!({"methods":[{"name":"session.model.update","mutating":true}]}),
             );
-            let list = wire.read("provider.list");
-            wire.reply(
-                &list,
-                json!({"providers":[{"providerId":"test","enabled":true}]}),
-            );
-            let catalog = wire.read("provider.catalog");
+
+            let catalog = wire.read("provider.models.query");
             wire.reply(
                 &catalog,
-                json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+                json!({"models":[{"providerId":"test","model":{"id":"model","name":"Model"}}],"next":null}),
             );
             detached_eof(wire);
         });
@@ -2229,17 +2225,20 @@ fn acp_stdio_advertises_effort_from_the_adopted_configuration() {
 fn acp_stdio_model_choices_keep_the_catalog_provider_and_adopted_result() {
     let home = Home::new();
     let daemon = home.daemon(|wire| {
-        let mut methods = METHODS.to_vec(); methods.extend(["session.methods","provider.catalog"]); wire.hello(&methods);
+        let mut methods = METHODS.to_vec(); methods.extend(["session.methods","provider.models.query"]); wire.hello(&methods);
         wire.created();
         let attach = wire.read("session.attach"); wire.reply(&attach,json!({"sequence":8,"model":{"providerId":"provider/with/slashes","modelId":"native/model"}}));
         let history = wire.read("session.history");
         wire.reply(&history,json!({"events":[event(8,"configured","context","configured",json!({"provider_id":"provider/with/slashes","model_id":"native/model"}))],"through":8,"nextAfter":8,"done":true}));
         let methods = wire.read("session.methods"); wire.reply(&methods,json!({"methods":[{"name":"session.model.update","mutating":true}]}));
         let catalog = |wire: &mut Wire| {
-            let list = wire.read("provider.list"); wire.reply(&list,json!({"providers":[{"providerId":"provider/with/slashes","enabled":true}]}));
-            let read = wire.read("provider.catalog");
-            assert_eq!(read["params"]["providerId"],"provider/with/slashes");
-            wire.reply(&read,json!({"catalog":{"models":[{"id":"native/model","name":"First"},{"id":"next/model","name":"Next"}],"disabledModelIds":[]}}));
+
+            let read = wire.read("provider.models.query");
+            assert_eq!(read["params"]["selectableOnly"],true);
+            wire.reply(&read,json!({"models":[],"next":{"providerId":"provider/with/slashes","modelId":"hidden"}}));
+            let read = wire.read("provider.models.query");
+            assert_eq!(read["params"],json!({"selectableOnly":true,"limit":128,"after":{"providerId":"provider/with/slashes","modelId":"hidden"}}));
+            wire.reply(&read,json!({"models":[{"providerId":"provider/with/slashes","model":{"id":"native/model","name":"First"}},{"providerId":"provider/with/slashes","model":{"id":"next/model","name":"Next"}}],"next":null}));
         };
         catalog(wire);
         let update = wire.read("session.model.update");
@@ -2277,7 +2276,7 @@ fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference()
         let mut methods = METHODS.to_vec();
         methods.extend([
             "session.methods",
-            "provider.catalog",
+            "provider.models.query",
             "session.model.update",
         ]);
         wire.hello(&methods);
@@ -2297,15 +2296,11 @@ fn acp_stdio_sets_effort_through_the_adopted_model_without_saving_a_preference()
             &methods,
             json!({"methods":[{"name":"session.model.update","mutating":true}]}),
         );
-        let list = wire.read("provider.list");
-        wire.reply(
-            &list,
-            json!({"providers":[{"providerId":"test","enabled":true}]}),
-        );
-        let catalog = wire.read("provider.catalog");
+
+        let catalog = wire.read("provider.models.query");
         wire.reply(
             &catalog,
-            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+            json!({"models":[{"providerId":"test","model":{"id":"model","name":"Model"}}],"next":null}),
         );
         // The App Server publishes the adopted fact before it replies, so the
         // reply can only report a value the owner has already committed.
@@ -2374,7 +2369,7 @@ fn acp_stdio_keeps_the_adopted_effort_when_a_clear_changes_nothing() {
         let mut methods = METHODS.to_vec();
         methods.extend([
             "session.methods",
-            "provider.catalog",
+            "provider.models.query",
             "session.model.update",
         ]);
         wire.hello(&methods);
@@ -2396,15 +2391,11 @@ fn acp_stdio_keeps_the_adopted_effort_when_a_clear_changes_nothing() {
             &methods,
             json!({"methods":[{"name":"session.model.update","mutating":true}]}),
         );
-        let list = wire.read("provider.list");
-        wire.reply(
-            &list,
-            json!({"providers":[{"providerId":"test","enabled":true}]}),
-        );
-        let catalog = wire.read("provider.catalog");
+
+        let catalog = wire.read("provider.models.query");
         wire.reply(
             &catalog,
-            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+            json!({"models":[{"providerId":"test","model":{"id":"model","name":"Model"}}],"next":null}),
         );
         // The clear restores the declaration the Session already sends, so the
         // owner reports `unchanged` and publishes no fact.
@@ -2452,7 +2443,7 @@ fn acp_stdio_reports_an_adopted_clear_from_the_fact_that_precedes_the_reply() {
         let mut methods = METHODS.to_vec();
         methods.extend([
             "session.methods",
-            "provider.catalog",
+            "provider.models.query",
             "session.model.update",
         ]);
         wire.hello(&methods);
@@ -2472,15 +2463,11 @@ fn acp_stdio_reports_an_adopted_clear_from_the_fact_that_precedes_the_reply() {
             &methods,
             json!({"methods":[{"name":"session.model.update","mutating":true}]}),
         );
-        let list = wire.read("provider.list");
-        wire.reply(
-            &list,
-            json!({"providers":[{"providerId":"test","enabled":true}]}),
-        );
-        let catalog = wire.read("provider.catalog");
+
+        let catalog = wire.read("provider.models.query");
         wire.reply(
             &catalog,
-            json!({"catalog":{"models":[{"id":"model","name":"Model"}],"disabledModelIds":[]}}),
+            json!({"models":[{"providerId":"test","model":{"id":"model","name":"Model"}}],"next":null}),
         );
         // The clear changes the configuration, so the fact is published
         // before the reply.
@@ -2516,7 +2503,7 @@ fn acp_stdio_model_switch_replaces_effort_choices_and_refuses_a_missing_value() 
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         let mut methods = METHODS.to_vec();
-        methods.extend(["session.methods", "provider.catalog", "session.model.update"]);
+        methods.extend(["session.methods", "provider.models.query", "session.model.update"]);
         wire.hello(&methods);
         wire.created();
         let attach = wire.read("session.attach");
@@ -2535,13 +2522,9 @@ fn acp_stdio_model_switch_replaces_effort_choices_and_refuses_a_missing_value() 
             &methods,
             json!({"methods":[{"name":"session.model.update","mutating":true}]}),
         );
-        let list = wire.read("provider.list");
-        wire.reply(
-            &list,
-            json!({"providers":[{"providerId":"test","enabled":true}]}),
-        );
-        let catalog = wire.read("provider.catalog");
-        wire.reply(&catalog,json!({"catalog":{"models":[{"id":"model","name":"Model"},{"id":"other","name":"Other"}],"disabledModelIds":[]}}));
+
+        let catalog = wire.read("provider.models.query");
+        wire.reply(&catalog,json!({"models":[{"providerId":"test","model":{"id":"model","name":"Model"}},{"providerId":"test","model":{"id":"other","name":"Other"}}],"next":null}));
         let update = wire.read("session.model.update");
         assert_eq!(update["params"]["modelId"], "other");
         wire.reply(
@@ -2555,13 +2538,9 @@ fn acp_stdio_model_switch_replaces_effort_choices_and_refuses_a_missing_value() 
             "session.event",
             json!({"sessionId":"session","branchId":"main","event":event}),
         );
-        let list = wire.read("provider.list");
-        wire.reply(
-            &list,
-            json!({"providers":[{"providerId":"test","enabled":true}]}),
-        );
-        let catalog = wire.read("provider.catalog");
-        wire.reply(&catalog,json!({"catalog":{"models":[{"id":"model","name":"Model"},{"id":"other","name":"Other"}],"disabledModelIds":[]}}));
+
+        let catalog = wire.read("provider.models.query");
+        wire.reply(&catalog,json!({"models":[{"providerId":"test","model":{"id":"model","name":"Model"}},{"providerId":"test","model":{"id":"other","name":"Other"}}],"next":null}));
         detached_eof(wire);
     });
     let mut peer = Peer::start(&home);
@@ -2745,17 +2724,13 @@ fn acp_stdio_lody_startup_config_is_applied_before_creation_without_shared_write
     let home = Home::new();
     let daemon = home.daemon(|wire| {
         let mut methods = METHODS.to_vec();
-        methods.push("provider.catalog");
+        methods.push("provider.models.query");
         wire.hello(&methods);
-        let list = wire.read("provider.list");
-        wire.reply(
-            &list,
-            json!({"providers":[{"providerId":"native-provider","enabled":true}]}),
-        );
-        let catalog = wire.read("provider.catalog");
+
+        let catalog = wire.read("provider.models.query");
         wire.reply(
             &catalog,
-            json!({"catalog":{"models":[{"id":"chosen","name":"Chosen"}],"disabledModelIds":[]}}),
+            json!({"models":[{"providerId":"native-provider","model":{"id":"chosen","name":"Chosen"}}],"next":null}),
         );
         let create = wire.created();
         assert_eq!(
@@ -3320,7 +3295,27 @@ fn acp_stdio_runs_against_the_production_daemon_and_a_local_model() {
     );
     manager.send(3, "session/delete", json!({"sessionId":id}));
     let deleted = manager.response(3);
-    assert_eq!(deleted["result"], json!({}), "{deleted}");
+    assert_eq!(
+        deleted["result"],
+        json!({}),
+        "{deleted}; persisted main tail read after delete rejection: {:?}",
+        (|| -> rusqlite::Result<Vec<(i64, i64, String, String)>> {
+            let database = rusqlite::Connection::open_with_flags(
+                home.0.join("rust/dimcode.sqlite"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )?;
+            database.busy_timeout(Duration::ZERO)?;
+            let mut statement = database.prepare(
+                "SELECT sequence, last_sequence, kind, body FROM timeline_events \
+                 WHERE session_id=?1 AND branch_id='main' ORDER BY sequence DESC LIMIT 32",
+            )?;
+            statement
+                .query_map([&id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect()
+        })()
+    );
     manager.send(4, "session/list", json!({}));
     let listed = manager.response(4);
     let sessions = listed["result"]["sessions"].as_array().unwrap();

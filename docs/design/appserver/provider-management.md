@@ -62,8 +62,9 @@ continues to exclude private account implementations and credentials from this r
 ### Session-local startup connections
 
 [Model startup](../model-startup.md) adds a separate admission to the existing
-protected-local `session.create` and `session.model.update` entries, not a
-Provider-management write. `startup` contains optional `connection`,
+protected-local `session.create`, `session.model.update` and
+`session.model.preview` entries, not a Provider-management write. `startup`
+contains optional `connection`,
 `contextWindow`, `maxOutputTokens` and `autoCompactWindow`. Connection fields are
 `apiFormat`, `baseUrl`, optional `apiKey` or `authToken`, and optional `headers`
 (a name/value map). A compaction window is a positive integer or `"auto"`.
@@ -118,9 +119,10 @@ preference, workspace selection, account lease or secret file is created.
 
 | Method | Request | Reply | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.management` | `{providerId, modelId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}`; each connection adds `gluedPrefix`, the prefix its record states, and each model adds `alias`, the catalog id the listed id stands for, and `catalogName`, the name `provider.catalog` publishes for the row; each is omitted when unset | false | `Drain` |
+| `provider.management` | `{providerId, modelId?, page?: {after?, limit?, query?}}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[], next: string|null}`; each connection adds `gluedPrefix`, the prefix its record states, and each model adds `alias`, the catalog id the listed id stands for, and `catalogName`, the name `provider.catalog` publishes for the row; each is omitted when unset | false | `Drain` |
 | `provider.list` | `{}` | Existing `{providers, errors}` summary; each provider adds `remoteModelList`, whether `provider.refresh` can list its models, which clients use to offer or withhold that command in a row naming an empty catalog, and `gluedPrefix`, the prefix its record states, omitted when unset | false | `Drain` |
 | `provider.selection` | `{cwd?}` | Existing `{selection}` and its separate scope/version. A `cwd` reads only that scope's row and answers `null` when the folder has none; the workspace-over-global precedence is a `configuration` rule, not this read's | false | `Drain` |
+| `provider.model.set_enabled` | `{providerId, expectedVersion, modelId, enabled}` | `{version}` | true | `Drain` |
 | `provider.catalog` | `{providerId, modelId?}` | Existing `{catalog}` with `ProviderModel`; each model's `name` is unique within its provider (§3.1 below) | false | `Drain` |
 
 `provider.catalog` publishes a `name` unique within its provider. Duplicates are
@@ -394,9 +396,14 @@ typed errors in §3.4. Existing writes retain `mutating:true`, `interruption:Dra
 | `provider.create`  | `{providerId, displayName, connection, models: ModelEntry[], enabled, gluedPrefix?}` | `ManagementProvider`; create-only, caller-generated fresh UUID, existing ID conflicts; `gluedPrefix` takes the patch's rule: trimmed, and an empty one states none | true | `Drain` |
 | `provider.update`  | `{providerId, expectedVersion, patch, reply?: "full" \| "summary"}` | `ManagementProvider` by default; `reply:"summary"` returns the committed safe `ManagementInfo` plus optional `modelsListed`; validate and commit one partial update transaction; a patch that changes `baseUrl`, `credential` or `headers` also replaces the record's own models with the new endpoint's listing in that same compare-and-set write, and `modelsListed` says what it did; a `network`-only change saves alone | true | `Drain` |
 | `provider.probe`  | `{providerId, connection}` | `{models: ModelEntry[]}`; §3.3, no record writes or version check | false | `Drain` |
-| `provider.models.create`  | `{providerId, expectedVersion, model: ModelEntry}` | Existing catalog; separate user-added list; duplicate default or user ID rejected; add enabled and remove any stale `modelConfigOverrides`, `disabledModelIds`, `modelPreferences` and `endpointOverrides` entries for that ID in the same transaction | true | `Drain` |
-| `provider.models.delete`  | `{providerId, expectedVersion, modelId}` | Existing catalog; only user-added items; remove that ID from `disabledModelIds` and clean owned preferences/routes/selections in the same transaction | true | `Drain` |
-| `provider.preferences.update`  | `{providerId, expectedVersion, modelId, patch}` | `ManagementProvider`; effort/tier independently set/clear, validated against the model | true | `Drain` |
+| `provider.models.create`  | `{providerId, expectedVersion, model: ModelEntry, reply?: "full" \| "summary"}` | Existing catalog by default, `{version}` for `reply:"summary"`; separate user-added list; duplicate default or user ID rejected; add enabled and remove any stale `modelConfigOverrides`, `disabledModelIds`, `modelPreferences` and `endpointOverrides` entries for that ID in the same transaction | true | `Drain` |
+| `provider.models.delete`  | `{providerId, expectedVersion, modelId, reply?: "full" \| "summary"}` | Existing catalog by default, `{version}` for `reply:"summary"`; only user-added items; remove that ID from `disabledModelIds` and clean owned preferences/routes/selections in the same transaction | true | `Drain` |
+| `provider.preferences.update`  | `{providerId, expectedVersion, modelId, patch, reply?: "full" \| "summary"}` | `ManagementProvider` by default, `{version}` for `reply:"summary"`; effort/tier independently set/clear, validated against the model | true | `Drain` |
+
+`provider.models.edit` and `provider.models.reset` take the same additive `reply`
+selection and answer the existing catalog or `{version}`. A client that rereads
+only the edited row requests the summary; the committed version is the CAS token
+for its next write. Absent `reply` keeps the full reply for existing callers.
 
 The client generates and retains the UUID before sending. `create` accepts only
 a canonical lowercase hyphenated UUID; another value returns
@@ -1616,6 +1623,42 @@ disposable database; see [the storage contract](native-storage-format.md#329-格
   writes leave the record unchanged.
 - **Owner/issue:** method errors in `dim-agent-capabilities` and App Server;
   [#1495](https://github.com/arcships/dim/issues/1495).
+
+## Scoped downstream reads
+
+`provider.management` accepts `page: {after?, limit?, query?}` for a single
+Provider's model editor. `modelId` and `page` are mutually exclusive. Limits are
+1–128, default 32; `after` is the last returned model ID and `next:null` ends
+traversal. IDs sort lexically. Search matches model ID or display name separately,
+case-insensitively. Disabled and unavailable models remain editable and visible.
+A page's model rows, preferences and Provider version come from one committed
+snapshot; later pages may observe later versions. Page reads decode only the
+selected payloads and the naming information required for their labels.
+
+The Web model editor requests its first page on opening, sends searches to the
+owner, and loads further pages on demand. A single-model write is followed by an
+exact `modelId` read and replaces that displayed row. Opening an existing model
+for editing also reads its current row, preferences and version together. Deletion removes only that
+row. With an active search, a write instead rereads the first bounded page of
+that query so the owner determines whether changed rows still match. Returning
+to the Models tab starts a new unfiltered first page, matching its empty search
+field. A record-version conflict requires rereading before another write.
+
+`provider.model.set_enabled` accepts `{providerId, expectedVersion, modelId,
+enabled}` and returns `{version}` through `managementMethods`. It checks the
+Provider version, managed-account identity and target availability, then updates
+only that model's disabled state in the same transaction as the version. Unknown
+targets return `provider_not_found`; unavailable targets cannot be toggled.
+This operation does not infer other models' enablement from a displayed page.
+
+`provider.models.query` accepts `selectableOnly: true` to return only targets
+accepted by the owner's existing execution predicate. The cursor still advances
+across examined candidates; a filtered page can be empty and carry `next`.
+ACP consumes these bounded pages to build its protocol's complete available-model
+response. Model IDs shared by multiple providers remain ambiguous and are omitted.
+CLI limit declarations naming one model pass `modelId` both for the version read and the
+post-write display. Bulk limit declarations enumerate the requested missing-limit
+set.
 
 ## 9. Ablation review
 

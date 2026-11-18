@@ -1,5 +1,5 @@
 //! The texts EventHub writes, and the byte helpers they need.
-use chrono::{DateTime, SecondsFormat, Utc};
+use jiff::Timestamp;
 
 /// The Session guide entry for the markers EventHub writes (design A.6),
 /// verbatim; a test pins its bytes.
@@ -48,8 +48,8 @@ pub fn preview(text: &str, limit: usize) -> &str {
 }
 
 /// A canonical UTC instant, `YYYY-MM-DDTHH:mm:ss.sssZ` (design §2.2).
-pub fn stamp(instant: DateTime<Utc>) -> String {
-    instant.to_rfc3339_opts(SecondsFormat::Millis, true)
+pub fn stamp(instant: Timestamp) -> String {
+    instant.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
 }
 
 /// The SHA-256 of a source's guide, lowercase hex: what the subscription file

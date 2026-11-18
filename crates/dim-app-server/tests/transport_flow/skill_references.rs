@@ -7,7 +7,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::{HostFuture, ModelConnection, ModelDriver, ModelStream},
     skill_settings::{SkillSettings, SkillSettingsHost},
-    skills::{self, MemorySkillSettings, SkillsCatalog},
+    skills::{self, MemorySkillSettings, SkillsCatalog, SkillsCatalogBinding},
 };
 use dim_agent_runtime::PartRegistry;
 use dim_agent_runtime::testing::branch_events;
@@ -45,7 +45,13 @@ impl DynPlugin for CatalogHost {
                 ),
             )
             .await?;
-            ctx.provide_as::<SkillsCatalog>(catalog.clone())?;
+            ctx.provide_at(dim_agent_capabilities::skills::owner_key(), catalog.clone())?;
+            let binding = Arc::new(SkillsCatalogBinding::new(catalog.clone()));
+            ctx.provide_as::<SkillsCatalogBinding>(binding.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("skillsCatalog"),
+                binding,
+            )?;
             skills::register_parts(ctx, &parts)?;
             *self.catalog.lock().unwrap() = Some(catalog);
             Ok(Effect::Done)
@@ -135,16 +141,16 @@ fn build(
     catalog: Arc<Mutex<Option<Arc<SkillsCatalog>>>>,
 ) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+        dim_agent_runtime::MemoryTimelineStore::default(),
+    )));
     defaults::install_with_prompt_capability(
         &mut builder,
         dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
     );
-    builder.session_value(Arc::new(
-        dim_agent_capabilities::permission::CommandRulesHost(Arc::new(
-            dim_agent_capabilities::permission::NoCommandRules,
-        )),
-    ));
+    builder.session_data_value(Arc::new(dim_agent_capabilities::permission::CommandRules(
+        Arc::new(dim_agent_capabilities::permission::NoCommandRules),
+    )));
     defaults::mock_model_hosts_with_model(&mut builder, HistoryRenderer::default(), model);
     dim_agent_capabilities::defaults::tool_host(&mut builder, Arc::new(MockTools));
     dim_app_server::collaboration::install(&mut builder);
@@ -273,15 +279,12 @@ fn block(name: &str, description: &str, body: &str, file: &std::path::Path) -> S
     )
 }
 
-fn view_version(session: &dim_agent_runtime::Session) -> String {
+fn listed_skills(session: &dim_agent_runtime::Session) -> Vec<skills::SkillSummary> {
     session
         .service::<skills::SkillsBranch>("main")
         .unwrap()
-        .session()
-        .current()
+        .list()
         .unwrap()
-        .version
-        .clone()
 }
 
 /// The names of the Skills the input's blocks loaded, in order: the operator's
@@ -314,14 +317,17 @@ async fn submitted(
     operator_inputs(session).await.pop().expect("the input")
 }
 
-async fn wait_view_change(session: &dim_agent_runtime::Session, before: &str) {
+async fn wait_skill_disabled(session: &dim_agent_runtime::Session, name: &str) {
     for _ in 0..500 {
-        if view_version(session) != before {
+        if listed_skills(session)
+            .iter()
+            .all(|skill| skill.name != name)
+        {
             return;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("the Session's Skill view did not change");
+    panic!("the disabled Skill remained in the public Session list");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -530,12 +536,16 @@ async fn a_disabled_or_unknown_name_adds_nothing() {
         .find(|entry| entry.definition.name == "checkin")
         .expect("the project Skill is listed");
     let skill_id = entry.definition.id.clone();
-    let before = view_version(&session);
+    assert!(
+        listed_skills(&session)
+            .iter()
+            .any(|skill| skill.name == "checkin")
+    );
     catalog
         .set_enabled(&skill_id, false, Some(&project))
         .await
         .unwrap();
-    wait_view_change(&session, &before).await;
+    wait_skill_disabled(&session, "checkin").await;
 
     let submitted = client
         .rpc(
@@ -806,12 +816,16 @@ async fn a_known_unknown_and_disabled_name_load_what_they_should() {
         .definition
         .id
         .clone();
-    let before = view_version(&session);
+    assert!(
+        listed_skills(&session)
+            .iter()
+            .any(|skill| skill.name == "beta")
+    );
     catalog
         .set_enabled(&beta, false, Some(&project))
         .await
         .unwrap();
-    wait_view_change(&session, &before).await;
+    wait_skill_disabled(&session, "beta").await;
 
     let input = submitted(
         &mut client,

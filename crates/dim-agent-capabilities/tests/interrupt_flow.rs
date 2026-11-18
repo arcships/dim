@@ -893,7 +893,7 @@ async fn a_stop_during_output_keeps_its_text_and_closes_every_started_call() {
     let (model, chunks) = channel_model();
     let store = Arc::new(MemoryTimelineStore::default());
     let mut builder = channel_builder(model.clone());
-    builder.timeline_store(store.clone());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = soon(agent.create_session(SessionConfig::default()))
@@ -1824,7 +1824,9 @@ async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
     });
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()))
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+            dim_agent_runtime::MemoryTimelineStore::default(),
+        )))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(BatchModel))))
         .session_value(Arc::new(ToolHost(tools)))

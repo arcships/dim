@@ -3,6 +3,8 @@ use super::*;
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelQuery {
+    #[serde(default)]
+    pub selectable_only: bool,
     pub provider_id: Option<String>,
     pub model_id: Option<String>,
     pub query: Option<String>,
@@ -167,6 +169,7 @@ impl ProviderService {
                         Ok(_) => continue,
                         Err(_) => { page.empty.push(EmptyModelProvider {provider_id,provider_name,reason:EmptyModelReason::Unreadable}); continue; }
                     };
+                    if input.selectable_only && catalog.selectable(&model_id).is_none() { continue; }
                     let disabled = catalog.disabled_model_ids.contains(&model_id);
                     let Some(mut model) = catalog.models.into_iter().find(|m|m.id==model_id) else { continue; };
                     model.name = names.get_mut(&provider_id).and_then(|names|names.remove(&model_id)).ok_or_else(||storage("Selected model name disappeared"))?;

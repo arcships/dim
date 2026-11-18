@@ -17,7 +17,7 @@ use futures_util::{FutureExt, future::join_all};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::service;
 use rutis::{Ctx, Error};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     num::NonZeroU64,
@@ -2364,8 +2364,9 @@ impl DynPlugin for BranchToolPlugin {
         })
     }
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LineRole {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LineRole {
     Main,
     Tool,
     Host,
@@ -2658,6 +2659,7 @@ pub struct BranchLine {
     changed: tokio::sync::Notify,
     stop: CancellationToken,
 }
+#[service]
 impl BranchLine {
     async fn block(&self, key: &str) -> Result<Option<(String, String, bool)>> {
         let reply = self
@@ -3102,11 +3104,11 @@ impl BranchLine {
         }
     }
     /// The line committed its own `branch/end`.
-    fn ending(&self) -> bool {
+    pub fn ending(&self) -> bool {
         self.view.lock().unwrap().ending
     }
     /// The `nextCursor` of the line's latest successful read of `target`.
-    async fn cursor(&self, target: &str) -> Result<Option<u64>> {
+    pub async fn cursor(&self, target: &str) -> Result<Option<u64>> {
         if let Some(cursor) = self.view.lock().unwrap().cursors.get(target).copied() {
             return Ok(Some(cursor));
         }
@@ -3280,7 +3282,7 @@ impl BranchLine {
             .unwrap_or(0)
     }
     /// The line's role and parent, from its directory record.
-    fn resolved(&self) -> Option<(LineRole, Option<String>)> {
+    pub fn resolved(&self) -> Option<(LineRole, Option<String>)> {
         {
             let view = self.view.lock().unwrap();
             if let Some(role) = view.role {

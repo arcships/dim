@@ -19,6 +19,7 @@ pub mod testing;
 mod timeline_context;
 mod timeline_query;
 mod timeline_store;
+mod timeline_store_face;
 
 pub use agent::*;
 pub use assembly::*;
@@ -40,3 +41,4 @@ pub use state::*;
 pub use timeline_context::*;
 pub use timeline_query::*;
 pub use timeline_store::*;
+pub use timeline_store_face::TimelineStoreBinding;

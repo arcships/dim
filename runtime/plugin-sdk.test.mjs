@@ -45,9 +45,33 @@ test('packed plugin service types compile the author guide and enforce the publi
   const eventHubFixture = path.join(directory, 'event-hub-producer.mts');
   writeFileSync(eventHubFixture, readFileSync(path.join(root, 'runtime/fixtures/event-hub-producer.ts'), 'utf8')
     .replace("'../../npm/plugin.js'", "'dimcode/plugin'"));
+  const promptFixtures = ['prompt-consumer', 'prompt-source'].map(name => {
+    const file = path.join(directory, `${name}.mts`);
+    writeFileSync(file, readFileSync(path.join(root, `runtime/fixtures/${name}.ts`), 'utf8')
+      .replaceAll("'../../npm/plugin.js'", "'dimcode/plugin'")
+      .replaceAll("'../../npm/branch-services.js'", "'dimcode/branch-services.js'")
+      .replace("'./part-row.ts'", "'./part-row.mjs'"));
+    return file;
+  });
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
 import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
+import type { BridgeJsonValue, JsonValue, PromptEntry } from 'dimcode/plugin';
+import type { ConfigureUpdate, InitialPromptConfiguration } from 'dimcode/branch-services.js';
+declare const initial: InitialPromptConfiguration;
+declare const entry: PromptEntry;
+const initialReply: MethodReply<ConfigureUpdate | null> = { kind: 'value', value: await initial.get() };
+const entryReply: MethodReply<PromptEntry> = { kind: 'value', value: entry };
+const bridgeInteger: BridgeJsonValue = { nested: [18446744073709551615n] };
+const configured: ConfigureUpdate = { sources: [], model: { providerId: 'p', modelId: 'm', metadata: { nested: [18446744073709551615n] }, config: { providerOptions: { xai: { reasoningEffort: 'high' } } } } };
+const configuredReply: MethodReply<ConfigureUpdate> = { kind: 'value', value: configured };
+// @ts-expect-error method replies carry data, not callbacks.
+const invalidReply: MethodReply = { kind: 'value', value: { callback: () => null } };
+// @ts-expect-error external client JSON does not carry bigint.
+const clientInteger: JsonValue = 18446744073709551615n;
+// @ts-expect-error generated JSON metadata cannot contain functions.
+const invalidConfig: ConfigureUpdate = { sources: [], model: { providerId: 'p', modelId: 'm', metadata: { callback: () => null } } };
+void [initialReply, entryReply, bridgeInteger, configuredReply, invalidReply, clientInteger, invalidConfig];
 declare const settings: Settings;
 declare const sessions: Sessions;
 declare const permissions: SessionPermissions;
@@ -62,6 +86,38 @@ declare const management: ManagementMethods;
 declare const handler: MethodHandler;
 declare const sessionHandler: SessionMethodHandler;
 declare const hub: EventHub;
+declare const typedSessionHandler: SessionMethodHandler<ConfigureUpdate>;
+declare const typedHandler: MethodHandler<ConfigureUpdate>;
+void methods.register('fixture', [], typedSessionHandler);
+void management.register('fixture', [], typedHandler);
+void methods.register('fixture', [], async () => initialReply);
+void management.register('fixture', [], async () => configuredReply);
+void methods.register('fixture', [], async (call, cancelled, progress) => {
+  progress(configured);
+  progress(entry);
+  progress({});
+  // @ts-expect-error progress carries data, not callbacks.
+  progress({ callback: () => null });
+  // @ts-expect-error Date is not bridge JSON data.
+  progress(new Date());
+  return { kind: 'value', value: configured };
+});
+// @ts-expect-error nested callbacks cannot be returned through a contributed method.
+void methods.register('fixture', [], async () => ({ kind: 'value', value: { callback: () => null } }));
+// @ts-expect-error Date is not bridge JSON data.
+void management.register('fixture', [], async () => ({ kind: 'value', value: new Date() }));
+class Empty {}
+// @ts-expect-error constructors are functions, not reply data.
+void methods.register('fixture', [], async () => ({ kind: 'value', value: Empty }));
+declare const opaque: object;
+// @ts-expect-error broad object does not establish that its fields are data.
+void management.register('fixture', [], async () => ({ kind: 'value', value: opaque }));
+declare const arbitrary: unknown;
+// @ts-expect-error unknown input must be validated before replying.
+void methods.register('fixture', [], async () => ({ kind: 'value', value: { nested: arbitrary } }));
+// @ts-expect-error invalid reply discriminators are not accepted.
+void management.register('fixture', [], async () => ({ kind: 'other', value: configured }));
+
 const declarations: MethodDeclaration[] = [{ name: 'example.status', mutating: false, interruption: 'report', progress: false }];
 void management.register('example', declarations, handler);
 void handler({ callId: 'call', method: 'example.status', params: [1, true] }, Promise.resolve(), () => {});
@@ -313,6 +369,6 @@ void panel;
   assert.equal(declarations.status, 0, declarations.stdout + declarations.stderr);
   const checked = spawnSync(process.execPath, [compiler,
     '--strict', '--noEmit', '--target', 'ES2022', '--module', 'NodeNext', '--moduleResolution', 'NodeNext',
-    ...files, calls, branchFixture, partRow, permissionsFixture, workflowFixture, eventHubFixture, uiFixture], { encoding: 'utf8' });
+    ...files, ...promptFixtures, calls, branchFixture, partRow, permissionsFixture, workflowFixture, eventHubFixture, uiFixture], { encoding: 'utf8' });
   assert.equal(checked.status, 0, checked.stdout + checked.stderr);
 });

@@ -3088,6 +3088,534 @@ async fn node_session_typescript_closed_connection_does_not_hide_an_undeclared_n
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_session_command_rules_share_the_native_owner_and_survive_another_session_closing() {
+    use dim_agent_capabilities::{
+        host::{HostError, HostFuture},
+        permission::{CommandRules, ReadCommandRules},
+    };
+    use dim_agent_types::{CommandMatch, CommandRule, CommandRuleDecision};
+    use std::sync::atomic::{AtomicU8, Ordering};
+    struct Rules {
+        mode: AtomicU8,
+        started: tokio::sync::mpsc::UnboundedSender<CancellationToken>,
+    }
+    impl ReadCommandRules for Rules {
+        fn rules(&self, cancel: CancellationToken) -> HostFuture<'_, Vec<CommandRule>> {
+            Box::pin(async move {
+                if self.mode.load(Ordering::SeqCst) == 2 {
+                    self.started.send(cancel.clone()).unwrap();
+                    cancel.cancelled().await;
+                    return Err(HostError::Cancelled("command rules read cancelled".into()));
+                }
+                if self.mode.load(Ordering::SeqCst) == 1 {
+                    return Err(HostError::failed("command rules source unavailable"));
+                }
+                Ok(vec![CommandRule {
+                    command: "git status".into(),
+                    matching: CommandMatch::Exact,
+                    decision: CommandRuleDecision::Allow,
+                }])
+            })
+        }
+    }
+    let home = PathBuf::from("/tmp").join(format!("dim-command-rules-{}", uuid::Uuid::new_v4()));
+    let mut parts = fixture();
+    parts.rows = vec![json!({
+        "id":"command-rules", "name":parts.anchor.parent().unwrap().join("fixtures/command-rules.ts"),
+        "provides":{}, "config":{}
+    })];
+    let (started, mut reads) = tokio::sync::mpsc::unbounded_channel();
+    let owner = Arc::new(Rules {
+        mode: AtomicU8::new(0),
+        started,
+    });
+    let binding = Arc::new(CommandRules(owner.clone()));
+    let mut native_only = AgentBuilder::new(AgentConfig::default());
+    native_only
+        .catalog_mut()
+        .register_instance::<CommandRules>("commandRules", dim_agent_runtime::SESSION_GROUP);
+    native_only.session_value(binding.clone());
+    native_only
+        .install(&mut dim_agent_runtime::Modules::new(), [])
+        .await
+        .unwrap();
+    native_only.session_data_value(binding.clone());
+    let error = native_only
+        .install(&mut dim_agent_runtime::Modules::new(), [])
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("commandRules is not a shared Session service"),
+        "{error}"
+    );
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::install_with_prompt_capability(
+        &mut builder,
+        dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
+    );
+    builder
+        .session_data_value(binding.clone())
+        .session_data_value(Arc::new(dim_agent_capabilities::host::PromptHost(
+            Arc::new(dim_agent_capabilities::host::EmptyPromptHost),
+        )))
+        .session_value(Arc::new(
+            dim_agent_capabilities::prompt::InitialPromptConfiguration::fixed(None),
+        ))
+        .session_value(Arc::new(HistoryRenderer::default()))
+        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(None)))
+        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::tool_host(&mut builder, Arc::new(MockTools));
+    let server = serve(
+        builder,
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            unix_path: Some(home.join("server.sock")),
+            session_typescript: Some(parts.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    plugin_active(&server, &parts.rows[0]).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    process_typescript::select_model(&mut client).await;
+    let first = new_session(&mut client, json!([])).await;
+    let second = new_session(&mut client, json!([])).await;
+    let expected = binding.read(CancellationToken::new()).await.unwrap();
+    for id in [&first, &second] {
+        let reply = when_served(
+            &mut client,
+            "session.commandrules.read",
+            json!({"sessionId":id}),
+        )
+        .await;
+        assert_eq!(reply["result"], json!({"sessionId":id, "reply":expected}));
+    }
+    owner.mode.store(1, Ordering::SeqCst);
+    assert!(binding.read(CancellationToken::new()).await.is_err());
+    let failed = client
+        .rpc("session.commandrules.read", json!({"sessionId":first}))
+        .await;
+    assert_ok(&failed);
+    assert_eq!(
+        failed["result"]["error"],
+        json!({
+            "code":"unavailable", "message":"command rules source unavailable"
+        })
+    );
+    owner.mode.store(2, Ordering::SeqCst);
+    let pending = client
+        .send("session.commandrules.read", json!({"sessionId":first}))
+        .await;
+    let owner_cancel = tokio::time::timeout(Duration::from_secs(5), reads.recv())
+        .await
+        .expect("the Node read reaches the command rules owner")
+        .unwrap();
+    let mut closer = Client::new_version(&server, false, 3).await;
+    let closed = tokio::time::timeout(
+        Duration::from_secs(5),
+        closer.rpc("session.close", json!({"sessionId":first})),
+    )
+    .await
+    .expect("closing the Session cancels its outstanding Node read");
+    assert_ok(&closed);
+    tokio::time::timeout(Duration::from_secs(5), owner_cancel.cancelled())
+        .await
+        .expect("Node unload ends the command rules owner's read");
+    assert_eq!(
+        client.response(pending).await["error"]["data"]["appError"],
+        "operation_interrupted"
+    );
+    owner.mode.store(0, Ordering::SeqCst);
+    let remaining = client
+        .rpc("session.commandrules.read", json!({"sessionId":second}))
+        .await;
+    assert_ok(&remaining);
+    assert_eq!(
+        remaining["result"],
+        json!({"sessionId":second, "reply":expected})
+    );
+    drop((client, closer));
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_prompt_sources_share_the_owner_and_settle_accepted_loads_after_withdrawal() {
+    use axum::{
+        Router,
+        extract::{Path, State},
+        routing::get,
+    };
+    use dim_agent_capabilities::{
+        host::PromptHost,
+        permission::{CommandRules, NoCommandRules},
+        prompt::InitialPromptConfiguration,
+        prompt_registry::PromptRegistryPlugin,
+    };
+    use dim_agent_runtime::PromptSourceTarget;
+    use dim_agent_types::PromptScope;
+    type Probe = (
+        InstanceId,
+        rutis::Ctx,
+        Arc<PromptHost>,
+        Arc<InitialPromptConfiguration>,
+    );
+    struct NativePromptProbe {
+        instance: InstanceId,
+        host: rutis::host::Key<PromptHost>,
+        initial: rutis::host::Key<InitialPromptConfiguration>,
+        sent: tokio::sync::mpsc::UnboundedSender<Probe>,
+    }
+    impl rutis::host::DynPlugin for NativePromptProbe {
+        fn name(&self) -> &str {
+            "NativePromptProbe"
+        }
+        fn injects(&self) -> Vec<rutis::host::TypeKey> {
+            vec![self.host.erase(), self.initial.erase()]
+        }
+        fn apply<'a>(
+            &'a self,
+            ctx: &'a rutis::Ctx,
+        ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
+            Box::pin(async move {
+                self.sent
+                    .send((
+                        self.instance,
+                        ctx.clone(),
+                        ctx.require_at(&self.host)?,
+                        ctx.require_at(&self.initial)?,
+                    ))
+                    .unwrap();
+                Ok(rutis::host::Effect::Done)
+            })
+        }
+    }
+    type GateEvent = (String, String, Option<tokio::sync::oneshot::Sender<()>>);
+    async fn gate(
+        State(sent): State<tokio::sync::mpsc::UnboundedSender<GateEvent>>,
+        Path((action, id)): Path<(String, String)>,
+    ) -> &'static str {
+        if action == "load" {
+            let (release, released) = tokio::sync::oneshot::channel();
+            sent.send((action, id, Some(release))).unwrap();
+            released.await.unwrap();
+        } else {
+            sent.send((action, id, None)).unwrap();
+        }
+        "ok"
+    }
+    let (sent, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let gate_url = format!("http://{}", listener.local_addr().unwrap());
+    let http = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new()
+                .route("/{action}/{id}", get(gate))
+                .with_state(sent),
+        )
+        .await
+        .unwrap();
+    });
+    let home = PathBuf::from("/tmp").join(format!("dim-prompt-face-{}", uuid::Uuid::new_v4()));
+    let mut parts = fixture();
+    parts.rows = ["prompt-source", "prompt-consumer"].into_iter().map(|name| json!({
+        "id":name, "name":parts.anchor.parent().unwrap().join(format!("fixtures/{name}.ts")),
+        "provides":{}, "config":{"gate":gate_url}
+    })).collect();
+    let (sent, mut probes) = tokio::sync::mpsc::unbounded_channel();
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    defaults::mock_hosts(&mut builder);
+    defaults::install_with_prompt_capability(
+        &mut builder,
+        dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
+    );
+    builder
+        .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))))
+        .require_feature(
+            Feature::new("PromptRegistry").session("PromptRegistry", |names| {
+                Ok(Box::new(PromptRegistryPlugin::new(names)?))
+            }),
+        )
+        .require_feature(Feature::new("NativePromptProbe").session(
+            "NativePromptProbe",
+            move |names| {
+                Ok(Box::new(NativePromptProbe {
+                    instance: names.instance(SESSION_GROUP)?,
+                    host: names.key()?,
+                    initial: names.key()?,
+                    sent: sent.clone(),
+                }))
+            },
+        ));
+    let server = serve(
+        builder,
+        ServerConfig {
+            product_home: Some(home.clone()),
+            target_home: Some(home.join("rust")),
+            unix_path: Some(home.join("server.sock")),
+            session_typescript: Some(parts.clone()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    for row in &parts.rows {
+        plugin_active(&server, row).await;
+    }
+    let mut client = Client::new_version(&server, false, 3).await;
+    let wide_integer = u64::MAX;
+    let provider_state = json!({"nested": [{"integer": wide_integer, "nullable": null}]});
+    let mut capabilities = dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384);
+    capabilities.provider_state = Some(provider_state.as_object().unwrap().clone());
+    assert_ok(&client.rpc("provider.create", json!({
+        "providerId":"018ec73f-0000-7000-8000-000000000007", "displayName":"Fixture",
+        "connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1","auth":{"type":"anonymous"}},
+        "models":[{"modelId":"fixture","displayName":"Fixture","status":"active","capabilities":capabilities}],
+        "enabled":true
+    })).await);
+    assert_ok(
+        &client
+            .rpc(
+                "provider.select",
+                json!({
+                    "providerId":"018ec73f-0000-7000-8000-000000000007","modelId":"fixture"
+                }),
+            )
+            .await,
+    );
+    let first = new_session(&mut client, json!([])).await;
+    let (instance, ctx, native, initial) = probes.recv().await.unwrap();
+    let second = new_session(&mut client, json!([])).await;
+    let (second_instance, second_ctx, second_native, second_initial) = probes.recv().await.unwrap();
+    for (ctx, instance) in [(&ctx, instance), (&second_ctx, second_instance)] {
+        let source = session_copy(ctx, instance, "PromptSourceFixture").await;
+        let mut state = source.watch();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.borrow().state != rutis::host::FiberState::Active {
+                state.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let target = PromptSourceTarget {
+        source: "fixture".into(),
+        scope: PromptScope::Branch {
+            timeline: "main".into(),
+        },
+    };
+    for (id, host, initial) in [
+        (&first, &native, &initial),
+        (&second, &second_native, &second_initial),
+    ] {
+        let snapshot = when_served(
+            &mut client,
+            "session.promptfixture.snapshot",
+            json!({"sessionId":id}),
+        )
+        .await;
+        assert_eq!(
+            snapshot["result"]["names"],
+            json!(["dim/skills/instructions", "dim/skills/list", "fixture"])
+        );
+        assert_eq!(
+            serde_json::from_value::<Option<dim_agent_runtime::ConfigureUpdate>>(
+                snapshot["result"]["initial"].clone()
+            )
+            .unwrap(),
+            initial.get()
+        );
+        let returned_capabilities =
+            &snapshot["result"]["initial"]["model"]["capabilitySnapshot"]["capabilities"];
+        assert_eq!(
+            returned_capabilities["providerState"]["nested"][0]["integer"].as_u64(),
+            Some(wide_integer)
+        );
+        assert_eq!(returned_capabilities["providerState"], provider_state);
+        assert!(
+            snapshot["result"]["initial"]["sources"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(target))
+        );
+        let direct = host
+            .load(target.clone(), CancellationToken::new())
+            .await
+            .unwrap()
+            .unwrap();
+        let wire = client
+            .rpc(
+                "session.promptfixture.load",
+                json!({"sessionId":id,"target":target}),
+            )
+            .await;
+        assert_eq!(wire["result"], json!(direct));
+        assert_eq!(direct.body, *id);
+    }
+    for action in ["duplicate", "missing"] {
+        let reply = client
+            .rpc(
+                &format!("session.promptfixture.{action}"),
+                json!({"sessionId":first}),
+            )
+            .await;
+        assert_eq!(reply["result"]["code"], "failed", "{reply}");
+    }
+    let held = |id: &str| PromptSourceTarget {
+        source: "fixture".into(),
+        scope: PromptScope::Turn {
+            timeline: "main".into(),
+            id: id.into(),
+        },
+    };
+    assert_ok(
+        &client
+            .rpc(
+                "session.promptfixture.abandon",
+                json!({"sessionId":first,"target":held("abandoned")}),
+            )
+            .await,
+    );
+    let (action, id, release) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((action.as_str(), id.as_str()), ("load", "abandoned"));
+    assert_eq!(
+        client
+            .rpc("session.promptfixture.snapshot", json!({"sessionId":first}))
+            .await["result"]["names"],
+        json!(["dim/skills/instructions", "dim/skills/list", "fixture"])
+    );
+    assert!(
+        events.try_recv().is_err(),
+        "abandoning the Promise does not notify source cancellation"
+    );
+    release.unwrap().send(()).unwrap();
+    let (action, id, _) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((action.as_str(), id.as_str()), ("settled", "abandoned"));
+    for case in ["cancelled", "cancel-error"] {
+        assert_ok(
+            &client
+                .rpc(
+                    "session.promptfixture.start",
+                    json!({"sessionId":first,"target":held(case)}),
+                )
+                .await,
+        );
+        let (action, id, release) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((action.as_str(), id.as_str()), ("load", case));
+        assert_ok(
+            &client
+                .rpc("session.promptfixture.cancel", json!({"sessionId":first}))
+                .await,
+        );
+        let (action, id, _) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((action.as_str(), id.as_str()), ("cancel", case));
+        assert_eq!(
+            client
+                .rpc("session.promptfixture.state", json!({"sessionId":first}))
+                .await["result"]["finished"],
+            false
+        );
+        release.unwrap().send(()).unwrap();
+        let settled = client
+            .rpc("session.promptfixture.result", json!({"sessionId":first}))
+            .await;
+        if case == "cancelled" {
+            assert_eq!(settled["result"]["body"], first);
+        } else {
+            assert_eq!(
+                settled["result"]["error"],
+                json!({"code":"cancelled","message":"source cancelled"})
+            );
+        }
+    }
+    let pending = tokio::spawn(async move {
+        native
+            .load(held("withdrawn"), CancellationToken::new())
+            .await
+    });
+    let (action, id, release) = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((action.as_str(), id.as_str()), ("load", "withdrawn"));
+    let source = session_copy(&ctx, instance, "PromptSourceFixture").await;
+    tokio::time::timeout(Duration::from_secs(5), source.dispose())
+        .await
+        .unwrap()
+        .unwrap();
+    let withdrawn = client
+        .rpc("session.promptfixture.snapshot", json!({"sessionId":first}))
+        .await;
+    assert_eq!(
+        withdrawn["result"]["names"],
+        json!(["dim/skills/instructions", "dim/skills/list"])
+    );
+    assert_eq!(
+        serde_json::from_value::<Option<dim_agent_runtime::ConfigureUpdate>>(
+            withdrawn["result"]["initial"].clone()
+        )
+        .unwrap(),
+        initial.get()
+    );
+    assert!(
+        !withdrawn["result"]["initial"]["sources"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(target))
+    );
+    assert!(
+        !pending.is_finished(),
+        "withdrawal must not terminate an accepted load"
+    );
+    let other = client
+        .rpc(
+            "session.promptfixture.load",
+            json!({"sessionId":second,"target":target}),
+        )
+        .await;
+    assert_eq!(other["result"]["body"], second);
+    release.unwrap().send(()).unwrap();
+    let loaded = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.body, first);
+    server.shutdown();
+    server.join().await.unwrap();
+    http.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_tool_source_observation_matches_native_watch_and_closes_a_pending_callback() {
     use dim_agent_capabilities::tool_registry::{ToolProvider, ToolSourceSet, ToolSourcesView};
     use rutis_bridge::session::HostDispatch;

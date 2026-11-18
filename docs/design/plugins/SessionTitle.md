@@ -69,7 +69,7 @@ and registers the Session part; each Session mounts a copy. The part injects
 `sessionMethods` and registers `session.rename` with it from `apply`; it provides no service.
 `apply` reads the Session identity and creation configuration and registers observation/cleanup;
 it does not start an asynchronous initialization job. Its creation configuration is immutable.
-The plugin depends on the existing public Rust Settings and SessionStore bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
+The plugin depends on the existing public Rust Settings and sessionMetadata bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
 
 The part injects its required dependencies: the process services
 `settings`, `sessionMetadata` and `auxiliaryModel`, and the Session services branch queries, `sessionIdentity`,
@@ -499,15 +499,15 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | --- | --- |
 | Namespace `session.rename` registered with `sessionMethods` | The Session part calls `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` on a `Key<SessionMethods>` dependency |
 | Published branch properties | Required `Key<TreeCommands>`; `TreeCommands::query("main", TimelineQuery)` with branch scope, `include_publishing: false` and one-row `QuerySelect::Fields` results. Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
-| Title metadata | `SessionStore::metadata` and `SessionStore::set_title` |
+| Title metadata | `SessionMetadataService::read` and `SessionMetadataService::set_title` |
 | Auxiliary call | `AuxiliaryModel.0.complete` with its cancellation token |
 | Optional generation | `ctx.get_at(&host_key("sessionTitleGenerator"))` at use; `HostDispatch.generate` with a cancellable callback promise, using the request/reply types exported by `dim-session-title` |
 | Session broadcast listener | Listener on `session_channel(session_id)` for `Event` records, removed by `ctx.effect` |
 | Generation task | Spawned under `ctx.effect` |
 
 ```rust
-// SessionStore metadata (S5b; named service `sessionMetadata`)
-async fn metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+// SessionMetadataService (S5b; named service `sessionMetadata`)
+async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
 fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)
     -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }

@@ -455,7 +455,9 @@ impl dim_agent_capabilities::host::ModelDriver for HoldModel {
 
 async fn launch_holding() -> (RunningServer, dim_agent_runtime::Agent) {
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+        dim_agent_runtime::MemoryTimelineStore::default(),
+    )));
     defaults::install(&mut builder);
     defaults::mock_model_hosts_with_model(
         &mut builder,
@@ -599,16 +601,16 @@ async fn launch_prompt_sources(
             .unwrap();
     }
     let mut builder = AgentBuilder::new(AgentConfig::default());
-    builder.timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()));
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+        dim_agent_runtime::MemoryTimelineStore::default(),
+    )));
     defaults::install_with_prompt_capability(
         &mut builder,
         dim_agent_capabilities::model_provider::ModelProviderPlugin::new,
     );
-    builder.session_value(Arc::new(
-        dim_agent_capabilities::permission::CommandRulesHost(Arc::new(
-            dim_agent_capabilities::permission::NoCommandRules,
-        )),
-    ));
+    builder.session_data_value(Arc::new(dim_agent_capabilities::permission::CommandRules(
+        Arc::new(dim_agent_capabilities::permission::NoCommandRules),
+    )));
     defaults::mock_model_hosts(&mut builder);
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     dim_app_server::collaboration::install(&mut builder);

@@ -16,7 +16,7 @@ use dim_agent_types::{
     AgentEvent, BranchSource, EventDraft, EventKind, ExecStatus, GoalRead, InputBlock,
     InputMessageData, InterruptScope, TurnEndData, TurnOutcome,
 };
-use dim_app_server::settings::{SettingsScope, SettingsService};
+use dim_app_server::settings::{Settings, SettingsScope};
 use rutis::Ctx;
 use rutis::host::{CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde::{Deserialize, Deserializer};
@@ -168,7 +168,7 @@ pub struct GoalBranch {
     dispatcher: Key<Dispatcher>,
     timeline: Key<Timeline>,
     tree: Key<TreeCommands>,
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     identity: Key<TimelineIdentity>,
     phase: Key<BranchLifecycle>,
     session: Key<SessionLifecycle>,
@@ -377,7 +377,7 @@ struct Owner {
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
     tree: Arc<TreeCommands>,
-    settings: Arc<SettingsService>,
+    settings: Arc<Settings>,
     texts: Arc<GoalTexts>,
     phase: Arc<BranchLifecycle>,
     session: Arc<SessionLifecycle>,
@@ -670,7 +670,7 @@ impl Owner {
     async fn limit(&self) -> Result<Option<u64>, ()> {
         let snapshot = match self
             .settings
-            .read_declared(SOURCE, SettingsScope::User, &self.stop)
+            .read(SOURCE, SettingsScope::User, &self.stop)
             .await
         {
             Ok(snapshot) => snapshot,

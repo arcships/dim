@@ -59,9 +59,10 @@ Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 
 | 方法 | 请求 | 回复 | mutating | interruption |
 | --- | --- | --- | --- | --- |
-| `provider.management` | `{providerId, modelId?}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[]}`；每个连接新增 `gluedPrefix`，即其记录声明的前缀，每个模型新增 `alias`，即所列 id 所指的 catalog id，以及 `catalogName`，即 `provider.catalog` 为该行发布的名字；未设置时省略 | false | `Drain` |
+| `provider.management` | `{providerId, modelId?, page?: {after?, limit?, query?}}` | `{drivers: ManagementDriver[], providers: ManagementProvider[], errors: ProviderRecordError[], next: string|null}`；每个连接新增 `gluedPrefix`，即其记录声明的前缀，每个模型新增 `alias`，即所列 id 所指的 catalog id，以及 `catalogName`，即 `provider.catalog` 为该行发布的名字；未设置时省略 | false | `Drain` |
 | `provider.list` | `{}` | 原 `{providers,errors}` 摘要；每项新增 `remoteModelList`，表示 `provider.refresh` 能否列举该 Provider 的模型，客户端据此在空 catalog 的提示行给出或省略该命令，以及 `gluedPrefix`，即其记录声明的前缀，未设置时省略 | false | `Drain` |
 | `provider.selection` | `{cwd?}` | 既有 `{selection}`，其 scope/version 独立。带 `cwd` 时只读该作用域的行，该文件夹没有行时返回 `null`；工作区优先于全局是一条 `configuration` 规则，不属于此读取 | false | `Drain` |
+| `provider.model.set_enabled` | `{providerId, expectedVersion, modelId, enabled}` | `{version}` | true | `Drain` |
 | `provider.catalog` | `{providerId, modelId?}` | 既有 `{catalog}` 和 `ProviderModel`；每个模型的 `name` 在其 Provider 内唯一（见下方 §3.1） | false | `Drain` |
 
 `provider.catalog` 发布的 `name` 在所属 Provider 内唯一。重复判定覆盖该目录的全部行，
@@ -217,9 +218,11 @@ Provider 列表 -> 连接配置 -> 保存（摘要与提交版本）
 | `provider.create` | `{providerId,displayName,connection,models:ModelEntry[],enabled,gluedPrefix?}` | `ManagementProvider`；只创建，客户端生成新 UUID，已存在 ID 冲突；`gluedPrefix` 按 patch 的规则：去空白，空值即未声明 | true | `Drain` |
 | `provider.update` | `{providerId,expectedVersion,patch}` | `ManagementProvider`；校验后单事务局部写入；patch 改动 `baseUrl`、`credential` 或 `headers` 时，同一次 CAS 写入还用新 endpoint 的列举结果替换记录自身的模型，`modelsListed` 说明结果；只改 `network` 时单独保存 | true | `Drain` |
 | `provider.probe` | `{providerId,connection}` | `{models:ModelEntry[]}`；只做 §3.3 网络探测，不写入或检查版本 | false | `Drain` |
-| `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry}` | 既有 catalog；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
-| `provider.models.delete` | `{providerId,expectedVersion,modelId}` | 既有 catalog；仅删用户新增项，同事务移除该 ID 的 disabledModelIds 项并清理自有偏好/路由/选择 | true | `Drain` |
-| `provider.preferences.update` | `{providerId,expectedVersion,modelId,patch}` | `ManagementProvider`；effort/tier 分别 set/clear，按模型校验 | true | `Drain` |
+| `provider.models.create` | `{providerId,expectedVersion,model:ModelEntry,reply?:"full" \| "summary"}` | 默认返回既有 catalog，`reply:"summary"` 返回 `{version}`；写独立用户新增列表，与默认/用户项重复的 ID 拒绝；以启用状态新增，同事务清掉该 ID 遗留的 modelConfigOverrides、disabledModelIds、modelPreferences 和 endpointOverrides 项 | true | `Drain` |
+| `provider.models.delete` | `{providerId,expectedVersion,modelId,reply?:"full" \| "summary"}` | 默认返回既有 catalog，`reply:"summary"` 返回 `{version}`；仅删用户新增项，同事务移除该 ID 的 disabledModelIds 项并清理自有偏好/路由/选择 | true | `Drain` |
+| `provider.preferences.update` | `{providerId,expectedVersion,modelId,patch,reply?:"full" \| "summary"}` | 默认返回 `ManagementProvider`，`reply:"summary"` 返回 `{version}`；effort/tier 分别 set/clear，按模型校验 | true | `Drain` |
+
+`provider.models.edit` 与 `provider.models.reset` 接受同样的可选 `reply`，分别答复既有 catalog 或 `{version}`。只重读所改行的客户端请求 summary，提交后的版本即其下次写入的 CAS 令牌；省略 `reply` 时对既有调用方保留完整答复。
 
 客户端发送前生成并保留 UUID。create 只接受规范的小写、带连字符 UUID，其他值返回
 `provider_invalid_config`，不从名称生成 identity。已有内置/导入的非 UUID ID 对其他方法
@@ -1051,6 +1054,34 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 - **通用能力：** 原生方法提供安全的 owner 自有错误字段，由[方法错误合同](../../../design/contracts/session-boundary.md#appendix-c-errors-and-recovery)保留，Rpc 不解释 Provider 字段。
 - **顺序影响：** 不影响序号、批次、中断或重载；被拒绝的写入不修改记录。
 - **owner/issue：** dim-agent-capabilities 方法错误与 App Server；[#1495](https://github.com/arcships/dim/issues/1495)。
+
+## 下游按范围读取
+
+`provider.management` 的单 Provider 模型管理读取可携带
+`page: {after?, limit?, query?}`，不能同时传 `modelId`。每页默认 32 行，
+上限 128，至少 1 行。按模型 ID 字典序排列，`after` 为上一页最后的模型 ID，
+回复 `next:null` 表示结束。搜索分别匹配模型 ID、显示名，忽略大小写。
+禁用和不可用模型也展示。每页的模型、偏好和 Provider 版本来自同一已提交快照；
+不同页可看到不同版本。只解码选中行及计算名称所需的数据。
+
+Web 模型管理页打开时读取第一页，搜索交给服务端，后续页按需加载。
+单模型修改后按 `modelId` 回读并替换该行，删除后只移除该行。
+有搜索条件时，修改后改为重读该查询的有界第一页，由服务端决定修改后的行是否仍匹配。
+返回模型页签时，从无过滤条件的第一页开始，与空搜索框保持一致。
+打开已有模型编辑时，点查该模型的内容、偏好和版本。
+版本冲突后需重新读取，才能再次写入。
+
+`managementMethods` 上的 `provider.model.set_enabled` 接收
+`{providerId, expectedVersion, modelId, enabled}`，返回 `{version}`。
+拥有方核对版本、托管账号身份和目标可用性，在同一事务内只修改该模型的启停状态
+并递增版本。目标不存在返回 `provider_not_found`，不可用目标拒绝切换。
+不得根据当前显示页推导其他页模型的启停状态。
+
+`provider.models.query` 的 `selectableOnly:true` 只返回拥有方现有执行规则
+认可的模型。游标按已检查候选推进，过滤后空页也可能携带 `next`。
+ACP 读取这些有界页，组成协议需要的完整可用模型回复；跨 Provider 重复的
+模型 ID 仍因歧义而排除。CLI 单模型限制修改及修改后的展示都传 `modelId`；
+批量补齐限制按其缺失条件枚举目标。
 
 ## 9. 消融检查
 

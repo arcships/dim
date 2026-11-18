@@ -19,7 +19,7 @@ use dim_agent_capabilities::{
     },
     host_platform::{HostPlatform, ShellStatus},
     model_provider::ModelProviderPlugin,
-    permission::{CommandRulesHost, NoCommandRules},
+    permission::{CommandRules, NoCommandRules},
     skill_settings::SkillSettingsHost,
     skills::{MemorySkillSettings, SkillsCatalogPlugin},
     toolchain::ToolchainSourceHost,
@@ -201,7 +201,7 @@ pub async fn local_graph() -> Result<BTreeMap<&'static str, Value>> {
         }))
     });
     defaults::mock_model_hosts(&mut builder);
-    builder.session_value(Arc::new(CommandRulesHost(Arc::new(NoCommandRules))));
+    builder.session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))));
     builder.session_value(Arc::new(HookSourcesHost(Arc::new(NoHookSources))));
     defaults::install_local_execution(
         &mut builder,

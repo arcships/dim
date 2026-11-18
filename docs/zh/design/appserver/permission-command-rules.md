@@ -49,10 +49,10 @@
                                          | read（每次调用）
  Session 作用域                          |
  |  CommandRules（Session 部分，App Server）提供                  |
- |    commandRules（Rust：CommandRulesHost）--read--> Settings    |
+ |    commandRules（Rust：CommandRules）--read--> Settings    |
  |  （mock 与测试配置：defaults 绑定固定的空宿主）                |
  +---------------------------------------^-----------------------+
-                                         | Keyed<CommandRulesHost>
+                                         | Keyed<CommandRules>
  分支作用域                              |
  |  ToolExecutor --admit--> Approval --decide(call, risk)-->      |
  |                                      Permission（补充）        |
@@ -60,7 +60,7 @@
 ```
 
 依赖指向核心：Permission（核心，dim-agent-capabilities）只依赖 capabilities crate 自己定义的
-Session 端口 `CommandRulesHost`。App Server 用自己的 Settings 来源实现该端口；capabilities 不点名
+Session 端口 `CommandRules`。App Server 用自己的 Settings 来源实现该端口；capabilities 不点名
 App Server 或 Settings。没有可选依赖：每个装载 Permission 的配置都恰好绑定一个规则宿主（§4.2）。
 
 ## 3. 数据与状态
@@ -124,6 +124,11 @@ App Server 或 Settings。没有可选依赖：每个装载 Permission 的配置
 
 ### 4.2 Rust 绑定
 
+`CommandRules::read(cancel)` 是原生类型化操作，返回 `CommandRulesReply { rules }`。
+dispatcher 的 `read({})` 调用同一个读取；原生 `HostError::Failed`/`Cancelled` 在 wire
+边界分别映射为 `unavailable`/`cancelled`。仅能力宿主通过 `AgentBuilder::session_data_value`
+在 Session 的两个键提供同一个值，产品的 CommandRules 部件自行提供两个键；都不新增读取或缓存。
+
 在 `dim-agent-types::permission` 中，紧挨 `PermissionPolicy`（一个类型，端口和 App Server 文档共用）：
 
 ```rust
@@ -142,7 +147,7 @@ pub trait ReadCommandRules: Send + Sync + 'static {
     fn rules(&self, cancel: CancellationToken)
         -> HostFuture<'_, Vec<CommandRule>>;   // Result<_, HostError>：Failed | Cancelled
 }
-pub struct CommandRulesHost(pub Arc<dyn ReadCommandRules>);       // Session 值
+pub struct CommandRules(pub Arc<dyn ReadCommandRules>);       // Session 值
 pub struct NoCommandRules;                                         // 固定的空宿主
 
 impl Permission {
@@ -151,16 +156,16 @@ impl Permission {
 }
 ```
 
-`PermissionPlugin::Deps` 新增 `Keyed<CommandRulesHost>`（硬依赖）。`Approval::admit` 传入它已持有
+`PermissionPlugin::Deps` 新增 `Keyed<CommandRules>`（硬依赖）。`Approval::admit` 传入它已持有
 的调用，并向上传递被取消的读取；它现有的两处 `decide`（首次判定和允许回复后的复核）其余不变。
 
 各配置的绑定（每个配置恰好一个）：
 
 | 配置 | 绑定 |
 | --- | --- |
-| `defaults::install`、`install_with_prompt`、`install_with_process_model`（App Server mock 配置与测试宿主） | `install_profile` 用 `session_value` 绑定固定的空宿主 `NoCommandRules`，与它已绑定的 `EmptyPromptHost` 并列。现有测试不变 |
-| `install_with_prompt_capability`、`install_local_execution`、`install_minimal_execution` | 与 `PromptHost` 一样不绑定：由安装它们的宿主绑定端口。只用 capabilities 的宿主（集成测试、`xtask` 本地图）绑定 `CommandRulesHost(Arc::new(NoCommandRules))` |
-| App Server 产品配置（`main.rs` 中的 `install_local_execution`、其测试与 `xtask` App Server 图） | 配置调用 `permission_rules::install(&mut builder)`，加入功能 `CommandRules` 并要求它的 Session 部分 `CommandRules`（`require_feature`，Deps `Keyed<SettingsService>`），它提供的 `CommandRulesHost` 每次调用都读取 `SettingsService::read::<PermissionSettings>(User)`。`serve` 在本地执行时注册进程部分 `PermissionRulesPlugin`（`register_part`，Deps `Keyed<SettingsService>` 与 `Keyed<ManagementMethods>`，所有者行 `permission`），与 `mcp`、`skills` 并列，由它提供管理方法。两者与文档类型 `PermissionSettings`（`NAMESPACE = "permission"`、`USER_FILE = "permission.json"`、无 `PROJECT_FILE`）同在 `dim-app-server/src/permission_rules.rs` |
+| `defaults::install`、`install_with_prompt`、`install_with_process_model`（App Server mock 配置与测试宿主） | `install_profile` 用 `session_data_value` 绑定固定的空宿主 `NoCommandRules`，与它已绑定的 `EmptyPromptHost` 并列。现有测试不变 |
+| `install_with_prompt_capability`、`install_local_execution`、`install_minimal_execution` | 与 `PromptHost` 一样不绑定：由安装它们的宿主绑定端口。只用 capabilities 的宿主（集成测试、`xtask` 本地图）绑定 `CommandRules(Arc::new(NoCommandRules))` |
+| App Server 产品配置（`main.rs` 中的 `install_local_execution`、其测试与 `xtask` App Server 图） | 配置调用 `permission_rules::install(&mut builder)`，加入功能 `CommandRules` 并要求它的 Session 部分 `CommandRules`（`require_feature`，Deps `Keyed<SettingsService>`），它提供的 `CommandRules` 每次调用都读取 `SettingsService::read::<PermissionSettings>(User)`。`serve` 在本地执行时注册进程部分 `PermissionRulesPlugin`（`register_part`，Deps `Keyed<SettingsService>` 与 `Keyed<ManagementMethods>`，所有者行 `permission`），与 `mcp`、`skills` 并列，由它提供管理方法。两者与文档类型 `PermissionSettings`（`NAMESPACE = "permission"`、`USER_FILE = "permission.json"`、无 `PROJECT_FILE`）同在 `dim-app-server/src/permission_rules.rs` |
 
 ## 5. 流程
 
@@ -208,8 +213,8 @@ allow 规则不能解除预设拒绝或文件检查，deny 规则在所有预设
 ### 5.3 准入
 
 ```
- ToolExecutor       Approval                     Permission           CommandRulesHost
-    | admit(call) --->| decide(call, risk) ------->| rules() ----------->| 读用户来源
+ ToolExecutor       Approval                     Permission           CommandRules
+    | admit(call) --->| decide(call, risk) ------->| read(cancel) ------>| 读用户来源
     |                 |<-- Allow | Ask | Deny -----|<-- rules ----------|
     |<- Ok（执行）    |   Allow                    |
     |<- 错误结果      |   Deny：content = 理由（现有 HostError::failed 路径）
@@ -269,7 +274,7 @@ allow 规则不能解除预设拒绝或文件检查，deny 规则在所有预设
 
 | 部分 | 关系 |
 | --- | --- |
-| Permission | 补充：`decide` 接收调用，对命令调用读取规则；Session 依赖 `CommandRulesHost`。规则不增加策略字段，不改变策略版本或方法；预设遵循 Permission 自身的合同 |
+| Permission | 补充：`decide` 接收调用，对命令调用读取规则；Session 依赖 `CommandRules`。规则不增加策略字段，不改变策略版本或方法；预设遵循 Permission 自身的合同 |
 | Approval | 在现有两处把调用传给 `decide`，并传递被取消的读取。事件、`approval.respond`、重放和恢复不变 |
 | ToolExecutor、WorkspaceTools、ShellTools | 不变；`exec` 与 `execute` 已声明 `execute_process` 并接收 `command` |
 | Settings | 不变；新增一个来源 `permission`（用户文件、原生行）。它的 `settings.changed` 与任何来源一样照常发出；F2 不监听 |
@@ -280,7 +285,7 @@ allow 规则不能解除预设拒绝或文件检查，deny 规则在所有预设
 | Collaboration、Scheduler、Workflow | 规则是宿主级的，在每个 Session 中生效；由于 allow 只回答 `Ask`，上限为 read-only 的自动化 Session 不会被放宽 |
 | Hooks（pre-tool） | 相互独立：Hooks 建议在命令规则之后、且仅当其未拒绝时才被询问（[Hooks A.6.1](../plugins/Hooks.md#a61-permission-的工具建议)） |
 
-新增公开内容：Session 端口 `commandRules`（Rust `CommandRulesHost`）、`CommandRule` 类型、
+新增公开内容：Session 端口 `commandRules`（Rust `CommandRules`）、`CommandRule` 类型、
 `permission` 管理命名空间（两个方法）以及 `permission` Settings 来源。每一项都是存储规则、客户端
 写入规则、Permission 读取规则所必需的。
 
@@ -320,7 +325,7 @@ allow 规则不能解除预设拒绝或文件检查，deny 规则在所有预设
    （[ADR 018](../../../adr/018-permission-is-the-preset.md)、[§10.1](#101-遗留规则类型)）。
 5. **专用方法与 S8b 的 `settings.read`/`settings.update`：** 在设计 S8b 时决定；F2 保留
    `permission.rules`/`permission.set_rules`。
-6. **绑定：** 按配置在 Session 级绑定端口 `Keyed<CommandRulesHost>`（§4.2），不依赖进程服务；
+6. **绑定：** 按配置在 Session 级绑定端口 `Keyed<CommandRules>`（§4.2），不依赖进程服务；
    现有测试不变。
 7. **范围：** F2 只做服务端：规则来源、Permission 检查、管理方法和流程测试。CLI `/permissions` 面板和
    "总是"选项属于 F6（CLI），作为它承接的需求（§5.4、§8）；CLI 已在 [#257](https://github.com/arcships/dim/issues/257) 交付。

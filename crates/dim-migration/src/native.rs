@@ -18,6 +18,13 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) const MAX_HISTORY_RECORD_BYTES: usize = 8 * 1024 * 1024;
 
+fn legacy_millis(text: &str) -> Result<u64> {
+    let instant = dim_agent_capabilities::timestamp::parse(text)
+        .map_err(|_| Error::Object("Legacy message timestamp is invalid".into()))?;
+    u64::try_from(dim_agent_capabilities::timestamp::millis(instant))
+        .map_err(|_| Error::Object("Legacy message timestamp is before the Unix epoch".into()))
+}
+
 pub(crate) fn failure(_: impl std::fmt::Display) -> Error {
     Error::Target(
         "Native migration storage operation failed; source and committed objects are preserved"
@@ -641,18 +648,10 @@ pub(crate) fn history(data: &SessionData) -> Result<Vec<StoredEvent>> {
     let mut pending_calls = BTreeMap::new();
     for record in &data.records {
         let first = events.len();
-        let timestamp = record
+        let now = record
             .created_at
             .as_deref()
-            .map(chrono::DateTime::parse_from_rfc3339)
-            .transpose()
-            .map_err(|_| Error::Object("Legacy message timestamp is invalid".into()))?;
-        let now = timestamp
-            .map(|time| {
-                u64::try_from(time.timestamp_millis()).map_err(|_| {
-                    Error::Object("Legacy message timestamp is before the Unix epoch".into())
-                })
-            })
+            .map(legacy_millis)
             .transpose()?
             .unwrap_or(now);
         let request = format!("import:{}", record.id);
@@ -1002,5 +1001,18 @@ mod tests {
         assert!(
             validate_settings("mcp", &json!({"mcpServers": {"": {"command": "server"}}})).is_err()
         );
+    }
+
+    #[test]
+    fn a_legacy_leap_second_keeps_its_milliseconds() {
+        assert_eq!(
+            legacy_millis("2016-12-31T23:59:60Z").unwrap(),
+            1_483_228_800_000
+        );
+    }
+
+    #[test]
+    fn a_legacy_pre_epoch_fraction_is_rejected() {
+        assert!(legacy_millis("1969-12-31T23:59:59.999999999Z").is_err());
     }
 }

@@ -40,7 +40,7 @@ impl Capture {
     fn new(names: &Names<'_>, services: Arc<OnceLock<Services>>) -> rutis::Result<Self> {
         Ok(Self {
             services,
-            mcp: names.key()?,
+            mcp: dim_app_server::mcp::owner_key(),
             settings: names.key()?,
             files: names.key()?,
         })
@@ -926,7 +926,7 @@ async fn framework_precancellation_closes_admission_before_dependent_cleanup_fin
         release: Arc<tokio::sync::Notify>,
     }
     impl Plugin for SlowConsumer {
-        type Deps = Arc<McpService>;
+        type Deps = Arc<dim_app_server::mcp::McpServiceBinding>;
         fn name(&self) -> &str {
             "SlowMcpConsumer"
         }

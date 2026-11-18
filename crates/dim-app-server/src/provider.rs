@@ -33,8 +33,8 @@ use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
 pub use startup::{StartupInput, StartupSelection};
 pub use view::{
-    ManagementInfo, ManagementPage, ManagementPageRequest, ManagementProvider, ManagementView,
-    ModelsListed,
+    ManagementInfo, ManagementModelPage, ManagementPage, ManagementPageRequest, ManagementProvider,
+    ManagementView, ModelsListed,
 };
 
 use crate::{

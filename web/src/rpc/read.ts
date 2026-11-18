@@ -438,14 +438,13 @@ export function readProviderCatalog(value: unknown): ProviderCatalog | undefined
 }
 
 /**
- * `provider.selection`: the default model for a directory. The selection
- * object serializes in snake_case (`ProviderSelection` has no rename).
+ * `session.model.preview`: the model a Session created now would adopt, or
+ * `undefined` when the owner resolves no usable model.
  */
-export function readProviderSelection(value: unknown): ModelId | undefined {
-  const source = obj(value, "provider.selection")
-  if (source.selection === null) return undefined
-  const selection = obj(source.selection, "provider.selection.selection")
-  return { providerId: str(selection, "provider_id", "provider.selection"), modelId: str(selection, "model_id", "provider.selection") }
+export function readModelPreview(value: unknown): ModelId | undefined {
+  const at = "session.model.preview"
+  const model = modelId(obj(value, at).model, `${at}.model`)
+  return model.providerId === "" || model.modelId === "" ? undefined : model
 }
 
 

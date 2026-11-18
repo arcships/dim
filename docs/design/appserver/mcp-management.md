@@ -1358,6 +1358,53 @@ business configuration, not an event.
 | `McpAuth` ([MCP OAuth](mcp-oauth.md)) | The `mcp.auth.*` methods of the same namespace; the credential record is untouched by a move |
 | `credentialVariablesHost` (capabilities host, D19) | The names of the environment variables the daemon reads credentials from; `McpPublication` and `McpPlugin` declare it, and the assembly root in `serve` provides it |
 
+The MCP publication coordinator is private typed wiring within the MCP owner. Its command queue, connection generations and application watch have no public catalog name; the existing management methods and `mcpSession` expose the owner operations. The explicit private dependency still orders assembly and shutdown.
+
+### 8.1 Plugin content data face
+
+The process service `mcpService` exposes the MCP owner's existing PluginManager operations:
+
+| Method | Request | Reply |
+| --- | --- | --- |
+| `register` (async) | `{plugin: string, dir: string, document: JSON}` | `null` |
+| `withdraw` (async) | `{plugin: string}` | `null` |
+| `plugins` (async) | `{}` | registered plugin IDs |
+| `refusal` (sync) | `{plugin: string}` | `[message, reason or null]`, or `null` when none |
+
+Each call takes one request object; unknown fields or malformed arguments fail with
+`invalid_request`. The registration directory is a string at the wire input boundary and uses
+the same native path validation and confinement as an in-process registration. No path is
+converted lossily. A document is registered as one unit under the existing plugin-content
+contract; a refused replacement withdraws that plugin's previous entries and records the refusal.
+Withdrawal removes both registration and refusal. The refusal tuple is read atomically.
+
+`plugin` is an identifier value, not authorization. Registration accepts a string containing
+at least one non-whitespace character and stores it verbatim; the other operations address that
+same value. Registration is persisted, not owned by the calling row's lifetime. Unloading a
+caller does not withdraw its document; the caller is responsible for explicit withdrawal.
+
+Failures retain the existing MCP management application code and message, including
+`mcp_invalid_config`, `mcp_settings_read`, `service_reloading`, `operation_interrupted` and
+`mcp_unavailable`; worker failures retain their existing sanitized message. This data face adds
+no management authorization or client RPC entry. Secret overlays, resolved server configuration,
+credential state, connection handles and application watches are not operations of this face.
+MCP's Session parts reach those internal resources through their declared owner-private binding.
+
+Rust parts resolve `McpServiceBinding` under `mcpService`. Its only owner operations are the
+four above, and it has no dereference or owner accessor. The native key and dispatcher hold the
+same binding, which directly calls the existing owner. The exported `McpService` owner type
+remains available for MCP's own embedding code at its private key; the public name does not
+provide that raw type. PluginManager depends on the public binding.
+
+Native and wire operations use the same owner state, admission gate, task set and publication
+coordinator. Native callers retain the existing explicit cancellation-token checks. The wire
+request has no cancel argument or cancel operation. Once an asynchronous wire operation starts,
+giving up its wait does not cancel or roll it back; the owner operation and refusal bookkeeping
+continue. Owner closing stops admission, cancels work through its existing owner token and waits
+for its owned tasks to settle. An interrupted reply is not proof that a configuration write did
+not commit. Synchronous refusal reads start no task and retain no wait to cancel. There is no new
+registry, cache, query, retry policy or resource lifetime.
+
 ## 9. Cross-module requirements
 
 One requirement is raised to the capabilities host: the `CredentialVariablesHost` port with its

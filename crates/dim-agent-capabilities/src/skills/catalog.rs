@@ -69,6 +69,11 @@ pub struct SkillsCatalog {
     closed: CancellationToken,
 }
 
+/// The private native binding for Skills' own parts and embedding hosts.
+pub fn owner_key() -> Key<SkillsCatalog> {
+    Key::named("dim/skills/catalog-owner")
+}
+
 async fn scan(root: PathBuf, kind: RootKind) -> Result<RootSnapshot, SkillIssue> {
     let path = root.clone();
     tokio::task::spawn_blocking(move || scan_root(&path, kind))
@@ -747,7 +752,13 @@ impl DynPlugin for SkillsCatalogPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let parts = ctx.require_at(&self.parts)?;
             let catalog = Self::mount(ctx, (platform, settings)).await?;
-            ctx.provide_as::<SkillsCatalog>(catalog)?;
+            ctx.provide_at(owner_key(), catalog.clone())?;
+            let binding = Arc::new(super::SkillsCatalogBinding::new(catalog));
+            ctx.provide_as::<super::SkillsCatalogBinding>(binding.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("skillsCatalog"),
+                binding,
+            )?;
             super::register_parts(ctx, &parts)?;
             Ok(Effect::Done)
         })
@@ -784,8 +795,8 @@ impl SkillsCatalogPlugin {
                 settings: initial,
                 version: 0,
             }),
-            reloading: tokio::sync::Mutex::new(()),
-            operating: tokio::sync::Mutex::new(()),
+            reloading: tokio::sync::Mutex::default(),
+            operating: tokio::sync::Mutex::default(),
             events: ctx.clone(),
             closed: lifecycle.clone(),
         });

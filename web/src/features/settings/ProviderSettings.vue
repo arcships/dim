@@ -21,6 +21,9 @@ const models = useModels()
 const view = ref<ManagementPage>()
 const detail = ref<ManagementInfo>()
 const modelDetail = ref<ManagementProvider>()
+const modelNext = ref<string | null>(null)
+const modelQuery = ref("")
+let modelRead = 0
 const loading = ref(true)
 const busy = ref(false)
 const error = ref("")
@@ -42,7 +45,7 @@ const providerId = computed(() => typeof route.params.providerId === "string" ? 
 const opened = computed(() => isNew.value || providerId.value !== "")
 const tabItems = computed(() => [
   { label: t("connection"), value: "connection" },
-  { label: modelDetail.value ? `${t("models")} (${modelDetail.value.models?.length ?? 0})` : t("models"), value: "models" },
+  { label: t("models"), value: "models" },
 ])
 function configured(provider: ManagementInfo): boolean {
   return provider.source === "custom" || provider.account?.state.authenticated === true
@@ -68,6 +71,9 @@ async function loadDetail(): Promise<void> {
   detailError.value = ""
   detail.value = undefined
   modelDetail.value = undefined
+  modelRead++
+  modelNext.value = null
+  modelQuery.value = ""
   if (!id) return
   try {
     const result = await connection.client.call("provider.management.list", { providerId: id }, readManagementPage)
@@ -81,16 +87,30 @@ async function loadDetail(): Promise<void> {
     }
   } catch (cause) { if (providerId.value === id) detailError.value = messageFrom(cause) }
 }
-async function loadModelDetail(): Promise<void> {
+async function loadModelDetail(more = false, query = modelQuery.value): Promise<void> {
+  if (query !== modelQuery.value) {
+    more = false
+    modelNext.value = null
+  }
+  if (more && !modelNext.value) return
+  modelQuery.value = query
+  const request = ++modelRead
   const id = providerId.value
   try {
-    const result = await connection.client.call("provider.management", { providerId: id }, readManagement)
-    if (providerId.value === id) {
+    const result = await connection.client.call("provider.management", { providerId: id, page: { query, limit: 32, ...(more && modelNext.value ? { after: modelNext.value } : {}) } }, readManagement)
+    if (providerId.value === id && request === modelRead) {
       const provider = result.providers.find((p) => p.providerId === id)
-      if (provider) updated(provider)
+      if (provider) {
+        if (more && modelDetail.value) {
+          provider.models = [...(modelDetail.value.models ?? []), ...(provider.models ?? [])]
+          provider.preferences = { ...modelDetail.value.preferences, ...provider.preferences }
+        }
+        modelNext.value = result.next
+        updated(provider)
+      }
       else detailError.value = result.errors.find((failure) => failure.providerId === id)?.message ?? t("unavailable")
     }
-  } catch (cause) { if (providerId.value === id) detailError.value = messageFrom(cause) }
+  } catch (cause) { if (providerId.value === id && request === modelRead) detailError.value = messageFrom(cause) }
 }
 function close(): void { void router.push({ name: "settings-providers" }) }
 function open(id: string): void { void router.push({ name: "settings-provider-detail", params: { providerId: id } }) }
@@ -120,7 +140,11 @@ async function changeTab(next: string): Promise<void> {
   connectionDirty.value = false
   modelDirty.value = false
   tab.value = next
-  if (next === "models" && !modelDetail.value) await loadModelDetail()
+  if (next === "models") {
+    modelDetail.value = undefined
+    modelNext.value = null
+    await loadModelDetail(false, "")
+  }
 }
 async function reloadDetail(): Promise<void> {
   if (dirty.value && !await confirm.value?.open(t("discard"))) return
@@ -268,7 +292,7 @@ void load()
             </section>
             <ProviderConnectionForm v-if="detail.connection && view" :key="`${detail.providerId}-${formKey}`" v-model:dirty="connectionDirty" :provider="detail" :drivers="view.drivers" @saved="saved" @reload="reloadDetail" @cancel="close" />
           </template>
-          <ProviderModels v-else-if="modelDetail" :key="modelDetail.providerId" v-model:dirty="modelDirty" :provider="modelDetail" @updated="updated" />
+          <ProviderModels v-else-if="modelDetail" :key="modelDetail.providerId" v-model:dirty="modelDirty" :provider="modelDetail" :next="modelNext" @load="(more, query) => loadModelDetail(more, query)" @updated="updated" />
           <footer v-if="detail.actions.includes('delete')" class="provider-footer">
             <UButton color="error" variant="ghost" :disabled="busy || dirty || connection.phase !== 'connected'" @click="remove()">{{ t("remove") }}</UButton>
           </footer>

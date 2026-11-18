@@ -804,39 +804,46 @@ async fn findings_name_their_branch() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn undeclared_reads_are_reported() {
-    let mut b = builder();
-    test_extension_a::register_names(b.catalog_mut());
-    names::register::<Marker>(b.catalog_mut(), Some(BRANCH_GROUP));
-    b.require_feature(
-        Feature::new("test.pair")
-            .branch("test.pair", |names| Ok(Box::new(PairProvider::new(names)?))),
-    )
-    .require_feature(
-        Feature::new("test.undeclared-reader").branch("test.undeclared-reader", |names| {
-            Ok(Box::new(UndeclaredReader::new(names)?))
-        }),
-    );
-    let agent = MinimalHost::start(&b).await.unwrap();
-    let session = agent
-        .create_session(SessionConfig::default())
-        .await
-        .unwrap();
-    let findings = agent.check_assembly().unwrap();
-    // Each plugin is checked once, by the innermost scope that contains it, so
-    // the reader's branch reports this read once.
-    assert_eq!(
-        pairs(&findings),
-        vec![(
-            session.id().to_string(),
-            Some("main".to_string()),
-            "test.undeclared-reader".to_string(),
-            AssemblyRule::UndeclaredRead
-        )],
-        "{findings:?}"
-    );
-    session.close().await.unwrap();
-    agent.close().await.unwrap();
+async fn optional_reads_are_allowed_and_undeclared_required_reads_are_reported() {
+    for present in [false, true] {
+        for required in [false, true] {
+            let mut b = builder();
+            test_extension_a::register_names(b.catalog_mut());
+            names::register::<Marker>(b.catalog_mut(), Some(BRANCH_GROUP));
+            b.require_feature(Feature::new("test.pair").branch("test.pair", move |names| {
+                Ok(Box::new(PairProvider::new(names, present)?))
+            }))
+            .require_feature(
+                Feature::new("test.undeclared-reader")
+                    .branch("test.undeclared-reader", move |names| {
+                        Ok(Box::new(UndeclaredReader::new(names, present, required)?))
+                    }),
+            );
+            let agent = MinimalHost::start(&b).await.unwrap();
+            let session = agent
+                .create_session(SessionConfig::default())
+                .await
+                .unwrap();
+            let findings = agent.check_assembly().unwrap();
+            let expected = if required {
+                vec![(
+                    session.id().to_string(),
+                    Some("main".to_string()),
+                    "test.undeclared-reader".to_string(),
+                    AssemblyRule::UndeclaredRead,
+                )]
+            } else {
+                vec![]
+            };
+            assert_eq!(
+                pairs(&findings),
+                expected,
+                "present={present}, required={required}: {findings:?}"
+            );
+            session.close().await.unwrap();
+            agent.close().await.unwrap();
+        }
+    }
 }
 
 /// A reader whose provider withdraws after the read keeps the access but loses
@@ -917,15 +924,15 @@ async fn reads_of_a_withdrawn_generation_are_reported() {
     agent.close().await.unwrap();
 }
 
-/// Provides the `Marker` a reader gates on and an external `Counter` in one
-/// part, so the gate also guarantees the counter is bound.
 struct PairProvider {
+    present: bool,
     marker: Key<Marker>,
     counter: Key<Counter>,
 }
 impl PairProvider {
-    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, present: bool) -> rutis::Result<Self> {
         Ok(Self {
+            present,
             marker: names.key()?,
             counter: names.key()?,
         })
@@ -938,24 +945,28 @@ impl DynPlugin for PairProvider {
     fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             ctx.provide_at(self.marker.clone(), std::sync::Arc::new(Marker))?;
-            ctx.provide_at(
-                self.counter.clone(),
-                std::sync::Arc::new(Counter::default()),
-            )?;
+            if self.present {
+                ctx.provide_at(
+                    self.counter.clone(),
+                    std::sync::Arc::new(Counter::default()),
+                )?;
+            }
             Ok(Effect::Done)
         })
     }
 }
 
-/// Declares the marker and reads the counter through the non-strict read,
-/// without declaring it.
 struct UndeclaredReader {
+    present: bool,
+    required: bool,
     marker: Key<Marker>,
     counter: Key<Counter>,
 }
 impl UndeclaredReader {
-    fn new(names: &Names<'_>) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, present: bool, required: bool) -> rutis::Result<Self> {
         Ok(Self {
+            present,
+            required,
             marker: names.key()?,
             counter: names.key()?,
         })
@@ -971,7 +982,15 @@ impl DynPlugin for UndeclaredReader {
     fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             ctx.require_at(&self.marker)?;
-            let _ = ctx.get_at(&self.counter);
+            if self.required {
+                let error = ctx
+                    .require_at(&self.counter)
+                    .err()
+                    .expect("undeclared required read must be rejected");
+                assert_eq!(error.reason, rutis::host::ServiceReadFailure::Undeclared);
+            } else {
+                assert_eq!(ctx.get_at(&self.counter).is_some(), self.present);
+            }
             Ok(Effect::Done)
         })
     }
@@ -1531,7 +1550,7 @@ async fn nested_instances_preserve_optional_rows_and_cleanup_across_create_resto
     let rolled_back = Arc::new(AtomicUsize::new(0));
     let mut builtins = Modules::new();
     let mut b = builder();
-    b.timeline_store(store);
+    b.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
     let fail = Arc::new(std::sync::atomic::AtomicBool::new(false));

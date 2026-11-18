@@ -37,7 +37,7 @@ async fn agent_with(store: Arc<dyn TimelineStore>) -> MinimalHost {
     );
     defaults::install(&mut builder);
     recall::install(&mut builder);
-    builder.timeline_store(store);
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     MinimalHost::start(&builder).await.unwrap()
 }
 

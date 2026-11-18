@@ -181,7 +181,86 @@ pub trait LoadPrompt: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> HostFuture<'_, Option<PromptEntry>>;
 }
+#[derive(Clone)]
 pub struct PromptHost(pub Arc<dyn LoadPrompt>);
+
+impl PromptHost {
+    /// Loads one source using its existing cancellation and settlement contract.
+    pub fn load(
+        &self,
+        target: PromptSourceTarget,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Option<PromptEntry>> {
+        self.0.load(target, cancel)
+    }
+}
+
+impl HostDispatch for PromptHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"load": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        if method != "load" {
+            return Err(crate::port_faces::unknown_method("promptHost", method));
+        }
+        let args = args.list()?;
+        let [target, BridgeValue::Reference(cancelled)] = args.as_slice() else {
+            return Err(crate::port_faces::invalid(
+                "promptHost",
+                "load needs its target and cancellation function",
+            ));
+        };
+        if !cancelled.is_function() {
+            return Err(crate::port_faces::invalid(
+                "promptHost",
+                "cancellation must be a function",
+            ));
+        }
+        let target = serde_json::from_value(target.clone().json()?)
+            .map_err(|error| crate::port_faces::invalid("promptHost", error))?;
+        let cancelled = cancelled.clone();
+        let caller = rutis_bridge::session::caller_row()
+            .map(|row| row.ctx().cancellation_token())
+            .unwrap_or_default();
+        let owner = self.clone();
+        Ok(BridgeValue::future(async move {
+            let cancel = caller.child_token();
+            let _finished = cancel.clone().drop_guard();
+            let cancelled: CancelledFn = Arc::new(move || {
+                let cancelled = cancelled.clone();
+                let caller = caller.clone();
+                Box::pin(async move {
+                    tokio::select! {
+                        _ = caller.cancelled() => {},
+                        _ = async {
+                            let reply = cancelled.call_async(BridgeValue::List(vec![])).await?;
+                            rutis_bridge::session::settle(reply).await
+                        } => {},
+                    }
+                    Ok(())
+                })
+            });
+            let result =
+                call_until_cancelled(cancelled, cancel.clone(), owner.load(target, cancel)).await;
+            match result {
+                Ok(entry) => rutis_bridge::session::arg(&entry),
+                Err(error) => {
+                    let code = match &error {
+                        HostError::Cancelled(_) => "cancelled",
+                        HostError::Failed { .. } => "failed",
+                    };
+                    Err(rutis_bridge::exports::failure(
+                        "PromptLoadError",
+                        code,
+                        error.to_string(),
+                        None,
+                    ))
+                }
+            }
+        }))
+    }
+}
 
 pub struct EmptyPromptHost;
 impl LoadPrompt for EmptyPromptHost {

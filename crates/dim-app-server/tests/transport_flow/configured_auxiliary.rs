@@ -106,7 +106,9 @@ async fn launch_configured_with(
     let database = home.is_none().then(|| directory.join("dim.sqlite"));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .timeline_store(Arc::new(dim_agent_runtime::MemoryTimelineStore::default()))
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+            dim_agent_runtime::MemoryTimelineStore::default(),
+        )))
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))

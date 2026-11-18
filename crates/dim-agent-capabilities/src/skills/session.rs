@@ -9,12 +9,13 @@ use crate::{
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{
-    BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget, SESSION_GROUP,
-    SessionConfig, SessionLifecycle, SessionLoader,
+    BRANCH_GROUP, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
+    SESSION_GROUP, SessionConfig, SessionLifecycle, SessionLoader,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
 use rutis::{Ctx, Error};
+use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue, host_key_in};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -38,7 +39,7 @@ fn view_version(view: &View) -> String {
 }
 
 /// The Session's current Skill view, or why it is unavailable.
-pub struct SessionSkills {
+struct SessionSkills {
     current: Mutex<View>,
     /// The how-to-use text: [`super::INSTRUCTIONS`] or the factory
     /// configuration's replacement.
@@ -54,11 +55,11 @@ impl SessionSkills {
             changed: watch::Sender::new(()),
         }
     }
-    pub fn current(&self) -> View {
+    fn current(&self) -> View {
         self.current.lock().unwrap().clone()
     }
     /// Enabled Skills of the current view, for input suggestions.
-    pub fn list(&self) -> Result<Vec<SkillSummary>, SkillsError> {
+    fn list(&self) -> Result<Vec<SkillSummary>, SkillsError> {
         Ok(self
             .current()?
             .skills
@@ -150,14 +151,14 @@ impl SkillsPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
             session: names.instance(SESSION_GROUP)?,
-            catalog: names.key()?,
+            catalog: super::owner_key(),
             config: names.key()?,
             loader: names.key()?,
             lifecycle: names.key()?,
             prompts: names.key()?,
             tools: names.key()?,
             checks: names.key()?,
-            skills: names.key()?,
+            skills: Key::of().instance(names.instance(SESSION_GROUP)?),
             factory: names
                 .registered::<super::SkillsConfig>()
                 .then(|| names.key::<super::SkillsConfig>())
@@ -583,13 +584,38 @@ pub struct SkillsBranch {
     skills: Arc<SessionSkills>,
 }
 impl SkillsBranch {
-    /// The Session's view, for entry points that reach Skills through a branch.
-    pub fn session(&self) -> Arc<SessionSkills> {
-        self.skills.clone()
+    /// Enabled Skills of the Session's current view, for input suggestions.
+    pub fn list(&self) -> Result<Vec<SkillSummary>, SkillsError> {
+        self.skills.list()
+    }
+}
+
+impl HostDispatch for SkillsBranch {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"list": "sync"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        match method {
+            "list" => {
+                let _: crate::port_faces::Empty = crate::port_faces::request("skillsBranch", args)?;
+                let skills = self.list().map_err(|error| {
+                    rutis_bridge::exports::failure(
+                        "skillsBranch",
+                        error.code(),
+                        error.to_string(),
+                        None,
+                    )
+                })?;
+                rutis_bridge::session::arg(&skills)
+            }
+            _ => Err(crate::port_faces::unknown_method("skillsBranch", method)),
+        }
     }
 }
 
 pub struct SkillsBranchPlugin {
+    instance: InstanceId,
     skills: Key<SessionSkills>,
     phase: Key<BranchLifecycle>,
     configure: Key<dyn ConfigureControl>,
@@ -598,7 +624,8 @@ pub struct SkillsBranchPlugin {
 impl SkillsBranchPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
-            skills: names.key()?,
+            instance: names.instance(BRANCH_GROUP)?,
+            skills: Key::of().instance(names.instance(SESSION_GROUP)?),
             phase: names.key()?,
             configure: names.key()?,
             branch: names.key()?,
@@ -653,7 +680,12 @@ impl DynPlugin for SkillsBranchPlugin {
                 tasks.wait().await;
                 Ok(())
             })?;
-            ctx.provide_at(self.branch.clone(), Arc::new(SkillsBranch { skills }))?;
+            let service = Arc::new(SkillsBranch { skills });
+            ctx.provide_at(self.branch.clone(), service.clone())?;
+            ctx.provide_at::<dyn HostDispatch>(
+                host_key_in("skillsBranch", self.instance),
+                service,
+            )?;
             Ok(Effect::Done)
         })
     }

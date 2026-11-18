@@ -832,7 +832,7 @@ fn picker_and_limit_declaration_read_the_same_catalog() {
                 assert_eq!(
                     edit["params"],
                     json!({"providerId":"fixture","expectedVersion":7,
-                    "modelId":"narrow","edit":{"maxOutputTokens":8000}})
+                    "modelId":"narrow","edit":{"maxOutputTokens":8000},"reply":"summary"})
                 );
                 wire.reply(&edit, json!({"version":8}));
                 snapshot["catalog"]["version"] = json!(8);

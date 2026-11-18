@@ -11,6 +11,7 @@ use dim_app_server::{
 };
 use rutis::Ctx;
 use rutis::host::CtxHost;
+use rutis_bridge::session::{HostDispatch, Value as RpcValue, host_key};
 use rutis_loader::resolve::Build;
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, time::Duration};
@@ -72,6 +73,21 @@ impl Fixture {
             .reply
             .await
             .unwrap()
+    }
+
+    async fn face(
+        &self,
+        method: &str,
+        request: Value,
+    ) -> Result<Value, rutis_bridge::session::Error> {
+        let face = self
+            .root
+            .get_at::<dyn HostDispatch>(&host_key("hooksService"))
+            .unwrap();
+        match face.invoke(method, RpcValue::List(vec![request.into()]))? {
+            RpcValue::Reference(reply) if reply.is_future() => reply.wait_async().await?.json(),
+            value => value.json(),
+        }
     }
 
     fn write_project(&self, document: Value) {
@@ -365,12 +381,26 @@ async fn plugin_documents_are_registered_listed_and_kept_by_their_owner() {
         "Stop": [{"hooks": [handler("guard")]}],
     }));
 
-    service
-        .register_plugin("kit".into(), dir.clone(), document, &fixture.cancel)
+    fixture
+        .face(
+            "register",
+            json!({"plugin":"kit", "dir":dir, "document":document}),
+        )
         .await
         .unwrap();
     assert!(service.plugin_refusal("kit").is_none());
     assert_eq!(service.plugins(&fixture.cancel).await.unwrap(), ["kit"]);
+    assert_eq!(
+        fixture.face("plugins", json!({})).await.unwrap(),
+        json!(["kit"])
+    );
+    assert_eq!(
+        fixture
+            .face("refusal", json!({"plugin":"kit"}))
+            .await
+            .unwrap(),
+        Value::Null
+    );
     let stored: Value =
         serde_json::from_slice(&fs::read(fixture.home.join("hooks-plugins.json")).unwrap())
             .unwrap();
@@ -445,6 +475,41 @@ async fn plugin_documents_are_registered_listed_and_kept_by_their_owner() {
         "{refused}"
     );
     assert!(service.plugin_refusal("broken").is_some());
+    let wire_error = fixture
+        .face(
+            "register",
+            json!({"plugin":"broken", "dir":dir, "document":{"hooks":[]}}),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(wire_error.code(), Some("invalid_document"));
+    assert_eq!(
+        wire_error.data().unwrap()["reason"],
+        refused.reason().unwrap()
+    );
+    assert_eq!(
+        fixture
+            .face("refusal", json!({"plugin":"broken"}))
+            .await
+            .unwrap(),
+        serde_json::to_value(service.plugin_refusal("broken")).unwrap()
+    );
+    assert_eq!(
+        fixture
+            .face("plugins", json!({"unexpected":true}))
+            .await
+            .unwrap_err()
+            .code(),
+        Some("invalid_request")
+    );
+
+    for request in [json!([]), json!(null), json!(["kit"])] {
+        assert_eq!(
+            fixture.face("plugins", request).await.unwrap_err().code(),
+            Some("invalid_request")
+        );
+    }
+
     assert_eq!(service.plugins(&fixture.cancel).await.unwrap(), ["kit"]);
 
     // A second registration replaces the first, and withdrawal removes it.
@@ -459,8 +524,8 @@ async fn plugin_documents_are_registered_listed_and_kept_by_their_owner() {
         .unwrap();
     let catalog = fixture.call("hooks.catalog", json!({})).await.unwrap();
     assert_eq!(catalog["hooks"][1]["command"], "second", "{catalog}");
-    service
-        .withdraw_plugin("kit".into(), &fixture.cancel)
+    fixture
+        .face("withdraw", json!({"plugin":"kit"}))
         .await
         .unwrap();
     assert!(service.plugins(&fixture.cancel).await.unwrap().is_empty());
