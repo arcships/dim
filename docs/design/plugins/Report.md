@@ -43,12 +43,15 @@ Both modes show `Run /report to create a report.` below reportable errors. When 
 +--------------------------------------------------------------+
 
 +-- Report ready ----------------------------------------------+
+| Saved ZIP <ZIP path>                                         |
+| Email the ZIP to feedback@arcships.ai                        |
 | <Report title>                                               |
 | ZIP contents: report.md, diagnostics.json                    |
 | > Save ZIP                                                   |
+|   Draft a GitHub issue                                       |
+|   Give feedback on Discord                                   |
 |   Close                                                      |
 +--------------------------------------------------------------+
-  After saving: <ZIP path> · GitHub · Discord
 ```
 
 The error-only overlay uses `Report this error`. The Session overlay shows when the Timeline could not be read or the bounded excerpt has no reportable activity. Either state permits generation. Local generation is available on its own. Clients can expose a model picker once the one-shot operation in §7 is available. Its initial model is the adopted model of the referenced branch, or of the Session's main branch when there is no branch reference. It also offers models from the client's admitted catalog and **Generate locally**. Redaction starts checked. Options accepts a short instruction about what to omit or keep. There are no required fields. With a model selected, the dialog exposes the exact model material and limits before Generate can send it. Local mode displays zero model requests. After a stale plan or a failed generation, the client offers to refresh the plan. When the draft expires, the client offers to prepare a report for the original target and reapplies the chosen options.
@@ -107,8 +110,10 @@ Build `report.md` and versioned `diagnostics.json` from the same approved conten
 | Action | Client behavior |
 | --- | --- |
 | Save ZIP | Save or download the received bytes on the client device. Show the resulting path where the platform exposes it. |
-| GitHub | Open an issue draft on `arcships/dim` with the report title and body. Supply the same ZIP for manual attachment. |
-| Discord | Offer the ZIP, copyable description and the [Dim Discord invite](https://discord.gg/ds35K3TadP). |
+| Draft a GitHub issue | Open an issue draft on `arcships/dim` with the report title and body. The user attaches the ZIP and submits the issue in the browser. |
+| Give feedback on Discord | Open the [Dim Discord invite](https://discord.gg/ds35K3TadP) and copy the report description. The user chooses where to post the description and ZIP. |
+
+After a successful save, both TUI modes show a hint below the saved path. Users can attach the saved ZIP to an email to `feedback@arcships.ai`.
 
 The client keeps the completed preview and bytes when a share action fails. The plugin cannot publish an issue or upload an archive. The browser flow is sufficient without an authenticated `gh`. [GitHub's attachment flow](https://docs.github.com/en/get-started/writing-on-github/working-with-advanced-formatting/attaching-files).
 

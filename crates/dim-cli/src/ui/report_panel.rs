@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use base64::{Engine, engine::general_purpose::STANDARD};
 
 use crate::report::{Action, Draft, EvidenceUnavailable, GeneratedReport, Plan, Reply, Target};
-use crate::ui::i18n::t;
+use crate::ui::i18n::{t, tf};
 use crate::ui::line_input::LineInput;
 use crate::ui::render::panel::{bordered, follow_window, wrap};
 use crate::ui::terminal::{KeyCode, KeyEvent};
@@ -263,7 +263,12 @@ impl Panel {
     fn controls(&self) -> Vec<&str> {
         if self.generated.is_some() {
             if self.saved.is_some() {
-                vec![t("Save ZIP"), "GitHub", "Discord", t("Close")]
+                vec![
+                    t("Save ZIP"),
+                    t("Draft a GitHub issue"),
+                    t("Give feedback on Discord"),
+                    t("Close"),
+                ]
             } else {
                 vec![t("Save ZIP"), t("Close")]
             }
@@ -332,6 +337,13 @@ impl Panel {
             if let Some(path) = &self.saved {
                 let path = crate::sanitize::safe_line(&path.display().to_string());
                 rows.extend(wrap(&format!("{} {path}", t("Saved ZIP")), inner));
+                rows.extend(crate::ui::render::panel::wrap_words(
+                    &tf(
+                        "Email the ZIP to {email}",
+                        &[("email", "feedback@arcships.ai")],
+                    ),
+                    inner,
+                ));
             }
             rows.extend(
                 crate::sanitize::safe(&self.summary())

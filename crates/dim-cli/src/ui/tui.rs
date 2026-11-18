@@ -18715,11 +18715,24 @@ mod tests {
                 }),
             });
             app.apply(Update::Failed("Disconnected".into()));
+            let Some(Prompt::Report(report)) = &app.prompt else {
+                panic!("expected report panel");
+            };
+            assert!(
+                !report
+                    .render(90, 20, &app.palette)
+                    .join("\n")
+                    .contains("feedback@arcships.ai")
+            );
             press(&mut app, KeyCode::Enter);
             let Some(Prompt::Report(report)) = &app.prompt else {
                 panic!("expected report panel");
             };
             assert_eq!(report.saved_path().is_some(), should_save);
+            let screen = report.render(36, 20, &app.palette).join("\n");
+            assert_eq!(screen.contains("feedback@arcships.ai"), should_save);
+            assert_eq!(screen.contains(t("Draft a GitHub issue")), should_save);
+            assert_eq!(screen.contains(t("Give feedback on Discord")), should_save);
             if let Some(path) = report.saved_path() {
                 assert_eq!(path.parent(), Some(home.path()));
                 assert!(
