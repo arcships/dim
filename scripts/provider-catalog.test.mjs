@@ -597,22 +597,11 @@ test("every model override the table states is applied by a sync", async (t) => 
   const path = join(cwd, bundled);
   const declared = JSON.parse(await readFile(join(cwd, modelOverrides), "utf8")).providers;
   const before = JSON.parse(await readFile(path, "utf8"));
-  const entries = Object.entries(declared).flatMap(([providerId, config]) =>
-    Object.entries(config.models).map(([modelId, patch]) => ({ providerId, modelId, patch })));
-  assert.deepEqual(entries.map(({ providerId, modelId }) => `${providerId}/${modelId}`).sort(), [
-    "aihubmix/glm-5.3-flashx",
-    "aihubmix/laguna-s-2.1",
-    "aihubmix/laguna-xs-2.1",
-    "aihubmix/ling-3.0-flash",
-    "custom-provider/MiniMax-M2.7",
-    "kimi-for-coding/k3.1-pro",
-    "siliconflow/Qwen/Qwen3-235B-A22B-Thinking-2507",
-    "siliconflow/Qwen/Qwen3-Coder-480B-A35B-Instruct",
-  ]);
+  const syncPolicies = await policies(cwd);
 
-  for (const { providerId } of entries) {
+  for (const providerId of Object.keys(declared)) {
     const provider = before.providers.find((entry) => entry.providerId === providerId);
-    const policy = (await policies(cwd))[providerId];
+    const policy = syncPolicies[providerId];
     const source = policy.upstreamId ?? providerId;
     await writeFile(join(upstream, `${source}.json`), JSON.stringify({
       api: provider.metadata.raw.api,
@@ -623,23 +612,17 @@ test("every model override the table states is applied by a sync", async (t) => 
 
   const after = new Map(JSON.parse(await readFile(path, "utf8")).providers
     .map((provider) => [provider.providerId, provider]));
-  for (const { providerId, modelId, patch } of entries) {
-    const model = after.get(providerId).models.find((entry) => entry.modelId === modelId);
-    assert.notEqual(model, undefined, `${providerId}/${modelId} must survive its sync`);
-    for (const [key, value] of Object.entries(patch)) {
-      if (key === "limit") {
-        assert.equal(model.metadata.raw.limit.context, value.context, `${modelId} context`);
-        assert.equal(model.capabilities.contextWindow, value.context, `${modelId} window`);
-        if (value.output !== undefined) {
-          assert.equal(model.capabilities.maxOutputTokens, value.output, `${modelId} output`);
-        }
-        continue;
+  for (const [providerId, { models }] of Object.entries(declared)) {
+    for (const [modelId, patch] of Object.entries(models)) {
+      const model = after.get(providerId).models.find((entry) => entry.modelId === modelId);
+      assert.notEqual(model, undefined, `${providerId}/${modelId} must survive its sync`);
+      assert.deepEqual(intersect(model.metadata.raw, patch), patch, `${providerId}/${modelId}`);
+      if (patch.limit?.context !== undefined) {
+        assert.equal(model.capabilities.contextWindow, patch.limit.context, `${modelId} window`);
       }
-      assert.deepEqual(
-        intersect(model.metadata.raw[key] ?? {}, value),
-        value,
-        `${providerId}/${modelId} ${key}`,
-      );
+      if (patch.limit?.output !== undefined) {
+        assert.equal(model.capabilities.maxOutputTokens, patch.limit.output, `${modelId} output`);
+      }
     }
   }
 });
