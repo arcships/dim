@@ -31275,6 +31275,14 @@
     },
     {
       "from": "dim_app_server::provider",
+      "to": "dim_agent_types::content",
+      "references": [
+        "use dim_agent_types::MessageContent",
+        "use dim_agent_types::MessagePart"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider",
       "to": "dim_agent_types::model",
       "references": [
         "path CatalogCapabilities",

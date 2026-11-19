@@ -30,6 +30,7 @@ const OPENAI_CODEX_PRESET: &str = "openai-codex";
 /// has a registry row. Every other accepted name is a registry row.
 const COMPATIBLE_PACKAGES: [&str; 2] = ["deepseek", "xai"];
 const MAX_REDIRECTS: usize = 10;
+const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Whether `name` is a preset the compatible protocol builds: a registry row,
 /// or a package whose options dim maps by name. Any other package name, such
@@ -56,6 +57,7 @@ fn is_redirect(status: reqwest::StatusCode) -> bool {
 struct DimFetch {
     transport: ReqwestFetch,
     timeout: Option<Duration>,
+    max_request_body_bytes: usize,
     /// The connection base URL's query, applied to every request URL. The
     /// models build an endpoint URL by appending the path to the base URL, so
     /// the query travels here instead of on the base URL itself.
@@ -74,9 +76,14 @@ impl std::fmt::Debug for DimFetch {
 #[async_trait::async_trait]
 impl Fetch for DimFetch {
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
-        if request.body.len() > 64 * 1024 * 1024 {
+        let body_bytes = request.body.len();
+        if body_bytes > self.max_request_body_bytes {
             return Err(FetchError::Other(
-                "Model request exceeds the 64 MiB encoded request limit".into(),
+                format!(
+                    "HTTP request body is {body_bytes} bytes; the limit is {} bytes. Shorten the prompt or use a smaller image",
+                    self.max_request_body_bytes
+                )
+                .into(),
             ));
         }
         let mut request = with_connection_query(request, &self.query);
@@ -204,12 +211,9 @@ fn name_redirect_target(mut error: AiMuxError) -> AiMuxError {
     error
 }
 
-/// A transport carrying one connection's proxy, timeout and query.
+/// A transport carrying one connection's proxy, timeout, body limit and query.
 ///
-/// Without a proxy it is a clone of the driver's own transport, which shares
-/// its connection pool; only a proxy needs a client of its own. Taking the
-/// shared transport here keeps a query or a timeout from costing a new pool
-/// per request.
+/// Without a proxy it shares the driver's connection pool.
 fn fetch(
     shared: &ReqwestFetch,
     network: &ModelNetwork,
@@ -225,6 +229,11 @@ fn fetch(
     Arc::new(DimFetch {
         transport,
         timeout: network.timeout_ms.map(Duration::from_millis),
+        max_request_body_bytes: network
+            .max_request_body_bytes
+            .map_or(MAX_REQUEST_BODY_BYTES, |limit| {
+                limit.get().min(MAX_REQUEST_BODY_BYTES)
+            }),
         query,
     })
 }
@@ -257,7 +266,7 @@ impl MediaTransport {
         }
     }
     /// The base URL without its query, and the transport carrying that query,
-    /// the connection's proxy and its timeout.
+    /// the connection's proxy, timeout and body limit.
     pub fn resolve(&self, network: &ModelNetwork, base_url: &str) -> (String, FetchFunction) {
         let (base, query) = split_query(base_url);
         (base, fetch(&self.transport, network, query))
@@ -530,6 +539,7 @@ impl AimuxDriver {
             fetch: Arc::new(DimFetch {
                 transport: transport.clone(),
                 timeout: None,
+                max_request_body_bytes: MAX_REQUEST_BODY_BYTES,
                 query: Vec::new(),
             }),
             transport,
@@ -611,12 +621,15 @@ impl ModelDriver for AimuxDriver {
                 ModelConnection::Bedrock(connection) => split_query(&connection.base_url),
                 ModelConnection::Local => unreachable!("the connection was checked above"),
             };
-            let fetch =
-                if network.proxy.is_none() && network.timeout_ms.is_none() && query.is_empty() {
-                    self.fetch.clone()
-                } else {
-                    fetch(&self.transport, network, query)
-                };
+            let fetch = if network.proxy.is_none()
+                && network.timeout_ms.is_none()
+                && network.max_request_body_bytes.is_none()
+                && query.is_empty()
+            {
+                self.fetch.clone()
+            } else {
+                fetch(&self.transport, network, query)
+            };
             if preset == Some(OPENAI_CODEX_PRESET) && protocol != ModelProtocol::OpenaiResponses {
                 return Err(HostError::classified(
                     HostErrorKind::InvalidRequest,

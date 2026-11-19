@@ -4,11 +4,11 @@
 
 ## 1. 一个封闭的 kind，在读取提供方错误的地方决定
 
-aimux 桥接层是唯一持有提供方结构化错误、并看得到完整响应的地方，因此由它决定 `ModelFailureKind`。它使用 origin、HTTP 状态、归一化后的 code、`AiMuxError` 变体、结束原因和回复的形态，从不用消息文本做匹配。
+aimux 桥接层是唯一持有提供方结构化错误、并看得到完整响应的地方，因此由它决定 `ModelFailureKind`。它使用 origin、HTTP 状态、归一化后的 code、`AiMuxError` 变体、传输层的可重试标记、结束原因和回复的形态，从不用消息文本做匹配。
 
 | kind | 依据 | 是否重试 | 含义 | 动作 |
 | --- | --- | --- | --- | --- |
-| `network` | 在无条件码决定时，origin 为 Transport | 是 | 无法连接提供方，或连接中断 | 检查网络或代理 |
+| `network` | 在无条件码决定时，origin 为 Transport 且不是本地拒绝 | 是 | 无法连接提供方，或连接中断 | 检查网络或代理 |
 | `rate_limited` | 429；条件码 `rate_limit_exceeded`、`rate_limit_error` | 是；`Retry-After` 在等待预算内时用作延迟 | 提供方正在限流 | 等待后重试 |
 | `server_error` | 408、除 501 和 505 外的 5xx；类别标签 `api_error`、`server_error`、`service_unavailable`、`request_timeout`、`timeout`；条件码 `engine_overloaded`、`model_overloaded`、`server_busy`、`overloaded_error` | 是 | 提供方报告服务器错误 | 稍后重试或换一个模型 |
 | `malformed_response` | `InvalidResponseData`、`JsonParse`、`InvalidToolInput`、`NoSuchTool`、`TypeValidation`、无法解码的流、始终没有完成的工具参数、以 end-turn 结束且既无任何非空白文本也无工具调用的回复 | 一次 | 提供方发来的响应 Dim 无法使用 | 重试；若反复出现，换一个模型或检查代理或网关 |
@@ -17,7 +17,7 @@ aimux 桥接层是唯一持有提供方结构化错误、并看得到完整响�
 | `not_found` | 404 | 否 | 提供方找不到模型或端点 | 检查模型和提供方 base URL |
 | `context_too_long` | 413；条件码 `context_length_exceeded`、`context_too_long` | 否 | 对话超过模型可接受的长度 | 压缩对话或新开会话 |
 | `content_filtered` | 条件码 `content_policy_violation`、`safety_block`、`moderation_block` | 否 | 提供方的内容过滤拦截了响应 | 改写请求 |
-| `invalid_request` | 400、409、422、501、505、其他 4xx；类别标签 `invalid_request_error`；条件码 `max_tokens_exceeded`；`InvalidArgument`、`InvalidPrompt`、`UnsupportedFunctionality` | 否 | 提供方拒绝了请求 | 查看详情 |
+| `invalid_request` | 传输层本地拒绝；400、409、422、501、505、其他 4xx；类别标签 `invalid_request_error`；条件码 `max_tokens_exceeded`；`InvalidArgument`、`InvalidPrompt`、`UnsupportedFunctionality` | 否 | 请求被拒绝 | 查看详情 |
 | `output_limit` | `max_tokens` 停止 | 否 | 模型达到输出上限 | 提高输出 token 上限后重试 |
 | `unknown` | 其他 | 否 | 模型请求失败 | 查看详情 |
 
@@ -34,7 +34,7 @@ code 比较前先 trim 并转 ASCII 小写。
 
 ### 规则
 
-一条规则决定所有协议的失败：
+origin 为 Transport、没有响应状态或响应头且传输层标为不可重试的失败属于本地拒绝（`invalid_request`），例如序列化后的请求体超出字节上限。其他失败按同一规则处理：
 
 1. 条件码决定，不重试的条件码优先于重试的，因此 `insufficient_quota` 与 `rate_limit_error` 同时出现时是 `quota_exhausted`；
 2. 否则 origin 为 Transport 的失败是 `network`；
@@ -74,7 +74,7 @@ ModelFailure {
 - `reason`：响应或流事件失败取提供方的错误消息；传输失败取原因链最内层。以空回复完成的请求背后没有提供方错误，其 `reason` 是该规则写明的固定句子，不引用任何响应内容。JSON 解析的消息内嵌了它读不懂的响应体文本，因此其 `reason` 取错误结构中的解析诊断；错误没有 cause 时为空。工具失败从 `tool_name` 字段命名：`invalid arguments for tool '<tool_name>'` 或 `the model called an unknown tool '<tool_name>'`。`TypeValidation` 不带 reason，因为它的消息内嵌了被校验的值。工具输入、可用工具列表和被校验的值从不存储。
 - `cause`：来自 `ApiCallError.message` 和 `ErrorCause` 的链，由外到内，每帧一行。`providerCode` 和 `requestId` 是单行且有界，最多 200 字符；为空则不存在。
 - 从不存储：请求 URL、请求头、请求值、响应体或任何凭据。aimux 已丢弃 URL；桥接层不得复制 `url`、`request_body_values` 或 `response_body`，`reason` 和原因帧只是去除了控制字符的文本。
-- 旧客户端读取的 `error` 是默认英文行 `<meaning>: <reason>. <action>`，没有 reason 时省略 `: <reason>`。不再有 `ApiCall:` 前缀。当该失败使其 turn 结算为 Failed 时，该回合在 `TurnOutcome::Failed.error` 中携带同一字符串，客户端据此可以区分两者并去掉重复。不使 turn 失败的失败（例如输出上限停止）不在 turn 的结果中携带任何内容。
+- 旧客户端读取的 `error` 是默认英文行 `<meaning>: <reason>. <action>`，没有 reason 时省略 `: <reason>`。传输层在本地拒绝请求且有 reason 时，只使用该 reason，不将拒绝归因于提供方。不再有 `ApiCall:` 前缀。当该失败使其 turn 结算为 Failed 时，该回合在 `TurnOutcome::Failed.error` 中携带同一字符串，客户端据此可以区分两者并去掉重复。不使 turn 失败的失败（例如输出上限停止）不在 turn 的结果中携带任何内容。
 - `max_tokens` 停止保留其 presentation，同时写入 `failure.kind = output_limit`。它不使 turn 失败：Loop 以 `output_limit` 为 reason 把该 turn 结算为 Completed（见 Loop.md「声明了调用却从未执行的失败步骤」一节）。
 - 工具参数始终没有完成时写入 `failure.kind = malformed_response`，与 `InvalidToolInput` 对同一缺陷的 kind 相同。
 - 以 end-turn 停止、既没有非空白文本也没有工具调用的回复写入 `failure.kind = malformed_response`，原因为 "the response had no text and no tool call"。只有 thinking 不算回答，所以只带 thinking 的回复同样算空回复。该判断落在桥接层流结束处，因为只有它看得到完整响应。是否重试取决于这次尝试交出了什么：只交出过消息开始的，与任何 `malformed_response` 一样重试一次；一旦交出过别的任何东西，包括只有空白的正文片段，就过了可重试的界线（`output.rs` 除消息开始外每个片段都清除 replay safety），因此 turn 带着已记录并展示的失败结束，由用户重新发送。重试在任何情况下都不能跟在已提交的输出之后：请求已提交的内容必须与下一份完整回复一致，thinking 也算在内（`output.rs`），而第二次尝试会带来它自己的 thinking。该规则适用于每个 turn，包括 Loop 与 Goal 的驱动 turn：空回复在那里同样不是一个有效步骤。

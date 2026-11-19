@@ -974,6 +974,17 @@ written before it: a listed model keeps the item it came from in
 `metadata.raw`, so a limit that item declares stays a declaration even when the
 stored entry does not mark it, and only a limit no source declares is deleted.
 
+#### Route-specific HTTP body limits
+
+For requests carrying an image, Provider supplies the [48 MiB HTTP body
+limit](https://api-docs.deepseek.com/guides/vision/#limits) on a static connection
+for `deepseek-flash` via OpenAI-compatible Chat Completions at
+`https://api.deepseek.com`, without a custom `Host` header. Provider uses the
+resolved route, not the catalog's `vision` flag or a vendor name in a model ID.
+Text and image references do not trigger this rule. The limit travels only
+with the resolved connection and is not a catalog, settings or storage field.
+Aimux applies it at its [HTTP send boundary](../../../crates/dim-agent-aimux/README.md).
+
 ### 3.6 Selectable models for process owners
 
 A process owner that routes work by model capability cannot keep its own copy of

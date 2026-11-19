@@ -22,6 +22,8 @@
 
 Aimux 无目录或 Session 依赖，独占可释放的 HTTP client。卸载关闭准入、释放未读取或停止读取的原生流、排空已受理调用，再释放池；旧宿主和流返回 `OwnerClosed`。HTTP 失败保留类型化 status/code，恢复由调用方决定，adapter 不重试。产品 Provider/OAuth 另行实施。
 
+模型宿主在发送前检查协议编码后的实际 HTTP 请求体，按 64 MiB 与本次解析连接给出的字节上限（若有）中的较小者执行。等于上限可发送；超限以[本地请求拒绝](../../docs/design/model-failures.md#1-one-closed-kind-decided-where-the-provider-error-is-read)结束，不发出或重试该请求。连接指定的上限不改变共享连接池或后续请求。
+
 ## 模型端点的重定向
 
 模型 HTTP client 只在同源（scheme、host、port 相同）时跟随 307 与 308，最多 10 跳。301、302、303 一律不跟随：模型请求是带 JSON body 的 POST，而 reqwest 的重定向层在策略之前就把这三种状态下的 POST 改写成不带 body 的 GET，跟随后服务器收到的已不是模型请求；端点要搬迁就返回 307 或 308。任何跨源跳转也不跟随：凭据只发给配置的那个源，reqwest 只在 host 变化时剥离 `Authorization`、`Cookie` 等少数敏感头，`x-api-key`、`x-goog-api-key` 等 provider 自己的头不在其列。

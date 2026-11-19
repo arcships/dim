@@ -568,6 +568,7 @@ pub fn convert_legacy_provider(
         network: ModelNetwork {
             proxy: field(fields, "proxy")?,
             timeout_ms: field(fields, "timeoutMs")?,
+            max_request_body_bytes: None,
         },
         headers,
         credential,

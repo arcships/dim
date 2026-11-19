@@ -38,10 +38,7 @@ fn connection(address: SocketAddr) -> ModalityConnection {
             connection: ModelConnection::Http(HttpModelConnection {
                 protocol: ModelProtocol::OpenaiCompatible,
                 base_url: format!("http://{address}/v1"),
-                network: ModelNetwork {
-                    proxy: None,
-                    timeout_ms: None,
-                },
+                network: ModelNetwork::default(),
                 headers,
                 bearer: Some(KEY.to_owned()),
                 api_key: None,

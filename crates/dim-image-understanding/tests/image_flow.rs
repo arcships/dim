@@ -46,6 +46,7 @@ struct Script {
     auxiliary: Mutex<Vec<Value>>,
     gate: Mutex<Option<CancellationToken>>,
     truncated: Mutex<bool>,
+    refusal: Mutex<Option<(u16, &'static str)>>,
     dropped: AtomicUsize,
     selections: AtomicUsize,
 }
@@ -122,6 +123,27 @@ async fn provider(stream: tokio::net::TcpStream, script: Arc<Script>) {
     stream.read_exact(&mut body).await.unwrap();
     let request: Value = serde_json::from_slice(&body).unwrap();
     script.auxiliary.lock().unwrap().push(request.clone());
+    let refusal = *script.refusal.lock().unwrap();
+    if let Some((status, message)) = refusal {
+        #[derive(serde::Serialize)]
+        struct ErrorBody {
+            error: ErrorMessage,
+        }
+        #[derive(serde::Serialize)]
+        struct ErrorMessage {
+            message: &'static str,
+        }
+        let body = serde_json::to_string(&ErrorBody {
+            error: ErrorMessage { message },
+        })
+        .unwrap();
+        let reply = format!(
+            "HTTP/1.1 {status} Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.get_mut().write_all(reply.as_bytes()).await.unwrap();
+        return;
+    }
     let gate = script.gate.lock().unwrap().clone();
     if let Some(gate) = gate {
         let mut byte = [0];
@@ -581,6 +603,77 @@ async fn image_questions_follow_current_defaults_and_reuse_only_completed_own_an
                 .contains("image_understand")
         );
         assert!(requests[0].messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, MessagePart::Text { text, .. } if text == REFERENCE)))));
+    }
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn upstream_image_refusals_remain_tool_errors_and_later_batched_calls_send_one_image_each() {
+    let fixture = Fixture::new().await;
+    let session = fixture.session().await;
+    attach(&fixture, &session, "main").await;
+    fixture.configure(Some("beta")).await;
+
+    for (index, (status, id, reason)) in [
+        (400, "rejected", "fixture rejected the image"),
+        (413, "too-large", "fixture request body too large"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        *fixture.script.refusal.lock().unwrap() = Some((status, reason));
+        let result = fixture.ask(&session, "main", id, question()).await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text(&result).starts_with("image_understand_failed:"));
+        assert!(text(&result).contains(reason), "{}", text(&result));
+        assert_eq!(fixture.script.auxiliary.lock().unwrap().len(), index + 1);
+    }
+
+    *fixture.script.refusal.lock().unwrap() = None;
+    fixture.script.push(&[
+        ("image_understand", "after-refusal", question()),
+        (
+            "image_understand",
+            "second-question",
+            json!({"image":REFERENCE,"question":"Is there any text?"}),
+        ),
+    ]);
+    session
+        .submit("inspect both questions".into(), InputMode::Queue, "main")
+        .await
+        .unwrap();
+    idle(&session, "main").await;
+    let events = branch_events(&session, "main", ..).await.unwrap();
+    let results = events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            EventKind::ToolResult(data) => Some(&data.results),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    for id in ["after-refusal", "second-question"] {
+        let result = &results
+            .iter()
+            .find(|result| result.call_id == id)
+            .unwrap()
+            .result;
+        assert_eq!(text(result), "answer from beta");
+    }
+    {
+        let requests = fixture.script.auxiliary.lock().unwrap();
+        assert_eq!(requests.len(), 4);
+        let mut questions = Vec::new();
+        for request in &requests[2..] {
+            assert_eq!(request["model"], "beta");
+            let parts = request["messages"][1]["content"].as_array().unwrap();
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0]["type"], "image_url");
+            questions.push(parts[1]["text"].as_str().unwrap());
+        }
+        questions.sort_unstable();
+        assert_eq!(questions, ["Is there any text?", "What is visible?"]);
     }
     fixture.close().await;
 }

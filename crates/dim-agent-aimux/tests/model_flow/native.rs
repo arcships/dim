@@ -5026,6 +5026,131 @@ async fn a_connection_reuses_one_tcp_connection_for_its_query_and_timeout() {
     server.close().await;
 }
 
+#[tokio::test]
+async fn the_http_body_budget_counts_the_exact_bytes_sent_and_does_not_retry() {
+    use dim_agent_capabilities::model_provider::invoke_with_recovery;
+    use std::num::NonZeroUsize;
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let server = MockServer::start().await;
+    let response = [
+        frame(json!({"role":"assistant","content":"ok"}), Value::Null),
+        frame(json!({}), json!("stop")),
+        "data: [DONE]\n\n".into(),
+    ]
+    .concat();
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(response),
+        )
+        .mount(&server)
+        .await;
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let proxy = CountingProxy::start(*server.address()).await;
+    let mut request = ModelRequest::new(
+        "local",
+        "deepseek-flash",
+        vec![Message {
+            role: Role::User,
+            content: MessageContent::Parts(vec![
+                MessagePart::Text {
+                    text: "Describe \"this\"\n图".into(),
+                    provider_metadata: None,
+                    start_time: None,
+                    end_time: None,
+                },
+                MessagePart::Image {
+                    source: ImageSource {
+                        file_id: None,
+                        source_type: ImageSourceType::Base64,
+                        media_type: "image/png".into(),
+                        data: Some(IMAGE.into()),
+                        url: None,
+                    },
+                },
+            ]),
+        }],
+    );
+    request.system = Some(Arc::new(SystemPrompt::Text("Answer briefly".into())));
+    let request = Arc::new(request);
+    let send = async |max_request_body_bytes| {
+        invoke_with_recovery(
+            &host,
+            &request,
+            None,
+            ResolvedModelConnection {
+                connection: ModelConnection::Http(HttpModelConnection {
+                    protocol: ModelProtocol::OpenaiCompatible,
+                    base_url: format!("{}/v1", proxy.url),
+                    network: ModelNetwork {
+                        max_request_body_bytes,
+                        ..ModelNetwork::default()
+                    },
+                    headers: Default::default(),
+                    bearer: None,
+                    api_key: None,
+                    preset: Some("deepseek".into()),
+                }),
+                failure_policy: None,
+                recovery: None,
+            },
+            &CancellationToken::new(),
+            &mut (),
+            |mut stream, _, _, _| {
+                Box::pin(async move {
+                    while let Some(chunk) = stream.next().await {
+                        chunk?;
+                    }
+                    Ok(())
+                })
+            },
+        )
+        .await
+    };
+
+    send(None).await.unwrap();
+    let sent = server.received_requests().await.unwrap();
+    let bytes = sent[0].body.len();
+    let limit = bytes - 1;
+    let error = tokio::time::timeout(Duration::from_secs(5), send(NonZeroUsize::new(limit)))
+        .await
+        .expect("a local refusal must settle without retries")
+        .unwrap_err();
+    let HostError::Failed {
+        kind: HostErrorKind::InvalidRequest,
+        message,
+        model: Some(facts),
+        ..
+    } = error
+    else {
+        panic!("expected a local budget refusal, got {error}");
+    };
+    assert_eq!(facts.kind, ModelFailureKind::InvalidRequest);
+    assert_eq!(facts.attempts, 1);
+    assert_eq!(facts.status, None);
+    assert_eq!(facts.reason.as_deref(), Some(message.as_str()));
+    assert!(message.starts_with(&format!(
+        "HTTP request body is {bytes} bytes; the limit is {limit} bytes"
+    )));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+
+    send(NonZeroUsize::new(bytes)).await.unwrap();
+    let at_limit = server.received_requests().await.unwrap();
+    assert_eq!(at_limit.len(), 2);
+    assert_eq!(at_limit[1].body, sent[0].body);
+    assert_eq!(
+        proxy.accepted(),
+        1,
+        "the byte limit does not replace the pool"
+    );
+    root.shutdown().await.unwrap();
+    proxy.join.abort();
+}
+
 /// The default User-Agent as every test below expects it: `dim` first, then
 /// the older relay identity, both from the crate's own version.
 fn expected_default_user_agent() -> String {

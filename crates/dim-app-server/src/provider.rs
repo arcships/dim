@@ -56,8 +56,8 @@ use dim_agent_capabilities::context_model::output_allowance;
 use dim_agent_capabilities::host::*;
 use dim_agent_runtime::{AgentError, Names};
 use dim_agent_types::{
-    ModalityModelSnapshot, ModelCapabilitySnapshot, ModelConfig, ModelId, ModelRequest,
-    ModelSelection,
+    MessageContent, MessagePart, ModalityModelSnapshot, ModelCapabilitySnapshot, ModelConfig,
+    ModelId, ModelRequest, ModelSelection,
 };
 use futures_util::future::BoxFuture as SharedFuture;
 use reqwest::Client;
@@ -69,6 +69,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    num::NonZeroUsize,
     path::Path,
     sync::{Arc, Mutex},
     time::Duration,
@@ -2934,6 +2935,22 @@ impl ProviderService {
             }
             connection.bearer = bearer;
             connection.network = record.network;
+            if protocol == ModelProtocol::OpenaiCompatible
+                && connection.base_url == "https://api.deepseek.com"
+                && model.id == "deepseek-flash"
+                && !connection
+                    .headers
+                    .keys()
+                    .any(|name| name.eq_ignore_ascii_case("host"))
+                && let ConnectionUse::Chat(request) = &use_
+                && request.messages.iter().any(|message| {
+                    matches!(&message.content, MessageContent::Parts(parts)
+                        if parts.iter().any(|part| matches!(part, MessagePart::Image { .. })))
+                })
+            {
+                // https://api-docs.deepseek.com/guides/vision/#limits
+                connection.network.max_request_body_bytes = NonZeroUsize::new(48 * 1024 * 1024);
+            }
             return Ok(Resolution {
                 connection: ResolvedModelConnection {
                     connection: ModelConnection::Http(connection),

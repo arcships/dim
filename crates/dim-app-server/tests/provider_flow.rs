@@ -528,6 +528,7 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
             config.connection.network = Some(ModelNetwork {
                 proxy: Some(proxy.clone()),
                 timeout_ms: Some(3000),
+                max_request_body_bytes: None,
             });
             let saved = provider.create(config.clone(), &cancel).await.unwrap();
             assert!(saved.info.connection.as_ref().unwrap().proxy_url.is_some());
@@ -4964,6 +4965,127 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
                 sent.body.get("service_tier").and_then(Value::as_str),
                 (!xai).then_some("priority"),
                 "{driver}/{model_id}"
+            );
+        }
+    }
+    for (index, (base, driver, model_id, custom_host, expected)) in [
+        (
+            "https://api.deepseek.com/",
+            "openai-compatible",
+            "deepseek-flash",
+            false,
+            Some(48 * 1024 * 1024),
+        ),
+        (
+            "https://api.deepseek.com/v1",
+            "openai-compatible",
+            "deepseek-flash",
+            false,
+            None,
+        ),
+        (
+            "https://gateway.example",
+            "deepseek",
+            "deepseek-flash",
+            false,
+            None,
+        ),
+        (
+            "https://api.deepseek.com",
+            "openai-responses",
+            "deepseek-flash",
+            false,
+            None,
+        ),
+        (
+            "https://api.deepseek.com",
+            "openai-compatible",
+            "deepseek-v4-pro",
+            false,
+            None,
+        ),
+        (
+            "https://api.deepseek.com",
+            "openai-compatible",
+            "deepseek-flash",
+            true,
+            None,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        use dim_agent_types::{ImageSource, ImageSourceType, MessageContent, MessagePart};
+
+        let id = format!("00000000-0000-4000-9001-{index:012}");
+        let mut input = input(&id, base, StaticAuth::Anonymous, None, "kept", 1357);
+        input.connection.driver_kind = driver.into();
+        if custom_host {
+            input
+                .connection
+                .headers
+                .as_mut()
+                .unwrap()
+                .insert("Host".into(), "gateway.example".into());
+        }
+        let mut entry = model(model_id, 1357);
+        entry.capabilities.vision = true;
+        input.models = vec![entry];
+        provider.create(input, &cancel).await.unwrap();
+        let selection = provider
+            .configuration(
+                Some(ModelId {
+                    provider_id: id.clone(),
+                    model_id: model_id.into(),
+                }),
+                None,
+                ModelPreferences::default(),
+                &cancel,
+            )
+            .await
+            .unwrap();
+        let mut request = ModelRequest::new(
+            &id,
+            model_id,
+            vec![Message {
+                role: Role::User,
+                content: MessageContent::Parts(vec![MessagePart::Image {
+                    source: ImageSource {
+                        source_type: ImageSourceType::Url,
+                        media_type: "image/png".into(),
+                        data: None,
+                        url: Some("https://fixture.example/image.png".into()),
+                        file_id: None,
+                    },
+                }]),
+            }],
+        );
+        request.capability_snapshot = selection.capability_snapshot;
+        for (request, expected) in [
+            (request.clone(), expected),
+            (
+                ModelRequest {
+                    messages: vec![Message::text(Role::User, "img:1234567890abcdef").into()],
+                    ..request
+                },
+                None,
+            ),
+        ] {
+            let resolved = resolver
+                .0
+                .resolve(Arc::new(request), cancel.clone())
+                .await
+                .unwrap();
+            let ModelConnection::Http(connection) = resolved.connection else {
+                panic!("HTTP expected")
+            };
+            assert_eq!(
+                connection
+                    .network
+                    .max_request_body_bytes
+                    .map(std::num::NonZeroUsize::get),
+                expected,
+                "{base} {driver} {model_id}, custom Host={custom_host}"
             );
         }
     }

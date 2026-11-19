@@ -569,6 +569,9 @@ pub struct ModelNetwork {
         deserialize_with = "optional_non_null"
     )]
     pub timeout_ms: Option<u64>,
+    /// A hard limit on the serialized HTTP body for this resolved request, in bytes.
+    #[serde(skip)]
+    pub max_request_body_bytes: Option<std::num::NonZeroUsize>,
 }
 #[derive(Clone)]
 pub struct HttpModelConnection {

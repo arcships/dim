@@ -467,14 +467,22 @@ pub(crate) fn error(failure: AiMuxError, cancel: &CancellationToken) -> HostErro
     // failure, a retry wrapper's last attempt and anything wrapped in `Other`
     // caused by another aimux error are unwrapped first.
     let failure = unwrap_failure(failure);
-    let (classification, facts) = classify(&failure);
+    let locally_refused = matches!(&failure, AiMuxError::ApiCall(detail)
+        if detail.origin == ApiCallErrorOrigin::Transport
+            && !detail.is_retryable
+            && detail.status_code.is_none()
+            && detail.response_headers.is_none());
+    let (classification, facts) = classify(&failure, locally_refused);
     tracing::debug!(
         failure_kind = ?facts.kind,
         status = facts.status,
         provider_code = facts.provider_code.as_deref(),
         "aimux request failed"
     );
-    let message = facts.kind.line(facts.reason.as_deref());
+    let message = match &facts.reason {
+        Some(reason) if locally_refused => reason.clone(),
+        reason => facts.kind.line(reason.as_deref()),
+    };
     HostError::Failed {
         kind: classification,
         message,
@@ -500,7 +508,7 @@ fn unwrap_failure(failure: AiMuxError) -> AiMuxError {
 }
 
 /// The internal host kind and the durable facts of one provider failure.
-fn classify(failure: &AiMuxError) -> (HostErrorKind, ModelFailureFacts) {
+fn classify(failure: &AiMuxError, locally_refused: bool) -> (HostErrorKind, ModelFailureFacts) {
     match failure {
         AiMuxError::ApiCall(detail) => {
             let view = detail.data.as_ref().map(|data| {
@@ -529,7 +537,11 @@ fn classify(failure: &AiMuxError) -> (HostErrorKind, ModelFailureFacts) {
                 error_type.as_deref(),
                 provider_code.as_deref(),
             ];
-            let kind = classify_kind(origin, detail.status_code, &codes);
+            let kind = if locally_refused {
+                ModelFailureKind::InvalidRequest
+            } else {
+                classify_kind(origin, detail.status_code, &codes)
+            };
             let chain = cause_chain(detail);
             let reason = if origin == ApiCallErrorOrigin::Transport {
                 chain
@@ -560,13 +572,15 @@ fn classify(failure: &AiMuxError) -> (HostErrorKind, ModelFailureFacts) {
                 retry_after_stop: None,
                 retry_forbidden: false,
             };
-            (
+            let classification = if locally_refused {
+                HostErrorKind::InvalidRequest
+            } else {
                 HostErrorKind::Http {
                     status: detail.status_code,
                     code,
-                },
-                facts,
-            )
+                }
+            };
+            (classification, facts)
         }
         failure => {
             let (kind, classification) = match failure {

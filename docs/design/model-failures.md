@@ -8,11 +8,12 @@ What a failed model request reports, and how the retry policy reads it (issue
 The aimux bridge is the only place that holds the provider's structured error
 and sees the whole response, so it decides `ModelFailureKind`. It uses the
 origin, the HTTP status, the normalized codes, the `AiMuxError` variant, the
-finish reason and the reply's shape. It never matches message text.
+transport's retry indication, the finish reason and the reply's shape. It
+never matches message text.
 
 | kind | decided from | retried | meaning | action |
 | --- | --- | --- | --- | --- |
-| `network` | the origin is Transport, once no condition code decides | yes | could not reach the provider, or the connection dropped | check the network or proxy |
+| `network` | a Transport-origin failure other than a local refusal, once no condition code decides | yes | could not reach the provider, or the connection dropped | check the network or proxy |
 | `rate_limited` | 429; the conditions `rate_limit_exceeded`, `rate_limit_error` | yes; `Retry-After` is used while it fits the wait budget | the provider is rate limiting requests | wait and try again |
 | `server_error` | 408, 5xx except 501 and 505; the labels `api_error`, `server_error`, `service_unavailable`, `request_timeout`, `timeout`; the conditions `engine_overloaded`, `model_overloaded`, `server_busy`, `overloaded_error` | yes | the provider reported a server error | try again later or choose another model |
 | `malformed_response` | `InvalidResponseData`, `JsonParse`, `InvalidToolInput`, `NoSuchTool`, `TypeValidation`, an undecodable stream, tool arguments that never complete, a reply that stops with an end-turn finish and carries no non-whitespace text and no tool call | once | the provider sent a response Dim could not use | try again; if it repeats, choose another model or check the proxy or gateway |
@@ -21,7 +22,7 @@ finish reason and the reply's shape. It never matches message text.
 | `not_found` | 404 | no | the provider did not find the model or endpoint | check the model and the provider's base URL |
 | `context_too_long` | 413; the conditions `context_length_exceeded`, `context_too_long` | no | the conversation is longer than the model accepts | compact the conversation or start a new session |
 | `content_filtered` | the conditions `content_policy_violation`, `safety_block`, `moderation_block` | no | the provider's content filter blocked the response | rephrase the request |
-| `invalid_request` | 400, 409, 422, 501, 505, other 4xx; the label `invalid_request_error`; the condition `max_tokens_exceeded`; `InvalidArgument`, `InvalidPrompt`, `UnsupportedFunctionality` | no | the provider rejected the request | see the details |
+| `invalid_request` | local transport refusal; 400, 409, 422, 501, 505, other 4xx; the label `invalid_request_error`; the condition `max_tokens_exceeded`; `InvalidArgument`, `InvalidPrompt`, `UnsupportedFunctionality` | no | the request was rejected | see the details |
 | `output_limit` | the `max_tokens` stop | no | the model stopped at its output limit | increase the output token limit and retry |
 | `unknown` | anything else | no | the model request failed | see the details |
 
@@ -50,7 +51,10 @@ gateway forwards either under any status.
 
 ### The rule
 
-One rule decides every protocol's failure:
+A Transport-origin failure with no response status or headers that the
+transport marks non-retryable is a local refusal (`invalid_request`). This
+includes a serialized request body exceeding its byte limit. Otherwise one
+rule decides every protocol's failure:
 
 1. a condition code decides, a condition that is not retried before one that
    is, so `insufficient_quota` beside `rate_limit_error` is `quota_exhausted`;
@@ -135,7 +139,9 @@ ModelFailure {
   are text only, with control characters stripped.
 - `error`, which old clients read, is the default English line
   `<meaning>: <reason>. <action>`, with `: <reason>` left out when there is
-  none. There is no `ApiCall:` prefix. When the failure ends its turn Failed,
+  none. For a local transport refusal with a reason, it uses that reason alone
+  rather than attributing the refusal to the provider. There is no `ApiCall:`
+  prefix. When the failure ends its turn Failed,
   that turn carries the same string in `TurnOutcome::Failed.error`, so a client
   can tell the two apart and drop the repeat. A failure that does not fail the
   turn, such as an output-limit stop, carries nothing in the turn's outcome.
