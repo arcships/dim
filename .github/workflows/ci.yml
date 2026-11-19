@@ -19,6 +19,7 @@ permissions:
   contents: read
 env:
   CARGO_PROFILE_DEV_DEBUG: "0"
+  DIM_TRIAL_SOURCE_SHA: e940892ed185f83a70395313e1d524554dc937ce
 jobs:
   probe:
     if: inputs.parallelism == 'probe'
@@ -36,7 +37,7 @@ jobs:
           uuid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ {print $4}')
           test -n "$uuid"
           printf "Host key: "
-          printf "%s:%s" "$GITHUB_SHA" "$uuid" | shasum -a 256 | cut -c1-16
+          printf "%s:%s" "$DIM_TRIAL_SOURCE_SHA" "$uuid" | shasum -a 256 | cut -c1-16
           printf "Workspace key: "
           printf "%s" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-16
           printf "Runner UID: "
@@ -105,13 +106,14 @@ jobs:
           uuid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ {print $4}')
           test -n "$uuid"
           printf "Host key: "
-          printf "%s:%s" "$GITHUB_SHA" "$uuid" | shasum -a 256 | cut -c1-16
+          printf "%s:%s" "$DIM_TRIAL_SOURCE_SHA" "$uuid" | shasum -a 256 | cut -c1-16
           printf "Workspace key: "
           printf "%s" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-16
           printf "Runner UID: "
           id -u
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
+          ref: ${{ env.DIM_TRIAL_SOURCE_SHA }}
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -122,6 +124,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "$DIM_TRIAL_SOURCE_SHA"
           cargo fmt --all -- --check
           features=()
           if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
@@ -148,7 +152,7 @@ jobs:
           rendezvous="/tmp/dim-ci-ab-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -p "$rendezvous"
           touch "$rendezvous/$DIM_TRIAL_ROLE.ready"
-          deadline=$((SECONDS + 900))
+          deadline=$((SECONDS + 2100))
           until [[ -f "$rendezvous/sample.ready" && -f "$rendezvous/load.ready" ]]; do
             if (( SECONDS >= deadline )); then
               echo "Companion verify did not reach the workspace test start"
