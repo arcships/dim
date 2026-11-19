@@ -1,5 +1,15 @@
 # Rust 会话存储格式
 
+## v53：主线的主线指针
+
+v53 是一条**只升标记**的格式决定 `(52, &[])`：不建表、不改列、不扫业务表、不迁移数据，启动时在既有的原生准入事务里只重写 `agent_store_format` 那一行。
+
+它存在的理由与 v40–v45 的空升级相同：新增事件种类 `branch/default` 和新增 `BranchSource` 变体（用户开线、用户结束）写出的行，52 版的 daemon 在本构建里解不出来。daemon 启动时不解码已存事件，所以它会接受一个含这些行的库，然后在第一次解码时失败；升一次标记让它在打开时就干净拒绝并保留数据。
+
+`timeline_branches`、`timeline_events`、`timeline_snapshots` 和 `session_catalog` 的形状都不变。已有 `branch/default` 事实的库重开时不做任何事；没有这条事实的 Session 在恢复时就是根（[Timeline 分支 §5](../timeline-branches.md#5-部件)）。
+
+`session_catalog` 仍然不存主线：`updated_at_ms` 由 `SqliteTimelineStore` 的写线程按它缓存的当前主线刷新，那份缓存用 `timeline_events_by_kind` 上的同一条索引点查初始化（`kind IN ('branch/default','session/forked')`，取最新一条）。这是派生状态，不是权威事实，重启后重新建立。
+
 ## v52: Sparse Provider state
 
 v52 separates provider headers from ordered model payload rows and immutable

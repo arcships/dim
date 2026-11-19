@@ -204,6 +204,26 @@
       ]
     },
     {
+      "id": "dim_agent_aimux::identity",
+      "crate": "dim_agent_aimux",
+      "parent": "dim_agent_aimux",
+      "file": "crates/dim-agent-aimux/src/identity.rs",
+      "unexpandedMacros": [
+        "env",
+        "format"
+      ]
+    },
+    {
+      "id": "dim_agent_aimux::identity::tests",
+      "crate": "dim_agent_aimux",
+      "parent": "dim_agent_aimux::identity",
+      "file": "crates/dim-agent-aimux/src/identity.rs",
+      "unexpandedMacros": [
+        "assert",
+        "assert_eq"
+      ]
+    },
+    {
       "id": "dim_agent_aimux::models",
       "crate": "dim_agent_aimux",
       "parent": "dim_agent_aimux",
@@ -3538,6 +3558,17 @@
         "format",
         "matches",
         "unreachable",
+        "vec"
+      ]
+    },
+    {
+      "id": "dim_app_server::provider_settings",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server",
+      "file": "crates/dim-app-server/src/provider_settings.rs",
+      "unexpandedMacros": [
+        "json",
+        "tracing::warn",
         "vec"
       ]
     },
@@ -8495,6 +8526,16 @@
     },
     {
       "from": "dim_agent_aimux",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "mod identity",
+        "use identity::ENVIRONMENT_VARIABLE",
+        "use identity::ModelIdentity",
+        "use identity::environment_user_agent"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux",
       "to": "dim_agent_aimux::models",
       "references": [
         "mod models",
@@ -8642,6 +8683,14 @@
     },
     {
       "from": "dim_agent_aimux::driver",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "path ModelIdentity",
+        "use crate::identity::ModelIdentity"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::driver",
       "to": "dim_agent_aimux::request",
       "references": [
         "path request",
@@ -8699,6 +8748,21 @@
         "path ModelRequest",
         "path model",
         "use dim_agent_types::ModelRequest"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::identity",
+      "to": "dim_agent_aimux::identity::tests",
+      "references": [
+        "mod tests"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::identity::tests",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "path ModelIdentity::new",
+        "path environment_user_agent"
       ]
     },
     {
@@ -8808,6 +8872,14 @@
       "references": [
         "path AimuxDriver::with_files",
         "use crate::driver::AimuxDriver"
+      ]
+    },
+    {
+      "from": "dim_agent_aimux::plugin",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "path ModelIdentity",
+        "use crate::identity::ModelIdentity"
       ]
     },
     {
@@ -23911,6 +23983,13 @@
     },
     {
       "from": "dim_app_server",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "path dim_agent_aimux::ModelIdentity::new"
+      ]
+    },
+    {
+      "from": "dim_app_server",
       "to": "dim_agent_aimux::models",
       "references": [
         "path dim_agent_aimux::AimuxModels"
@@ -24331,6 +24410,14 @@
       "to": "dim_app_server::provider::secrets",
       "references": [
         "path provider::ProviderSecretHost"
+      ]
+    },
+    {
+      "from": "dim_app_server",
+      "to": "dim_app_server::provider_settings",
+      "references": [
+        "mod provider_settings",
+        "path provider_settings::ProviderSettingsPlugin::new"
       ]
     },
     {
@@ -25634,6 +25721,14 @@
       "references": [
         "path ModelConfigFile",
         "use dim_agent_aimux::config::ModelConfigFile"
+      ]
+    },
+    {
+      "from": "dim_app_server::cli",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "path dim_agent_aimux::ENVIRONMENT_VARIABLE",
+        "path dim_agent_aimux::environment_user_agent"
       ]
     },
     {
@@ -32644,6 +32739,44 @@
       "to": "dim_app_server::provider::query",
       "references": [
         "path query"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider_settings",
+      "to": "dim_agent_aimux::identity",
+      "references": [
+        "path ModelIdentity",
+        "use dim_agent_aimux::ModelIdentity"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider_settings",
+      "to": "dim_agent_capabilities::settings",
+      "references": [
+        "path SettingsChanged",
+        "path SettingsScope::User",
+        "path settings_changes",
+        "use crate::settings::SettingsChanged",
+        "use crate::settings::SettingsScope",
+        "use crate::settings::settings_changes"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider_settings",
+      "to": "dim_agent_runtime::names",
+      "references": [
+        "path Names",
+        "use dim_agent_runtime::Names"
+      ]
+    },
+    {
+      "from": "dim_app_server::provider_settings",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "path SourceDeclaration",
+        "use crate::settings::Settings",
+        "use crate::settings::SourceDeclaration"
       ]
     },
     {

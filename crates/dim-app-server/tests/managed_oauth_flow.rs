@@ -62,10 +62,17 @@ fn jwt(claims: Value) -> String {
         URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
     )
 }
-async fn token(State(f): State<Fixture>, body: String) -> Response {
+async fn token(State(f): State<Fixture>, headers: HeaderMap, body: String) -> Response {
     let fields: HashMap<_, _> = url::form_urlencoded::parse(body.as_bytes())
         .into_owned()
         .collect();
+    if fields["client_id"] == "codex-fixture" {
+        assert_eq!(
+            headers["user-agent"], "codex_cli_rs/0.170.0 (Ubuntu 22.4.0; x86_64) xterm-256color",
+            "the managed Codex token request carries the Codex CLI identity"
+        );
+        assert_eq!(headers["originator"], "codex_cli_rs");
+    }
     match fields["grant_type"].as_str() {
         "authorization_code" => {
             assert_eq!(fields["client_id"], "codex-fixture");
@@ -1265,8 +1272,14 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 assert_eq!(headers["originator"], "codex-tui");
                 assert_eq!(
                     headers["user-agent"],
-                    "codex-tui/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.144.1) ai-sdk-provider-utils/5.0.53"
+                    "codex-tui/0.170.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.170.0) ai-sdk-provider-utils/5.0.53"
                 );
+                for absent in ["x-title", "http-referer"] {
+                    assert!(
+                        !headers.contains_key(absent),
+                        "the managed Codex path carries no Dim identity header: {absent}"
+                    );
+                }
                 assert_eq!(body["store"], false);
                 assert!(body.get("max_output_tokens").is_none());
             } else {
@@ -1274,6 +1287,16 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 assert!(!headers.contains_key("chatgpt-account-id"));
                 assert!(!headers.contains_key("oai-product-sku"));
                 assert_eq!(body["max_tokens"], 4321);
+                let version = env!("CARGO_PKG_VERSION");
+                assert_eq!(
+                    headers["user-agent"],
+                    format!(
+                        "dim/{version} DimAgent/{version} ai-sdk-openai-compatible/3.0.62 ai-sdk-provider-utils/5.0.53"
+                    ),
+                    "the managed Grok provider sends Dim's identity like any other provider"
+                );
+                assert_eq!(headers["x-title"], "DimCode");
+                assert_eq!(headers["http-referer"], "https://dimagent.com/");
             }
         }
         rejected.finish_rejected(cancel.clone()).await.unwrap();

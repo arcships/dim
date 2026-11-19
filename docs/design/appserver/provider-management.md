@@ -50,12 +50,70 @@ with its existing owner; management never writes another owner's state.
 | Existing `account`, `account.codex`, `account.grok` namespaces | Existing account operations; no new account method, event or managed host capability |
 | `ProviderConnectionResolver`, `ModelSelectionHost` | Provider implements catalog/route decisions through existing types; no new core port |
 | `auxiliaryModel.complete` | Existing caller-selected S4 contract, unchanged |
+| `provider` Settings source, user scope (`provider.json`) | The Provider part registers it; it holds `userAgent`, the User-Agent override (§2, Model request identity), so a user's choice is a declared, validated document rather than a request-local input |
 | Native CLI Provider flows | Migrate discovery, create, update and disconnect together with the new owner methods |
 
 Business logic stays in Provider, not `connection.rs`, `protocol.rs` or a wiring
 plugin. No Session Capability, notification stream, second catalog, credential
 service or registry is added. The [managed-provider boundary](../../architecture/development.md#managed-provider-boundary)
 continues to exclude private account implementations and credentials from this repository.
+
+### Model request identity
+
+Every chat model request dim builds through
+[`build_model`](../../../crates/dim-agent-aimux/src/driver.rs) carries dim's own
+identity in its Provider layer: the header layer whose User-Agent the library's
+own `ai-sdk-<package>/<version>` and `ai-sdk-provider-utils/<version>` parts
+follow. Media requests do not carry it yet: the media adapters build their
+providers directly
+([`dim-modality-aimux`](../../../crates/dim-modality-aimux/src/media.rs)) and
+send none of the three headers. The default is
+`User-Agent: dim/<version> DimAgent/<version>`, `X-Title: DimCode` and
+`HTTP-Referer: https://dimagent.com/`. `dim` comes first because a gateway that
+identifies its client by the first token names the entry Dim publishes;
+`DimAgent` is the older relay identity, kept for those still matching it. The
+version is the workspace version, read with `env!` rather than written out.
+
+The identity is a provider-layer default, so a per-call header still wins:
+a Provider's own `User-Agent`, `X-Title` or `HTTP-Referer` (in `record.headers`,
+or in `DIM_CUSTOM_HEADERS` for a startup connection) replaces that header for
+that Provider alone. Precedence, highest first: an impersonating path, a
+Provider's own header, the override below, the built-in default, the library's
+parts.
+
+Two paths keep their own headers instead of this default identity:
+
+- The managed `openai-codex` Provider sends the Codex CLI's own per-call
+  `User-Agent`, `originator` and `OAI-Product-Sku` instead of this identity. Its
+  token request sends the Codex CLI's `User-Agent` and `originator`. Being
+  overridden is not enough for this one: `X-Title` and `HTTP-Referer` would
+  still reach the wire from the provider layer, so its model is built without
+  the identity headers at all.
+  Its version is the Codex release the request must appear to come from; the
+  numbers in `provider.rs` and `managed_oauth.rs` change together.
+- The Dim OAuth relay keeps its own `DimCode/<version>`, `X-Title` and
+  `HTTP-Referer` headers instead of the default identity
+  ([`dim-oauth`](../../../crates/dim-oauth/src/http.rs)); its wire does not
+  change.
+
+The managed Grok Provider (`grok-build`) does not impersonate: it sends the
+default identity like any other Provider.
+
+| Override | Where | Notes |
+| --- | --- | --- |
+| `provider` settings source, `userAgent` | `provider.json`, user scope, owned by the Provider part | Replaces the whole User-Agent string; 1–512 printable ASCII characters, refused by the source's schema otherwise. The part serving one App Server holds it, so two Servers in one process keep theirs apart |
+| `DIM_USER_AGENT` | Environment of the process that hosts models | The same validation; wins over the setting. Read once by the App Server command line, beside the other startup inputs, and passed to each Server it builds, so a value a request cannot carry fails that process's startup |
+
+`DIM_USER_AGENT` wins over the setting because it is set for one run of the
+process that hosts models, as environment overrides do elsewhere. A shared
+daemon keeps the environment it was started with, so a new value takes effect
+when the daemon restarts.
+
+Both go in the provider layer too, so the library's parts still follow them.
+The settings row serializes its read and its publish, so an older document
+cannot replace a newer one.
+There is no short mode: a value the request cannot carry is refused rather than
+trimmed.
 
 ## 3. Management contract
 

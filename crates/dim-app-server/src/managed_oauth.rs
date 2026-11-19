@@ -1134,7 +1134,7 @@ impl Service {
         Ok(if self.key == "openaiCodex" {
             request.header("originator", "codex_cli_rs").header(
                 "User-Agent",
-                "codex_cli_rs/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color",
+                "codex_cli_rs/0.170.0 (Ubuntu 22.4.0; x86_64) xterm-256color",
             )
         } else {
             request

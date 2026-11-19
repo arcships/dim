@@ -1,4 +1,4 @@
-use crate::{AimuxModels, driver::AimuxDriver};
+use crate::{AimuxModels, driver::AimuxDriver, identity::ModelIdentity};
 use dim_agent_capabilities::host::*;
 use dim_agent_runtime::{Names, SessionConfig, SessionIdentity};
 use dim_agent_types::{Message, SystemPrompt, ToolDefinition};
@@ -8,13 +8,27 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 /// Process-owned request execution; configured file references gate on their owner.
+///
+/// The part owns the identity its model requests carry, so two App Servers in
+/// one process keep theirs apart.
 #[derive(Default)]
 pub struct AimuxPlugin {
     files: Option<Key<SessionFiles>>,
+    identity: ModelIdentity,
 }
 impl AimuxPlugin {
     pub fn with_files(files: Key<SessionFiles>) -> Self {
-        Self { files: Some(files) }
+        Self {
+            files: Some(files),
+            ..Self::default()
+        }
+    }
+    /// The same plugin, serving `identity`'s overrides: the one the host
+    /// built from its startup inputs, and the one its `provider` settings row
+    /// writes.
+    pub fn with_identity(mut self, identity: ModelIdentity) -> Self {
+        self.identity = identity;
+        self
     }
 }
 impl DynPlugin for AimuxPlugin {
@@ -31,7 +45,8 @@ impl DynPlugin for AimuxPlugin {
                 .as_ref()
                 .map(|key| ctx.require_at(key))
                 .transpose()?;
-            let driver = AimuxDriver::with_files(ctx.cancellation_token(), files)
+            let identity = self.identity.clone();
+            let driver = AimuxDriver::with_files(ctx.cancellation_token(), files, identity)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
             let owned = driver.clone();
             if let Err(error) = ctx.effect(move || async move {

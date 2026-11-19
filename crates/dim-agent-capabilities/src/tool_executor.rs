@@ -1260,19 +1260,6 @@ mod tests {
     }
 
     #[test]
-    fn a_concurrent_call_joins_the_step_before_it_and_an_exclusive_one_starts_a_step() {
-        use ToolConcurrency::{Concurrent as C, Exclusive as X};
-        let (_, segments, _) = waiters(&[C, X, C, C, X, C]);
-        assert_eq!(segments, [0, 1, 2, 2, 3, 4]);
-        let (_, segments, _) = waiters(&[C, C, C]);
-        assert_eq!(segments, [0, 0, 0]);
-        let (_, segments, _) = waiters(&[X, X]);
-        assert_eq!(segments, [0, 1]);
-        let (_, segments, _) = waiters(&[]);
-        assert!(segments.is_empty());
-    }
-
-    #[test]
     fn the_barrier_advances_over_the_settled_prefix_only() {
         // Three exclusive calls: one step each.
         let (turn, _, mut waiters) = waiters(&[

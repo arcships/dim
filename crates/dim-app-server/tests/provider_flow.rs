@@ -303,6 +303,141 @@ fn stored_prefix(home: &Path, provider_id: &str) -> Option<String> {
     value["gluedPrefix"].as_str().map(str::to_owned)
 }
 
+/// A Provider record's own `User-Agent`, `X-Title` and `HTTP-Referer` win over
+/// dim's built-in identity, which a record that names none carries
+/// (`docs/design/appserver/provider-management.md` §2, Model request identity).
+#[tokio::test]
+async fn a_provider_records_own_identity_headers_win_over_dims() {
+    use axum::{
+        http::{StatusCode, Uri},
+        response::{IntoResponse, Response},
+    };
+    type Requests = Arc<Mutex<Vec<(Uri, HeaderMap)>>>;
+    async fn endpoint(State(seen): State<Requests>, uri: Uri, headers: HeaderMap) -> Response {
+        seen.lock().unwrap().push((uri.clone(), headers));
+        if uri.path().ends_with("/models") {
+            return Json(json!({"data":[{"id":"same"}]})).into_response();
+        }
+        if uri.path().ends_with("/v1") {
+            return (StatusCode::NOT_FOUND, "").into_response();
+        }
+        let first = Event::default().data(json!({"id":"identity","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}).to_string());
+        let last = Event::default().data(
+            json!({"id":"identity","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+                .to_string(),
+        );
+        Sse::new(stream::iter([
+            Ok::<_, std::convert::Infallible>(first),
+            Ok(last),
+        ]))
+        .into_response()
+    }
+    let seen: Requests = Arc::new(Mutex::new(Vec::new()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let app = Router::new().fallback(endpoint).with_state(seen.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let home = std::env::temp_dir().join(format!("provider-identity-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&home).unwrap();
+    let home = home.canonicalize().unwrap();
+    let root = Ctx::root().unwrap();
+    root.plugin(
+        dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
+            .unwrap(),
+    );
+    root.plugin(FileStoragePlugin::new(vec![home.clone()]));
+    root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite")));
+    root.plugin(ManagedProvidersPlugin::new(None));
+    root.plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(dim_agent_aimux::AimuxPlugin::default());
+    let view = root.plugin(provider_part(ProviderPlugin::new));
+    tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))
+        .await
+        .unwrap();
+    let provider = root.get::<ProviderService>().unwrap();
+    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let cancel = CancellationToken::new();
+
+    let default_user_agent = format!(
+        "dim/{version} DimAgent/{version}",
+        version = env!("CARGO_PKG_VERSION")
+    );
+    for (id, headers, expected) in [
+        (
+            PROVIDER_A,
+            HashMap::from([
+                ("User-Agent".to_owned(), "gateway-client/9".to_owned()),
+                ("X-Title".to_owned(), "Gateway Title".to_owned()),
+                (
+                    "HTTP-Referer".to_owned(),
+                    "https://gateway.example/".to_owned(),
+                ),
+            ]),
+            (
+                "gateway-client/9".to_owned(),
+                "Gateway Title",
+                "https://gateway.example/",
+            ),
+        ),
+        (
+            PROVIDER_B,
+            HashMap::new(),
+            (
+                default_user_agent.clone(),
+                "DimCode",
+                "https://dimagent.com/",
+            ),
+        ),
+    ] {
+        let mut create = input(
+            id,
+            &base,
+            StaticAuth::Bearer,
+            Some("identity-key"),
+            id,
+            1000,
+        );
+        create.connection.headers = Some(headers);
+        provider.create(create, &cancel).await.unwrap();
+        let selection = provider
+            .configuration(Some(target(id)), None, ModelPreferences::default(), &cancel)
+            .await
+            .unwrap();
+        let request = Arc::new(ModelRequest {
+            capability_snapshot: selection.capability_snapshot,
+            config: selection.config,
+            ..ModelRequest::new(id, "same", vec![Message::text(Role::User, "hello")])
+        });
+        let resolved = resolver
+            .0
+            .resolve(request.clone(), cancel.clone())
+            .await
+            .unwrap();
+        let mut output = host
+            .0
+            .invoke(request, resolved.connection, cancel.clone())
+            .await
+            .unwrap();
+        while let Some(chunk) = output.next().await {
+            chunk.unwrap();
+        }
+        let seen = seen.lock().unwrap();
+        let (_, sent) = seen.last().unwrap();
+        let user_agent = sent["user-agent"].to_str().unwrap();
+        assert!(
+            user_agent.starts_with(&expected.0) && user_agent.contains(" ai-sdk-"),
+            "{id}: {user_agent}"
+        );
+        assert_eq!(sent["x-title"], expected.1, "{id}");
+        assert_eq!(sent["http-referer"], expected.2, "{id}");
+    }
+    root.shutdown().await.unwrap();
+    server.abort();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
 #[tokio::test]
 async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies() {
     use axum::{
@@ -10485,3 +10620,6 @@ async fn measure_on_demand_provider_reads() {
 
 #[path = "provider_flow/indexed.rs"]
 mod indexed;
+
+#[path = "provider_flow/identity.rs"]
+mod identity;

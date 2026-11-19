@@ -1303,6 +1303,130 @@ async fn model_log_switch_starts_the_recorder() {
     fs::remove_dir_all(home).unwrap();
 }
 
+/// The `provider` source holds the model request User-Agent override. The
+/// source is declared and listed, a written document publishes on the Aimux
+/// part serving the same root, clearing it falls back, and the schema refuses
+/// a value a request cannot carry.
+#[tokio::test]
+async fn provider_identity_override_comes_from_the_settings_source() {
+    let home = home();
+    let root = Ctx::root().unwrap();
+    let identity = dim_agent_aimux::ModelIdentity::new(None);
+    let views = vec![
+        root.plugin(FileStoragePlugin::new(vec![home.clone()])),
+        root.plugin(settings_part(0, vec![])),
+        root.plugin(ManagementMethodsPlugin::typed(&dim_app_server::catalog()).unwrap()),
+        root.plugin(
+            SettingsMethodsPlugin::new(&Names::copy(&dim_app_server::catalog(), &Build::default()))
+                .unwrap(),
+        ),
+        root.plugin(
+            dim_app_server::provider_settings::ProviderSettingsPlugin::new(
+                &Names::copy(&dim_app_server::catalog(), &Build::default()),
+                identity.clone(),
+            )
+            .unwrap(),
+        ),
+    ];
+    let cancel = CancellationToken::new();
+    wait_active(&root, &views, Duration::from_secs(5), &cancel)
+        .await
+        .unwrap();
+    let settings = root.get::<SettingsService>().unwrap();
+    let listed = client_call(&root, "settings.sources", json!({}))
+        .await
+        .unwrap();
+    let provider = listed["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|source| source["source"] == "provider")
+        .unwrap_or_else(|| panic!("settings.sources lists provider: {listed}"));
+    assert_eq!(provider["scopes"], json!(["user"]));
+    assert_eq!(provider["userOnly"], json!(["/userAgent"]));
+    let current = settings
+        .read_declared("provider", SettingsScope::User, &cancel)
+        .await
+        .unwrap();
+    assert_eq!(
+        current.document,
+        json!({}),
+        "the document starts with no override, so the built-in User-Agent applies"
+    );
+    settings
+        .update_declared(
+            "provider",
+            SettingsScope::User,
+            &current.revision,
+            json!({"userAgent": "private-client/7"}),
+            Writer::Client,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while identity.user_agent() != "private-client/7" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the override was not published: {}",
+            identity.user_agent()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let current = settings
+        .read_declared("provider", SettingsScope::User, &cancel)
+        .await
+        .unwrap();
+    settings
+        .update_declared(
+            "provider",
+            SettingsScope::User,
+            &current.revision,
+            json!({}),
+            Writer::Client,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while identity.user_agent().starts_with("private-client/") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "clearing the setting falls back to the built-in identity: {}",
+            identity.user_agent()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    for refused in [
+        json!({"userAgent": ""}),
+        json!({"userAgent": "a".repeat(513)}),
+        json!({"userAgent": "a\nb"}),
+        json!({"userAgent": "dím/1.0"}),
+    ] {
+        let current = settings
+            .read_declared("provider", SettingsScope::User, &cancel)
+            .await
+            .unwrap();
+        let error = settings
+            .update_declared(
+                "provider",
+                SettingsScope::User,
+                &current.revision,
+                refused,
+                Writer::Client,
+                &cancel,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, SettingsError::Document(_)),
+            "the schema refuses a value a request cannot carry: {error}"
+        );
+    }
+    root.shutdown().await.unwrap();
+    fs::remove_dir_all(home).unwrap();
+}
+
 /// §4.3: with nothing registered, `settings.sources` replies an empty
 /// listing, not an error.
 #[tokio::test]

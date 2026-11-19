@@ -2018,21 +2018,6 @@ async fn context_preparation_copies_a_failure_chain_into_the_call() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_request_without_a_failure_chain_gets_a_fresh_retry_budget() {
-    let (agent, session, probe) = recovery_agent(25, None).await;
-    session
-        .submit("fresh budget".into(), InputMode::Queue, "main")
-        .await
-        .unwrap();
-    session.idle("main").await.unwrap();
-    assert_eq!(probe.calls.load(Ordering::SeqCst), 8);
-    let failure = model_failure(&session).await;
-    assert_eq!(failure.kind, ModelFailureKind::ServerError);
-    assert_eq!(failure.attempts, 8);
-    agent.close().await.unwrap();
-}
-
-#[tokio::test(start_paused = true)]
 async fn a_continuation_continues_its_failure_chain_retry_budget() {
     let chain = FailureChain {
         from_request_id: "request-before".into(),

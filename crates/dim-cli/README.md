@@ -411,6 +411,15 @@ split at the first colon. Invalid names/values, case-insensitive duplicates and
 conflicts with generated authentication fail without printing values. Credentials
 and headers without direct mode are errors, not silently ignored inputs.
 
+`DIM_USER_AGENT` replaces the User-Agent dim sends on its chat model requests,
+which is `dim/<version> DimAgent/<version>` by default. The App Server reads it
+once at startup, beside the other startup inputs, not the client: a daemon
+started by this client reads the environment it was started with. Values are
+1–512 printable ASCII characters; an invalid value fails that process's startup
+with exit code 1. The `provider` settings source's `userAgent` holds the same
+override, and the environment wins over it. A Provider's own `User-Agent` header
+still wins for that Provider. Media requests do not carry the identity yet.
+
 `DIM_MAX_CONTEXT_TOKENS` and `DIM_MAX_OUTPUT_TOKENS` declare positive JS-safe
 integer capacities; the request output allowance is derived from the pair, so a
 declared output may equal or exceed the declared context window. Empty or

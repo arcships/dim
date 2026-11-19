@@ -3108,7 +3108,7 @@ fn managed_connection(
             headers.insert("originator".into(), "codex-tui".into());
             headers.insert(
                 "User-Agent".into(),
-                "codex-tui/0.144.1 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.144.1)"
+                "codex-tui/0.170.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.170.0)"
                     .into(),
             );
             if let Some(account_id) = &lease.account_id {

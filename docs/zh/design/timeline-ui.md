@@ -16,7 +16,7 @@ L0  Session ............ 主体：身份、工作区、交互面
      ├ 点 .............. 切点：某条用户消息之前的回合边界
      │   ├ e 编辑 / q 引用         （已有）
      │   ├ b 从这里分支 → 本 Session 的一条线
-     │   └ f 从这里 fork → 一个新 Session（仅 main）
+     │   └ f 从这里 fork → 一个新 Session（仅根）
      ├ 标记 ............ ⑂ 在这里打开了一条线（可选中）
      └ /timeline ....... 当前线的所有点，可跳转（§4.6）
  L3  Lines（/lines）.... 每条线挂在它被切出的父线下
@@ -34,11 +34,11 @@ L0  Session ............ 主体：身份、工作区、交互面
 | --- | --- | --- |
 | 结果 | 本 Session 的一条线 | 一个新 Session |
 | 共享 | 工作区与同一个主体；与父线互发消息 | 只共享切点之前的历史 |
-| 可用的点 | 任一未结束的线，合法的上下文边界 | 仅 `main`，且必须是 rest point |
-| 之后 | 屏幕不动；新线在侧面板里回答（§4.7） | TUI attach 到 fork |
+| 可用的点 | 任一未结束的线，合法的上下文边界 | `main`，即根，且必须是 rest point |
+| 之后 | 屏幕不动；新线在侧面板里回答（§4.7） | TUI attach 到 fork，它的默认分支是它的根 |
 | 在源上的痕迹 | `⑂` 标记 | 无（§7） |
 
-不适用的动作用 notice 说明原因（`A fork copies main; b opens a line here`、`Line has ended: X`）。切点是否合法只由 App Server 判断，拒绝时显示为 notice。
+不适用的动作用 notice 说明原因（`A fork copies the root; b opens a line here`、`Line has ended: X`）。切点是否合法只由 App Server 判断，拒绝时显示为 notice。fork 不是“从这里继续”：那是选择默认分支（§6.1），仍留在同一个 Session 里。
 
 ## 4. Timeline 与点
 
@@ -70,7 +70,7 @@ fullscreen 的 Tab 选取本来就停在用户消息上。被选消息的点是�
 
 ### 4.3 `f`：从这里 fork
 
-仅 `main`，从 Tab 选取或 `/timeline`（§4.6）发起；scrollback 就是用 `/timeline` 选消息。独立的有边框确认框写明切点，并说明当前会话保持不变；问题和选项在框内，不再放在 composer 底边。选中消息时问 `在“把 cache 的锁换成 RwLock 试试”之前派生会话？`，`/fork` 问 `在最近一个回合之后派生会话？`。
+仅 `main`，即根，从 Tab 选取或 `/timeline`（§4.6）发起；scrollback 就是用 `/timeline` 选消息。fork 只把根拷到某个 rest point，从不拷默认分支自己的历史，界面写明这一点。独立的有边框确认框写明切点，并说明当前会话保持不变；问题和选项在框内，不再放在 composer 底边。选中消息时问 `在“把 cache 的锁换成 RwLock 试试”之前派生会话？`，`/fork` 问 `在最近一个回合之后派生会话？`。
 
 ```text
 ╭─ 派生会话 ─────────────────────────────────────────────╮
@@ -102,7 +102,7 @@ scrollback 在 live 交互区以确认框替换输入框，不提交到历史；
 
 ### 4.5 我在哪里
 
-显示一条线时，composer 底边写出从 `main` 到它的路径（每条线用它的名字，§4.4）和切点：
+显示一条线时，composer 底边写出从 `main` 到它的路径（每条线用它的名字，§4.4）和切点。显示的是默认分支时，底边还标出“主线”；根读作“起点”：
 
 ```
 ╰── ~/repo (main) · ⑂ main ▸ parser race ▸ the guard · after message 4 ─╯
@@ -212,14 +212,16 @@ applied 的输入可以跨过一次 stop 继续待消费，正是下一个 turn 
 
 ```
 ┌ Lines ───────────────────────────────────────────────────────────┐
-│   main                  the session itself                       │
+│   main             起点                                         │
 │     docs pass           after message 1 · b-02 · ended itself    │
-│     parser race         after message 3 · b-7c · working · shown │
+│     parser race         after message 3 · b-7c · 主线 · shown    │
 │       the guard         after message 4 · b-c3 · working         │
-└──────────────────── Enter show the line · x end it · Esc close ──┘
+└ Enter 显示 · p 从这里继续 · x 结束 · Esc 关闭 ───────────────────┘
 ```
 
-fork 是别的 Session，归 `/resume`。按键保持 #427 §14 的定义。
+主线是默认分支，起点是根，这两行就是能开线的两条线（§6.1 是菜单在这件事上的契约，`p` 在这个角色之间移动它）。`p` 把所选线选为默认分支（“从这里继续”）：Session 的对话、它的缺省目标和居中随之改变，旧默认分支照旧开着，并保留它开过的线。插件线、升级前经客户端开出的线、以及已经是默认分支的线上拒绝；根在不是默认分支时就是合法目标。面板写明旧默认分支照旧开着。根上、默认分支上、以及默认分支之上的每条线上，`x` 都被拒绝，因为结束一条线会连带结束它下面的所有线；默认分支不管是谁请求都拒绝，要结束它得先移动默认分支。
+
+fork 是别的 Session，归 `/resume`；fork 出来的会话自己的默认分支是它的根。按键保持 #427 §14 的定义，另加 `p`。
 
 ### 分支未读回答
 

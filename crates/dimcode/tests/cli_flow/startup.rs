@@ -1978,3 +1978,263 @@ fn a_first_prompt_a_new_draft_keeps_out_is_reported() {
     daemon.join().unwrap();
     assert_eq!(status.code(), Some(0), "{}", terminal.transcript);
 }
+
+/// A model server that records the User-Agent of every chat request it
+/// receives, answers the model list, and answers each turn with "ok". A test
+/// stops it with [`IdentityFixture::stop`] once the CLI has exited.
+struct IdentityFixture {
+    address: std::net::SocketAddr,
+    seen: Arc<Mutex<Vec<String>>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    model: thread::JoinHandle<()>,
+}
+
+impl IdentityFixture {
+    fn start() -> Self {
+        use std::io::{BufRead, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (recorded, stopping) = (seen.clone(), stop.clone());
+        let model = thread::spawn(move || {
+            while !stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                let deadline = Instant::now() + PATIENCE;
+                let stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if stopping.load(std::sync::atomic::Ordering::SeqCst) {
+                                return;
+                            }
+                            assert!(
+                                Instant::now() < deadline,
+                                "the model was not requested for {PATIENCE:?}"
+                            );
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream.set_read_timeout(Some(PATIENCE)).unwrap();
+                let mut stream = std::io::BufReader::new(stream);
+                let mut request_line = String::new();
+                assert!(stream.read_line(&mut request_line).unwrap() > 0);
+                let mut length = 0;
+                let mut user_agent = String::new();
+                loop {
+                    let mut line = String::new();
+                    assert!(stream.read_line(&mut line).unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(n) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = n.trim().parse().unwrap();
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("user-agent:") {
+                        user_agent = value.trim().to_owned();
+                    }
+                }
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                let path = request_line
+                    .split(' ')
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_owned();
+                if path.ends_with("/models") {
+                    let list = json!({"data":[{"id":"fixture-model"}]}).to_string();
+                    write!(
+                        stream.get_mut(),
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{list}",
+                        list.len()
+                    )
+                    .unwrap();
+                    stream.get_mut().flush().unwrap();
+                    continue;
+                }
+                recorded.lock().unwrap().push(user_agent);
+                let frame = |delta, finish| {
+                    format!(
+                        "data: {}\n\n",
+                        json!({"id":"fixture","choices":[{"index":0,"delta":delta,"finish_reason":finish}]})
+                    )
+                };
+                let data = frame(json!({"content":"ok"}), Value::Null)
+                    + &frame(json!({}), json!("stop"))
+                    + "data: [DONE]\n\n";
+                write!(
+                    stream.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{data}",
+                    data.len()
+                )
+                .unwrap();
+                stream.get_mut().flush().unwrap();
+            }
+        });
+        Self {
+            address,
+            seen,
+            stop,
+            model,
+        }
+    }
+
+    /// The User-Agent of every chat request so far.
+    fn user_agents(&self) -> Vec<String> {
+        self.seen.lock().unwrap().clone()
+    }
+
+    /// Ends the server and joins it.
+    fn stop(self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.model.join().unwrap();
+    }
+}
+
+/// The model config that points a started process at `address`.
+fn identity_model(home: &Home, address: std::net::SocketAddr) -> PathBuf {
+    let config = home.0.join("model.json");
+    fs::write(&config, json!({"defaultModel":{"providerId":"fixture","modelId":"fixture-model"},"providers":[{"id":"fixture","kind":"openai-compatible","baseUrl":format!("http://{address}/v1"),"models":[{"id":"fixture-model","contextWindow":128000,"maxOutputTokens":4096,"config":{"maxTokens":128}}]}]}).to_string()).unwrap();
+    config
+}
+
+/// `DIM_USER_AGENT` reaches the model requests of the process that hosts
+/// models, followed by the library's own parts.
+#[test]
+fn a_started_process_sends_the_dim_user_agent_from_its_environment() {
+    let home = Home::new();
+    let fixture = IdentityFixture::start();
+    let model = identity_model(&home, fixture.address);
+    let output = command(&home)
+        .env("DIM_USER_AGENT", "private-client/7")
+        .args([
+            "--model-config",
+            model.to_str().unwrap(),
+            "exec",
+            "-p",
+            "hi",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\ndaemon log: {}",
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(home.0.join("rust/daemon.log")).unwrap_or_default()
+    );
+    let seen = fixture.user_agents();
+    fixture.stop();
+    assert!(!seen.is_empty(), "the fixture saw a chat request");
+    for user_agent in &seen {
+        let library = user_agent
+            .strip_prefix("private-client/7 ")
+            .unwrap_or_else(|| panic!("the environment value leads the User-Agent: {user_agent}"));
+        assert!(
+            library.starts_with("ai-sdk-openai-compatible/"),
+            "the library's parts follow: {user_agent}"
+        );
+    }
+}
+
+/// A value a request cannot carry fails the process that hosts models: exit
+/// code 1 and the validation message, before anything is served. `--help`
+/// stays reachable with the same value, because the override is read after
+/// the arguments are parsed.
+#[test]
+fn an_invalid_dim_user_agent_fails_startup() {
+    for invalid in ["", "private client\u{1}/1", "dím/1.0"] {
+        let home = Home::new();
+        // Startup fails before any request, so nothing listens here.
+        let model = identity_model(&home, "127.0.0.1:9".parse().unwrap());
+        let socket = home.0.join("rust/daemon.sock");
+        daemon_cleanup::mark_test_server(&home.0);
+        let mut command = Command::new(env!("CARGO_BIN_EXE_dimcode"));
+        command
+            .arg("app-server")
+            .arg("--unix")
+            .arg(&socket)
+            .args(["--no-ws", "--home"])
+            .arg(home.0.join("rust"))
+            .arg("--model-config")
+            .arg(&model)
+            .env("DIM_USER_AGENT", invalid)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for name in STARTUP_ENV {
+            command.env_remove(name);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1), "{invalid:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("DIM_USER_AGENT must be 1 to 512 printable ASCII characters"),
+            "{invalid:?}: {error}"
+        );
+        assert!(!error.contains(invalid) || invalid.is_empty(), "{error}");
+        assert!(!socket.exists(), "nothing was served: {invalid:?}");
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_dimcode"))
+        .args(["app-server", "--help"])
+        .env("DIM_USER_AGENT", "")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "--help does not validate the override: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let usage = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        usage.contains("dim-app-server (--product-home PATH"),
+        "--help prints usage: {usage}"
+    );
+}
+
+/// A startup connection's own `User-Agent` wins over dim's identity and over
+/// `DIM_USER_AGENT`; the library's parts still follow it.
+#[test]
+fn a_startup_connection_user_agent_wins_over_the_identity() {
+    let home = Home::new();
+    let fixture = IdentityFixture::start();
+    let base_url = format!("http://{}/v1", fixture.address);
+    let output = command(&home)
+        .envs([
+            ("DIM_BASE_URL", base_url.as_str()),
+            ("DIM_API_FORMAT", "openai-compatible"),
+            ("DIM_MODEL", "fixture-model"),
+            ("DIM_CUSTOM_HEADERS", "User-Agent: gateway-client/9"),
+            ("DIM_USER_AGENT", "private-client/7"),
+            ("DIM_MAX_CONTEXT_TOKENS", "128000"),
+            ("DIM_MAX_OUTPUT_TOKENS", "4096"),
+        ])
+        .args(["exec", "-p", "hi"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\ndaemon log: {}",
+        String::from_utf8_lossy(&output.stderr),
+        fs::read_to_string(home.0.join("rust/daemon.log")).unwrap_or_default()
+    );
+    let seen = fixture.user_agents();
+    fixture.stop();
+    assert!(!seen.is_empty(), "the fixture saw a chat request");
+    for user_agent in &seen {
+        assert!(
+            user_agent.starts_with("gateway-client/9 ai-sdk-"),
+            "the connection's own User-Agent leads: {user_agent}"
+        );
+        assert!(
+            !user_agent.contains("private-client/7"),
+            "DIM_USER_AGENT does not reach past it: {user_agent}"
+        );
+    }
+}

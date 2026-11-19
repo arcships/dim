@@ -185,7 +185,7 @@ Features outside the settings scope with no v3 backend are left out rather than 
 
 A line is a Timeline of the same Session ([Timeline branches](timeline-branches.md) §1). The Web workspace follows [Clients’ bounded-window contract](clients.md#opening-a-conversation-with-a-bounded-window). Main and selected lines load at most four initial wire pages; only an explicit “Load earlier” action reads older content. Reconnect replaces opened transcripts with fresh windows. Raw pages are released after projection.
 
-The Web workspace keeps the main transcript in the center and follows lines in a right-side detail panel, modeled on the Kimi Code Web `/btw` panel (tabs, a scroll region with a composer, an empty state, and a full-screen panel on narrow shells). Unlike Kimi's read-only side chat, a Dim line continues to run tools and accepts operator input; the panel therefore includes `session.submit`, `session.stop`, approvals and `session.branch_end` for the line.
+The Web workspace keeps the default branch's transcript in the center and follows other lines in a right-side detail panel, modeled on the Kimi Code Web `/btw` panel (tabs, a scroll region with a composer, an empty state, and a full-screen panel on narrow shells). Unlike Kimi's read-only side chat, a Dim line continues to run tools and accepts operator input; the panel therefore includes `session.submit`, `session.stop`, approvals and `session.branch_end` for the line.
 
 ```
 ┌──────────────┬────────────────────────────────┬─────────────────────────────────┐
@@ -201,9 +201,9 @@ The Web workspace keeps the main transcript in the center and follows lines in a
 | --- | --- |
 | Input | `session.branches` supplies the directory. Lifecycle facts and `session.state` update it. `session.branch.get` supplies the selected line’s purpose, end details and inherited message count. Only opened lines read their own transcript windows. |
 | Derived data | `lines.ts` keeps directory metadata, not historical input identities. Unknown message counts remain absent. `projection.ts` owns visible rows and live controls. `stores/chat.ts` keeps each opened window’s fixed head, backward cursor and in-flight live queue. |
-| Actions | `session.branch_create {parentBranchId, at, prompt}`, `session.branch_end {branchId}`, `session.submit`/`session.stop` with the line's `branchId`; approvals use the request's `branchId` |
+| Actions | `session.branch_create {parentBranchId, at, prompt}`, `session.branch_end {branchId}`, `session.branch_set_default {branchId}` (continue from here), `session.submit`/`session.stop` with the line's `branchId`; approvals use the request's `branchId` |
 | Points | A user message's cut is its sequence minus one; a line's end is its newest `turn-end`. `session.branch_create` remains the validator; its refusal is shown in the dialog or line tab |
-| Switching | Opening a line adds or activates a tab; closing a tab does not end the line; main stays the center transcript |
+| Switching | Opening a line adds or activates a tab; closing a tab does not end the line; the center shows the default branch, which `session.branches` reports as `defaultBranchId`, and `session.branch_set_default` changes it. The root and that line are the two that can open a line, so the Lines tree marks both |
 | Errors | `branch_missing`, `branch_ended`, `input_blocked`, an invalid cut and a disabled Branch tool are shown at the action that raised them; an ended line is read-only |
 | State | Line tabs are per Session and live in `stores/ui.ts`; the tree is read from the existing directory on reload and reconnect. No storage format is added |
 
@@ -286,17 +286,17 @@ A daemon that does not serve `session.skills` shows the commands alone.
 | --- | --- | --- |
 | `model` | `/models` | Open the existing model picker when model selection is available |
 | `session` | `/branch <prompt>` | Create a line from the shown line's newest finished turn and use the inline prompt as its opening input |
-| `session` | `/compact` | Compact the main line's context (`session.context.compact`); listed when the Session's method table (`session.methods`) lists it. Reports the result as a notice |
-| `session` | `/usage` | Show the main line's context window usage (`session.context.usage`); listed under the same condition as `/compact` |
-| `session` | `/fork` | Fork the Session at its last finished turn (`session.fork {at}`) after a confirmation, then open the new Session; listed when the connection serves `session.fork` and main has a finished turn |
-| `session` | `/goal [words]` | Show the main line's current goal through `session.goal.get`, or write it: `/goal OBJECTIVE`, `set`, `edit`, `pause`, `resume` and `clear` call `session.goal.<call>` with `branchId: main`; listed when the Session's method table lists `session.goal.set`. The menu fills `/goal ` for its words |
-| `model` | `/effort [value]` | List the main line model's reasoning effort choices (from `provider.catalog`, when the model advertises reasoning preferences), or set one with `session.model.update {modelPreferences: {reasoningEffort}}`, as `/effort` does in the TUI (`configure.rs`). Listed only when the model has choices. `/fast` is not offered: no model advertises service tiers yet |
+| `session` | `/compact` | Compact the shown line's context (`session.context.compact` on the line currently centred, which is the default branch); listed when the Session's method table (`session.methods`) lists it. Reports the result as a notice |
+| `session` | `/usage` | Show the shown line's context window usage (`session.context.usage`, the same line); listed under the same condition as `/compact` |
+| `session` | `/fork` | Fork the Session at its last finished turn (`session.fork {at}`) after a confirmation, then open the new Session; listed when the connection serves `session.fork` and the root has a finished turn |
+| `session` | `/goal [words]` | Show the shown line's current goal through `session.goal.get`, or write it: `/goal OBJECTIVE`, `set`, `edit`, `pause`, `resume` and `clear` call `session.goal.<call>` with the shown line's `branchId` (it is the default branch), so two lines keep two goals; listed when the Session's method table lists `session.goal.set`. The menu fills `/goal ` for its words |
+| `model` | `/effort [value]` | List the shown line's model reasoning effort choices (from `provider.catalog`, when the model advertises reasoning preferences), or set one with `session.model.update {modelPreferences: {reasoningEffort}}`, as `/effort` does in the TUI (`configure.rs`). Listed only when the model has choices. `/fast` is not offered: no model advertises service tiers yet |
 | `model` | `/permissions` | Open the composer's permission selector (below). Listed where the Session serves `session.permission.get` and `session.permission.update` |
 | `session` | `/lines` | Open the existing Session lines panel |
 | `session` | `/new` | Navigate to the existing new-Session page, seeded with the current Session's working directory |
 | `session` | `/scheduled` | Open Scheduled tasks when the connection admits `schedule.list`; `/schedule` is an alternate. The current Session's `cwd` seeds creation, not the list's workspace filter |
 
-`/compact`, `/usage`, `/fork`, `/goal` and `/effort` belong to the main Session composer; a line composer does not list them, because the Session-wide cut and compaction are decided on main. `/rename` is not listed: the App Server does not serve `session.rename` yet (the SessionTitle design).
+`/compact`, `/usage`, `/goal` and `/effort` act on the line the composer is showing, which in the centre is the default branch: they name that line instead of hard-coding the root, so a Session whose conversation is on another line compacts and configures that line. `/fork` is the exception in kind, not in placement: it still copies only the root to a rest point, and the UI says so. `/rename` is not listed: the App Server does not serve `session.rename` yet (the SessionTitle design).
 
 Commands whose action is unavailable are omitted. Native-only commands are not
 advertised. Shared actions follow the TUI's canonical names and argument flow,
@@ -305,7 +305,7 @@ the menu footer displays its keyboard controls.
 
 Choosing `/branch` fills `/branch ` and focuses the composer without opening a
 dialog. Submitting a nonempty prompt creates the line and opens it in the side
-panel. In a line-panel composer its parent is that line, not `main`. With no
+panel. In a line-panel composer its parent is that line, not the root. With no
 finished turn or after a creation error, show the reason and preserve the draft;
 never submit a recognized branch command as model input unless explicitly escaped.
 Only successful creation clears the submitted draft. The existing transcript
@@ -1016,7 +1016,7 @@ which of a run's two destinations a draft takes, and an idle line has only one.
 ┌──────────────────────────────────────────────────────────┐
 │ Timeline: the run in flight                              │
 │                                                          │
-│ queued messages (main line strip)                        │
+│ queued messages (default branch strip)                   │
 │   1  run the linter                     [Steer] [Remove] │
 │   2  then fix the warnings              [Remove]         │
 ├──────────────────────────────────────────────────────────┤

@@ -9,16 +9,18 @@ optional inherited user-message count instead of querying the historical prefix.
 Restore selects lifecycle kind/positions first. Closed lines retain directory metadata without
 reading creation/end bodies; unfinished closes read the terminal data they must settle, and
 only active lines read their opening source. Parent-child adjacency orders the directory once.
+A Session with one line is on its root without a query; a Session with more reads the root's
+newest `branch/default` or `session/forked` through the kind index to find the default branch.
 The App Server only maps these owner-produced properties into its wire fields.
-`TreeCommands.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. It decodes no event body and has no wire binding.
+`TreeCommands.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. It decodes no event body and has no wire binding. The default branch's answer and its write are `TreeCommands` methods too: `default_branch()` reads the fact and `set_default_branch(id, source)` writes `branch/default` on the root and the two status notes.
 
 ## TimelineTree
 
 Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline_tree.rs).
 Owns Session branches, reservations and asynchronous creation/restore/close,
-and a line's end: the identity block in every child's opening input, the parent
+the default branch, and a line's end: the identity block in every child's opening input, the parent
 block a nested line is told at open, the `info.source` a line was opened with,
-`branch/end` to `branch/ended` on the parent, and the restore rule that leaves
+the one `branch/default` fact on the root, `branch/end` to `branch/ended` on the parent, and the restore rule that leaves
 an ended line closed
 ([timeline branches §5–§10](../../../design/timeline-branches.md#10-ending-a-line)).
 Provides the TreeCommands/TimelineTreeControl ports. The `branch` tool is
@@ -38,10 +40,11 @@ block and the branch markers — with their classes are listed on
 ### Events and lifetime
 
 Produces `branch/create`, `branch/create-failed`, `branch/start`, `branch/resume`,
-`branch/end` and `branch/ended`, and initial child input, through tree-owned
+`branch/end`, `branch/ended` and `branch/default`, and initial child input, through tree-owned
 operations. TreeTimeline consumes creation on the parent and an end on the
 ending line. `TreeCommands::end`
-checks only the target: it exists, it is open, and it is not `main`; a line
+checks only the target: it exists, it is open, and it is neither the root, the
+default branch nor an ancestor of it; a line
 that ended writes nothing and answers `branch_ended`. `info` answers for an
 ended line too, and `page` reads an open or ended line from the store at its
 head, rebuilding stored request bodies. `batch_end`

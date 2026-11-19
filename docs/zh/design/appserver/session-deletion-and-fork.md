@@ -193,7 +193,7 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 | 类别 | Rpc 内建方法。它像 `session.create` 一样创建 Session，只是从另一个 Session 的切点创建（Agents） |
 | 协议与调用方 | 与 `session.delete` 相同（§3.1）。源的记录版本不得高于连接的版本，分叉记录源的版本 |
 | `at` | 分叉继承的最后一个 `main` 序号。0 表示不继承任何事件 |
-| 回复 | 分叉发布后的 id 及其 `main` 头部。客户端随后附着 |
+| 回复 | 分叉发布后的 id 及其 `main` 头部。客户端随后附着。分叉的主线是 `main`，与源的主线无关（§6.2） |
 | 没有其他参数 | 没有 `branchId` 或配置字段。分叉的配置就是源的配置（§6.3）。客户端之后用 `session.permission.update` 或 `session.model.update` 修改，与 [#26](https://github.com/arcships/dim/issues/26) 对预设的决定相同 |
 
 分叉不是幂等的：回复不确定后重试可能再建一个分叉，客户端可在 `session.summaries` 中找到它。
@@ -208,9 +208,11 @@ Rpc 检查参数和 Session 的协议版本，然后调用 Agents。Agents 负�
 
 这些读取使用原生存储的[版本化成员索引](../../../design/appserver/timeline-member-index.md)和[状态读取索引](../../../design/appserver/timeline-state-read-indexes.md)，不再重放已完成的输入、轮次或任务历史，每次查询最多返回一个事件。输入条件判断可能检查切点时仍待处理的成员，成本取决于待处理集合，而非已完成的历史前缀。切点之后的消费、删除、任务结束或唤醒不能改变历史切点的判定；上下文压缩也不能隐藏更早的待处理工作。上下文边界检查和存储端复制保持各自的契约与成本。
 
-**为什么只在 `main` 上。** 子分支的历史是各祖先的前缀加上它自己的事件，而每个分支的事件都从 1 编号。把它排成一条 `main` 要给事件重新编号，而压缩的 `through`、`branch/create.at`、`branch/start.createEvent`、批次终点和快照锚点都引用这些编号：存储将不得不改写其他所有者写下的事实。要继续某个子分支的工作，客户端在 Session 内从它创建分支。
+**为什么只在 `main` 上。** 子分支的历史是各祖先的前缀加上它自己的事件，而每个分支的事件都从 1 编号。把它排成一条 `main` 要给事件重新编号，而压缩的 `through`、`branch/create.at`、`branch/start.createEvent`、批次终点和快照锚点都引用这些编号：存储将不得不改写其他所有者写下的事实。要继续某个子分支的工作，用户在 Session 内把主线挪到它（timeline branches §9）。
 
-被否决：以相同的分支 id 复制子分支的祖先链，并在子分支的副本上继续。那样分叉的对话就不在它的 `main` 上，而客户端、`session.summaries` 和 SessionTitle 读的都是 `main`。
+被否决：以相同的分支 id 复制子分支的祖先链，并在子分支的副本上继续。那样分叉会变成一个 `main` 不是它全部历史的 Session，此后对那条线的每次读取都会拼接两个编号空间。
+
+**分叉的主线是它的根。** 副本继承的每条 `branch/default` 都是切点之前在源的 `main` 上写下的，所以它指名的线要么不在 F 中，要么只作为没有事件的目录行存在（§6.3）。因此 F 把它的主线记为 `main`：它在 `at + 1` 处的 `session/forked` 晚于每条复制来的 `branch/default`，而决定一个 Session 主线的唯一一次查询（timeline branches §5）读取两者中较新的那条。切点为 `0` 时不写 `session/forked`，它同样因为没有任何复制来的事实指名别的线，主线是 `main`。
 
 ### 6.3 分叉复制什么
 

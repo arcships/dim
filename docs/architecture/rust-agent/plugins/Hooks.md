@@ -186,7 +186,6 @@ reported by `hooks.catalog` rather than at the hook point.
 `a_prompt_context_cannot_close_its_runtime_block`,
 `post_tool_use_failure_runs_only_for_error_results`,
 `a_timeout_is_a_failure_and_a_blocking_failure_still_answers`,
-`identical_commands_at_one_point_run_once`,
 `an_identical_command_in_the_user_and_project_sources_runs_once`,
 `identical_commands_from_two_plugins_run_with_their_own_roots`,
 `stop_follow_ups_are_bounded_at_three_and_flag_the_driven_turns`,

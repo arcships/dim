@@ -1,4 +1,4 @@
-use crate::{request, stream};
+use crate::{identity::ModelIdentity, request, stream};
 use aimux_core::{AbortSignal, AiMuxError, language_model::LanguageModel};
 use aimux_provider_utils::{
     Fetch, FetchError, FetchFunction, FetchRequest, FetchResponse, HeaderMapOpt, ProxyConfig,
@@ -320,12 +320,29 @@ fn no_credential(header: &str) -> HeaderMapOpt {
     HashMap::from([(header.to_string(), None)])
 }
 
+/// The provider layer of one model's headers: dim's identity, then the name
+/// of the credential the provider must leave alone.
+///
+/// The identity sits here, not in `options.headers`, because this layer keeps
+/// the library's own User-Agent parts (`ai-sdk-<package>/<v>` and later
+/// `ai-sdk-provider-utils/<v>`), which a per-call User-Agent would replace.
+/// A per-call header still wins over this layer, so a Provider that names its
+/// own User-Agent keeps it.
+fn provider_headers(identity: &ModelIdentity, credential: Option<&str>) -> HeaderMapOpt {
+    let mut headers = identity.headers();
+    if let Some(credential) = credential {
+        headers.extend(no_credential(credential));
+    }
+    headers
+}
+
 fn build_model(
     connection: &ModelConnection,
     base_url: &str,
     protocol: &ModelProtocol,
     preset: Option<&str>,
     model_id: &str,
+    identity: &ModelIdentity,
     fetch: FetchFunction,
 ) -> Result<Arc<dyn LanguageModel>, AiMuxError> {
     if matches!(connection, ModelConnection::Local) {
@@ -333,6 +350,17 @@ fn build_model(
             "Aimux requires a resolved model connection",
         ));
     }
+    // The managed `openai-codex` provider impersonates another client: its
+    // request carries the per-call headers and no identity of dim's own, not
+    // even `X-Title` or `HTTP-Referer` from the provider layer.
+    let impersonated = preset == Some(OPENAI_CODEX_PRESET);
+    let identity_headers = |credential: Option<&str>| {
+        if impersonated {
+            credential.map_or_else(HeaderMapOpt::new, no_credential)
+        } else {
+            provider_headers(identity, credential)
+        }
+    };
     let base_url = base_url.to_owned();
     match protocol {
         ModelProtocol::OpenaiChat => {
@@ -342,7 +370,7 @@ fn build_model(
             let provider = create_openai(OpenAIProviderSettings {
                 base_url: Some(base_url),
                 api_key: Some(String::new()),
-                headers: Some(no_credential("authorization")),
+                headers: Some(identity_headers(Some("authorization"))),
                 fetch: Some(fetch),
                 ..OpenAIProviderSettings::default()
             })?;
@@ -362,7 +390,7 @@ fn build_model(
                     aimux_providers::PresetSettings {
                         api_key: Some(Resolvable::Value(String::new())),
                         base_url: Some(base_url),
-                        headers: Some(no_credential("authorization")),
+                        headers: Some(identity_headers(Some("authorization"))),
                         fetch: Some(fetch),
                         ..aimux_providers::PresetSettings::default()
                     },
@@ -373,7 +401,7 @@ fn build_model(
                 name: preset.unwrap_or("openai").to_owned(),
                 base_url,
                 api_key: None,
-                headers: None,
+                headers: Some(identity_headers(None)),
                 include_usage: Some(true),
                 fetch: Some(fetch),
                 ..OpenAICompatibleProviderSettings::default()
@@ -384,7 +412,7 @@ fn build_model(
             let provider = create_openai(OpenAIProviderSettings {
                 base_url: Some(base_url),
                 api_key: Some(String::new()),
-                headers: Some(no_credential("authorization")),
+                headers: Some(identity_headers(Some("authorization"))),
                 fetch: Some(fetch),
                 ..OpenAIProviderSettings::default()
             })?;
@@ -395,7 +423,7 @@ fn build_model(
                 name: "xai".into(),
                 base_url,
                 api_key: None,
-                headers: None,
+                headers: Some(identity_headers(None)),
                 include_usage: Some(true),
                 fetch: Some(fetch),
                 ..OpenAICompatibleProviderSettings::default()
@@ -406,7 +434,7 @@ fn build_model(
             let provider = create_xai(XAIProviderSettings {
                 base_url: Some(base_url),
                 api_key: Some(String::new()),
-                headers: Some(no_credential("authorization")),
+                headers: Some(identity_headers(Some("authorization"))),
                 fetch: Some(fetch),
             })?;
             Ok(Arc::new(provider.responses(model_id)))
@@ -419,7 +447,7 @@ fn build_model(
                 base_url: Some(anthropic_base_url(&base_url)),
                 api_key: Some(String::new()),
                 auth_token: None,
-                headers: Some(no_credential("x-api-key")),
+                headers: Some(identity_headers(Some("x-api-key"))),
                 fetch: Some(fetch),
                 ..AnthropicProviderSettings::default()
             })?;
@@ -429,7 +457,7 @@ fn build_model(
             let provider = create_google(GoogleProviderSettings {
                 base_url: Some(base_url),
                 api_key: Some(String::new()),
-                headers: Some(no_credential("x-goog-api-key")),
+                headers: Some(identity_headers(Some("x-goog-api-key"))),
                 fetch: Some(fetch),
                 ..GoogleProviderSettings::default()
             })?;
@@ -466,6 +494,7 @@ fn build_model(
                 secret_access_key: credentials.1,
                 session_token: credentials.2,
                 base_url: Some(base_url.clone()),
+                headers: Some(identity_headers(None)),
                 fetch: Some(fetch),
                 ..AmazonBedrockProviderSettings::default()
             })?;
@@ -476,6 +505,9 @@ fn build_model(
 
 pub(crate) struct AimuxDriver {
     files: Option<Arc<dim_agent_capabilities::host::SessionFiles>>,
+    /// The identity this driver's model requests carry, owned by the Aimux
+    /// part that built it.
+    identity: ModelIdentity,
     /// The transport every connection without a proxy reuses, so their
     /// clients share one connection pool.
     transport: ReqwestFetch,
@@ -489,10 +521,12 @@ impl AimuxDriver {
     pub fn with_files(
         generation: CancellationToken,
         files: Option<Arc<dim_agent_capabilities::host::SessionFiles>>,
+        identity: ModelIdentity,
     ) -> Result<Arc<Self>, HostError> {
         let transport = ReqwestFetch::default();
         Ok(Arc::new(Self {
             files,
+            identity,
             fetch: Arc::new(DimFetch {
                 transport: transport.clone(),
                 timeout: None,
@@ -659,6 +693,7 @@ impl ModelDriver for AimuxDriver {
                 &protocol,
                 preset,
                 &request.model_id,
+                &self.identity,
                 fetch,
             ) {
                 Ok(model) => model,

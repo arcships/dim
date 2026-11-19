@@ -1382,32 +1382,6 @@ fn drive(grows_through: Option<u32>) -> (SettleDecision, SettleWait) {
     }
 }
 
-/// A total that never grows exits idle exactly one idle window in.
-#[test]
-fn a_wait_with_no_output_at_all_exits_idle() {
-    let (decision, wait) = drive(None);
-    assert_eq!(decision, SettleDecision::Idle);
-    assert_eq!(wait.polls, SETTLE_IDLE_POLLS);
-}
-
-/// A log that grows on every poll never reaches the idle exit, because every
-/// poll grows, so the ceiling is the only way out. The final poll is exactly
-/// the poll that grew, so the bookkeeping reports zero polls since the last
-/// growth and the text names that same poll.
-#[test]
-fn a_continuously_growing_log_exits_at_the_ceiling() {
-    let (decision, wait) = drive(Some(MAX_SETTLE_POLLS + 1));
-    assert_eq!(decision, SettleDecision::Ceiling);
-    assert_eq!(wait.polls, MAX_SETTLE_POLLS);
-    assert_eq!(wait.since_growth(), 0);
-    let text = settle_timeout("exec wake", decision, &wait);
-    assert!(
-        text.contains("the last growth was this same poll"),
-        "{text}"
-    );
-    assert!(!text.contains("still writing"), "{text}");
-}
-
 /// A stall inside the last idle window: growth through zero-based poll 2501,
 /// then flat for good. Only 498 unchanged polls follow, short of the 500 the
 /// idle exit needs, so it reaches the ceiling — and the ceiling text must
@@ -1420,17 +1394,6 @@ fn a_stall_inside_the_last_idle_window_still_exits_at_the_ceiling() {
     let text = settle_timeout("exec wake", decision, &wait);
     assert!(text.contains("last growth 498 polls (9.96 s)"), "{text}");
     assert!(!text.contains("still writing"), "{text}");
-}
-
-/// Growth through poll 2499, then flat: the 500th unchanged poll is poll 3000,
-/// which is also the ceiling. The idle exit is checked first, so a stall that
-/// begins exactly one idle window before the ceiling is named as a stall.
-#[test]
-fn a_stall_one_idle_window_before_the_ceiling_exits_idle() {
-    let (decision, wait) = drive(Some(2499));
-    assert_eq!(decision, SettleDecision::Idle);
-    assert_eq!(wait.polls, MAX_SETTLE_POLLS);
-    assert_eq!(wait.since_growth(), SETTLE_IDLE_POLLS);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

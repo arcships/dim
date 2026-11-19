@@ -206,6 +206,25 @@ pub fn product_session_defaults(defaults: &mut dim_agent_runtime::SessionConfig)
 const MIGRATE_PROMPT_REFERENCES_USAGE: &str =
     "--migrate-prompt-references --database PATH --session ID --branch NAME";
 
+/// `DIM_USER_AGENT`, read once here rather than inside the Aimux part: the
+/// environment does not change under a running process, and a value a request
+/// cannot carry must fail startup before anything is served. It is read after
+/// the arguments are parsed, so `--help` and a configuration error stay
+/// reachable with a value this process would refuse.
+pub fn user_agent_from_environment() -> Result<Option<String>, String> {
+    let variable = match std::env::var(dim_agent_aimux::ENVIRONMENT_VARIABLE) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(format!(
+                "{} must be valid Unicode",
+                dim_agent_aimux::ENVIRONMENT_VARIABLE
+            ));
+        }
+    };
+    dim_agent_aimux::environment_user_agent(variable).map_err(|error| error.to_string())
+}
+
 /// [`run`] with a managed provider plugin, which an account build's own
 /// executable supplies; it is installed when the server has a product home.
 /// `install` contributes the host's native plugins to the builder before assembly.
@@ -510,6 +529,7 @@ pub fn run_with(
         };
         None
     };
+    config.user_agent = user_agent_from_environment()?;
     let mut agent_config = AgentConfig::default();
     if let Some(models) = &models {
         config.model_catalog = Some(models.clone());

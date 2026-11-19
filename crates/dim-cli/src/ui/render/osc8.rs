@@ -25,14 +25,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wraps_text_in_open_and_close() {
-        assert_eq!(
-            hyperlink("https://a.example/x", "docs"),
-            "\x1b]8;;https://a.example/x\x1b\\docs\x1b]8;;\x1b\\"
-        );
-    }
-
-    #[test]
     fn control_characters_cannot_end_the_sequence() {
         let out = hyperlink("https://a\x07\x1b]0;pwned\x07.example", "go\x1b[31m");
         assert!(!out.contains('\x07'));

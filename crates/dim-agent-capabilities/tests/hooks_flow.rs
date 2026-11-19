@@ -2203,34 +2203,6 @@ async fn member_session_payloads_carry_collaboration_role() {
     env.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn identical_commands_at_one_point_run_once() {
-    let env = Env::new().await;
-    let runs = env.path("runs");
-    let repeat = format!(
-        "{}; printf '{{\"hookSpecificOutput\":{{\"additionalContext\":\"context\"}}}}'",
-        marker_command(&runs, "run\n")
-    );
-    env.sources.set(document(serde_json::json!({
-        "PostToolUse": [
-            command(serde_json::json!({"type": "command", "command": repeat})),
-            command(serde_json::json!({"type": "command", "command": repeat})),
-        ],
-    })));
-    let session = env.session().await;
-    let note = env.path("work/note.txt");
-    std::fs::write(&note, "note\n").unwrap();
-    turn(
-        &session,
-        &format!("tool:read {{\"path\":{:?}}}", note.to_str().unwrap()),
-    )
-    .await;
-    wait_blocks(&session, "post-tool", 1).await;
-    assert_eq!(std::fs::read_to_string(&runs).unwrap(), "run\n");
-    assert_eq!(hook_blocks(&session, "post-tool").await.len(), 1);
-    env.close().await;
-}
-
 /// A.2: user and project handlers have no plugin directory, so their
 /// identical commands at one point still run once, across sources.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

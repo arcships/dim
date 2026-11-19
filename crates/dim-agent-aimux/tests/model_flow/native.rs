@@ -212,6 +212,18 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
             ])
         );
         assert_eq!(sent[1].headers["x-tenant"], "tenant-A");
+        assert_identity_before(
+            sent[1].headers["user-agent"].to_str().unwrap(),
+            "bedrock",
+            &[
+                "ai-sdk-amazon-bedrock/",
+                "ai-sdk-provider-utils/",
+                "ai-sdk-amazon-bedrock/",
+            ],
+            3,
+        );
+        assert_eq!(sent[1].headers["x-title"], "DimCode");
+        assert_eq!(sent[1].headers["http-referer"], "https://dimagent.com/");
         match auth {
             BedrockAuth::Bearer(_) => {
                 assert_eq!(sent[1].headers["authorization"], "Bearer bearer-asymmetric")
@@ -1118,9 +1130,13 @@ async fn codex_request_profile_is_isolated_to_responses() {
     assert_eq!(sent_headers["chatgpt-account-id"], "account-1");
     assert_eq!(sent_headers["oai-product-sku"], "codex");
     assert_eq!(sent_headers["originator"], "codex-tui");
-    assert_eq!(
-        sent_headers["user-agent"],
-        "dimagent/0.144.1 ai-sdk-provider-utils/5.0.53"
+    let user_agent = sent_headers["user-agent"].to_str().unwrap();
+    let library = user_agent
+        .strip_prefix("dimagent/0.144.1 ai-sdk-provider-utils/")
+        .unwrap_or_else(|| panic!("the connection's own User-Agent leads: {user_agent}"));
+    assert!(
+        !library.is_empty(),
+        "The library part carries a version: {user_agent}"
     );
     assert_eq!(body["store"], false);
     assert!(body.get("max_output_tokens").is_none());
@@ -5007,5 +5023,291 @@ async fn a_connection_reuses_one_tcp_connection_for_its_query_and_timeout() {
         "the timeout connection reuses the driver's pool"
     );
     proxy.join.abort();
+    server.close().await;
+}
+
+/// The default User-Agent as every test below expects it: `dim` first, then
+/// the older relay identity, both from the crate's own version.
+fn expected_default_user_agent() -> String {
+    let version = env!("CARGO_PKG_VERSION");
+    format!("dim/{version} DimAgent/{version}")
+}
+
+/// One request over `connection`, drained to its end.
+async fn send_over(host: &ModelHost, server: &NativeServer, connection: ModelConnection) {
+    let request = Arc::new(ModelRequest::new(
+        "tenant",
+        server.model_id(),
+        vec![Message::text(Role::User, "hello")],
+    ));
+    let mut stream = host
+        .0
+        .invoke(request, connection, CancellationToken::new())
+        .await
+        .unwrap();
+    while let Some(chunk) = stream.next().await {
+        chunk.unwrap();
+    }
+}
+
+/// The headers of the one request the host sent.
+fn sent_headers(server: &NativeServer) -> HeaderMap {
+    let requests = server.endpoint.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 1, "one request");
+    requests.into_iter().next().unwrap().1
+}
+
+fn http_connection(
+    server: &NativeServer,
+    protocol: ModelProtocol,
+    preset: Option<&str>,
+    headers: std::collections::HashMap<String, String>,
+) -> ModelConnection {
+    ModelConnection::Http(HttpModelConnection {
+        protocol,
+        base_url: server.url.clone(),
+        network: Default::default(),
+        headers,
+        bearer: None,
+        api_key: None,
+        preset: preset.map(str::to_owned),
+    })
+}
+
+/// The library parts after dim's identity: each package by name and any
+/// version the dependency ships, so a routine bump does not fail the test.
+fn assert_identity_before(user_agent: &str, kind: &str, packages: &[&str], library_parts: usize) {
+    let Some(library) = user_agent
+        .strip_prefix(&expected_default_user_agent())
+        .and_then(|rest| rest.strip_prefix(' '))
+    else {
+        panic!("{kind}: dim's identity does not lead: {user_agent}");
+    };
+    let parts: Vec<&str> = library.split(' ').collect();
+    assert_eq!(parts.len(), library_parts, "{kind}: {user_agent}");
+    for (part, package) in parts.iter().zip(packages) {
+        let Some(version) = part.strip_prefix(package) else {
+            panic!("{kind}: {part} is not {package}");
+        };
+        assert!(!version.is_empty(), "{kind}: {part} carries a version");
+    }
+}
+
+/// Every protocol carries dim's own identity in the provider layer, so the
+/// library's parts follow it.
+#[tokio::test]
+async fn every_protocol_sends_dims_own_identity_before_the_library_parts() {
+    for (kind, protocol, packages) in [
+        (
+            "openai-chat",
+            ModelProtocol::OpenaiChat,
+            &["ai-sdk-openai/", "ai-sdk-provider-utils/"],
+        ),
+        (
+            "openai-compatible",
+            ModelProtocol::OpenaiCompatible,
+            &["ai-sdk-openai-compatible/", "ai-sdk-provider-utils/"],
+        ),
+        (
+            "openai-responses",
+            ModelProtocol::OpenaiResponses,
+            &["ai-sdk-openai/", "ai-sdk-provider-utils/"],
+        ),
+        (
+            "openai-compatible",
+            ModelProtocol::Xai,
+            &["ai-sdk-openai-compatible/", "ai-sdk-provider-utils/"],
+        ),
+        (
+            "openai-responses",
+            ModelProtocol::XaiResponses,
+            &["ai-sdk-xai/", "ai-sdk-provider-utils/"],
+        ),
+        (
+            "anthropic",
+            ModelProtocol::Anthropic,
+            &["ai-sdk-anthropic/", "ai-sdk-provider-utils/"],
+        ),
+        (
+            "gemini",
+            ModelProtocol::Gemini,
+            &["ai-sdk-google/", "ai-sdk-provider-utils/"],
+        ),
+    ] {
+        let server = NativeServer::start(kind).await;
+        let root = rutis::Ctx::root().unwrap();
+        root.plugin(AimuxPlugin::default()).await.unwrap();
+        let host = root.get::<ModelHost>().unwrap();
+        send_over(
+            &host,
+            &server,
+            http_connection(&server, protocol, None, Default::default()),
+        )
+        .await;
+        let headers = sent_headers(&server);
+        assert_identity_before(
+            headers["user-agent"].to_str().unwrap(),
+            kind,
+            packages,
+            packages.len(),
+        );
+        assert_eq!(headers["x-title"], "DimCode", "{kind}");
+        assert_eq!(headers["http-referer"], "https://dimagent.com/", "{kind}");
+        root.shutdown().await.unwrap();
+        server.close().await;
+    }
+}
+
+/// A registry preset is a compatible endpoint too, so it carries the same
+/// identity.
+#[tokio::test]
+async fn a_preset_connection_sends_dims_own_identity() {
+    let server = NativeServer::start("openai-compatible").await;
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    send_over(
+        &host,
+        &server,
+        http_connection(
+            &server,
+            ModelProtocol::OpenaiCompatible,
+            Some("deepseek"),
+            Default::default(),
+        ),
+    )
+    .await;
+    let headers = sent_headers(&server);
+    let user_agent = headers["user-agent"].to_str().unwrap();
+    assert!(
+        user_agent.starts_with(&format!("{} ai-sdk-", expected_default_user_agent())),
+        "{user_agent}"
+    );
+    assert_eq!(headers["x-title"], "DimCode");
+    root.shutdown().await.unwrap();
+    server.close().await;
+}
+
+/// The impersonating path: the `openai-codex` preset sends its own Codex
+/// headers and none of dim's, not even `X-Title` or `HTTP-Referer`.
+#[tokio::test]
+async fn the_openai_codex_preset_carries_no_identity_of_dims_own() {
+    let server = NativeServer::start("openai-responses").await;
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let codex = "codex-tui/0.170.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.170.0)";
+    let headers = std::collections::HashMap::from([
+        ("originator".into(), "codex-tui".into()),
+        ("OAI-Product-Sku".into(), "codex".into()),
+        ("User-Agent".into(), codex.into()),
+    ]);
+    send_over(
+        &host,
+        &server,
+        http_connection(
+            &server,
+            ModelProtocol::OpenaiResponses,
+            Some("openai-codex"),
+            headers,
+        ),
+    )
+    .await;
+    let headers = sent_headers(&server);
+    assert_eq!(headers["originator"], "codex-tui");
+    assert_eq!(headers["oai-product-sku"], "codex");
+    let user_agent = headers["user-agent"].to_str().unwrap();
+    let library = user_agent
+        .strip_prefix(&format!("{codex} ai-sdk-provider-utils/"))
+        .unwrap_or_else(|| {
+            panic!("only the library part follows the impersonated User-Agent: {user_agent}")
+        });
+    assert!(!library.is_empty(), "{user_agent}");
+    for absent in ["x-title", "http-referer"] {
+        assert!(!headers.contains_key(absent), "{absent} must not leak");
+    }
+    root.shutdown().await.unwrap();
+    server.close().await;
+}
+
+/// A Provider's own User-Agent wins over dim's, and so do its `X-Title` and
+/// `HTTP-Referer`.
+#[tokio::test]
+async fn a_providers_own_headers_win_over_dims_identity() {
+    let server = NativeServer::start("openai-compatible").await;
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let headers = std::collections::HashMap::from([
+        ("User-Agent".into(), "gateway-client/9".into()),
+        ("X-Title".into(), "Gateway Title".into()),
+        ("HTTP-Referer".into(), "https://gateway.example/".into()),
+    ]);
+    send_over(
+        &host,
+        &server,
+        http_connection(&server, ModelProtocol::OpenaiCompatible, None, headers),
+    )
+    .await;
+    let headers = sent_headers(&server);
+    assert!(
+        headers["user-agent"]
+            .to_str()
+            .unwrap()
+            .starts_with("gateway-client/9 ai-sdk-"),
+        "the provider's User-Agent replaces dim's and the library part stays"
+    );
+    assert_eq!(headers["x-title"], "Gateway Title");
+    assert_eq!(headers["http-referer"], "https://gateway.example/");
+    root.shutdown().await.unwrap();
+    server.close().await;
+}
+
+/// An override replaces the whole built-in string; the library's parts still
+/// follow it.
+#[tokio::test]
+async fn an_override_replaces_the_user_agent_and_keeps_the_library_parts() {
+    let server = NativeServer::start("openai-compatible").await;
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(
+        AimuxPlugin::default().with_identity(dim_agent_aimux::ModelIdentity::new(Some(
+            "private-client/7".into(),
+        ))),
+    )
+    .await
+    .unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    send_over(
+        &host,
+        &server,
+        http_connection(
+            &server,
+            ModelProtocol::OpenaiCompatible,
+            None,
+            Default::default(),
+        ),
+    )
+    .await;
+    let headers = sent_headers(&server);
+    let user_agent = headers["user-agent"].to_str().unwrap();
+    let library = user_agent
+        .strip_prefix("private-client/7 ")
+        .unwrap_or_else(|| panic!("the override leads: {user_agent}"));
+    let parts: Vec<&str> = library.split(' ').collect();
+    assert_eq!(parts.len(), 2, "{user_agent}");
+    for (part, package) in parts
+        .iter()
+        .zip(["ai-sdk-openai-compatible/", "ai-sdk-provider-utils/"])
+    {
+        let version = part
+            .strip_prefix(package)
+            .unwrap_or_else(|| panic!("{part} is not {package}"));
+        assert!(!version.is_empty(), "{user_agent}");
+    }
+    assert_eq!(
+        headers["x-title"], "DimCode",
+        "an override leaves the other identity headers alone"
+    );
+    root.shutdown().await.unwrap();
     server.close().await;
 }

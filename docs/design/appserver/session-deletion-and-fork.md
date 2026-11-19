@@ -299,7 +299,7 @@ partial failure would still need per-id results.
 | Kind | Rpc built-in. It creates a Session, as `session.create` does, from another Session's cut (Agents) |
 | Protocol and callers | As for `session.delete` (§3.1). The source's recorded version must not exceed the connection's, and the fork records the source's version |
 | `at` | The last `main` sequence the fork inherits. 0 inherits no event |
-| Reply | The fork's id and its `main` head once it is published. The client then attaches |
+| Reply | The fork's id and its `main` head once it is published. The client then attaches. The fork's default branch is `main`, whatever the source's was (§6.2) |
 | No other params | No `branchId` or configuration fields. The fork's configuration is the source's (§6.3). A client changes it afterwards with `session.permission.update` or `session.model.update`, as [#26](https://github.com/arcships/dim/issues/26) decided for the preset |
 
 A fork is not idempotent: a retry after an uncertain reply can create a second fork, which the client finds in
@@ -345,11 +345,19 @@ copy keep their own contracts and costs.
 **Why `main` only.** A child branch's history is its ancestors' prefixes followed by its own events, and each branch
 numbers its events from 1. Laying that out as one `main` would renumber events, and compaction `through`,
 `branch/create.at`, `branch/start.createEvent`, batch ends and snapshot anchors refer to those numbers: the store
-would rewrite facts other owners wrote. To continue a child branch's work, a client creates a branch from it inside
-the Session.
+would rewrite facts other owners wrote. To continue a child branch's work, the user moves the default branch to it
+inside the Session (timeline branches §9).
 
 Rejected: copying a child's ancestor chain under the same branch ids and continuing on the copy of the child. The
-fork's conversation would then not be its `main`, which clients, `session.summaries` and SessionTitle read.
+fork would then be a Session whose `main` is not its whole history, and every later read of that line would join two
+numbering spaces.
+
+**A fork's default branch is its root.** Every `branch/default` the copy inherits was written on the source's `main`
+before the cut, so it names a line that is either absent from F or present only as a directory row without events
+(§6.3). F therefore records its default branch as `main`: its `session/forked` at `at + 1` is later than every
+copied `branch/default`, and the one lookup that decides a Session's default branch (timeline branches §5) reads the
+newest of the two kinds. A cut of `0` records no `session/forked`, and its default branch is `main` for the same
+reason: no copied fact names another.
 
 ### 6.3 What a fork copies
 

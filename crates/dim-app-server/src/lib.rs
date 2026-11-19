@@ -27,6 +27,7 @@ pub mod prompt_settings;
 pub mod prompt_suggestion_settings;
 pub mod protocol;
 pub mod provider;
+pub mod provider_settings;
 pub mod runtime_manager;
 pub mod session_grants;
 pub mod session_language;
@@ -93,6 +94,11 @@ pub struct ServerConfig {
     /// Admission is disabled until the product execution profile is installed.
     pub session_execution: bool,
     pub model_catalog: Option<Arc<dim_agent_aimux::AimuxModels>>,
+    /// The override `DIM_USER_AGENT` names, read and validated once by the
+    /// process that hosts models and passed to this Server's Aimux part.
+    /// `None` leaves dim's built-in User-Agent, subject to the `provider`
+    /// settings source.
+    pub user_agent: Option<String>,
     pub file_roots: Vec<PathBuf>,
     pub session_defaults: SessionConfig,
     pub hello_timeout: Duration,
@@ -145,6 +151,7 @@ impl Default for ServerConfig {
             daemon_profile: protocol::DaemonProfile::Mock,
             session_execution: true,
             model_catalog: None,
+            user_agent: None,
             file_roots: vec![],
             session_defaults: SessionConfig::default(),
             hello_timeout: Duration::from_secs(5),
@@ -715,17 +722,23 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         builder.catalog(),
         move |_| Ok(Box::new(files.clone())),
     )?);
+    // The identity of this Server's model requests. Its Aimux part owns the
+    // state; the `provider` settings row writes the configured override into
+    // the same value, so two Servers in one process keep theirs apart.
+    let identity = dim_agent_aimux::ModelIdentity::new(config.user_agent.clone());
     if config.model_catalog.is_some() || product_root.is_some() {
         let has_files = config.database_path.is_some();
+        let plugin_identity = identity.clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
-                Ok(Box::new(if has_files {
+                let plugin = if has_files {
                     dim_agent_aimux::AimuxPlugin::with_files(names.key()?)
                 } else {
                     dim_agent_aimux::AimuxPlugin::default()
-                }))
+                };
+                Ok(Box::new(plugin.with_identity(plugin_identity.clone())))
             },
         )?);
     }
@@ -873,6 +886,17 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             Ok(Box::new(web::WebPlugin::new(names)?))
         })?);
         if config.model_catalog.is_some() || product_root.is_some() {
+            let settings_identity = identity.clone();
+            rows.push(register_part(
+                &mut builtins,
+                builder.catalog(),
+                move |names| {
+                    Ok(Box::new(provider_settings::ProviderSettingsPlugin::new(
+                        names,
+                        settings_identity.clone(),
+                    )?))
+                },
+            )?);
             rows.push(register_part(
                 &mut builtins,
                 builder.catalog(),

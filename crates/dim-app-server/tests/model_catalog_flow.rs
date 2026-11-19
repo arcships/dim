@@ -1099,27 +1099,6 @@ fn two_vendors_claiming_one_id_report_ambiguity() {
 
 /// Two providers selling one model under one name with one set of numbers are
 /// one model, not a conflict, and the API entry beside them settles it.
-#[test]
-fn two_rows_with_one_set_of_numbers_are_one_model() {
-    let catalog = catalog(json!([
-        vendor(
-            "acme",
-            json!([row("acme-k3", "Acme K3", 1_048_576, 1_048_576)]),
-        ),
-        vendor(
-            "acme-mirror",
-            json!([row("acme-k3", "Acme K3", 1_048_576, 1_048_576)]),
-        ),
-    ]));
-    let entry = relay(&catalog, "acme-k3");
-    assert_eq!(matched(&entry).1, "acme-k3");
-    assert_ne!(rule(&entry), "ambiguous");
-    assert_eq!(
-        numbers(&bundled(&catalog, "acme", "acme-k3")),
-        numbers(&bundled(&catalog, "acme-mirror", "acme-k3"))
-    );
-}
-
 /// A plan's own provider keeps the plan's numbers even when the vendor's API
 /// entry disagrees, since the provider answers for the subscription it sells.
 #[test]

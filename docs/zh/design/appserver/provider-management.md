@@ -46,12 +46,55 @@ Provider 拥有进程配置、目录、覆盖、偏好、校验、安全投影�
 | `account`、`account.codex`、`account.grok` | 复用账号调用，不新增账号方法、事件或 managed host capability |
 | `ProviderConnectionResolver`、`ModelSelectionHost` | Provider 沿现有类型处理目录和路由，不增加 core 端口 |
 | `auxiliaryModel.complete` | S4 由调用者显式选模型的合同不变 |
+| `provider` 设置源，user 作用域（`provider.json`） | Provider 部件注册它；其中 `userAgent` 是 User-Agent 覆盖值（§2 模型请求身份），使该选择成为已声明、已校验的文档，而不是请求内的临时输入 |
 | 原生 CLI Provider 流程 | 能力发现、创建、更新、断开随 owner 方法一起迁移 |
 
 业务留在 Provider，不进入 `connection.rs`、`protocol.rs` 或接线插件。不增加 Session
 Capability、通知流、目录副本、凭据服务或注册表。继续遵守
 [managed provider boundary](../../../architecture/development.md#managed-provider-boundary)，
 私有账号实现和凭据不进入本仓库。
+
+### 模型请求身份
+
+dim 通过
+[`build_model`](../../../../crates/dim-agent-aimux/src/driver.rs) 构建的每个 chat 模型请求
+都在 Provider 层携带自己的身份；这一层的 User-Agent 之后会接上库自己的
+`ai-sdk-<package>/<version>` 和 `ai-sdk-provider-utils/<version>`。默认值是
+`User-Agent: dim/<version> DimAgent/<version>`、`X-Title: DimCode` 和
+`HTTP-Referer: https://dimagent.com/`。`dim` 放在最前，因为按首个 token 识别客户端的
+网关会落到 Dim 发布的那一条；`DimAgent` 是旧的 relay 身份，为仍按它匹配的网关保留。
+版本取 workspace 版本，由 `env!` 读出，不手写。
+
+媒体请求目前还不携带这一身份：媒体适配器直接构建 provider
+（[`dim-modality-aimux`](../../../../crates/dim-modality-aimux/src/media.rs)），三个头都不发送。
+
+身份是 Provider 层的默认值，所以每次调用的头仍然优先：Provider 自己的
+`User-Agent`、`X-Title` 或 `HTTP-Referer`（记录里的 `headers`，启动连接里的
+`DIM_CUSTOM_HEADERS`）只覆盖该 Provider 的对应头。优先级由高到低：冒充路径、Provider
+自己的头、下面的覆盖值、内置默认值、库的部分。
+
+两条路径保留自己的头，不使用这一默认身份：
+
+- 托管的 `openai-codex` Provider 以 Codex CLI 自己的 `User-Agent`、`originator`
+  和 `OAI-Product-Sku` 取代这一身份；其 token 请求发送 Codex CLI 的 `User-Agent`
+  和 `originator`。仅靠"被覆盖"不够：Provider 层的 `X-Title` 和 `HTTP-Referer` 仍会
+  上线，因此该 Provider 的模型根本不装配身份头。它的版本是请求必须冒充的 Codex 发布版本，
+  `provider.rs` 与 `managed_oauth.rs` 里的版本号一起改。
+- Dim OAuth relay 用自己 `DimCode/<version>`、`X-Title` 和 `HTTP-Referer` 头取代默认身份
+  （[`dim-oauth`](../../../../crates/dim-oauth/src/http.rs)），其线上行为不变。
+
+托管的 Grok Provider（`grok-build`）不冒充，像其他 Provider 一样发送默认身份。
+
+| 覆盖 | 位置 | 说明 |
+| --- | --- | --- |
+| `provider` 设置源，`userAgent` | `provider.json`，user 作用域，归 Provider 部件所有 | 整体替换 User-Agent 字符串；长度为 1–512 个可打印 ASCII 字符，否则由该源的 schema 拒绝。该值由服务该 App Server 的部件持有，因此同一进程里两个 Server 各自独立 |
+| `DIM_USER_AGENT` | 承载模型进程的环境变量 | 校验相同，且优先于设置项。App Server 命令行在读取其他启动输入处读取一次，再传给每个它构建的 Server；请求无法承载的值会让该进程启动失败 |
+
+`DIM_USER_AGENT` 优先于设置项，因为它只作用于承载模型的那个进程的一次运行，与环境覆盖在其
+它地方的作用方式相同。共享 daemon 保留它启动时的环境，所以新的值要等 daemon 重启才生效。
+
+两者同样位于 Provider 层，所以库的部分仍在其后。设置行把读取与发布串行化，旧文档不会覆盖
+新文档。没有短格式：请求无法承载的值会被拒绝，不会被裁剪。
 
 ## 3. 管理合同
 

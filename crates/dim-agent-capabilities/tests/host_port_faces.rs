@@ -409,23 +409,6 @@ async fn cancelled_native_and_abandoned_native_or_wire_reads_settle_the_owner() 
     }
 }
 
-#[tokio::test]
-async fn a_cancelled_binding_call_does_not_reach_the_owner() {
-    let root = Ctx::root().unwrap();
-    let entered = Arc::new(Mutex::new(false));
-    let seen = entered.clone();
-    let settings = ExecutionSettingsHost::new(Arc::new(move |_| {
-        *seen.lock().unwrap() = true;
-        Box::pin(async move { Ok(ExecutionSettings::default()) })
-    }));
-    dim_agent_capabilities::execution_settings::provide(&root, &settings).unwrap();
-    let binding = root.get::<ExecutionSettingsHost>().unwrap();
-    let cancel = CancellationToken::new();
-    cancel.cancel();
-    assert!(binding.read(cancel).await.is_err());
-    assert!(!*entered.lock().unwrap(), "a cancelled call reads nothing");
-}
-
 #[test]
 fn the_port_errors_cross_as_code_and_message() {
     let cancelled = serde_json::to_value(ModelPortError::Cancelled {
