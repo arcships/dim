@@ -5161,8 +5161,10 @@
       "parent": "dim_cli",
       "file": "crates/dim-cli/src/report.rs",
       "unexpandedMacros": [
+        "format",
         "json",
-        "matches"
+        "matches",
+        "write"
       ]
     },
     {
@@ -5301,7 +5303,8 @@
         "assert",
         "assert_eq",
         "format",
-        "json"
+        "json",
+        "panic"
       ]
     },
     {
@@ -6525,6 +6528,7 @@
       "unexpandedMacros": [
         "format",
         "matches",
+        "unreachable",
         "vec"
       ]
     },
@@ -7082,6 +7086,7 @@
         "assert",
         "assert_eq",
         "assert_ne",
+        "concat",
         "format",
         "json",
         "matches",
@@ -7775,6 +7780,16 @@
       ]
     },
     {
+      "id": "dim_report::conversation",
+      "crate": "dim_report",
+      "parent": "dim_report",
+      "file": "crates/dim-report/src/conversation.rs",
+      "unexpandedMacros": [
+        "format",
+        "matches"
+      ]
+    },
+    {
       "id": "dim_report::draft",
       "crate": "dim_report",
       "parent": "dim_report",
@@ -7796,6 +7811,19 @@
         "matches",
         "unreachable",
         "vec"
+      ]
+    },
+    {
+      "id": "dim_report::redaction",
+      "crate": "dim_report",
+      "parent": "dim_report",
+      "file": "crates/dim-report/src/redaction.rs",
+      "unexpandedMacros": [
+        "concat",
+        "format",
+        "matches",
+        "write",
+        "writeln"
       ]
     },
     {
@@ -41601,7 +41629,8 @@
       "from": "dim_cli::report",
       "to": "dim_cli",
       "references": [
-        "path crate::Error"
+        "path crate::Error",
+        "path crate::Result"
       ]
     },
     {
@@ -41609,6 +41638,13 @@
       "to": "dim_cli::report::tests",
       "references": [
         "mod tests"
+      ]
+    },
+    {
+      "from": "dim_cli::report",
+      "to": "dim_cli::ui::i18n",
+      "references": [
+        "path crate::ui::i18n::t"
       ]
     },
     {
@@ -43053,6 +43089,8 @@
         "path Action::Prepare",
         "path Captured",
         "path Draft",
+        "path LocalGeneration",
+        "path LocalGeneration::Local",
         "path Reply",
         "path Reply::Failed",
         "path Reply::Plan",
@@ -43065,6 +43103,7 @@
         "use crate::report::Action",
         "use crate::report::Captured",
         "use crate::report::Draft",
+        "use crate::report::LocalGeneration",
         "use crate::report::Reply",
         "use crate::report::Request",
         "use crate::report::Target",
@@ -43106,6 +43145,7 @@
       "to": "dim_cli::model::session",
       "references": [
         "path SwitchKind::Resumed",
+        "path Update::ReportReply",
         "path Update::Reportable",
         "use crate::model::session::SwitchKind"
       ]
@@ -43114,7 +43154,9 @@
       "from": "dim_cli::session_host::report::tests",
       "to": "dim_cli::report",
       "references": [
+        "path Action::Plan",
         "path Action::Prepare",
+        "path Draft",
         "path Request",
         "path Target::Error",
         "path Target::Session",
@@ -47983,22 +48025,34 @@
         "path EvidenceUnavailable::ReadFailed",
         "path EvidenceUnavailable::Unknown",
         "path GeneratedReport",
+        "path MailScope",
+        "path MailScope::InternalRegression",
+        "path MailScope::ReportOnly",
+        "path MailScope::default",
         "path Plan",
         "path Reply",
         "path Reply::Failed",
         "path Reply::Generated",
         "path Reply::Plan",
         "path Reply::Prepared",
+        "path ReportFiles",
+        "path ReportFiles::preview",
         "path Target",
         "path Target::Error",
         "path Target::Session",
+        "path mailto",
         "use crate::report::Action",
         "use crate::report::Draft",
+        "use crate::report::EMAIL",
+        "use crate::report::EMAIL_SUBJECT",
         "use crate::report::EvidenceUnavailable",
         "use crate::report::GeneratedReport",
+        "use crate::report::MailScope",
         "use crate::report::Plan",
         "use crate::report::Reply",
-        "use crate::report::Target"
+        "use crate::report::ReportFiles",
+        "use crate::report::Target",
+        "use crate::report::mailto"
       ]
     },
     {
@@ -48014,7 +48068,6 @@
       "to": "dim_cli::ui::i18n",
       "references": [
         "path t",
-        "path tf",
         "use crate::ui::i18n::t",
         "use crate::ui::i18n::tf"
       ]
@@ -48047,8 +48100,12 @@
       "references": [
         "path KeyCode::BackTab",
         "path KeyCode::Down",
+        "path KeyCode::End",
         "path KeyCode::Enter",
         "path KeyCode::Esc",
+        "path KeyCode::Home",
+        "path KeyCode::PageDown",
+        "path KeyCode::PageUp",
         "path KeyCode::Tab",
         "path KeyCode::Up",
         "path KeyEvent",
@@ -50658,6 +50715,7 @@
         "path crate::report::Captured",
         "path crate::report::Draft",
         "path crate::report::HINT",
+        "path crate::report::Reply",
         "path crate::report::Reply::Prepared",
         "path crate::report::Request",
         "path crate::report::Target::Error",
@@ -51867,6 +51925,7 @@
         "path KeyCode::Esc",
         "path KeyCode::Home",
         "path KeyCode::Left",
+        "path KeyCode::PageDown",
         "path KeyCode::Right",
         "path KeyCode::Tab",
         "path KeyCode::Up",
@@ -55732,6 +55791,13 @@
     },
     {
       "from": "dim_report",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path dim_agent_capabilities::host_platform::HostPlatform"
+      ]
+    },
+    {
+      "from": "dim_report",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path SessionMethods",
@@ -55759,6 +55825,7 @@
       "to": "dim_agent_runtime::config",
       "references": [
         "path SessionLifecycle",
+        "path dim_agent_runtime::SessionIdentity",
         "use dim_agent_runtime::SessionLifecycle"
       ]
     },
@@ -55790,6 +55857,13 @@
     },
     {
       "from": "dim_report",
+      "to": "dim_report::conversation",
+      "references": [
+        "mod conversation"
+      ]
+    },
+    {
+      "from": "dim_report",
       "to": "dim_report::draft",
       "references": [
         "mod draft",
@@ -55806,9 +55880,84 @@
     },
     {
       "from": "dim_report",
+      "to": "dim_report::redaction",
+      "references": [
+        "mod redaction"
+      ]
+    },
+    {
+      "from": "dim_report",
       "to": "dim_report::render",
       "references": [
         "mod render"
+      ]
+    },
+    {
+      "from": "dim_report::conversation",
+      "to": "dim_agent_runtime::timeline_query::properties",
+      "references": [
+        "path QueryEvent",
+        "use dim_agent_runtime::QueryEvent"
+      ]
+    },
+    {
+      "from": "dim_report::conversation",
+      "to": "dim_agent_types::content",
+      "references": [
+        "path ContentBlock::Text",
+        "path ContentMetadata::OpenaiResponses",
+        "path ContentMetadata::XaiResponses",
+        "path MessagePart::Text",
+        "path MessagePart::Thinking",
+        "path MessagePart::ToolUse",
+        "use dim_agent_types::ContentBlock",
+        "use dim_agent_types::ContentMetadata",
+        "use dim_agent_types::MessagePart"
+      ]
+    },
+    {
+      "from": "dim_report::conversation",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path EventKind::InputConsumed",
+        "path EventKind::InputMessage",
+        "path EventKind::ModelContent",
+        "path EventKind::ModelOutputEnd",
+        "path EventKind::ModelStart",
+        "path EventKind::Text",
+        "path EventKind::ToolCompleted",
+        "path EventKind::ToolStart",
+        "use dim_agent_types::EventKind",
+        "use dim_agent_types::FinishReason",
+        "use dim_agent_types::ModelOutputOutcome"
+      ]
+    },
+    {
+      "from": "dim_report::conversation",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path runtime_context",
+        "use dim_agent_types::markup::runtime_context"
+      ]
+    },
+    {
+      "from": "dim_report::conversation",
+      "to": "dim_report::evidence",
+      "references": [
+        "path ConversationExcerpt",
+        "use crate::evidence::ConversationExcerpt"
+      ]
+    },
+    {
+      "from": "dim_report::conversation",
+      "to": "dim_report::redaction",
+      "references": [
+        "path Facts",
+        "path Replacements::new",
+        "path mask_credentials",
+        "use crate::redaction::Facts",
+        "use crate::redaction::Replacements",
+        "use crate::redaction::mask_credentials"
       ]
     },
     {
@@ -55849,6 +55998,7 @@
       "references": [
         "path SessionHold",
         "path SessionLifecycle",
+        "path dim_agent_runtime::SessionIdentity",
         "use dim_agent_runtime::SessionHold",
         "use dim_agent_runtime::SessionLifecycle"
       ]
@@ -55868,7 +56018,6 @@
         "path ErrorReference",
         "path Snapshot",
         "path Snapshot::capture_session",
-        "path crate::evidence::capture_conversation",
         "use crate::evidence::ErrorReference",
         "use crate::evidence::Snapshot"
       ]
@@ -55879,6 +56028,7 @@
       "references": [
         "path InstructionsStatus",
         "path Reviewed",
+        "path render::Rendered",
         "path render::review",
         "use crate::render",
         "use crate::render::InstructionsStatus",
@@ -55969,16 +56119,6 @@
     },
     {
       "from": "dim_report::evidence",
-      "to": "dim_agent_types::content",
-      "references": [
-        "path ContentBlock::Text",
-        "path MessagePart::Text",
-        "use dim_agent_types::ContentBlock",
-        "use dim_agent_types::MessagePart"
-      ]
-    },
-    {
-      "from": "dim_report::evidence",
       "to": "dim_agent_types::events",
       "references": [
         "path AgentEvent",
@@ -55991,12 +56131,8 @@
         "path EventKind::BranchEnded",
         "path EventKind::BranchResume",
         "path EventKind::BranchStart",
-        "path EventKind::InputConsumed",
-        "path EventKind::InputMessage",
-        "path EventKind::ModelContent",
         "path EventKind::ModelOutputEnd",
         "path EventKind::ModelStart",
-        "path EventKind::Text",
         "path EventKind::ToolCompleted",
         "path EventKind::ToolStart",
         "path EventKind::TurnEnd",
@@ -56011,17 +56147,8 @@
         "use dim_agent_types::BranchCreateFailedData",
         "use dim_agent_types::DEFAULT_BRANCH_ID",
         "use dim_agent_types::EventKind",
-        "use dim_agent_types::FinishReason",
         "use dim_agent_types::ModelOutputOutcome",
         "use dim_agent_types::TurnOutcome"
-      ]
-    },
-    {
-      "from": "dim_report::evidence",
-      "to": "dim_agent_types::markup",
-      "references": [
-        "path runtime_context",
-        "use dim_agent_types::markup::runtime_context"
       ]
     },
     {
@@ -56030,6 +56157,21 @@
       "references": [
         "path ModelId",
         "use dim_agent_types::ModelId"
+      ]
+    },
+    {
+      "from": "dim_report::evidence",
+      "to": "dim_report::conversation",
+      "references": [
+        "path crate::conversation::Conversation",
+        "path crate::conversation::select"
+      ]
+    },
+    {
+      "from": "dim_report::evidence",
+      "to": "dim_report::draft",
+      "references": [
+        "path crate::draft::Session"
       ]
     },
     {
@@ -57595,6 +57737,10 @@
       "path": "SignalKind::terminate"
     },
     {
+      "module": "dim_cli::report",
+      "path": "char::from"
+    },
+    {
       "module": "dim_cli::session",
       "path": "char::is_whitespace"
     },
@@ -58177,6 +58323,14 @@
     {
       "module": "dim_ocr::platform",
       "path": "CStr::from_bytes_until_nul"
+    },
+    {
+      "module": "dim_report::redaction",
+      "path": "char::from"
+    },
+    {
+      "module": "dim_report::redaction",
+      "path": "char::from_u32"
     }
   ]
 }

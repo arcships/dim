@@ -1533,6 +1533,8 @@ dependencies = [
  "dim-client",
  "futures-util",
  "jiff",
+ "regex",
+ "regex-syntax",
  "reqwest 0.12.28",
  "rutis",
  "serde",

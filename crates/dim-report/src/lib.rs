@@ -1,7 +1,9 @@
 //! Connection-bound reports for the App Server's product profiles.
 
+mod conversation;
 mod draft;
 mod evidence;
+pub mod redaction;
 mod render;
 
 use dim_agent_capabilities::{methods::SessionMethods, timeline_tree::TreeCommands};
@@ -48,6 +50,8 @@ impl DynPlugin for Report {
 }
 
 struct ReportSession {
+    identity: Key<dim_agent_runtime::SessionIdentity>,
+    platform: Key<dim_agent_capabilities::host_platform::HostPlatform>,
     methods: Key<SessionMethods>,
     lifecycle: Key<SessionLifecycle>,
     tree: Key<TreeCommands>,
@@ -58,6 +62,8 @@ impl ReportSession {
         Ok(Self {
             methods: names.key()?,
             lifecycle: names.key()?,
+            identity: names.key()?,
+            platform: names.key()?,
             tree: names.key()?,
         })
     }
@@ -73,6 +79,8 @@ impl DynPlugin for ReportSession {
             self.methods.erase(),
             self.lifecycle.erase(),
             self.tree.erase(),
+            self.identity.erase(),
+            self.platform.erase(),
         ]
     }
 
@@ -81,6 +89,8 @@ impl DynPlugin for ReportSession {
             let methods = ctx.require_at(&self.methods)?;
             let session = draft::Session {
                 lifecycle: ctx.require_at(&self.lifecycle)?,
+                identity: ctx.require_at(&self.identity)?,
+                home: ctx.require_at(&self.platform)?.home.clone(),
                 tree: ctx.require_at(&self.tree)?,
             };
             draft::register(ctx, &methods, "session.report", Some(session))?;

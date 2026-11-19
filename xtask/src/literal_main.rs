@@ -69,7 +69,7 @@ const HOMES: [(&str, &str); 2] = [
 /// Production uses of `"main"` that are not about lines, each with the file's
 /// path from the repository root, the expression or attribute that must span
 /// the literal on its own line, and why the use is unrelated.
-const UNRELATED: [(&str, &str, &str); 9] = [
+const UNRELATED: [(&str, &str, &str); 11] = [
     (
         "crates/dim-app-server/src/storage/sqlite.rs",
         "is_readonly(\"main\")",
@@ -107,6 +107,16 @@ const UNRELATED: [(&str, &str, &str); 9] = [
     ),
     (
         "web/src/features/chat/TimelineView.vue",
+        "variant?: \"main\" | \"panel\"",
+        "a layout variant's type",
+    ),
+    (
+        "web/src/chat-ui/WebChatTimeline.vue",
+        ":data-variant=\"variant ?? 'main'\"",
+        "a layout variant's default",
+    ),
+    (
+        "web/src/chat-ui/WebChatTimeline.vue",
         "variant?: \"main\" | \"panel\"",
         "a layout variant's type",
     ),
