@@ -82,15 +82,13 @@ jobs:
   verify:
     name: verify (${{ matrix.role }})
     needs: changes
-    if: inputs.parallelism != 'probe' && inputs.sample_runner != inputs.load_runner
+    if: inputs.parallelism != 'probe'
     strategy:
       fail-fast: false
       matrix:
         include:
           - role: sample
             label: ${{ inputs.sample_runner }}
-          - role: load
-            label: ${{ inputs.load_runner }}
     runs-on: [self-hosted, macOS, ARM64, "${{ matrix.label }}"]
     timeout-minutes: 75
     env:
@@ -142,25 +140,6 @@ jobs:
             cargo build --locked -p xtask
           fi
           target/debug/xtask check
-      - name: Synchronize workspace test start
-        shell: bash
-        env:
-          DIM_TRIAL_ROLE: ${{ matrix.role }}
-        run: |
-          set -euo pipefail
-          umask 077
-          rendezvous="/tmp/dim-ci-ab-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          mkdir -p "$rendezvous"
-          touch "$rendezvous/$DIM_TRIAL_ROLE.ready"
-          deadline=$((SECONDS + 2100))
-          until [[ -f "$rendezvous/sample.ready" && -f "$rendezvous/load.ready" ]]; do
-            if (( SECONDS >= deadline )); then
-              echo "Companion verify did not reach the workspace test start"
-              exit 1
-            fi
-            sleep 1
-          done
-          sysctl vm.swapusage
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
         env:
@@ -261,13 +240,3 @@ jobs:
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
-      - name: Release workspace start barrier
-        if: always()
-        shell: bash
-        env:
-          DIM_TRIAL_ROLE: ${{ matrix.role }}
-        run: |
-          rendezvous="/tmp/dim-ci-ab-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          rm -f "$rendezvous/$DIM_TRIAL_ROLE.ready"
-          if [[ -d "$rendezvous" ]]; then rmdir "$rendezvous" 2>/dev/null || true; fi
-          sysctl vm.swapusage
