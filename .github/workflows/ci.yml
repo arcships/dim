@@ -1,24 +1,51 @@
 name: PR check
+run-name: 'macOS verify A/B (${{ inputs.parallelism }})'
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-  pull_request:
+    inputs:
+      parallelism:
+        type: choice
+        required: true
+        options: [probe, '2', '3']
+      sample_runner:
+        type: choice
+        default: dim-verify
+        options: [dim-verify, dim-verify-ab-20261119-5, dim-verify-ab-20261119-6]
+      load_runner:
+        type: choice
+        default: dim-verify-ab-20261119-5
+        options: [dim-verify, dim-verify-ab-20261119-5, dim-verify-ab-20261119-6]
 permissions:
   contents: read
-concurrency:
-  # Main check jobs join their shared groups only after path classification.
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
-  cancel-in-progress: true
 env:
-  # CI only needs pass/fail; skipping debug info shortens compiling and linking.
   CARGO_PROFILE_DEV_DEBUG: "0"
 jobs:
+  probe:
+    if: inputs.parallelism == 'probe'
+    strategy:
+      fail-fast: false
+      matrix:
+        label: [dim-verify, dim-verify-ab-20261119-5, dim-verify-ab-20261119-6]
+    runs-on: [self-hosted, macOS, ARM64, "${{ matrix.label }}"]
+    timeout-minutes: 2
+    steps:
+      - name: Identify physical host and checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          uuid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ {print $4}')
+          test -n "$uuid"
+          printf "Host key: "
+          printf "%s:%s" "$GITHUB_SHA" "$uuid" | shasum -a 256 | cut -c1-16
+          printf "Workspace key: "
+          printf "%s" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-16
+          printf "Runner UID: "
+          id -u
   changes:
     # Pull requests run only the groups their paths need; scripts/ci-changes.mjs holds the rules.
     # Self-hosted runners keep state between jobs, so they run only code from branches of this
     # repository; fork pull requests skip every job and fail ci-ok. See docs/release/README.md.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    if: inputs.parallelism != 'probe'
     runs-on: self-hosted
     timeout-minutes: 5
     outputs:
@@ -51,101 +78,19 @@ jobs:
         env:
           DIM_DOCS_ADR_ERRATUM: ${{ contains(github.event.pull_request.labels.*.name, 'adr-erratum') && '1' || '0' }}
         run: node scripts/adr-check.mjs --base HEAD^1
-  dependencies:
-    needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
-    concurrency:
-      group: ci-main-dependencies-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
-    runs-on: [self-hosted, windows, x64]
-    timeout-minutes: 15
-    env:
-      CARGO_INCREMENTAL: "0"
-      RUSTC_WRAPPER: ""
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - name: Configure Windows C/C++ toolchain
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: amd64
-      - name: Install cargo-deny
-        run: cargo install --jobs 2 --locked cargo-deny --version '=0.20.2'
-      - name: Check dependency advisories and licenses
-        run: cargo deny --locked check advisories licenses
-  windows-cli:
-    needs: changes
-    if: needs.changes.outputs.windows == 'true'
-    concurrency:
-      group: ci-main-windows-cli-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
-    runs-on: [self-hosted, windows, x64]
-    timeout-minutes: 15
-    env:
-      CARGO_INCREMENTAL: "0"
-      RUSTC_WRAPPER: ""
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - name: Configure Windows C/C++ toolchain
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: amd64
-      - name: Verify native Windows CLI boundaries
-        run: cargo test --locked -p dim-cli --lib
-  web:
-    needs: changes
-    if: needs.changes.outputs.web == 'true'
-    concurrency:
-      group: ci-main-web-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
-    runs-on: [self-hosted, windows, x64]
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-          package-manager-cache: false
-      - name: Build and test the Web workspace
-        run: |
-          $declarations = 'web/src/auto-imports.d.ts', 'web/src/components.d.ts'
-          $original = @{}
-          foreach ($file in $declarations) {
-            $original[$file] = (Get-Content -Raw -Encoding UTF8 $file).Replace("`r`n", "`n")
-          }
-          $version = node -p "require('./npm/package.json').version"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:Path = "$env:WINDIR\System32;$env:Path"
-          node scripts/stage-web.mjs staging/release-web $version $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $notices = tar.exe -xOzf "staging/release-web/dimcode-web-$version.tar.gz" dimcode-web/web/THIRD-PARTY-NOTICES.txt
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($package in 'vue', 'vue-router', 'pinia') {
-            $entry = $notices -cmatch "^${package}@"
-            if (-not $entry) { throw "Missing third-party notice for $package" }
-            Write-Output $entry
-          }
-          foreach ($file in $declarations) {
-            if ((Get-Content -Raw -Encoding UTF8 $file).Replace("`r`n", "`n") -cne $original[$file]) {
-              throw "Generated declaration changed: $file"
-            }
-          }
-          npm.cmd test --prefix web
   verify:
+    name: verify (${{ matrix.role }})
     needs: changes
-    if: >-
-      needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
-      needs.changes.outputs.scripts == 'true'
-    concurrency:
-      group: ci-main-verify-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
-    # PR runners must be isolated from release credentials and private networks.
-    runs-on: [self-hosted, macOS, ARM64]
+    if: inputs.parallelism != 'probe' && inputs.sample_runner != inputs.load_runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: sample
+            label: ${{ inputs.sample_runner }}
+          - role: load
+            label: ${{ inputs.load_runner }}
+    runs-on: [self-hosted, macOS, ARM64, "${{ matrix.label }}"]
     timeout-minutes: 75
     env:
       CARGO_BUILD_JOBS: "4"
@@ -153,6 +98,18 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
     steps:
+      - name: Identify physical host and checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          uuid=$(ioreg -rd1 -c IOPlatformExpertDevice | awk -F'"' '/IOPlatformUUID/ {print $4}')
+          test -n "$uuid"
+          printf "Host key: "
+          printf "%s:%s" "$GITHUB_SHA" "$uuid" | shasum -a 256 | cut -c1-16
+          printf "Workspace key: "
+          printf "%s" "$GITHUB_WORKSPACE" | shasum -a 256 | cut -c1-16
+          printf "Runner UID: "
+          id -u
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -181,10 +138,30 @@ jobs:
             cargo build --locked -p xtask
           fi
           target/debug/xtask check
+      - name: Synchronize workspace test start
+        shell: bash
+        env:
+          DIM_TRIAL_ROLE: ${{ matrix.role }}
+        run: |
+          set -euo pipefail
+          umask 077
+          rendezvous="/tmp/dim-ci-ab-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$rendezvous"
+          touch "$rendezvous/$DIM_TRIAL_ROLE.ready"
+          deadline=$((SECONDS + 900))
+          until [[ -f "$rendezvous/sample.ready" && -f "$rendezvous/load.ready" ]]; do
+            if (( SECONDS >= deadline )); then
+              echo "Companion verify did not reach the workspace test start"
+              exit 1
+            fi
+            sleep 1
+          done
+          sysctl vm.swapusage
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
         env:
           DIM_TEST_TIMEOUT_MS: "900000"
+          DIM_TRIAL_WORKSPACE_PROGRAMS: ${{ matrix.role == 'sample' && inputs.parallelism || '2' }}
         run: |
           node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=3
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
@@ -280,70 +257,13 @@ jobs:
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
-  acp-registry:
-    needs: changes
-    if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
-    concurrency:
-      group: ci-main-acp-registry-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 30
-    env:
-      CARGO_INCREMENTAL: "0"
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      RUSTC_WRAPPER: ""
-    steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
-        with:
-          node-version-file: .node-version
-          package-manager-cache: false
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e
-        with:
-          version: "0.13.6"
-          enable-cache: false
-      - uses: actions-rust-lang/setup-rust-toolchain@c8ff772090ab9d00f7f7bd7b388f3c3032282e3b
-        with:
-          cache: false
-          build-warnings: ""
-      - name: Build the account executable
-        env:
-          DIM_OAUTH_CLIENT_ID_CN: ${{ secrets.DIM_OAUTH_CLIENT_ID_CN }}
-          DIM_OAUTH_CLIENT_ID_GLOBAL: ${{ secrets.DIM_OAUTH_CLIENT_ID_GLOBAL }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "$DIM_OAUTH_CLIENT_ID_CN" || -z "$DIM_OAUTH_CLIENT_ID_GLOBAL" ]]; then
-            echo 'ACP Registry acceptance requires both OAuth client ID secrets.' >&2
-            exit 1
-          fi
-          cargo build --locked -p dimcode
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          repository: agentclientprotocol/registry
-          ref: 49f768659a8089f07874f56a0d474312695ad861
-          path: .acp-registry
-          persist-credentials: false
-      - name: Verify upstream Registry authentication and protocol
-        shell: bash
-        run: node scripts/check-acp-registry.mjs target/debug/dimcode .acp-registry "$RUNNER_TEMP/acp-registry-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Release workspace start barrier
         if: always()
-        with:
-          name: acp-registry
-          path: ${{ runner.temp }}/acp-registry-${{ github.run_id }}-${{ github.run_attempt }}/
-          if-no-files-found: ignore
-          retention-days: 1
-  ci-ok:
-    # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
-    needs: [changes, dependencies, windows-cli, web, verify, acp-registry]
-    if: always()
-    runs-on: self-hosted
-    timeout-minutes: 5
-    steps:
-      # A skipped changes job means a fork pull request, which this workflow does not verify.
-      - name: Fail unless every selected job passed
-        if: needs.changes.result != 'success' || contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: exit 1
+        shell: bash
+        env:
+          DIM_TRIAL_ROLE: ${{ matrix.role }}
+        run: |
+          rendezvous="/tmp/dim-ci-ab-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -f "$rendezvous/$DIM_TRIAL_ROLE.ready"
+          if [[ -d "$rendezvous" ]]; then rmdir "$rendezvous" 2>/dev/null || true; fi
+          sysctl vm.swapusage

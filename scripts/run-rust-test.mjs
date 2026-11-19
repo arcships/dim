@@ -7,6 +7,8 @@ import {dirname} from 'node:path';
 const [artifacts,target,...args]=process.argv.slice(2);
 assert(artifacts&&target,'Usage: node scripts/run-rust-test.mjs ARTIFACTS TARGET|--workspace [TEST_ARGUMENTS...]');
 const workspace=target==='--workspace';
+const programCount=workspace?Number(process.env.DIM_TRIAL_WORKSPACE_PROGRAMS??2):1;
+assert(!workspace||programCount===2||programCount===3,'Expected two or three workspace test programs');
 const timeout=Number(process.env.DIM_TEST_TIMEOUT_MS??600_000);
 assert(Number.isSafeInteger(timeout)&&timeout>0,'DIM_TEST_TIMEOUT_MS must be a positive integer');
 const matches=readFileSync(artifacts,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line))
@@ -51,7 +53,7 @@ for(const [signal,code] of [['SIGINT',130],['SIGTERM',143]]){
     for(const child of active) terminate(child);
   });
 }
-await Promise.all(Array.from({length:workspace?2:1},async()=>{
+await Promise.all(Array.from({length:programCount},async()=>{
   while(matches.length&&!stopping){
     const record=matches.shift();
     const started=performance.now();
