@@ -829,6 +829,32 @@ async fn conversation_text_is_opt_in_anchored_and_only_in_the_report_member() {
     assert!(hidden["evidence"].get("conversation").is_none());
     let omitted = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false,"instructions":"omit timeline"})).await.unwrap();
     assert!(omitted["evidence"].get("conversation").is_none());
+    for (label, eol) in [("LF", "\n"), ("CRLF", "\r\n"), ("CR", "\r")] {
+        let message = format!("Example {label}{eol}{eol}# Literal heading");
+        submit(&mut owner, &message).await;
+        let prepared = owner
+            .rpc("session.report.prepare", json!({"sessionId":id}))
+            .await
+            .unwrap();
+        let plan = owner.rpc("session.report.plan", json!({"sessionId":id,"reportId":prepared["reportId"],"generation":{"kind":"local"},"redact":false})).await.unwrap();
+        let generated = owner
+            .rpc(
+                "session.report.generate",
+                json!({"sessionId":id,"reportId":prepared["reportId"],"planId":plan["planId"]}),
+            )
+            .await
+            .unwrap();
+        archive(&generated);
+        let report = generated["files"]["report.md"].as_str().unwrap();
+        for prefix in ["", "Echo: "] {
+            let literal = format!("\n    {prefix}Example {label}\n    \n    # Literal heading\n");
+            assert!(
+                report.contains(&literal),
+                "{label} excerpt lost its literal block"
+            );
+        }
+        assert!(!report.contains('\r'));
+    }
     let long = "合成可见文本".repeat(3000);
     for _ in 0..4 {
         submit(&mut owner, &long).await;

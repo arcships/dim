@@ -338,11 +338,12 @@ fn append_bounded(target: &mut String, text: &str, limit: usize) {
     target.push_str(&text[..end]);
 }
 
-fn append_visible(target: &mut String, text: &str) {
-    for line in text.lines() {
-        if target.len() == 2048 {
-            break;
-        }
+fn append_visible(target: &mut String, mut text: &str) {
+    while !text.is_empty() && target.len() < 2048 {
+        let end = text.find(['\r', '\n']).unwrap_or(text.len());
+        let (line, rest) = text.split_at(end);
+        let rest = rest.strip_prefix('\r').unwrap_or(rest);
+        text = rest.strip_prefix('\n').unwrap_or(rest);
         let mut bounded = String::new();
         append_bounded(&mut bounded, line, 2048);
         if eligible_line(&bounded) {
