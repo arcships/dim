@@ -670,6 +670,10 @@ async fn upstream_image_refusals_remain_tool_errors_and_later_batched_calls_send
             let parts = request["messages"][1]["content"].as_array().unwrap();
             assert_eq!(parts.len(), 2);
             assert_eq!(parts[0]["type"], "image_url");
+            assert_eq!(
+                parts[0]["image_url"]["url"],
+                format!("data:image/png;base64,{PNG}")
+            );
             questions.push(parts[1]["text"].as_str().unwrap());
         }
         questions.sort_unstable();

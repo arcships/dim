@@ -507,6 +507,162 @@ async fn every_summary_request_fits_the_window_for_cjk_history() {
     agent.close().await.unwrap();
 }
 
+struct LegacyScreenshot(String);
+
+impl ToolDriver for LegacyScreenshot {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            risk: Some("session".into()),
+            ..dim_agent_capabilities::tool_registry::definition(
+                "cdp_send",
+                "Return a legacy screenshot receipt.",
+                serde_json::json!({"type":"object","properties":{"method":{"type":"string"}},"required":["method"]}),
+            )
+        }]
+    }
+
+    fn execute(
+        &self,
+        call: ToolCall,
+        _: ToolExecutionContext,
+        _: CancellationToken,
+    ) -> HostFuture<'_, ToolResult> {
+        Box::pin(async move {
+            assert_eq!(call.name, "cdp_send");
+            assert_eq!(call.input["method"], "Page.captureScreenshot");
+            Ok(ToolResult::text(&self.0))
+        })
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compaction_chunks_images_as_markers_and_legacy_screenshots_as_text() {
+    use base64::Engine as _;
+
+    let gif = "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    let bytes: Vec<_> = (0u8..=255).cycle().take(3_000).collect();
+    let data = base64::engine::general_purpose::STANDARD.encode(bytes);
+    let receipt = serde_json::json!({"data": data}).to_string();
+    let recorder = Arc::new(Recorder {
+        calls: std::sync::Mutex::new(VecDeque::from([
+            Vec::new(),
+            vec![(
+                "cdp_send".into(),
+                serde_json::json!({"method":"Page.captureScreenshot"}),
+            )],
+        ])),
+        ..Default::default()
+    });
+    let (agent, session) = product_session_on(
+        WINDOW,
+        Arc::new(LegacyScreenshot(receipt.clone())),
+        recorder.clone(),
+        OUTPUT,
+        ProductSummaryStrategyConfig {
+            system_prompt: Some(
+                format!(
+                    "You summarize a coding session. {}",
+                    "Preserve the facts from the transcript. ".repeat(250),
+                )
+                .into(),
+            ),
+            ..Default::default()
+        },
+        SessionConfig {
+            tools: Some(vec!["cdp_send".into()]),
+            permission_policy: PermissionPolicy {
+                preset: PermissionPreset::FullAccess,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        None,
+        Arc::new(Local),
+        None,
+        None,
+    )
+    .await;
+    session
+        .input(
+            InputMessageData {
+                user: Some(UserInput {
+                    content: vec![ContentBlock::Image {
+                        source: ImageSource {
+                            file_id: None,
+                            source_type: ImageSourceType::Base64,
+                            media_type: "image/gif".into(),
+                            data: Some(gif.into()),
+                            url: None,
+                        },
+                    }],
+                }),
+                ..Default::default()
+            },
+            "main",
+        )
+        .await
+        .unwrap();
+    session.idle("main").await.unwrap();
+    for text in ["Capture a screenshot.".to_owned(), cjk(1_800), cjk(1_800)] {
+        session
+            .submit(text, InputMode::Queue, "main")
+            .await
+            .unwrap();
+        session.idle("main").await.unwrap();
+    }
+    let (_, events) = compact_now(&session).await;
+    assert!(
+        events.iter().any(|event| matches!(&event.kind,
+            EventKind::ToolResult(data) if data.results.iter().any(|item|
+                item.call_id == "call-0"
+                    && matches!(&item.result.content, ToolContent::Text(text) if text == &receipt))
+        )),
+        "the legacy receipt is stored as tool text"
+    );
+    assert!(
+        events.iter().any(|event| matches!(&event.kind,
+            EventKind::ContextCompaction(ContextCompactionData {
+                outcome: ContextCompactionResult::Completed { diagnostics, .. }, ..
+            }) if diagnostics.strategy.details["chunkCount"].as_u64().is_some_and(|count| count > 1)
+        )),
+        "one completed compaction folds multiple chunks"
+    );
+
+    let requests = recorder.requests.lock().unwrap().clone();
+    let mut saw_image_marker = false;
+    let mut saw_legacy_receipt = false;
+    let rendered_receipt = format!("Tool result: {receipt}");
+    for request in requests {
+        let model = ProductContextModel
+            .resolve(request.clone(), CancellationToken::new())
+            .await
+            .unwrap();
+        let tokens = model.count_tokens(&request);
+        assert!(
+            tokens <= (WINDOW - OUTPUT) as f64,
+            "summary request uses {tokens} input tokens"
+        );
+        let [message] = request.messages.as_slice() else {
+            panic!("expected one transcript message");
+        };
+        let MessageContent::Text(text) = &message.content else {
+            panic!("expected a text-only transcript");
+        };
+        assert!(
+            !text.contains(gif),
+            "the native image never enters the transcript"
+        );
+        saw_image_marker |= text.contains("User: [image]");
+        saw_legacy_receipt |= text.contains(&rendered_receipt);
+    }
+    assert!(saw_image_marker, "the native image renders as a marker");
+    assert!(
+        saw_legacy_receipt,
+        "the legacy receipt retains its base64 text"
+    );
+    agent.close().await.unwrap();
+}
+
 /// A prompt much longer than `SYSTEM` and a length sentence, configured on
 /// the factory, reach every summarizer request with the target the rule
 /// derives, and the request budget counts both (ContextCompaction §13.3,
