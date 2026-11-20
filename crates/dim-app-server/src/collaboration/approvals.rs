@@ -1,7 +1,6 @@
 use super::*;
 use dim_agent_capabilities::{
     approval::ApprovalRespondError,
-    input_queue::InputQueue,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_broadcast::{SessionNotice, notify},
 };
@@ -415,14 +414,15 @@ impl CollaborationSession {
         );
         self.deny_member(&route.descriptor).await;
         if let Ok(branch) = self.tree.get(branch_id)
-            && let Ok(queue) = branch.service::<InputQueue>()
-            && let Err(error) = queue
-                .withdraw(InputWithdrawData {
+            && let Ok(withdraw) = self.tree.withdraw(
+                branch_id,
+                InputWithdrawData {
                     input_id: route.input_id.clone(),
                     reason: Some("Member approval ended".into()),
                     steer: None,
-                })
-                .await
+                },
+            )
+            && let Err(error) = withdraw.await
             && !branch.is_closing()
         {
             dispatcher.fail(error);
@@ -485,17 +485,16 @@ impl CollaborationSession {
                 let branch_id = branch_id.to_owned();
                 let input_id = event.id.clone();
                 tasks.spawn(async move {
-                    let _ = owner
-                        .tree
-                        .withdraw(
-                            &branch_id,
-                            InputWithdrawData {
-                                input_id,
-                                reason: Some("Member approval is not active".into()),
-                                steer: None,
-                            },
-                        )
-                        .await;
+                    if let Ok(withdraw) = owner.tree.withdraw(
+                        &branch_id,
+                        InputWithdrawData {
+                            input_id,
+                            reason: Some("Member approval is not active".into()),
+                            steer: None,
+                        },
+                    ) {
+                        let _ = withdraw.await;
+                    }
                     owner.deny_member(&source.descriptor).await;
                 });
             }

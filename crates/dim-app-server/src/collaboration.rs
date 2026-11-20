@@ -2451,12 +2451,15 @@ impl CollaborationSession {
             InputFate::Pending => {}
         }
         match session
-            .service::<dim_agent_capabilities::input_queue::InputQueue>(ROOT_BRANCH_ID)?
-            .withdraw(InputWithdrawData {
-                input_id: input.to_owned(),
-                reason: Some(reason.into()),
-                steer: None,
-            })
+            .session_service::<TimelineTree>()?
+            .withdraw(
+                ROOT_BRANCH_ID,
+                InputWithdrawData {
+                    input_id: input.to_owned(),
+                    reason: Some(reason.into()),
+                    steer: None,
+                },
+            )?
             .await?
         {
             // (W): no turn will run for the input; the settle names it.
@@ -4022,15 +4025,17 @@ async fn restore(
                 return;
             }
             let result = async {
-                let branch = service.tree.get(&branch_id)?;
-                let queue = branch.service::<dim_agent_capabilities::input_queue::InputQueue>()?;
                 for input_id in stale_inputs {
-                    queue
-                        .withdraw(InputWithdrawData {
-                            input_id,
-                            reason: Some(RELOADING.into()),
-                            steer: None,
-                        })
+                    service
+                        .tree
+                        .withdraw(
+                            &branch_id,
+                            InputWithdrawData {
+                                input_id,
+                                reason: Some(RELOADING.into()),
+                                steer: None,
+                            },
+                        )?
                         .await?;
                 }
                 Ok::<_, AgentError>(())

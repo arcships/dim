@@ -649,16 +649,16 @@ impl TimelineTree {
         Ok(async move { approval.decide(request_id, decision).await })
     }
 
-    pub async fn withdraw(
+    pub fn withdraw(
         &self,
         branch_id: &str,
         command: InputWithdrawData,
-    ) -> std::result::Result<crate::input_queue::Withdrawal, crate::methods::RpcError> {
-        self.get(branch_id)?
-            .service::<crate::input_queue::InputQueue>()?
-            .withdraw(command)
-            .await
-            .map_err(|error| crate::methods::RpcError::service(error.variant(), error.to_string()))
+    ) -> Result<impl Future<Output = Result<crate::input_queue::Withdrawal>> + Send + 'static + use<>>
+    {
+        let queue = self
+            .get(branch_id)?
+            .service::<crate::input_queue::InputQueue>()?;
+        Ok(async move { queue.withdraw(command).await })
     }
 
     pub(crate) async fn call_branch(
@@ -703,7 +703,9 @@ impl TimelineTree {
                 Ok(serde_json::Value::Null)
             }
             BranchOperation::Withdraw { command } => {
-                crate::methods::reply(self.withdraw(branch_id, command).await?)
+                crate::methods::reply(self.withdraw(branch_id, command)?.await.map_err(
+                    |error| crate::methods::RpcError::service(error.variant(), error.to_string()),
+                )?)
             }
             BranchOperation::ApprovalPending => {
                 crate::methods::reply(self.pending_approvals(branch_id)?)
