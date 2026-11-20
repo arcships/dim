@@ -9,6 +9,7 @@ import {
   type Component,
 } from 'vue'
 import MarkdownRender from 'markstream-vue'
+import { useChatUiCopy } from './clipboard'
 import TimelineDetailsRegion from './TimelineDetailsRegion.vue'
 import TimelineSearchDomText from './TimelineSearchDomText.vue'
 import TimelineSearchHighlightedText from './TimelineSearchHighlightedText.vue'
@@ -617,6 +618,7 @@ function appendDebugDetailLine(
   lines.push({ key, label, value })
 }
 
+const copy = useChatUiCopy()
 const turnTerminalDebugCopied = ref(false)
 
 async function copyTurnTerminalDebugDetails(): Promise<void> {
@@ -627,7 +629,7 @@ async function copyTurnTerminalDebugDetails(): Promise<void> {
     ...turnTerminalDebugLines.value.map(line => `${line.label}: ${line.value}`),
   ].join('\n')
   try {
-    await navigator.clipboard.writeText(text)
+    await copy(text)
     turnTerminalDebugCopied.value = true
     props.onCopySuccess?.()
     setTimeout(() => {
@@ -707,7 +709,7 @@ function statusBlockText(block: ChatUiAssistantMessageBlock): string {
 }
 
 async function copyText(content: string) {
-  await navigator.clipboard.writeText(content)
+  await copy(content)
   props.onCopySuccess?.()
 }
 

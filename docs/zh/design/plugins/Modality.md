@@ -40,7 +40,7 @@ flowchart LR
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `Modality` | 进程（控制节点） | Provider 的模型选择（`ModelSelectionHost`）与非对话连接解析；`pluginFiles`（扩展：UTF-8 与二进制）；Settings 业务来源 `modality`；按提供方适配器副本、并以家族名副本兜底的按调用读取（[#40](https://github.com/arcships/dim/issues/40) 已决定，A.2）；控制节点的 HostPlatform（OCR）；诊断 | `modalityTasks` 与 `modalityTargets` 进程服务；把 `modality`（`modality.*`）注册到 `managementMethods` |
+| `Modality` | 进程（控制节点） | Provider 的模型选择（`ModelSelectionHost`）与非对话连接解析；`pluginFiles`（UTF-8 与二进制），已打开的读取器使用 `fsHost.readAt/closeRead`；Settings 业务来源 `modality`；按提供方适配器副本、并以家族名副本兜底的按调用读取（[#40](https://github.com/arcships/dim/issues/40) 已决定，A.2）；控制节点的 HostPlatform（OCR）；诊断 | `modalityTasks` 与 `modalityTargets` 进程服务；把 `modality`（`modality.*`）注册到 `managementMethods` |
 | 适配器插件 | 进程 | 各自的提供方依赖 | `modalityAdapter` 提供方专属副本（以该提供方的 id 为 key）；内置适配器只提供服务没有专属副本的提供方的家族名副本（A.2） |
 
 **依赖的契约：**[方法](../contracts/session-boundary.md)契约（注册到 `managementMethods` 的命名空间、每次调用的进度接收器、绑定连接的通知）；按提供方适配器副本、并以家族名副本兜底的按调用读取（[#40](https://github.com/arcships/dim/issues/40) 已决定，§1 与 A.2）；Provider 的模型选择（`ResolveModelSelection::resolve`，拒绝不可选的显式模型；[AuxiliaryModel](../appserver/auxiliary-model.md)）、用于选项列表的可选模型读取（§9.2），以及每个适配器操作与实时会话所需的非对话连接解析（[overview 附录 B.2](../overview.md#b2-app-server-进程插件)，§9.3）；`pluginFiles`（扩展），含二进制原子替换与格式版本（[App Server README](../../../../crates/dim-app-server/README.md#trusted-plugin-storage)）；带隔离的 HostPlatform spawn（[HostPlatform](../../../architecture/rust-agent/plugins/HostPlatform.md)，隔离补充见 [overview 附录 B.1](../overview.md#b1-session-与分支-capability)）。
