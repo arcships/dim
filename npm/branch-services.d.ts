@@ -12,12 +12,12 @@ export type BranchSource =
   | /** A host operation: a client's own entry, or a plugin's id. */ { kind: "host"; operation_id: string }
   | /** A line a client opened through `session.branch_create`, whose opener is the user. It is a conversation line, so the core tells it from a plugin's without reading the operation's id. */ { kind: "user"; operation_id: string }
 
-export interface ApprovalCallData {
+export type ApprovalCallData = {
   name: string
   input: import('./plugin.js').BridgeJsonObject
 }
 
-export interface ApprovalRequestData {
+export type ApprovalRequestData = {
   approval_id: string
   source: BranchSource
   call: ApprovalCallData
@@ -42,7 +42,7 @@ export interface Approval {
 }
 
 /** The connections attached to one Session now. */
-export interface SessionPresenceRequest {
+export type SessionPresenceRequest = {
   sessionId: string
 }
 
@@ -53,14 +53,14 @@ export interface SessionPresenceRequest {
 export type ClientChannel = "tui" | "cli" | "web" | "acp" | "remote" | "desktop" | "unknown"
 
 /** One attached connection. */
-export interface ClientPresence {
+export type ClientPresence = {
   channel: ClientChannel
   /** The client's self-declared `hello.clientName`; never an identity. */
   label?: string | null
 }
 
 /** The `presences` reply; an unknown Session is empty. */
-export interface SessionPresencesReply {
+export type SessionPresencesReply = {
   presences: ClientPresence[]
 }
 
@@ -81,7 +81,7 @@ export interface SessionClientsHost {
  * paths are UTF-8 strings, as every path that crosses is ([service faces
  * §1](../../../docs/design/service-faces.md#1-规则)).
  */
-export interface WorktreeAssociation {
+export type WorktreeAssociation = {
   sessionId: string
   repository: string
   root: string
@@ -106,7 +106,7 @@ export interface WorktreeAssociations {
 }
 
 /** The `variables` reply: the names only, never a credential value. */
-export interface CredentialVariablesReply {
+export type CredentialVariablesReply = {
   variables: string[]
 }
 
@@ -121,7 +121,7 @@ export interface CredentialVariablesHost {
   variables(): Promise<CredentialVariablesReply>
 }
 
-export interface ToolExecutionContext {
+export type ToolExecutionContext = {
   turnId: string
   requestId: string
   branchId: string
@@ -144,7 +144,7 @@ export interface ToolHost {
 
 export type ImageSourceType = "base64" | "url" | "file"
 
-export interface ImageSource {
+export type ImageSource = {
   fileId?: string | null
   type: ImageSourceType
   mediaType: string
@@ -154,7 +154,7 @@ export interface ImageSource {
 
 export type ContentBlock = { type: "text"; text: string } | { type: "image"; source: ImageSource }
 
-export interface UserInput {
+export type UserInput = {
   content: ContentBlock[]
 }
 
@@ -170,12 +170,12 @@ export type InputMode = "queue" | "steer" | "append"
  * The handover one input is addressed to: only the continuation of that
  * handover consumes it, and InputQueue deletes it otherwise.
  */
-export interface InputHandover {
+export type InputHandover = {
   turn_id: string
   request_id: string
 }
 
-export interface InputMessageData {
+export type InputMessageData = {
   submission_id?: string | null
   user?: UserInput | null
   blocks?: InputBlock[]
@@ -184,7 +184,7 @@ export interface InputMessageData {
 }
 
 /** The identity of one committed input. */
-export interface InputRef {
+export type InputRef = {
   inputId: string
   sequence: number | bigint
 }
@@ -193,7 +193,7 @@ export interface InputRef {
  * A command to withdraw an input InputQueue still holds unapplied. It is
  * never a fact about the input by itself: only `input/deleted` is.
  */
-export interface InputWithdrawData {
+export type InputWithdrawData = {
   input_id: string
   /** Text for clients to show with the deleted input; no decision reads it. */
   reason?: string | null
@@ -237,14 +237,14 @@ export interface InputQueue {
  * `progress` belong to an actual registration, not to the question, so they do
  * not cross.
  */
-export interface ReservedMethod {
+export type ReservedMethod = {
   name: string
   mutating: boolean
   notifications?: string[]
 }
 
 /** A namespace and the declarations it would register. */
-export interface ReservedMethodsRequest {
+export type ReservedMethodsRequest = {
   namespace: string
   declarations?: ReservedMethod[]
 }
@@ -286,12 +286,12 @@ export type PromptScope =
   | { kind: "turn"; timeline: string; id: string }
   | { kind: "task"; timeline: string; id: string }
 
-export interface PromptSourceTarget {
+export type PromptSourceTarget = {
   source: string
   scope: PromptScope
 }
 
-export interface ModelId {
+export type ModelId = {
   providerId: string
   modelId: string
 }
@@ -302,7 +302,7 @@ export interface ModelId {
  * a property of the catalog, which carries [`CatalogCapabilities`] and
  * converts through [`CatalogCapabilities::declared`].
  */
-export interface ModelCapabilities {
+export type ModelCapabilities = {
   modalities: string[]
   toolCalling: boolean
   streaming: boolean
@@ -315,7 +315,7 @@ export interface ModelCapabilities {
   providerState?: import('./plugin.js').BridgeJsonObject | null
 }
 
-export interface ReasoningBudget {
+export type ReasoningBudget = {
   min?: number | null
   max?: number | null
   default?: number | null
@@ -328,7 +328,7 @@ export type ReasoningOff =
   | { kind: "enable_thinking"; value: boolean }
   | { kind: "chat_template_kwargs"; keys: string[] }
 
-export interface ModelReasoning {
+export type ModelReasoning = {
   supported: boolean
   defaultEnabled?: boolean | null
   mode?: string | null
@@ -347,13 +347,13 @@ export interface ModelReasoning {
   off?: ReasoningOff | null
 }
 
-export interface ModelServiceTier {
+export type ModelServiceTier = {
   supported: boolean
   default?: string | null
   options?: string[]
 }
 
-export interface ModelCapabilitySnapshot {
+export type ModelCapabilitySnapshot = {
   target: ModelId
   capabilities: ModelCapabilities
   reasoning?: ModelReasoning | null
@@ -376,7 +376,7 @@ export type StartupAuth = "anonymous" | "apiKey" | "bearer"
  * Non-secret connection declaration. Credentials are rebound in Provider
  * memory; this identity remains valid across Session unload and restore.
  */
-export interface StartupConnectionSource {
+export type StartupConnectionSource = {
   id: string
   apiFormat: ModelProtocol
   baseUrl: string
@@ -388,7 +388,7 @@ export interface StartupConnectionSource {
  * Adopted startup policy, copied with the model at a branch cut and into
  * newly created native members and summary requests. Contains no secrets.
  */
-export interface ModelStartup {
+export type ModelStartup = {
   connection?: StartupConnectionSource | null
   autoCompactWindow?: number | bigint | null
 }
@@ -412,7 +412,7 @@ export type RequestMetadata = {
  * The model-owned part of configuration. Tool declarations and system content
  * are adopted by their own capabilities, not supplied by a provider.
  */
-export interface ModelSelection {
+export type ModelSelection = {
   providerId: string
   modelId: string
   capabilitySnapshot?: ModelCapabilitySnapshot | null
@@ -420,7 +420,7 @@ export interface ModelSelection {
   metadata?: RequestMetadata | null
 }
 
-export interface ConfigureUpdate {
+export type ConfigureUpdate = {
   sources: PromptSourceTarget[]
   model?: ModelSelection | null
 }
@@ -447,7 +447,7 @@ export type ReplyLanguage = "en" | "zh-CN" | "zh-Hant" | "ja" | "ko" | "id" | "d
  * The `get` reply: the Session's reply language when the operator selected
  * one, `null` otherwise.
  */
-export interface SessionLanguageReply {
+export type SessionLanguageReply = {
   language?: ReplyLanguage | null
 }
 
@@ -468,7 +468,7 @@ export interface SessionLanguage {
 }
 
 /** The `get` reply: the factory instructions text, when the assembly set one. */
-export interface SkillsConfigReply {
+export type SkillsConfigReply = {
   instructions?: string | null
 }
 
@@ -484,7 +484,7 @@ export interface SkillsConfig {
   get(): Promise<SkillsConfigReply>
 }
 
-export interface TimelineInfo {
+export type TimelineInfo = {
   id: string
   parent?: string | null
   branch_point?: number | bigint | null
@@ -536,12 +536,12 @@ export type TimelineQueryDirection =
   | /** Increasing key values; position order runs from root to branch. */ "ascending"
   | /** Decreasing key values. */ "descending"
 
-export interface QueryOrder {
+export type QueryOrder = {
   key: QueryOrderKey
   direction: TimelineQueryDirection
 }
 
-export interface QuerySpec {
+export type QuerySpec = {
   filter?: QueryFilter | null
   select: QuerySelect
   group_by?: string[]
@@ -556,18 +556,18 @@ export type QueryValue =
   | { kind: "elements"; values: QueryValue[] }
 
 /** Continuation data bound to the query and logical scope, without server-side state. */
-export interface QueryCursor {
+export type QueryCursor = {
   binding: string
   keys: QueryValue[]
 }
 
-export interface QueryPage {
+export type QueryPage = {
   limit: number | bigint
   after?: QueryCursor | null
 }
 
 /** A property read at a fixed branch boundary (ADR 022). */
-export interface TimelineQuery {
+export type TimelineQuery = {
   scope: TimelineQueryScope
   from?: { branch_id: string; sequence: number | bigint } | null
   through?: number | bigint | null
@@ -576,12 +576,12 @@ export interface TimelineQuery {
   page?: QueryPage | null
 }
 
-export interface QueryRow {
+export type QueryRow = {
   group: QueryValue[]
   values: QueryValue[]
 }
 
-export interface QueryEvent {
+export type QueryEvent = {
   group: QueryValue[]
   position: { branch_id: string; sequence: number | bigint }
   event: import('./plugin.js').BranchEvent
@@ -593,13 +593,13 @@ export type QueryOutput =
   | { kind: "count"; count: number | bigint }
   | { kind: "exists"; exists: boolean }
 
-export interface TimelineQueryReply {
+export type TimelineQueryReply = {
   through: number | bigint
   result: QueryOutput
   next?: QueryCursor | null
 }
 
-export interface BranchOptions {
+export type BranchOptions = {
   prompt: string
   source: BranchSource
 }
@@ -720,7 +720,7 @@ export type TaskError =
  * One page of a task's registered output file, as
  * `session.exec.output.page` answers it.
  */
-export interface OutputPage {
+export type OutputPage = {
   /** The page's text, sanitized like the tail preview. */
   text: string
   /**
@@ -750,7 +750,7 @@ export type OutputPageError =
 
 export type ExecStatus = "completed" | "failed" | "cancelled"
 
-export interface ExecEndedData {
+export type ExecEndedData = {
   task_id: string
   status: ExecStatus
   result: import('./plugin.js').ToolResult
@@ -793,7 +793,7 @@ export interface BackgroundExec {
   stop(taskId: string): Promise<ExecEndedData>
 }
 
-export interface AgentConfig2 {
+export type AgentConfig2 = {
   name: string
   systemPrompt: string
   model: ModelId
@@ -978,7 +978,7 @@ export interface PartRegistry {
 }
 
 /** A branch of a Session. */
-export interface SessionRef {
+export type SessionRef = {
   sessionId: string
   branchId: string
 }
@@ -987,7 +987,7 @@ export interface SessionRef {
  * The dispatched policy; `version` is the local sequence of the last
  * `permission/changed` of this branch, 0 when there is none.
  */
-export interface PermissionState {
+export type PermissionState = {
   version: number | bigint
   policy: import('./plugin.js').PermissionPolicy
 }
@@ -1005,7 +1005,7 @@ export type SessionsError =
   | { code: "publication_unknown"; message: string }
   | { code: "failed"; message: string }
 
-export interface Empty {
+export type Empty = {
 }
 
 /** Read-only policy access through the stable Agents directory. */
@@ -1026,7 +1026,7 @@ export interface SessionPermissions {
  * The `get` reply: each description text the assembly configured, or `null`
  * for the built-in one.
  */
-export interface CollaborationConfigReply {
+export type CollaborationConfigReply = {
   leaderDescription?: string | null
   memberDescription?: string | null
 }
@@ -1041,14 +1041,14 @@ export interface CollaborationConfig {
 }
 
 /** One member relation as `collaborationDirectory.relations` answers it. */
-export interface CollaborationRelation {
+export type CollaborationRelation = {
   memberSessionId: string
   leaderSessionId: string
   memberAgentId: string
 }
 
 /** The `relations` reply: every member relation this process holds. */
-export interface CollaborationRelationsReply {
+export type CollaborationRelationsReply = {
   relations: CollaborationRelation[]
 }
 
@@ -1089,7 +1089,7 @@ export type McpSourceState =
   | /** The transport is gone but the last tools stay published and callable. The reason is kept until a connection succeeds. */ { state: "disconnected"; message: string }
   | /** The server needs the user to sign in; clears by itself once the server's credential changes. */ { state: "authRequired"; expired: boolean }
 
-export interface McpSessionState {
+export type McpSessionState = {
   servers: Record<string, McpSourceState>
   catalogError?: string | null
   closed: boolean
@@ -1121,7 +1121,7 @@ export type JsonSchema = {
  * The mount read's reply (MCP Apps §4.1). `text` and `blob` are exclusive;
  * `app` is the document's own `_meta.ui`, which the host applies.
  */
-export interface McpWidgetResult {
+export type McpWidgetResult = {
   server: string
   name: string
   description?: string | null
@@ -1139,7 +1139,7 @@ export type ToolContent = string | ContentBlock[]
  * A view's tool result (MCP Apps §4.2), `_meta` included. It is the reply to
  * the client that asked; the Timeline's `ToolResult` is never built from it.
  */
-export interface McpAppCallResult {
+export type McpAppCallResult = {
   content: ToolContent
   structuredContent?: import('./plugin.js').BridgeJsonObject | null
   isError?: boolean | null
@@ -1181,7 +1181,7 @@ export interface McpSession {
 
 export type WorkflowRoot = { project: string } | { package: string }
 
-export interface WorkflowReadRequest {
+export type WorkflowReadRequest = {
   root: WorkflowRoot
   path: string
 }
@@ -1197,7 +1197,7 @@ export type WorkflowFilesError =
   | { code: "not_found"; message: string }
   | { code: "invalid_data"; message: string }
 
-export interface WorkflowDirectoryRequest {
+export type WorkflowDirectoryRequest = {
   root: WorkflowRoot
 }
 
@@ -1207,12 +1207,12 @@ export type EntryKind =
   | "directory"
   | /** A symbolic link, reparse point or special file. Storage operations never follow it. */ "other"
 
-export interface WorkflowFileEntry {
+export type WorkflowFileEntry = {
   name: string
   kind: EntryKind
 }
 
-export interface WorkflowReplaceRequest {
+export type WorkflowReplaceRequest = {
   root: WorkflowRoot
   path: string
   bytes: Uint8Array
@@ -1246,7 +1246,7 @@ export interface WorkflowFiles {
  * The `read` reply: the addresses as UTF-8 text, as every path that crosses
  * is ([service faces §1](../../../docs/design/service-faces.md#1-规则)).
  */
-export interface BoundAddresses {
+export type BoundAddresses = {
   unixPath?: string | null
   pipeName?: string | null
   websocketAddress?: string | null
@@ -1264,18 +1264,18 @@ export interface ListenAddresses {
   read(): Promise<BoundAddresses>
 }
 
-export interface PublishFile {
+export type PublishFile = {
   /** Absolute host path inside an already authorized FileStorage root. */
   path: string
   mediaType: string
 }
 
-export interface ResourceRef {
+export type ResourceRef = {
   sessionId: string
   id: string
 }
 
-export interface ResourceError {
+export type ResourceError = {
   code: string
   message: string
 }
