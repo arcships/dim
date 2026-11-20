@@ -97,7 +97,7 @@ commit returns the original conflict on a stale snapshot.
 **Record reads.** `readRecord({providerId,projection}) → PersistedProviderRecord | null`.
 Use the existing persisted managed/static variants and the five SQLite model projections:
 `header`, `all`, `mutable`, `one{modelId}`, `selected{modelIds}`. Header and target reads
-retain their original query bounds. A version-only read uses the existing header version lookup.
+retain their original query bounds. The `version` projection returns only the stored header version (`number | null`).
 
 **Conditional edits.** `commitEdit({providerId,edit})` selects one transaction by the edit tag.
 Each variant carries its own precondition; callers cannot choose a weaker one.

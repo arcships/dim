@@ -30,7 +30,7 @@ pub(super) enum ProviderOperation {
     #[serde(rename_all = "camelCase")]
     ReadRecord {
         provider_id: String,
-        projection: crate::provider::ProviderRecordProjection,
+        projection: RecordProjection,
     },
     #[serde(rename_all = "camelCase")]
     AdoptProvider {
@@ -43,6 +43,14 @@ pub(super) enum ProviderOperation {
         revision: String,
         base_facts: Vec<u8>,
     },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub(super) enum RecordProjection {
+    Version,
+    #[serde(untagged)]
+    Models(crate::provider::ProviderRecordProjection),
 }
 
 #[derive(Deserialize)]
@@ -414,7 +422,15 @@ impl ProviderOperation {
             }
             Self::ReadRecord {
                 provider_id,
-                projection,
+                projection: RecordProjection::Version,
+            } => serde_json::json!(
+                db.record_version(provider_id)
+                    .await
+                    .map_err(storage_failure)?
+            ),
+            Self::ReadRecord {
+                provider_id,
+                projection: RecordProjection::Models(projection),
             } => serde_json::json!(
                 db.read_record(provider_id, projection)
                     .await

@@ -654,6 +654,7 @@ export type ProviderPageAccounts = {
 };
 export type LegacyProviderRow = { id: string; version: number; digest: string; fields: JsonObject };
 export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+  readRecord(request: { providerId: string; projection: { kind: 'version' } }): Promise<number | null>;
   readRecord(request: { providerId: string; projection: ProviderRecordProjection }): Promise<PersistedProviderRecord | null>;
   findCandidates(request: { kind: 'providers'; modelId?: string }): Promise<string[]>;
   findCandidates(request: { kind: 'models'; providers: string[] }): Promise<StoredModelId[]>;

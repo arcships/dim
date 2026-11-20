@@ -21,6 +21,8 @@ export default definePlugin({
           const { providerId } = params
           const header = await sqlite.readRecord({ providerId, projection: { kind: 'header' } })
           assert.ok(header && header.kind !== 'managed')
+          assert.equal(await sqlite.readRecord({ providerId, projection: { kind: 'version' } }), header.version)
+          assert.equal(await sqlite.readRecord({ providerId: 'missing-fixture', projection: { kind: 'version' } }), null)
           assert.equal(header.credential, 'fixture-inline')
           assert.deepEqual(header.models, [])
           const full = await sqlite.readRecord({ providerId, projection: { kind: 'all' } })

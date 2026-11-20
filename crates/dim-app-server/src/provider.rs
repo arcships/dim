@@ -325,6 +325,16 @@ impl PersistedProviderRecord {
 pub(crate) use persistence::{Models as ProviderRecordProjection, OrderedModel};
 
 impl SqliteStorage {
+    pub(crate) async fn record_version(
+        self: &Arc<Self>,
+        provider_id: String,
+    ) -> dim_agent_runtime::Result<Option<u32>> {
+        self.run_read(move |connection| {
+            Ok(persistence::header(connection, &provider_id)?.map(|(version, _)| version))
+        })
+        .await
+    }
+
     pub(crate) async fn read_record(
         self: &Arc<Self>,
         provider_id: String,
@@ -2326,13 +2336,7 @@ impl ProviderService {
         let id = provider_id.clone();
         let expected_version = self
             .owned(cancel, move |_| {
-                Box::pin(async move {
-                    db.run_read(move |connection| {
-                        Ok(persistence::header(connection, &id)?.map(|(version, _)| version))
-                    })
-                    .await
-                    .map_err(ProviderError::from)
-                })
+                Box::pin(async move { db.record_version(id).await.map_err(ProviderError::from) })
             })
             .await?;
         let catalog = self.oauth.catalog(&provider_id, cancel).await?;
