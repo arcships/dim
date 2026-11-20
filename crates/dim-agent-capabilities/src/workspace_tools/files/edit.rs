@@ -4,8 +4,8 @@ use super::super::file_reads::{Eol, FileReads, TextFileBinding};
 use super::codec;
 use super::write::write_target;
 use super::{
-    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, cancelled,
-    failed, field, hex, invalid_input, js_len, not_regular, refused, resolve_path, revision, wrote,
+    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, failed,
+    field, hex, invalid_input, js_len, not_regular, refused, resolve_path, revision, wrote,
 };
 use crate::host::HostError;
 use dim_agent_types::{JsonObject, ToolContent, ToolResult};
@@ -189,27 +189,21 @@ pub(super) async fn run(
     }
     let _lock = tools.locks.lock(&path, &cancel).await?;
     let binding = reads.get(&path);
-    let (target, bounded) = (path.clone(), tools.boundary.is_some());
-    #[cfg(test)]
-    let hook = tools.before_commit.clone();
-    let (_lock, written) = blocking(move || {
-        let written = edit_locked(
-            &target,
-            bounded,
-            &input,
-            binding,
+    let (_lock, reply) = super::Mutation::Edit(input, binding)
+        .apply(
+            tools.fs.as_deref(),
+            path.clone(),
+            tools.boundary.is_some(),
+            _lock,
             &cancel,
             #[cfg(test)]
-            hook,
-        );
-        (_lock, written)
-    })
-    .await?;
-    let (result, binding) = written.map_err(|Cancelled| cancelled())?;
-    if let Some(binding) = binding {
+            tools.before_commit.clone(),
+        )
+        .await?;
+    if let Some(binding) = reply.binding {
         reads.set(path, binding, established);
     }
-    Ok(result)
+    Ok(reply.result)
 }
 
 pub(super) fn edit_locked(

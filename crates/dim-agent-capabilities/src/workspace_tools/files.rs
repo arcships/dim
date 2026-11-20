@@ -52,19 +52,86 @@ pub(crate) enum WorkspaceMutation {
     Edit(JsonObject),
 }
 
+enum Mutation {
+    Write {
+        display: String,
+        content: String,
+        binding: super::file_reads::WriteBinding,
+    },
+    Edit(edit::Input, Option<super::file_reads::TextFileBinding>),
+}
+
+impl Mutation {
+    async fn apply(
+        self,
+        owner: Option<&crate::file_storage::FsHost>,
+        path: PathBuf,
+        bounded: bool,
+        lock: PathLock,
+        cancel: &CancellationToken,
+        #[cfg(test)] hook: Option<CommitHook>,
+    ) -> Result<(PathLock, WorkspaceMutationReply), HostError> {
+        let generation = owner
+            .map(|host| host.begin_workspace_operation(cancel))
+            .transpose()?;
+        let stopping = generation
+            .as_ref()
+            .map_or_else(|| cancel.child_token(), |(_, stop)| stop.clone());
+        let _drop = stopping.clone().drop_guard();
+        let stop = stopping.clone();
+        let write = blocking(move || {
+            let _generation = generation;
+            let written = match self {
+                Self::Write {
+                    display,
+                    content,
+                    binding,
+                } => write::write_locked(
+                    &path,
+                    bounded,
+                    &display,
+                    &content,
+                    binding,
+                    &stop,
+                    #[cfg(test)]
+                    hook,
+                ),
+                Self::Edit(input, binding) => edit::edit_locked(
+                    &path,
+                    bounded,
+                    &input,
+                    binding,
+                    &stop,
+                    #[cfg(test)]
+                    hook,
+                ),
+            };
+            written.map(|(result, binding)| (lock, WorkspaceMutationReply { result, binding }))
+        });
+        tokio::pin!(write);
+        tokio::select! {
+            result = &mut write => result,
+            _ = cancel.cancelled() => { stopping.cancel(); write.await }
+        }?
+        .map_err(|Cancelled| cancelled())
+    }
+}
+
 impl crate::file_storage::FsHost {
     pub(crate) async fn mutate_workspace_file(
         &self,
         request: WorkspaceMutation,
         cancel: &CancellationToken,
     ) -> Result<WorkspaceMutationReply, HostError> {
-        use super::file_reads::{TextFileBinding, WriteBinding};
-        enum Mutation {
-            Write(WorkspaceWrite),
-            Edit(edit::Input, Option<TextFileBinding>),
-        }
+        use super::file_reads::WriteBinding;
         let mutation = match request {
-            WorkspaceMutation::Write(request) => Mutation::Write(request),
+            WorkspaceMutation::Write(request) => Mutation::Write {
+                display: request.path,
+                content: request.content,
+                binding: request
+                    .binding
+                    .map_or(WriteBinding::None, WriteBinding::Text),
+            },
             WorkspaceMutation::Edit(mut request) => {
                 let binding = request
                     .remove("binding")
@@ -84,52 +151,33 @@ impl crate::file_storage::FsHost {
             }
         };
         let path = PathBuf::from(match &mutation {
-            Mutation::Write(request) => &request.path,
+            Mutation::Write { display, .. } => display,
             Mutation::Edit(input, _) => &input.path,
         });
         if !path.is_absolute() {
             return Err(HostError::failed("Expected an absolute file path"));
         }
-        let (operation, stopping) = self.begin_workspace_operation(cancel)?;
-        let _drop = stopping.clone().drop_guard();
-        let work = async {
-            let lock = self.writes.lock(&path, &stopping).await?;
-            let stop = stopping.clone();
-            blocking(move || {
-                let (_operation, _lock) = (operation, lock);
-                match mutation {
-                    Mutation::Write(request) => write::write_locked(
-                        &path,
-                        false,
-                        &request.path,
-                        &request.content,
-                        request
-                            .binding
-                            .map_or(WriteBinding::None, WriteBinding::Text),
-                        &stop,
-                        #[cfg(test)]
-                        None,
-                    ),
-                    Mutation::Edit(input, binding) => edit::edit_locked(
-                        &path,
-                        false,
-                        &input,
-                        binding,
-                        &stop,
-                        #[cfg(test)]
-                        None,
-                    ),
-                }
-            })
+        let (waiting, stopping) = self.begin_workspace_operation(cancel)?;
+        let path = blocking(move || canonical_prefix(lexical(&path)))
             .await?
-            .map_err(|Cancelled| cancelled())
+            .map_err(HostError::failed)?;
+        let lock = tokio::select! {
+            result = self.writes.lock(&path, &stopping) => result?,
+            _ = cancel.cancelled() => return Err(cancelled()),
         };
-        tokio::pin!(work);
-        let (result, binding) = tokio::select! {
-            result = &mut work => result,
-            _ = cancel.cancelled() => { stopping.cancel(); work.await }
-        }?;
-        Ok(WorkspaceMutationReply { result, binding })
+        drop(waiting);
+        let (_lock, reply) = mutation
+            .apply(
+                Some(self),
+                path,
+                false,
+                lock,
+                cancel,
+                #[cfg(test)]
+                None,
+            )
+            .await?;
+        Ok(reply)
     }
 }
 
