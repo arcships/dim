@@ -271,7 +271,7 @@ struct ResolvedShell {
 
 impl std::fmt::Debug for ExecHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostPlatform")
+        f.debug_struct("ExecHost")
             .field("home", &self.home)
             .field("os", &self.os)
             .field("arch", &self.arch)
@@ -285,7 +285,7 @@ impl std::fmt::Debug for ExecHost {
     }
 }
 
-/// A child process started by [`HostPlatform::spawn`].
+/// A child process started by [`ExecHost::spawn`].
 pub struct ProcessSpec {
     pub executable: PathBuf,
     /// The shell argv is built by the caller; the model command is one element.
@@ -311,7 +311,7 @@ pub enum SandboxBackend {
 }
 
 /// What a consumer keeps for a process that
-/// [`HostPlatform::prepare_isolated_process`] sandboxed.
+/// [`ExecHost::prepare_isolated_process`] sandboxed.
 #[derive(Clone, Copy)]
 pub(crate) struct Isolation;
 
@@ -1028,7 +1028,7 @@ pub struct HostPlatformConfig {
     pub home: Option<PathBuf>,
 }
 
-/// Process plugin providing `P:HostPlatform`.
+/// Process plugin providing `execHost`.
 pub struct HostPlatformPlugin {
     config: HostPlatformConfig,
     /// File storage only when a local configuration source is configured.
