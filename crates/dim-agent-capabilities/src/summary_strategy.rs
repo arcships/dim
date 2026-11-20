@@ -220,7 +220,8 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
                     }
                 }
             }
-            let strategy = SummaryStrategy::new(host, resolver, config);
+            let strategy =
+                SummaryStrategy::new(Arc::new(ModelInvocation::new(host, Some(resolver))), config);
             ctx.provide_at(
                 self.host.clone(),
                 Arc::new(CompactionStrategyHost(Some(Arc::new(strategy)))),
@@ -231,7 +232,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
 }
 
 pub struct SummaryStrategy {
-    host: ModelInvocation,
+    host: Arc<ModelInvocation>,
     /// The factory's reasoning value; Provider's mapping may fall back to
     /// `inherit` for a model or protocol that rejects the effort.
     reasoning: SummaryReasoning,
@@ -356,13 +357,9 @@ impl SummaryStrategy {
     }
     /// The strategy over the process's model host and connection resolver,
     /// with its factory configuration.
-    pub fn new(
-        host: Arc<ModelHost>,
-        resolver: Arc<ProviderConnectionResolver>,
-        config: ProductSummaryStrategyConfig,
-    ) -> Self {
+    pub fn new(host: Arc<ModelInvocation>, config: ProductSummaryStrategyConfig) -> Self {
         Self {
-            host: ModelInvocation::new(host, Some(resolver)),
+            host,
             reasoning: config.reasoning,
             target: config.target,
             system_prompt: config.system_prompt,

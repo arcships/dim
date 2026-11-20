@@ -29,10 +29,9 @@ use dim_agent_capabilities::{
     history::{HistoryEntry, summary_message},
     host::{
         CompactionCheckpoint, CompactionCut, CompactionInput, CompactionStrategy, ContextModel,
-        HostError, ModelChunk, ModelHost, ModelStopReason, ModelStream, ProviderConnectionResolver,
+        HostError, InvocationMode, ModelChunk, ModelInvocation, ModelStopReason, ModelStream,
         ResolveContextModel, StrategyOutcome,
     },
-    model_provider::invoke_with_recovery,
     summary_strategy::{
         LengthSentence, ProductSummaryStrategyConfig, SummaryReasoning, SummaryStrategy, TargetRule,
     },
@@ -82,11 +81,8 @@ pub async fn run() -> Result<()> {
         .service::<ProviderService>()
         .ok_or("the product profile serves no provider catalog")?;
     let host = server
-        .service::<ModelHost>()
+        .service::<ModelInvocation>()
         .ok_or("the product profile serves no model host")?;
-    let resolver = server
-        .service::<ProviderConnectionResolver>()
-        .ok_or("the product profile serves no connection resolver")?;
     let model = selection_with_preferences(&providers, &options.model, &cancel).await?;
     let judge = selection_with_preferences(&providers, &options.judge, &cancel).await?;
     let summarizer = Configuration::read(model.config.as_ref());
@@ -100,7 +96,6 @@ pub async fn run() -> Result<()> {
     for arm in arms(&options) {
         let strategy = SummaryStrategy::new(
             host.clone(),
-            resolver.clone(),
             ProductSummaryStrategyConfig {
                 reasoning: arm.reasoning,
                 target: arm.target,
@@ -113,16 +108,7 @@ pub async fn run() -> Result<()> {
             for run in 0..options.runs {
                 let outcome = run_case(&strategy, case, &cancel).await;
                 let mut retried = false;
-                let judged = judge_run(
-                    &host,
-                    &resolver,
-                    &judge,
-                    case,
-                    &outcome,
-                    &cancel,
-                    &mut retried,
-                )
-                .await;
+                let judged = judge_run(&host, &judge, case, &outcome, &cancel, &mut retried).await;
                 no_temperature += usize::from(retried);
                 let probes = probe_records(
                     &case.probes,
@@ -1153,8 +1139,8 @@ fn probe_records(probes: &[Probe], summary: &str, judged: &Judged) -> Vec<Value>
 /// reports whether the judge had to drop its temperature, which is part of the
 /// instrument's record (ContextCompaction §13.4).
 async fn judge_run(
-    host: &Arc<ModelHost>,
-    resolver: &Arc<ProviderConnectionResolver>,
+    host: &Arc<ModelInvocation>,
+
     judge: &ModelSelection,
     case: &Prepared,
     run: &Run,
@@ -1171,17 +1157,7 @@ async fn judge_run(
     {
         return Judged::Verdicts(BTreeMap::new());
     }
-    match judge_probes(
-        host,
-        resolver,
-        judge,
-        case,
-        &summary,
-        cancel,
-        no_temperature,
-    )
-    .await
-    {
+    match judge_probes(host, judge, case, &summary, cancel, no_temperature).await {
         Ok(verdicts) => Judged::Verdicts(verdicts),
         Err(JudgeError::Call(error)) => Judged::Failed(error),
         Err(JudgeError::Unreadable(error)) => Judged::Unreadable(error),
@@ -1198,8 +1174,8 @@ enum JudgeError {
 }
 
 async fn judge_probes(
-    host: &Arc<ModelHost>,
-    resolver: &Arc<ProviderConnectionResolver>,
+    host: &Arc<ModelInvocation>,
+
     judge: &ModelSelection,
     case: &Prepared,
     summary: &str,
@@ -1228,7 +1204,7 @@ async fn judge_probes(
         JUDGE_SYSTEM.into(),
     )));
     let request = Arc::new(request);
-    let reply = match complete(host, resolver, &request, cancel).await {
+    let reply = match complete(host, &request, cancel).await {
         Ok(reply) => reply,
         Err(error) => {
             let mut retry = (*request).clone();
@@ -1242,7 +1218,7 @@ async fn judge_probes(
             }
             retry.config.as_mut().expect("a config").temperature = None;
             *no_temperature = true;
-            match complete(host, resolver, &Arc::new(retry), cancel).await {
+            match complete(host, &Arc::new(retry), cancel).await {
                 Ok(reply) => reply,
                 Err(retry) => {
                     return Err(JudgeError::Call(format!(
@@ -1269,14 +1245,12 @@ async fn judge_probes(
 }
 
 async fn complete(
-    host: &Arc<ModelHost>,
-    resolver: &Arc<ProviderConnectionResolver>,
+    host: &Arc<ModelInvocation>,
+
     request: &Arc<ModelRequest>,
     cancel: &CancellationToken,
 ) -> Result<String> {
-    Ok(complete_detailed(host, resolver, request, cancel)
-        .await?
-        .text)
+    Ok(complete_detailed(host, request, cancel).await?.text)
 }
 
 /// One completion's reply with what the stream reported about it: its text,
@@ -1298,22 +1272,22 @@ pub(crate) struct Completion {
 }
 
 pub(crate) async fn complete_detailed(
-    host: &Arc<ModelHost>,
-    resolver: &Arc<ProviderConnectionResolver>,
+    host: &Arc<ModelInvocation>,
+
     request: &Arc<ModelRequest>,
     cancel: &CancellationToken,
 ) -> Result<Completion> {
-    let resolved = resolver.0.resolve(request.clone(), cancel.clone()).await?;
-    let reply = invoke_with_recovery(
-        host,
-        request,
-        None,
-        resolved,
-        cancel,
-        &mut (),
-        |stream: ModelStream, _, _, _| Box::pin(collected(stream)),
-    )
-    .await?;
+    let reply = host
+        .invoke(
+            request.clone(),
+            InvocationMode::Recovering {
+                failure_chain: None,
+            },
+            cancel,
+            &mut (),
+            |stream: ModelStream, _, _, _| Box::pin(collected(stream)),
+        )
+        .await?;
     Ok(reply)
 }
 
@@ -2365,8 +2339,10 @@ mod tests {
         let case = prepared("case", vec![probe("floods", ProbeKind::Fact)]);
         let mut no_temperature = false;
         let judged = judge_run(
-            &Arc::new(ModelHost(Arc::new(Malformed))),
-            &Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            &Arc::new(ModelInvocation::new(
+                Arc::new(ModelHost(Arc::new(Malformed))),
+                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            )),
             &fake_selection(),
             &case,
             &completed(),
@@ -2811,6 +2787,7 @@ mod tests {
             })
         }
     }
+    use dim_agent_capabilities::host::{ModelHost, ProviderConnectionResolver};
     struct Local;
     impl ResolveModelConnection for Local {
         fn resolve(
@@ -2859,8 +2836,10 @@ mod tests {
             .expect("the chain case");
         let driver = Arc::new(Markers::default());
         let strategy = SummaryStrategy::new(
-            Arc::new(ModelHost(driver.clone())),
-            Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            Arc::new(ModelInvocation::new(
+                Arc::new(ModelHost(driver.clone())),
+                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            )),
             ProductSummaryStrategyConfig::default(),
         );
         let selection = fake_selection();
@@ -2948,8 +2927,10 @@ mod tests {
             .expect("the code case");
         let driver = Arc::new(Reply);
         let strategy = SummaryStrategy::new(
-            Arc::new(ModelHost(driver)),
-            Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            Arc::new(ModelInvocation::new(
+                Arc::new(ModelHost(driver)),
+                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            )),
             ProductSummaryStrategyConfig::default(),
         );
         let selection = fake_selection();
