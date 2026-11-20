@@ -1187,7 +1187,7 @@ impl HostDispatch for LoopsFace {
                 })
             }
             _ => {
-                return Err(BridgeError::Value(format!("unknown loops method {method}")));
+                return Err(BridgeError::value(format!("unknown loops method {method}")));
             }
         };
         Ok(operation)

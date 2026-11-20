@@ -297,19 +297,19 @@ impl HostDispatch for Store {
             let mut args = args.list()?.into_iter();
             let directory = args
                 .next()
-                .ok_or_else(|| Error::Value("missing directory".into()))?
+                .ok_or_else(|| Error::value("missing directory"))?
                 .json()?;
             if !directory.is_object() {
-                return Err(Error::Value("store request must be an object".into()));
+                return Err(Error::value("store request must be an object"));
             }
             let directory: Directory = serde_json::from_value(directory)
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::value(error.to_string()))?;
             let remove = args
                 .next()
-                .ok_or_else(|| Error::Value("missing removal callback".into()))?
+                .ok_or_else(|| Error::value("missing removal callback"))?
                 .reference()?;
             if args.next().is_some() {
-                return Err(Error::Value("unexpected removeWorktree argument".into()));
+                return Err(Error::value("unexpected removeWorktree argument"));
             }
             let owner = self.clone();
             return Ok(Value::future(async move {
@@ -353,13 +353,13 @@ impl HostDispatch for Store {
             }));
         }
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(Error::Value("store request must be an object".into()));
+            return Err(Error::value("store request must be an object"));
         }
         if method == "catalog" {
             let p: Catalog =
-                serde_json::from_value(request).map_err(|error| Error::Value(error.to_string()))?;
+                serde_json::from_value(request).map_err(|error| Error::value(error.to_string()))?;
             let owner = self.clone();
             return Ok(Value::cancellable_future(async move {
                 let cancel = tokio_util::sync::CancellationToken::new();
@@ -369,12 +369,12 @@ impl HostDispatch for Store {
                     .await
                     .map_err(failure)?;
                 Ok(serde_json::to_value(page)
-                    .map_err(|error| Error::Value(error.to_string()))?
+                    .map_err(|error| Error::value(error.to_string()))?
                     .into())
             }));
         }
         let request: Request = serde_json::from_value(json!({"method":method,"request":request}))
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         let owner = self.clone();
         Ok(Value::future(async move {
             let result: dim_agent_runtime::Result<serde_json::Value> = async {

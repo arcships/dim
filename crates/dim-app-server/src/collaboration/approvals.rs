@@ -113,7 +113,7 @@ impl rutis_bridge::session::HostDispatch for CollaborationSession {
         args: rutis_bridge::session::Value,
     ) -> rutis_bridge::session::Reply {
         if method != "approvalDestination" {
-            return Err(rutis_bridge::session::Error::Value(format!(
+            return Err(rutis_bridge::session::Error::value(format!(
                 "collaborationSession has no method {method}"
             )));
         }

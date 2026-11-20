@@ -807,16 +807,15 @@ impl HostDispatch for ForeignRegistry {
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method != "register" {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "toolRegistry has no method {method}"
             )));
         }
         let caller = rutis_bridge::session::caller_row()
             .map(|row| row.ctx().clone())
             .ok_or_else(|| {
-                BridgeError::Value(
-                    "register needs the calling row's context: only a row of a language runtime can call it"
-                        .into(),
+                BridgeError::value(
+                    "register needs the calling row's context: only a row of a language runtime can call it",
                 )
             })?;
         let mut args = match args {
@@ -824,7 +823,7 @@ impl HostDispatch for ForeignRegistry {
             args => args.list()?,
         };
         if args.len() > 3 {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "expected at most 3 arguments, received {}",
                 args.len()
             )));
@@ -835,8 +834,8 @@ impl HostDispatch for ForeignRegistry {
         let Some(Value::Reference(execute)) = args.next().filter(
             |execute| matches!(execute, Value::Reference(reference) if reference.is_function()),
         ) else {
-            return Err(BridgeError::Value(
-                "register needs the tool's declaration and its execute function".into(),
+            return Err(BridgeError::value(
+                "register needs the tool's declaration and its execute function",
             ));
         };
         let options = match args.next().expect("three arguments") {
@@ -844,11 +843,11 @@ impl HostDispatch for ForeignRegistry {
             options => Some(options.json()?),
         };
         let registered = foreign_concurrency(options)
-            .map_err(|error| BridgeError::Value(error.to_string()))
+            .map_err(|error| BridgeError::value(error.to_string()))
             .and_then(|concurrency| {
                 self.0
                     .register_foreign(&caller, declaration, execute, concurrency)
-                    .map_err(|error| BridgeError::Value(error.to_string()))
+                    .map_err(|error| BridgeError::value(error.to_string()))
             })
             .map(|()| Value::Undefined);
         Ok(Value::future(async move { registered }))

@@ -56404,7 +56404,7 @@
     },
     {
       "module": "dim_agent_capabilities::session_files",
-      "path": "Error::Value"
+      "path": "Error::value"
     },
     {
       "module": "dim_agent_capabilities::session_files",

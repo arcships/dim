@@ -306,7 +306,7 @@ fn envelope(result: Result<impl Serialize>) -> RpcValue {
     .into()
 }
 fn request<T: DeserializeOwned>(args: RpcValue) -> std::result::Result<T, Error> {
-    let invalid = || Error::Value("expected one settings request object".into());
+    let invalid = || Error::value("expected one settings request object");
     let Value::Array(args) = args.json()? else {
         return Err(invalid());
     };
@@ -389,16 +389,15 @@ impl HostDispatch for Settings {
                 let caller = rutis_bridge::session::caller_row()
                     .map(|row| row.ctx().clone())
                     .ok_or_else(|| {
-                        Error::Value(
-                            "register needs the calling row's context: only a row of a language runtime can call it"
-                                .into(),
+                        Error::value(
+                            "register needs the calling row's context: only a row of a language runtime can call it",
                         )
                     })?;
                 let registered = request(args).and_then(|declaration| {
                     service
                         .register(&caller, declaration)
                         .map(|()| RpcValue::Undefined)
-                        .map_err(|error| Error::Value(error.to_string()))
+                        .map_err(|error| Error::value(error.to_string()))
                 });
                 Ok(RpcValue::future(async move { registered }))
             }
@@ -435,7 +434,7 @@ impl HostDispatch for Settings {
                     ))
                 }))
             }
-            _ => Err(Error::Value(format!("unknown settings method {method}"))),
+            _ => Err(Error::value(format!("unknown settings method {method}"))),
         }
     }
 }

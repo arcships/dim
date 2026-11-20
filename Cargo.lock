@@ -4179,9 +4179,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rutis"
-version = "0.19.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37143a70e4a943d50dd1e3303b7f2b856460a56a362ee62fa62712e55882961a"
+checksum = "9108ed4d1074c48a674b17e44b4f02ed4a650f4f152370f588f50bee6bd655ee"
 dependencies = [
  "erased-serde",
  "rutis-macros",
@@ -4195,9 +4195,9 @@ dependencies = [
 
 [[package]]
 name = "rutis-bridge"
-version = "0.19.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1e15efcf6926d6c0f8c5ca78a3a7c0af80bdeac3fac95c1332086c779266959"
+checksum = "bc5b5671633d5054a4b4a1ba34d1560b98fd9e2b871383db314386824c811f0d"
 dependencies = [
  "getrandom 0.2.17",
  "libc",
@@ -4205,6 +4205,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "shuttle",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
@@ -4213,9 +4214,9 @@ dependencies = [
 
 [[package]]
 name = "rutis-loader"
-version = "0.19.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa6a552b9bd8f52acf066104bfc859bb4458b860db38f486ad85e99a12254d06"
+checksum = "56d4db8006f9de93c7a86bf6c3346f2208dd827c64085638c0bc1e635c2bffb7"
 dependencies = [
  "libc",
  "rutis",
@@ -4223,15 +4224,16 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "shuttle",
  "thiserror 2.0.20",
  "tokio",
 ]
 
 [[package]]
 name = "rutis-macros"
-version = "0.19.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91dacd6ec042c7f181577318cfa73a05598b0878fb119071b971a67ff1e01db0"
+checksum = "c291572eeef520ce82a5c99982618fab42053296a7e61f8edb05702473346f8e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4240,9 +4242,9 @@ dependencies = [
 
 [[package]]
 name = "rutis-types"
-version = "0.19.3"
+version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86c93f394dffdbc00686ffcb182141bc8b4a9e940d3e96e18f16fc39d2a3a785"
+checksum = "101ff463b2d6d808df7a3f404bf8e8e1dfb9403ea841e054942543c7ab9defa4"
 dependencies = [
  "proc-macro2",
  "quote",

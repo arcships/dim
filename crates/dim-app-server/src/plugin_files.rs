@@ -50,7 +50,7 @@ fn success(value: Value) -> Value {
     Value::Record([("ok".into(), json!(true).into()), ("value".into(), value)].into())
 }
 fn invalid() -> Error {
-    Error::Value("invalid file operation".into())
+    Error::value("invalid file operation")
 }
 fn private_permissions() -> Option<Permissions> {
     #[cfg(unix)]
@@ -169,7 +169,7 @@ impl Scope {
         let caller = self
             .caller
             .clone()
-            .ok_or_else(|| Error::Value("openRead requires a calling row".into()))?;
+            .ok_or_else(|| Error::value("openRead requires a calling row"))?;
         self.operation(args, move |files, _, path, cancel| {
             Box::pin(async move {
                 Ok(
