@@ -59,11 +59,11 @@ git diff --check
 
 ### Verify the bundled catalog sync
 
-Reuse an accepted sync result when resuming the same release, including a recorded up-to-date result. Otherwise use the Node version in `.node-version` and run `node scripts/update-provider-catalog.ts --sync` with its default PublicProviderConf source from a clean release checkout. Capture the exit status and output, and check `git status --short` and the catalog diff.
+Reuse an accepted sync result when resuming the same release, including a recorded up-to-date result. Otherwise use the Node version in `.node-version` and run `node scripts/update-provider-catalog.ts --sync` with its default PublicProviderConf source from a clean checkout of the release branch. Capture the exit status and output, and check `git status --short` and the catalog diff.
 
 - **Updated.** Require exit status `0`, the final `Updated catalog:` message and a diff confined to `crates/dim-app-server/resources/default-catalog.json`. Review the summary for model removals, changes to defaults or API base URLs, and capability or limit regressions. Use the relevant diff, upstream data or catalog policy to explain questionable changes. Commit the accepted diff as the release PR's first commit and include the sync summary in the commit message.
 - **Up to date.** Require exit status `0`, `Catalog is up to date` and a clean checkout. Proceed with the version commit.
-- **Failed or needs review.** Stop before committing the catalog or changing the version if the command fails, its status, output and diff disagree, or the review finds unexplained changes. Report the error or the affected providers, models and fields. Retry a failed sync after fixing its cause and resolve any unexplained changes before proceeding.
+- **Failed or needs review.** Stop before committing the catalog or changing the version if the command fails, its status, output and diff disagree, or the review finds unexplained changes. Report the error or the affected providers, models and fields. Address the cause before retrying. If a repository fix is needed, land it on `main` first. Then fetch `origin/main` and update the same release branch and its PR, if open, to include the fix before rerunning the sync. Resolve any unexplained changes before proceeding.
 
 Record the successful result in the release PR, with the affected providers and significant changes when there is a diff. [Recovery and nightly repair](#recovery) use the catalog from the existing source and skip the sync.
 

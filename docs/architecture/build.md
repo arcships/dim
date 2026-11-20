@@ -417,12 +417,5 @@ it was. Review and commit the complete catalog after a sync. Model entries occup
 individual lines for review. Upstream responses and intermediate model lists stay in
 memory.
 
-Before a release, run `node scripts/update-provider-catalog.ts --sync` once with the Node
-version in `.node-version`, in a clean checkout of the latest `origin/main`, and read its
-summary. No diff means the release PR carries only its version commit. A diff is committed on its own branch with
-the summary in the commit message, as the release PR's first commit, and it reaches `main` through that pull request the user
-approves; a patch that no longer matches a model fails the run instead of being dropped, so
-fix the override or the policy and run again. Never sync twice for one release, and
-recovery or nightly repair skips the step because it rebuilds an existing SHA or tag. The
-[release skill](../../.agents/skills/dim-release/SKILL.md#prepare-the-release-pr)
-carries the steps.
+For release preparation, follow the
+[release skill's catalog sync checks](../../.agents/skills/dim-release/SKILL.md#verify-the-bundled-catalog-sync).
