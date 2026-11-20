@@ -130,8 +130,9 @@ impl ExecHost {
                 }
                 capture.total += chunk.len() as u64;
                 capture.text.push_str(&chunk);
-                if capture.text.len() > 2 * RETAINED {
-                    capture.text = tail_bytes(&capture.text, RETAINED).to_owned();
+                if capture.text.len() > RETAINED {
+                    let dropped = capture.text.len() - tail_bytes(&capture.text, RETAINED).len();
+                    capture.text.drain(..dropped);
                 }
                 if let Some(sender) = &output {
                     let _ = sender.send(chunk);
