@@ -330,12 +330,26 @@ jobs:
             if [[ -n "${!name-}" ]]; then vars+=("$name=${!name}"); fi
           done
           echo "expected: $home"
-          echo '--- login shell, no sandbox'
-          env -i "${vars[@]}" "$login_shell" -lc 'echo $HOME' 2>&1 | cat -A | head -20 || true
-          echo '--- login shell under bubblewrap'
-          env -i "${vars[@]}" bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --cap-drop ALL \
-            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind /etc /etc \
-            --bind "$home" "$home" --proc /proc --dev /dev --remount-ro / --chdir "$home" -- "$login_shell" -lc 'echo $HOME' 2>&1 | cat -A | head -20 || true
+          sandbox=(bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --cap-drop ALL
+            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind /etc /etc
+            --bind "$home" "$home" --proc /proc --dev /dev --remount-ro / --chdir "$home" --)
+          echo '--- scripts that name a journal or logging command'
+          grep -lE 'systemd-cat|systemd-notify|logger|journal' /etc/profile /etc/bash.bashrc /etc/profile.d/* 2>/dev/null || true
+          echo '--- each profile script alone under bubblewrap'
+          for script in /etc/profile /etc/bash.bashrc /etc/profile.d/*.sh; do
+            out="$(env -i "${vars[@]}" "${sandbox[@]}" /bin/bash --noprofile --norc -c ". '$script'" 2>&1 | head -5)"
+            if [[ -n "$out" ]]; then echo "== $script"; echo "$out"; fi
+          done
+          echo '--- the lines of the script that prints'
+          grep -nE 'systemd-cat|systemd-notify|logger|journal' /etc/profile /etc/bash.bashrc /etc/profile.d/* 2>/dev/null | cut -c1-240 || true
+          echo '--- who owns it'
+          for script in $(grep -lE 'systemd-cat|systemd-notify|logger|journal' /etc/profile.d/* 2>/dev/null); do
+            dpkg -S "$script" 2>&1 | head -1
+            ls -l "$script"
+          done
+          echo '--- same shell with --noprofile under bubblewrap'
+          env -i "${vars[@]}" "${sandbox[@]}" "$login_shell" --noprofile -c 'echo $HOME' 2>&1 | head -5
+          . /etc/os-release && echo "$PRETTY_NAME"
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
