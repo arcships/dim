@@ -1214,7 +1214,7 @@ fn slow_upgrade_report() {
 /// The process connection and maintenance admission. Business modules never
 /// open a second connection to this database.
 pub struct SqliteStorage {
-    pub(super) ownership: tokio::sync::Mutex<()>,
+    pub(super) ownership: Arc<tokio::sync::Mutex<()>>,
     pub(super) defaults: Mutex<std::collections::BTreeMap<String, String>>,
     pub(super) timeline_memo: Mutex<super::timeline::Memo>,
     pub(super) connection: Mutex<Option<Connection>>,
@@ -1404,6 +1404,26 @@ impl Drop for DatabaseLease {
     }
 }
 struct Operation(Arc<SqliteStorage>);
+impl Operation {
+    async fn write<T: Send + 'static>(
+        self,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        tokio::task::spawn_blocking(move || {
+            let mut guard = self
+                .0
+                .connection
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let connection = guard
+                .as_mut()
+                .ok_or_else(|| storage("SQLite storage is closed"))?;
+            guarded(connection, operation)
+        })
+        .await
+        .map_err(storage)?
+    }
+}
 impl Drop for Operation {
     fn drop(&mut self) {
         let mut admission = self.0.admission.lock().unwrap();
@@ -1909,17 +1929,23 @@ impl SqliteStorage {
         self: &Arc<Self>,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.admit()?.write(operation).await
+    }
+
+    pub(super) async fn run_ownership_write<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let admitted = self.admit()?;
-        tokio::task::spawn_blocking(move || {
-            let mut guard = admitted
-                .0
-                .connection
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let connection = guard
-                .as_mut()
-                .ok_or_else(|| storage("SQLite storage is closed"))?;
-            guarded(connection, operation)
+        let ownership = self.ownership.clone();
+        tokio::spawn(async move {
+            let guard = ownership.lock_owned().await;
+            admitted
+                .write(move |connection| {
+                    let _guard = guard;
+                    operation(connection)
+                })
+                .await
         })
         .await
         .map_err(storage)?

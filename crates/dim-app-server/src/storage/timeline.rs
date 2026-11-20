@@ -708,8 +708,7 @@ impl SqliteStorage {
         session: String,
         config: SessionConfig,
     ) -> Result<()> {
-        let _ownership = self.ownership.lock().await;
-        self.run(move |connection| {
+        self.run_ownership_write(move |connection| {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
@@ -3745,29 +3744,24 @@ impl SqliteStorage {
     ) -> Result<()> {
         crate::protocol::check_session_id(source)?;
         crate::protocol::check_session_id(fork)?;
-        let _ownership = self.ownership.lock().await;
+        let ownership = self.ownership.clone().lock_owned().await;
         let (references, arrays) = fork_references(self, source, at).await?;
         let content: Vec<String> = content_closure(self, source, references)
             .await?
             .into_iter()
             .collect();
         let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
-        let reset = fork.clone();
-        let copied = self
-            .run_copy(move |connection| {
-                copy_fork(connection, &source, &fork, at, &content, &arrays, &config)
-            })
-            .await;
-        if copied.is_ok() {
-            // A fork's default branch is its root: the cache starts the fork
-            // there, and forgets the source's entry nothing reads again (design
-            // §5, §13).
-            self.defaults
+        let db = self.clone();
+        self.run_copy(move |connection| {
+            let _ownership = ownership;
+            copy_fork(connection, &source, &fork, at, &content, &arrays, &config)?;
+            db.defaults
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(reset, ROOT_BRANCH_ID.into());
-        }
-        copied
+                .insert(fork, ROOT_BRANCH_ID.into());
+            Ok(())
+        })
+        .await
     }
 
     pub(super) async fn remove_worktree_directory(
@@ -3820,7 +3814,7 @@ impl SqliteStorage {
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
         crate::protocol::check_session_id(session_id)?;
-        let _ownership = self.ownership.lock().await;
+        let ownership = self.ownership.clone().lock_owned().await;
         if !tokio::fs::metadata(&config.cwd)
             .await
             .map(|metadata| metadata.is_dir())
@@ -3853,6 +3847,7 @@ impl SqliteStorage {
             )
             .transpose()?;
         self.run(move |connection| {
+            let _ownership = ownership;
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
@@ -3890,7 +3885,7 @@ impl SqliteStorage {
         subtree: PathBuf,
     ) -> Result<()> {
         let (repository, root, subtree_text) = worktree_association_paths(&directory, &subtree)?;
-        let _ownership = self.ownership.lock().await;
+        let ownership = self.ownership.clone().lock_owned().await;
         if !tokio::fs::metadata(&directory.root)
             .await
             .is_ok_and(|metadata| metadata.is_dir())
@@ -3902,6 +3897,7 @@ impl SqliteStorage {
         let session = session_id.to_owned();
         let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
         self.run(move |connection| {
+            let _ownership = ownership;
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(error)?;
