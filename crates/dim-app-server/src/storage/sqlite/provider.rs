@@ -159,7 +159,7 @@ impl ProviderOperation {
         let loaded_bundle = || {
             crate::model_catalog::BundledCatalog::load()
                 .map(Arc::new)
-                .map_err(|e| BridgeError::Value(e.to_string()))
+                .map_err(|e| BridgeError::value(e.to_string()))
         };
         Ok(match self {
             Self::CommitEdit { provider_id, edit } => {
@@ -302,7 +302,7 @@ impl ProviderOperation {
                         .map(|r| serde_json::json!(r)),
                     ProviderEdit::Create { mut record } => {
                         crate::provider::validate_static_record(&provider_id, &mut record)
-                            .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            .map_err(|e| BridgeError::value(e.to_string()))?;
                         db.create_record(provider_id, record)
                             .await
                             .map(|r| serde_json::json!(r))
@@ -316,7 +316,7 @@ impl ProviderOperation {
                         mut record,
                     } => {
                         crate::provider::validate_static_record(&provider_id, &mut record)
-                            .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            .map_err(|e| BridgeError::value(e.to_string()))?;
                         db.replace_record(provider_id, expected, record)
                             .await
                             .map(|r| serde_json::json!(r))
@@ -396,7 +396,7 @@ impl ProviderOperation {
             Self::QueryModels { page, accounts } => {
                 let limit = page
                     .page_limit()
-                    .map_err(|e| BridgeError::Value(e.to_string()))?;
+                    .map_err(|e| BridgeError::value(e.to_string()))?;
                 let bundled = loaded_bundle()?;
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
