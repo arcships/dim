@@ -35,7 +35,7 @@ flowchart LR
     p25["InputMethods"]
     p24["BranchTool"]
   end
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p50
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p50
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p50
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p50
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p50
@@ -81,7 +81,7 @@ flowchart LR
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p43
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p43
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p43
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p42
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p42
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p42
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p42
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p42
@@ -101,7 +101,7 @@ flowchart LR
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p40
   p35 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p40
   p28 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p39
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p39
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p39
   p35 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p39
   p21 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p39
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p39
@@ -116,7 +116,7 @@ flowchart LR
   p21 -->|"dim_agent_runtime::config::SessionIdentity@session"| p33
   p21 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p33
   p30 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p32
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p32
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p32
   p28 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p31
   p21 -->|"dim_agent_runtime::assembly::TimelineFactory@session"| p31
   p21 -->|"dim_agent_runtime::config::SessionIdentity@session"| p31
@@ -124,8 +124,8 @@ flowchart LR
   p21 -->|"dim_agent_runtime::config::SessionIdentity@session"| p29
   p21 -->|"dim_agent_runtime::config::SessionConfig@session"| p27
   p30 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p26
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p26
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p26
   p30 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p25
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p25
-  p31 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p24
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p25
+  p31 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p24
   p33 -->|"dim_agent_capabilities::tool_registry::ToolRegistry@session"| p24

@@ -28,7 +28,7 @@ The Session entry extends Agents' public entry surface. Its factory captures onl
 configuration and instance identity; services come from `Deps`. Provider remains a
 per-call lookup. Rpc's generic Session-method dispatch does not implement modes.
 
-`AgentsSession` injects process `AgentIndex` and Session `TreeCommands` and
+`AgentsSession` injects process `AgentIndex` and Session `TimelineTree` and
 `sessionMethods`, registers the namespace `session.agent` with `sessionMethods`
 from its `apply`, and reads the addressed branch's public Prompt service and
 published `PromptSnapshot` per call. The Session's method table owns admission,

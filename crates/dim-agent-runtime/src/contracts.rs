@@ -139,7 +139,8 @@ pub struct TimelineInfo {
 }
 
 /// Whether a line takes input, is finishing a committed end, or has ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum BranchDirectoryState {
     /// The line takes input, and its head is live.
     Open,
@@ -151,7 +152,8 @@ pub enum BranchDirectoryState {
 }
 
 /// One line's directory record: its identity, its state, its head and its end.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchDirectoryEntry {
     pub info: TimelineInfo,
     /// The published head while open or ending, the fixed head once ended.
@@ -159,6 +161,7 @@ pub struct BranchDirectoryEntry {
     pub state: BranchDirectoryState,
     /// The sequence of the line's own `branch/end`: committed while ending,
     /// recorded once ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub end_event: Option<u64>,
 }
 

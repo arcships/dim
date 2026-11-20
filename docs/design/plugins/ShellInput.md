@@ -15,7 +15,7 @@ flowchart LR
   end
   subgraph S["Session scope"]
     SI["ShellInputPlugin (run registry, sessionMethods shell)"]:::new
-    TC["TreeCommands"]
+    TC["TimelineTree"]
     SS["SessionConfig, SessionLifecycle, SessionIdentity"]
   end
   subgraph B["Branch"]
@@ -32,7 +32,7 @@ flowchart LR
 
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
-| `ShellInputPlugin` | Session | `P:HostPlatform` (as WorkspaceTools uses it), `S:SessionConfig` (`cwd`), `S:TreeCommands`, `S:SessionLifecycle`, `S:SessionIdentity`, `S:sessionMethods` | Registers `shell` with `sessionMethods` |
+| `ShellInputPlugin` | Session | `P:HostPlatform` (as WorkspaceTools uses it), `S:SessionConfig` (`cwd`), `S:TimelineTree`, `S:SessionLifecycle`, `S:SessionIdentity`, `S:sessionMethods` | Registers `shell` with `sessionMethods` |
 
 Contracts depended on:
 
@@ -229,7 +229,7 @@ Rules: [principles §1 and §4](../../architecture/rust-agent/principles.md), [A
 | §4.4 No business meaning in core | Rpc, InputQueue and Loop gain no ShellInput handling: Rpc reaches it by namespace, and the marker is an ordinary raw block. |
 | §4.5 Read the whole batch | Not applicable: ShellInput reads no Timeline event, and its one event (`input/message`) needs no other fact in its batch. |
 | §4.6 Context only from handed-off events | The output reaches the model only after InputQueue applies and Loop consumes the input; `!!` output and progress never do. |
-| §4.7 Public events and services only | ShellInput uses `Branch::input` through `S:TreeCommands`, `SessionConfig`, `SessionLifecycle`, `SessionIdentity`, HostPlatform and the `sessionMethods` contract. |
+| §4.7 Public events and services only | ShellInput uses `Branch::input` through `S:TimelineTree`, `SessionConfig`, `SessionLifecycle`, `SessionIdentity`, HostPlatform and the `sessionMethods` contract. |
 | §4.8 Requirements to mechanism owners | Infrastructure is unchanged and nothing is raised to the runtime or rutis (§9). The changes needed from Rpc (per-call progress, in C1) and HostPlatform (command builder, S7) are listed in A.5; the Agents activity handle is replaced by the runtime activity hold that idle unload raised (A.5). |
 | §4.9 Only facts later decisions use enter the Timeline | Only the recorded `!` result enters, as an input the model reads. Progress is reply data of one call, not Session state, so it uses neither the Timeline nor a Session broadcast notice; run records go to the process log. |
 | §1 Capability and App Server boundary | ShellInput is a Session Capability in its own module of dim-agent-capabilities; Rpc only dispatches `sessionMethods`. |
@@ -329,7 +329,7 @@ One input written with `Branch::input` on `branchId`:
 
 | Step | Mechanics |
 | --- | --- |
-| Start | Parse the params (`invalid_params`); admit (below); resolve the branch through `S:TreeCommands`; build the `ProcessSpec` (S7; `shell_unavailable`) until the call's token fires; then, under the registry lock in one step, admit again, take the Session hold, `spawn` (`spawn_failed`), register the run with its hold and start its task in the generation's task tracker, not in the call. A `runId` counts as used once its process has spawned or a stop that came first ended it, so a refused start leaves it free |
+| Start | Parse the params (`invalid_params`); admit (below); resolve the branch through `S:TimelineTree`; build the `ProcessSpec` (S7; `shell_unavailable`) until the call's token fires; then, under the registry lock in one step, admit again, take the Session hold, `spawn` (`spawn_failed`), register the run with its hold and start its task in the generation's task tracker, not in the call. A `runId` counts as used once its process has spawned or a stop that came first ended it, so a refused start leaves it free |
 | Admission | Refuses, in this order: an interrupted call (`operation_interrupted`), an unloading generation (`service_reloading`), a closing Session (`session_closed`), a registered run (`shell_busy`), a used `runId` (`duplicate_run`). The second admission then consumes a stop remembered for the `runId`: nothing starts and the reply is `{runId, status: "stopped", output: "", truncated: false, durationMs: 0}`, with nothing recorded and no span. Otherwise it takes the Session hold: `None` once the Session is closing or an idle release has been decided, which refuses the run `session_closed` and leaves its `runId` unused |
 | Hold | One `SessionLifecycle::take_hold()` per run, kept in its registry entry. The task drops it as it removes the run from the registry, after the run's last fact (Write below, the exit for `private`, or termination) and before `shell.stop` or the reply sees the end. While it is held, `Session::unload_if_idle()` refuses; a Session close ignores it (idle unload §5.1) |
 | Run | The task owns the process tree. It reads both pipes, sends capped progress (A.1), keeps the bounded tail, and waits for the exit, `shell.stop`, `SessionLifecycle::closing()` or the generation's cancellation |
@@ -511,14 +511,14 @@ ShellInput is implemented in Rust as the `shell_input` module of dim-agent-capab
 
 | Neutral contract | Rust binding |
 | --- | --- |
-| Plugin | `TypedPlugin`; `Deps = (Keyed<HostPlatform>, Keyed<SessionConfig>, Keyed<TreeCommands>, Keyed<SessionLifecycle>, Keyed<SessionIdentity>, Keyed<SessionMethods>)` |
+| Plugin | `TypedPlugin`; `Deps = (Keyed<HostPlatform>, Keyed<SessionConfig>, Keyed<TimelineTree>, Keyed<SessionLifecycle>, Keyed<SessionIdentity>, Keyed<SessionMethods>)` |
 | Namespace `shell` | `methods.register(ctx, "shell", declarations, handler)` on the `Keyed<SessionMethods>` dependency (`dim_agent_capabilities::methods`), called in `apply` after ShellInput's own effects, so its unload effect runs first. `declarations` holds `MethodDecl { progress: true, ..MethodDecl::new("shell.run", true, Interruption::Report) }`, `MethodDecl::new("shell.stop", true, Interruption::Report)` and `MethodDecl::new("shell.list", false, Interruption::Report)` |
 | Handler | A `Handler`, called with the method name, the params, the call's `CancellationToken` (A.4 Two cancellations) and its `Progress`, returning a future of `Result<Value, RpcError>`. Own errors are `RpcError::app(-32000, "shell_busy", ..)` and the like, and `RpcError::invalid` for `invalid_params`; runtime facade errors convert with `?` (`From<AgentError> for RpcError`) |
 | Progress | The handler's `Progress` argument: `progress.send(json!({"text": text}))`, with `"skipped"` added when bytes were left out. The run task holds a clone; a send after the reply is dropped |
 | Command construction | `HostPlatform::build_process_spec(command, cwd).await` returns `(ProcessSpec, ExecShellRuntime)` or `ProcessSpecError { code, reason }`; it reads the current shell itself. The handler `select!`s it against the call's token |
 | Process | `HostPlatform::spawn(ProcessSpec)` returns a `ProcessTree` with `stdout`, `stderr`, `wait` and `terminate` |
 | Run tasks | ShellInput's own `TaskTracker`, separate from the calls `SessionMethods` tracks; each task owns its `ProcessTree` and watches `ctx.cancelled()` and `SessionLifecycle::closing()`; `ctx.effect` registers the disposer that waits for the tracker. The call's token, the generation token and the Session phase are read under the registry lock right before `spawn`, and the disposer closes the tracker under that lock. The `SessionHold` from `SessionLifecycle::take_hold()` is taken there too and kept in the run's registry entry, which the task clears after the run's last fact |
-| Recorded input (A.3) | `TreeCommands::get(branch_id)?.input(..)` |
+| Recorded input (A.3) | `TimelineTree::get(branch_id)?.input(..)` |
 | Process log | A `tracing` span `shell.run` with `session_id`, `branch_id` and `run_id`, with `outcome` recorded when the run ends |
 
 ```rust

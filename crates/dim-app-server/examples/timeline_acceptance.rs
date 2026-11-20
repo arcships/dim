@@ -15,7 +15,7 @@ use dim_agent_capabilities::{
     defaults,
     history::{HistoryRenderer, summary_message},
     host::*,
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{testing::MinimalHost, *};
 use dim_agent_types::*;
@@ -86,14 +86,14 @@ fn quantile(values: &mut [f64], p: f64) -> f64 {
 }
 
 struct CaptureTree {
-    captured: Arc<Mutex<Option<Arc<TreeCommands>>>>,
+    captured: Arc<Mutex<Option<Arc<TimelineTree>>>>,
 
-    tree: rutis::host::Key<TreeCommands>,
+    tree: rutis::host::Key<TimelineTree>,
 }
 impl CaptureTree {
     fn new(
         names: &dim_agent_runtime::Names<'_>,
-        captured: Arc<Mutex<Option<Arc<TreeCommands>>>>,
+        captured: Arc<Mutex<Option<Arc<TimelineTree>>>>,
     ) -> rutis::Result<Self> {
         Ok(Self {
             captured,

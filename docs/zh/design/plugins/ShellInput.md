@@ -15,7 +15,7 @@ flowchart LR
   end
   subgraph S["Session 作用域"]
     SI["ShellInputPlugin（运行注册表，sessionMethods shell）"]:::new
-    TC["TreeCommands"]
+    TC["TimelineTree"]
     SS["SessionConfig、SessionLifecycle、SessionIdentity"]
   end
   subgraph B["分支"]
@@ -32,7 +32,7 @@ flowchart LR
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `ShellInputPlugin` | Session | `P:HostPlatform`（与 WorkspaceTools 的用法相同）、`S:SessionConfig`（`cwd`）、`S:TreeCommands`、`S:SessionLifecycle`、`S:SessionIdentity`、`S:sessionMethods` | 把 `shell` 注册到 `sessionMethods` |
+| `ShellInputPlugin` | Session | `P:HostPlatform`（与 WorkspaceTools 的用法相同）、`S:SessionConfig`（`cwd`）、`S:TimelineTree`、`S:SessionLifecycle`、`S:SessionIdentity`、`S:sessionMethods` | 把 `shell` 注册到 `sessionMethods` |
 
 依赖的契约：
 
@@ -229,7 +229,7 @@ Session 部件加载期间该条目生效，其文本是代码（[Prompt §5](Pr
 | §4.4 核心机制不带业务含义 | Rpc、InputQueue 与 Loop 不为 ShellInput 增加处理：Rpc 按命名空间找到它，标记是普通 raw 块。 |
 | §4.5 决定前读完整个批次 | 不适用：ShellInput 不读任何 Timeline 事件，它唯一的事件（`input/message`）不需要同批次的其他事实。 |
 | §4.6 模型上下文只含交接后被读取的事件 | 输出只在 InputQueue 应用、Loop 消费该输入后进入模型；`!!` 的输出和进度从不进入。 |
-| §4.7 插件之间只通过公开事件和服务交互 | ShellInput 经 `S:TreeCommands` 使用 `Branch::input`，并使用 `SessionConfig`、`SessionLifecycle`、`SessionIdentity`、HostPlatform 与 `sessionMethods` 契约。 |
+| §4.7 插件之间只通过公开事件和服务交互 | ShellInput 经 `S:TimelineTree` 使用 `Branch::input`，并使用 `SessionConfig`、`SessionLifecycle`、`SessionIdentity`、HostPlatform 与 `sessionMethods` 契约。 |
 | §4.8 基础设施默认不变 | 基础设施不变，不向运行时或 rutis 提需求（§9）。需要 Rpc（逐次调用的进度，在 C1 中）和 HostPlatform（命令构造器，S7）做的改动列在 A.5；Agents 活动句柄由空闲卸载提出的运行时活动持有取代（A.5）。 |
 | §4.9 只有后续决定要用的事实进入 Timeline | 只有 `!` 的记录结果进入，作为模型会读取的输入。进度是一次调用的回复数据，不是 Session 状态，因此既不进 Timeline，也不走 Session 广播通知；运行记录进入进程日志。 |
 | §1 Capability 与 App Server 边界 | ShellInput 是 dim-agent-capabilities 中自成模块的 Session Capability；Rpc 只分派 `sessionMethods`。 |
@@ -329,7 +329,7 @@ setsid  o--------------------------------------> own session (POSIX): not reache
 
 | 步骤 | 机制 |
 | --- | --- |
-| 启动 | 解析参数（`invalid_params`）；准入（见下）；通过 `S:TreeCommands` 解析分支；构造 `ProcessSpec`（S7；`shell_unavailable`），直到调用的取消令牌触发为止；然后在登记表的锁内一步完成：再次准入、取得 Session 持有、`spawn`（`spawn_failed`）、连同持有登记运行，并在本代的任务跟踪器中启动它的任务，而不是在调用中运行。`runId` 在其进程启动后、或被先到的 stop 结束后才算用过，被拒绝的启动不占用它 |
+| 启动 | 解析参数（`invalid_params`）；准入（见下）；通过 `S:TimelineTree` 解析分支；构造 `ProcessSpec`（S7；`shell_unavailable`），直到调用的取消令牌触发为止；然后在登记表的锁内一步完成：再次准入、取得 Session 持有、`spawn`（`spawn_failed`）、连同持有登记运行，并在本代的任务跟踪器中启动它的任务，而不是在调用中运行。`runId` 在其进程启动后、或被先到的 stop 结束后才算用过，被拒绝的启动不占用它 |
 | 准入 | 依次拒绝：调用已被中断（`operation_interrupted`）、本代正在卸载（`service_reloading`）、Session 正在关闭（`session_closed`）、已有登记的运行（`shell_busy`）、`runId` 已用过（`duplicate_run`）。第二次准入随后取走为该 `runId` 记住的 stop：什么都不启动，回复 `{runId, status: "stopped", output: "", truncated: false, durationMs: 0}`，不记录，也没有 span。否则它取得 Session 持有：Session 正在关闭或已决定空闲释放时为 `None`，此时以 `session_closed` 拒绝运行，`runId` 保持未使用 |
 | 持有 | 每次运行一个 `SessionLifecycle::take_hold()`，保存在它的登记项中。任务把运行移出登记表时释放它：在运行的最后一个事实之后（下文的写入、`private` 的退出或终止），并在 `shell.stop` 或回复看到运行结束之前。持有期间 `Session::unload_if_idle()` 拒绝；Session 关闭不理会它（空闲卸载 §5.1） |
 | 运行 | 任务持有进程树。它读取两个管道，发送有上限的进度（A.1），保留有界尾部，并等待退出、`shell.stop`、`SessionLifecycle::closing()` 或本代的取消 |
@@ -511,14 +511,14 @@ ShellInput 用 Rust 实现，为 dim-agent-capabilities 的 `shell_input` 模块
 
 | 中立契约 | Rust 绑定 |
 | --- | --- |
-| 插件 | `TypedPlugin`；`Deps = (Keyed<HostPlatform>, Keyed<SessionConfig>, Keyed<TreeCommands>, Keyed<SessionLifecycle>, Keyed<SessionIdentity>, Keyed<SessionMethods>)` |
+| 插件 | `TypedPlugin`；`Deps = (Keyed<HostPlatform>, Keyed<SessionConfig>, Keyed<TimelineTree>, Keyed<SessionLifecycle>, Keyed<SessionIdentity>, Keyed<SessionMethods>)` |
 | 命名空间 `shell` | 在 `Keyed<SessionMethods>` 依赖（`dim_agent_capabilities::methods`）上调用 `methods.register(ctx, "shell", declarations, handler)`，在 `apply` 中于 ShellInput 自己的 effect 之后调用，因此它的卸载 effect 先运行。`declarations` 为 `MethodDecl { progress: true, ..MethodDecl::new("shell.run", true, Interruption::Report) }`、`MethodDecl::new("shell.stop", true, Interruption::Report)` 和 `MethodDecl::new("shell.list", false, Interruption::Report)` |
 | 处理函数 | 一个 `Handler`，以方法名、参数、调用的 `CancellationToken`（A.4 两种取消）和它的 `Progress` 调用，返回 `Result<Value, RpcError>` 的 future。自己的错误用 `RpcError::app(-32000, "shell_busy", ..)` 等，`invalid_params` 用 `RpcError::invalid`；运行时门面的错误用 `?` 转换（`From<AgentError> for RpcError`） |
 | 进度 | 处理函数的 `Progress` 参数：`progress.send(json!({"text": text}))`，有略去的字节时加上 `"skipped"`。运行任务持有它的克隆；回复之后的发送被丢弃 |
 | 命令构造 | `HostPlatform::build_process_spec(command, cwd).await` 返回 `(ProcessSpec, ExecShellRuntime)` 或 `ProcessSpecError { code, reason }`；内部读取当前 shell。处理函数用 `select!` 让它与调用的取消令牌竞争 |
 | 进程 | `HostPlatform::spawn(ProcessSpec)` 返回带 `stdout`、`stderr`、`wait` 和 `terminate` 的 `ProcessTree` |
 | 运行任务 | ShellInput 自己的 `TaskTracker`，与 `SessionMethods` 跟踪的调用分开；每个任务持有自己的 `ProcessTree`，观察 `ctx.cancelled()` 和 `SessionLifecycle::closing()`；`ctx.effect` 登记等待该跟踪器的卸载清理函数。`spawn` 之前在登记表的锁内读取调用的取消令牌、本代的取消令牌和 Session 阶段，卸载清理函数在同一把锁内关闭跟踪器。`SessionLifecycle::take_hold()` 返回的 `SessionHold` 也在那里取得，保存在运行的登记项中，任务在运行的最后一个事实之后清除该登记项 |
-| 记录的输入（A.3） | `TreeCommands::get(branch_id)?.input(..)` |
+| 记录的输入（A.3） | `TimelineTree::get(branch_id)?.input(..)` |
 | 进程日志 | `tracing` span `shell.run`，带 `session_id`、`branch_id` 与 `run_id`，运行结束时记录 `outcome` |
 
 ```rust

@@ -50,7 +50,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           },
@@ -72,7 +72,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -98,7 +98,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -959,7 +959,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           },
@@ -981,7 +981,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -1007,7 +1007,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -1326,7 +1326,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           },
@@ -1364,7 +1364,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -1408,7 +1408,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -1853,7 +1853,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           }
@@ -1866,7 +1866,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -1880,7 +1880,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -2061,7 +2061,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           }
@@ -2074,7 +2074,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -2088,7 +2088,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -2108,7 +2108,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           }
@@ -2121,7 +2121,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -2135,7 +2135,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -2150,7 +2150,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           },
@@ -2162,7 +2162,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "provider": 31,
             "generation": 1
@@ -2176,7 +2176,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
+            "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 31,
             "declared": true,
             "external": true
@@ -2265,12 +2265,6 @@
       },
       {
         "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
-        "provider": 31,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
         "provider": 31,
         "generation": 1,
         "removing": false
@@ -2402,6 +2396,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#timelineTree@session",
+        "provider": 31,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#toolHost@session",
         "provider": 21,
         "generation": 1,
@@ -2416,12 +2416,6 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#toolSourcesView@session",
         "provider": 33,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#treeCommands@session",
-        "provider": 31,
         "generation": 1,
         "removing": false
       }

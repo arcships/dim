@@ -1,25 +1,22 @@
 use super::*;
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DirectoryDisplay {
     pub entry: BranchDirectoryEntry,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub purpose: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cut_messages: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub end: Option<BranchEndData>,
 }
 
-impl TreeCommands {
+impl TimelineTree {
     /// Reads one branch's creation purpose/source and end detail.
     /// Unknown branches and failed history reads return errors.
-    pub async fn display(&self, id: String) -> Result<DirectoryDisplay> {
-        let tree = self
-            .tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
-        let mut entry = tree
-            .directory()
-            .into_iter()
-            .find(|entry| entry.info.id == id)
-            .ok_or(AgentError::UnknownBranch(id))?;
+    pub(super) async fn display_line(&self, id: String) -> Result<DirectoryDisplay> {
+        let mut entry = self.directory_entry(&id)?;
         let mut purpose = None;
         if let (Some(parent), Some(anchor)) = (&entry.info.parent, entry.info.create_anchor) {
             let point = self

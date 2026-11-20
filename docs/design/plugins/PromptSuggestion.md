@@ -13,7 +13,7 @@ The feature is one plugin with two parts, split by the owner of their state:
 | Part | Scope | State it owns | Depends on | Provides |
 | --- | --- | --- | --- | --- |
 | `PromptSuggestionSettings` | Process (App Server) | The `prompt-suggestion` Settings source | `P:Settings` | `P:PromptSuggestionSettingsHost` |
-| `PromptSuggestion` | Session | The latest completed turn's request and content, the offer in flight, the shown offer, the unused count | `S:SessionIdentity`, `S:SessionConfig`, `S:SessionLifecycle`, `S:SessionMethods`, `S:TreeCommands`, `P:ModelHost`, `P:ProviderConnectionResolver` in the product's process-model mode, and, when the assembly binds it, `P:PromptSuggestionSettingsHost` | `session.suggestion` with `sessionMethods` |
+| `PromptSuggestion` | Session | The latest completed turn's request and content, the offer in flight, the shown offer, the unused count | `S:SessionIdentity`, `S:SessionConfig`, `S:SessionLifecycle`, `S:SessionMethods`, `S:TimelineTree`, `P:ModelHost`, `P:ProviderConnectionResolver` in the product's process-model mode, and, when the assembly binds it, `P:PromptSuggestionSettingsHost` | `session.suggestion` with `sessionMethods` |
 
 The process part declares the source where every other business source of this daemon lives, next to `ExecutionSettings` and `ModelLog`; the source is process state shared by Sessions, so it is not a Session part ([ADR 002 D1](../../adr/002-plugin-scope.md)). The source itself is read by the Session part through the host port at each decision ([ADR 002 D4](../../adr/002-plugin-scope.md)): changing `enabled` or `maxChars` never reloads a part.
 
@@ -302,7 +302,7 @@ None ([principles §4 rule 8](../../architecture/rust-agent/principles.md)). The
 | `ModelHost` | `invoke` | async | `{request, connection, cancel}` | A stream of `ModelChunk` |
 | `ProviderConnectionResolver` | `resolve` | async | `{request, cancel}` | `{connection, failurePolicy, recovery}` (process models only; a local model sends `ModelConnection::Local`, and its assembly installs the part with `install_local` instead of `install`) |
 | `SessionMethods` | `register` | sync | namespace `session.suggestion`, two declarations | The registrations end with this part's generation |
-| `TreeCommands` | `get` | sync | `main` | The branch, whose `ContextPreparation::usage` the context gate reads |
+| `TimelineTree` | `get` | sync | `main` | The branch, whose `ContextPreparation::usage` the context gate reads |
 | Session broadcast | record on `session/{sessionId}` | bus event | - | `Event {branchId, event}`, `Notice`, `Fence`, `Closed` |
 | Settings source `prompt-suggestion` | `read` | async | user scope | `{enabled, maxChars}` |
 

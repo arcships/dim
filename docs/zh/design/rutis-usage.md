@@ -466,7 +466,7 @@ async def apply_branch(ctx, config):
     identity = await ctx.use("timelineIdentity").get()
     ...
 
-branch = define_plugin(apply_branch, inject=["dispatcher", "timelineIdentity", "treeCommands"])
+branch = define_plugin(apply_branch, inject=["dispatcher", "timelineIdentity", "timelineTree"])
 
 inject = ["partRegistry"]
 provides = {}

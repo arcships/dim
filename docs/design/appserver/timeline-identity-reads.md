@@ -11,7 +11,7 @@ Scope: 原生 Store 的查询执行。关联问题：[#1320](https://github.com/
   -> Timeline.query：固定 branch/chain、through 和可见尾部
      -> Store.query：执行索引定位与属性投影
 
-结束分支 -> TreeCommands.query -> Store.query
+结束分支 -> TimelineTree.query -> Store.query
 ```
 
 插件不读写数据库。Store 不计算业务状态。既有 session 方法仍由各业务 owner 提供。

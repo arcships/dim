@@ -148,7 +148,7 @@ async fn read_both_sides(config: ServerConfig) {
     assert_eq!(pinned["result"]["nextAfter"], cutoff);
     assert_eq!(pinned["result"], racing["result"]);
     let tree = session
-        .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()
+        .session_service::<dim_agent_capabilities::timeline_tree::TimelineTree>()
         .unwrap();
     let facts = tree.page(child.clone(), 0, 256, through).await.unwrap();
     if native {

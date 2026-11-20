@@ -87,7 +87,7 @@ Everything is computed from that one head, so a call never mixes two heads. An
 ancestor is still read to its cut. The pattern is the one `wait` already uses
 ([wait.rs](../../../crates/dim-agent-capabilities/src/wait.rs)): a Session tool that
 resolves the calling branch from `ToolExecutionContext.branch_id` through
-`TreeCommands`. Recall does not apply compaction: it walks the whole pinned history the
+`TimelineTree`. Recall does not apply compaction: it walks the whole pinned history the
 pages reach.
 
 Search has a separate candidate and verification path. It first selects origin
@@ -123,7 +123,6 @@ accordingly.
 
 On a line while it is ending, `branch/end` is not told and the `end` call is told like any other
 call.
-
 
 Candidate queries return `position`, `kind`, `id` and the identities required by
 §3.2, not the body. For input things the candidate is `input/consumed`: its position
@@ -582,7 +581,7 @@ configured. Rejected:
 | Principles §4 rule 4 (no business meaning in core) | No core change. Recall itself also knows no producer: it tells runtime blocks by the tag and attributes of their text and by `key`/`retire`, so the Prompt, Goal and background-notification blocks need no case of their own. |
 | Principles §4 rule 5 (atomic batch) | Not applicable: it writes nothing; its read is pinned to one published head. |
 | Principles §4 rule 6 (context from handed-over events) | It selects with the context-assembly rules and adds only the public experience events it names; every other kind is not told. Its result reaches the model only as a tool result. |
-| Principles §4 rule 7 (public events and services) | It uses `TreeCommands`, the Branch facade and public events and their join ids. It reads no plugin's internal state. |
+| Principles §4 rule 7 (public events and services) | It uses `TimelineTree`, the Branch facade and public events and their join ids. It reads no plugin's internal state. |
 | Principles §4 rule 8 (infrastructure unchanged) | Timeline, Dispatcher, the envelope, assembly, the facades and the projection types are unchanged. |
 | Principles §4 rule 9 (only facts later decisions use) | No new event. |
 | Principles §1 (Capability and App Server boundary) | A Session Capability in `dim-agent-capabilities`, installed by `defaults::install_local_execution` beside `wait`, so the App Server's product and `--models` profiles both have it. |
@@ -702,7 +701,7 @@ in `crates/dim-app-server/tests` that finds `recall` in the tool table of both t
 ## 15. Ready
 
 Every rule and cited contract above was rechecked against main at
-`bf95eaf6` (events, Branch facade, `TreeCommands`, `wait`, ToolExecutor cancellation, the block
+`bf95eaf6` (events, Branch facade, `TimelineTree`, `wait`, ToolExecutor cancellation, the block
 producers, `session/forked`, ADR 001 of 2026-10-20).
 
 Approved as Ready by the maintainer (2026-10-21), with these decisions:
@@ -730,7 +729,7 @@ pub fn feature() -> Feature {
     Feature::new("Recall").session("Recall", |names| Ok(Box::new(RecallPlugin::new(names)?)))
 }
 pub struct RecallPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     tools: Key<ToolRegistry>,
 }
 impl RecallPlugin {
@@ -740,7 +739,7 @@ impl DynPlugin for RecallPlugin {
     // injects: [tree.erase(), tools.erase()]
     // apply: tools.register(ctx, ToolContribution { definition, handler: RecallTool(tree) })
 }
-struct RecallTool(Arc<TreeCommands>);
+struct RecallTool(Arc<TimelineTree>);
 impl ToolHandler for RecallTool { /* §3–§6 */ }
 
 // dim-agent-capabilities/src/defaults.rs, install_local_execution, beside wait::install

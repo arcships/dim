@@ -31,7 +31,7 @@ InputQueue decides conditional acceptance in sequence order
 
 | Service | Purpose |
 | --- | --- |
-| `S:TreeCommands` | Find the branch named by a call and read its InputQueue. |
+| `S:TimelineTree` | Find the branch named by a call and read its InputQueue. |
 | `S:SessionMethods` | Register `session.input` from `apply`, until this part unloads. |
 
 ### Events and lifetime
@@ -63,7 +63,7 @@ covers the table and the Rpc entries.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:SessionMethods`、`S:TreeCommands` |
+| 注入 | `S:SessionMethods`、`S:TimelineTree` |
 | 提供 | `S:SubmitChecks` |
 | 被注入于 | `HooksSession`、`Skills` |
 <!-- /generated -->
@@ -80,7 +80,7 @@ observable input queue.
 | --- | --- |
 | `B:Dispatcher` | Hand off restored queue state to live input/turn/interrupt transitions. |
 | `B:Timeline` | Commit withdrawal commands and atomic application or withdrawal results. |
-| `S:TreeCommands` | Reach the validating branch input entry for `submit`. |
+| `S:TimelineTree` | Reach the validating branch input entry for `submit`. |
 | `B:TimelineIdentity` | Identify the branch for `submit`. |
 
 ### Data face
@@ -174,7 +174,7 @@ are ignored; original facts and native member indexes remain authoritative.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TimelineTree` |
 | 提供 | `B:InputQueue`、`B:StateCell<InputSnapshot>`、`B:dyn HostDispatch#inputQueue` |
 | 被注入于 | — |
 <!-- /generated -->

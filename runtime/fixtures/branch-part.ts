@@ -5,11 +5,11 @@ import type { BranchEvent, Services } from '../../npm/plugin.js'
 export const part = definePlugin({
   name: 'BranchPartFixture',
   provides: {},
-  inject: ['dispatcher', 'timeline', 'timelineIdentity', 'treeCommands', 'branchLine'],
+  inject: ['dispatcher', 'timeline', 'timelineIdentity', 'timelineTree', 'branchLine'],
   async apply(ctx) {
     const dispatcher = ctx.use<Services['dispatcher']>('dispatcher')
     const timeline = ctx.use<Services['timeline']>('timeline')
-    const tree = ctx.use<Services['treeCommands']>('treeCommands')
+    const tree = ctx.use<Services['timelineTree']>('timelineTree')
     const line = ctx.use<Services['branchLine']>('branchLine')
     const lineState = async () => JSON.stringify({
       resolved: await line.resolved(), ending: await line.ending(), cursor: await line.cursor('main'),

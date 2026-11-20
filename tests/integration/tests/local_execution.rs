@@ -19,7 +19,7 @@ use dim_agent_capabilities::{
         HostPlatformConfig, HostPlatformPlugin, OutputEncoding, ShellEdition, ShellSource,
         ShellStatus, resolve_shell,
     },
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     wait,
     workspace_tools::{
         self, WorkspaceToolsConfig,
@@ -186,7 +186,7 @@ type Probed = Vec<(String, Arc<Timeline>, Ctx)>;
 #[derive(Clone, Default)]
 struct Seen {
     timelines: Arc<Mutex<Probed>>,
-    tree: Arc<Mutex<Option<Arc<TreeCommands>>>>,
+    tree: Arc<Mutex<Option<Arc<TimelineTree>>>>,
 }
 impl Seen {
     fn timeline(&self, branch: &str) -> Arc<Timeline> {
@@ -218,7 +218,7 @@ impl Seen {
         let (.., ctx) = timelines.iter().rfind(|(id, ..)| id == branch).unwrap();
         ctx.view(id).unwrap().restart()
     }
-    fn tree(&self) -> Arc<TreeCommands> {
+    fn tree(&self) -> Arc<TimelineTree> {
         self.tree.lock().unwrap().clone().expect("probed tree")
     }
     /// The probed branch's own context, which reads the services of its
@@ -238,7 +238,7 @@ struct Probe {
     seen: Seen,
     timeline: Key<Timeline>,
     identity: Key<TimelineIdentity>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
 }
 impl Probe {
     fn new(names: &Names<'_>, hook: Hook, seen: Seen) -> rutis::Result<Self> {

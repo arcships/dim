@@ -306,7 +306,7 @@ Session fork 只在没有缺少结果的工具提议的静止点切 `main`（[se
 | 元素 | 结果 |
 | --- | --- |
 | `question/*` 事件、Questions 重放、动态事件 | 已在 #178 删除（§2） |
-| 分支部分 `questions`、它对 `step/tool-result` 的 Dispatcher 订阅、保留的已回答/已取消条目、`question_already_answered` 和 `question_cancelled` | 本次删除。等待的处理函数本来就属于 Session 部分，分支关闭（经由它的中断）和重载通过 ToolExecutor 的取消令牌到达它，所以分支部分只多出一次经 `TreeCommands` 的查找和第二个生命周期。保留条目只是让第二个客户端在 `step/tool-result` 之前分辨“别处已回答”和“尚未就绪”；去掉后两者都得到 `question_not_pending`，提示仍在 `step/tool-result` 时正确关闭。已复核：回答、拒绝、中断、重载、关闭、重启和两个客户端（附录 B）的结果不变 |
+| 分支部分 `questions`、它对 `step/tool-result` 的 Dispatcher 订阅、保留的已回答/已取消条目、`question_already_answered` 和 `question_cancelled` | 本次删除。等待的处理函数本来就属于 Session 部分，分支关闭（经由它的中断）和重载通过 ToolExecutor 的取消令牌到达它，所以分支部分只多出一次经 `TimelineTree` 的查找和第二个生命周期。保留条目只是让第二个客户端在 `step/tool-result` 之前分辨“别处已回答”和“尚未就绪”；去掉后两者都得到 `question_not_pending`，提示仍在 `step/tool-result` 时正确关闭。已复核：回答、拒绝、中断、重载、关闭、重启和两个客户端（附录 B）的结果不变 |
 | `respond` 中 `branchId` 默认 `"main"` | 删除：客户端总能从 `session.event` 得到分支；默认值只会诱发回答错分支 |
 | 原 F2（非交互 Session 中的审批） | 删除：归 Approval，已在 [CLI 命令](../../../design/cli-commands.md#execution-and-jsonl-output)和 [sessions-service D10](../appserver/sessions-service.md) 中决定 |
 | 用互斥表而不是 `StateCell` | 保留：条目是实时 I/O 等待，不是可从 Timeline 重建的状态 |

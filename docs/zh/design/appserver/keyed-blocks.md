@@ -82,7 +82,7 @@
 
 该读使用属性查询的数组条件、删除关联及位置游标，不新增块级持久化投影。成本取决于 opening 以上的相关输入与关联查询；按[SQL 验收](../timeline-property-query.md#81-sql-成本验收)检查实际扫描量与索引，不能仅按返回块数估计。
 
-本读沿用 `session.history` 的双 owner 模式：活线经其 Session 读取（`Session::query`，读发布头），结束线经 TimelineTree 在其固定头读取（`TreeCommands::query`）。调用期间线结束会回答 `branch_ended`；随后改经 tree 在固定头重读。与 `latestTurn` 窗口不同，本读不需要原生存储：两种 owner 都能提供。
+本读沿用 `session.history` 的双 owner 模式：活线经其 Session 读取（`Session::query`，读发布头），结束线经 TimelineTree 在其固定头读取（`TimelineTree::query`）。调用期间线结束会回答 `branch_ended`；随后改经 tree 在固定头重读。与 `latestTurn` 窗口不同，本读不需要原生存储：两种 owner 都能提供。
 
 ## 4. `through` 与客户端的实时 overlay
 
@@ -135,7 +135,7 @@ projection(through) = delivered_state(through)
 | ADR 019 D2（固定语义） | 按 sequence 排序的下行页，短页即穷尽，推进用范围而非 offset |
 | ADR 019 D3（查询面向事件合同） | 只指名 kinds 与 sequence 起点；不指名表、列或索引 |
 | ADR 019 D4（索引是派生的或格式的一部分） | 不新增索引；块级 key 谓词在当前查询中无法表达，也不加入 |
-| [ADR 020](../../adr/020-timeline-read-convergence.md) D1（一次读取，门面只转发） | 读取经 `Session::query` 与 `TreeCommands::query`，与 `session.history` 相同的门面 |
+| [ADR 020](../../adr/020-timeline-read-convergence.md) D1（一次读取，门面只转发） | 读取经 `Session::query` 与 `TimelineTree::query`，与 `session.history` 相同的门面 |
 | [ADR 021](../../adr/021-reads-follow-the-state-owner.md) D3（客户端读取需要活着的 Session） | 调用先 acquire Session；没有为进程未持有的 Session 读取存储事实的分支 |
 | ADR 021 D2（结束线经拥有其结束的对象读取） | 结束线经 TimelineTree 在固定头读取，包括线在调用中途结束的情形 |
 

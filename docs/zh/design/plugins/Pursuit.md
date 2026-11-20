@@ -14,7 +14,7 @@
 | P2 | 裁判由 `set` 按目标选择，记在 `set` 块上 | 它是用户对这个目标的意图，属于 Timeline 事实 |
 | P3 | 在干活模型的完成报告让 Goal 停下时评审 | 只有这个点是干活的模型认为目标已完成。干活模型的 `blocked` 直接生效（需要用户处理）；上限，以及用户自己的中断或暂停，都不是完成，不启动任何东西 |
 | P4 | 评审裁判下干活模型的 `completed` 是请求，状态保持 `active` | 只有评审者能使目标完成。这是 Goal 折叠规则唯一的例外，随本设计记录在 [Goal A16](Goal.md#附录-e-假设) 中（维护者决定，2026-10-22） |
-| P5 | 评审者是在该 `turn/end` 处切出的子分支 | 它能看到做了什么、为什么做，在同一策略下运行，是用 `treeCommands.create` 创建的普通分支 |
+| P5 | 评审者是在该 `turn/end` 处切出的子分支 | 它能看到做了什么、为什么做，在同一策略下运行，是用 `timelineTree.create` 创建的普通分支 |
 | P6 | 评审者把结论作为输入写到工作分支；由那里的 Goal 决定 | 分支只折叠自己的事件；跨分支通信就是按 id 写输入（[插件契约 §5.2](plugin-contract.md#52-消费事实)），一条线经工具结果读取它被切出来的那条线（[Timeline 分支](../../../design/timeline-branches.md#6-线之间的消息) §6）。调用方写，所有者决定 |
 
 ## 2. 用户流程
@@ -53,7 +53,7 @@
 
 | 消费的事件 | 条件 | 动作 |
 | --- | --- | --- |
-| `turn/end` N | Goal 的 C1–C4 满足（目标 active、未中断、回合 `completed`、是最新的且未决定），裁判为 `evaluator`，且该回合包含干活模型的 `completed` 块 | 取代 Goal 的续跑决定：`treeCommands.create(B, N, {prompt, source: {kind: "host", operation_id: "goal:evaluate:N"}}, cancelled)`。Goal 的 `decided` 把该 `branch/create` 算作 `N` 的决定（§3），所以重载不会再次创建 |
+| `turn/end` N | Goal 的 C1–C4 满足（目标 active、未中断、回合 `completed`、是最新的且未决定），裁判为 `evaluator`，且该回合包含干活模型的 `completed` 块 | 取代 Goal 的续跑决定：`timelineTree.create(B, N, {prompt, source: {kind: "host", operation_id: "goal:evaluate:N"}}, cancelled)`。Goal 的 `decided` 把该 `branch/create` 算作 `N` 的决定（§3），所以重载不会再次创建 |
 | `goal:evaluate:N` 的 `branch/create-failed`，或在 `N` 的任何 `branch/create` 提交之前 `create` 抛出 | `N` 仍是当前评审 | 暂停（`evaluation_failed`），与 Goal 的暂停一样标记 `after="N"`；两者中先写出暂停的一个使 `N` 对另一个而言已被取代。已提交的创建会记录自己的结果（子分支或 `branch/create-failed`），由那个事实决定；因任务被取消而抛出时不写任何东西 |
 | 评审 `N` 的结论输入 | 是 `N` 的第一份结论，来自 `goal:evaluate:N` 的 `branch/create` 所记录的分支，且 `N` 仍是当前评审：`N` 之后没有更新的变更：`set`、`edit`、`clear`、`pause` 或 `resume` 触发器、干活模型新的 `completed`，或旧历史中带 key 的块。Goal 为回答 `N` 自己回合内的变更而写的 `goal:state` 记录是那个变更的陈述，不是新的变更，因此不会让 `N` 过期；暂停目标的记录通过状态本身停止结论 | `done`：评审者判定的 `completed`。`blocked`：评审者判定的 `blocked`。`continue`：Goal 的续跑决定（[Goal A.4](Goal.md#a4-续跑决策) 的 C1、C5 和 C6；只有设置了 `maxContinuations` 时 C6 才生效；以及后台等待），然后写使用 Pursuit 文本的续跑，或暂停（`limit`）；与任何回合结束时一样，有待处理的驱动输入就不续跑（C5），有后台任务仍开放时也不决策：折叠保留该结论，关闭最后一个开放任务的 cancelled 结束会执行它。`failed`：暂停（`evaluation_failed`） |
 
@@ -65,7 +65,7 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 
 | 消费的事件 | 条件 | 动作 |
 | --- | --- | --- |
-| `turn/end` M，状态 `completed` | 回复带有结论 | 用 `treeCommands.input` 写到 `B`（Append），标记 `evaluation="N" evaluator="E"` |
+| `turn/end` M，状态 `completed` | 回复带有结论 | 用 `timelineTree.input` 写到 `B`（Append），标记 `evaluation="N" evaluator="E"` |
 | `turn/end` M，状态 `completed` | 没有结论，且 `M` 是评审分支的第一个回合结束 | 在评审分支上写一条追问（Queue，`after="M"`），要求它以三种结论之一结束 |
 | `turn/end` M，状态 `completed` | 没有结论，且 `M` 不是第一个回合结束（已经追问过一次） | 向 `B` 写 `continue`，以截断到 4000 字符的整个回复为反馈 |
 | `turn/end` M，状态 `failed` 或 `cancelled` | — | 向 `B` 写 `failed` |
@@ -171,15 +171,15 @@ Goal 从分支的第一条本地 Queue 输入识别这个角色（Prompt 在 `br
 
 | # | 改动 |
 | --- | --- |
-| E1 | **从线的来源识别。** 当 `treeCommands.info(自己的 id)` 的 `source = {kind: "host", operation_id: "goal:evaluate:N"}` 且 `parent = B` 时，这条线上的 Goal 担任评审者角色，不再读 prompt 的第一行。prompt 保留 `<dim-goal kind="evaluate" …>` 这一首行，只给模型看（§5） |
-| E2 | **Goal 结束它的评审者。** 评审 `N` 的结论或失败已经决定（§4.1），或者之后的目标变更已经取代了 `N`，`N` 就在 `B` 上了结。了结之后，`B` 上的 Goal 通过一个写入前复核的自有任务，以 `treeCommands.end(E, {kind: "host", operation_id: "goal:evaluate:N"})` 结束 `E`。如果 `B` 的历史里已经有 `E` 的 `branch/ended`，Goal 什么也不做。加载时用同样的检查补齐：已记录的评审者，若它的 `N` 已了结、而 `B` 上没有它的 `branch/ended`，就结束它 |
+| E1 | **从线的来源识别。** 当 `timelineTree.info(自己的 id)` 的 `source = {kind: "host", operation_id: "goal:evaluate:N"}` 且 `parent = B` 时，这条线上的 Goal 担任评审者角色，不再读 prompt 的第一行。prompt 保留 `<dim-goal kind="evaluate" …>` 这一首行，只给模型看（§5） |
+| E2 | **Goal 结束它的评审者。** 评审 `N` 的结论或失败已经决定（§4.1），或者之后的目标变更已经取代了 `N`，`N` 就在 `B` 上了结。了结之后，`B` 上的 Goal 通过一个写入前复核的自有任务，以 `timelineTree.end(E, {kind: "host", operation_id: "goal:evaluate:N"})` 结束 `E`。如果 `B` 的历史里已经有 `E` 的 `branch/ended`，Goal 什么也不做。加载时用同样的检查补齐：已记录的评审者，若它的 `N` 已了结、而 `B` 上没有它的 `branch/ended`，就结束它 |
 | E3 | **结论之前的外部结束算 `failed`。** `N` 仍是当前评审时，如果 `B` 上 `E` 的 `branch/ended` 出现在 `E` 的结论之前，就判为 `failed`：暂停（`evaluation_failed`），与 §4.1 相同 |
 
 接口：
 
 - Goal 的分支部件新增 Dispatcher key `branch/ended`。
 - Goal 的分支部件注入 `sessionLifecycle`（`activated()`）：加载时的结束要等 Session 发布其恢复打开的各条线（E2）。
-- Goal 的分支部件经 Rust 导出使用 `TreeCommands` 的 `create`、`input`、`end` 与 `info`，并读 `TimelineInfo.source` 识别评审线。
+- Goal 的分支部件经 Rust 导出使用 `TimelineTree` 的 `create`、`input`、`end` 与 `info`，并读 `TimelineInfo.source` 识别评审线。
 
 验收，使用假模型，放在 `crates/dim-goal/tests` 的流程测试中：
 

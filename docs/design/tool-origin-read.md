@@ -8,7 +8,7 @@ Null means no committed complete call has that identity at the cutoff; it does
 not mean an empty argument object. A partial call that never supplied arguments
 can have a terminal result and no complete call.
 
-The Session part ToolMethods declares TreeCommands and SessionMethods. It queries
+The Session part ToolMethods declares TimelineTree and SessionMethods. It queries
 the addressed branch's own facts, including ended branches, by request and call id,
 selects only the matching data and retains no event list. It never invokes the
 historical tool. Request cancellation ends the query.

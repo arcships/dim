@@ -86,8 +86,8 @@ unreleased.
  |    provides S:CompactionStrategyHost(Some(summary strategy))      |
  |  ContextMethods (new part)                                        |
  |    registers session.context with sessionMethods: compact, usage  |
- |      compact -> TreeCommands.get(b).service::<AgentLoop>().compact()
- |      usage   -> TreeCommands.get(b).service::<ContextPreparation>().usage()
+ |      compact -> TimelineTree.get(b).service::<AgentLoop>().compact()
+ |      usage   -> TimelineTree.get(b).service::<ContextPreparation>().usage()
  +---------------------------------^---------------------------------+
             Rpc (C1) dispatches ---'
  Branch scope (one Timeline, one Dispatcher)
@@ -106,7 +106,7 @@ unreleased.
 
 `ProductContextModel` needs no service, so it is a plain Session value. ContextMethods is a
 separate part from the strategy because branches inject `CompactionStrategyHost`, and its
-provider must not depend on `TreeCommands`, which the branch tree provides.
+provider must not depend on `TimelineTree`, which the branch tree provides.
 
 ### 2.1 Where the manual step lives
 
@@ -506,7 +506,7 @@ pub struct ProductContextModel;                    // ResolveContextModel, no de
 pub struct ProductSummaryStrategyPlugin { host: DepKey<CompactionStrategyHost> }   // new(names)
 //   Deps = (Keyed<ModelHost>, Keyed<ProviderConnectionResolver>); provides CompactionStrategyHost
 pub struct ContextMethodsPlugin;
-//   Deps = (Keyed<TreeCommands>, Keyed<SessionMethods>); methods.register(ctx, "session.context", ..)
+//   Deps = (Keyed<TimelineTree>, Keyed<SessionMethods>); methods.register(ctx, "session.context", ..)
 
 // dim-app-server/src/cli.rs, defaults::install_compaction, the one install of every profile
 // that compacts; the product profile passes ProductContextModel and its product home,
@@ -1271,7 +1271,7 @@ A `failed` fact carries the same cost diagnostics as a completed one whenever th
 | §4 rule 4 (no business meaning in core) | Timeline, Dispatcher and facades unchanged. The digest is composed by ContextPolicy from the declarations on `step/tool-result` facts; no core part names an effect kind. |
 | §4 rule 5 (atomic batch) | Each new write is one event. |
 | §4 rule 6 (context only from handed-off events) | The replacement reaches the model only through the projection of a completed fact. Pending inputs are not consumed by a step (AGENTS rule 10). |
-| §4 rule 7 (public events and services) | `TreeCommands`, `Branch::service` on `PublicService`s, `ProviderConnectionResolver`, `ModelHost`, `sessionMethods`. |
+| §4 rule 7 (public events and services) | `TimelineTree`, `Branch::service` on `PublicService`s, `ProviderConnectionResolver`, `ModelHost`, `sessionMethods`. |
 | §4 rule 8 (infrastructure unchanged) | Dispatcher, envelope, rutis, loader, Agent assembly and facades unchanged. There is one infrastructure change (#130): snapshot anchoring in Timeline and both stores drops its knowledge of `context/compaction` and keeps only structural checks, and the owner's decode callback receives the anchor event. The requirement comes from Timeline itself: it must not know event content (principles §4 rule 4; Timeline checks only the envelope and reserved core domains, ADR 001). It closes within Timeline's own contract: a snapshot is a cache with a structural anchor. Valid snapshots behave the same, and an invalid one is a cache miss. |
 | §4 rule 9 (only needed facts) | `context/compact` is read by the Loop's later decisions and on reload. `context/compaction` is used by projection. `context/compaction-start` and the visible result are facts by the maintainer's decision, for two reasons. First, they do not only drive a state machine: they are content that users and other state machines need in order to read the history (a UI connecting at any time must see that a compaction is running or how it ended). Second, reload settlement uses them: an unmatched start means a compaction was in flight. The Loop and ContextPreparation rebuild from start/result pairs, which is more precise than commands alone because it tells a running compaction from a pending one and covers automatic compaction. Usage writes nothing. The completed result's `modelUsage` and `insufficientSpace` are descriptive fields of that required fact: the trigger reads the latest start's `through`, recovery reads the budget, and only a client reads the cost and the mark. The digest adds no fact: it is composed into the existing replacement from declarations the `step/tool-result` facts already carry. The next compaction's roll-forward is why the completed result stores the entries as data (`digest_entries`): that decision reads the field, never the rendered message, and the field is an optional part of a fact the projection already reads. |
 | ADR 002 D1 (scope) | Window facts, strategy and methods: Session. Command, step and slot: branch, in the Loop. The pinning, the digest, the retention rule and the mark are branch-scope ContextPolicy work: they read the branch's events and compose its record. |

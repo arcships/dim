@@ -4,7 +4,7 @@ use crate::{
     agent_loop::AgentLoop,
     context_preparation::{ContextOpError, ContextPreparation},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{
     Branch, Names, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec,
@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 pub const NAMESPACE: &str = "session.context";
 
 pub struct ContextMethodsPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
 }
 impl ContextMethodsPlugin {

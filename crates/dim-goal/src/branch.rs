@@ -5,7 +5,7 @@
 
 use crate::fold::{self, Conclusion, ConclusionAction, Decision, Fold, TurnEnd};
 use crate::text::{self, GoalTexts, Live};
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchLifecycle, BranchOptions, Dispatcher, Names, QueryComparison,
     QueryFilter, QueryOperand, QueryOrder, QueryOrderKey, QueryOutput, QueryPage, QueryPick,
@@ -167,7 +167,7 @@ where
 pub struct GoalBranch {
     dispatcher: Key<Dispatcher>,
     timeline: Key<Timeline>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     settings: Key<Settings>,
     identity: Key<TimelineIdentity>,
     phase: Key<BranchLifecycle>,
@@ -378,7 +378,7 @@ struct Owner {
     branch_id: String,
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     settings: Arc<Settings>,
     texts: Arc<GoalTexts>,
     phase: Arc<BranchLifecycle>,

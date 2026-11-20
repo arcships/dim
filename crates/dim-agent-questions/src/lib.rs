@@ -17,7 +17,7 @@
 use dim_agent_capabilities::{
     host::{HostError, HostFuture, ToolExecutionContext},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::{
         ToolClaim, ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition,
     },
@@ -512,7 +512,7 @@ pub struct QuestionsPlugin {
     config: Key<SessionConfig>,
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
 }
 impl QuestionsPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {

@@ -627,7 +627,7 @@ pub async fn branch_creates(session: &Session, branch: &str) -> Vec<(u64, Branch
 /// built has no published events yet.
 pub async fn first_user_text(session: &Session, branch: &str) -> String {
     let tree = session
-        .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()
+        .session_service::<dim_agent_capabilities::timeline_tree::TimelineTree>()
         .unwrap();
     let mut last = String::new();
     for _ in 0..750 {

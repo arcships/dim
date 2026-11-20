@@ -1518,7 +1518,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("settingsService", "owner-api"),
         ("submitChecks", "hot-path"),
         ("timelineFactory", "control"),
-        ("timelineTree", "owner-api"),
         ("timelineTreeControl", "owner-api"),
         ("toolBinding", "hot-path"),
         ("toolExecutor", "hot-path"),

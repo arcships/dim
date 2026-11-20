@@ -4,7 +4,7 @@ mod recovery;
 use crate::{
     host::HostFuture,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{
     AgentError, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell, Timeline,
@@ -207,7 +207,7 @@ pub struct InputQueue {
     observable: Arc<StateCell<InputSnapshot>>,
     pending_snapshot: Mutex<Option<(u64, usize)>>,
     timeline: Arc<Timeline>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     branch_id: String,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
@@ -232,7 +232,7 @@ impl Drop for WithdrawalWaiter<'_> {
 impl InputQueue {
     /// Commits an input through the branch entry, accepting each submission id once.
     pub async fn submit(&self, input: InputMessageData) -> Result<InputRef> {
-        let event = self.tree.get(&self.branch_id)?.input(input).await?;
+        let event = self.tree.input(self.branch_id.clone(), input).await?;
         Ok(InputRef {
             input_id: event.id.clone(),
             sequence: event.sequence,
@@ -365,7 +365,7 @@ pub struct InputQueuePlugin {
     queue: Key<InputQueue>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     identity: Key<TimelineIdentity>,
 }
 impl InputQueuePlugin {
@@ -645,7 +645,7 @@ struct WithdrawParams {
 /// Serves `session.input.withdraw` for every branch of its Session through
 /// the branch's InputQueue, so Rpc names no owning service.
 pub struct InputMethodsPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
     checks: Key<SubmitChecks>,
 }

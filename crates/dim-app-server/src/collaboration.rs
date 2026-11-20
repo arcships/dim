@@ -26,7 +26,7 @@ use dim_agent_capabilities::{
     methods::RpcError,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::PromptSnapshot,
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{
@@ -949,7 +949,7 @@ pub struct CollaborationSession {
     collaboration: Arc<Collaboration>,
     session_id: String,
     role: CollaborationRole,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     /// Gives each request its hold on this Session.
     lifecycle: Arc<SessionLifecycle>,
     /// The deployment's selectable models, when it reads them: the `models`
@@ -3375,7 +3375,7 @@ struct CollaborationSessionPlugin {
     collaboration: Key<Collaboration>,
     identity: Key<SessionIdentity>,
     config: Key<SessionConfig>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     lifecycle: Key<SessionLifecycle>,
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,

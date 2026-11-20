@@ -1,5 +1,5 @@
 use dim_agent_capabilities::{
-    methods::RpcError, prompt_state::PromptSnapshot, timeline_tree::TreeCommands,
+    methods::RpcError, prompt_state::PromptSnapshot, timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{
     AgentError, Branch, QueryEvent, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
@@ -50,7 +50,7 @@ pub(super) enum ErrorReference {
 impl ErrorReference {
     pub(super) async fn capture(
         self,
-        tree: Option<&TreeCommands>,
+        tree: Option<&TimelineTree>,
     ) -> Result<(Snapshot, Option<ModelId>), RpcError> {
         let (observed, branch, timeline) = match self {
             Self::Observed { observed } => (
@@ -190,7 +190,7 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    pub(super) async fn capture_session(tree: &TreeCommands) -> (Self, Option<ModelId>) {
+    pub(super) async fn capture_session(tree: &TimelineTree) -> (Self, Option<ModelId>) {
         let branch = tree.get(DEFAULT_BRANCH_ID).ok();
         let conversation_through = branch.as_ref().map(Branch::sequence);
         let timeline = match conversation_through {
@@ -225,7 +225,7 @@ pub(super) struct ConversationExcerpt {
 }
 
 pub(super) async fn capture_conversation(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     through: u64,
 ) -> Vec<ConversationExcerpt> {
     let Ok((events, _)) = read_window(
@@ -477,7 +477,7 @@ fn project(event: &AgentEvent, include_completed_model: bool) -> Option<Record> 
 }
 
 async fn read(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &str,
     sequence: u64,
     operation: Operation,
@@ -520,7 +520,7 @@ async fn read(
 }
 
 async fn read_window(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &str,
     through: u64,
     extra_kinds: &[&str],

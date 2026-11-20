@@ -1,7 +1,7 @@
 //! Branch TypeScript parts on the exported branch services
 //! (branch-typescript.md): a row that injects `dispatcher` runs in every
 //! branch, follows its committed events in order and writes input through
-//! `treeCommands`.
+//! `timelineTree`.
 use super::*;
 use dim_agent_runtime::Timeline;
 use dim_agent_runtime::testing::branch_events;
@@ -318,7 +318,7 @@ impl rutis::host::DynPlugin for HoldBuild {
     }
 }
 
-/// `treeCommands.create` takes the caller's cancellation as an explicit
+/// `timelineTree.create` takes the caller's cancellation as an explicit
 /// argument, as C4's `cancelled` does: one that never completes lets the
 /// child be created; one that has completed ends the call `Cancelled`. A
 /// creation already committed is a fact TimelineTree finishes.

@@ -12,7 +12,7 @@ only active lines read their opening source. Parent-child adjacency orders the d
 A Session with one line is on its root without a query; a Session with more reads the root's
 newest `branch/default` or `session/forked` through the kind index to find the default branch.
 The App Server only maps these owner-produced properties into its wire fields.
-`TreeCommands.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. It decodes no event body and has no wire binding. The default branch's answer and its write are `TreeCommands` methods too: `default_branch()` answers the line the Session's conversation is on, restored from the root's newest `branch/default` or `session/forked`, and `set_default_branch(id, source)` admits an open conversation line whose chain is not ending, then writes `branch/default` on the root. Its refusals are `branch_already_default`, `branch_not_selectable` and `branch_target_protected`, and it writes nothing for any of them. A move queues its transition on every participant that is not the root, so a line owes its note from the moment it can take part, and signals every line; each line's own BranchLine drains its queue and writes the one status note its role earns; a load whose latest `branch:line` block disagrees with the tree writes the missing note once.
+`TimelineTree.page_end` resolves a raw-event page endpoint using atomic-batch metadata through the live Timeline or the ended line’s store. The cross-language operation is `pageEnd`. The default branch's answer and its write are `TimelineTree` methods too: `default_branch()` answers the line the Session's conversation is on, restored from the root's newest `branch/default` or `session/forked`, and `set_default_branch(id, source)` admits an open conversation line whose chain is not ending, then writes `branch/default` on the root. Its refusals are `branch_already_default`, `branch_not_selectable` and `branch_target_protected`, and it writes nothing for any of them. A move queues its transition on every participant that is not the root, so a line owes its note from the moment it can take part, and signals every line; each line's own BranchLine drains its queue and writes the one status note its role earns; a load whose latest `branch:line` block disagrees with the tree writes the missing note once.
 
 ## TimelineTree
 
@@ -23,7 +23,7 @@ block a nested line is told at open, the `info.source` a line was opened with,
 the one `branch/default` fact on the root, `branch/end` to `branch/ended` on the parent, and the restore rule that leaves
 an ended line closed
 ([timeline branches §5–§10](../../../design/timeline-branches.md#10-ending-a-line)).
-Provides the TreeCommands/TimelineTreeControl ports. The `branch` tool is
+Provides the TimelineTree/TimelineTreeControl ports. The `branch` tool is
 [BranchTool](BranchTool.md)'s. Its model-facing texts — every child's identity
 block and the branch markers — with their classes are listed on
 [timeline branches §12.4](../../../design/timeline-branches.md#124-texts-and-their-classes).
@@ -42,7 +42,7 @@ block and the branch markers — with their classes are listed on
 Produces `branch/create`, `branch/create-failed`, `branch/start`, `branch/resume`,
 `branch/end`, `branch/ended` and `branch/default`, and initial child input, through tree-owned
 operations. TreeTimeline consumes creation on the parent and an end on the
-ending line. `TreeCommands::end`
+ending line. `TimelineTree::end`
 checks only the target: it exists, it is open, and it is neither the root, the
 default branch nor an ancestor of it; a line
 that ended writes nothing and answers `branch_ended`. `info` answers for an
@@ -61,7 +61,7 @@ line's facts are, and a failed read fails the create like any other opening
 failure (branch/create-failed). Each line's node publishes the
 sequence of its latest `turn/end`, which the line's BranchLine waits on for the
 parent block (design
-[§7.1.1](../../../design/timeline-branches.md#711-the-parent-block-branchparent)). `TreeCommands` also
+[§7.1.1](../../../design/timeline-branches.md#711-the-parent-block-branchparent)). `TimelineTree` also
 answers whether a line's parent has new activity past a sequence with an
 existence query over operator inputs and tool uses. Opening and end checks
 select lifecycle fields; inherited parent state selects the last matching
@@ -97,7 +97,7 @@ Session close, and closing is not deletion of persisted history.
 | --- | --- |
 | 作用域 | Session |
 | 注入 | `S:GuideEntries`、`S:SessionIdentity`、`S:TimelineFactory`、`S:dyn TimelineStore` |
-| 提供 | `S:TimelineTree`、`S:TreeCommands`、`S:dyn HostDispatch#treeCommands`、`S:dyn TimelineTreeControl` |
+| 提供 | `S:TimelineTree`、`S:dyn HostDispatch#timelineTree`、`S:dyn TimelineTreeControl` |
 | 被注入于 | `BranchLine`、`BranchTool`、`InputMethods`、`InputQueue`、`LoopMethods`、`PromptSuggestion`、`Questions`、`Recall`、`ShellInput`、`ToolMethods`、`TreeTimeline`、`Wait`、`WorkspaceTools` |
 <!-- /generated -->
 
@@ -111,7 +111,7 @@ identity, and releases pending child reservations when the parent unloads.
 
 | Service | Purpose |
 | --- | --- |
-| `S:TreeCommands` | Reach the owning Session tree through its command port. |
+| `S:TimelineTree` | Reach the owning Session tree through its command port. |
 | `B:TimelineIdentity` | Identify the parent branch. |
 | `B:Dispatcher` | Consume creation events. |
 | `B:Timeline` | Parent history, creation and end settlement location. |
@@ -137,7 +137,7 @@ An accepted creation need not survive parent or Session close.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TreeCommands` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:TimelineTree` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->

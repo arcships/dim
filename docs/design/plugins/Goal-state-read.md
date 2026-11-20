@@ -76,7 +76,7 @@ Goal branch 通过自己的 timeline 写私有业务事件 type=goal、name=stat
 
 同一次业务变更的模型状态输入、命令 trigger、goal/state 由 Goal branch 用已有 append_batch 原子提交。原状态输入仍紧邻并位于 trigger 前；结构化 goal/state 放在它们之后。没有 trigger 的暂停/完成将模型状态输入与 goal/state 同批提交。
 
-输入由 Goal 的参数边界校验，submission ID、输入事件 ID 由生产者一次确定；不新增 TreeCommands 写接口，不修改 Branch::inputs。continuation 沿用原输入入口。公开方法仍返回 trigger 的 sequence。提交失败不报告变更成功；无法落盘 paused 时，下一次加载仍按 §4 暂停。
+输入由 Goal 的参数边界校验，submission ID、输入事件 ID 由生产者一次确定；不新增 TimelineTree 写接口，不修改 Branch::inputs。continuation 沿用原输入入口。公开方法仍返回 trigger 的 sequence。提交失败不报告变更成功；无法落盘 paused 时，下一次加载仍按 §4 暂停。
 
 普通事件仅推进内存消费位置。getter 就绪与持久状态事件无关；不得为发布 getter 进度、关闭时刷 source_through 或确认归零而追加事件。
 
@@ -112,7 +112,7 @@ Store 使用现有类型/位置索引；新格式不从 input/message 文本筛�
 
 活 get 等入口固定位置已交付后返回内存目标和状态；零 SQL、零写入，不等待新的持久状态事件。不能再读旧 active 事件覆盖内存 paused。
 
-无活 owner 的结束分支通过原 TreeCommands.query 读取业务状态并应用结束/重载映射。保持原 GoalRead；through 是本次读/交付覆盖的位置，不是 source_through。历史页表示当时的持久状态，不能代替当前状态 API。
+无活 owner 的结束分支通过原 TimelineTree.query 读取业务状态并应用结束/重载映射。保持原 GoalRead；through 是本次读/交付覆盖的位置，不是 source_through。历史页表示当时的持久状态，不能代替当前状态 API。
 
 新格式普通加载只返回一个 Goal 状态对象，不装载集合节点、不查控制源后缀。本地 opening 定位另需一次位置查询；其他所有者的资源结算不属于 Goal 状态读取。
 

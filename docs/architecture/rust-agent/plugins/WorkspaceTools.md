@@ -96,7 +96,7 @@ enter.
 | Service | Purpose |
 | --- | --- |
 | `P:HostPlatform` | Home, shell, environment and process supervision. |
-| `S:TreeCommands` | Resolve the calling branch per call. |
+| `S:TimelineTree` | Resolve the calling branch per call. |
 | `S:SessionConfig` | cwd and collaboration role. |
 | `S:SessionIdentity` | Session-specific output directory. |
 | `S:SessionMethods` | Register the `session.exec.output` namespace, until this part unloads. |
@@ -332,7 +332,7 @@ or missing diffs do not provide a comparison.
 ### Rule check
 
 The read-only [`session.exec.output`](../../../design/background-task-output.md)
-method resolves the requested branch through TreeCommands and reads that branch's
+method resolves the requested branch through TimelineTree and reads that branch's
 BackgroundExec capture. It accepts only `{sessionId, branchId, taskId}` and returns
 `{text}`. It does not open a client-supplied or historical path, append events,
 acquire Session holds or start background work. Its sibling
@@ -470,7 +470,7 @@ empty live preview and unavailable historical captures.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`P:MentionIndex`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TreeCommands` |
+| 注入 | `P:HostPlatform`、`P:MentionIndex`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TimelineTree` |
 | 提供 | `S:ToolHost`、`S:dyn HostDispatch#toolHost` |
 | 被注入于 | `ToolRegistry` |
 <!-- /generated -->
@@ -536,7 +536,7 @@ facts and posts completion notices for ShellSession; that producer retains its l
 PTY and stop port. See [Shell exec recovery](../../../design/shell-exec-recovery.md)
 for the profile and generation handoff.
 
-`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable. Persistence uses [native format v48](../../../design/appserver/native-storage-format.md#v48-task-titles), a marker-only, one-way upgrade that makes older strict readers reject the store at startup; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `treeCommands` and `backgroundExec` faces retain their operations.
+`start` carries an optional task `title` into `exec/started` alongside the unchanged command-derived `description`. `session.exec.pending` returns that same title in each `PendingExec` item. The fact and inventory field are optional strings: missing values deserialize as absent and absent values are omitted on serialization. Existing persisted facts and inventories without a title remain readable. Persistence uses [native format v48](../../../design/appserver/native-storage-format.md#v48-task-titles), a marker-only, one-way upgrade that makes older strict readers reject the store at startup; ShellInput's command facts have no supplied title. This adds no state owner or service face and changes neither execution nor cancellation. The existing `toolHost`, `timelineTree` and `backgroundExec` faces retain their operations.
 
 ### Data face
 

@@ -8,7 +8,7 @@
 )]
 use dim_agent_capabilities::host::ToolExecutionContext;
 use dim_agent_capabilities::methods::RpcError;
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
 use dim_agent_capabilities::{
     defaults,
     file_storage::FileStoragePlugin,
@@ -49,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Default)]
 pub struct Probe {
     timelines: Mutex<HashMap<String, Arc<Timeline>>>,
-    commands: Mutex<HashMap<String, Arc<TreeCommands>>>,
+    commands: Mutex<HashMap<String, Arc<TimelineTree>>>,
     dispatchers: Mutex<HashMap<String, Arc<Dispatcher>>>,
     tools: Mutex<Option<Arc<ToolRegistry>>>,
     guide: Mutex<Option<Arc<GuideEntries>>>,
@@ -68,13 +68,13 @@ impl Probe {
     pub fn has(&self, branch: &str) -> bool {
         self.timelines.lock().unwrap().contains_key(branch)
     }
-    pub fn commands(&self, branch: &str) -> Arc<TreeCommands> {
+    pub fn commands(&self, branch: &str) -> Arc<TimelineTree> {
         self.commands
             .lock()
             .unwrap()
             .get(branch)
             .cloned()
-            .unwrap_or_else(|| panic!("branch {branch} has no TreeCommands"))
+            .unwrap_or_else(|| panic!("branch {branch} has no TimelineTree"))
     }
     pub fn dispatcher(&self, branch: &str) -> Arc<Dispatcher> {
         self.dispatchers
@@ -134,7 +134,7 @@ impl DynPlugin for ProbeSession {
 struct ProbeBranch {
     probe: Arc<Probe>,
     timeline: Key<Timeline>,
-    commands: Key<TreeCommands>,
+    commands: Key<TimelineTree>,
     dispatcher: Key<Dispatcher>,
     identity: Key<TimelineIdentity>,
 }

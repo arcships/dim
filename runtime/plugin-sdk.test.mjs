@@ -316,9 +316,9 @@ const referencedEntry = await branch.timeline.query({
   page: { limit: 1 },
 });
 void referencedEntry;
-void branch.treeCommands.input('main', { blocks: [{ type: 'raw', text: 'source marker' }], mode: 'queue' });
-void branch.treeCommands.create('main', cutoff, { prompt: 'child', source: { kind: 'host', operation_id: 'create-id' } }, cancelled);
-const info = await branch.treeCommands.info('main');
+void branch.timelineTree.input('main', { blocks: [{ type: 'raw', text: 'source marker' }], mode: 'queue' });
+void branch.timelineTree.create('main', cutoff, { prompt: 'child', source: { kind: 'host', operation_id: 'create-id' } }, cancelled);
+const info = await branch.timelineTree.info('main');
 const parentCut: number | bigint | null | undefined = info.branch_point;
 const active: boolean = await branch.branchLifecycle.activated();
 const closing: Promise<void> = branch.branchLifecycle.closing();
@@ -331,9 +331,9 @@ void branch.dispatcher.listen({}, 'counter', ['input/message'], () => {});
 // @ts-expect-error a handler returns void or a Promise of void.
 void branch.dispatcher.listen('counter', ['input/message'], () => 'ack');
 // @ts-expect-error native input uses blocks, not the sessions service's rawBlocks.
-void branch.treeCommands.input('main', { rawBlocks: [{ text: 'source marker' }] });
+void branch.timelineTree.input('main', { rawBlocks: [{ text: 'source marker' }] });
 // @ts-expect-error native source field spelling comes from Rust serde.
-void branch.treeCommands.create('main', 0, { prompt: 'child', source: { kind: 'host', operationId: 'id' } }, cancelled);
+void branch.timelineTree.create('main', 0, { prompt: 'child', source: { kind: 'host', operationId: 'id' } }, cancelled);
 // @ts-expect-error sequence values must retain their number | bigint type.
 const lossyCut: number = cutoff;
 `);

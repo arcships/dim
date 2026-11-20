@@ -9,7 +9,7 @@ use dim_agent_capabilities::{
         ResolveContextModel, StrategyDiagnostics, StrategyOutcome, ToolDriver,
         ToolExecutionContext, ToolHost,
     },
-    timeline_tree::{BranchToolConfig, TreeCommands},
+    timeline_tree::{BranchToolConfig, TimelineTree},
     workspace_tools::{file_reads::FileReads, files::FileTools},
 };
 use dim_agent_runtime::testing::MinimalHost;
@@ -155,7 +155,7 @@ struct Probe {
     delay_child: AtomicBool,
     child_builds: AtomicUsize,
     child_cleanups: Arc<AtomicUsize>,
-    commands: Mutex<Option<Arc<TreeCommands>>>,
+    commands: Mutex<Option<Arc<TimelineTree>>>,
     /// main's Timeline as its capabilities receive it, for direct writes.
     main_timeline: Mutex<Option<Arc<Timeline>>>,
     /// A line's own Timeline: the binding its file tools keep reads in.
@@ -193,7 +193,7 @@ struct ProbePlugin {
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     identity: Key<TimelineIdentity>,
-    commands: Key<TreeCommands>,
+    commands: Key<TimelineTree>,
 }
 impl ProbePlugin {
     fn new(names: &Names<'_>, probe: Arc<Probe>) -> rutis::Result<Self> {
@@ -1711,7 +1711,7 @@ struct SettleOnActivation {
     child: String,
     source: BranchSource,
     ends: Arc<Mutex<Vec<String>>>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     session: Key<SessionLifecycle>,
     identity: Key<TimelineIdentity>,
 }
@@ -2686,7 +2686,7 @@ async fn a_host_line_opens_with_its_identity_block_and_the_creator_prompt() {
         )
         .await
         .unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     assert!(matches!(
         tree.batch_end(child.clone(), batch[0].sequence).await,
         Err(AgentError::InvalidInput(_))
@@ -3484,7 +3484,7 @@ async fn call(session: &Session, branch: &str, arguments: &str) -> (String, Stri
 /// serves both an open line and one that ended.
 async fn line_events(session: &Session, branch: &str) -> Result<Vec<Arc<AgentEvent>>> {
     session
-        .session_service::<TreeCommands>()?
+        .session_service::<TimelineTree>()?
         .page(branch.to_owned(), 0, LINE_PAGE, session.sequence(branch)?)
         .await
 }
@@ -7241,7 +7241,7 @@ async fn a_host_lines_end_says_nothing_to_main() {
     .await;
     assert!(blocks_with(&events, "<dim-branch-ended").is_empty());
     assert!(roster_block(&events).is_none());
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let facts = local_events(&session, &host).await;
     let head = facts.last().unwrap().sequence;
     let mut query = TimelineQuery {
@@ -7362,7 +7362,7 @@ async fn a_tree_page_refuses_a_through_inside_a_batch() {
         .append_batch_registered(vec![input("first"), input("second")], |_| Ok(()))
         .unwrap();
     let (inside, end) = (batch[0].sequence, batch[1].sequence);
-    let commands = session.session_service::<TreeCommands>().unwrap();
+    let commands = session.session_service::<TimelineTree>().unwrap();
     let refused = |page: Result<Vec<Arc<AgentEvent>>>, ended: bool| {
         assert!(
             matches!(page, Err(AgentError::InvalidInput(ref message)) if message.contains("inside an atomic batch")),
@@ -8100,7 +8100,7 @@ async fn a_turn_spanning_a_restart_after_a_steer_writes_no_idle_notice() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
-    async fn texts(tree: &TreeCommands, branch: &str) -> Vec<String> {
+    async fn texts(tree: &TimelineTree, branch: &str) -> Vec<String> {
         let mut query = TimelineQuery {
             scope: TimelineQueryScope::Chain,
             from: None,
@@ -8204,7 +8204,7 @@ async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
         .await
         .unwrap();
     soon(session.idle(&leaf)).await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let expected = ["visible-root", "visible-child", "visible-leaf"];
     assert_eq!(texts(&tree, &leaf).await, expected);
     assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
@@ -8222,7 +8222,7 @@ async fn tree_chain_queries_preserve_inherited_cuts_after_ending_and_restore() {
     soon(agent.close()).await.unwrap();
     let agent = MinimalHost::start(&config).await.unwrap();
     let restored = agent.restore_session(session_id).await.unwrap();
-    let tree = restored.session_service::<TreeCommands>().unwrap();
+    let tree = restored.session_service::<TimelineTree>().unwrap();
     assert_eq!(texts(&tree, &leaf).await, expected);
     assert_eq!(texts(&tree, &zero).await, ["visible-root"]);
     soon(agent.close()).await.unwrap();
@@ -8877,7 +8877,7 @@ async fn timeline_store_binding_preserves_memory_batch_publication_and_wire_read
     host.close().await.unwrap();
 }
 
-/// The tree's refusal code and message for a `TreeCommands` call.
+/// The tree's refusal code and message for a `TimelineTree` call.
 fn refusal(error: &Result<()>) -> (&'static str, String) {
     match error {
         Err(AgentError::BranchRefused { refusal, message }) => (refusal.code(), message.clone()),
@@ -8894,7 +8894,7 @@ async fn the_default_branch_starts_at_the_root_and_survives_a_restart() {
         .unwrap();
     assert_eq!(session.default_branch().unwrap(), "main");
     let line = open_line(&session, "a line to continue on").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     assert_eq!(
         tree.default_branch().unwrap(),
         "main",
@@ -9084,7 +9084,7 @@ async fn an_end_whose_final_message_fails_is_delivered_by_the_next_restore() {
         .unwrap();
     let session_id = session.id().to_owned();
     let line = open_line(&session, "deliver me").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     store.fail_next_delivery("main");
     let failed = tree
         .end_with_final(
@@ -9187,7 +9187,7 @@ async fn a_second_end_retries_an_undelivered_final_message() {
         .unwrap();
     let line = open_line(&session, "deliver me").await;
     soon(session.idle("main")).await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let source = || BranchSource::Tool {
         turn_id: "turn".into(),
         request_id: "request".into(),
@@ -9275,7 +9275,7 @@ async fn ending_the_parent_of_a_line_with_an_undelivered_message_answers() {
     .await
     .unwrap();
     soon(session.idle(&child)).await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     store.fail_next_lookup(&parent);
     let failed = soon(tree.end_with_final(
         child.clone(),
@@ -9336,7 +9336,7 @@ async fn ending_the_root_the_default_branch_or_an_ancestor_is_refused() {
     .await
     .unwrap();
     soon(session.idle(&inner)).await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let user = BranchSource::User {
         operation_id: "end".into(),
     };
@@ -10038,7 +10038,7 @@ async fn a_move_answers_only_after_its_fact_is_durable() {
         .await
         .unwrap();
     let line = open_line(&session, "continue on").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     // The line's turn and its parent's roster writes settle before the store
     // is armed, so the held batch is the move's own.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -10094,7 +10094,7 @@ async fn a_move_whose_write_fails_changes_nothing() {
         .unwrap();
     let session_id = session.id().to_owned();
     let line = open_line(&session, "stay on main").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     // The line's turn and its parent's roster writes settle before the store
     // is armed, so the held batch is the move's own.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -10198,7 +10198,7 @@ async fn a_restore_falls_back_to_the_root_for_a_target_it_cannot_select() {
             "main",
             "a {source:?} line cannot hold the role"
         );
-        let tree = session.session_service::<TreeCommands>().unwrap();
+        let tree = session.session_service::<TimelineTree>().unwrap();
         let refused = tree
             .set_default_branch(
                 line.clone(),
@@ -10330,7 +10330,7 @@ async fn every_refusal_of_a_move_writes_nothing() {
     let session = soon(agent.create_session(SessionConfig::default()))
         .await
         .unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let switch = |line: &str| {
         let tree = tree.clone();
         let line = line.to_owned();
@@ -10461,7 +10461,7 @@ async fn a_former_default_branch_keeps_no_stale_instruction_and_ends_after_a_mov
         [("main".to_owned(), 0), (a.clone(), 2), (nested.clone(), 1)],
         "the root has no note and A holds the one that says it lost the role"
     );
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let refused = tree
         .end(
             a.clone(),
@@ -10682,7 +10682,7 @@ async fn a_pre_upgrade_host_line_is_refused_and_a_user_line_is_accepted() {
     .await
     .unwrap();
     soon(session.idle(&line)).await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let refused = tree
         .set_default_branch(
             legacy.clone(),
@@ -10737,7 +10737,7 @@ async fn a_switch_and_a_tool_lines_end_admit_in_one_order_without_a_refused_ones
             .unwrap();
         let line = open_line(&session, "the line that ends").await;
         soon(session.idle("main")).await.unwrap();
-        let tree = session.session_service::<TreeCommands>().unwrap();
+        let tree = session.session_service::<TimelineTree>().unwrap();
         let source = BranchSource::Tool {
             turn_id: "turn".into(),
             request_id: "request".into(),
@@ -11476,7 +11476,7 @@ async fn owed_notes(session: &Session, line: &str, count: usize) -> Vec<String> 
 
 /// Waits, bounded, for the tree to answer `line` as the default branch: an
 /// admitted `branch/default` settles even when its caller went away.
-async fn answers_default(tree: &TreeCommands, line: &str) {
+async fn answers_default(tree: &TimelineTree, line: &str) {
     for _ in 0..600 {
         if tree.default_branch().is_ok_and(|default| default == line) {
             return;
@@ -11545,7 +11545,7 @@ async fn a_move_committed_before_its_writer_starts_still_owes_its_note() {
         stopped.is_ok(),
         "the writers of lines {b} and {c} never stopped at the test seam"
     );
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let switch = |target: &str| {
         let tree = tree.clone();
         let target = target.to_owned();
@@ -11611,7 +11611,7 @@ async fn a_move_cancelled_after_admission_settles_under_the_tree() {
         .await
         .unwrap();
     let line = open_line(&session, "switched while cancelled").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     // The line's turn and its parent's roster writes settle before the store is
     // armed, so the held batch is the move's own.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -11659,7 +11659,7 @@ async fn a_cancelled_move_whose_publication_fails_keeps_the_tree_until_it_settle
         .unwrap();
     let first = open_line(&session, "first switch").await;
     let second = open_line(&session, "second switch").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     store.hold_next_default("main");
     let mut moved = Box::pin(tree.set_default_branch(
@@ -11719,7 +11719,7 @@ async fn an_end_retry_cancelled_after_admission_settles_under_the_tree() {
         .unwrap();
     let line = open_line(&session, "deliver me").await;
     soon(session.idle("main")).await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let source = || BranchSource::Tool {
         turn_id: "turn".into(),
         request_id: "request".into(),
@@ -11840,7 +11840,7 @@ async fn a_close_waits_for_an_admitted_move_and_a_restore_reads_its_fact() {
 /// with its caller gone: the tree owns what happens to it.
 async fn move_admitted_while_held(session: &Session, store: &Arc<TestStore>) -> String {
     let line = open_line(session, "moved while closing").await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
     store.hold_next_default("main");
     let mut moved = Box::pin(tree.set_default_branch(

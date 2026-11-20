@@ -6,7 +6,7 @@ use crate::storage::Store;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     prompt_sources::{self, PromptSourcesBranch},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{AgentError, Names, ReplyLanguage};
 use dim_agent_types::ROOT_BRANCH_ID;
@@ -23,7 +23,7 @@ const FAILED: &str = "language_failed";
 
 /// The Session's two reply-language methods; one per Session instance.
 pub(crate) struct SessionLanguagePlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
     /// Native storage, when the assembly has it: the record carries the value.
     store: Option<Key<Store>>,
@@ -82,7 +82,7 @@ impl DynPlugin for SessionLanguagePlugin {
 
 /// `session.language.get`: the value the Session holds now, `null` when the
 /// operator selected none.
-async fn read(tree: &TreeCommands) -> Result<Value, RpcError> {
+async fn read(tree: &TimelineTree) -> Result<Value, RpcError> {
     let language = cell(tree)?.language();
     let _guard = language.gate().await;
     Ok(language_value(language.get().language))
@@ -91,7 +91,7 @@ async fn read(tree: &TreeCommands) -> Result<Value, RpcError> {
 /// `session.language.update`: writes the record, replaces the live cell and
 /// has Prompt adopt the source, all under the Session's language gate.
 async fn change(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     store: Option<&Store>,
     value: Value,
     cancel: CancellationToken,
@@ -182,7 +182,7 @@ async fn change(
 /// The branch service that carries the Session's cell. An assembly without
 /// PromptSources has none, which is an explicit unavailable result and never a
 /// default language.
-fn cell(tree: &TreeCommands) -> Result<Arc<PromptSourcesBranch>, RpcError> {
+fn cell(tree: &TimelineTree) -> Result<Arc<PromptSourcesBranch>, RpcError> {
     let branch = tree.get(ROOT_BRANCH_ID).map_err(RpcError::from)?;
     match branch.service::<PromptSourcesBranch>() {
         Ok(service) => Ok(service),

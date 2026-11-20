@@ -224,7 +224,7 @@ Agents 取得该分支的发布观察器，调用 `Session::input`；它像对�
 | Rpc `session.submit`，协议 v3（[connection/tree.rs](../../../../crates/dim-app-server/src/connection/tree.rs)） | 可选的 UUID | — |
 | Agents `sessions.input`（§6.2） | 必填、非空，按约定为 `<source>:<uuid>` | — |
 | 分支 Timeline（[core/timeline.rs](../../../../crates/dim-agent-runtime/src/core/timeline.rs)），经 `Session::input` 与 `Session::lookup`（`sessions.input`、`sessions.lookup`、Rpc 的 `session.submit` 与 `session.input_lookup`） | — | 每个分支对每个标识只接受一次；查找回答 `accepted`、`unknown` 或 `ambiguous` |
-| Goal 的部件（[crates/dim-goal](../../../../crates/dim-goal)） | 经 `TreeCommands::input` 写 `goal:<uuid>` | 不读取 |
+| Goal 的部件（[crates/dim-goal](../../../../crates/dim-goal)） | 经 `TimelineTree::input` 写 `goal:<uuid>` | 不读取 |
 | Workflow（[engine.ts](../../../../runtime/plugins/workflow/engine.ts)） | 每个阶段输入和报告写 `workflow:<uuid>`，写入前先存入运行文件 | 同一代或替换代重试时以同一标识重新提交，按回复结算 |
 | Scheduler([A.5](../plugins/Scheduler.md#a5-timeline-与-capability-机制)、[A.6](../plugins/Scheduler.md#a6-运行结果投递)；运行时在 draft [#317](https://github.com/arcships/dim/pull/317)) | `scheduler:<run_id>`，每个投递一个 | 不确定的回复由查询结算(A.6)；同一窗口绝不写两次 |
 | `dimcode` 与 Rust TUI（[#312](https://github.com/arcships/dim/pull/312)） | 每次提交新生成一个 UUID | 目前不读取：不确定的提交只报告给用户，不查找 |
@@ -303,7 +303,7 @@ Agents 在该分支上用 `Session::service::<InputQueue>` 取得 S1 的 InputQu
 | 项 | 规则 |
 | --- | --- |
 | `through` | 带 `atLeast` 时：已发布 head（`Session::sequence`）；低于 `atLeast` 时为 `future_sequence`。否则为请求的 `through`（不能超过 head，否则 `future_sequence`），或 head |
-| `events` | 该分支自己在 `(after, through]` 内的事件，由 `AgentIndex::history_page` 读取：已装载的线经该分支的 query 分页，并问存储该页最后一条是否结束一个批次；已结束的线在固定的头部经 `TreeCommands.page` 读取；调用前会 acquire 该 Session，本进程不持有的线会被装载而不是直接读存储。读取过程中线结束时会改由 tree 重读同一页。`after`（缺省为 0）必须是某批次的结尾。剩余事件足够时，一页先取 `limit` 条（1 到 256，缺省 256），再读到该批次结尾，因此可能超过 `limit`；它从不越过 `through`。以已发布 head 或 `idle` 截止点作为 `through` 时，每个批次都完整。调用方把 `after` 设为上一页最后的序号继续读，直到 `through` |
+| `events` | 该分支自己在 `(after, through]` 内的事件，由 `AgentIndex::history_page` 读取：已装载的线经该分支的 query 分页，并问存储该页最后一条是否结束一个批次；已结束的线在固定的头部经 `TimelineTree.page` 读取；调用前会 acquire 该 Session，本进程不持有的线会被装载而不是直接读存储。读取过程中线结束时会改由 tree 重读同一页。`after`（缺省为 0）必须是某批次的结尾。剩余事件足够时，一页先取 `limit` 条（1 到 256，缺省 256），再读到该批次结尾，因此可能超过 `limit`；它从不越过 `through`。以已发布 head 或 `idle` 截止点作为 `through` 时，每个批次都完整。调用方把 `after` 设为上一页最后的序号继续读，直到 `through` |
 | 形式 | 分支的每个事件都作为 `AgentEvent` 记录返回，序列化形式与 `session.history` 展示事件时相同。不做过滤，因此一页最后的序号总是某个批次的结尾 |
 | 祖先 | 不包含。启动的 Session 在 `main` 上读取，`main` 没有祖先。等有使用方需要时，再增加读取子分支前缀的方式 |
 | 错误 | `rejected`（`after` > `through`、`after` 位于批次中间、`limit` 不在 1 到 256 之间、同时给出 `atLeast` 与 `through`）、`future_sequence`、`session_closed`、`branch_missing`、`reloading` |

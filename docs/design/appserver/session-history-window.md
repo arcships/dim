@@ -22,7 +22,7 @@ and is served by `Connection::history`
    ([agents.rs](../../../crates/dim-app-server/src/agents.rs)): the call acquires
    the Session first, so a Session that unloaded is loaded again before the
    read; a live line pages through the branch's query and the store's
-   `batch_end`, and a line that has ended goes through `TreeCommands.page` at
+   `batch_end`, and a line that has ended goes through `TimelineTree.page` at
    its fixed head. The client protocol has no page read of stored facts for a
    Session the process does not hold (ADR 021 D3).
    `after` and `through` must end a batch. `limit` is required and must be positive; the v3
@@ -343,8 +343,8 @@ line is open, the branch's Timeline, which `Connection::history` already has the
 loaded Session for — each anchor is a kind selection and the page is a range
 selection, both through `Session::query`, with `Session::batch_end` for the
 page's ends. An ended line's Timeline is gone, so its anchors and its page are
-the tree's read at the fixed head it owns: `TreeCommands::query` for both
-directions and `TreeCommands::batch_end` for the page's ends
+the tree's read at the fixed head it owns: `TimelineTree::query` for both
+directions and `TimelineTree::batch_end` for the page's ends
 ([ADR 021](../../adr/021-reads-follow-the-state-owner.md) D2,
 [timeline read ownership §2](../timeline-read-ownership.md#2-owners-and-their-reads)).
 A line that ends while its window is read is served by the tree: the owner is

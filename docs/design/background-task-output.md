@@ -71,7 +71,7 @@ WorkspaceTools registers the leaf; Rpc's built-in list and namespace checks are
 unchanged.
 
 Each call resolves the named branch through WorkspaceTools' existing
-`TreeCommands`, then asks that branch's BackgroundExec for the active task's
+`TimelineTree`, then asks that branch's BackgroundExec for the active task's
 capture. No Session part retains branch business state.
 
 **Task identity.** Every request resolves `taskId` inside the branch it names:

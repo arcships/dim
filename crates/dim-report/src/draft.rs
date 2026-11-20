@@ -4,7 +4,7 @@ use crate::{
 };
 use dim_agent_capabilities::{
     methods::{Caller, Interruption, MethodCall, MethodDecl, MethodTable, RpcError, params, reply},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{SessionHold, SessionLifecycle};
 use dim_agent_types::ModelId;
@@ -30,7 +30,7 @@ const INPUT_LIMIT: usize = 1024;
 
 pub(super) struct Session {
     pub(super) lifecycle: Arc<SessionLifecycle>,
-    pub(super) tree: Arc<TreeCommands>,
+    pub(super) tree: Arc<TimelineTree>,
 }
 
 pub(super) fn register(

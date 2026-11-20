@@ -29,7 +29,7 @@ this is not a constant-time search guarantee.
 
 | Service | Purpose |
 | --- | --- |
-| `S:TreeCommands` | Resolve the calling branch and read its pinned history per call. |
+| `S:TimelineTree` | Resolve the calling branch and read its pinned history per call. |
 | `S:ToolRegistry` | Register `recall`, until this part unloads. |
 
 ### Events and lifetime
@@ -73,7 +73,7 @@ profile.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:ToolRegistry`、`S:TreeCommands` |
+| 注入 | `S:TimelineTree`、`S:ToolRegistry` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->

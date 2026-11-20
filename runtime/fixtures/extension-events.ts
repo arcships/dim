@@ -5,11 +5,11 @@ import type { BranchEvent, Services } from '../../npm/plugin.js'
 export const part = definePlugin({
   name: 'ExtensionEventsFixture',
   provides: {},
-  inject: ['dispatcher', 'timeline', 'timelineIdentity', 'treeCommands'],
+  inject: ['dispatcher', 'timeline', 'timelineIdentity', 'timelineTree'],
   async apply(ctx) {
     const dispatcher = ctx.use<Services['dispatcher']>('dispatcher')
     const timeline = ctx.use<Services['timeline']>('timeline')
-    const tree = ctx.use<Services['treeCommands']>('treeCommands')
+    const tree = ctx.use<Services['timelineTree']>('timelineTree')
     const { branchId } = await ctx.use<Services['timelineIdentity']>('timelineIdentity').get()
     let appended = false
     let restored = false

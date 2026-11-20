@@ -6,7 +6,7 @@ use dim_agent_capabilities::{
     prompt::Prompt,
     prompt_sources,
     prompt_state::PromptSnapshot,
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{Names, PromptSourceTarget};
 use dim_agent_types::{DEFAULT_BRANCH_ID, ModelSelection, PromptScope};
@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 /// and reads back the profile the branch's configuration was adopted from.
 pub(crate) struct AgentsSessionPlugin {
     index: Key<AgentIndex>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
 }
 impl AgentsSessionPlugin {
@@ -75,7 +75,7 @@ impl DynPlugin for AgentsSessionPlugin {
 /// `session.agent.get`: the profile recorded on the branch's adopted
 /// configuration. It reads the branch's published Prompt snapshot, which
 /// projects the configuration inherited from the branch's ancestry.
-fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError> {
+fn configured_agent(tree: &TimelineTree, value: Value) -> Result<Value, RpcError> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct Params {
@@ -105,7 +105,7 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
 /// the record is the adopted configuration's own metadata.
 async fn adopt_profile(
     index: Arc<AgentIndex>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     value: Value,
     cancel: CancellationToken,
 ) -> Result<Value, RpcError> {

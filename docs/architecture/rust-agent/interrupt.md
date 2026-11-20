@@ -60,7 +60,7 @@ sequenceDiagram
 
 控制事件与业务事件共用 Timeline、序号、时间字段和 Dispatcher；没有第二条控制总线。模型历史转换忽略控制事件。
 
-外部输入经门面 `Branch::input` 写入：门面在边界校验（`InputMessageData::validate`，只拒绝没有内容的输入，失败不落事实），然后追加 input/message，不读 Loop 状态。需要一起生效的多条输入经门面 `Branch::inputs` 一次提交：门面逐条按同一规则校验，批次为空或任一条不合法时不落任何事实；整批是一个原子批次，序号连续、一起发布，按给定顺序返回事件。批次内每条输入都必须带 submission id 且互不相同：都已提交时返回既有事件、不写；只有部分已提交时返回 `PartialSubmission`、不写。分支已关闭或故障时，两者以相同方式失败。`TreeCommands::inputs` 是同一入口的服务包装，仅 Rust 使用。能力产生的自动输入直接追加到本分支 Timeline，由产生方保证合法。InputQueue 只消费，不拦截写入。
+外部输入经门面 `Branch::input` 写入：门面在边界校验（`InputMessageData::validate`，只拒绝没有内容的输入，失败不落事实），然后追加 input/message，不读 Loop 状态。需要一起生效的多条输入经门面 `Branch::inputs` 一次提交：门面逐条按同一规则校验，批次为空或任一条不合法时不落任何事实；整批是一个原子批次，序号连续、一起发布，按给定顺序返回事件。批次内每条输入都必须带 submission id 且互不相同：都已提交时返回既有事件、不写；只有部分已提交时返回 `PartialSubmission`、不写。分支已关闭或故障时，两者以相同方式失败。`TimelineTree::inputs` 是同一入口的服务包装，仅 Rust 使用。能力产生的自动输入直接追加到本分支 Timeline，由产生方保证合法。InputQueue 只消费，不拦截写入。
 
 中断前后的输入按 Timeline 顺序处理，提交与 stop 之间不需要锁：
 

@@ -10,7 +10,7 @@ use dim_agent_capabilities::{
     host::{HostFuture, ToolExecutionContext},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub struct GoalSession {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     tools: Key<ToolRegistry>,
     methods: Key<SessionMethods>,
     guide: Key<GuideEntries>,
@@ -117,18 +117,17 @@ impl DynPlugin for GoalSession {
                             let id = branch_of(&params)?;
                             return tokio::select! {
                                 result = async {
-                                    match owner.tree.get(&id) {
-                                        Ok(_) => {
+                                    match owner.tree.directory_entry(&id)?.state {
+                                        dim_agent_runtime::BranchDirectoryState::Open | dim_agent_runtime::BranchDirectoryState::Ending => {
                                             let key = TimelineKey {
                                                 session_id: owner.identity.session_id.clone(),
                                                 branch_id: id,
                                             };
                                             owner.changes.current(&key).await
                                         }
-                                        Err(dim_agent_runtime::AgentError::BranchEnded(_)) => {
+                                        dim_agent_runtime::BranchDirectoryState::Ended => {
                                             crate::read::current(&owner.tree, &id, &cancel).await
                                         }
-                                        Err(error) => Err(error),
                                     }
                                 } => reply(result?),
                                 _ = cancel.cancelled() => Err(RpcError::interrupted()),
@@ -144,7 +143,7 @@ impl DynPlugin for GoalSession {
 }
 
 struct Owner {
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     identity: Arc<SessionIdentity>,
     changes: Changes,
 }
@@ -196,7 +195,11 @@ impl Owner {
         };
         // The branch is checked through the tree first, so a missing or ended
         // branch answers as it does to every other write.
-        self.tree.get(&branch).map_err(RpcError::from)?;
+        if self.tree.directory_entry(&branch)?.state
+            == dim_agent_runtime::BranchDirectoryState::Ended
+        {
+            return Err(dim_agent_runtime::AgentError::BranchEnded(branch).into());
+        }
         let sequence = self
             .changes
             .change(

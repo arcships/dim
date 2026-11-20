@@ -2,7 +2,7 @@
 //! References resolve only within the calling branch's published history.
 mod history;
 
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
 use dim_agent_capabilities::{
     host::{
         AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest, HostError, HostFuture,
@@ -78,7 +78,7 @@ impl Drop for Flight {
 }
 
 struct ImageUnderstanding {
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     files: Arc<SessionFiles>,
     identity: Arc<SessionIdentity>,
     targets: Arc<ModalityTargets>,
@@ -277,7 +277,7 @@ impl ToolHandler for ImageUnderstanding {
 /// The Session part contributes `image_understand` and its reference guide.
 pub struct ImageUnderstandingPlugin {
     tools: Key<ToolRegistry>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     files: Key<SessionFiles>,
     identity: Key<SessionIdentity>,
     targets: Key<ModalityTargets>,

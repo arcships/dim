@@ -11,7 +11,7 @@
 //! as TS only commits inputs of a running turn.
 use crate::{
     host::{CancelledFn, HostError, HostFuture, ToolExecutionContext, call_until_cancelled},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
     workspace_tools::background::{WAKE_TASK_TAG, tagged},
 };
@@ -366,7 +366,7 @@ fn wait_definition() -> ToolDefinition {
     definition
 }
 
-struct WaitTool(Arc<TreeCommands>);
+struct WaitTool(Arc<TimelineTree>);
 impl WaitTool {
     async fn run(
         &self,
@@ -458,7 +458,7 @@ impl ToolHandler for WaitTool {
 }
 
 pub struct WaitPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     tools: Key<ToolRegistry>,
 }
 impl WaitPlugin {

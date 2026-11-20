@@ -47,8 +47,8 @@ F1 把压缩分成三层（§2.2），并新增：
  |    提供 S:CompactionStrategyHost(Some(摘要策略))                  |
  |  ContextMethods（新部件）                                         |
  |    把 session.context 注册到 sessionMethods：compact, usage       |
- |      compact -> TreeCommands.get(b).service::<AgentLoop>().compact()
- |      usage   -> TreeCommands.get(b).service::<ContextPreparation>().usage()
+ |      compact -> TimelineTree.get(b).service::<AgentLoop>().compact()
+ |      usage   -> TimelineTree.get(b).service::<ContextPreparation>().usage()
  +---------------------------------^---------------------------------+
             Rpc（C1）分发 ---------'
  分支作用域（一个 Timeline，一个 Dispatcher）
@@ -64,7 +64,7 @@ F1 把压缩分成三层（§2.2），并新增：
  +-------------------------------------------------------------------+
 ```
 
-`ProductContextModel` 不需要任何服务，所以是一个普通的 Session 值。ContextMethods 与策略部件分开：分支注入 `CompactionStrategyHost`，它的提供者不能依赖由分支树提供的 `TreeCommands`。
+`ProductContextModel` 不需要任何服务，所以是一个普通的 Session 值。ContextMethods 与策略部件分开：分支注入 `CompactionStrategyHost`，它的提供者不能依赖由分支树提供的 `TimelineTree`。
 
 ### 2.1 手动步骤放在哪里
 
@@ -318,7 +318,7 @@ pub struct ProductContextModel;                    // ResolveContextModel，无�
 pub struct ProductSummaryStrategyPlugin { host: DepKey<CompactionStrategyHost> }   // new(names)
 //   Deps = (Keyed<ModelHost>, Keyed<ProviderConnectionResolver>)；提供 CompactionStrategyHost
 pub struct ContextMethodsPlugin;
-//   Deps = (Keyed<TreeCommands>, Keyed<SessionMethods>)；methods.register(ctx, "session.context", ..)
+//   Deps = (Keyed<TimelineTree>, Keyed<SessionMethods>)；methods.register(ctx, "session.context", ..)
 
 // dim-app-server/src/cli.rs 的 defaults::install_compaction，每种会压缩的配置共用这一处安装；
 // 产品配置传入 ProductContextModel 和产品 home，--models 配置传入 AimuxModels 和它的 --home：
@@ -650,7 +650,7 @@ consume pending inputs --> prepare next request
 | §4 规则 4（核心无业务含义） | Timeline、Dispatcher 和门面不变。清单由 ContextPolicy 从 `step/tool-result` 事实上的声明组合；核心没有任何部分认识效果类型。 |
 | §4 规则 5（原子批次） | 每次新写入都是一个事件。 |
 | §4 规则 6（上下文只来自交接后的事件） | 替换内容只经已完成事实的投影到达模型。待处理输入不被步骤消费（AGENTS 规则 10）。 |
-| §4 规则 7（公开事件与服务） | `TreeCommands`、`PublicService` 上的 `Branch::service`、`ProviderConnectionResolver`、`ModelHost`、`sessionMethods`。 |
+| §4 规则 7（公开事件与服务） | `TimelineTree`、`PublicService` 上的 `Branch::service`、`ProviderConnectionResolver`、`ModelHost`、`sessionMethods`。 |
 | §4 规则 8（基础设施不变） | Dispatcher、信封、rutis、loader、Agent 装配和门面都不改。有一处基础设施改动（#130）：Timeline 与两个存储的快照锚定不再了解 `context/compaction`，只保留结构检查，所有者的解码回调接收锚点事件。需求来自 Timeline 自身：它不能了解事件内容（原则 §4 规则 4；Timeline 只检查信封与核心保留领域，ADR 001）。它在 Timeline 自己的合同内闭环：快照是带结构锚点的缓存。有效快照的行为不变，无效快照算作缓存未命中。|
 | §4 规则 9（只写需要的事实） | `context/compact` 由 Loop 后续的决定和重载读取。`context/compaction` 用于投影。按维护者的决定，`context/compaction-start` 和可见的结果都是事实，理由有两条。第一，它们不只是驱动某个状态机：用户和其他状态机读取历史时需要这些内容（任何时候接入的 UI 都必须看到压缩正在进行，或者它是怎样结束的）。第二，重载结算要用它们：没有结果的开始意味着当时有压缩在途。Loop 和 ContextPreparation 由开始与结果的配对重建，这比只靠指令更精确：它能区分运行中和待处理，也覆盖自动压缩。用量查询不写任何东西。已完成结果的 `modelUsage` 与 `insufficientSpace` 是这条必需事实上的描述性字段：触发点读最近一条开始事实的 `through`，预算恢复读预算，只有客户端读成本和标记。清单不新增事实：它由 `step/tool-result` 事实本来就携带的声明组合进现有的替换内容。后续压缩的滚动正是已完成结果以数据形式保存条目的原因（`digest_entries`）：那个决定读这个字段，绝不读渲染出的消息，而这个字段是投影本来就会读取的事实上的可选部分。 |
 | ADR 002 D1（作用域） | 窗口事实、策略和方法：Session。指令、步骤和压缩槽：分支，在 Loop 中。钉住、清单、保留规则和标记是分支作用域的 ContextPolicy 工作：它们读分支的事件并组合它的记录。 |

@@ -3,7 +3,7 @@ use crate::tree_protocol as wire;
 use dim_agent_capabilities::input_queue::{
     CheckInterrupted, SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry, append_blocks,
 };
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
 use dim_agent_runtime::{
     BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
     QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue,
@@ -286,7 +286,7 @@ impl Connection {
         }
         if window {
             let tree = session
-                .session_service::<TreeCommands>()
+                .session_service::<TimelineTree>()
                 .map_err(history_error)?;
             let turn = if params.latest_turn {
                 turn_window(&tree, branch, through).await?
@@ -339,7 +339,7 @@ impl Connection {
             });
         }
         let tree = session
-            .session_service::<TreeCommands>()
+            .session_service::<TimelineTree>()
             .map_err(history_error)?;
         let read = if session.ended_head(branch).is_some() {
             HistoryRead::Ended(&tree, self.protocol_version())
@@ -423,7 +423,7 @@ impl Connection {
         let reply = match session.query(branch, query.clone()).await {
             Err(AgentError::BranchEnded(_)) => {
                 session
-                    .session_service::<TreeCommands>()
+                    .session_service::<TimelineTree>()
                     .map_err(history_error)?
                     .query(branch.to_owned(), query)
                     .await
@@ -484,7 +484,7 @@ impl Connection {
         };
         let entries = if session.ended_head(branch).is_some() {
             let tree = session
-                .session_service::<TreeCommands>()
+                .session_service::<TimelineTree>()
                 .map_err(history_error)?;
             scan_keys(
                 &HistoryRead::Ended(&tree, self.protocol_version()),
@@ -509,7 +509,7 @@ impl Connection {
                         .is_some_and(|data| data.app_error == "branch_ended") =>
                 {
                     let tree = session
-                        .session_service::<TreeCommands>()
+                        .session_service::<TimelineTree>()
                         .map_err(history_error)?;
                     scan_keys(
                         &HistoryRead::Ended(&tree, self.protocol_version()),
@@ -549,7 +549,7 @@ impl Connection {
     ) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
         let tree = session
-            .session_service::<TreeCommands>()
+            .session_service::<TimelineTree>()
             .map_err(RpcError::from)?;
         let read = tree
             .display(params.branch_id)
@@ -723,7 +723,7 @@ fn keys_too_large(bytes: usize) -> RpcError {
 /// its first request consumed or, when it has yet to take one, the newest
 /// message at or below the start.
 async fn turn_window(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &str,
     through: u64,
 ) -> Result<crate::storage::TurnWindow, RpcError> {
@@ -928,7 +928,7 @@ async fn turn_window(
 /// the tree that owns its fixed head (ADR 021 D2).
 enum HistoryRead<'a> {
     Open(&'a Session, u32),
-    Ended(&'a TreeCommands, u32),
+    Ended(&'a TimelineTree, u32),
 }
 
 impl HistoryRead<'_> {

@@ -1,6 +1,6 @@
 use crate::{
     methods::{Interruption, MethodDecl, RpcError, SessionMethods, params},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::*;
 use dim_agent_types::{ToolRead, ToolUseData};
@@ -20,7 +20,7 @@ struct Params {
 }
 
 pub struct ToolMethodsPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
 }
 impl ToolMethodsPlugin {

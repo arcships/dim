@@ -16,7 +16,7 @@ use crate::{
         Interruption, MethodCall, MethodDecl, Progress, RpcError, SessionMethods, params, reply,
     },
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     workspace_tools::exec::{
         OutputSink, bounded_preview, capture_preview, pump, sanitize, signal_name, tail_bytes,
     },
@@ -136,7 +136,7 @@ struct Registry {
 struct ShellInput {
     platform: Arc<HostPlatform>,
     cwd: PathBuf,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     lifecycle: Arc<SessionLifecycle>,
     identity: Arc<SessionIdentity>,
     /// This generation's cancellation: with the Session's closing, it ends
@@ -224,7 +224,11 @@ impl ShellInput {
         }
         check_run_id(&p.run_id)?;
         self.admit(&self.registry.lock().unwrap(), &p.run_id, &cancel)?;
-        self.tree.get(&p.branch_id)?;
+        if self.tree.directory_entry(&p.branch_id)?.state
+            == dim_agent_runtime::BranchDirectoryState::Ended
+        {
+            return Err(dim_agent_runtime::AgentError::BranchEnded(p.branch_id).into());
+        }
         let built = async {
             #[cfg(feature = "testing")]
             testing::pause(&self.cwd).await;
@@ -545,7 +549,7 @@ const SHELL_INPUT_ENTRY: &str = r#"<dim-shell-input kind="command" status="compl
 pub struct ShellInputPlugin {
     platform: Key<HostPlatform>,
     config: Key<SessionConfig>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     lifecycle: Key<SessionLifecycle>,
     identity: Key<SessionIdentity>,
     methods: Key<SessionMethods>,
