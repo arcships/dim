@@ -53,22 +53,22 @@ impl HostDispatch for ToolBinding {
                     &data.tools,
                     &data.tool_sources,
                 )
-                .map_err(Error::Value)?;
+                .map_err(Error::value)?;
                 Ok(Value::Undefined)
             }
             "bindCurrent" => {
                 let data: BindCurrent = request(NAME, args)?;
                 arg(&self
                     .bind_current(&data.request_id, data.declared.as_deref())
-                    .map_err(Error::Value)?)
+                    .map_err(Error::value)?)
             }
             "definitions" => {
                 let data: Request = request(NAME, args)?;
-                arg(&self.definitions(&data.request_id).map_err(Error::Value)?)
+                arg(&self.definitions(&data.request_id).map_err(Error::value)?)
             }
             "transfer" => {
                 let data: Transfer = request(NAME, args)?;
-                self.transfer(&data.from, &data.to).map_err(Error::Value)?;
+                self.transfer(&data.from, &data.to).map_err(Error::value)?;
                 Ok(Value::Undefined)
             }
             "release" => {
