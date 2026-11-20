@@ -394,8 +394,8 @@ struct PreparationState {
 /// `context/budget`, plus the compaction threshold. Token counts are
 /// estimates that travel as JSON numbers and may carry a fraction, so
 /// clients decode them as `f64`.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContextUsage {
     pub through: u64,
     pub context_window: f64,
@@ -865,14 +865,6 @@ impl ContextPreparation {
             }
             None => Ok(()),
         }
-    }
-
-    /// The current head's budget; writes nothing.
-    pub async fn usage(
-        &self,
-        cancel: CancellationToken,
-    ) -> std::result::Result<ContextUsage, ContextOpError> {
-        self.usage.read(None, cancel).await
     }
 
     async fn prepare(

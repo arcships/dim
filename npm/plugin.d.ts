@@ -439,6 +439,12 @@ export interface ToolDefinition {
     postExecutePaths?: 'path' | 'affectedPaths';
   };
 }
+export interface ContextUsage {
+  read(request: { through?: number | bigint }, cancelled: () => Promise<void>): Promise<import('./client-protocol.js').ContextUsage & {
+    through: number | bigint;
+    baselineSource: 'provider_baseline' | 'full_estimate';
+  }>;
+}
 export interface PrepareContextHost {
   prepare(request: { request: PreparedModelRequest; source: { turnId: string; requestId: string; through: number | bigint } }, cancelled: () => Promise<void>): Promise<PreparedModelRequest>;
 }

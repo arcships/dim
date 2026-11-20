@@ -1493,7 +1493,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("connectionHub", "control"),
         ("contextModelHost", "hot-path"),
         ("contextPreparation", "hot-path"),
-        ("contextUsage", "hot-path"),
         ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),
         ("fileStorage", "object"),

@@ -2,7 +2,8 @@
 //! query, exposed from their owners (ContextCompaction §4.1).
 use crate::{
     agent_loop::AgentLoop,
-    context_preparation::{ContextOpError, ContextPreparation},
+    context_preparation::ContextOpError,
+    context_usage::ContextUsage,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
 };
@@ -191,23 +192,22 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
 }
 
 async fn usage(branch: &Branch, cancel: CancellationToken) -> Result<Value, RpcError> {
-    match branch.service::<ContextPreparation>()?.usage(cancel).await {
-        Ok(usage) => reply(usage),
-        Err(ContextOpError::NotReady) => Err(RpcError::app(
-            -32000,
-            "context_usage_unavailable",
-            ContextOpError::NotReady.to_string(),
-        )),
-        Err(ContextOpError::NotConfigured) => Err(RpcError::app(
-            -32000,
-            "context_not_configured",
-            ContextOpError::NotConfigured.to_string(),
-        )),
-        Err(ContextOpError::Model(error)) => Err(RpcError::app(
-            -32000,
-            "context_model_failed",
-            error.to_string(),
-        )),
-        Err(ContextOpError::Read(error)) => Err(error.into()),
+    reply(branch.service::<ContextUsage>()?.read(None, cancel).await?)
+}
+
+impl From<ContextOpError> for RpcError {
+    fn from(error: ContextOpError) -> Self {
+        match error {
+            ContextOpError::NotReady => {
+                Self::app(-32000, "context_usage_unavailable", error.to_string())
+            }
+            ContextOpError::NotConfigured => {
+                Self::app(-32000, "context_not_configured", error.to_string())
+            }
+            ContextOpError::Model(error) => {
+                Self::app(-32000, "context_model_failed", error.to_string())
+            }
+            ContextOpError::Read(error) => error.into(),
+        }
     }
 }

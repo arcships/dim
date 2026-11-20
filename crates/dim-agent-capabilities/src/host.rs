@@ -270,27 +270,8 @@ impl HostDispatch for PrepareContextHost {
             request: Arc<ModelRequest>,
             source: ContextSource,
         }
-        let args = args.list()?;
-        let [data, BridgeValue::Reference(cancelled)] = args.as_slice() else {
-            return Err(crate::port_faces::invalid(
-                NAME,
-                "prepare requires its request and cancellation function",
-            ));
-        };
-        if !cancelled.is_function() {
-            return Err(crate::port_faces::invalid(
-                NAME,
-                "cancellation must be a function",
-            ));
-        }
-        let Request { request, source } = serde_json::from_value(data.clone().json()?)
-            .map_err(|error| crate::port_faces::invalid(NAME, error))?;
+        let (Request { request, source }, cancel, cancelled) = cancellable_request(NAME, args)?;
         let owner = self.clone();
-        let caller = rutis_bridge::session::caller_row()
-            .map(|row| row.ctx().cancellation_token())
-            .unwrap_or_default();
-        let cancel = caller.child_token();
-        let cancelled = wire_cancellation(caller, cancelled.clone());
         Ok(BridgeValue::future(async move {
             let _finished = cancel.clone().drop_guard();
             let result = call_until_cancelled(
@@ -303,6 +284,33 @@ impl HostDispatch for PrepareContextHost {
             rutis_bridge::session::arg(&result)
         }))
     }
+}
+
+pub(crate) fn cancellable_request<T: serde::de::DeserializeOwned>(
+    name: &str,
+    args: BridgeValue,
+) -> Result<(T, CancellationToken, CancelledFn), rutis_bridge::session::Error> {
+    let args = args.list()?;
+    let [data, BridgeValue::Reference(cancelled)] = args.as_slice() else {
+        return Err(crate::port_faces::invalid(
+            name,
+            "expected request and cancellation function",
+        ));
+    };
+    if !cancelled.is_function() {
+        return Err(crate::port_faces::invalid(
+            name,
+            "cancellation must be a function",
+        ));
+    }
+    let request = serde_json::from_value(data.clone().json()?)
+        .map_err(|error| crate::port_faces::invalid(name, error))?;
+    let caller = rutis_bridge::session::caller_row()
+        .map(|row| row.ctx().cancellation_token())
+        .unwrap_or_default();
+    let cancel = caller.child_token();
+    let cancelled = wire_cancellation(caller, cancelled.clone());
+    Ok((request, cancel, cancelled))
 }
 
 fn wire_cancellation(

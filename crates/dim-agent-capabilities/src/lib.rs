@@ -9,7 +9,7 @@ pub mod context_methods;
 pub mod context_model;
 mod context_policy;
 pub mod context_preparation;
-mod context_usage;
+pub mod context_usage;
 pub mod defaults;
 pub mod environment_clients;
 pub mod exec_stop;
@@ -111,6 +111,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<prompt::Prompt>(catalog, branch);
     register::<context_preparation::ContextPreparation>(catalog, branch);
     register::<context_usage::ContextUsage>(catalog, branch);
+    catalog.register_shared_instance("contextUsage", BRANCH_GROUP);
     register::<context_preparation::ConfigurationPublisher>(catalog, branch);
     register::<tool_executor::ToolExecutor>(catalog, branch);
     register::<tool_binding::ToolBinding>(catalog, branch);
@@ -158,5 +159,6 @@ impl PublicService for tool_registry::ToolSourcesView {}
 impl PublicService for methods::SessionMethods {}
 impl PublicService for agent_loop::AgentLoop {}
 impl PublicService for context_preparation::ContextPreparation {}
+impl PublicService for context_usage::ContextUsage {}
 
 pub mod session_files;

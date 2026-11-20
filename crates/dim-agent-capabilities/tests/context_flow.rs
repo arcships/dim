@@ -1068,9 +1068,9 @@ async fn a_final_request_transform_does_not_calibrate_the_canonical_context() {
         .unwrap();
     session.idle("main").await.unwrap();
     let usage = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(usage.baseline_source, BaselineSource::FullEstimate);
@@ -1106,9 +1106,9 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
             .unwrap();
         session.idle("main").await.unwrap();
         session
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         store.property_queries.lock().unwrap().clear();
@@ -1119,9 +1119,9 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
             .unwrap();
         session.idle("main").await.unwrap();
         session
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -1192,9 +1192,9 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
             123. + budgets[1].delta_tokens.unwrap()
         );
         let usage = session
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         let history = HistoryRenderer::default()
@@ -1233,9 +1233,9 @@ async fn provider_usage_baseline_counts_new_history_and_ignores_unusable_measure
         let agent = MinimalHost::start(&changed).await.unwrap();
         let session = agent.restore_session(id).await.unwrap();
         let usage = session
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(usage.context_window, 8192.);

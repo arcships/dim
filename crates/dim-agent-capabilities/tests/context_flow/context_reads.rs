@@ -515,7 +515,7 @@ impl TimelineStore for CountContextReads {
 
 #[tokio::test]
 async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_resume() {
-    use dim_agent_capabilities::{context_preparation::ContextPreparation, prompt::Prompt};
+    use dim_agent_capabilities::{context_usage::ContextUsage, prompt::Prompt};
     let store = Arc::new(CountContextReads::default());
     let mut profile = builder_with_context(
         Arc::new(EchoModel),
@@ -548,9 +548,9 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
         .unwrap();
     assert!(matches!(
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await,
         Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
@@ -561,9 +561,9 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
     session.idle("main").await.unwrap();
     assert!(matches!(
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await,
         Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
@@ -582,9 +582,9 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
         .unwrap();
     session.idle("main").await.unwrap();
     session
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(
@@ -637,9 +637,9 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
     let agent = MinimalHost::start(&profile).await.unwrap();
     let session = agent.restore_session(id).await.unwrap();
     session
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     assert!(
@@ -665,7 +665,7 @@ async fn prepared_requests_use_saved_boundaries_and_growth_after_compaction_and_
 
 #[tokio::test]
 async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories() {
-    use dim_agent_capabilities::context_preparation::ContextPreparation;
+    use dim_agent_capabilities::context_usage::ContextUsage;
     let mut reads = Vec::new();
     for size in [256usize, 2_048] {
         let store = Arc::new(CountContextReads::default());
@@ -755,9 +755,9 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
         session.idle("main").await.unwrap();
         let initialized = session.sequence("main").unwrap();
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         let timeline = cell.get().unwrap();
@@ -791,9 +791,9 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
             )
             .unwrap();
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         agent.close().await.unwrap();
@@ -801,9 +801,9 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent.restore_session("growth".into()).await.unwrap();
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         store.context_pages.lock().unwrap().clear();
@@ -814,9 +814,9 @@ async fn growth_checks_seek_numeric_boundaries_across_larger_restored_histories(
             .unwrap();
         session.idle("main").await.unwrap();
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         let mut last = None;
@@ -902,9 +902,12 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
             session.idle("main").await.unwrap();
         }
         let preparation = session
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap();
-        let first = preparation.usage(CancellationToken::new()).await.unwrap();
+        let first = preparation
+            .read(None, CancellationToken::new())
+            .await
+            .unwrap();
         if threshold.is_some() {
             assert!(chain_events(&session, "main", ..).await.unwrap().iter().any(|event| matches!(&event.kind,
             EventKind::ContextCompaction(data) if matches!(data.outcome, ContextCompactionResult::Completed { .. }))));
@@ -936,7 +939,10 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
         );
         store.context_pages.lock().unwrap().clear();
         for _ in 0..3 {
-            let next = preparation.usage(CancellationToken::new()).await.unwrap();
+            let next = preparation
+                .read(None, CancellationToken::new())
+                .await
+                .unwrap();
             assert_eq!(next.estimated_input_tokens, first.estimated_input_tokens);
         }
         assert!(
@@ -959,9 +965,9 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
         let agent = MinimalHost::start(&resumed_builder).await.unwrap();
         let restored = agent.restore_session(session_id.clone()).await.unwrap();
         let usage = restored
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(usage.estimated_input_tokens, first.estimated_input_tokens);
@@ -1012,9 +1018,9 @@ async fn persisted_usage_reads_and_restores_without_projecting_history() {
         let agent = MinimalHost::start(&resumed_builder).await.unwrap();
         let restored = agent.restore_session(session_id).await.unwrap();
         let usage = restored
-            .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+            .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await;
         assert!(matches!(
             usage,
@@ -1193,9 +1199,9 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
         .unwrap();
     session.idle("main").await.unwrap();
     let expected = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     agent.close().await.unwrap();
@@ -1205,9 +1211,9 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session(id.clone()).await.unwrap();
     let unavailable = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await;
     assert!(
         matches!(unavailable, Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(error))
@@ -1223,9 +1229,9 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session(id).await.unwrap();
     let restored = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     assert_eq!(
@@ -1234,9 +1240,9 @@ async fn unavailable_usage_counter_does_not_fault_resume_and_can_recover() {
     );
     store.context_pages.lock().unwrap().clear();
     session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     assert!(
@@ -1273,9 +1279,9 @@ async fn unsupported_usage_counter_does_not_fall_back_to_history_projection() {
         .unwrap();
     store.context_pages.lock().unwrap().clear();
     let result = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await;
     assert!(
         matches!(result, Err(dim_agent_capabilities::context_preparation::ContextOpError::Model(error))
@@ -1397,10 +1403,10 @@ async fn unconfigured_usage_does_not_project_legacy_messages() {
     let agent = MinimalHost::start(&builder).await.unwrap();
     let session = agent.restore_session("unconfigured".into()).await.unwrap();
     let preparation = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap();
     store.context_pages.lock().unwrap().clear();
-    let reply = preparation.usage(CancellationToken::new()).await;
+    let reply = preparation.read(None, CancellationToken::new()).await;
     assert!(
         matches!(
             reply,
@@ -1469,9 +1475,9 @@ async fn usage_reads_the_published_head_while_a_fact_is_in_flight() {
         .await
         .expect("a fact is in flight");
     let preparation = session
-        .service::<dim_agent_capabilities::context_preparation::ContextPreparation>("main")
+        .service::<dim_agent_capabilities::context_usage::ContextUsage>("main")
         .unwrap();
-    let usage = preparation.usage(CancellationToken::new()).await;
+    let usage = preparation.read(None, CancellationToken::new()).await;
     hold.store(false, Ordering::SeqCst);
     assert!(
         !matches!(
@@ -3401,7 +3407,7 @@ impl ContextCounter for ObservedCounter {
 
 #[tokio::test]
 async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_state_writes() {
-    use dim_agent_capabilities::context_preparation::ContextPreparation;
+    use dim_agent_capabilities::context_usage::ContextUsage;
     let counter = Arc::new(ObservedCounter::default());
     let mut profile = builder_with_usage_resolver(counter.clone());
     let store = Arc::new(CountContextReads::default());
@@ -3448,9 +3454,9 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
             .into(),
         )
         .unwrap();
-    let preparation = session.service::<ContextPreparation>("main").unwrap();
+    let preparation = session.service::<ContextUsage>("main").unwrap();
     assert!(matches!(
-        preparation.usage(CancellationToken::new()).await,
+        preparation.read(None, CancellationToken::new()).await,
         Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
     session
@@ -3458,7 +3464,10 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
         .await
         .unwrap();
     session.idle("main").await.unwrap();
-    let empty = preparation.usage(CancellationToken::new()).await.unwrap();
+    let empty = preparation
+        .read(None, CancellationToken::new())
+        .await
+        .unwrap();
     let initial_messages = counter.messages.load(Ordering::SeqCst);
     assert_eq!(
         counter.full.load(Ordering::SeqCst),
@@ -3498,7 +3507,10 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
             .into(),
         )
         .unwrap();
-    let value = preparation.usage(CancellationToken::new()).await.unwrap();
+    let value = preparation
+        .read(None, CancellationToken::new())
+        .await
+        .unwrap();
     assert!(value.estimated_input_tokens > empty.estimated_input_tokens);
     assert_eq!(
         counter.messages.load(Ordering::SeqCst),
@@ -3514,7 +3526,7 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     for _ in 0..2 {
         assert_eq!(
             preparation
-                .usage(CancellationToken::new())
+                .read(None, CancellationToken::new())
                 .await
                 .unwrap()
                 .estimated_input_tokens,
@@ -3540,9 +3552,9 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
     let agent = MinimalHost::start(&profile).await.unwrap();
     let restored = agent.restore_session(id).await.unwrap();
     let reading = restored
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     let context = HistoryRenderer::default()
@@ -3570,7 +3582,7 @@ async fn usage_reuses_counted_messages_and_current_registry_tools_without_extra_
 
 #[tokio::test]
 async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_request() {
-    use dim_agent_capabilities::{context_preparation::ContextPreparation, prompt::Prompt};
+    use dim_agent_capabilities::{context_usage::ContextUsage, prompt::Prompt};
     let source = Arc::new(MemoryTimelineStore::default());
     let counter = Arc::new(ObservedCounter::default());
     let mut profile = builder_with_usage_resolver(counter.clone());
@@ -3649,9 +3661,9 @@ async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_reques
     let session = agent.restore_session(id).await.unwrap();
     assert!(matches!(
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await,
         Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
@@ -3676,9 +3688,9 @@ async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_reques
         .unwrap();
     session.idle("main").await.unwrap();
     let usage = session
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     assert!(usage.estimated_input_tokens > serde_json::to_vec(&replacement).unwrap().len() as f64);
@@ -3687,7 +3699,7 @@ async fn resuming_a_replacement_only_context_defers_missing_usage_until_a_reques
 
 #[tokio::test]
 async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_result_backfill() {
-    use dim_agent_capabilities::{context_preparation::ContextPreparation, prompt::Prompt};
+    use dim_agent_capabilities::{context_usage::ContextUsage, prompt::Prompt};
     use serde_json::{Value, json};
     let source = Arc::new(MemoryTimelineStore::default());
     let counter = Arc::new(ObservedCounter::default());
@@ -3722,9 +3734,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         session.idle("main").await.unwrap();
     }
     let expected = session
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     agent.close().await.unwrap();
@@ -3888,9 +3900,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent.restore_session(id.clone()).await.unwrap();
         let value = session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await;
         if schema.is_none() {
             assert_eq!(
@@ -3927,9 +3939,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .unwrap();
             session.idle("main").await.unwrap();
             let value = session
-                .service::<ContextPreparation>("main")
+                .service::<ContextUsage>("main")
                 .unwrap()
-                .usage(CancellationToken::new())
+                .read(None, CancellationToken::new())
                 .await
                 .unwrap();
             assert!(value.estimated_input_tokens > expected.estimated_input_tokens);
@@ -3950,9 +3962,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             let agent = MinimalHost::start(&profile).await.unwrap();
             let session = agent.restore_session(id.clone()).await.unwrap();
             let reloaded = session
-                .service::<ContextPreparation>("main")
+                .service::<ContextUsage>("main")
                 .unwrap()
-                .usage(CancellationToken::new())
+                .read(None, CancellationToken::new())
                 .await
                 .unwrap();
             assert_eq!(
@@ -3990,9 +4002,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent.restore_session(id.clone()).await.unwrap();
         let value = session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -4014,9 +4026,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             .unwrap();
         session.idle("main").await.unwrap();
         let value = session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert!(value.estimated_input_tokens > expected.estimated_input_tokens);
@@ -4024,9 +4036,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
         let agent = MinimalHost::start(&profile).await.unwrap();
         let session = agent.restore_session(id.clone()).await.unwrap();
         let reloaded = session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -4070,9 +4082,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
             let session = agent.restore_session(id.clone()).await.unwrap();
             assert!(matches!(
                 session
-                    .service::<ContextPreparation>("main")
+                    .service::<ContextUsage>("main")
                     .unwrap()
-                    .usage(CancellationToken::new())
+                    .read(None, CancellationToken::new())
                     .await,
                 Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
             ));
@@ -4082,9 +4094,9 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
                 .unwrap();
             session.idle("main").await.unwrap();
             let usage = session
-                .service::<ContextPreparation>("main")
+                .service::<ContextUsage>("main")
                 .unwrap()
-                .usage(CancellationToken::new())
+                .read(None, CancellationToken::new())
                 .await
                 .unwrap();
             let context = HistoryRenderer::default()
@@ -4111,7 +4123,7 @@ async fn usage_upgrades_saved_numbers_or_initializes_once_without_historical_res
 
 #[tokio::test]
 async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction() {
-    use dim_agent_capabilities::{context_preparation::ContextPreparation, prompt::Prompt};
+    use dim_agent_capabilities::{context_usage::ContextUsage, prompt::Prompt};
     let store = Arc::new(MemoryTimelineStore::default());
     let counter = Arc::new(ObservedCounter::default());
     let mut profile = builder_with_usage_resolver(counter.clone());
@@ -4152,8 +4164,11 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
         .await
         .unwrap();
     session.idle("main").await.unwrap();
-    let preparation = session.service::<ContextPreparation>("main").unwrap();
-    let before = preparation.usage(CancellationToken::new()).await.unwrap();
+    let preparation = session.service::<ContextUsage>("main").unwrap();
+    let before = preparation
+        .read(None, CancellationToken::new())
+        .await
+        .unwrap();
     let counts = counter.messages.load(Ordering::SeqCst);
     let timeline = cell.get().unwrap();
     let call = timeline
@@ -4186,7 +4201,10 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
             .with_parent_call_id("outer"),
         )
         .unwrap();
-    let live = preparation.usage(CancellationToken::new()).await.unwrap();
+    let live = preparation
+        .read(None, CancellationToken::new())
+        .await
+        .unwrap();
     assert_eq!(live.estimated_input_tokens, before.estimated_input_tokens);
     assert_eq!(
         counter.messages.load(Ordering::SeqCst),
@@ -4199,9 +4217,9 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
     let session = agent.restore_session(id.clone()).await.unwrap();
     assert_eq!(
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap()
             .estimated_input_tokens,
@@ -4219,9 +4237,9 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
         .unwrap();
     session.idle("main").await.unwrap();
     session
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     let cut = chain_events(&session, "main", ..)
@@ -4266,9 +4284,9 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
     let session = agent.restore_session(id).await.unwrap();
     assert!(matches!(
         session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await,
         Err(dim_agent_capabilities::context_preparation::ContextOpError::NotReady)
     ));
@@ -4278,9 +4296,9 @@ async fn child_tool_results_do_not_change_usage_live_after_reload_or_compaction(
         .unwrap();
     session.idle("main").await.unwrap();
     let usage = session
-        .service::<ContextPreparation>("main")
+        .service::<ContextUsage>("main")
         .unwrap()
-        .usage(CancellationToken::new())
+        .read(None, CancellationToken::new())
         .await
         .unwrap();
     let context = HistoryRenderer::default()

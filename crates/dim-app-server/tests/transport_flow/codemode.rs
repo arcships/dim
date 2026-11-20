@@ -106,12 +106,13 @@ impl CompactionStrategy for UsageResolver {
 }
 
 async fn launch_codemode_with_defaults(tools: Option<Vec<String>>) -> RunningServer {
-    launch_codemode_with_model(tools, Arc::new(CodeModeModel::default())).await
+    launch_codemode_with_model(tools, Arc::new(CodeModeModel::default()), None).await
 }
 
 async fn launch_codemode_with_model(
     tools: Option<Vec<String>>,
     model: Arc<CodeModeModel>,
+    session_typescript: Option<dim_app_server::session_typescript::SessionTypeScriptConfig>,
 ) -> RunningServer {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
@@ -141,6 +142,9 @@ async fn launch_codemode_with_model(
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     dim_app_server::collaboration::install(&mut builder);
     dim_codemode::install(&mut builder);
+    if session_typescript.is_some() {
+        builder.require_part("ContextUsageFixture");
+    }
     serve(
         builder,
         ServerConfig {
@@ -148,6 +152,7 @@ async fn launch_codemode_with_model(
                 "dim-server-test-{}/server.sock",
                 uuid::Uuid::new_v4()
             ))),
+            session_typescript,
             session_defaults: SessionConfig {
                 tools,
                 ..Default::default()
@@ -159,11 +164,8 @@ async fn launch_codemode_with_model(
     .unwrap()
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
-    let model = Arc::new(CodeModeModel::default());
-    let server = launch_codemode_with_model(SessionConfig::default().tools, model.clone()).await;
-    let mut client = Client::new_version(&server, false, 4).await;
+async fn run_session(server: &RunningServer) -> (Client, String, dim_agent_runtime::Session) {
+    let mut client = Client::new_version(server, false, 4).await;
     let created = client
         .rpc(
             "session.create",
@@ -209,6 +211,15 @@ async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
             )
             .await,
     );
+    (client, session, loaded)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_product_style_app_server_runs_codemode_and_writes_child_facts() {
+    let model = Arc::new(CodeModeModel::default());
+    let server =
+        launch_codemode_with_model(SessionConfig::default().tools, model.clone(), None).await;
+    let (mut client, session, loaded) = run_session(&server).await;
     let history = client
         .rpc(
             "session.history",
@@ -285,6 +296,42 @@ async fn a_v3_default_all_tools_session_does_not_mount_codemode() {
             .iter()
             .any(|name| name == "codemode"),
         "a pre-v4 all-tools Session must exclude codemode"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_context_usage_reads_the_same_budget_at_a_previous_cutoff() {
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![
+        json!({"id":"context-usage","name":parts.anchor.parent().unwrap().join("fixtures/context-usage.ts"),"provides":{}}),
+    ];
+    let server = launch_codemode_with_model(
+        SessionConfig::default().tools,
+        Arc::new(CodeModeModel::default()),
+        Some(parts),
+    )
+    .await;
+    let (mut client, session, loaded) = run_session(&server).await;
+    let target = json!({"sessionId":session,"branchId":"main"});
+    let initial = client.rpc("session.context.usage", target.clone()).await;
+    assert_ok(&initial);
+    let through = initial["result"]["through"].as_u64().unwrap();
+    assert_ok(&client.rpc("session.stop", target).await);
+    assert!(loaded.sequence("main").unwrap() > through);
+    let historical = client
+        .rpc(
+            "session.usagefixture.read",
+            json!({"sessionId":session,"through":through}),
+        )
+        .await;
+    assert_ok(&historical);
+    use dim_agent_capabilities::context_preparation::ContextUsage;
+    assert_eq!(
+        serde_json::from_value::<ContextUsage>(initial["result"].clone()).unwrap(),
+        serde_json::from_value::<ContextUsage>(historical["result"].clone()).unwrap(),
     );
     server.shutdown();
     server.join().await.unwrap();

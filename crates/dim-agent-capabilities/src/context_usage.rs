@@ -273,7 +273,7 @@ struct Progress {
     error: Option<AgentError>,
 }
 
-pub(crate) struct ContextUsage {
+pub struct ContextUsage {
     timeline: Arc<Timeline>,
     resolver: Arc<ContextModelHost>,
     registry: Arc<ToolRegistry>,
@@ -981,7 +981,8 @@ impl ContextUsage {
         .map_err(|error| HostError::failed(error.to_string()))
     }
 
-    pub(crate) async fn read(
+    /// Reads the budget at the supplied committed sequence, or at the current head.
+    pub async fn read(
         &self,
         through: Option<u64>,
         cancel: CancellationToken,
@@ -1287,7 +1288,54 @@ impl ContextUsage {
     }
 }
 
+struct UsageFace(Arc<ContextUsage>);
+
+impl rutis_bridge::session::HostDispatch for UsageFace {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"read":"async"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        const NAME: &str = "contextUsage";
+        if method != "read" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            through: Option<u64>,
+        }
+        let (Request { through }, cancel, cancelled) =
+            crate::host::cancellable_request(NAME, args)?;
+        let owner = self.0.clone();
+        Ok(rutis_bridge::session::Value::future(async move {
+            let _finished = cancel.clone().drop_guard();
+            let usage = crate::host::call_until_cancelled(
+                cancelled,
+                cancel.clone(),
+                owner.read(through, cancel),
+            )
+            .await
+            .map_err(|error| {
+                let error = crate::methods::RpcError::from(error);
+                rutis_bridge::exports::failure(
+                    NAME,
+                    error.data.as_ref().map_or("failed", |data| &data.app_error),
+                    error.message,
+                    None,
+                )
+            })?;
+            rutis_bridge::session::arg(&usage)
+        }))
+    }
+}
+
 pub(crate) struct ContextUsagePlugin {
+    instance: rutis::host::InstanceId,
     usage: ServiceKey<ContextUsage>,
     timeline: ServiceKey<Timeline>,
     resolver: ServiceKey<ContextModelHost>,
@@ -1299,6 +1347,7 @@ pub(crate) struct ContextUsagePlugin {
 impl ContextUsagePlugin {
     pub(crate) fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            instance: names.instance(dim_agent_runtime::BRANCH_GROUP)?,
             usage: names.key()?,
             timeline: names.key()?,
             resolver: names.key()?,
@@ -1408,6 +1457,10 @@ impl DynPlugin for ContextUsagePlugin {
                     }
                 });
             }
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in("contextUsage", self.instance),
+                Arc::new(UsageFace(owner.clone())),
+            )?;
             ctx.provide_at(self.usage.clone(), owner)?;
             Ok(Effect::Done)
         })

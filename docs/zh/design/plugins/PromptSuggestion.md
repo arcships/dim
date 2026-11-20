@@ -301,7 +301,7 @@ CLI 只在看到该轮 `turn/end` 为 `Completed` 之后、且输入框为空、
 | `ModelHost` | `invoke` | async | `{request, connection, cancel}` | `ModelChunk` 流 |
 | `ProviderConnectionResolver` | `resolve` | async | `{request, cancel}` | `{connection, failurePolicy, recovery}`（仅 process 模型；本地模型发送 `ModelConnection::Local`，其装配用 `install_local` 而不是 `install` 装载该部件） |
 | `SessionMethods` | `register` | sync | 命名空间 `session.suggestion`，两个声明 | 登记随该部件的代结束 |
-| `TreeCommands` | `get` | sync | `main` | 分支，上下文门读取其 `ContextPreparation::usage` |
+| `TreeCommands` | `get` | sync | `main` | 分支，上下文门读取其 `ContextUsage::read` |
 | Session 广播 | `session/{sessionId}` 上的记录 | 总线事件 | - | `Event {branchId, event}`、`Notice`、`Fence`、`Closed` |
 | Settings 来源 `prompt-suggestion` | `read` | async | 用户作用域 | `{enabled, maxChars}` |
 
