@@ -111,7 +111,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |
 | `contextUsage` | branch | ContextUsage | internal(hot-path) | — |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
-| `fileReads` | branch | FileReads | internal(hot-path) | — |
+| `fileReads` | branch | FileReads | data | `binding` sync, `record` sync, `writeBinding` async |
 | `inputQueue` | branch | InputQueue | data | `submit` async, `withdraw` async |
 | `loopState` | branch | Loop | internal(hot-path) | — |
 | `permission` | branch | Permission | data | `check` async |

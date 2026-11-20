@@ -591,3 +591,75 @@ async fn node_tool_binding_transfers_pinned_handlers_in_the_native_owner() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_file_reads_round_trips_a_native_binding_used_by_write() {
+    use dim_agent_capabilities::workspace_tools::{file_reads::FileReads, files::FileTools};
+    let root = std::env::temp_dir().join(format!("dim-binding-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let source = root.join("source.txt");
+    let target = root.join("target.txt");
+    std::fs::write(&source, b"before").unwrap();
+    std::fs::copy(&source, &target).unwrap();
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"file-reads","name":parts.anchor.parent().unwrap().join("fixtures/file-reads.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_feature(dim_agent_runtime::Feature::new("FixtureFileReadsOwner")
+                .branch("FileReads", |names| Ok(Box::new(dim_agent_capabilities::workspace_tools::file_reads::FileReadsPlugin::new(names)?))));
+            builder.require_part("FileReadsFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!(["echo", "wait"])).await;
+    let reads = agent
+        .get_session(&id)
+        .unwrap()
+        .service::<FileReads>("main")
+        .unwrap();
+    let files = FileTools::new(root.clone(), root.clone(), root.join("outputs"));
+    let call = |name: &str, input: Value| dim_agent_types::ToolCall {
+        id: name.to_owned(),
+        name: name.to_owned(),
+        input: input.as_object().unwrap().clone(),
+    };
+    let read = files
+        .execute(
+            &call("read", json!({"path":source,"encoding":"cp932"})),
+            &reads,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(read.is_error, Some(true), "{read:?}");
+    let reply = client
+        .rpc(
+            "session.filebinding.copy",
+            json!({"sessionId":id,"source":source,"target":target}),
+        )
+        .await;
+    assert_ok(&reply);
+    let written = files
+        .execute(
+            &call("write", json!({"path":target,"content":"日"})),
+            &reads,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true), "{written:?}");
+    assert_eq!(std::fs::read(target).unwrap(), [0x93, 0xfa]);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}

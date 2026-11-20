@@ -5,6 +5,8 @@
 //! Overwriting an existing file requires a binding from this branch whose
 //! operation is still in the model's context (#524).
 
+mod face;
+
 use crate::host::HostError;
 use dim_agent_runtime::{
     Names, QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick,
@@ -20,27 +22,32 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum TextEncoding {
     Utf8,
     Utf16Le,
     Utf16Be,
     /// Only established by an explicit `read.encoding`; never guessed.
+    #[serde(deserialize_with = "super::files::deserialize_legacy_encoding")]
     Legacy {
         /// The requested name, lowercased, as echoed to the model.
         name: String,
+        #[serde(skip_serializing)]
         encoding: &'static encoding_rs::Encoding,
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum EncodingSource {
     Bom,
     User,
     Utf8Policy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Bom {
     None,
     Utf8,
@@ -48,7 +55,8 @@ pub enum Bom {
     Utf16Be,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Eol {
     None,
     Lf,
@@ -56,7 +64,8 @@ pub enum Eol {
     Mixed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextFileBinding {
     /// SHA-256 of the raw file bytes.
     pub raw_revision: [u8; 32],
@@ -75,13 +84,16 @@ struct Binding {
 }
 
 /// What `write` may replace an existing file with.
-#[derive(Debug)]
-pub(crate) enum WriteBinding {
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", content = "binding", rename_all = "lowercase")]
+pub enum WriteBinding {
     /// No operation on this branch bound the file.
+    #[serde(rename = "absent")]
     None,
     /// The operation that bound the file was compacted out of the context.
     Compacted,
     /// The binding of an operation still in the model's context.
+    #[serde(rename = "bound")]
     Text(TextFileBinding),
 }
 
@@ -100,7 +112,7 @@ impl FileReads {
     }
     /// The binding `edit` may use: it checks the model's `oldText` against the
     /// file itself, so a compaction does not take it away (#524).
-    pub(crate) fn get(&self, path: &Path) -> Option<TextFileBinding> {
+    pub fn binding(&self, path: &Path) -> Option<TextFileBinding> {
         self.bindings
             .lock()
             .unwrap()
@@ -114,17 +126,24 @@ impl FileReads {
     }
     /// The binding `write` may use: only while the operation that established
     /// it is still in the model's context.
-    pub(crate) async fn write_binding(&self, path: &Path) -> Result<WriteBinding, HostError> {
-        let Some(binding) = self.bindings.lock().unwrap().get(path).cloned() else {
-            return Ok(WriteBinding::None);
-        };
-        Ok(if self.in_context(binding.established).await? {
-            WriteBinding::Text(binding.text)
-        } else {
-            WriteBinding::Compacted
-        })
+    pub fn write_binding(
+        &self,
+        path: &Path,
+    ) -> impl Future<Output = Result<WriteBinding, HostError>> + Send + 'static {
+        let binding = self.bindings.lock().unwrap().get(path).cloned();
+        let timeline = self.timeline.clone();
+        async move {
+            let Some(binding) = binding else {
+                return Ok(WriteBinding::None);
+            };
+            Ok(if Self::in_context(&timeline, binding.established).await? {
+                WriteBinding::Text(binding.text)
+            } else {
+                WriteBinding::Compacted
+            })
+        }
     }
-    pub(crate) fn set(&self, path: PathBuf, text: TextFileBinding, established: u64) {
+    pub fn record(&self, path: PathBuf, text: TextFileBinding, established: u64) {
         self.bindings
             .lock()
             .unwrap()
@@ -140,17 +159,16 @@ impl FileReads {
     /// compactions this check folds are published before it runs: the model
     /// call that led to the write tool was written after them, and a batch is
     /// published only after every batch committed before it.
-    async fn in_context(&self, established: u64) -> Result<bool, HostError> {
-        let now = self.timeline.sequence();
+    async fn in_context(timeline: &Timeline, established: u64) -> Result<bool, HostError> {
+        let now = timeline.sequence();
         if now <= established {
             return Ok(true);
         }
-        let completed = self
-            .timeline
+        let completed = timeline
             .query(TimelineQuery {
                 scope: TimelineQueryScope::Branch,
                 from: Some(TimelinePosition {
-                    branch_id: self.timeline.branch_id(),
+                    branch_id: timeline.branch_id(),
                     sequence: established + 1,
                 }),
                 through: Some(now),
@@ -197,8 +215,7 @@ impl FileReads {
         let [QueryValue::Value { value: retain_from }] = row.values.as_slice() else {
             unreachable!("completed compaction has a retain_from")
         };
-        let cut = self
-            .timeline
+        let cut = timeline
             .query(TimelineQuery {
                 scope: TimelineQueryScope::Branch,
                 from: None,
@@ -241,12 +258,14 @@ impl FileReads {
 }
 
 pub struct FileReadsPlugin {
+    instance: rutis::host::InstanceId,
     reads: Key<FileReads>,
     timeline: Key<Timeline>,
 }
 impl FileReadsPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            instance: names.instance(dim_agent_runtime::BRANCH_GROUP)?,
             reads: names.key()?,
             timeline: names.key()?,
         })
@@ -262,7 +281,15 @@ impl DynPlugin for FileReadsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let timeline = ctx.require_at(&self.timeline)?;
-            ctx.provide_at(self.reads.clone(), Arc::new(FileReads::new(timeline)))?;
+            let owner = Arc::new(FileReads::new(timeline));
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in(
+                    &dim_agent_runtime::names::name_of::<FileReads>(),
+                    self.instance,
+                ),
+                owner.clone(),
+            )?;
+            ctx.provide_at(self.reads.clone(), owner)?;
             Ok(Effect::Done)
         })
     }

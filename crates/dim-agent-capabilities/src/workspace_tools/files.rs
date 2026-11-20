@@ -10,6 +10,7 @@
 )]
 
 mod codec;
+pub(super) use codec::deserialize_legacy_encoding;
 mod edit;
 mod read;
 mod search;

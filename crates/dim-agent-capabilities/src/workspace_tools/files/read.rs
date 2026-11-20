@@ -164,7 +164,7 @@ pub(super) async fn run(
     let (result, binding) = outcome;
     let result = offload(tools, call_id, result).await?;
     if let Some((path, binding)) = binding {
-        reads.set(path, binding, established);
+        reads.record(path, binding, established);
     }
     Ok(result)
 }
@@ -338,10 +338,10 @@ fn read_text(
         "path": display,
         "size": stat.len,
         "revision": hex(&binding.raw_revision),
-        "encoding": codec::encoding_json(&binding.encoding),
-        "encodingSource": codec::source_str(binding.encoding_source),
-        "bom": codec::bom_str(binding.bom),
-        "eol": codec::eol_str(binding.eol),
+        "encoding": binding.encoding,
+        "encodingSource": binding.encoding_source,
+        "bom": binding.bom,
+        "eol": binding.eol,
     });
     if !text.has_content {
         return Ok((succeeded("", structured), Some((path, binding))));

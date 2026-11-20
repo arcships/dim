@@ -477,6 +477,8 @@ empty live preview and unavailable historical captures.
 
 ## FileReads
 
+The branch [file binding operations](../../../design/contracts/runtime-owner-operations.md) use the canonical path. `record` takes the Timeline sequence captured at the start of the file operation.
+
 Owner: [workspace_tools/file_reads.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/file_reads.rs).
 Records canonical-path bindings for files read on this branch: raw-byte revision,
 encoding, BOM and line endings. Existing-file `edit` admission requires a binding
@@ -523,7 +525,7 @@ a filesystem lock, permission grant or cross-process compare-and-swap.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Timeline` |
-| 提供 | `B:FileReads` |
+| 提供 | `B:FileReads`、`B:dyn HostDispatch#fileReads` |
 | 被注入于 | — |
 <!-- /generated -->
 

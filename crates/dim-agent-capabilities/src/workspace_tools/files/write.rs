@@ -101,7 +101,7 @@ pub(super) async fn run(
     .await?;
     let (result, binding) = written.map_err(|Cancelled| cancelled())?;
     if let Some(binding) = binding {
-        reads.set(path, binding, established);
+        reads.record(path, binding, established);
     }
     Ok(result)
 }

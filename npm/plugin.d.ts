@@ -817,6 +817,19 @@ export interface HooksService {
   refusal(request: { plugin: string }): [error: string, reason: string | null] | null;
 }
 
+export interface TextFileBinding {
+  rawRevision: number[];
+  encoding: { kind: 'utf8' | 'utf16le' | 'utf16be' } | { kind: 'legacy'; name: string };
+  encodingSource: 'bom' | 'user' | 'utf8-policy';
+  bom: 'none' | 'utf8' | 'utf16le' | 'utf16be';
+  eol: 'none' | 'lf' | 'crlf' | 'mixed';
+}
+export interface FileReads {
+  binding(request: { path: FsEntryName }): TextFileBinding | null;
+  writeBinding(request: { path: FsEntryName }): Promise<{ kind: 'absent' } | { kind: 'compacted' } | { kind: 'bound'; binding: TextFileBinding }>;
+  record(request: { path: FsEntryName; binding: TextFileBinding; established: number | bigint }): void;
+}
+
 export type BoundToolDefinition = Omit<ToolDefinition, 'risk'> & { risk?: string };
 export interface ToolBinding {
   bind(request: { requestId: string; through: number | bigint; tools: BoundToolDefinition[]; toolSources: { key: string; version: string }[] }): void;
