@@ -206,6 +206,12 @@ pub enum BranchOperation {
     ContextUsage,
     #[serde(rename = "compactAndWait")]
     CompactAndWait,
+    #[serde(rename = "prompt.configure")]
+    ConfigurePrompt {
+        request: Box<crate::prompt::PromptConfigurationRequest>,
+    },
+    #[serde(rename = "prompt.adoptedConfiguration")]
+    AdoptedConfiguration,
     #[serde(rename = "approval.pending")]
     ApprovalPending,
     #[serde(rename = "approval.decide", rename_all = "camelCase")]
@@ -569,22 +575,45 @@ impl TimelineTree {
     }
 }
 impl TimelineTree {
+    /// The native result of the selected branch's `prompt.adoptedConfiguration` operation.
+    pub fn adopted_configuration(&self, branch_id: &str) -> Result<Option<ModelConfiguration>> {
+        Ok(self
+            .get(branch_id)?
+            .service::<crate::prompt::Prompt>()?
+            .adopted_configuration(Default::default()))
+    }
+
     pub(crate) async fn call_branch(
         &self,
         request: BranchCall,
         cancel: CancellationToken,
     ) -> std::result::Result<serde_json::Value, crate::methods::RpcError> {
-        let branch = self.get(&request.branch_id)?;
+        let branch_id = &request.branch_id;
         match request.operation {
-            BranchOperation::ContextUsage => crate::context_methods::usage(&branch, cancel).await,
+            BranchOperation::ContextUsage => {
+                crate::context_methods::usage(&self.get(branch_id)?, cancel).await
+            }
             BranchOperation::CompactAndWait => {
-                crate::context_methods::compact(&branch, &cancel).await
+                crate::context_methods::compact(&self.get(branch_id)?, &cancel).await
+            }
+            BranchOperation::ConfigurePrompt { request } => {
+                let prompt = self
+                    .get(branch_id)?
+                    .admitted_service::<crate::prompt::Prompt>()?;
+                let outcome = tokio::select! {
+                    result = prompt.configure(*request) => result?,
+                    _ = cancel.cancelled() => return Err(crate::methods::RpcError::interrupted()),
+                };
+                crate::methods::reply(outcome)
+            }
+            BranchOperation::AdoptedConfiguration => {
+                crate::methods::reply(self.adopted_configuration(branch_id)?)
             }
             BranchOperation::ApprovalDecide {
                 request_id,
                 decision,
             } => {
-                branch
+                self.get(branch_id)?
                     .service::<crate::approval::Approval>()?
                     .decide(request_id, decision)
                     .await
@@ -600,15 +629,19 @@ impl TimelineTree {
                 Ok(serde_json::Value::Null)
             }
             BranchOperation::Withdraw { command } => {
-                let queue = branch.service::<crate::input_queue::InputQueue>()?;
+                let queue = self
+                    .get(branch_id)?
+                    .service::<crate::input_queue::InputQueue>()?;
                 let answer = queue.withdraw(command).await.map_err(|error| {
                     crate::methods::RpcError::service(error.variant(), error.to_string())
                 })?;
                 crate::methods::reply(answer)
             }
-            BranchOperation::ApprovalPending => {
-                crate::methods::reply(branch.service::<crate::approval::Approval>()?.pending())
-            }
+            BranchOperation::ApprovalPending => crate::methods::reply(
+                self.get(branch_id)?
+                    .service::<crate::approval::Approval>()?
+                    .pending(),
+            ),
         }
     }
 }

@@ -665,6 +665,8 @@ export interface SkillsConfig {
 export type BranchOperation =
   | { kind: "contextUsage.read" }
   | { kind: "compactAndWait" }
+  | { kind: "prompt.configure"; request: PromptConfigurationRequest }
+  | { kind: "prompt.adoptedConfiguration" }
   | { kind: "approval.pending" }
   | { kind: "approval.decide"; requestId: string; decision: ApprovalDecision }
   | { kind: "inputQueue.withdraw"; command: InputWithdrawData }

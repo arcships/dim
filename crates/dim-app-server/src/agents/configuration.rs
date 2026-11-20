@@ -90,10 +90,7 @@ fn configured_agent(tree: &TimelineTree, value: Value) -> Result<Value, RpcError
     }
     let Params { branch_id, .. } = params(value)?;
     let agent_id = tree
-        .get(&branch_id)?
-        .service::<Prompt>()
-        .map_err(|_| RpcError::reloading())?
-        .adopted_configuration(Default::default())
+        .adopted_configuration(&branch_id)?
         .and_then(|configuration| configuration.metadata)
         .and_then(|metadata| metadata.agent_id);
     reply(Answer { agent_id })

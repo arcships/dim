@@ -37,7 +37,9 @@ Within a branch, inject its owner face directly. For Session callers the existin
 TimelineTree resolves the admitted live branch once using its existing branch lookup and
 dispatches on that branch instance. The operation is tagged by `kind`. The Context calls and `approval.pending` take only
 this tag. `approval.decide` takes `requestId` and `decision`; `inputQueue.withdraw`
-takes `command` in the InputQueue owner's existing event shape.
+takes `command` in the InputQueue owner's existing event shape. The
+`prompt.configure` variant takes the owner's `request`. The
+`prompt.adoptedConfiguration` variant takes only its tag.
 
 Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
 Ended and unknown branches retain their original errors. Calls admitted before close stay

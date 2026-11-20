@@ -32,6 +32,18 @@ export const part = definePlugin({
             tree.call({ branchId: 'missing', operation: { kind: 'approval.pending' } }, cancelled),
             { code: 'session_invalid_input' },
           )
+          const adopted = { kind: 'prompt.adoptedConfiguration' as const }
+          const rootModel = await tree.call({ branchId: 'main', operation: adopted }, cancelled)
+          const configured = await tree.call({
+            branchId: id, operation: { kind: 'prompt.configure', request: {
+              sources: [], model: { providerId: 'fixture', modelId: 'tree-selected' },
+            } },
+          }, cancelled)
+          assert.equal(configured, 'adopted')
+          const childModel = await tree.call({ branchId: id, operation: adopted }, cancelled)
+          assert.ok(childModel && typeof childModel === 'object' && 'modelId' in childModel)
+          assert.equal(childModel.modelId, 'tree-selected')
+          assert.deepEqual(await tree.call({ branchId: 'main', operation: adopted }, cancelled), rootModel)
           const entry = await tree.directory({id})
           assert.ok(!Array.isArray(entry) && entry.info.id === id && entry.state === 'open')
           const directory = await tree.directory({})
