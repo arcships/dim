@@ -1233,6 +1233,84 @@ pub trait ModelDriver: Send + Sync + 'static {
 }
 pub struct ModelHost(pub Arc<dyn ModelDriver>);
 
+pub struct ModelInvocation {
+    driver: Arc<ModelHost>,
+    resolver: Option<Arc<ProviderConnectionResolver>>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum InvocationMode {
+    Once,
+    Recovering { failure_chain: Option<FailureChain> },
+}
+
+impl ModelInvocation {
+    pub fn new(driver: Arc<ModelHost>, resolver: Option<Arc<ProviderConnectionResolver>>) -> Self {
+        Self { driver, resolver }
+    }
+
+    pub async fn invoke<S: crate::model_provider::RetryObserver, T>(
+        &self,
+        request: Arc<ModelRequest>,
+        mode: InvocationMode,
+        cancel: &CancellationToken,
+        state: &mut S,
+        consume: crate::model_provider::Consume<S, T>,
+    ) -> Result<T, HostError> {
+        let resolved = match &self.resolver {
+            Some(resolver) => resolver.0.resolve(request.clone(), cancel.clone()).await?,
+            None => ResolvedModelConnection {
+                connection: ModelConnection::Local,
+                failure_policy: None,
+                recovery: None,
+            },
+        };
+        match mode {
+            InvocationMode::Recovering { failure_chain } => {
+                crate::model_provider::invoke_with_recovery(
+                    &self.driver,
+                    &request,
+                    failure_chain.as_ref(),
+                    resolved,
+                    cancel,
+                    state,
+                    consume,
+                )
+                .await
+            }
+            InvocationMode::Once => {
+                let request = state
+                    .prepare(request, resolved.connection.protocol())
+                    .await?;
+                state.before_attempt().await?;
+                let attempt = cancel.child_token();
+                let _end = attempt.clone().drop_guard();
+                let stream = self
+                    .driver
+                    .0
+                    .invoke(request, resolved.connection, attempt.clone())
+                    .await?;
+                consume(stream, state, attempt, &mut true).await
+            }
+        }
+    }
+}
+
+impl ModelConnection {
+    pub(crate) fn protocol(&self) -> Option<ModelProtocol> {
+        match self {
+            Self::Local => None,
+            Self::Http(http) => Some(http.protocol),
+            Self::Bedrock(_) => Some(ModelProtocol::Bedrock),
+        }
+    }
+}
+
 /// The caller's cancellation as a function it passes, the form a data method
 /// takes it in ([service faces §1](../../../docs/design/service-faces.md#1-规则)):
 /// it completes when the caller cancels the call, and the result the call

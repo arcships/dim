@@ -94,12 +94,9 @@ pub async fn invoke<S: Send + RetryObserver, T>(
         failure_policy: policy,
         mut recovery,
     } = resolved;
-    let protocol = match &connection {
-        ModelConnection::Local => None,
-        ModelConnection::Http(http) => Some(http.protocol),
-        ModelConnection::Bedrock(_) => Some(ModelProtocol::Bedrock),
-    };
-    let request = state.prepare(request.clone(), protocol).await?;
+    let request = state
+        .prepare(request.clone(), connection.protocol())
+        .await?;
     let mut recovery_state = RecoveryState::default();
     if let Some(chain) = chain {
         recovery_state.attempts = chain.attempts;

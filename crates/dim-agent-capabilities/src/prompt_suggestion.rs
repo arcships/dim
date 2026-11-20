@@ -13,8 +13,8 @@
 use crate::context_preparation::ContextPreparation;
 use crate::history::fold_output_parts;
 use crate::host::{
-    HostError, ModelChunk, ModelConnection, ModelHost, ModelStream, ProviderConnectionResolver,
-    ResolvedModelConnection,
+    HostError, InvocationMode, ModelChunk, ModelHost, ModelInvocation, ModelStream,
+    ProviderConnectionResolver,
 };
 use crate::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply,
@@ -481,8 +481,7 @@ impl State {
 }
 
 struct Hosts {
-    model: Arc<ModelHost>,
-    resolver: Option<Arc<ProviderConnectionResolver>>,
+    model: ModelInvocation,
     settings: Option<Arc<PromptSuggestionSettingsHost>>,
     tree: Arc<TreeCommands>,
 }
@@ -560,8 +559,7 @@ impl DynPlugin for PromptSuggestionPlugin {
                 root: config.interactive && config.collaboration_role == CollaborationRole::Leader,
                 state: Mutex::new(State::default()),
                 hosts: Hosts {
-                    model,
-                    resolver,
+                    model: ModelInvocation::new(model, resolver),
                     settings,
                     tree,
                 },
@@ -1197,27 +1195,19 @@ impl Part {
         token: &CancellationToken,
     ) -> Result<String, &'static str> {
         let request = suggestion_request(&call.request, content, &instruction(max_chars));
-        let resolved = match &self.hosts.resolver {
-            Some(resolver) => resolver
-                .0
-                .resolve(request.clone(), token.clone())
-                .await
-                .map_err(|_| "failed")?,
-            None => ResolvedModelConnection {
-                connection: ModelConnection::Local,
-                failure_policy: None,
-                recovery: None,
-            },
-        };
-        let ResolvedModelConnection { connection, .. } = resolved;
-        let stream = self
-            .hosts
+        self.hosts
             .model
-            .0
-            .invoke(request, connection, token.clone())
+            .invoke(
+                request,
+                InvocationMode::Once,
+                token,
+                &mut SuggestionLimit(max_chars as usize),
+                |stream, limit, token, _| {
+                    Box::pin(async move { read_line(stream, limit.0, &token).await })
+                },
+            )
             .await
-            .map_err(failed)?;
-        read_line(stream, max_chars as usize, token).await
+            .map_err(failed)
     }
 
     fn respond(&self, value: Value) -> Result<Value, RpcError> {
@@ -1265,16 +1255,19 @@ fn failed(_: HostError) -> &'static str {
     "failed"
 }
 
+struct SuggestionLimit(usize);
+impl crate::model_provider::RetryObserver for SuggestionLimit {}
+
 async fn read_line(
     mut stream: ModelStream,
     max_chars: usize,
     token: &CancellationToken,
-) -> Result<String, &'static str> {
+) -> Result<String, HostError> {
     let mut text = String::new();
     loop {
         let chunk = tokio::select! {
             chunk = stream.next() => chunk,
-            _ = token.cancelled() => return Err("failed"),
+            _ = token.cancelled() => return Err(HostError::failed("Suggestion generation failed")),
         };
         let Some(chunk) = chunk else {
             break;
@@ -1286,10 +1279,12 @@ async fn read_line(
                     break;
                 }
             }
-            Ok(ModelChunk::ToolStart { .. }) | Ok(ModelChunk::ToolUse(_)) => return Err("failed"),
+            Ok(ModelChunk::ToolStart { .. }) | Ok(ModelChunk::ToolUse(_)) => {
+                return Err(HostError::failed("Suggestion generation failed"));
+            }
             Ok(ModelChunk::MessageStop { .. }) => break,
             Ok(_) => {}
-            Err(_) => return Err("failed"),
+            Err(error) => return Err(error),
         }
     }
     Ok(text)

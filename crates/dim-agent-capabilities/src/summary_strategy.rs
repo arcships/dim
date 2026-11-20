@@ -5,7 +5,6 @@
 use crate::{
     history::{summary_message, truncate_middle},
     host::*,
-    model_provider::invoke_with_recovery,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
 };
 use dim_agent_runtime::Names;
@@ -232,8 +231,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
 }
 
 pub struct SummaryStrategy {
-    host: Arc<ModelHost>,
-    resolver: Arc<ProviderConnectionResolver>,
+    host: ModelInvocation,
     /// The factory's reasoning value; Provider's mapping may fall back to
     /// `inherit` for a model or protocol that rejects the effort.
     reasoning: SummaryReasoning,
@@ -364,8 +362,7 @@ impl SummaryStrategy {
         config: ProductSummaryStrategyConfig,
     ) -> Self {
         Self {
-            host,
-            resolver,
+            host: ModelInvocation::new(host, Some(resolver)),
             reasoning: config.reasoning,
             target: config.target,
             system_prompt: config.system_prompt,
@@ -471,22 +468,19 @@ impl SummaryStrategy {
         system: &str,
     ) -> Result<Option<String>, HostError> {
         let request = Arc::new(summary_request(input, system, earlier, chunk));
-        let resolved = self
-            .resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
-            .await?;
         stats.attempt_limit = (stats.calls + SUMMARY_RETRY_LIMIT).saturating_sub(stats.carried);
-        let (text, complete) = invoke_with_recovery(
-            &self.host,
-            &request,
-            None,
-            resolved,
-            cancel,
-            stats,
-            |stream, stats, _, _| Box::pin(collect(stream, stats)),
-        )
-        .await?;
+        let (text, complete) = self
+            .host
+            .invoke(
+                request,
+                InvocationMode::Recovering {
+                    failure_chain: None,
+                },
+                cancel,
+                stats,
+                |stream, stats, _, _| Box::pin(collect(stream, stats)),
+            )
+            .await?;
         if !complete {
             stats.cut_offs += 1;
             return Ok(None);

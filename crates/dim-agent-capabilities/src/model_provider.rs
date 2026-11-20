@@ -74,8 +74,7 @@ struct ModelProvider {
     tasks: TaskTracker,
     errors: Mutex<Vec<AgentError>>,
     context: Arc<ContextPreparation>,
-    host: Arc<ModelHost>,
-    resolver: Option<Arc<ProviderConnectionResolver>>,
+    host: ModelInvocation,
     files: Option<Arc<SessionFiles>>,
     timeline: Arc<Timeline>,
     identity: Arc<TimelineIdentity>,
@@ -486,26 +485,19 @@ impl ModelProvider {
                 self.context
                     .validate(&call.request_id, request.clone(), cancel.clone())
                     .await?;
-                let resolved = match &self.resolver {
-                    Some(resolver) => resolver.0.resolve(request.clone(), cancel.clone()).await?,
-                    None => ResolvedModelConnection {
-                        connection: ModelConnection::Local,
-                        failure_policy: None,
-                        recovery: None,
-                    },
-                };
-                recovery::invoke(
-                    &self.host,
-                    &request,
-                    call.failure_chain.as_ref(),
-                    resolved,
-                    &cancel,
-                    &mut output,
-                    |stream, output, attempt, replay_safe| {
-                        Box::pin(consume_output(stream, output, attempt, replay_safe))
-                    },
-                )
-                .await
+                self.host
+                    .invoke(
+                        request,
+                        InvocationMode::Recovering {
+                            failure_chain: call.failure_chain.clone(),
+                        },
+                        &cancel,
+                        &mut output,
+                        |stream, output, attempt, replay_safe| {
+                            Box::pin(consume_output(stream, output, attempt, replay_safe))
+                        },
+                    )
+                    .await
             })
             .catch_unwind()
             .await;
@@ -640,8 +632,7 @@ impl DynPlugin for ModelProviderPlugin {
                 tasks: TaskTracker::new(),
                 errors: Mutex::new(Vec::new()),
                 context,
-                host,
-                resolver,
+                host: ModelInvocation::new(host, resolver),
                 files,
                 timeline,
                 identity,
