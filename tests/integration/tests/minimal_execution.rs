@@ -6,6 +6,7 @@
 mod compaction_support;
 #[path = "local_support/process.rs"]
 mod process_support;
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,

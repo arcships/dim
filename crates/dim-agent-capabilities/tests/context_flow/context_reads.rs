@@ -1,4 +1,5 @@
 use super::*;
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_runtime::TimelineQueryScope;
 use dim_agent_runtime::testing::{chain_events, timeline_events};
 use rutis::host::CtxHost;
@@ -1728,7 +1729,7 @@ async fn stop_waits_for_an_unpublished_turn_end_seen_by_a_reloaded_loop() {
         defaults::install(&mut builder);
         let agent = MinimalHost::start(&builder).await.unwrap();
         let session = agent.create_session(SessionConfig::default()).await.unwrap();
-        let old_loop = session.service::<dyn LoopState>("main").unwrap();
+        let old_loop = session.service::<dyn AgentLoop>("main").unwrap();
         let generation = || session.branch_diagnostics("main").unwrap().plugins
             .into_iter().find(|plugin| plugin.name == "Loop").unwrap();
         let before = generation().generation;
@@ -1748,7 +1749,7 @@ async fn stop_waits_for_an_unpublished_turn_end_seen_by_a_reloaded_loop() {
             }
             tokio::task::yield_now().await;
         }
-        assert_eq!(session.service::<dyn LoopState>("main").unwrap().state().phase, LoopPhase::Idle);
+        assert_eq!(session.service::<dyn AgentLoop>("main").unwrap().state().phase, LoopPhase::Idle);
         drop(old_loop);
         let premature = tokio::time::timeout(Duration::from_millis(25), &mut stop).await;
         release.notify_one();

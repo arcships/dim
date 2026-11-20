@@ -1,4 +1,5 @@
 use super::*;
+use dim_agent_capabilities::prompt::Prompt;
 use dim_agent_runtime::Session;
 use dim_agent_types::{ModelConfiguration, StartupAuth, StartupConnectionSource};
 
@@ -556,12 +557,11 @@ impl ProviderService {
                 .or_default()
                 .insert(session.id().to_owned());
             for branch in session.branches() {
-                if let Ok(Some(state)) =
-                    session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
-                    && let Some(previous) = state
-                        .configuration
+                if let Ok(prompt) = session.service::<Prompt>(&branch.id)
+                    && let Some(model) = prompt.adopted_configuration(Default::default())
+                    && let Some(previous) = model
+                        .metadata
                         .as_ref()
-                        .and_then(|model| model.metadata.as_ref())
                         .and_then(|metadata| metadata.startup.as_ref())
                         .and_then(|startup| startup.connection.as_ref())
                     && same_destination(previous, source)
@@ -588,12 +588,11 @@ impl ProviderService {
     pub(super) fn restore_startup(self: &Arc<Self>, session: Session) {
         let mut bindings = self.startup.lock().unwrap();
         for branch in session.branches() {
-            if let Ok(Some(state)) =
-                session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
-                && let Some(source) = state
-                    .configuration
+            if let Ok(prompt) = session.service::<Prompt>(&branch.id)
+                && let Some(model) = prompt.adopted_configuration(Default::default())
+                && let Some(source) = model
+                    .metadata
                     .as_ref()
-                    .and_then(|model| model.metadata.as_ref())
                     .and_then(|metadata| metadata.startup.as_ref())
                     .and_then(|startup| startup.connection.as_ref())
             {

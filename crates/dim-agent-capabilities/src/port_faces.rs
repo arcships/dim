@@ -1,6 +1,6 @@
 //! Data encoding at the process host-port boundary and cancellation of
 //! typed owner reads. Native calls do not pass through the dispatcher.
-use rutis::host::Key;
+use rutis::host::{CtxHost, Key};
 use rutis_bridge::session::{
     Error as BridgeError, HostDispatch, Reply, Value as BridgeValue, host_key,
 };
@@ -106,6 +106,40 @@ pub(crate) async fn read<T, E, F: Future<Output = Result<T, E>>>(
 /// marked service is named.
 pub(crate) fn face_key<T: ?Sized>() -> Key<dyn HostDispatch> {
     host_key(&dim_agent_runtime::names::name_of::<T>())
+}
+
+pub(crate) fn observe<T: Serialize + Clone + Send + Sync + 'static>(
+    port: &str,
+    callback: &rutis_bridge::session::Reference,
+    mut state: tokio::sync::watch::Receiver<T>,
+    generation: tokio_util::sync::CancellationToken,
+) -> Reply {
+    use rutis_bridge::session::Value;
+    if !callback.is_function() {
+        return Err(invalid(port, "expected a callback function"));
+    }
+    let callback = callback.clone();
+    let caller = rutis_bridge::session::caller_row()
+        .map(|row| row.ctx().cancellation_token())
+        .unwrap_or_default();
+    Ok(Value::cancellable_future(async move {
+        tokio::select! {
+            biased;
+            _ = generation.cancelled() => Ok(Value::Undefined),
+            _ = caller.cancelled() => Ok(Value::Undefined),
+            result = async move {
+                loop {
+                    let snapshot = state.borrow_and_update().clone();
+                    let args =
+                        Value::List(vec![rutis_bridge::session::arg(&snapshot)?]);
+                    rutis_bridge::session::settle(callback.call_async(args).await?).await?;
+                    if state.changed().await.is_err() {
+                        return Ok(Value::Undefined);
+                    }
+                }
+            } => result,
+        }
+    }))
 }
 
 #[cfg(test)]

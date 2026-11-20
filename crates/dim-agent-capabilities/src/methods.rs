@@ -180,17 +180,7 @@ impl From<AgentError> for RpcError {
         if let AgentError::BranchRefused { refusal, message } = &error {
             return Self::service(refusal.code(), message.clone());
         }
-        let variant = match &error {
-            AgentError::InvalidInput(_) => "InvalidInput",
-            AgentError::UnknownBranch(_) => "UnknownBranch",
-            AgentError::Closed(_) => "Closed",
-            AgentError::Build(_) => "Build",
-            AgentError::Reloading(_) => "Reloading",
-            AgentError::PublicationUnknown(_) => "PublicationUnknown",
-            AgentError::AmbiguousSubmission(_) => "AmbiguousSubmission",
-            AgentError::BranchEnded(_) => "BranchEnded",
-            _ => "",
-        };
+        let variant = error.variant();
         Self::agent(variant, error.to_string())
     }
 }

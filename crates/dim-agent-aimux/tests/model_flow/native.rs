@@ -1,5 +1,6 @@
 use super::*;
 use axum::http::Uri;
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_runtime::testing::chain_events;
 use rutis::host::CtxHost;
 

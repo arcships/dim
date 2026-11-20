@@ -66,7 +66,7 @@ rather than making Wait re-prove BackgroundExec or Loop internals. Run outcomes 
 ## 4. Corrections to model scope
 
 The [notification experiment](wait-contract-experiment.md) is a component-boundary check with an
-idle LoopState. Keep its broad traces as robustness evidence, but do not use their reachability
+idle AgentLoop. Keep its broad traces as robustness evidence, but do not use their reachability
 to invent requirements for the product. Its successful tagged inputs assume the producer has
 already posted the notification; they make no claim that every terminal will post successfully.
 Its zero-timeout reads exercise the public service, not the model-facing tool's timeout validation.

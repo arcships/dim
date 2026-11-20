@@ -1,3 +1,4 @@
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{defaults, host::*, prompt_state::PromptSnapshot};
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::{testing::MinimalHost, *};

@@ -64,7 +64,7 @@ scope end -> 该 scope 有条目？ -> 无：仅更新内存
                              -> 有：[退役输入 + 引用结果] -> 发布
 ~~~
 
-保留原串行采用、取消、提交注册检查、closing 和 opening 位置语义。ConfigurationPublisher 接收 Prompt 当前已采用状态，做真实配置转换；不自己恢复历史，不反向依赖 Prompt StateCell。Dispatcher 尚未启动的装配采用仍同步应用其实际提交事实，不能等待尚未启动的派发。并发加载结束后只能按当前目标有效性采用，不能拿旧 Snapshot 覆盖新状态。
+保留原串行采用、取消、提交注册检查、closing 和 opening 位置语义。ContextPreparation 接收 Prompt 当前已采用状态，做真实配置转换；不自己恢复历史，不反向依赖 Prompt StateCell。Dispatcher 尚未启动的装配采用仍同步应用其实际提交事实，不能等待尚未启动的派发。并发加载结束后只能按当前目标有效性采用，不能拿旧 Snapshot 覆盖新状态。
 
 scope 结束/interrupt 的 handler 及时取消受影响加载。scope 退役需要等待的工作在现有采用任务内，handler 不等待数据库。普通 turn 生命周期更新没有引用保存，StateCell 不以恢复事件的提交位置作为发布门槛。
 
@@ -98,7 +98,7 @@ checkpoint 的含义不变：它是写入者在某个边界上的视图，因此
 | --- | --- |
 | prompt/recovery.rs | v2引用格式与读取、scope 定位；去掉逐源 checkpoint、turn/task 持久化、配置引用重复保存 |
 | prompt.rs / prompt_state.rs | 当前键/作用域的变更结果；原采用批次合并引用；复用本次变更生成必要输入，避免整集 clone/比较 |
-| context_preparation.rs 的 ConfigurationPublisher | 使用显式已采用状态；原采用批次仍保存真实配置/输入；引用结果在实际事实处理后保存，不依据变换前草稿 |
+| context_preparation.rs 的 ContextPreparation | 使用显式已采用状态；原采用批次仍保存真实配置/输入；引用结果在实际事实处理后保存，不依据变换前草稿 |
 | Store query/格式 | 现有数字下标直接寻址；完整 scope/turn 键的范围查询；不解释 Prompt 活动规则 |
 
 | owner / 问题 | 复用与确定要求 | 位置/取消/重载 |

@@ -554,3 +554,128 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
     server.join().await.unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_agent_loop_observes_idle_and_admits_the_native_compaction_command() {
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"agent-loop","name":parts.anchor.parent().unwrap().join("fixtures/agent-loop.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("AgentLoopFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!([])).await;
+    let reply = client
+        .rpc("session.loopfixture.compact", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    let value = &reply["result"];
+    assert_eq!(value["observed"], json!({"phase":"idle"}));
+    assert_eq!(value["state"], value["observed"]);
+    assert!(value["stale"].is_null());
+    let sequence = value["sequence"].as_u64().unwrap();
+    let session = agent.get_session(&id).unwrap();
+    let events = branch_events(&session, "main", sequence..=sequence)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.as_slice(), [event] if matches!(event.kind, dim_agent_types::EventKind::ContextCompact(_)))
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_prompt_adopts_frozen_content_in_the_native_snapshot() {
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"branch-prompt","name":parts.anchor.parent().unwrap().join("fixtures/branch-prompt.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("BranchPromptFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!([])).await;
+    let reply = client
+        .rpc("session.promptfixture.update", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    let snapshot = agent
+        .get_session(&id)
+        .unwrap()
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply["result"]["outcome"], "adopted");
+    assert_eq!(
+        reply["result"]["modelId"],
+        json!(snapshot.configuration.as_ref().map(|model| &model.model_id))
+    );
+    assert!(
+        snapshot
+            .entries
+            .values()
+            .any(|entry| entry.source == "fixture" && entry.body == "frozen fixture content")
+    );
+    let session = agent.get_session(&id).unwrap();
+    let history = branch_events(&session, "main", ..).await.unwrap();
+    let configuration = history
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            dim_agent_types::EventKind::ContextConfigured(data) => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    let reply = client
+        .rpc(
+            "session.promptfixture.publish",
+            json!({
+                "sessionId": id,
+                "adopted": {"prompts": snapshot.checkpoint(), "configuration": configuration}
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+    assert_eq!(reply["result"]["unchanged"], Value::Null);
+    let end: u64 = reply["result"]["published"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let published = branch_events(&session, "main", end - 1..=end)
+        .await
+        .unwrap();
+    let [change, delivery] = published.as_slice() else {
+        panic!("missing publication batch")
+    };
+    assert!(
+        matches!(&change.kind, dim_agent_types::EventKind::PromptChanged(data)
+        if data.inputs == [delivery.id.clone()] && data.previous == snapshot.revision)
+    );
+    assert!(
+        matches!(&delivery.kind, dim_agent_types::EventKind::InputMessage(input)
+        if matches!(input.blocks.as_slice(), [dim_agent_types::InputBlock::Raw { text, .. }] if text == "published content"))
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

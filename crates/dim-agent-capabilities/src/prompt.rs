@@ -2,7 +2,7 @@ mod recovery;
 
 use crate::{
     context_block,
-    context_preparation::{ConfigurationPublisher, ToolSetAdoption},
+    context_preparation::{ContextPreparation, PublishedSequence, ToolSetAdoption},
     host::{HostError, PromptHost},
     prompt_guide::GuideEntries,
     prompt_state::PromptSnapshot,
@@ -23,6 +23,16 @@ use uuid::Uuid;
 
 type Key = (String, PromptScope);
 type LoadedPrompts = Vec<(PromptSourceTarget, Option<PromptEntry>)>;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum PromptConfigurationRequest {
+    Targets(ConfigureUpdate),
+    Loaded {
+        sources: Vec<(PromptSourceTarget, Option<PromptEntry>)>,
+        model: Option<ModelSelection>,
+    },
+}
 
 fn validate_entry(target: &PromptSourceTarget, entry: &PromptEntry) -> Result<()> {
     if entry.source != target.source || entry.scope != target.scope {
@@ -125,7 +135,7 @@ pub struct Prompt {
     host: Arc<PromptHost>,
     /// Sources the Session delivers, and the model a new Session adopts.
     initial: Arc<InitialPromptConfiguration>,
-    publisher: Arc<ConfigurationPublisher>,
+    preparation: Arc<ContextPreparation>,
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
     faults: Arc<FaultReporter>,
@@ -501,7 +511,7 @@ impl Prompt {
                     projection.configuration.clone(),
                 )
             };
-            self.publisher
+            self.preparation
                 .adopt_guide(&snapshot, configuration.as_ref())
                 .await?;
             self.advance(self.timeline.sequence()).await
@@ -647,7 +657,7 @@ impl Prompt {
     ) -> Result<Option<u64>> {
         let sequence = {
             let projection = self.projection.lock().unwrap();
-            self.publisher.publish(
+            self.preparation.publish_registered(
                 (&projection.snapshot, projection.configuration.as_ref()),
                 changes,
                 model,
@@ -657,7 +667,9 @@ impl Prompt {
             )?
         };
         if let Some(sequence) = sequence {
-            self.publisher.await_published(sequence).await?;
+            self.preparation
+                .await_published(PublishedSequence { sequence })
+                .await?;
             self.advance(sequence).await?;
         }
         Ok(sequence)
@@ -666,7 +678,7 @@ impl Prompt {
     /// Adopts frozen source values and an optional model through the existing
     /// configure command. Each entry has its target's source and scope.
     pub async fn configure_loaded(
-        self: Arc<Self>,
+        &self,
         model: Option<ModelSelection>,
         sources: Vec<(PromptSourceTarget, Option<PromptEntry>)>,
     ) -> Result<ConfigureOutcome> {
@@ -705,12 +717,36 @@ impl Prompt {
     }
 }
 
-impl ConfigureControl for Prompt {
+/// The Rust Session facade for the addressed branch's `prompt.configure` operation.
+pub trait SessionPrompt {
     fn configure(
-        self: Arc<Self>,
+        &self,
         update: ConfigureUpdate,
-    ) -> BoxFuture<'static, Result<ConfigureOutcome>> {
-        Box::pin(async move { self.submit(update, None).await })
+        branch: &str,
+    ) -> impl Future<Output = Result<ConfigureOutcome>> + Send;
+}
+
+impl SessionPrompt for Session {
+    async fn configure(&self, update: ConfigureUpdate, branch: &str) -> Result<ConfigureOutcome> {
+        self.admitted_service::<Prompt>(branch)?
+            .configure(PromptConfigurationRequest::Targets(update))
+            .await
+    }
+}
+
+/// The Rust branch facade for `prompt.configure`.
+pub trait BranchPrompt {
+    fn configure(
+        &self,
+        update: ConfigureUpdate,
+    ) -> impl Future<Output = Result<ConfigureOutcome>> + Send;
+}
+
+impl BranchPrompt for Branch {
+    async fn configure(&self, update: ConfigureUpdate) -> Result<ConfigureOutcome> {
+        self.admitted_service::<Prompt>()?
+            .configure(PromptConfigurationRequest::Targets(update))
+            .await
     }
 }
 
@@ -719,7 +755,7 @@ pub struct PromptPlugin {
     dispatcher: rutis::host::Key<Dispatcher>,
     host: rutis::host::Key<PromptHost>,
     initial: rutis::host::Key<InitialPromptConfiguration>,
-    publisher: rutis::host::Key<ConfigurationPublisher>,
+    preparation: rutis::host::Key<ContextPreparation>,
     identity: rutis::host::Key<TimelineIdentity>,
     faults: rutis::host::Key<FaultReporter>,
     branch_phase: rutis::host::Key<BranchLifecycle>,
@@ -727,7 +763,6 @@ pub struct PromptPlugin {
     guide: rutis::host::Key<GuideEntries>,
     state: rutis::host::Key<StateCell<PromptSnapshot>>,
     prompt: rutis::host::Key<Prompt>,
-    configure: rutis::host::Key<dyn ConfigureControl>,
 }
 impl PromptPlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -736,7 +771,7 @@ impl PromptPlugin {
             dispatcher: names.key()?,
             host: names.key()?,
             initial: names.key()?,
-            publisher: names.key()?,
+            preparation: names.key()?,
             identity: names.key()?,
             faults: names.key()?,
             branch_phase: names.key()?,
@@ -744,7 +779,6 @@ impl PromptPlugin {
             guide: names.key()?,
             state: names.state_cell()?,
             prompt: names.key()?,
-            configure: names.key()?,
         })
     }
 }
@@ -758,7 +792,7 @@ impl DynPlugin for PromptPlugin {
             self.dispatcher.erase(),
             self.host.erase(),
             self.initial.erase(),
-            self.publisher.erase(),
+            self.preparation.erase(),
             self.identity.erase(),
             self.faults.erase(),
             self.branch_phase.erase(),
@@ -772,7 +806,7 @@ impl DynPlugin for PromptPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let host = ctx.require_at(&self.host)?;
             let initial = ctx.require_at(&self.initial)?;
-            let publisher = ctx.require_at(&self.publisher)?;
+            let preparation = ctx.require_at(&self.preparation)?;
             let identity = ctx.require_at(&self.identity)?;
             let faults = ctx.require_at(&self.faults)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
@@ -786,7 +820,7 @@ impl DynPlugin for PromptPlugin {
             let service = Arc::new(Prompt {
                 host,
                 initial,
-                publisher,
+                preparation,
                 timeline: timeline.clone(),
                 dispatcher: dispatcher.clone(),
                 faults,
@@ -1056,14 +1090,30 @@ impl DynPlugin for PromptPlugin {
             });
 
             ctx.provide_at(self.state.clone(), state)?;
-            ctx.provide_at::<Prompt>(self.prompt.clone(), service.clone())?;
-            ctx.provide_at::<dyn ConfigureControl>(self.configure.clone(), service)?;
+            ctx.provide_at::<Prompt>(self.prompt.clone(), service)?;
             Ok(Effect::Done)
         })
     }
 }
+#[rutis::service]
 impl Prompt {
-    pub(crate) async fn initial_completion(&self) -> Result<()> {
+    pub async fn configure(&self, request: PromptConfigurationRequest) -> Result<ConfigureOutcome> {
+        match request {
+            PromptConfigurationRequest::Targets(update) => self.submit(update, None).await,
+            PromptConfigurationRequest::Loaded { sources, model } => {
+                self.configure_loaded(model, sources).await
+            }
+        }
+    }
+
+    pub fn adopted_configuration(
+        &self,
+        _request: crate::port_faces::Empty,
+    ) -> Option<ModelConfiguration> {
+        self.snapshot.subscribe().borrow().configuration.clone()
+    }
+
+    pub async fn initial_completion(&self, _request: crate::port_faces::Empty) -> Result<()> {
         let mut opened = self.opened.subscribe();
         loop {
             if let Some(result) = opened.borrow_and_update().clone() {
@@ -1076,7 +1126,9 @@ impl Prompt {
             }
         }
     }
+}
 
+impl Prompt {
     /// Delivers what the Session's sources hold now, compared with what this
     /// branch already has. A new Session also adopts its model.
     async fn open(&self, event: &AgentEvent, mut current: PromptSnapshot) -> Result<()> {

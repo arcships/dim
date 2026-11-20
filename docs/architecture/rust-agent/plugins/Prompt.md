@@ -2,8 +2,7 @@
 
 Owner: [prompt.rs](../../../../crates/dim-agent-capabilities/src/prompt.rs) and
 [prompt_state.rs](../../../../crates/dim-agent-capabilities/src/prompt_state.rs).
-Loads and adopts prompt/model/tool configuration in timeline order, exposes
-ConfigureControl and projects adopted prompt and configuration state.
+Loads and adopts prompt/model/tool configuration in timeline order, exposes the branch `prompt` operations for initial completion, configuration adoption and reading the adopted model.
 `Branch::get<PromptSnapshot>()` reads the last adopted `context/configured` without
 replaying history. Prompt owns the current projection and its effective entry references under one
 lock. Recovery reads the latest v2 effective references and adoption revisions,
@@ -17,7 +16,7 @@ The publisher receives explicit adopted state instead of rebuilding history.
 
 | Service | Purpose |
 | --- | --- |
-| `B:ConfigurationPublisher` | Atomically publish configuration and final input content. |
+| `B:ContextPreparation` | Atomically publish configuration and final input content. |
 | `S:PromptHost` | Load named prompt sources. |
 | `S:InitialPromptConfiguration` | Initial source/model selection. |
 | `B:BranchLifecycle` | Coordinate opening and closing. |
@@ -32,7 +31,7 @@ The publisher receives explicit adopted state instead of rebuilding history.
 
 Consumes prompt configure-request/result/changed, `context/configured`, turn
 boundaries, branch start/resume, `context/scope`, `stop/interrupt`. Produces
-configure controls and, through ConfigurationPublisher, prompt changes,
+configure controls and, through ContextPreparation, prompt changes,
 context configuration and final adopted `input/message` content. Scope/turn
 changes can produce retirement inputs. A tracked adoption worker serializes
 loads and adoptions. Source handlers synchronously compute state and append required
@@ -68,8 +67,8 @@ owners, rule check and complete-candidate concurrency limit.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ConfigurationPublisher`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:GuideEntries`、`S:InitialPromptConfiguration`、`S:PromptHost` |
-| 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl` |
+| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:GuideEntries`、`S:InitialPromptConfiguration`、`S:PromptHost` |
+| 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn HostDispatch#prompt` |
 | 被注入于 | `PromptSourcesBranch`、`SkillsBranch`、`ToolBinding` |
 <!-- /generated -->
 
@@ -151,3 +150,6 @@ through the request Loop assembles, never through a request of their own.
 | 提供 | `S:GuideEntries`、`S:dyn HostDispatch#guideEntries` |
 | 被注入于 | `BackgroundExec`、`BranchLine`、`ContextPreparation`、`Loop`、`Prompt`、`ShellInput`、`TimelineTree` |
 <!-- /generated -->
+
+Rust callers using the Session or branch `configure` shorthand import
+`dim_agent_capabilities::prompt::SessionPrompt` or `BranchPrompt`, respectively.

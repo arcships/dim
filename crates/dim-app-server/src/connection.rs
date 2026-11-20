@@ -6,6 +6,7 @@ use crate::{
     protocol::*,
     skills_management::skills_error,
 };
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{
     host::{ModelPortError, ModelSelectionRequest},
     methods::{Accepted, CallSite, CallerConnection, Callers, NotifyError, RpcError},

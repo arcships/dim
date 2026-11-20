@@ -177,36 +177,12 @@ impl HostDispatch for ToolSourcesView {
                     "toolSourcesView",
                     Value::List(vec![request.clone()]),
                 )?;
-                if !callback.is_function() {
-                    return Err(crate::port_faces::invalid(
-                        "toolSourcesView",
-                        "expected a callback function",
-                    ));
-                }
-                let callback = callback.clone();
-                let mut state = self.subscribe();
-                let generation = self.generation.clone();
-                let caller = rutis_bridge::session::caller_row()
-                    .map(|row| row.ctx().cancellation_token())
-                    .unwrap_or_default();
-                Ok(Value::cancellable_future(async move {
-                    tokio::select! {
-                        biased;
-                        _ = generation.cancelled() => Ok(Value::Undefined),
-                        _ = caller.cancelled() => Ok(Value::Undefined),
-                        result = async move {
-                            loop {
-                                let snapshot = state.borrow_and_update().clone();
-                                let args =
-                                    Value::List(vec![rutis_bridge::session::arg(&snapshot)?]);
-                                settle(callback.call_async(args).await?).await?;
-                                if state.changed().await.is_err() {
-                                    return Ok(Value::Undefined);
-                                }
-                            }
-                        } => result,
-                    }
-                }))
+                crate::port_faces::observe(
+                    "toolSourcesView",
+                    callback,
+                    self.subscribe(),
+                    self.generation.clone(),
+                )
             }
             _ => Err(crate::port_faces::unknown_method("toolSourcesView", method)),
         }

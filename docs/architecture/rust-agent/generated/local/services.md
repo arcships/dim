@@ -83,9 +83,9 @@ flowchart LR
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p78
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p78
   p60 -->|"dim_agent_runtime::timeline_context::BranchOpening@main"| p78
+  p74 -->|"dim_agent_capabilities::prompt::Prompt@main"| p77
   p51 -->|"dim_agent_capabilities::skills::session::SessionSkills@session"| p77
   p60 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p77
-  p74 -->|"dyn dim_agent_runtime::contracts::ConfigureControl@main"| p77
   p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p76
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p76
   p43 -->|"dim_agent_capabilities::host::PromptHost@session"| p75
@@ -93,7 +93,7 @@ flowchart LR
   p44 -->|"dim_agent_capabilities::prompt_sources::SessionLanguage@session"| p75
   p60 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p75
   p74 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::prompt_state::PromptSnapshot>@main"| p75
-  p66 -->|"dim_agent_capabilities::context_preparation::ConfigurationPublisher@main"| p74
+  p66 -->|"dim_agent_capabilities::context_preparation::ContextPreparation@main"| p74
   p43 -->|"dim_agent_capabilities::host::PromptHost@session"| p74
   p43 -->|"dim_agent_capabilities::prompt::InitialPromptConfiguration@session"| p74
   p42 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p74

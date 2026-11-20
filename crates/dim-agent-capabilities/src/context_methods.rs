@@ -1,7 +1,6 @@
 //! `sessionMethods["session.context"]`: manual compaction and the usage
 //! query, exposed from their owners (ContextCompaction §4.1).
 use crate::{
-    agent_loop::AgentLoop,
     context_preparation::{ContextOpError, ContextPreparation},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
@@ -78,7 +77,9 @@ impl DynPlugin for ContextMethodsPlugin {
 /// Writes `context/compact`, or joins the outstanding command, and waits for
 /// the result that carries that command.
 async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, RpcError> {
-    let command = branch.service::<AgentLoop>()?.compact()?;
+    let command = branch
+        .service::<dyn dim_agent_runtime::AgentLoop>()?
+        .compact()?;
     let publication = branch.publication();
     let mut watch = publication.watch();
     let mut after = command;
