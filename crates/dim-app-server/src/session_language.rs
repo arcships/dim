@@ -3,7 +3,7 @@
 //! in PromptSources' live cell; this part reads both and changes both, then
 //! has Prompt adopt the `dim/language` source.
 use crate::storage::Store;
-use dim_agent_capabilities::prompt::BranchPrompt as _;
+use dim_agent_capabilities::prompt::PromptConfigurationRequest;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     prompt_sources::{self, SessionLanguage},
@@ -82,7 +82,14 @@ impl DynPlugin for SessionLanguagePlugin {
                     Box::pin(async move {
                         match method.as_str() {
                             "session.language.get" => {
-                                tree.get(ROOT_BRANCH_ID).map_err(RpcError::from)?;
+                                if tree.directory_entry(ROOT_BRANCH_ID)?.state
+                                    == dim_agent_runtime::BranchDirectoryState::Ended
+                                {
+                                    return Err(dim_agent_runtime::AgentError::BranchEnded(
+                                        ROOT_BRANCH_ID.into(),
+                                    )
+                                    .into());
+                                }
                                 read(cell?).await
                             }
                             _ => change(&tree, cell, store.as_deref(), params, cancel).await,
@@ -143,7 +150,10 @@ async fn change(
         }) => None,
         Change::Code(code) => Some(code),
     };
-    let branch = tree.get(ROOT_BRANCH_ID).map_err(RpcError::from)?;
+    let adoption = tree.configure_prompt(
+        ROOT_BRANCH_ID,
+        PromptConfigurationRequest::Targets(prompt_sources::language_update()),
+    )?;
     let language_cell = language_cell?;
     let _guard = language_cell.gate().await;
     // A failure before this write leaves the value unchanged; once the record
@@ -157,7 +167,6 @@ async fn change(
             .map_err(|error| RpcError::app(-32000, FAILED, error.to_string()))?;
     }
     let applied = language_cell.replace(language);
-    let adoption = branch.configure(prompt_sources::language_update());
     let outcome = tokio::select! {
         result = adoption => {
             crate::connection::configuration_outcome(result.map_err(RpcError::from)?)?
@@ -173,10 +182,12 @@ async fn change(
         if info.id == ROOT_BRANCH_ID {
             continue;
         }
-        let Ok(side) = tree.get(&info.id) else {
+        let Ok(adoption) = tree.configure_prompt(
+            &info.id,
+            PromptConfigurationRequest::Targets(prompt_sources::language_update()),
+        ) else {
             continue;
         };
-        let adoption = side.configure(prompt_sources::language_update());
         let result = tokio::select! {
             result = adoption => result,
             _ = cancel.cancelled() => return Err(RpcError::interrupted()),

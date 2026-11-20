@@ -575,6 +575,23 @@ impl TimelineTree {
     }
 }
 impl TimelineTree {
+    /// Selects the branch now. Polling the returned operation configures that
+    /// instance even when the caller first has to persist Session state.
+    pub fn configure_prompt(
+        &self,
+        branch_id: &str,
+        request: crate::prompt::PromptConfigurationRequest,
+    ) -> Result<impl Future<Output = Result<dim_agent_runtime::ConfigureOutcome>> + Send + 'static>
+    {
+        let branch = self.get(branch_id)?;
+        Ok(async move {
+            branch
+                .admitted_service::<crate::prompt::Prompt>()?
+                .configure(request)
+                .await
+        })
+    }
+
     /// The native result of the selected branch's `prompt.adoptedConfiguration` operation.
     pub fn adopted_configuration(&self, branch_id: &str) -> Result<Option<ModelConfiguration>> {
         Ok(self
@@ -617,11 +634,9 @@ impl TimelineTree {
                 crate::context_methods::compact(&self.get(branch_id)?, &cancel).await
             }
             BranchOperation::ConfigurePrompt { request } => {
-                let prompt = self
-                    .get(branch_id)?
-                    .admitted_service::<crate::prompt::Prompt>()?;
+                let configure = self.configure_prompt(branch_id, *request)?;
                 let outcome = tokio::select! {
-                    result = prompt.configure(*request) => result?,
+                    result = configure => result?,
                     _ = cancel.cancelled() => return Err(crate::methods::RpcError::interrupted()),
                 };
                 crate::methods::reply(outcome)
