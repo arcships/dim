@@ -1,11 +1,12 @@
 //! The progress reminder: the Loop adds one input to the request it starts
 //! after a silent stretch of tool calls, so that request consumes it at once
-//! and no later turn can see it. Interactive Sessions only.
+//! and renders it as its last model message; no later request sees it.
+//! Interactive Sessions only.
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
     agent_loop::{LoopConfig, REMINDER},
     defaults,
-    history::HistoryRenderer,
+    history::{HistoryRenderer, project_context_history, project_history, projection_checkpoint},
     host::*,
     input_queue::InputQueue,
     tool_registry::definition,
@@ -149,6 +150,9 @@ impl Env {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         let gate = Arc::new(Gate::default());
         builder
+            .timeline_store(TimelineStoreBinding::new(Arc::new(
+                MemoryTimelineStore::default(),
+            )))
             .process_value(Arc::new(ModelHost(model)))
             .session_value(Arc::new(ToolHost(Arc::new(GateTool(gate.clone())))))
             .session_value(Arc::new(HistoryRenderer::default()))
@@ -465,9 +469,14 @@ async fn a_new_tool_call_earns_the_next_reminder() {
     assert_eq!(reminder_count(&sent[1]), 1, "{}", said(&sent[1]));
     assert_eq!(
         reminder_count(&sent[2]),
-        2,
-        "the second reminder joins the first in the history: {}",
+        1,
+        "only the new reminder is in the next request: {}",
         said(&sent[2])
+    );
+    assert!(
+        last_message(&sent[2]).contains("<dim-progress-reminder"),
+        "the new reminder is the next request's last model message: {}",
+        last_message(&sent[2])
     );
     assert_eq!(
         reminders(&session).await.len(),
@@ -650,6 +659,287 @@ async fn a_reload_after_the_reminders_turn_keeps_only_its_consumption() {
             .count(),
         1,
         "the reminder is consumed once, not again after reload"
+    );
+    env.host.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reminder_is_last_even_when_another_input_joins_the_request() {
+    let model = ScriptedModel::new(vec![Step::Tool("gate"), Step::Text("done")]);
+    let env = Env::start(model, Duration::from_secs(10)).await;
+    let session = env.session(true).await;
+    submit(&session).await;
+    reached(&env.gate).await;
+
+    pass(11).await;
+    session
+        .submit("hint".into(), InputMode::Append, "main")
+        .await
+        .unwrap();
+    env.gate.release.notify_waiters();
+    idle(&session).await;
+
+    let sent = requests(&session).await;
+    assert_eq!(sent.len(), 2, "the tool result earns the continuation");
+    let texts: Vec<String> = sent[1]
+        .messages
+        .iter()
+        .map(|message| message_text(message))
+        .collect();
+    let hint = texts
+        .iter()
+        .position(|text| text == "hint")
+        .expect("the append input joins the continuation");
+    assert_eq!(
+        hint + 1,
+        texts.len() - 1,
+        "the reminder follows the later input: {texts:?}"
+    );
+    assert!(
+        texts
+            .last()
+            .is_some_and(|text| text.starts_with("<dim-progress-reminder")),
+        "the reminder is the continuation's last model message: {texts:?}"
+    );
+    env.host.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_next_request_of_the_same_turn_has_no_reminder() {
+    let model = ScriptedModel::new(vec![
+        Step::Tool("gate"),
+        Step::TextThenTool("update", "gate"),
+        Step::Text("done"),
+    ]);
+    let env = Env::start(model, Duration::from_secs(10)).await;
+    let session = env.session(true).await;
+    submit(&session).await;
+    reached(&env.gate).await;
+
+    pass(11).await;
+    env.gate.release.notify_waiters();
+    while env.gate.entered.load(Ordering::SeqCst) < 2 {
+        tokio::task::yield_now().await;
+    }
+    env.gate.release.notify_waiters();
+    idle(&session).await;
+
+    let sent = requests(&session).await;
+    assert_eq!(sent.len(), 3, "one request per model step");
+    assert_eq!(reminder_count(&sent[1]), 1, "{}", said(&sent[1]));
+    assert_eq!(
+        reminder_count(&sent[2]),
+        0,
+        "the reminder goes with the request that consumed it, not the next one: {}",
+        said(&sent[2])
+    );
+    env.host.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_next_turn_has_no_reminder() {
+    let model = ScriptedModel::new(vec![Step::Tool("gate"), Step::Text("done")]);
+    let env = Env::start(model, Duration::from_secs(10)).await;
+    let session = env.session(true).await;
+    submit(&session).await;
+    reached(&env.gate).await;
+
+    pass(11).await;
+    env.gate.release.notify_waiters();
+    idle(&session).await;
+    let sent = requests(&session).await;
+    assert_eq!(reminder_count(&sent[1]), 1, "{}", said(&sent[1]));
+
+    submit_again(&session).await;
+    idle(&session).await;
+    let sent = requests(&session).await;
+    let next = sent.last().expect("a request for the next turn");
+    assert_eq!(
+        reminder_count(next),
+        0,
+        "the next turn's first request starts without the previous reminder: {}",
+        said(next)
+    );
+    env.host.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_restored_session_carries_no_reminder_into_its_next_request() {
+    let model = ScriptedModel::new(vec![
+        Step::Tool("gate"),
+        Step::Text("done"),
+        Step::Text("next"),
+    ]);
+    let env = Env::start(model, Duration::from_secs(10)).await;
+    let session = env.session(true).await;
+    submit(&session).await;
+    reached(&env.gate).await;
+
+    pass(11).await;
+    env.gate.release.notify_waiters();
+    idle(&session).await;
+    let sent = requests(&session).await;
+    assert_eq!(reminder_count(&sent[1]), 1, "{}", said(&sent[1]));
+
+    let id = session.id().to_owned();
+    session.close().await.unwrap();
+    let restored = env.host.agent().restore_session(id).await.unwrap();
+    submit_again(&restored).await;
+    idle(&restored).await;
+
+    let sent = requests(&restored).await;
+    let next = sent.last().expect("a request for the next turn");
+    assert_eq!(
+        reminder_count(next),
+        0,
+        "a restored Session starts without the previous reminder: {}",
+        said(next)
+    );
+    env.host.close().await.unwrap();
+}
+
+/// Facts with sequential ids, for fold-level checks of what a request renders.
+fn fixed(kinds: Vec<EventKind>) -> Vec<Arc<AgentEvent>> {
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| {
+            Arc::new(AgentEvent {
+                id: format!("event-{index}"),
+                sequence: index as u64 + 1,
+                create_at: index as u64,
+                tags: None,
+                parent_call_id: None,
+                kind,
+            })
+        })
+        .collect()
+}
+
+fn context_of(events: Vec<Arc<AgentEvent>>) -> ContextHistory {
+    ContextHistory {
+        positions: events
+            .iter()
+            .map(|event| TimelinePosition {
+                branch_id: "main".into(),
+                sequence: event.sequence,
+            })
+            .collect(),
+        ancestry: vec!["main".into()],
+        events,
+        checkpoint: None,
+    }
+}
+
+fn completed() -> ModelOutputOutcome {
+    ModelOutputOutcome::Completed {
+        finish_reason: FinishReason::ToolUse,
+    }
+}
+
+#[test]
+fn an_ordinary_handover_input_stays_in_later_requests() {
+    let hook = "<dim-hooks kind=\"prompt-submit\">run the suite</dim-hooks>";
+    let events = fixed(vec![
+        EventKind::TurnStart(TurnStartData {
+            turn_id: "turn".into(),
+        }),
+        EventKind::InputMessage(InputMessageData::text("work", None)),
+        EventKind::InputConsumed(InputConsumedData {
+            input_id: "event-1".into(),
+        }),
+        EventKind::ModelStart(ModelStartData {
+            turn_id: "turn".into(),
+            request_id: "r1".into(),
+        }),
+        EventKind::Text(TextData {
+            turn_id: "turn".into(),
+            request_id: "r1".into(),
+            delta: "working".into(),
+        }),
+        EventKind::ModelOutputEnd(ModelOutputEndData {
+            turn_id: "turn".into(),
+            request_id: "r1".into(),
+            outcome: completed(),
+        }),
+        EventKind::InputMessage(InputMessageData {
+            blocks: vec![InputBlock::Raw {
+                text: hook.into(),
+                key: None,
+                retire: false,
+            }],
+            mode: Some(InputMode::Append),
+            handover: Some(InputHandover {
+                turn_id: "turn".into(),
+                request_id: "r1".into(),
+            }),
+            ..InputMessageData::default()
+        }),
+        EventKind::InputConsumed(InputConsumedData {
+            input_id: "event-6".into(),
+        }),
+        EventKind::ModelStart(ModelStartData {
+            turn_id: "turn".into(),
+            request_id: "r2".into(),
+        }),
+    ]);
+    let history = project_history(&events, "main").unwrap();
+    assert_eq!(
+        history.last().map(|entry| message_text(&entry.message)),
+        Some(hook.to_owned()),
+        "an ordinary handover input renders like any other input"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_checkpoint_and_the_facts_render_the_same_request_context() {
+    let model = ScriptedModel::new(vec![Step::Tool("gate"), Step::Text("done")]);
+    let env = Env::start(model, Duration::from_secs(10)).await;
+    let session = env.session(true).await;
+    submit(&session).await;
+    reached(&env.gate).await;
+
+    pass(11).await;
+    env.gate.release.notify_waiters();
+    idle(&session).await;
+
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let cut = events
+        .iter()
+        .find(|event| matches!(&event.kind, EventKind::ToolResult(_)))
+        .map(|event| event.id.clone())
+        .expect("a tool result places an entry before the reminder");
+    let context = context_of(events);
+    let whole = project_context_history(&context).unwrap();
+    assert!(
+        !whole
+            .iter()
+            .any(|entry| message_text(&entry.message).contains("<dim-progress-reminder")),
+        "the reminder's request has closed"
+    );
+    let checkpoint = projection_checkpoint(&context, &cut).unwrap();
+    let index = context
+        .positions
+        .iter()
+        .position(|position| {
+            position.branch_id == checkpoint.resume.branch_id
+                && position.sequence == checkpoint.resume.sequence
+        })
+        .expect("the cut is in the prefix");
+    let resumed = ContextHistory {
+        checkpoint: Some(checkpoint),
+        ancestry: context.ancestry.clone(),
+        events: context.events[index..].to_vec(),
+        positions: context.positions[index..].to_vec(),
+    };
+    let kept = whole
+        .iter()
+        .position(|entry| entry.event_id == cut)
+        .expect("the cut places an entry");
+    assert_eq!(
+        project_context_history(&resumed).unwrap(),
+        whole[kept..],
+        "a checkpoint renders the same context as the facts it stands for"
     );
     env.host.close().await.unwrap();
 }

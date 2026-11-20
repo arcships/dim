@@ -46,6 +46,11 @@ const MARKERS: &[&str] = &[
     "dim-workflow",             // Workflow: a run's report and its stage markers
 ];
 
+/// The markers whose block belongs to the request whose batch consumed it:
+/// it is rendered there as that request's last model message, in no later
+/// request and never in compaction input.
+const REQUEST_SCOPED: &[&str] = &["dim-progress-reminder"];
+
 /// The element name `text` opens, when it is one of the runtime's own blocks.
 ///
 /// Unlike [`runtime_element`] no index rule applies: a raw input block is
@@ -56,6 +61,12 @@ pub fn element(text: &str) -> Option<&'static str> {
         open.strip_prefix(marker)
             .is_some_and(|rest| rest.starts_with('>') || rest.starts_with(char::is_whitespace))
     })
+}
+
+/// Whether `text` opens a request-scoped marker: a block rendered only into
+/// the request whose batch consumed it.
+pub fn request_scoped(text: &str) -> bool {
+    element(text).is_some_and(|name| REQUEST_SCOPED.contains(&name))
 }
 
 /// The element name of the runtime block at `index`, when the text block is
@@ -229,5 +240,25 @@ mod tests {
         assert_eq!(element(text), Some("dim-hooks"));
         assert_eq!(runtime_element(0, text), None);
         assert_eq!(runtime_element(3, text), Some("dim-hooks"));
+    }
+
+    /// Only the declared markers are request-scoped; every other runtime block
+    /// and ordinary text is not.
+    #[test]
+    fn only_a_declared_request_scoped_marker_matches() {
+        for (text, scoped) in [
+            (
+                r#"<dim-progress-reminder seconds="61">no text</dim-progress-reminder>"#,
+                true,
+            ),
+            (r#"<dim-hooks kind="follow-up">run</dim-hooks>"#, false),
+            (
+                "<dim-progress-reminderish>not the element</dim-progress-reminderish>",
+                false,
+            ),
+            ("a sentence that mentions <dim-progress-reminder>", false),
+        ] {
+            assert_eq!(super::request_scoped(text), scoped, "{text}");
+        }
     }
 }

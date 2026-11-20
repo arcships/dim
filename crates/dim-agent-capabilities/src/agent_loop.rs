@@ -510,8 +510,9 @@ impl AgentLoop {
     /// Writes the inputs the next request consumes, then its `step/model-start`.
     /// A due progress reminder is written as a handover-bound input addressed
     /// to the request that continues the turn, in the same batch as the other
-    /// consumed inputs and before the request's `step/model-start`, and is
-    /// consumed at once.
+    /// consumed inputs and before the request's `step/model-start`. Every
+    /// chosen input is consumed before it, so the request renders it as its
+    /// last model message.
     fn start_request(
         &self,
         turn: &mut Turn,
@@ -539,8 +540,7 @@ impl AgentLoop {
         };
         let id = uuid::Uuid::new_v4().to_string();
         let mut events: Vec<EventDraft> = Vec::new();
-        let mut consumed = Vec::new();
-        if let Some(seconds) = reminder {
+        let reminder_id = if let Some(seconds) = reminder {
             let handover = InputHandover {
                 turn_id: turn.id.clone(),
                 request_id: turn
@@ -553,9 +553,12 @@ impl AgentLoop {
                 EventDraft::new(EventKind::InputMessage(reminder::input(seconds, handover)))
                     .with_id(input_id.clone()),
             );
-            consumed.push(input_id);
-        }
-        consumed.extend(chosen.iter().cloned());
+            Some(input_id)
+        } else {
+            None
+        };
+        let mut consumed = chosen.clone();
+        consumed.extend(reminder_id);
         events.extend(consumed.iter().map(|input_id| {
             EventKind::InputConsumed(InputConsumedData {
                 input_id: input_id.clone(),

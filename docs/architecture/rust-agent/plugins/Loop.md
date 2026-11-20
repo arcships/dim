@@ -58,18 +58,28 @@ start, its last non-empty `step/text` and its last reminder, and that anchor at
 least `LoopConfig::reminder_after` old (60 seconds by default). A due reminder
 is written as a handover-bound input, `handover: {turn_id, request_id}`
 addressed to the request this one continues ([ModelRecovery §3](../../../design/plugins/ModelRecovery.md#3-the-handover-input)),
-in the same atomic batch as the request's `input/consumed` events and before
-its `step/model-start`, so the request consumes
-`<dim-progress-reminder seconds="N">` at once as its last model message; the
-batch ends on the consumptions and `step/model-start` follows in its own
-append, so the branch tool's cut immediately before a request stays on a batch
-boundary. InputQueue never applies a handover input: it holds the reminder for
-its turn, drops it at that `input/consumed`, and deletes it if the turn ends
-with it still unconsumed. The reminder therefore has no `input/applied`, never
-drives a turn and cannot outlive the turn it was written for. Writing the
-reminder starts a new stretch, so the next one needs another tool call and
-another full threshold; text also resets the stretch. A non-interactive Session
-registers neither the reminder nor its guide entry.
+after every input that request consumes, in the same atomic batch as their
+`input/consumed` events and before its `step/model-start`. The request
+consumes `<dim-progress-reminder seconds="N">` at once, as its last model
+message; the batch ends on the consumptions and `step/model-start` follows in
+its own append, so the branch tool's cut immediately before a request stays on
+a batch boundary. InputQueue never applies a handover input: it holds the
+reminder for its turn, drops it at that `input/consumed`, and deletes it if the
+turn ends with it still unconsumed. The reminder therefore has no
+`input/applied`, never drives a turn and cannot outlive the turn it was written
+for. Writing the reminder starts a new stretch, so the next one needs another
+tool call and another full threshold; text also resets the stretch. A
+non-interactive Session registers neither the reminder nor its guide entry.
+
+The reminder is request-scoped in model context too. History renders it only
+into the request whose batch consumed it, as that request's last model message;
+once that request's output ends, no later request contains it: not the rest of
+its turn, not the next turn and not a restored Session, and compaction input
+never contains it. History decides this from the marker alone: an input whose
+blocks are all request-scoped markers and which carries no user content is
+request-scoped, and `Handover` alone is not ([ModelRecovery §3](../../../design/plugins/ModelRecovery.md#3-the-handover-input) renders an ordinary
+handover input like any other). The marker list lives with the other runtime
+markers in `dim_agent_types::markup`.
 
 A restored open turn ends Failed and starts no request, so reload never decides
 the reminder again for a request that already started; the next turn starts a

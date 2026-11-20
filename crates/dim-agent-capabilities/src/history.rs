@@ -232,6 +232,9 @@ pub struct HistoryEntry {
     pub id: String,
     pub message: Arc<Message>,
     pub tool_context: bool,
+    /// The entry belongs to the one request whose batch consumed it, so no
+    /// later read renders it.
+    pub request_scoped: bool,
     /// Deterministic state immediately after this entry's source event.
     pub baseline: Arc<[ContextBaselineEntry]>,
     /// Id of the Timeline event that placed this entry; compaction cuts are
@@ -634,6 +637,7 @@ impl HistoryRenderer {
         let mut compaction = None;
         let mut cut_in_effect: Option<(Option<usize>, u64)> = None;
         let mut compaction_cut: Option<dim_agent_types::TimelinePosition> = None;
+        let mut close: Option<TimelinePosition> = None;
         let mut read = FoldRead::timeline(timeline, begin, through);
         loop {
             let Some(page) = read.next(batch).await? else {
@@ -643,6 +647,11 @@ impl HistoryRenderer {
                 .map_err(|error| AgentError::fault("History", error))?;
             history.extend(projected.0);
             state = Some(projected.1);
+            for (event, position) in page.events.iter().zip(page.positions.iter()) {
+                if closes_request(&event.kind) {
+                    close = Some(position.clone());
+                }
+            }
             for event in page.events.iter() {
                 let EventKind::ContextCompaction(data) = &event.kind else {
                     continue;
@@ -708,6 +717,9 @@ impl HistoryRenderer {
                 break;
             }
         }
+        drop_closed_request_scoped(&mut history, close.as_ref(), |branch| {
+            rank(branch).unwrap_or(usize::MAX)
+        });
         let state = state.unwrap_or_default();
         Ok(StreamedContext {
             history,
@@ -782,7 +794,19 @@ impl HistoryRenderer {
 pub(crate) struct ProjectionEntry {
     pub(crate) id: String,
     pub(crate) message: Arc<Message>,
+    pub(crate) request_scoped: bool,
     state: Option<(String, Option<ContextBaselineEntry>)>,
+}
+
+/// An input is request-scoped when it carries no operator content and every
+/// block is a request-scoped marker.
+fn request_scoped(input: &InputMessageData) -> bool {
+    input.user.is_none()
+        && !input.blocks.is_empty()
+        && input
+            .blocks
+            .iter()
+            .all(|InputBlock::Raw { text, .. }| dim_agent_types::markup::request_scoped(text))
 }
 
 /// Raw blocks in order, then the operator's words; each is one message.
@@ -790,6 +814,7 @@ pub(crate) fn render_input<'a>(
     consumed_id: &'a str,
     input: &'a InputMessageData,
 ) -> impl Iterator<Item = ProjectionEntry> + 'a {
+    let scoped = request_scoped(input);
     input
         .blocks
         .iter()
@@ -799,6 +824,7 @@ pub(crate) fn render_input<'a>(
             let message = Arc::new(Message::text(Role::User, text));
             ProjectionEntry {
                 id: format!("{consumed_id}:block:{index}"),
+                request_scoped: scoped,
                 state: key.as_ref().map(|key| {
                     (
                         key.clone(),
@@ -815,6 +841,7 @@ pub(crate) fn render_input<'a>(
         .chain(input.user.as_ref().map(move |user| ProjectionEntry {
             id: consumed_id.to_owned(),
             message: Arc::new(user_message(user)),
+            request_scoped: false,
             state: None,
         }))
 }
@@ -863,7 +890,49 @@ pub fn project_history(
     events: &[Arc<AgentEvent>],
     branch: &str,
 ) -> Result<Vec<HistoryEntry>, String> {
-    replay(events, None, &planned(events, branch)).map(|projection| projection.history)
+    let positions = planned(events, branch);
+    let close = last_close(events, &positions);
+    let mut history = replay(events, None, &positions)?.history;
+    drop_closed_request_scoped(&mut history, close.as_ref(), |_| 0);
+    Ok(history)
+}
+
+/// Whether `kind` ends the context of one request: its output, its turn or
+/// its branch.
+fn closes_request(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::ModelOutputEnd(_) | EventKind::TurnEnd(_) | EventKind::BranchStart(_)
+    )
+}
+
+/// The position of the last event that ended a request in a fixed prefix.
+fn last_close(
+    events: &[Arc<AgentEvent>],
+    positions: &[TimelinePosition],
+) -> Option<TimelinePosition> {
+    events.iter().enumerate().rev().find_map(|(index, event)| {
+        closes_request(&event.kind)
+            .then(|| positions.get(index).cloned())
+            .flatten()
+    })
+}
+
+/// A request-scoped block is rendered only into the request whose batch
+/// consumed it. Once the last close before the read is at or after it, the
+/// read is for a later request, and the block is dropped.
+fn drop_closed_request_scoped(
+    history: &mut Vec<HistoryEntry>,
+    close: Option<&TimelinePosition>,
+    rank: impl Fn(&str) -> usize,
+) {
+    let Some(close) = close else {
+        return;
+    };
+    let at = (rank(&close.branch_id), close.sequence);
+    history.retain(|entry| {
+        !entry.request_scoped || (rank(&entry.position.branch_id), entry.position.sequence) > at
+    });
 }
 
 fn planned(events: &[Arc<AgentEvent>], branch: &str) -> Vec<TimelinePosition> {
@@ -1033,7 +1102,13 @@ fn replay(
                         matches!(data.outcome, ModelOutputOutcome::Completed { .. }),
                     )
                     .map(|message| {
-                        entry(event.id.clone(), Arc::new(message), false, baseline.clone())
+                        entry(
+                            event.id.clone(),
+                            Arc::new(message),
+                            false,
+                            false,
+                            baseline.clone(),
+                        )
                     }),
                 );
                 output_open = false;
@@ -1042,7 +1117,13 @@ fn replay(
                 if data.call_event_id.is_none() && output_open {
                     history.extend(
                         settled_output_message(std::mem::take(&mut output), false).map(|message| {
-                            entry(event.id.clone(), Arc::new(message), false, baseline.clone())
+                            entry(
+                                event.id.clone(),
+                                Arc::new(message),
+                                false,
+                                false,
+                                baseline.clone(),
+                            )
                         }),
                     );
                     output_open = false;
@@ -1057,6 +1138,7 @@ fn replay(
                             item.result.is_error,
                         )),
                         false,
+                        false,
                         baseline.clone(),
                     ));
                     if let Some(messages) = &item.result.context_messages {
@@ -1066,6 +1148,7 @@ fn replay(
                                     format!("{}:{index}:{context_index}", event.id),
                                     Arc::new(message.clone()),
                                     true,
+                                    false,
                                     baseline.clone(),
                                 )
                             },
@@ -1185,6 +1268,14 @@ pub fn project_context_history(context: &ContextHistory) -> Result<Vec<HistoryEn
         let kept = retained_entry(context, &history, retain_from)?;
         history.drain(..kept);
     }
+    let close = last_close(&context.events, &context.positions);
+    drop_closed_request_scoped(&mut history, close.as_ref(), |branch| {
+        context
+            .ancestry
+            .iter()
+            .position(|name| name == branch)
+            .unwrap_or(usize::MAX)
+    });
     Ok(history)
 }
 
@@ -1637,12 +1728,14 @@ fn entry(
     id: String,
     message: Arc<Message>,
     tool_context: bool,
+    request_scoped: bool,
     baseline: Arc<[ContextBaselineEntry]>,
 ) -> HistoryEntry {
     HistoryEntry {
         id,
         message,
         tool_context,
+        request_scoped,
         baseline,
         event_id: String::new(),
         position: TimelinePosition {
@@ -1671,6 +1764,7 @@ fn apply(
         projection.id,
         projection.message,
         false,
+        projection.request_scoped,
         baseline(delivered_state),
     ));
 }

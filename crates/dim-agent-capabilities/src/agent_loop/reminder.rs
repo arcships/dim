@@ -1,6 +1,8 @@
 //! The progress reminder the Loop adds to a request it starts: after a silent
 //! stretch of tool calls it writes one handover-bound input in that request's
-//! own batch, so the request consumes it at once and no later turn can see it.
+//! own batch, so the request consumes it at once and renders it as its last
+//! model message. History drops it once that request's output ends, so no
+//! later request and no compaction input contains it.
 use crate::context_block;
 use dim_agent_runtime::core::unix_millis;
 use dim_agent_types::{InputHandover, InputMessageData, InputMode};

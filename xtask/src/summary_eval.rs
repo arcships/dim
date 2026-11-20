@@ -767,6 +767,7 @@ impl PreparedStep {
                 id: format!("m{index}"),
                 message: Arc::new(message.clone()),
                 tool_context: message.role == Role::ToolResult,
+                request_scoped: false,
                 baseline: Arc::from([]),
                 event_id: format!("m{index}"),
                 position: dim_agent_types::TimelinePosition {
