@@ -586,7 +586,10 @@ impl AgentBuilder {
                 let wire = rutis_bridge::session::host_key(&name);
                 let value = value.clone();
                 Ok(Box::new(move |ctx: &Ctx| {
-                    ctx.provide_at(key.clone(), value.clone())?;
+                    let native = ctx
+                        .isolate_label(&wire.erase())
+                        .map_or_else(|| ctx.clone(), |label| ctx.isolate(key.erase(), &label));
+                    native.provide_at(key.clone(), value.clone())?;
                     ctx.provide_at(
                         wire.clone(),
                         value.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,

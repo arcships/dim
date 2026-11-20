@@ -566,7 +566,7 @@ pub struct ModelProviderPlugin {
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     context: Key<ContextPreparation>,
-    host: Key<ModelHost>,
+    host: Key<dyn rutis_bridge::session::HostDispatch>,
     /// Optional process service, read at load without gating standalone hosts.
     files: Option<Key<SessionFiles>>,
     identity: Key<TimelineIdentity>,
@@ -582,7 +582,7 @@ impl ModelProviderPlugin {
             timeline: names.key()?,
             dispatcher: names.key()?,
             context: names.key()?,
-            host: names.key()?,
+            host: rutis_bridge::session::host_key("modelHost"),
             files: names
                 .registered::<SessionFiles>()
                 .then(|| names.key())
@@ -610,7 +610,7 @@ impl DynPlugin for ModelProviderPlugin {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let context = ctx.require_at(&self.context)?;
-            let host = ctx.require_at(&self.host)?;
+            let host = ModelHost::from_scope(ctx)?;
             let files = self.files.as_ref().and_then(|key| ctx.get_at(key));
             let identity = ctx.require_at(&self.identity)?;
             let service = Arc::new(ModelProvider {

@@ -1270,6 +1270,15 @@ pub enum InvocationMode {
 }
 
 impl ModelHost {
+    pub(crate) fn from_scope(ctx: &Ctx) -> rutis::Result<Arc<Self>> {
+        let wire = rutis_bridge::session::host_key("modelHost");
+        let native = rutis::host::Key::<Self>::of();
+        let scope = ctx
+            .isolate_label(&wire.erase())
+            .map_or_else(|| ctx.clone(), |label| ctx.isolate(native.erase(), &label));
+        scope.require_at(&native)
+    }
+
     pub fn local(driver: Arc<dyn ModelDriver>) -> Self {
         Self::new(Arc::new(ModelDriverHost(driver)), None)
     }

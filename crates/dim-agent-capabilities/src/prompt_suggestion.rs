@@ -477,7 +477,7 @@ struct PromptSuggestionPlugin {
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,
     tree: Key<TreeCommands>,
-    model: Key<ModelHost>,
+    model: Key<dyn rutis_bridge::session::HostDispatch>,
     settings: Option<Key<PromptSuggestionSettingsHost>>,
 }
 
@@ -489,7 +489,7 @@ impl PromptSuggestionPlugin {
             lifecycle: names.key()?,
             methods: names.key()?,
             tree: names.key()?,
-            model: names.key()?,
+            model: rutis_bridge::session::host_key("modelHost"),
             settings: names
                 .registered::<PromptSuggestionSettingsHost>()
                 .then(|| names.key::<PromptSuggestionSettingsHost>())
@@ -527,7 +527,7 @@ impl DynPlugin for PromptSuggestionPlugin {
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let methods = ctx.require_at(&self.methods)?;
             let tree = ctx.require_at(&self.tree)?;
-            let model = ctx.require_at(&self.model)?;
+            let model = ModelHost::from_scope(ctx)?;
             let settings = match &self.settings {
                 Some(key) => ctx.get_at(key),
                 None => None,

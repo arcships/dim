@@ -154,7 +154,7 @@ impl rutis_bridge::session::HostDispatch for SummaryPromptSettingsHost {
 
 pub struct ProductSummaryStrategyPlugin {
     host: Key<CompactionStrategyHost>,
-    model: Key<ModelHost>,
+    model: Key<dyn rutis_bridge::session::HostDispatch>,
     guide: Key<GuideEntries>,
     settings: Option<Key<SummaryPromptSettingsHost>>,
     config: ProductSummaryStrategyConfig,
@@ -163,7 +163,7 @@ impl ProductSummaryStrategyPlugin {
     pub fn new(names: &Names<'_>, config: ProductSummaryStrategyConfig) -> rutis::Result<Self> {
         Ok(Self {
             host: names.key()?,
-            model: names.key()?,
+            model: rutis_bridge::session::host_key("modelHost"),
             guide: names.key()?,
             settings: names
                 .registered::<SummaryPromptSettingsHost>()
@@ -182,7 +182,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let host = ctx.require_at(&self.model)?;
+            let host = ModelHost::from_scope(ctx)?;
             let guide = ctx.require_at(&self.guide)?;
             guide.register(
                 ctx,
