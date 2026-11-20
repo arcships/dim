@@ -157,6 +157,12 @@ pub enum Effect {
         projection_id: u64,
         branch_id: String,
     },
+    /// Continue on this line: make it the Session's default branch and show it.
+    SetDefaultLine {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+    },
     /// Stop the background command on its originating branch.
     StopTask {
         session_id: String,

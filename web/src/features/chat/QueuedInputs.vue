@@ -1,16 +1,16 @@
 <script setup lang="ts">
 import { ref } from "vue"
 import { useI18n } from "vue-i18n"
-import { ROOT_BRANCH_ID, type QueuedInput } from "../../rpc/protocol"
+import type { QueuedInput } from "../../rpc/protocol"
 import { useChatStore } from "../../stores/chat"
 import { useToastStore } from "../../stores/toast"
 
 /**
- * The messages queued while the main line runs, above the composer. Steer
+ * The messages queued while the centred line runs, above the composer. Steer
  * sends the oldest one into the run at its next turn boundary; Remove drops
  * any of them. Both withdraw the message through `session.input.withdraw`.
  */
-const props = defineProps<{ sessionId: string; items: readonly QueuedInput[] }>()
+const props = defineProps<{ sessionId: string; branchId: string; items: readonly QueuedInput[] }>()
 const { t } = useI18n()
 const chat = useChatStore()
 const toast = useToastStore()
@@ -20,7 +20,7 @@ async function withdraw(item: QueuedInput, steer: boolean): Promise<void> {
   if (busy.value) return
   busy.value = true
   try {
-    const result = await chat.withdrawInput(props.sessionId, ROOT_BRANCH_ID, item.id, steer ? item.user : undefined)
+    const result = await chat.withdrawInput(props.sessionId, props.branchId, item.id, steer ? item.user : undefined)
     if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
   } catch (cause) {
     toast.push({ tone: "danger", title: t("command.failed"), description: cause instanceof Error ? cause.message : String(cause) })

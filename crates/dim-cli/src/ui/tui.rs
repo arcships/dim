@@ -2360,6 +2360,21 @@ impl App {
                 self.composer.set_accepts_images(images);
                 self.service_tiers = service_tiers;
             }
+            Update::LineRefusal {
+                projection_id,
+                branch_id,
+                text,
+            } => {
+                let shown = match &mut self.prompt {
+                    Some(Prompt::Lines(panel)) => {
+                        panel.refuse(projection_id, &branch_id, text.clone())
+                    }
+                    _ => false,
+                };
+                if !shown {
+                    self.set_notice(text);
+                }
+            }
             Update::Snapshot(snapshot) => {
                 let was_running = self.running();
                 let switched = self
@@ -4152,6 +4167,17 @@ impl App {
                 branch_id,
             } => {
                 self.host.send(Command::EndLine {
+                    session_id,
+                    projection_id,
+                    branch_id,
+                });
+            }
+            Effect::SetDefaultLine {
+                session_id,
+                projection_id,
+                branch_id,
+            } => {
+                self.host.send(Command::SetDefaultLine {
                     session_id,
                     projection_id,
                     branch_id,

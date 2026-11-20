@@ -4,7 +4,6 @@ import { useRoute, useRouter } from "vue-router"
 import ConfirmDialog from "../../components/ConfirmDialog.vue"
 import { useSettingsText } from "../../i18n/settings-general"
 import { RpcError } from "../../rpc/client"
-import { DEFAULT_BRANCH_ID } from "../../rpc/protocol"
 import { readScheduledDelete, readScheduledHistory, readScheduledJob, readScheduledJobs, readScheduledRun, readScheduledSave, type InputMode, type JobInput, type Schedule, type ScheduledJob, type ScheduledRun, type Target } from "../../rpc/scheduler"
 import { useConnectionStore } from "../../stores/connection"
 import { useSessionsStore } from "../../stores/sessions"
@@ -50,7 +49,7 @@ const planKey = ref(0)
 type Form = { name: string; prompt: string; schedule: Schedule; enabled: boolean; kind: "launch" | "session"; cwd: string; agent_id?: string; policy?: "read-only" | "workspace-write" | "full-access"; max_run_minutes: number; session_id: string; branch_id: string; input_mode: InputMode }
 const currentCwd = typeof route.query.cwd === "string" ? route.query.cwd : sessions.byId.get(ui.lastSessionId ?? "")?.cwd ?? ""
 function blank(cwd: string): Form {
-  return { name: "", prompt: "", schedule: { cron: "0 9 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone }, enabled: true, kind: "launch", cwd, agent_id: undefined, policy: undefined, max_run_minutes: 60, session_id: "", branch_id: DEFAULT_BRANCH_ID, input_mode: "queue" }
+  return { name: "", prompt: "", schedule: { cron: "0 9 * * *", tz: Intl.DateTimeFormat().resolvedOptions().timeZone }, enabled: true, kind: "launch", cwd, agent_id: undefined, policy: undefined, max_run_minutes: 60, session_id: "", branch_id: "", input_mode: "queue" }
 }
 function fromJob(job: ScheduledJob): Form {
   const form = blank("")
@@ -70,7 +69,7 @@ function applyTarget(form: Form, target: Target): void {
     form.max_run_minutes = target.max_run_minutes
   } else {
     form.session_id = target.session_id
-    form.branch_id = target.branch_id
+    form.branch_id = target.branch_id ?? ""
     form.input_mode = target.input_mode
   }
 }
@@ -79,7 +78,7 @@ function toInput(form: Form): JobInput {
     ? { kind: "launch", cwd: form.cwd, max_run_minutes: form.max_run_minutes,
         ...(form.agent_id ? { agent_id: form.agent_id } : {}),
         ...(form.policy ? { policy: form.policy } : {}) }
-    : { kind: "session", session_id: form.session_id, branch_id: form.branch_id || DEFAULT_BRANCH_ID, input_mode: form.input_mode }
+    : { kind: "session", session_id: form.session_id, ...(form.branch_id.trim() === "" ? {} : { branch_id: form.branch_id.trim() }), input_mode: form.input_mode }
   return { name: form.name, prompt: form.prompt, schedule: form.schedule, target, enabled: form.enabled }
 }
 const baseline = shallowRef<Form>(blank(currentCwd))
@@ -137,7 +136,7 @@ const targetKind = computed({
   get: () => draft.value.kind,
   set: (kind: string) => {
     if (kind === draft.value.kind) return
-    if (kind === "session") applyTarget(draft.value, { kind: "session", session_id: "", branch_id: DEFAULT_BRANCH_ID, input_mode: "queue" })
+    if (kind === "session") applyTarget(draft.value, { kind: "session", session_id: "", branch_id: "", input_mode: "queue" })
     else applyTarget(draft.value, { kind: "launch", cwd: currentCwd, max_run_minutes: 60 })
   },
 })
@@ -159,7 +158,7 @@ function planLabel(plan: Schedule): string {
   return (daily ? s("Every day ", "每天 ") + `${daily[2]!.padStart(2, "0")}:${daily[1]!.padStart(2, "0")}` : `Cron ${plan.cron}`) + ` · ${plan.tz ?? s("Host local time", "主机本地时区")}`
 }
 function targetLabel(target: Target): string {
-  if (target.kind === "session") return s(`Delivers to Session ${target.session_id}, branch ${target.branch_id} (${target.input_mode})`, `投递到会话 ${target.session_id} 的分支 ${target.branch_id}（${target.input_mode}）`)
+  if (target.kind === "session") return s(`Delivers to Session ${target.session_id}, branch ${target.branch_id ?? "the default branch"} (${target.input_mode})`, `投递到会话 ${target.session_id} 的分支 ${target.branch_id ?? "默认分支"}（${target.input_mode}）`)
   return s(`Launches a new Session in ${target.cwd}`, `在 ${target.cwd} 新建会话`)
 }
 function runState(state: string): string {
@@ -336,7 +335,7 @@ onMounted(() => { void load() })
                 </template>
                 <template v-else>
                   <UFormField :label="s('Session ID', '会话 ID')"><UInput v-model="draft.session_id" required /></UFormField>
-                  <UFormField :label="s('Branch', '分支')"><UInput v-model="draft.branch_id" :placeholder="DEFAULT_BRANCH_ID" /></UFormField>
+                  <UFormField :label="s('Branch', '分支')"><UInput v-model="draft.branch_id" :placeholder="s('the default branch', '默认分支')" /></UFormField>
                   <UFormField :label="s('Input mode', '输入模式')" :help="s('The saved prompt is delivered to this branch as one input, in the chosen mode.', '保存的指令会以所选模式作为一条输入投递到该分支。')">
                     <USelectMenu v-model="draft.input_mode" value-key="value" :search-input="false" :aria-label="s('Input mode', '输入模式')" :items="inputModeItems" />
                   </UFormField>

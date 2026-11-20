@@ -236,6 +236,13 @@ pub enum Command {
         projection_id: u64,
         branch_id: String,
     },
+    /// Continue on a line: make it the Session's default branch and show it
+    /// (design §14).
+    SetDefaultLine {
+        session_id: String,
+        projection_id: u64,
+        branch_id: String,
+    },
     /// Open a line of the displayed attachment at `at` of `parent`, with
     /// its opening input, and follow it in the side panel (timeline UI §4.7).
     OpenLine {
@@ -1255,6 +1262,13 @@ pub enum Update {
     /// draft it held back, or keeps it when `error` says the stop failed.
     Stopped {
         error: Option<String>,
+    },
+    /// `session.branch_set_default` refused the chosen line: the lines panel
+    /// shows the reason on the line the choice was made on (design §14).
+    LineRefusal {
+        projection_id: u64,
+        branch_id: String,
+        text: String,
     },
     Exported {
         format: crate::export::Format,

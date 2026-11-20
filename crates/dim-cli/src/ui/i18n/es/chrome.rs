@@ -39,8 +39,19 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Running" => "En curso",
         "Lines" => "Líneas",
-        "Enter show the line · x end it · Esc close" => {
-            "Enter ver la línea · x terminarla · Esc cerrar"
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter ver · p continuar desde aquí · x terminar · Esc cerrar"
+        }
+        "Main line" => "línea principal",
+        "Start" => "inicio",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "La rama predeterminada y las líneas de las que continúa no se cierran; continúa primero en otra línea"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "La rama predeterminada anterior sigue abierta y conserva las líneas que abrió. La raíz conserva su propio derecho a abrir una línea en ambas direcciones."
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "La rama predeterminada anterior sigue abierta y conserva las líneas que abrió. Las dos líneas intercambian el derecho a abrir una."
         }
         "This session has no lines." => "Esta sesión no tiene líneas.",
         "No matching lines." => "Ninguna línea coincide.",

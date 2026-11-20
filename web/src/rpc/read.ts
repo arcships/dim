@@ -981,8 +981,19 @@ export function readBranchEntry(value: unknown): BranchEntry {
   }
 }
 
-export function readBranches(value: unknown): BranchEntry[] {
-  return arr(obj(value, "session.branches").branches, "session.branches.branches").map(readBranchEntry)
+export type BranchDirectory = { branches: BranchEntry[]; defaultBranchId: string }
+
+export function readBranches(value: unknown): BranchDirectory {
+  const at = "session.branches"
+  const source = obj(value, at)
+  // A server that predates `session.branch_set_default` reports no line the
+  // conversation is on, and such a Session is on its root (design §4).
+  const defaultBranchId = source.defaultBranchId === undefined || source.defaultBranchId === null ? ROOT_BRANCH_ID : str(source, "defaultBranchId", at)
+  return { branches: arr(source.branches, `${at}.branches`).map(readBranchEntry), defaultBranchId }
+}
+
+export function readDefaultBranch(value: unknown): string {
+  return str(obj(value, "session.branch_set_default"), "defaultBranchId", "session.branch_set_default")
 }
 
 export function readBranchDetail(value: unknown): BranchEntry {

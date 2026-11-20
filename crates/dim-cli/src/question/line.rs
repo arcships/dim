@@ -91,9 +91,14 @@ fn key(call: &Call) -> (String, String, String) {
 }
 
 impl Questions {
-    /// Starts the main branch inventory independently of its transcript window.
-    pub async fn start(&mut self, client: &mut Client, session_id: &str) -> Result<()> {
-        self.read(client, session_id, ROOT_BRANCH_ID).await
+    /// Starts the conversation's inventory independently of its transcript window.
+    pub async fn start(
+        &mut self,
+        client: &mut Client,
+        session_id: &str,
+        branch_id: &str,
+    ) -> Result<()> {
+        self.read(client, session_id, branch_id).await
     }
 
     /// Whether a question prompt owns the terminal input.

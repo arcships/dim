@@ -1,11 +1,11 @@
 use crate::{Result, client::Client, display::Display, wire::HistoryWindow};
-use dim_agent_types::DEFAULT_BRANCH_ID;
 use dim_client::window::Window;
 use dim_client::wire::DisplayPage;
 
 pub(super) async fn read(
     client: &mut Client,
     session_id: &str,
+    conversation: &str,
     display: &mut Display,
 ) -> Result<u64> {
     if !client.supports(&["session.history.latestTurn"]) {
@@ -17,7 +17,7 @@ pub(super) async fn read(
     loop {
         let params = window.params_with_display(
             session_id,
-            DEFAULT_BRANCH_ID,
+            conversation,
             !display.json && client.offers("session.history.display.tail"),
             !display.json && client.offers("session.history.display.transcript"),
         );
@@ -57,6 +57,7 @@ pub(super) async fn read(
 pub(super) async fn earlier(
     client: &mut Client,
     session_id: &str,
+    conversation: &str,
     display: &mut Display,
 ) -> Result<()> {
     let Some(before) = display.history_before else {
@@ -66,7 +67,7 @@ pub(super) async fn earlier(
     loop {
         let params = window.params_with_display(
             session_id,
-            DEFAULT_BRANCH_ID,
+            conversation,
             !display.json && client.offers("session.history.display.tail"),
             !display.json && client.offers("session.history.display.transcript"),
         );

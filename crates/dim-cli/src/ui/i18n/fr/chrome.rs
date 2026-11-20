@@ -37,8 +37,19 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Running" => "En cours",
         "Lines" => "Lignes",
-        "Enter show the line · x end it · Esc close" => {
-            "Enter afficher la ligne · x la terminer · Esc fermer"
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter afficher · p continuer ici · x terminer · Esc fermer"
+        }
+        "Main line" => "ligne principale",
+        "Start" => "origine",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "La branche par défaut et les lignes dont elle continue restent ouvertes ; continuez d'abord sur une autre ligne"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "L'ancienne branche par défaut reste ouverte et conserve les lignes qu'elle a ouvertes. La racine garde son propre droit d'ouvrir une ligne dans les deux sens."
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "L'ancienne branche par défaut reste ouverte et conserve les lignes qu'elle a ouvertes. Les deux lignes échangent le droit d'en ouvrir une."
         }
         "This session has no lines." => "Cette session n'a aucune ligne.",
         "No matching lines." => "Aucune ligne correspondante.",

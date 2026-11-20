@@ -387,6 +387,16 @@ impl HistoryWindow {
     }
 }
 
+/// The line the Session's conversation is on, with that line's own sequence:
+/// the branch-qualified cursor beside [`Attached::sequence`], which stays the
+/// root's (design §14).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchCursor {
+    pub branch_id: String,
+    pub sequence: u64,
+}
+
 /// The record `session.attach` replies for the Session it opened. A server
 /// from before the record existed replies `{}`.
 #[derive(Deserialize)]
@@ -394,6 +404,10 @@ impl HistoryWindow {
 pub struct Attached {
     #[serde(default)]
     pub sequence: u64,
+    /// The line the conversation is on and its own cursor; absent from a
+    /// server older than the field, whose Session is on its root (design §14).
+    #[serde(default)]
+    pub default_branch: Option<BranchCursor>,
     #[serde(default)]
     pub model: Option<dim_agent_types::ModelId>,
     #[serde(default)]
@@ -411,6 +425,20 @@ pub struct Attached {
     /// The title's revision; 0 on a server that reports none.
     #[serde(default)]
     pub title_revision: u64,
+}
+
+/// The cursor a client resumes `line` from: the attach reply's own
+/// `defaultBranch`, or the root's `sequence` on a server that predates the
+/// field, whose Session is on its root (design §14).
+pub fn resume_cursor(
+    default_branch: Option<&BranchCursor>,
+    sequence: u64,
+    line: &str,
+) -> Option<u64> {
+    match default_branch {
+        Some(cursor) => (cursor.branch_id == line).then_some(cursor.sequence),
+        None => (line == dim_agent_types::ROOT_BRANCH_ID).then_some(sequence),
+    }
 }
 
 #[derive(Deserialize)]
@@ -480,8 +508,14 @@ pub struct TurnBoundary {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BranchDirectory {
     pub branches: Vec<BranchEntry>,
+    /// The line the Session's conversation is on (design §14). A server that
+    /// predates `session.branch_set_default` reports none, and such a Session
+    /// is on its root.
+    #[serde(default)]
+    pub default_branch_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

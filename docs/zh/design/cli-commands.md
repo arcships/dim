@@ -235,7 +235,7 @@ shell 运行拦截，再是 steer 最早的排队消息，只有在没有排队�
 
 ## 用量报告
 
-两种 TUI 模式下，`/usage` 都输出主分支的上下文用量。当前模型使用 Dim OAuth 时，
+两种 TUI 模式下，`/usage` 都输出默认分支的上下文用量。当前模型使用 Dim OAuth 时，
 还通过现有[账号用量合同](../../../crates/dim-oauth/docs/runtime-contract.md)查询并输出账号的
 套餐、积分、滚动窗口和功能额度。其他模型提供方只显示上下文用量；仅登录 Dim 账号不会启用
 账号用量报告。`/login` 中的账号视图保持可用。
@@ -1856,7 +1856,7 @@ permission: read-only
 
 > Fix the build
 Assistant: ...
-[permission] main branch preset: workspace-write  <- 由其他客户端修改
+[permission] preset: workspace-write  <- 由其他客户端修改
 ```
 
 两种 TUI 模式都在输入框下方绘制实时权限页脚，不带 `AGENT` 前缀；预设、颜色、本地化快捷键提示与
@@ -1922,7 +1922,7 @@ Session 创建配置 --> main 当前策略 --分支点--> 子分支策略
 ### `/permissions`
 
 `/permissions` 是两种 TUI 模式下可见的菜单入口；`/approvals` 和 `/approval` 作为兼容别名打开同一组
-预设选择器。选择作用于 `main`，每次更新使用当前完整策略与版本，保留工具列表。
+预设选择器。选择作用于 Session 的默认分支，每次更新使用当前完整策略与版本，保留工具列表。
 保存失败既不改变记住的选择，也不回退到其他预设。
 
 Process isolation 行链接到 Settings 的进程隔离控件；Esc 返回本面板并保持该行的焦点。

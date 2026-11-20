@@ -37,7 +37,20 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Running" => "실행 중",
         "Lines" => "라인",
-        "Enter show the line · x end it · Esc close" => "Enter 라인 보기 · x 종료 · Esc 닫기",
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter 보기 · p 여기서 계속 · x 종료 · Esc 닫기"
+        }
+        "Main line" => "메인 라인",
+        "Start" => "시작점",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "기본 브랜치와 그 브랜치가 이어지는 라인은 닫을 수 없습니다. 먼저 다른 라인에서 계속하세요"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "이전 기본 브랜치는 열린 채로 남고 연 라인을 유지합니다. 루트는 어느 방향에서든 라인을 열 권리를 그대로 가집니다."
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "이전 기본 브랜치는 열린 채로 남고 연 라인을 유지합니다. 두 라인이 라인을 열 권리를 교환합니다."
+        }
         "This session has no lines." => "이 세션에는 아직 라인이 없습니다.",
         "No matching lines." => "일치하는 라인이 없습니다.",
         "the session itself" => "세션 자체",

@@ -502,6 +502,9 @@ pub struct ViewSnapshot {
     /// `main` followed by this Session's lines, as the lines panel lists them.
     pub lines: Vec<LineView>,
     pub unread_lines: std::collections::BTreeSet<String>,
+    /// The line the Session's conversation is on (design §4): the lines panel
+    /// marks it and refuses to end it or an ancestor of it.
+    pub default_branch_id: String,
     pub focus: String,
     /// The line opened beside the shown one, while its panel is open.
     pub side: Option<SideLine>,

@@ -219,7 +219,7 @@ The Web workspace keeps the default branch's transcript in the center and follow
 | Derived data | `lines.ts` keeps directory metadata, not historical input identities. Unknown message counts remain absent. `projection.ts` owns visible rows and live controls. `stores/chat.ts` keeps each opened window’s fixed head, backward cursor and in-flight live queue. |
 | Actions | `session.branch_create {parentBranchId, at, prompt}`, `session.branch_end {branchId}`, `session.branch_set_default {branchId}` (continue from here), `session.submit`/`session.stop` with the line's `branchId`; approvals use the request's `branchId` |
 | Points | A user message's cut is its sequence minus one; a line's end is its newest `turn-end`. `session.branch_create` remains the validator; its refusal is shown in the dialog or line tab |
-| Switching | Opening a line adds or activates a tab; closing a tab does not end the line; the center shows the default branch, which `session.branches` reports as `defaultBranchId`, and `session.branch_set_default` changes it. The root and that line are the two that can open a line, so the Lines tree marks both |
+| Switching | Opening a line adds or activates a tab, the root included while another line is the default branch, so the root's own transcript and pending approvals and questions stay reachable without moving the Session back; closing a tab does not end the line; the center shows the default branch, which `session.branches` reports as `defaultBranchId`, and `session.branch_set_default` changes it. A move reads the new centre's window before the center changes hands, so the transcript on screen, its actions and the line they name change together, and a read that fails reports the failure instead of showing the outgoing transcript. The root and that line are the two that can open a line, so the Lines tree marks both |
 | Errors | `branch_missing`, `branch_ended`, `input_blocked`, an invalid cut and a disabled Branch tool are shown at the action that raised them; an ended line is read-only |
 | State | Line tabs are per Session and live in `stores/ui.ts`; the tree is read from the existing directory on reload and reconnect. No storage format is added |
 
@@ -232,7 +232,8 @@ with `session.question.pending` and current execution/output offsets with `sessi
 window's cutoff. Lists use their own keyset continuation and retain that cutoff. Read current Goal
 state through `session.goal.get`; refresh it after Goal commands or relevant live input/deletion facts.
 The browser no longer parses Goal blocks or keeps historical Goal inputs. The attach reply supplies
-the current model; a historical configuration in the window cannot overwrite it.
+the root's model; a centre on a line keeps the model that line's own window adopted, because the
+reply's record belongs to the root ([timeline branches §14](timeline-branches.md#14-clients)).
 
 Questions on unopened branches are restored at their directory heads without reading transcripts.
 Live question terminals update those control states. Directory discovery and background branch notices

@@ -1,5 +1,5 @@
 import type { LineState, LineView } from "../../lines"
-import { DEFAULT_BRANCH_ID, ROOT_BRANCH_ID, type ApprovalDecision } from "../../rpc/protocol"
+import { ROOT_BRANCH_ID, type ApprovalDecision } from "../../rpc/protocol"
 
 export type Translate = (key: string, params?: Record<string, unknown>) => string
 
@@ -9,6 +9,8 @@ export type ApprovalLayout = {
   detailOpen: boolean
   detailExpanded: boolean
   shellWidth: number
+  /** The line the Session's conversation is on: the centre's own prompt is the main one. */
+  defaultBranchId: string
   activeLine?: string | undefined
   detailFocused?: boolean
 }
@@ -49,6 +51,23 @@ export function lineName(t: Translate, line: LineView | undefined, branchId: str
   return purpose === "" ? shortId(branchId) : purpose
 }
 
+/** The marks a line's row carries: the role the default branch holds, and where the Session started (design §14). */
+export function lineMarks(id: string, defaultBranchId: string): Array<"main-line" | "start"> {
+  const marks: Array<"main-line" | "start"> = []
+  if (id === defaultBranchId) marks.push("main-line")
+  if (id === ROOT_BRANCH_ID) marks.push("start")
+  return marks
+}
+
+/**
+ * Whether the tree offers "continue from here" on a line. The method decides
+ * every refusal; a line already holding the role is not offered a move to
+ * itself, and a line that never opened has nothing to continue on.
+ */
+export function canContinueFrom(line: { id: string; state: LineState }, defaultBranchId: string): boolean {
+  return line.id !== defaultBranchId && line.state.kind !== "creation-failed"
+}
+
 /**
  * The branch whose visible approval prompt owns the window keyboard shortcuts
  * (`Enter`/`y` allow, `Escape`/`n` deny), or `undefined` when no visible
@@ -60,11 +79,11 @@ export function approvalKeyboardBranch(
 ): string | undefined {
   const mainVisible = !layout.detailOpen || (!layout.detailExpanded && layout.shellWidth >= DETAIL_COVER_WIDTH)
   const activeLine = layout.detailOpen ? layout.activeLine : undefined
-  const mainHas = mainVisible && approvals.some((request) => request.branchId === DEFAULT_BRANCH_ID)
+  const mainHas = mainVisible && approvals.some((request) => request.branchId === layout.defaultBranchId)
   const lineHas = activeLine !== undefined && approvals.some((request) => request.branchId === activeLine)
-  if (mainHas && lineHas) return layout.detailFocused ? activeLine : DEFAULT_BRANCH_ID
+  if (mainHas && lineHas) return layout.detailFocused ? activeLine : layout.defaultBranchId
   if (lineHas) return activeLine
-  if (mainHas) return DEFAULT_BRANCH_ID
+  if (mainHas) return layout.defaultBranchId
   return undefined
 }
 

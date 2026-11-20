@@ -1047,7 +1047,7 @@ fn tui_task_stop_all_keeps_its_finite_targets_and_waits_only_for_replies() {
         wire.reply(&submit, json!({"event":{}}));
         wire.send(json!({"jsonrpc":"2.0","id":first["id"],"error":{"code":-32000,"message":"first stop failed","data":{"appError":"service_reloading"}}}));
         let member = wire.read("session.stop");
-        assert_eq!(member["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
+        assert_eq!(member["params"], json!({"sessionId":"member","reason":"stopped by the user"}));
         wire.quiet(Duration::from_millis(150));
         wire.reply(&member, json!({}));
         let child = wire.read("session.exec.stop");
@@ -1458,7 +1458,7 @@ wire.reply(&second, json!({"events":[fact("member-input",1,1000,"input","message
         wire.notice("session.event", json!({"sessionId":"member","branchId":"main","event":fact("member-tool-result",7,3000,"step","tool-result",json!({"turn_id":"member-turn","request_id":"member-tools","results":[{"call_id":"member-exec","result":{"content":"member disclosure output"}}]}))}));
         wire.notice("session.model.progress", json!({"sessionId":"member","branchId":"main","requestId":"member-model","text":"","textOffset":0,"thinking":"live member thought\n\nmember thinking final paragraph","thinkingOffset":0}));
         let stop = wire.read("session.stop");
-        assert_eq!(stop["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
+        assert_eq!(stop["params"], json!({"sessionId":"member","reason":"stopped by the user"}));
         wire.reply(&stop, json!({}));
         event(wire, "main", fact("leader-result",5,4000,"collaboration","result",json!({"request_event_id":"leader-member","agent_id":"reviewer","session_id":"member","status":"cancelled","reason":"stopped by the user","text":"real cancelled delegation result"})));
         let detach = wire.read("session.detach");

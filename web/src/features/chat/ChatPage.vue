@@ -10,7 +10,7 @@ import QueuedInputs from "./QueuedInputs.vue"
 import QuestionPrompt from "./QuestionPrompt.vue"
 import { WebChatTimeline } from "../../chat-ui/timeline"
 import ExtensionMenu from "../extensions/ExtensionMenu.vue"
-import { DEFAULT_BRANCH_ID, ROOT_BRANCH_ID, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
+import { ROOT_BRANCH_ID, type ContextUsage, type DraftAttachments, type ModelId, type PermissionPreset, type QueuedInput, type SubmitMode, type WithdrawResult } from "../../rpc/protocol"
 import { goalCall, goalObjective, parseGoalRequest, type Goal, type GoalStatus } from "../../goal"
 import { intervalSeconds, loopReport, parseLoopRequest } from "../../loop"
 import { useChatStore } from "../../stores/chat"
@@ -39,8 +39,10 @@ const title = computed(() => summary.value?.title ?? summary.value?.preview ?? t
 const parentId = computed(() => summary.value?.parentSessionId)
 const parent = computed(() => parentId.value === undefined ? undefined : sessions.byId.get(parentId.value))
 const children = computed(() => sessions.summaries.filter((session) => session.parentSessionId === props.sessionId))
-const approval = computed(() => view.value?.approvals.find((request) => request.branchId === DEFAULT_BRANCH_ID))
-const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === DEFAULT_BRANCH_ID) ?? [])
+/** The centre: the line the Session's conversation is on (design §4). */
+const centred = computed(() => view.value?.defaultBranchId ?? ROOT_BRANCH_ID)
+const approval = computed(() => view.value?.approvals.find((request) => request.branchId === centred.value))
+const questions = computed(() => view.value?.questions.filter((ask) => ask.branchId === centred.value) ?? [])
 const prompting = computed(() => approval.value !== undefined || questions.value.length > 0)
 const rulesAvailable = computed(() => connection.supports("permission.rules") && connection.supports("permission.set_rules"))
 const storesPastes = computed(() => view.value?.methods.includes("attachment.put") === true)
@@ -57,7 +59,7 @@ const permissionControl = computed(() => {
   if (session?.status !== "ready" || !connection.supports("session.permission.get") || !connection.supports("session.permission.update")) return undefined
   return { policy: session.permission, select: setPermission }
 })
-const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, DEFAULT_BRANCH_ID, view.value?.approvals ?? []))
+const approvalKeyboard = computed(() => ui.approvalKeyboard(props.sessionId, centred.value, centred.value, view.value?.approvals ?? []))
 const composer = ref<InstanceType<typeof ComposerPanel>>()
 const lineCount = computed(() => view.value?.lines.filter((line) => line.id !== ROOT_BRANCH_ID).length ?? 0)
 const linesBusy = computed(() => {
@@ -80,7 +82,7 @@ const sessionCommands = computed(() => {
   return {
     compact: session.methods.includes("session.context.compact") ? compact : undefined,
     usage: session.methods.includes("session.context.usage") ? usage : undefined,
-    fork: connection.supports("session.fork") && session.lastTurnEnd !== undefined ? fork : undefined,
+    fork: connection.supports("session.fork") ? fork : undefined,
     goal: session.methods.includes("session.goal.set") ? goal : undefined,
     loop: session.methods.includes("session.loop.start") ? loop : undefined,
     effort: effortChoices.value !== undefined && effortChoices.value.length > 0 ? effort : undefined,
@@ -88,16 +90,16 @@ const sessionCommands = computed(() => {
 })
 
 function send(text: string, attachments: DraftAttachments, mode: SubmitMode): Promise<void> {
-  return chat.submit(props.sessionId, DEFAULT_BRANCH_ID, text, attachments, mode)
+  return chat.submit(props.sessionId, centred.value, text, attachments, mode)
 }
 
 function stop(): Promise<void> {
-  return chat.stop(props.sessionId, DEFAULT_BRANCH_ID)
+  return chat.stop(props.sessionId, centred.value)
 }
 
 /** Withdraws one held message of main, so the composer can recall it into the draft; reports a message the run already adopted. */
 async function withdrawHeld(input: QueuedInput): Promise<WithdrawResult["status"]> {
-  const result = await chat.withdrawInput(props.sessionId, DEFAULT_BRANCH_ID, input.id, undefined)
+  const result = await chat.withdrawInput(props.sessionId, centred.value, input.id, undefined)
   if (result.status === "notHeld") toast.push({ tone: "info", title: t("queue.notHeld") })
   return result.status
 }
@@ -111,14 +113,15 @@ function openLine(branchId: string): void {
   ui.openLine(props.sessionId, branchId)
 }
 
+/** The shown transcript is the centre's, so a cut in it opens a child of that line. */
 function branch(text: string, cut: number): void {
-  ui.requestNewLine({ sessionId: props.sessionId, parentBranchId: ROOT_BRANCH_ID, at: cut, text })
+  ui.requestNewLine({ sessionId: props.sessionId, parentBranchId: centred.value, at: cut, text })
 }
 
 async function createBranch(prompt: string): Promise<void> {
   const at = view.value?.lastTurnEnd
   if (at === undefined) throw new Error(t("lines.noFinishedTurn"))
-  const branchId = await chat.createLine(props.sessionId, ROOT_BRANCH_ID, at, prompt)
+  const branchId = await chat.createLine(props.sessionId, centred.value, at, prompt)
   ui.openLine(props.sessionId, branchId)
 }
 
@@ -272,12 +275,11 @@ async function setPermission(preset: PermissionPreset): Promise<void> {
   }
 }
 
+/** `/fork` copies only the root, whichever line the centre shows (design §9, §14). */
 async function fork(): Promise<void> {
-  const at = view.value?.lastTurnEnd
-  if (at === undefined) return
   if (!await forkConfirm.value?.open(t("fork.confirm"), { confirmLabel: t("fork.confirmLabel") })) return
   try {
-    const forked = await chat.fork(props.sessionId, at)
+    const forked = await chat.fork(props.sessionId)
     void sessions.refresh()
     await router.push({ name: "chat-session", params: { sessionId: forked } })
   } catch (cause) {
@@ -367,12 +369,12 @@ async function fork(): Promise<void> {
       </div>
     </div>
     <WebChatTimeline :session-id="sessionId"
-      :branch-id="ROOT_BRANCH_ID"
+      :branch-id="centred"
       :rows="view.rows"
       :earlier="view.earlier"
       :loading-earlier="view.loadingEarlier"
       :history-error="view.historyError"
-      @earlier="chat.loadEarlier(sessionId, ROOT_BRANCH_ID)"
+      @earlier="chat.loadEarlier(sessionId, centred)"
       :running="view.running"
       :retry="view.retry"
       :quotable="!approval && questions.length === 0"
@@ -382,7 +384,7 @@ async function fork(): Promise<void> {
       @quote="composer?.quote($event)"
     />
     <div v-if="view.running && view.queued.length" class="composer-panel">
-      <QueuedInputs :session-id="sessionId" :items="view.queued" />
+      <QueuedInputs :session-id="sessionId" :branch-id="centred" :items="view.queued" />
     </div>
     <div v-if="approval" class="composer-panel">
       <ApprovalPrompt :key="JSON.stringify([approval.branchId, approval.requestId])" :session-id="sessionId" :request="approval" :keyboard="approvalKeyboard" :rules-available="rulesAvailable" />

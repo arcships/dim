@@ -458,6 +458,20 @@ usage pending -> /new -> new Session
 old reply             -> discard
 ```
 
+### 3.8 The lines panel and the default branch
+
+The Session worker reads the Session's default branch once per attachment, from
+the attach reply's `defaultBranch`, and opens on it: the initial focus, the
+transcript windows and the top bar's model, permission and usage read that
+line's events. `/lines` marks that line `Main line` and `main` `Start`; `p`
+continues on the selected line through `session.branch_set_default`, then shows
+its transcript with that line's own model, permission and usage in the top bar,
+and the method's refusal is drawn in the panel on the line that raised it rather
+than only reported elsewhere. `x` is refused on `main`, on the default branch
+and on every line above the default branch. The panel's rows, refusals and key
+rules are [timeline UI §6](../timeline-ui.md#6-lines-panel); the method is
+`session.branch_set_default` in §6 below.
+
 ## 4. Timing and conflicts
 
 | Case | Decision |

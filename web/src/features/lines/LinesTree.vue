@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed } from "vue"
+import { computed, ref } from "vue"
 import { useI18n } from "vue-i18n"
 import { ROOT_BRANCH_ID } from "../../rpc/protocol"
 import type { LineView } from "../../lines"
 import { useChatStore } from "../../stores/chat"
 import { useUiStore } from "../../stores/ui"
-import { lineName, lineStateLabel, lineStateTone, shortId } from "./line-state"
+import { canContinueFrom, lineMarks, lineName, lineStateLabel, lineStateTone, shortId } from "./line-state"
 
 const props = defineProps<{ sessionId: string }>()
 const { t } = useI18n()
@@ -15,11 +15,36 @@ const ui = useUiStore()
 const view = computed(() => chat.views[props.sessionId])
 const lines = computed(() => view.value?.lines ?? [])
 const hasLines = computed(() => lines.value.some((line) => line.id !== ROOT_BRANCH_ID))
+/** The line the Session's conversation is on (design §4). */
+const defaultBranchId = computed(() => view.value?.defaultBranchId ?? ROOT_BRANCH_ID)
+/** The refusal `session.branch_set_default` answered, shown on the row that raised it. */
+const refusal = ref<{ branchId: string; message: string }>()
 
 function open(line: LineView): void {
-  if (line.id === ROOT_BRANCH_ID || line.state.kind === "creation-failed") return
+  if (line.state.kind === "creation-failed") return
+  if (line.id === defaultBranchId.value) {
+    ui.openLines(props.sessionId)
+    return
+  }
   chat.ensureLine(props.sessionId, line.id)
   ui.openLine(props.sessionId, line.id)
+}
+
+function marks(line: LineView): Array<"main-line" | "start"> {
+  return lineMarks(line.id, defaultBranchId.value)
+}
+
+function canContinue(line: LineView): boolean {
+  return canContinueFrom(line, defaultBranchId.value)
+}
+
+async function continueFrom(line: LineView): Promise<void> {
+  refusal.value = undefined
+  try {
+    await chat.setDefaultBranch(props.sessionId, line.id)
+  } catch (cause) {
+    refusal.value = { branchId: line.id, message: cause instanceof Error ? cause.message : String(cause) }
+  }
 }
 
 function canEnd(line: LineView): boolean {
@@ -63,12 +88,18 @@ function parent(line: LineView): string {
         :key="line.id"
         class="lines-row"
         :data-depth="line.depth"
-        :data-active="line.id !== ROOT_BRANCH_ID && ui.activeLineTab[sessionId] === line.id"
+        :data-active="ui.activeLineTab[sessionId] === line.id"
       >
         <template v-if="line.id === ROOT_BRANCH_ID">
-          <span class="lines-state" :data-tone="tone(line)" aria-hidden="true" />
-          <span class="lines-name">{{ t("lines.main") }}</span>
-          <span class="lines-meta">{{ t("lines.mainHint") }}</span>
+          <button type="button" class="lines-open" :aria-label="t('lines.openLine', { name: t('lines.main') })" @click="open(line)">
+            <span class="lines-state" :data-tone="tone(line)" aria-hidden="true" />
+            <span class="lines-name">{{ t("lines.main") }}</span>
+            <span v-for="mark in marks(line)" :key="mark" class="lines-mark">{{ t(mark === "main-line" ? "lines.mainLine" : "lines.start") }}</span>
+            <span class="lines-meta">{{ t("lines.mainHint") }}</span>
+          </button>
+          <UButton v-if="canContinue(line)" class="lines-continue" color="neutral" variant="ghost" size="xs" :aria-label="t('lines.continueFromLine', { name: t('lines.main') })" @click="continueFrom(line)">
+            {{ t("lines.continueFrom") }}
+          </UButton>
         </template>
         <template v-else>
           <button type="button" class="lines-open" :aria-label="t('lines.openLine', { name: lineName(t, line, line.id) })" :disabled="line.state.kind === 'creation-failed'" @click="open(line)">
@@ -80,11 +111,16 @@ function parent(line: LineView): string {
               <span v-if="line.parentId !== ROOT_BRANCH_ID"> · {{ t("lines.from", { name: parent(line) }) }}</span>
               <span> · {{ lineStateLabel(t, line.state) }}</span>
             </span>
+            <span v-for="mark in marks(line)" :key="mark" class="lines-mark">{{ t(mark === "main-line" ? "lines.mainLine" : "lines.start") }}</span>
           </button>
+          <UButton v-if="canContinue(line)" class="lines-continue" color="neutral" variant="ghost" size="xs" :aria-label="t('lines.continueFromLine', { name: lineName(t, line, line.id) })" @click="continueFrom(line)">
+            {{ t("lines.continueFrom") }}
+          </UButton>
           <UButton v-if="canEnd(line)" class="lines-end" color="neutral" variant="ghost" size="xs" :aria-label="t('lines.endLine', { name: lineName(t, line, line.id) })" @click="end(line)">
             {{ t("lines.end") }}
           </UButton>
         </template>
+        <p v-if="refusal?.branchId === line.id" class="lines-refusal" role="alert">{{ refusal.message }}</p>
       </li>
     </ol>
   </div>
@@ -110,9 +146,13 @@ function parent(line: LineView): string {
 .lines-name { min-width: 0; overflow: hidden; color: var(--foreground); font-size: var(--text-md); font-weight: var(--weight-ui); text-overflow: ellipsis; white-space: nowrap; }
 .lines-meta { min-width: 0; overflow: hidden; color: var(--muted-foreground); font-family: var(--font-mono); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .lines-id { color: var(--fg-2); }
-.lines-end { flex: none; opacity: 0; }
-.lines-row:hover .lines-end, .lines-row:focus-within .lines-end { opacity: 1; }
-@media (hover: none) { .lines-end { opacity: 1; } }
+.lines-end, .lines-continue { flex: none; opacity: 0; }
+.lines-row:hover .lines-end, .lines-row:focus-within .lines-end,
+.lines-row:hover .lines-continue, .lines-row:focus-within .lines-continue { opacity: 1; }
+@media (hover: none) { .lines-end, .lines-continue { opacity: 1; } }
+.lines-mark { flex: none; color: var(--primary); font-size: var(--text-xs); font-weight: var(--weight-medium); }
+.lines-row { flex-wrap: wrap; }
+.lines-refusal { width: 100%; margin: 0; padding: 0 var(--space-2) var(--space-1); color: var(--danger); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .lines-empty { display: flex; min-height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); padding: var(--space-6) var(--space-4); text-align: center; }
 .lines-empty-icon { display: grid; width: 44px; height: 44px; place-items: center; border-radius: var(--radius-xl); background: var(--muted); color: var(--primary); }
 .lines-empty strong { color: var(--foreground); font-size: var(--text-sm); font-weight: var(--weight-medium); }

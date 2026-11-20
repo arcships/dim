@@ -1,4 +1,4 @@
-use crate::wire::{Attached, Created, DisplayNotice, EventNotice, Progress};
+use crate::wire::{Attached, Created, DisplayNotice, EventNotice, Progress, resume_cursor};
 use crate::{
     Result,
     args::{Action, Options},
@@ -14,7 +14,7 @@ use crate::{
     question::line::Questions,
 };
 use dim_agent_types::{
-    ApprovalCallData, ContentBlock, DEFAULT_BRANCH_ID, PermissionPolicy, UserInput,
+    ApprovalCallData, ContentBlock, PermissionPolicy, ROOT_BRANCH_ID, UserInput,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -107,6 +107,7 @@ struct RecordingError {
 async fn start_shell(
     client: &mut Client,
     session_id: &str,
+    conversation: &str,
     text: &str,
     display: &mut Display,
 ) -> Result<Option<ShellRun>> {
@@ -119,7 +120,7 @@ async fn start_shell(
         return Ok(None);
     }
     let run_id = uuid::Uuid::new_v4().to_string();
-    let request = client.send("shell.run", json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"runId":run_id,"command":command,"mode":mode})).await?;
+    let request = client.send("shell.run", json!({"sessionId":session_id,"branchId":conversation,"runId":run_id,"command":command,"mode":mode})).await?;
     display.record(&format!("[shell started] {mode}"))?;
     Ok(Some(ShellRun {
         request: Some(request),
@@ -198,6 +199,20 @@ pub(crate) async fn settle<T>(
     }
 }
 
+/// The line the Session's conversation is on: the default branch the daemon
+/// reports, or the root of a Session that has not moved it (design §4, §14).
+async fn conversation(client: &mut Client, session_id: &str) -> Result<String> {
+    if !client.supports(&["session.branches"]) {
+        return Ok(ROOT_BRANCH_ID.to_owned());
+    }
+    let directory: dim_client::wire::BranchDirectory = client
+        .typed("session.branches", json!({"sessionId": session_id}))
+        .await?;
+    Ok(directory
+        .default_branch_id
+        .unwrap_or_else(|| ROOT_BRANCH_ID.to_owned()))
+}
+
 pub async fn chat(
     client: &mut Client,
     options: &Options,
@@ -254,22 +269,15 @@ pub async fn chat(
         }
         created.session_id
     };
-    let selected = if let (Some(preset), Some(_)) = (options.permission, &options.resume) {
-        if !client.supports(&permission::PRESET_METHODS) {
-            return Err(
-                "This daemon cannot change a Session's permission preset; omit --permission".into(),
-            );
-        }
-        Some(
-            permission::select(client, &session_id, preset)
-                .await
-                .map_err(|error| {
-                    crate::client::resume_failure("Cannot set the permission preset", error)
-                })?,
-        )
-    } else {
-        None
-    };
+    let listed = conversation(client, &session_id).await?;
+    if options.permission.is_some()
+        && options.resume.is_some()
+        && !client.supports(&permission::PRESET_METHODS)
+    {
+        return Err(
+            "This daemon cannot change a Session's permission preset; omit --permission".into(),
+        );
+    }
     display.record(&format!(
         "{}: {}\nsession: {}",
         if interactive {
@@ -280,6 +288,35 @@ pub async fn chat(
         options.launch_dir().display(),
         session_id
     ))?;
+    let mut params = json!({"sessionId":session_id});
+    if !display.json
+        && client.offers("session.history.display")
+        && client.offers("session.history.detail")
+    {
+        params["display"] = json!(true);
+    }
+    let attached: Attached = client.typed("session.attach", params).await?;
+    let session_cwd = attached.cwd;
+    // The attach reply names the line the conversation is on, beside the
+    // root's `sequence`; a server that predates the field leaves the directory
+    // as its answer (design §14).
+    let conversation = attached
+        .default_branch
+        .as_ref()
+        .map_or(listed, |cursor| cursor.branch_id.clone());
+    // The preset belongs to the line the reply names: the directory's answer is
+    // one round trip older, and the line may have moved between them
+    // (design §14).
+    let selected = match (options.permission, &options.resume) {
+        (Some(preset), Some(_)) => Some(
+            permission::select(client, &session_id, &conversation, preset)
+                .await
+                .map_err(|error| {
+                    crate::client::resume_failure("Cannot set the permission preset", error)
+                })?,
+        ),
+        _ => None,
+    };
     let policy = match (selected, options.permission) {
         (Some(policy), _) => Some(Ok(policy)),
         (None, Some(preset)) => Some(Ok(PermissionPolicy {
@@ -287,7 +324,7 @@ pub async fn chat(
             ..Default::default()
         })),
         (None, None) if interactive && client.supports(&["session.permission.get"]) => Some(
-            permission::read(client, &session_id)
+            permission::read(client, &session_id, &conversation)
                 .await
                 .map(|state| state.policy),
         ),
@@ -300,35 +337,44 @@ pub async fn chat(
         Some(Err(error)) => display.record(&format!("permission: unavailable ({error})"))?,
         None => {}
     }
-    let mut params = json!({"sessionId":session_id});
-    if !display.json
-        && client.offers("session.history.display")
-        && client.offers("session.history.detail")
-    {
-        params["display"] = json!(true);
-    }
-    let attached: Attached = client.typed("session.attach", params).await?;
-    let session_cwd = attached.cwd;
     if options.resume.is_some() {
         crate::session_host::adopt_startup(client, options, &session_id).await?;
     }
     let mut questions = Questions::default();
     let result = async {
         display.muted = !interactive;
-        display.model = attached.model.map(|model| crate::wire::Configuration {
-            provider_id: model.provider_id,
-            model_id: model.model_id,
-            capability_snapshot: attached.capability_snapshot,
-            model_preferences: attached.model_preferences,
-        });
-        display.model_through = attached.sequence;
-        display.cursor = window::read(client, &session_id, &mut display).await?;
-        questions.start(client, &session_id).await?;
+        // The reply's configuration is the root's (design §14): a conversation
+        // on a line takes that line's own facts from the window below, and its
+        // watermark starts below every one of them. A reply that names no line
+        // comes from a server that cannot move the default branch, so its model
+        // is the Session's.
+        let seeded = attached.default_branch.is_none() || conversation == ROOT_BRANCH_ID;
+        display.model = if seeded {
+            attached.model.map(|model| crate::wire::Configuration {
+                provider_id: model.provider_id,
+                model_id: model.model_id,
+                capability_snapshot: attached.capability_snapshot,
+                model_preferences: attached.model_preferences,
+            })
+        } else {
+            None
+        };
+        // The attach reply's `defaultBranch` is the conversation's own cursor;
+        // its `sequence` stays the root's (design §14).
+        display.model_through = if seeded {
+            resume_cursor(attached.default_branch.as_ref(), attached.sequence, &conversation)
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        display.cursor = window::read(client, &session_id, &conversation, &mut display).await?;
+        questions.start(client, &session_id, &conversation).await?;
         display.failed = false;
         display.muted = false;
         let mut code = wait_turn(
             client,
             &session_id,
+            &conversation,
             None,
             &mut display,
             &mut input,
@@ -351,6 +397,7 @@ pub async fn chat(
             return wait_turn(
                 client,
                 &session_id,
+                &conversation,
                 Some(Submission::Message(UserInput { content })),
                 &mut display,
                 &mut input,
@@ -409,7 +456,7 @@ pub async fn chat(
                     let result = settle(
                         &mut interrupts,
                         "Waiting for configuration result before accepting more input.",
-                        configure(client, &session_id, text, &mut display),
+                        configure(client, &session_id, &conversation, text, &mut display),
                     )
                     .await;
                     if let Err(error) = result {
@@ -425,6 +472,7 @@ pub async fn chat(
                         reader,
                         &mut interrupts,
                         &session_id,
+                        &conversation,
                         text,
                         &mut display,
                         &mut listing,
@@ -441,6 +489,7 @@ pub async fn chat(
                     if let Err(error) = goal_command::command(
                         client,
                         &session_id,
+                        &conversation,
                         text,
                         &mut display,
                         &mut interrupts,
@@ -457,7 +506,7 @@ pub async fn chat(
                     if let Err(error) = loop_command::command(
                         client,
                         &session_id,
-                        DEFAULT_BRANCH_ID,
+                        &conversation,
                         text,
                         &mut display,
                         &mut interrupts,
@@ -478,7 +527,7 @@ pub async fn chat(
                     continue;
                 }
                 Some("/earlier") => {
-                    if let Err(error) = window::earlier(client, &session_id, &mut display).await { display.record(&format!("Error: {error}"))?; }
+                    if let Err(error) = window::earlier(client, &session_id, &conversation, &mut display).await { display.record(&format!("Error: {error}"))?; }
                     draft.clear();
                     continue;
                 }
@@ -560,6 +609,7 @@ pub async fn chat(
             code = match wait_turn(
                 client,
                 &session_id,
+                &conversation,
                 Some(submission),
                 &mut display,
                 &mut input,
@@ -623,12 +673,13 @@ pub async fn read_history(
     after: u64,
     sink: &mut impl HistorySink,
 ) -> Result<u64> {
-    read_history_mode(client, session_id, after, sink, false).await
+    read_history_mode(client, session_id, ROOT_BRANCH_ID, after, sink, false).await
 }
 
 async fn read_history_mode(
     client: &mut Client,
     session_id: &str,
+    branch_id: &str,
     mut after: u64,
     sink: &mut impl HistorySink,
     summaries: bool,
@@ -636,7 +687,7 @@ async fn read_history_mode(
     let mut through = None;
     loop {
         let mut params =
-            json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"after":after,"limit":256});
+            json!({"sessionId":session_id,"branchId":branch_id,"after":after,"limit":256});
         if let Some(through) = through {
             params["through"] = json!(through);
         }
@@ -666,6 +717,7 @@ async fn read_history_mode(
 async fn configure(
     client: &mut Client,
     session_id: &str,
+    conversation: &str,
     text: &str,
     display: &mut Display,
 ) -> Result<()> {
@@ -676,6 +728,7 @@ async fn configure(
         display.cursor = read_history_mode(
             client,
             session_id,
+            conversation,
             display.cursor,
             &mut |value| display.event(serde_json::from_value(value)?, true),
             summaries,
@@ -683,7 +736,14 @@ async fn configure(
         .await?;
         display.failed = false;
     }
-    let report = configure::run(client, session_id, display.model.as_ref(), text).await?;
+    let report = configure::run(
+        client,
+        session_id,
+        conversation,
+        display.model.as_ref(),
+        text,
+    )
+    .await?;
     for line in &report.lines {
         display.record(line)?;
     }
@@ -691,6 +751,7 @@ async fn configure(
         display.cursor = read_history_mode(
             client,
             session_id,
+            conversation,
             display.cursor,
             &mut |value| display.event(serde_json::from_value(value)?, true),
             summaries,
@@ -708,6 +769,7 @@ async fn configure(
 async fn wait_turn(
     client: &mut Client,
     session_id: &str,
+    conversation: &str,
     submission: Option<Submission>,
     display: &mut Display,
     input: &mut Option<Input>,
@@ -719,7 +781,7 @@ async fn wait_turn(
     let mut shell = None;
     let mut submit = match submission {
         Some(Submission::Shell(text)) => {
-            shell = start_shell(client, session_id, &text, display).await?;
+            shell = start_shell(client, session_id, conversation, &text, display).await?;
             if let Some(draft) = draft.take() {
                 draft.clear();
             }
@@ -727,7 +789,7 @@ async fn wait_turn(
         }
         Some(Submission::Message(mut user)) => {
             crate::images::import(client, session_id, &mut user.content).await?;
-            let mut params = json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"submissionId":uuid::Uuid::new_v4().to_string(),"mode":"queue"});
+            let mut params = json!({"sessionId":session_id,"branchId":conversation,"submissionId":uuid::Uuid::new_v4().to_string(),"mode":"queue"});
             match user.content.as_slice() {
                 [ContentBlock::Text { text }] => params["text"] = json!(text),
                 _ => params["user"] = json!(user),
@@ -741,7 +803,7 @@ async fn wait_turn(
             client
                 .send(
                     "session.idle",
-                    json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID}),
+                    json!({"sessionId":session_id,"branchId":conversation}),
                 )
                 .await?,
         )
@@ -882,7 +944,7 @@ async fn wait_turn(
                         client
                             .send(
                                 "session.stop",
-                                json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"reason":reason}),
+                                json!({"sessionId":session_id,"branchId":conversation,"reason":reason}),
                             )
                             .await?,
                     );
@@ -925,7 +987,7 @@ async fn wait_turn(
                     code = 130;
                     approvals.clear(); prompted = false;
                     questions.interrupt(client, session_id).await?;
-                    stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"reason":"CLI interrupted"})).await?);
+                    stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":conversation,"reason":"CLI interrupted"})).await?);
                     continue;
                 }
                 line = async {
@@ -996,7 +1058,9 @@ async fn wait_turn(
                             if shell.is_some() {
                                 display.record("[shell busy] This caller already has a pending command")?;
                             } else {
-                                shell = start_shell(client, session_id, text, display).await?;
+                                shell =
+                                    start_shell(client, session_id, conversation, text, display)
+                                        .await?;
                             }
                         } else if !text.trim().is_empty() {
                             display.record("[busy] Wait for the prompt to send a message; !command and !!command remain available")?;
@@ -1014,7 +1078,7 @@ async fn wait_turn(
                     }
                     if line.is_none() && stop.is_none() && settled.is_none() {
                         code = 130;
-                        stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"reason":"CLI input closed"})).await?);
+                        stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":conversation,"reason":"CLI input closed"})).await?);
                     }
                     continue;
                 }
@@ -1124,7 +1188,7 @@ async fn wait_turn(
                         client
                             .send(
                                 "session.idle",
-                                json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID}),
+                                json!({"sessionId":session_id,"branchId":conversation}),
                             )
                             .await?,
                     );
@@ -1263,7 +1327,7 @@ async fn wait_turn(
                     display.record("Interactive approval required; the operation was denied. Rerun in a terminal to review it")?;
                     approval_replies.insert(client.send("approval.respond", json!({"sessionId":session_id,"branchId":approval.branch_id,"requestId":approval.request_id,"decision":"deny"})).await?);
                     code = 3;
-                    stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"reason":"Interactive approval required"})).await?);
+                    stop = Some(client.send("session.stop", json!({"sessionId":session_id,"branchId":conversation,"reason":"Interactive approval required"})).await?);
                 } else {
                     approvals.push_back(approval);
                 }
@@ -1348,13 +1412,18 @@ async fn wait_turn(
                 display.shell_progress(&progress.text)?;
             }
             notice @ Message::Notice { .. } => {
-                render(notice, session_id, display)?;
+                render(notice, session_id, conversation, display)?;
             }
         }
     }
 }
 
-fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()> {
+fn render(
+    notice: Message,
+    session_id: &str,
+    conversation: &str,
+    display: &mut Display,
+) -> Result<()> {
     let Message::Notice { method, params } = notice else {
         unreachable!()
     };
@@ -1365,7 +1434,7 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
             }
             let event = &params["event"];
             if method == "session.event"
-                && params["branchId"] == DEFAULT_BRANCH_ID
+                && params["branchId"] == conversation
                 && event["type"] == "turn"
                 && event["name"] == "end"
                 && event["data"]["status"] == "failed"
@@ -1385,12 +1454,12 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
             } else {
                 decode(params, &method)?
             };
-            if notice.session_id == session_id && notice.branch_id == DEFAULT_BRANCH_ID {
+            if notice.session_id == session_id && notice.branch_id == conversation {
                 if let Some((sequence, policy)) = changed
                     && sequence > display.cursor.max(display.permission_seen)
                 {
                     display.record(&format!(
-                        "[permission] main branch preset: {}",
+                        "[permission] preset: {}",
                         permission::name(policy.preset)
                     ))?;
                     display.permission_seen = sequence;
@@ -1400,7 +1469,7 @@ fn render(notice: Message, session_id: &str, display: &mut Display) -> Result<()
         }
         "session.model.progress" => {
             let notice: Progress = decode(params, &method)?;
-            if notice.session_id == session_id && notice.branch_id == DEFAULT_BRANCH_ID {
+            if notice.session_id == session_id && notice.branch_id == conversation {
                 display.progress(notice)?;
             }
         }

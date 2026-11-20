@@ -1,12 +1,14 @@
 import { ProtocolError, readPermissionPolicy } from "./read"
-import { DEFAULT_BRANCH_ID, type PermissionPolicy, type PermissionPreset } from "./protocol"
+import type { PermissionPolicy, PermissionPreset } from "./protocol"
 
 export type Schedule = { every_minutes: number } | { at: string } | { cron: string; tz?: string }
 type Origin = "user" | { tool: { session_id: string; branch_id: string } }
 export type InputMode = "queue" | "steer" | "append"
 /** Where a job delivers (Scheduler §2.1): a Session branch, or a new Session. */
 export type Target =
-  | { kind: "session"; session_id: string; branch_id: string; input_mode: InputMode }
+  // A save that omits `branch_id` records the Session's default branch at
+  // commit (Scheduler §2.1); a stored job always reports the branch it recorded.
+  | { kind: "session"; session_id: string; branch_id?: string; input_mode: InputMode }
   | { kind: "launch"; cwd: string; agent_id?: string; policy?: PermissionPreset; max_run_minutes: number }
 /** Why the owner disabled a job (Scheduler A.3). */
 export type DisabledReason = { code: string; at: string }
@@ -55,7 +57,7 @@ function inputMode(value: unknown): InputMode {
 }
 function target(value: unknown): Target {
   const v = object(value)
-  if (v.kind === "session") return { kind: "session", session_id: string(v.session_id), branch_id: v.branch_id === undefined || v.branch_id === null ? DEFAULT_BRANCH_ID : string(v.branch_id), input_mode: inputMode(v.input_mode) }
+  if (v.kind === "session") return { kind: "session", session_id: string(v.session_id), ...(v.branch_id === undefined || v.branch_id === null ? {} : { branch_id: string(v.branch_id) }), input_mode: inputMode(v.input_mode) }
   if (v.kind === "launch") return { kind: "launch", cwd: string(v.cwd), agent_id: optional(v.agent_id, string), policy: optional(v.policy, preset), max_run_minutes: v.max_run_minutes === undefined || v.max_run_minutes === null ? 60 : integer(v.max_run_minutes) }
   throw new ProtocolError("Invalid Scheduler target")
 }

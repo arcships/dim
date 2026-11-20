@@ -152,6 +152,12 @@ export const useUiStore = defineStore("ui", () => {
     detailFocused.value = true
   }
 
+  /** The centre follows a new default branch: it becomes no line tab, and the tab it had is gone. */
+  function followDefault(sessionId: string, branchId: string): void {
+    lineTabs.value = { ...lineTabs.value, [sessionId]: (lineTabs.value[sessionId] ?? []).filter((id) => id !== branchId) }
+    activeLineTab.value = { ...activeLineTab.value, [sessionId]: undefined }
+  }
+
   function closeLineTab(sessionId: string, branchId: string): void {
     const tabs = (lineTabs.value[sessionId] ?? []).filter((id) => id !== branchId)
     lineTabs.value = { ...lineTabs.value, [sessionId]: tabs }
@@ -166,12 +172,13 @@ export const useUiStore = defineStore("ui", () => {
     detailFocused.value = false
   }
 
-  function approvalKeyboard(sessionId: string, branchId: string, approvals: readonly { branchId: string }[]): boolean {
+  function approvalKeyboard(sessionId: string, branchId: string, defaultBranchId: string, approvals: readonly { branchId: string }[]): boolean {
     if (extension.value !== undefined && detailOpen.value && detailFocused.value) return false
     return approvalKeyboardBranch(approvals, {
       detailOpen: detailOpen.value,
       detailExpanded: detailExpanded.value,
       shellWidth: shellWidth.value,
+      defaultBranchId,
       activeLine: activeLineTab.value[sessionId],
       detailFocused: detailFocused.value,
     }) === branchId
@@ -206,7 +213,7 @@ export const useUiStore = defineStore("ui", () => {
     sidebarCollapsed, lastSessionId, drawerOpen, shellWidth, shellMode, setShellWidth,
     isWorkspaceExpanded, toggleWorkspace, sidebarSortBy,
     extension, detailOpen, detailWidth, detailExpanded, detailFocused, lineTabs, activeLineTab, newLine, endingLine,
-    setDetailWidth, openLines, toggleLines, openLine, activateLine, closeLineTab, closeDetail,
+    setDetailWidth, openLines, toggleLines, openLine, activateLine, followDefault, closeLineTab, closeDetail,
     approvalKeyboard,
     requestNewLine, closeNewLine, requestEndLine, closeEndLine, resetSessionTabs,
   }

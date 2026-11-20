@@ -37,8 +37,19 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Running" => "Berjalan",
         "Lines" => "Jalur",
-        "Enter show the line · x end it · Esc close" => {
-            "Enter lihat jalur · x hentikan · Esc tutup"
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter lihat · p lanjutkan dari sini · x akhiri · Esc tutup"
+        }
+        "Main line" => "jalur utama",
+        "Start" => "titik awal",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "Jalur default dan jalur yang dilanjutkannya tetap terbuka; lanjutkan dulu di jalur lain"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "Jalur default lama tetap terbuka dan menyimpan jalur yang telah dibukanya. Akar mempertahankan haknya sendiri untuk membuka jalur ke dua arah."
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "Jalur default lama tetap terbuka dan menyimpan jalur yang telah dibukanya. Kedua jalur bertukar hak untuk membuka jalur."
         }
         "This session has no lines." => "Sesi ini belum punya jalur.",
         "No matching lines." => "Tidak ada jalur yang cocok.",

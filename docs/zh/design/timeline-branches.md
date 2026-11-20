@@ -590,6 +590,8 @@ WorkspaceTools 不变。
 
 **旧连接上的默认分支。** 移动现在已能经 RPC 触达，但跟随它的客户端随后才到，所以现有客户端依赖的每个字段和行为都保持旧含义，新含义经新字段到达。v1 连接的事件投影只带根（`connection/subscription.rs` 的 `project` 与 v1 分支监视），因此在该连接上，省略 `branchId` 仍然指向根，适用于本节会路由默认值的每个调用：`session.submit`、`session.stop` 和 `session.idle`（v1 客户端可以不带分支发出的三个；其余被路由的调用从 v3 起才准入，而 v3 的投影带每条线）。所以较新的连接移动默认分支后，v1 客户端仍能看到它的输入所跑的轮次。v2 及以后带每条线，必须在 v1 不能命名处命名一条线；v3 连接的缺省调用跟随默认分支。旧客户端读到的其他内容含义都不变：`session.attach` 回复里的 `SessionInfo.sequence` 仍是根的序号——CLI 用作 `main` 窗口 `through` 和根模型更新水位的截止点——对话所在的线以 `defaultBranch {branchId, sequence}` 并列给出。该游标只属于这条回复：`session.summaries` 的条目是目录行，不带 `defaultBranch`，所以客户端在 attach 之后读这条线，而不是从列表里读。早于该字段的客户端忽略它；跟随移动的客户端据它续读那条线。目录行的 `sequence` 同理：在已加载覆盖和存储查询两种投影里都是根的，所以加载或卸载 Session 都不会改变它；`running` 与 `updatedAt` 跟随默认分支，持久化的移动在它自己的事务里用新默认分支的最新活动刷新 `updatedAt`，移动本身不算活动，所以空闲移动不会让该行按离开的那条线显得刚刚活动。
 
+回复里的 `model`、`modelPreferences` 和 `capabilitySnapshot` 仍是根的已采纳配置，也就是对话停在根上的 Session 一贯读的水位。跟随移动的客户端把配置与游标成对取用，不把两者混在一起：它取游标所指那条线的配置，所以对话在某条线上的 Session 显示那条线在游标处或之前采纳的模型，回复里的记录只给根做种子。不带 `defaultBranch` 的回复说明该服务器还不能移动默认分支、对话在根上，它的记录就是该 Session 唯一的模型，所有客户端继续使用它。
+
 **Web** 让默认分支留在中央，在右侧详情面板里跟随其他线：Lines 树、每个打开的线一个标签，以及按 line 的发送、停止、审批和结束（[Web 工作区 §4.1](../../design/web-workspace.md#41-lines-and-branch)）。移动默认分支与 TUI 是同一个动作，经 `session.branch_set_default`。Lines 树标出根和默认分支，也就是能开线的两条线；其他线的 `create` 被拒绝，拒绝显示在发起该动作的地方。输入框提供的命令作用于当前居中的那条线，而不是根：`/goal`、`/compact`、`/usage` 和 `/effort` 不传分支或传当前显示的线，而 `/fork` 仍只复制根（[Web 工作区](../../design/web-workspace.md)）。会话列表显示一个 Session 的运行状态和最近活动，取自它的默认分支，所以对话在某条线上的 Session 按那条线读作繁忙或刚刚活动，而不是按它的根。Desktop 得到的是协议：`session.branch_set_default`，以及 v3 历史里的新事件。
 
 ## 15. 改动

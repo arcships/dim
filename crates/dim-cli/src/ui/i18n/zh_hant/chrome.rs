@@ -31,7 +31,20 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history is incomplete; stop-all unavailable" => "分支歷程尚未讀完，暫無法全部停止",
         "Running" => "執行中",
         "Lines" => "線",
-        "Enter show the line · x end it · Esc close" => "Enter 查看該線 · x 結束 · Esc 關閉",
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter 查看 · p 從此繼續 · x 結束 · Esc 關閉"
+        }
+        "Main line" => "主線",
+        "Start" => "起點",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "預設分支和它延續的線都不能結束；請先切換到另一條線繼續"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "原預設分支保持開啟，並保留它已開啟的線。根分支在任一方向都保有自己的開線權。"
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "原預設分支保持開啟，並保留它已開啟的線。兩條線互換開線的權利。"
+        }
         "This session has no lines." => "這個工作階段還沒有線。",
         "No matching lines." => "沒有符合的線。",
         "the session itself" => "工作階段本身",

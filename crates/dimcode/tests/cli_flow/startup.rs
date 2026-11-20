@@ -844,12 +844,27 @@ fn resume_startup_is_adopted_or_explicitly_rejected_before_input_in_every_client
                 let request = wire.read_any();
                 let update = if request["method"] == "session.attach" {
                     wire.reply(&request, attach_record(&request));
-                    wire.read("session.model.update")
+                    // The launch attaches before it adopts, and the attach
+                    // opens the UI and the conversation's window first.
+                    loop {
+                        let next = wire.read_any();
+                        match next["method"].as_str().unwrap_or_default() {
+                            "ui.open" => {
+                                wire.reply(&next, json!({"uiId":"ui-1","token":"token-1"}))
+                            }
+                            "session.history" => wire.reply(
+                                &next,
+                                json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+                            ),
+                            "session.model.update" => break next,
+                            other => panic!("unexpected {other}: {next}"),
+                        }
+                    }
                 } else {
                     assert_eq!(request["method"], "session.model.update");
                     request
                 };
-                let mut expected = json!({"sessionId":"session","branchId":"main",
+                let mut expected = json!({"sessionId":"session",
                     "modelPreferences":{"reasoningEffort":"low"},
                     "startup":{"connection":{"baseUrl":"https://gateway.example/prefix",
                         "apiFormat":"anthropic","apiKey":"resume-secret"},"autoCompactWindow":"auto"}});
@@ -904,7 +919,7 @@ fn resume_effort_only_sends_forced_inheritance_before_submitting() {
         let update = wire.read("session.model.update");
         assert_eq!(
             update["params"],
-            json!({"sessionId":"session","branchId":"main",
+            json!({"sessionId":"session",
             "modelPreferences":{"reasoningEffort":"high"},"startup":{}})
         );
         wire.reply(&update, json!({"outcome":"adopted"}));

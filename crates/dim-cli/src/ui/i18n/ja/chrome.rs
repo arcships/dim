@@ -35,7 +35,20 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Branch history is incomplete; stop-all unavailable" => "ブランチ履歴が不完全。全停止不可",
         "Running" => "実行中",
         "Lines" => "ライン",
-        "Enter show the line · x end it · Esc close" => "Enter ライン表示 · x 終了 · Esc 閉じる",
+        "Enter show · p continue from here · x end it · Esc close" => {
+            "Enter 表示 · p ここから続ける · x 終了 · Esc 閉じる"
+        }
+        "Main line" => "メインライン",
+        "Start" => "起点",
+        "the default branch and the lines it continues from stay open; continue on another line first" => {
+            "デフォルトブランチとその元になるラインは閉じられません。先に別のラインで続けてください"
+        }
+        "The old default branch stays open and keeps the lines it opened. The root keeps its own right to open a line in either direction." => {
+            "以前のデフォルトブランチは開いたままで、開いたラインを保持します。ルートはどちらの方向でもラインを開く権利を保ちます。"
+        }
+        "The old default branch stays open and keeps the lines it opened. The two lines swap the right to open a line." => {
+            "以前のデフォルトブランチは開いたままで、開いたラインを保持します。2 本のラインはラインを開く権利を交換します。"
+        }
         "This session has no lines." => "このセッションにはまだラインがありません。",
         "No matching lines." => "一致するラインがありません。",
         "the session itself" => "セッション自体",

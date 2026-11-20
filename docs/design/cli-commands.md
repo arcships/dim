@@ -540,7 +540,7 @@ queue strip when nothing is held:
 
 ## Usage report
 
-In both TUI modes, `/usage` prints the main branch's context usage. When the
+In both TUI modes, `/usage` prints the default branch's context usage. When the
 active model uses Dim OAuth, it also queries and prints the account's plan,
 credits, rolling windows and feature meters through the existing
 [account usage contract](../../crates/dim-oauth/docs/runtime-contract.md).
@@ -3095,7 +3095,7 @@ permission: read-only
 
 > Fix the build
 Assistant: ...
-[permission] main branch preset: workspace-write  <- changed by another client
+[permission] preset: workspace-write  <- changed by another client
 ```
 
 Both TUI modes draw a live permission footer under the composer, without an `AGENT` prefix;
@@ -3254,8 +3254,8 @@ approves nor cancels work by that fact alone.
 ### `/permissions`
 
 `/permissions` is the visible menu entry in both TUI modes; `/approvals` and `/approval` open the
-same preset picker as compatibility aliases. The control applies to `main`; selecting a preset
-uses the current policy and version, preserving the tool lists. A failed save neither changes remembered choices nor falls back to another preset.
+same preset picker as compatibility aliases. The control applies to the Session's default
+branch; selecting a preset uses the current policy and version, preserving the tool lists. A failed save neither changes remembered choices nor falls back to another preset.
 
 The Process isolation row links to the Settings control; Esc returns to this panel with that row focused.
 The Command rules row opens the management panel

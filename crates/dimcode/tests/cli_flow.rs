@@ -30,6 +30,9 @@ mod hooks;
 #[path = "cli_flow/mcp.rs"]
 mod mcp;
 
+#[path = "cli_flow/lines.rs"]
+mod lines;
+
 #[path = "cli_flow/migration.rs"]
 mod migration;
 #[path = "cli_flow/modality.rs"]
@@ -455,14 +458,41 @@ impl Wire {
     fn attached(&mut self) {
         let attach = self.read("session.attach");
         self.reply(&attach, attach_record(&attach));
+        self.resumed_on("main", 8);
+    }
+    /// The attach reply, then the policy read of the line it names and the
+    /// window, pending-question and idle reads that follow: a Session's first
+    /// frame names one line, and the reply is where it comes from
+    /// (design §14).
+    fn attached_with_policy(&mut self, policy: Value) {
+        let attach = self.read("session.attach");
+        self.reply(&attach, attach_record(&attach));
+        let get = self.read("session.permission.get");
+        assert_eq!(
+            get["params"],
+            json!({"sessionId":"session","branchId":"main"})
+        );
+        self.reply(&get, policy);
+        self.resumed_on("main", 8);
+    }
+    /// The window, pending-question and idle reads a resumed Session makes on
+    /// `branch`, after its attach reply.
+    fn resumed_on(&mut self, branch: &str, through: u64) {
         let history = self.read("session.history");
+        assert_eq!(history["params"]["branchId"], branch);
         self.reply(
             &history,
-            json!({"events":[],"through":8,"nextAfter":8,"done":true}),
+            json!({"events":[],"through":through,"nextAfter":through,"done":true}),
         );
-        self.no_pending_questions(8);
+        let question = self.read("session.question.pending");
+        assert_eq!(question["params"]["branchId"], branch);
+        self.reply(
+            &question,
+            json!({"branchId":branch,"through":through,"batches":[],"next":null}),
+        );
         let idle = self.read("session.idle");
-        self.reply(&idle, json!({"sequence":8}));
+        assert_eq!(idle["params"]["branchId"], branch);
+        self.reply(&idle, json!({"sequence":through}));
     }
     fn no_pending_questions(&mut self, through: u64) {
         let request = self.read("session.question.pending");
@@ -6009,6 +6039,87 @@ fn a_resumed_session_draws_the_adopted_model_and_effort() {
     daemon.join().unwrap();
 }
 
+/// The capability declaration a configuration states for `model_id`.
+fn effort_snapshot(model_id: &str, efforts: &[&str]) -> Value {
+    let mut capabilities = dim_agent_types::ModelCapabilities::with_limits(64_000, 2_048);
+    capabilities.reasoning = true;
+    json!({"target":{"providerId":"test","modelId":model_id},
+        "capabilities":capabilities,
+        "reasoning":{"supported":true,"effortOptions":efforts}})
+}
+
+/// A resumed Session folds the configuration of the line its cursor names: the
+/// attach reply's model is the root's (design §14), so a Session whose
+/// conversation is on a line shows the model that line adopted at or below its
+/// cursor, and only the root takes the reply's. The reply's cursor stays the
+/// shown line's, and the directory answers only for a server that does not
+/// carry the field.
+#[test]
+fn a_resumed_line_mode_session_folds_the_default_branchs_cursor() {
+    for (line, cursor, listed) in [
+        ("main", 8, "main"),
+        ("line-1", 5, "line-1"),
+        ("line-1", 5, "main"),
+    ] {
+        let home = Home::new();
+        let daemon = home.daemon(move |wire| {
+            wire.hello(&["session.branches"]);
+            let branches = wire.read("session.branches");
+            let mut entries = vec![json!({"branchId":"main","state":"open","head":8})];
+            if line != "main" {
+                entries.push(json!({"branchId":line,"parentBranchId":"main","branchPoint":1,"state":"open","head":8}));
+            }
+            wire.reply(&branches, json!({"defaultBranchId":listed,"branches":entries}));
+            let attach = wire.read("session.attach");
+            let mut record = attach_record(&attach);
+            record["defaultBranch"] = json!({"branchId":line,"sequence":cursor});
+            record["capabilitySnapshot"] = effort_snapshot("model", &["low", "high"]);
+            wire.reply(&attach, record);
+            let history = wire.read("session.history");
+            assert_eq!(history["params"]["branchId"], json!(line));
+            assert!(
+                history["params"].get("through").is_none(),
+                "the line's window starts from its head"
+            );
+            let mut event = configured_event(cursor - 1, "line-model", json!({}));
+            event["data"]["capability_snapshot"] =
+                effort_snapshot("line-model", &["none", "minimal"]);
+            wire.reply(
+                &history,
+                json!({"events":[event],"through":cursor,"nextAfter":cursor,"done":true}),
+            );
+            let idle = wire.read("session.idle");
+            assert_eq!(idle["params"]["branchId"], json!(line));
+            wire.reply(&idle, json!({"sequence":cursor}));
+            loop {
+                let request = wire.read_any();
+                match request["method"].as_str().unwrap() {
+                    "session.history" => {
+                        let through = request["params"]["through"].as_u64().unwrap_or(cursor);
+                        wire.reply(
+                            &request,
+                            json!({"events":[],"through":through,"nextAfter":through,"done":true}),
+                        );
+                    }
+                    other => panic!("unexpected {other}: {request}"),
+                }
+            }
+        });
+        let mut command = home.command();
+        command.args(["--resume", "session"]);
+        let mut terminal = Terminal::launch(command);
+        terminal.editor();
+        terminal.write(b"/effort\r");
+        terminal.until(match line {
+            "main" => "Reasoning effort choices: low, high",
+            _ => "Reasoning effort choices: none, minimal",
+        });
+        home.kill(&terminal);
+        terminal.wait();
+        daemon.join().unwrap();
+    }
+}
+
 /// An adoption written by another client reaches the label as it arrives.
 #[test]
 fn another_clients_adoption_redraws_the_model_label() {
@@ -10547,7 +10658,7 @@ fn tui_tasks_panel_stops_the_selected_command_or_member() {
         wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"req-other","sequence":20,"create_at":1,"type":"collaboration","name":"request","data":{"turn_id":"t","request_id":"r4","call_id":"call-4","target":{"kind":"agent","agent_id":"writer"},"prompt":"Check the docs"}}}));
         wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"del-other","sequence":21,"create_at":1,"type":"collaboration","name":"delivered","data":{"op_event_id":"req-other","status":"ok","agent_id":"writer","session_id":"other-member","input_event_id":"other-input"}}}));
         let stop = past_observations(wire, "session.stop");
-        assert_eq!(stop["params"], json!({"sessionId":"member","branchId":"main","reason":"stopped by the user"}));
+        assert_eq!(stop["params"], json!({"sessionId":"member","reason":"stopped by the user"}));
         wire.reply(&stop, json!({}));
         wire.notice("session.event", json!({"sessionId":"session","branchId":"main","event":{"id":"res-1","sequence":22,"create_at":1,"type":"collaboration","name":"result","data":{"request_event_id":"req-1","agent_id":"reviewer","session_id":"member","text":"","status":"cancelled","reason":"stopped by the user"}}}));
         let submit = past_observations(wire, "session.submit");

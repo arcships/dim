@@ -6,7 +6,7 @@ use crate::{
     client::Client,
     wire::{Configuration, ProviderCatalogSnapshot},
 };
-use dim_agent_types::{DEFAULT_BRANCH_ID, ModelPreferences};
+use dim_agent_types::ModelPreferences;
 use serde::Deserialize;
 use serde_json::json;
 
@@ -174,10 +174,12 @@ pub async fn preference(
 }
 
 /// Runs `text`, a configuration command line; `model` is the model the
-/// Session adopted, which the preference commands read choices for.
+/// Session adopted, which the preference commands read choices for, and
+/// `branch` is the line the command acts on.
 pub async fn run(
     client: &mut Client,
     session_id: &str,
+    branch: &str,
     model: Option<&Configuration>,
     text: &str,
 ) -> Result<Report> {
@@ -192,7 +194,7 @@ pub async fn run(
             let result: Configured = client
                 .typed(
                     "session.agent.update",
-                    json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"agentId":agent_id}),
+                    json!({"sessionId":session_id,"branchId":branch,"agentId":agent_id}),
                 )
                 .await?;
             lines.push(format!(
@@ -228,7 +230,7 @@ pub async fn run(
                 let result: Configured = client
                     .typed(
                         "session.model.update",
-                        json!({"sessionId":session_id,"branchId":DEFAULT_BRANCH_ID,"modelPreferences":preferences}),
+                        json!({"sessionId":session_id,"branchId":branch,"modelPreferences":preferences}),
                     )
                     .await?;
                 lines.push(format!(

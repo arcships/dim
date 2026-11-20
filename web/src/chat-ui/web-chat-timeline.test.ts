@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, createApp, defineComponent, h, nextTick, ref, shallowReactive, type App } from "vue"
+import { computed, createApp, defineComponent, h, nextTick, ref, shallowReactive, type App, type Ref } from "vue"
 import { createPinia, setActivePinia, type Pinia } from "pinia"
 import { createMemoryHistory, createRouter, type Router } from "vue-router"
 import type { ChatUiHost } from "@dimcode/chat-ui"
+import type { WebChatActions } from "./web-host"
 import { i18n } from "../i18n"
 import { Projection } from "../projection"
 import type { ApprovalRequest, PendingQuestion, SessionEvent } from "../rpc/protocol"
@@ -1071,17 +1072,18 @@ describe("Web ChatUiHost commands", () => {
   }
   const rows = project(recorded).rows
 
-  function setup(features: readonly string[] = HELLO_FEATURES, methods: readonly string[] = SESSION_METHODS, view: "loaded" | "missing" = "loaded") {
+  function setup(features: readonly string[] = HELLO_FEATURES, methods: readonly string[] = SESSION_METHODS, view: "loaded" | "missing" = "loaded", branch = "main") {
     const pinia = stores(features, view === "missing" ? null : { approvals: [approval], questions: [question], methods })
     const router = testRouter()
     const openBranch = vi.fn()
     const confirmFork = vi.fn(async () => true)
     let host!: ChatUiHost
+    let actions!: Ref<WebChatActions>
     const app = createApp({
       setup() {
-        host = createWebChatUiHost({
+        const created = createWebChatUiHost({
           sessionId: ref("s-1"),
-          branchId: ref("main"),
+          branchId: ref(branch),
           rows: computed(() => createRowMapper()(rows, "s-1")),
           running: ref(false),
           branchable: ref(true),
@@ -1089,13 +1091,15 @@ describe("Web ChatUiHost commands", () => {
           noticeText: () => "",
           confirmFork,
           openBranch,
-        }).host
+        })
+        host = created.host
+        actions = created.actions
         return () => null
       },
     })
     app.use(pinia).use(router).use(i18n).mount(document.createElement("div"))
     mounted.push(app)
-    return { host, chat: useChatStore(pinia), sessions: useSessionsStore(pinia), router, openBranch, confirmFork }
+    return { host, actions, chat: useChatStore(pinia), sessions: useSessionsStore(pinia), router, openBranch, confirmFork }
   }
 
   it("maps each supported command to its chat store action", async () => {
@@ -1136,6 +1140,17 @@ describe("Web ChatUiHost commands", () => {
     await expect(host.commands.approve("req-gone", "allow")).rejects.toThrow("That request is no longer waiting.")
     await expect(host.commands.answer("ask-1", [{ questionId: "q-pick", answer: "Maybe" }])).rejects.toThrow("“Maybe” is not an option of this question.")
     expect(answer).not.toHaveBeenCalled()
+  })
+
+  it("refuses a fork of a centre that is not the root, so a line's cut stays its own", async () => {
+    const { host, actions, chat, confirmFork } = setup(HELLO_FEATURES, SESSION_METHODS, "loaded", "worker")
+    const storeFork = vi.spyOn(chat, "fork").mockResolvedValue("s-2")
+    const availability = actions.value.fork
+    expect(availability.available).toBe(false)
+    expect(availability.available ? undefined : availability.reason).toBe("A fork copies the main line; branch opens a line here instead.")
+    await expect(host.commands.fork("user-9")).rejects.toThrow("A fork copies the main line")
+    expect(confirmFork).not.toHaveBeenCalled()
+    expect(storeFork).not.toHaveBeenCalled()
   })
 
   it("approves through the built-in approval.respond, which hello does not announce", async () => {

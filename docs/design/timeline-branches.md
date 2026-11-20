@@ -662,6 +662,13 @@ Session never changes it, while `running` and `updatedAt` follow the default bra
 `updatedAt` in its own transaction from the new default's latest activity, and the switch itself counts as none, so an
 idle move never leaves the row recent by the line the Session left.
 
+The reply's `model`, `modelPreferences` and `capabilitySnapshot` stay the root's adopted configuration, the watermark a
+Session on its root has always read. A client that follows the move pairs the configuration with the cursor instead of
+mixing the two: it takes the configuration of the line the cursor names, so a Session whose conversation is on a line
+shows the model that line adopted at or below its cursor, and the reply's record seeds the root alone. A reply that
+carries no `defaultBranch` names the root, because a server without the field cannot move the default branch, so
+its record is the Session's one model and every client keeps using it.
+
 The directory read performs no history I/O. Its display fields are null or absent.
 `session.branch.get {sessionId, branchId}` (v3, separately listed in
 `hello.features`) reads one line's directory record and display fields:
