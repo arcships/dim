@@ -17,7 +17,7 @@ use crate::task::{
 };
 use crate::{Evaluation, catalog_category, host_target, is_understand};
 use base64::{Engine, engine::general_purpose::STANDARD};
-use dim_agent_capabilities::file_storage::{EntryKind, FileReader};
+use dim_agent_capabilities::file_storage::{EntryKind, FsHost, OpenRead};
 use dim_agent_capabilities::host::{
     ModalityConnection, ModalityConnectionHost, ModalityTarget, ModelSelectionHost,
     SelectableModelsHost,
@@ -27,7 +27,7 @@ use dim_agent_capabilities::host_platform::{
 };
 use dim_agent_capabilities::methods::{Progress, RpcError};
 use dim_agent_types::ModelId;
-use dim_app_server::plugin_files::PluginFileTransactions;
+use dim_app_server::plugin_files::FileScope;
 use dim_app_server::settings::SettingsService;
 use jiff::{SignedDuration, Timestamp};
 use rutis::Ctx;
@@ -465,7 +465,8 @@ pub struct TaskResultReply {
 /// The plugin's shared state: everything the scheduler, the methods and the
 /// running tasks read.
 pub(crate) struct Shared {
-    pub(crate) files: Arc<PluginFileTransactions>,
+    pub(crate) files: Arc<FileScope>,
+    fs: Arc<FsHost>,
     pub(crate) settings: Arc<SettingsService>,
     pub(crate) selection: Arc<ModelSelectionHost>,
     pub(crate) selectable: Arc<SelectableModelsHost>,
@@ -490,7 +491,8 @@ impl Shared {
         reason = "one parameter per host handle the modality part is assembled from"
     )]
     pub(crate) fn new(
-        files: Arc<PluginFileTransactions>,
+        files: Arc<FileScope>,
+        fs: Arc<FsHost>,
         settings: Arc<SettingsService>,
         selection: Arc<ModelSelectionHost>,
         selectable: Arc<SelectableModelsHost>,
@@ -501,6 +503,7 @@ impl Shared {
     ) -> Self {
         Self {
             files,
+            fs,
             settings,
             selection,
             selectable,
@@ -1431,25 +1434,34 @@ impl ModalityTasks {
         else {
             return Err(not_found(format!("Unknown result file {}", params.name)));
         };
-        let length = reader.len().min(file.bytes);
-        let mut cursor = params.offset;
-        let mut data = Vec::new();
-        while cursor < length && (data.len() as u64) < params.length {
-            let want = (params.length - data.len() as u64).min(length - cursor);
-            let chunk = reader
-                .read_at(cursor, want as usize, cancel)
-                .await
-                .map_err(|error| storage_error(error.to_string()))?;
-            if chunk.is_empty() {
-                break;
+        let result: Result<TaskResultReply, RpcError> = async {
+            let length = reader.size.min(file.bytes);
+            let mut cursor = params.offset;
+            let mut data = Vec::new();
+            while cursor < length && (data.len() as u64) < params.length {
+                let want = (params.length - data.len() as u64).min(length - cursor);
+                let chunk = self
+                    .shared
+                    .fs
+                    .read_at(reader.read_id.clone(), cursor, want as usize, cancel)
+                    .await
+                    .map_err(|error| storage_error(error.to_string()))?;
+                if chunk.is_empty() {
+                    break;
+                }
+                cursor += chunk.len() as u64;
+                data.extend(chunk);
             }
-            cursor += chunk.len() as u64;
-            data.extend(chunk);
+            Ok(TaskResultReply {
+                data_base64: STANDARD.encode(&data),
+                eof: cursor >= length,
+            })
         }
-        Ok(TaskResultReply {
-            data_base64: STANDARD.encode(&data),
-            eof: cursor >= length,
-        })
+        .await;
+        let closed = self.shared.fs.close_read(reader.read_id).await;
+        let reply = result?;
+        closed.map_err(|error| storage_error(error.to_string()))?;
+        Ok(reply)
     }
 
     /// The per-client submission lock.
@@ -2478,7 +2490,7 @@ impl Shared {
         &self,
         work_name: &str,
         name: &str,
-    ) -> Result<Option<FileReader>, String> {
+    ) -> Result<Option<OpenRead>, String> {
         self.files
             .open_read(&format!("{work_name}/{name}"))
             .await
@@ -2637,9 +2649,9 @@ impl Shared {
                 }
             };
             if let Some(limit) = cap {
-                total = total.saturating_add(source.len());
+                total = total.saturating_add(source.size);
                 if total > limit {
-                    drop(source);
+                    let _ = self.fs.close_read(source.read_id).await;
                     self.discard_results(&record.task_id, &written).await;
                     self.fail_settled(
                         slot,
@@ -2652,13 +2664,21 @@ impl Shared {
                 }
                 self.artifacts.after_count(&work, &file.name);
             }
-            let (bytes, sha256) = match task::write_result(
+            let read_id = source.read_id;
+            let result = task::write_result(
                 &self.files,
                 &record.task_id,
                 &file.name,
-                ReaderSource::new(source),
+                ReaderSource::new(self.fs.clone(), read_id.clone()),
             )
-            .await
+            .await;
+            if result.is_ok() {
+                written.push(file.name.clone());
+            }
+            let closed = self.fs.close_read(read_id).await;
+            let (bytes, sha256) = match result
+                .map_err(|e| e.to_string())
+                .and_then(|result| closed.map(|()| result).map_err(|e| e.to_string()))
             {
                 Ok(result) => result,
                 Err(error) => {
@@ -2668,7 +2688,6 @@ impl Shared {
                     return;
                 }
             };
-            written.push(file.name.clone());
             results.push(ResultFile {
                 name: file.name,
                 media_type: file.media_type,
@@ -2733,10 +2752,15 @@ impl Shared {
             .await
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "The OCR helper wrote no readable result".to_owned())?;
-        let parsed = tokio::task::spawn_blocking(move || {
-            dim_ocr::read_pages(ReaderSource::new(reader), MAX_DATA_TEXT_BYTES)
-        })
-        .await;
+        let read_id = reader.read_id;
+        let source = ReaderSource::new(self.fs.clone(), read_id.clone());
+        let parsed =
+            tokio::task::spawn_blocking(move || dim_ocr::read_pages(source, MAX_DATA_TEXT_BYTES))
+                .await;
+        self.fs
+            .close_read(read_id)
+            .await
+            .map_err(|e| e.to_string())?;
         let Ok(Ok(pages)) = parsed else {
             return Err("The OCR helper wrote no readable result".to_owned());
         };
@@ -2864,20 +2888,22 @@ enum OutputData {
     ResultJson,
 }
 
-/// A synchronous [`Read`] over a pinned [`FileReader`]: each read blocks the
+/// A synchronous [`Read`] over a pinned file: each read blocks the
 /// calling thread on the storage's asynchronous read. Only used inside
 /// `spawn_blocking`, never on a runtime worker.
 struct ReaderSource {
-    reader: FileReader,
+    fs: Arc<FsHost>,
+    read_id: String,
     handle: tokio::runtime::Handle,
     cancel: CancellationToken,
     offset: u64,
 }
 
 impl ReaderSource {
-    fn new(reader: FileReader) -> Self {
+    fn new(fs: Arc<FsHost>, read_id: String) -> Self {
         Self {
-            reader,
+            fs,
+            read_id,
             handle: tokio::runtime::Handle::current(),
             cancel: CancellationToken::new(),
             offset: 0,
@@ -2892,7 +2918,12 @@ impl Read for ReaderSource {
         }
         let chunk = self
             .handle
-            .block_on(self.reader.read_at(self.offset, buffer.len(), &self.cancel))
+            .block_on(self.fs.read_at(
+                self.read_id.clone(),
+                self.offset,
+                buffer.len(),
+                &self.cancel,
+            ))
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let count = chunk.len().min(buffer.len());
         buffer[..count].copy_from_slice(&chunk[..count]);

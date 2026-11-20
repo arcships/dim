@@ -967,11 +967,32 @@ impl FullScreen {
         }
         let hovered = self.hover(doc);
         if self.overlay_open {
-            return match event.kind {
-                MouseKind::WheelUp => MouseOutcome::Overlay(-1),
-                MouseKind::WheelDown => MouseOutcome::Overlay(1),
-                _ => MouseOutcome::Ignored,
-            };
+            match event.kind {
+                MouseKind::WheelUp => {
+                    self.press = None;
+                    return MouseOutcome::Overlay(-1);
+                }
+                MouseKind::WheelDown => {
+                    self.press = None;
+                    return MouseOutcome::Overlay(1);
+                }
+                MouseKind::Press
+                    if column < content_width(self.size.0 as usize)
+                        && self.task_rows.contains_key(&row) => {}
+                MouseKind::Release
+                    if matches!(
+                        self.press,
+                        Some(Press {
+                            spot: MouseOutcome::Task(_),
+                            ..
+                        })
+                    ) => {}
+                MouseKind::Move => return MouseOutcome::Ignored,
+                _ => {
+                    self.press = None;
+                    return MouseOutcome::Ignored;
+                }
+            }
         }
         match event.kind {
             MouseKind::Move => {
@@ -1297,6 +1318,10 @@ impl FullScreen {
             self.press = None;
         }
         self.model_label = model_label;
+        let covered = frame.overlay.as_ref().map_or(0..0, |overlay| {
+            let (_, y) = overlay_origin(overlay, cols, rows, self.view_rows);
+            y..y + overlay.rows.len()
+        });
         self.task_rows = frame
             .task_rows
             .iter()
@@ -1305,6 +1330,7 @@ impl FullScreen {
                     .filter(|row| *row < dock_rows)
                     .map(|row| (self.view_rows + row, task.clone()))
             })
+            .filter(|(row, _)| !covered.contains(row))
             .collect();
         let thought_rows: HashMap<usize, PanelThought> = frame
             .thought_rows
@@ -1363,7 +1389,10 @@ impl FullScreen {
         self.overlay_open = dim;
         if dim {
             self.cancel_click();
-            self.press = None;
+            self.press = self
+                .press
+                .take()
+                .filter(|press| matches!(press.spot, MouseOutcome::Task(_)));
             self.thumb_drag = None;
             self.clicks = None;
             self.clicked = None;
