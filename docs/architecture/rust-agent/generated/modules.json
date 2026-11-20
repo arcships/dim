@@ -34732,13 +34732,11 @@
       "from": "dim_app_server::storage::files",
       "to": "dim_agent_capabilities::file_storage",
       "references": [
-        "path FileStorage",
         "path FileStorageError",
         "path FileStorageError::Cancelled",
         "path FileStorageError::Closed",
         "path FileStorageError::Io",
         "path dim_agent_capabilities::file_storage::EntryKind::File",
-        "use dim_agent_capabilities::file_storage::FileStorage",
         "use dim_agent_capabilities::file_storage::FileStorageError"
       ]
     },
