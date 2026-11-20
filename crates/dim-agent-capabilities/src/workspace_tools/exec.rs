@@ -1631,15 +1631,15 @@ fn high_cost_target(raw: &str, cwd: &str, home: &str) -> bool {
 }
 
 /// TS `path.ts` resolution of the `cwd` argument.
-fn resolve_cwd(value: &str, cwd: &Path, platform: &HostPlatform) -> PathBuf {
+fn resolve_cwd(value: &str, cwd: &Path, home: &Path, os: Os) -> PathBuf {
     let expanded = if value == "~" {
-        platform.home.clone()
+        home.to_owned()
     } else if let Some(rest) = value
         .strip_prefix("~/")
         .or_else(|| value.strip_prefix("~\\"))
     {
-        platform.home.join(rest)
-    } else if platform.os == Os::Windows {
+        home.join(rest)
+    } else if os == Os::Windows {
         PathBuf::from(correct_windows_path(value))
     } else {
         PathBuf::from(value)
@@ -2657,7 +2657,7 @@ pub(super) async fn execute(
     };
     let platform = &tools.platform;
     let cwd = match &input.cwd {
-        Some(value) => resolve_cwd(value, &tools.cwd, platform),
+        Some(value) => resolve_cwd(value, &tools.cwd, &tools.execution_home, tools.execution_os),
         None => tools.cwd.clone(),
     };
     let (spec, shell) = match platform.build_process_spec(&input.command, &cwd).await {
@@ -2689,9 +2689,11 @@ pub(super) async fn execute(
         ));
     }
     let cwd_text = cwd.to_string_lossy().into_owned();
-    if let Some(refused) =
-        check_heavy_search(&input.command, &cwd_text, &platform.home.to_string_lossy())
-    {
+    if let Some(refused) = check_heavy_search(
+        &input.command,
+        &cwd_text,
+        &tools.execution_home.to_string_lossy(),
+    ) {
         return Ok(refused);
     }
     let task_id = format!("exec-{}", uuid::Uuid::new_v4());

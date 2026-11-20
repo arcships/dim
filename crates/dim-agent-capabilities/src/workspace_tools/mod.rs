@@ -146,6 +146,8 @@ pub(crate) struct WorkspaceTools {
     facts: Key<crate::file_access::FileAccessFacts>,
     platform: Arc<HostPlatform>,
     exec_definition: ToolDefinition,
+    execution_home: PathBuf,
+    execution_os: crate::host_platform::Os,
     cwd: PathBuf,
     output_dir: PathBuf,
     /// SessionStore's output ownership (ADR 013); absent in hosts without
@@ -391,7 +393,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 .config
                 .boundary
                 .as_ref()
-                .map_or(info.home, |boundary| boundary.home.clone());
+                .map_or_else(|| info.home.clone(), |boundary| boundary.home.clone());
             let tools = Arc::new(WorkspaceTools {
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
@@ -408,6 +410,8 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
                 exec_definition,
+                execution_home: info.home,
+                execution_os: info.os,
                 platform,
                 tree,
                 lifecycle: CancellationToken::new(),

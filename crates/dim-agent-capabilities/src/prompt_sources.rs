@@ -441,6 +441,7 @@ impl PromptSourcesBranch {
 }
 
 struct Sources {
+    home: PathBuf,
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
     today: Today,
@@ -474,7 +475,7 @@ impl LoadPrompt for Sources {
                 PROJECT_INSTRUCTIONS | USER_INSTRUCTIONS => {
                     let body = load_instructions(
                         &self.config.cwd,
-                        &self.platform.home,
+                        &self.home,
                         target.source == PROJECT_INSTRUCTIONS,
                     )
                     .await?;
@@ -602,6 +603,7 @@ impl DynPlugin for PromptSourcesPlugin {
                 }
             }
             let sources: Arc<dyn LoadPrompt> = Arc::new(Sources {
+                home: platform.info().await.home,
                 platform,
                 config,
                 today: self.today.clone(),

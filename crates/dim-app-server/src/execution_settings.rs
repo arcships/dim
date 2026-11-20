@@ -135,7 +135,7 @@ impl DynPlugin for ExecutionBackendPlugin {
                         match method.as_str() {
                             "host.execution.backend" => {
                                 let _: Empty = params(value)?;
-                                let (available, reason) = match platform.sandbox_backend() {
+                                let (available, reason) = match platform.info().await.backend {
                                     SandboxBackend::Available => (true, None),
                                     SandboxBackend::Unavailable { reason } => (false, Some(reason)),
                                 };

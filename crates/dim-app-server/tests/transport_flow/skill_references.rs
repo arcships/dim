@@ -40,7 +40,7 @@ impl DynPlugin for CatalogHost {
             let catalog = skills::SkillsCatalogPlugin::mount(
                 ctx,
                 (
-                    self.platform.clone(),
+                    self.platform.info().await.home,
                     Arc::new(SkillSettingsHost(self.settings.clone())),
                 ),
             )

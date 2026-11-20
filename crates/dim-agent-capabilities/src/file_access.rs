@@ -140,7 +140,7 @@ pub fn install(builder: &mut AgentBuilder) {
 
 struct Facts {
     config: Arc<SessionConfig>,
-    platform: Arc<HostPlatform>,
+    platform_roots: Vec<PathBuf>,
     files: Arc<SessionFiles>,
     grants: Arc<SessionGrantsHost>,
     worktrees: Arc<Worktrees>,
@@ -174,7 +174,6 @@ impl ReadFileAccessFacts for Facts {
             let mut facts = FileFacts {
                 workspace: path.starts_with(&workspace),
                 system: self
-                    .platform
                     .platform_roots
                     .iter()
                     .any(|root| path.starts_with(root)),
@@ -268,7 +267,7 @@ impl DynPlugin for FileAccessFactsPlugin {
                 self.service.clone(),
                 Arc::new(FileAccessFacts(Arc::new(Facts {
                     config,
-                    platform,
+                    platform_roots: platform.info().await.platform_roots,
                     files: ctx.require_at(&self.files)?,
                     grants: ctx.require_at(&self.grants)?,
                     worktrees,
