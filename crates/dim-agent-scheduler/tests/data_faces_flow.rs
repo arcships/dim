@@ -23,7 +23,7 @@ impl DynPlugin for Probe {
             TypeKey::of::<ScheduleJobs>(),
             TypeKey::of::<Wakeups>(),
             TypeKey::of::<Loops>(),
-            TypeKey::of::<dim_app_server::plugin_files::PluginFileTransactions>(),
+            TypeKey::of::<dim_app_server::plugin_files::PluginFiles>(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -151,13 +151,15 @@ impl Rig {
     async fn hold_loops_file(&self) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
         let files = self
             .ctx
-            .require::<dim_app_server::plugin_files::PluginFileTransactions>()
+            .require::<dim_app_server::plugin_files::PluginFiles>()
+            .unwrap()
+            .open(&self.ctx)
             .unwrap();
         let (release, held) = std::sync::mpsc::channel();
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             files
-                .transact("scheduler/loops.json", move |_| {
+                .with_lock("scheduler/loops.json", move |_| {
                     entered.send(()).unwrap();
                     held.recv_timeout(Duration::from_secs(30)).unwrap();
                     (None, ())
@@ -172,13 +174,15 @@ impl Rig {
     async fn hold_wakeup_file(&self) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
         let files = self
             .ctx
-            .require::<dim_app_server::plugin_files::PluginFileTransactions>()
+            .require::<dim_app_server::plugin_files::PluginFiles>()
+            .unwrap()
+            .open(&self.ctx)
             .unwrap();
         let (release, held) = std::sync::mpsc::channel();
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             files
-                .transact("scheduler/wakeups.json", move |_| {
+                .with_lock("scheduler/wakeups.json", move |_| {
                     entered.send(()).unwrap();
                     held.recv_timeout(Duration::from_secs(30)).unwrap();
                     (None, ())

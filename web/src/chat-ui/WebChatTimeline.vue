@@ -12,9 +12,11 @@ import {
   type ChatUiTimelineUserMessageMarker,
 } from "@dimcode/chat-ui"
 import BrandMark from "../components/BrandMark.vue"
+import ConfirmDialog from "../components/ConfirmDialog.vue"
 import { retryAnnouncement, retrySeconds, retryStatus } from "../failures"
 import type { TimelineRow } from "../projection"
 import type { ModelRetryProgress } from "../rpc/protocol"
+import { useToastStore } from "../stores/toast"
 import { WebErrorBoundary, WebTimelineRow, WebUserMessageRail, createLabels } from "./components"
 import { WEB_TIMELINE, icons } from "./primitives"
 import { createRowMapper } from "./rows"
@@ -22,6 +24,7 @@ import { createWebChatUiHost } from "./web-host"
 
 const props = defineProps<{
   sessionId?: string
+  branchId: string
   earlier?: boolean
   loadingEarlier?: boolean
   historyError?: string
@@ -68,14 +71,52 @@ function readTheme(): void {
 }
 
 const labels = computed(() => createLabels())
-const host = createWebChatUiHost({ sessionId: toRef(props, "sessionId"), rows, running: toRef(props, "running"), noticeText })
+const toast = useToastStore()
+const forkConfirm = ref<InstanceType<typeof ConfirmDialog>>()
+const { host, actions } = createWebChatUiHost({
+  sessionId: toRef(props, "sessionId"),
+  branchId: toRef(props, "branchId"),
+  rows,
+  running: toRef(props, "running"),
+  branchable: computed(() => props.branchable === true),
+  rowByKey,
+  noticeText,
+  confirmFork: async text => await forkConfirm.value?.open(text, { confirmLabel: t("fork.confirmLabel") }) === true,
+  openBranch: (text, cut) => emit("branch", text, cut),
+})
+/**
+ * While the line runs, the user messages no turn end has settled: the running
+ * turn's own, steered into it, or held for the next. A notice or error inside
+ * the turn splits it into several display rows, so the renderer's latest-row
+ * check alone does not find them.
+ */
+const runningUserMessageIds = computed(() => {
+  const ids = new Set<string>()
+  if (!props.running) return ids
+  for (const row of props.rows) if (row.kind === "user" && !row.settled) ids.add(row.key)
+  return ids
+})
 provide(CHAT_UI_HOST, host)
 provide(WEB_TIMELINE, {
+  runningUserMessageIds,
   rowByKey,
   isDark,
   labels,
   openLine: branchId => emit("openLine", branchId),
+  actions,
+  quotable: toRef(props, "quotable"),
+  quote: text => emit("quote", text),
 })
+
+/** Runs a timeline action; a refusal or failure is shown, never swallowed. */
+function act(command: Promise<void>): void {
+  command.catch((cause: unknown) => toast.push({ tone: "danger", title: cause instanceof Error ? cause.message : String(cause) }))
+}
+
+/** The surface types its `fork-message` payload `unknown`; the row it forwards sends the forked message's id. */
+function forkMessage(message: unknown): void {
+  if (typeof message === "object" && message !== null && "id" in message && typeof message.id === "string") act(host.commands.fork(message.id))
+}
 
 const shell = ref<HTMLElement>()
 const railHost = ref<HTMLElement | null>(null)
@@ -234,7 +275,7 @@ const surfaceProps = computed<Omit<ChatUiPlainTimelineSurfaceProps, "window">>((
       searchMatchesBySource: {},
       elapsedNowMs: undefined,
       presentationActive: true,
-      readOnly: true,
+      readOnly: !host.capabilities.value.interactive,
     },
     diagnostics: {
       prependAnchor: null,
@@ -340,6 +381,8 @@ onBeforeUnmount(() => {
       @jump-to-bottom="jumpToLatest"
       @marker-click="jumpTo"
       @rail-wheel="onRailWheel"
+      @fork-message="forkMessage"
+      @branch-message="act(host.commands.branch($event.id))"
     />
     <Teleport v-if="running && retry !== undefined && activitySlot" :to="activitySlot">
       <span class="tabular-nums" aria-hidden="true" data-testid="web-chat-retry">{{ retryText }}</span>
@@ -357,6 +400,7 @@ onBeforeUnmount(() => {
       @pointerdown.prevent
       @click="quoteSelection"
     >{{ t("message.quote") }}</UButton>
+    <ConfirmDialog ref="forkConfirm" />
   </div>
 </template>
 

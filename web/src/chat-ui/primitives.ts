@@ -1,6 +1,7 @@
 import { Text, cloneVNode, defineComponent, h, inject, isVNode, type Component, type ComputedRef, type InjectionKey, type Ref, type Slots, type VNode } from "vue"
 import type { TimelineRow as ProjectionRow } from "../projection"
 import type { WebTimelineLabels } from "./components"
+import type { WebChatActions } from "./web-host"
 import WebIcon, { ICON } from "./WebIcon.vue"
 
 /** What the Web renderers read from the timeline that mounts them. */
@@ -9,6 +10,12 @@ export type WebTimelineContext = {
   isDark: Readonly<Ref<boolean>>
   labels: ComputedRef<WebTimelineLabels>
   openLine: (branchId: string) => void
+  actions: Readonly<Ref<WebChatActions>>
+  /** The composer is shown, so a message can be quoted into it. */
+  quotable: Readonly<Ref<boolean>>
+  quote: (text: string) => void
+  /** The user messages whose turn is still running: no cut before them is a rest point yet. */
+  runningUserMessageIds: Readonly<Ref<ReadonlySet<string>>>
 }
 
 export const WEB_TIMELINE: InjectionKey<WebTimelineContext> = Symbol("web-timeline")

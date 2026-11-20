@@ -92,22 +92,23 @@ flowchart LR
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p73
   p3 -->|"dim_app_server::control::ProcessActivity"| p73
   p10 -->|"dim_app_server::methods::ManagementMethods"| p73
-  p14 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p73
+  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p73
   p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p73
   p73 -->|"dim_event_hub::bridge::EventHub"| p77
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p72
   p3 -->|"dim_app_server::control::ProcessActivity"| p72
   p10 -->|"dim_app_server::methods::ManagementMethods"| p72
-  p14 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p72
+  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p72
   p18 -->|"dim_app_server::settings::SettingsService"| p72
   p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p72
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p71
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p70
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p69
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p68
   p17 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p68
   p17 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p68
   p10 -->|"dim_app_server::methods::ManagementMethods"| p68
-  p14 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p68
+  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p68
   p18 -->|"dim_app_server::settings::SettingsService"| p68
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p67
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p66
