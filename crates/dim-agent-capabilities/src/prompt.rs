@@ -24,6 +24,16 @@ use uuid::Uuid;
 type Key = (String, PromptScope);
 type LoadedPrompts = Vec<(PromptSourceTarget, Option<PromptEntry>)>;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum PromptConfigurationRequest {
+    Targets(ConfigureUpdate),
+    Loaded {
+        sources: Vec<(PromptSourceTarget, Option<PromptEntry>)>,
+        model: Option<ModelSelection>,
+    },
+}
+
 fn validate_entry(target: &PromptSourceTarget, entry: &PromptEntry) -> Result<()> {
     if entry.source != target.source || entry.scope != target.scope {
         return Err(AgentError::InvalidInput(format!(
@@ -666,7 +676,7 @@ impl Prompt {
     /// Adopts frozen source values and an optional model through the existing
     /// configure command. Each entry has its target's source and scope.
     pub async fn configure_loaded(
-        self: Arc<Self>,
+        &self,
         model: Option<ModelSelection>,
         sources: Vec<(PromptSourceTarget, Option<PromptEntry>)>,
     ) -> Result<ConfigureOutcome> {
@@ -1062,8 +1072,25 @@ impl DynPlugin for PromptPlugin {
         })
     }
 }
+#[rutis::service]
 impl Prompt {
-    pub(crate) async fn initial_completion(&self) -> Result<()> {
+    pub async fn configure(&self, request: PromptConfigurationRequest) -> Result<ConfigureOutcome> {
+        match request {
+            PromptConfigurationRequest::Targets(update) => self.submit(update, None).await,
+            PromptConfigurationRequest::Loaded { sources, model } => {
+                self.configure_loaded(model, sources).await
+            }
+        }
+    }
+
+    pub fn adopted_configuration(
+        &self,
+        _request: crate::port_faces::Empty,
+    ) -> Option<ModelConfiguration> {
+        self.snapshot.subscribe().borrow().configuration.clone()
+    }
+
+    pub async fn initial_completion(&self, _request: crate::port_faces::Empty) -> Result<()> {
         let mut opened = self.opened.subscribe();
         loop {
             if let Some(result) = opened.borrow_and_update().clone() {
@@ -1076,7 +1103,9 @@ impl Prompt {
             }
         }
     }
+}
 
+impl Prompt {
     /// Delivers what the Session's sources hold now, compared with what this
     /// branch already has. A new Session also adopts its model.
     async fn open(&self, event: &AgentEvent, mut current: PromptSnapshot) -> Result<()> {

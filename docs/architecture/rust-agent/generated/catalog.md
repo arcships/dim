@@ -114,7 +114,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `fileReads` | branch | FileReads | internal(hot-path) | — |
 | `inputQueue` | branch | InputQueue | data | `submit` async, `withdraw` async |
 | `permission` | branch | Permission | data | `check` async |
-| `prompt` | branch | Prompt | internal(hot-path) | — |
+| `prompt` | branch | Prompt | data | `adoptedConfiguration` async, `configure` async, `initialCompletion` async |
 | `promptSourcesBranch` | branch | PromptSourcesBranch | internal(hot-path) | — |
 | `skillsBranch` | branch | SkillsBranch | data | `list` sync |
 | `timeline` | branch | BranchScope | data | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `query` async, `sequence` async |

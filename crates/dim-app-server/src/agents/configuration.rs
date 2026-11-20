@@ -3,9 +3,8 @@ use crate::connection::{configuration_outcome, port_error};
 use dim_agent_capabilities::{
     host::ModelSelectionRequest,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    prompt::Prompt,
+    prompt::{Prompt, PromptConfigurationRequest},
     prompt_sources,
-    prompt_state::PromptSnapshot,
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{Names, PromptSourceTarget};
@@ -92,9 +91,9 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
     let Params { branch_id, .. } = params(value)?;
     let agent_id = tree
         .get(&branch_id)?
-        .get::<PromptSnapshot>()
-        .ok_or_else(RpcError::reloading)?
-        .configuration
+        .service::<Prompt>()
+        .map_err(|_| RpcError::reloading())?
+        .adopted_configuration(Default::default())
         .and_then(|configuration| configuration.metadata)
         .and_then(|metadata| metadata.agent_id);
     reply(Answer { agent_id })
@@ -155,9 +154,9 @@ async fn adopt_profile(
         // A profile without a model keeps the adopted configuration; it is
         // materialized so the configuration can carry the profile's record.
         None => branch
-            .get::<PromptSnapshot>()
-            .ok_or_else(RpcError::reloading)?
-            .configuration
+            .service::<Prompt>()
+            .map_err(|_| RpcError::reloading())?
+            .adopted_configuration(Default::default())
             .map(|configuration| ModelSelection {
                 provider_id: configuration.provider_id,
                 model_id: configuration.model_id,
@@ -182,9 +181,13 @@ async fn adopt_profile(
         scope: scope.clone(),
     };
     let entry = prompt_sources::session_entry(profile.system_prompt, scope);
-    let adoption = branch
-        .service::<Prompt>()?
-        .configure_loaded(model, vec![(target, entry)]);
+    let prompt = branch.service::<Prompt>()?;
+    let adoption = prompt
+        .as_ref()
+        .configure(PromptConfigurationRequest::Loaded {
+            model,
+            sources: vec![(target, entry)],
+        });
     tokio::select! {
         result = adoption => reply(json!({"outcome": configuration_outcome(result?)?})),
         _ = cancel.cancelled() => Err(RpcError::interrupted()),

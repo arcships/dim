@@ -594,3 +594,48 @@ async fn node_agent_loop_observes_idle_and_admits_the_native_compaction_command(
     server.shutdown();
     server.join().await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_prompt_adopts_frozen_content_in_the_native_snapshot() {
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"branch-prompt","name":parts.anchor.parent().unwrap().join("fixtures/branch-prompt.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("BranchPromptFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!([])).await;
+    let reply = client
+        .rpc("session.promptfixture.update", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    let snapshot = agent
+        .get_session(&id)
+        .unwrap()
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    assert_eq!(reply["result"]["outcome"], "adopted");
+    assert_eq!(
+        reply["result"]["modelId"],
+        json!(snapshot.configuration.map(|model| model.model_id))
+    );
+    assert!(
+        snapshot
+            .entries
+            .values()
+            .any(|entry| entry.source == "fixture" && entry.body == "frozen fixture content")
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

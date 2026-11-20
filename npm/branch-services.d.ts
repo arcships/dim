@@ -434,6 +434,107 @@ export interface InitialPromptConfiguration {
   get(): Promise<ConfigureUpdate | null>
 }
 
+export type PromptDelivery =
+  | /** Part of the system prompt. */ "system"
+  | /** A rule delivered as a `dim-rule` input. */ "context"
+  | /** State delivered as a `dim-state` input. */ "state"
+
+export interface PromptEntry {
+  source: string
+  version: string
+  body: string
+  scope: PromptScope
+  delivery: PromptDelivery
+  order: number
+}
+
+export type PromptConfigurationRequest =
+  | ConfigureUpdate
+  | { sources: [PromptSourceTarget, PromptEntry | null][]; model?: ModelSelection | null }
+
+export type ConfigureOutcome = "unchanged" | "adopted" | "superseded"
+
+/** The request of an operation that takes none: the documented `{}`. */
+export interface Empty {
+}
+
+export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+
+/**
+ * A tool input schema.
+ *
+ * Deserialization accepts the JSON Schema forms an MCP server may send and
+ * stores the canonical shape the v22 format defines: a `type` array of one
+ * name becomes that name, two or more names become `anyOf` branches (under
+ * `allOf` when the node already has an `anyOf`), and a boolean subschema
+ * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
+ * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
+ * walked. A rejected node's error names its path under `inputSchema`.
+ */
+export type JsonSchema = {
+  type?: SchemaType | null
+  properties?: Record<string, JsonSchema> | null
+  items?: JsonSchema | null
+  required?: string[] | null
+  enum?: import('./plugin.js').BridgeJsonValue[] | null
+  description?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ToolSource = "static" | "builtin" | "extension" | "dynamic"
+
+export type ToolMetadata = {
+  version?: string | null
+  author?: string | null
+  docsUrl?: string | null
+  sourcePluginId?: string | null
+  mcpServerId?: string | null
+  mcpOriginalToolName?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ToolFilePathSelector = "path" | "affectedPaths"
+
+export interface ToolPreExecutePaths {
+  selector: ToolFilePathSelector
+}
+
+export interface ToolFileChangeDeclaration {
+  preExecutePaths?: ToolPreExecutePaths | null
+  postExecutePaths?: ToolFilePathSelector | null
+}
+
+export interface ToolDefinition {
+  name: string
+  description: string
+  inputSchema: JsonSchema
+  source: ToolSource
+  risk?: string | null
+  metadata?: ToolMetadata | null
+  fileChanges?: ToolFileChangeDeclaration | null
+}
+
+export interface ToolSourceVersion {
+  key: string
+  version: string
+}
+
+export interface ModelConfiguration {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  tools?: ToolDefinition[] | null
+  toolSources?: ToolSourceVersion[]
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
+}
+
+export interface Prompt {
+  /** @throws {AgentErrorThrown} */
+  configure(request: PromptConfigurationRequest): Promise<ConfigureOutcome>
+  adoptedConfiguration(request: Empty): Promise<ModelConfiguration | null>
+  /** @throws {AgentErrorThrown} */
+  initialCompletion(request: Empty): Promise<void>
+}
+
 /**
  * The operator's reply-language choices, by their stable wire codes. The
  * names are the ones the operator selects, named in English for the prompt
@@ -1005,7 +1106,7 @@ export type SessionsError =
   | { code: "publication_unknown"; message: string }
   | { code: "failed"; message: string }
 
-export interface Empty {
+export interface Empty2 {
 }
 
 /** Read-only policy access through the stable Agents directory. */
@@ -1019,7 +1120,7 @@ export interface SessionPermissions {
    * Reads the current host bound without creating or choosing a Session.
    * @throws {SessionsErrorThrown}
    */
-  permissionDefaults(request: Empty): Promise<import('./plugin.js').PermissionPolicy>
+  permissionDefaults(request: Empty2): Promise<import('./plugin.js').PermissionPolicy>
 }
 
 /**
@@ -1094,28 +1195,6 @@ export interface McpSessionState {
   catalogError?: string | null
   closed: boolean
 }
-
-export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
-
-/**
- * A tool input schema.
- *
- * Deserialization accepts the JSON Schema forms an MCP server may send and
- * stores the canonical shape the v22 format defines: a `type` array of one
- * name becomes that name, two or more names become `anyOf` branches (under
- * `allOf` when the node already has an `anyOf`), and a boolean subschema
- * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
- * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
- * walked. A rejected node's error names its path under `inputSchema`.
- */
-export type JsonSchema = {
-  type?: SchemaType | null
-  properties?: Record<string, JsonSchema> | null
-  items?: JsonSchema | null
-  required?: string[] | null
-  enum?: import('./plugin.js').BridgeJsonValue[] | null
-  description?: string | null
-} & import('./plugin.js').BridgeJsonObject
 
 /**
  * The mount read's reply (MCP Apps §4.1). `text` and `blob` are exclusive;
@@ -1351,6 +1430,7 @@ export interface Services {
   reservedMethods: ReservedMethods
   permission: Permission
   initialPromptConfiguration: InitialPromptConfiguration
+  prompt: Prompt
   sessionLanguage: SessionLanguage
   skillsConfig: SkillsConfig
   treeCommands: TreeCommands

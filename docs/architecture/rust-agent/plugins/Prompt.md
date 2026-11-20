@@ -2,8 +2,7 @@
 
 Owner: [prompt.rs](../../../../crates/dim-agent-capabilities/src/prompt.rs) and
 [prompt_state.rs](../../../../crates/dim-agent-capabilities/src/prompt_state.rs).
-Loads and adopts prompt/model/tool configuration in timeline order, exposes
-ConfigureControl and projects adopted prompt and configuration state.
+Loads and adopts prompt/model/tool configuration in timeline order, exposes the branch `prompt` operations for initial completion, configuration adoption and reading the adopted model.
 `Branch::get<PromptSnapshot>()` reads the last adopted `context/configured` without
 replaying history. Prompt owns the current projection and its effective entry references under one
 lock. Recovery reads the latest v2 effective references and adoption revisions,
@@ -69,7 +68,7 @@ owners, rule check and complete-candidate concurrency limit.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ConfigurationPublisher`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:GuideEntries`、`S:InitialPromptConfiguration`、`S:PromptHost` |
-| 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl` |
+| 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl`、`B:dyn HostDispatch#prompt` |
 | 被注入于 | `PromptSourcesBranch`、`SkillsBranch`、`ToolBinding` |
 <!-- /generated -->
 

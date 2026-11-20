@@ -2225,6 +2225,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#prompt@main",
+        "provider": 74,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#skillsBranch@main",
         "provider": 77,
         "generation": 1,

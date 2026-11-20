@@ -108,25 +108,6 @@ pub(crate) fn face_key<T: ?Sized>() -> Key<dyn HostDispatch> {
     host_key(&dim_agent_runtime::names::name_of::<T>())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_call_carries_the_request_object_and_nothing_else() {
-        let empty = rutis_bridge::session::arg(&Empty {}).unwrap();
-        assert!(request::<Empty>("port", BridgeValue::List(vec![empty])).is_ok());
-        assert!(request::<Empty>("port", BridgeValue::Undefined).is_err());
-        assert!(
-            request::<Empty>(
-                "port",
-                BridgeValue::List(vec![serde_json::json!({"unexpected": true}).into()])
-            )
-            .is_err()
-        );
-    }
-}
-
 pub(crate) fn observe<T: Serialize + Clone + Send + Sync + 'static>(
     port: &str,
     callback: &rutis_bridge::session::Reference,
@@ -159,4 +140,23 @@ pub(crate) fn observe<T: Serialize + Clone + Send + Sync + 'static>(
             } => result,
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_call_carries_the_request_object_and_nothing_else() {
+        let empty = rutis_bridge::session::arg(&Empty {}).unwrap();
+        assert!(request::<Empty>("port", BridgeValue::List(vec![empty])).is_ok());
+        assert!(request::<Empty>("port", BridgeValue::Undefined).is_err());
+        assert!(
+            request::<Empty>(
+                "port",
+                BridgeValue::List(vec![serde_json::json!({"unexpected": true}).into()])
+            )
+            .is_err()
+        );
+    }
 }

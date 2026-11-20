@@ -726,9 +726,13 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                     }
                     let _language_gate = language_changed.then_some(language_gate);
                     if !changed.is_empty() {
+                        let request = crate::prompt::PromptConfigurationRequest::Loaded {
+                            model: None,
+                            sources: changed,
+                        };
                         tokio::select! {
                             _ = lifecycle.cancelled() => return,
-                            result = configure.clone().configure_loaded(None, changed) => {
+                            result = configure.as_ref().configure(request) => {
                                 if let Err(error) = result {
                                     tracing::warn!(%error, "changed prompt sources were not adopted");
                                 }
