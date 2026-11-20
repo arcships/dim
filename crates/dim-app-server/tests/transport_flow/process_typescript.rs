@@ -1239,6 +1239,23 @@ async fn node_reads_the_five_host_ports_through_the_product_owners() {
     let mut reply = files_available(&mut client, "hostports.read", json!({"model":model})).await;
     let cancel = CancellationToken::new();
     let models = server.service::<SelectableModelsHost>().unwrap();
+    let adopted: dim_agent_types::ModelSelection =
+        serde_json::from_value(reply.as_object_mut().unwrap().remove("adopted").unwrap()).unwrap();
+    let provider = server
+        .service::<dim_app_server::provider::ProviderService>()
+        .unwrap();
+    let configured = provider
+        .configuration(Some(model.clone()), None, Default::default(), &cancel)
+        .await
+        .unwrap();
+    let current = serde_json::from_value(serde_json::to_value(configured).unwrap()).unwrap();
+    assert_eq!(
+        adopted,
+        provider
+            .apply_preferences(&current, &Default::default(), &cancel)
+            .await
+            .unwrap()
+    );
     let selection: dim_agent_types::ModelSelection =
         serde_json::from_value(reply.as_object_mut().unwrap().remove("selection").unwrap())
             .unwrap();

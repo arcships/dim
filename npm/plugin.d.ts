@@ -86,6 +86,19 @@ export interface SessionMetadata {
 }
 
 export interface ModelId { providerId: string; modelId: string }
+export interface ProviderService extends AuxiliaryModel {
+  resolve(request: { explicit?: ModelId; cwd?: string }): Promise<import('./branch-services.js').ModelSelection>;
+  selectableModels(request: {}): Promise<{ models: import('./branch-services.js').ModelCapabilitySnapshot[] }>;
+  selectableForModality(request: {}): Promise<{ models: { target: ModelId; operations: string[] }[] }>;
+  configuration(request: {
+    explicit?: ModelId; cwd?: string; preferences: { reasoningEffort?: string; serviceTier?: string };
+  }): Promise<import('./branch-services.js').ModelSelection>;
+  applyPreferences(request: {
+    current: import('./branch-services.js').ModelSelection & { tools?: ToolDefinition[]; toolSources?: { key: string; version: string }[] };
+    update: { reasoningEffort?: string | { action: 'clear' }; serviceTier?: string | { action: 'clear' } };
+  }): Promise<import('./branch-services.js').ModelSelection>;
+}
+
 export interface AuxiliaryRequest {
   system?: string | null;
   /** Serialized dim-agent-types Message values, validated by Provider. */

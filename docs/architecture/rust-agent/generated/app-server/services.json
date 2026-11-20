@@ -3853,6 +3853,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#providerService",
+        "provider": 17,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#reservedMethods",
         "provider": 1,
         "generation": 0,

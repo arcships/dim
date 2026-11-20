@@ -26,7 +26,7 @@ pub mod methods;
 pub mod model_provider;
 mod output;
 pub mod permission;
-mod port_faces;
+pub mod port_faces;
 pub mod prompt;
 pub mod prompt_guide;
 pub mod prompt_registry;

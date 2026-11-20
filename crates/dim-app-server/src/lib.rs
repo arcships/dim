@@ -1453,6 +1453,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<grok_oauth::GrokOAuthService>(catalog, None);
     register::<provider::ProviderSecretHost>(catalog, None);
     register::<provider::ProviderService>(catalog, None);
+    catalog.register_shared("providerService");
     catalog.register_shared(dim_agent_runtime::names::name_of::<SelectableModelsHost>());
     catalog.register_shared("mcpService");
     register::<hooks_settings::HooksService>(catalog, None);
@@ -1511,7 +1512,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("prepareModelHost", "hot-path"),
         ("prompt", "hot-path"),
         ("providerConnectionResolver", "host-resource"),
-        ("providerService", "secret"),
         ("serverControl", "control"),
         ("sessionLoader", "control"),
         ("sessionStore", "owner-api"),

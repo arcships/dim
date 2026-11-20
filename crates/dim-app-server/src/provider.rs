@@ -3,6 +3,7 @@
 mod auxiliary;
 mod drivers;
 mod editing;
+mod face;
 mod legacy;
 pub(crate) mod management;
 mod models;
@@ -3421,8 +3422,12 @@ impl DynPlugin for ProviderPlugin {
                 owner: service.clone(),
                 host,
             });
-            dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary)?;
+            dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary.clone())?;
             management::provide(ctx, &methods, service.clone())?;
+            ctx.provide_at(
+                rutis_bridge::session::host_key("providerService"),
+                auxiliary as Arc<dyn rutis_bridge::session::HostDispatch>,
+            )?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)
         })
