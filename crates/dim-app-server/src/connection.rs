@@ -1681,7 +1681,7 @@ impl Connection {
                     rpc.ctx
                         .get::<crate::provider::ProviderService>()
                         .ok_or_else(RpcError::reloading)?
-                        .retain_startup(session, &model)
+                        .retain_startup(session.id(), &session.instance()?.to_string(), &model)
                         .map_err(provider_error)?;
                 }
                 Reply::ModelUpdate(ModelUpdateResult { model: id, outcome })
@@ -1787,7 +1787,7 @@ impl Connection {
                 rpc.ctx
                     .get::<crate::provider::ProviderService>()
                     .ok_or_else(RpcError::reloading)?
-                    .startup_connection(connection)
+                    .check_startup(connection)
                     .map_err(provider_error)?;
             }
         } else {
@@ -1855,7 +1855,11 @@ impl Connection {
                 .ok_or_else(RpcError::reloading)
                 .and_then(|provider| {
                     provider
-                        .retain_startup(&session, &session.config().model)
+                        .retain_startup(
+                            session.id(),
+                            &session.instance()?.to_string(),
+                            &session.config().model,
+                        )
                         .map_err(provider_error)
                 });
             if let Err(error) = retained {

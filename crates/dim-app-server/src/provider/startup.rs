@@ -1,5 +1,4 @@
 use super::*;
-use dim_agent_runtime::Session;
 use dim_agent_types::{ModelConfiguration, StartupAuth, StartupConnectionSource};
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -527,9 +526,14 @@ impl ProviderService {
             .ok_or_else(|| failure("Temporary model connection is not bound; resume with the matching DIM_BASE_URL, DIM_API_FORMAT and credentials"))
     }
 
+    pub(crate) fn check_startup(&self, source: &StartupConnectionSource) -> Result<(), HostError> {
+        self.startup_connection(source).map(drop)
+    }
+
     pub(crate) fn retain_startup(
         self: &Arc<Self>,
-        session: &Session,
+        session_id: &str,
+        generation: &str,
         model: &ModelSelection,
     ) -> Result<(), HostError> {
         let Some(source) = model
@@ -541,38 +545,56 @@ impl ProviderService {
             return Ok(());
         };
         let connection = self.startup_connection(source)?;
-        {
-            let mut bindings = self.startup.lock().unwrap();
+        let sessions = self
+            .sessions
+            .as_ref()
+            .ok_or_else(|| failure("Session directory unavailable"))?;
+        let mut bindings = self.startup.lock().unwrap();
+        let watch = uuid::Uuid::new_v4();
+        let stop = self.stop.child_token();
+        let owner = self.clone();
+        let observed = sessions
+            .observe_current(
+                session_id,
+                Some(generation),
+                stop.clone(),
+                move |ended| async move {
+                    owner
+                        .startup
+                        .lock()
+                        .unwrap()
+                        .end_watch(&ended.session_id, watch, ended.reason);
+                },
+            )
+            .map_err(failure)?;
+        if observed.is_none() {
+            return Err(failure("Session generation is no longer current"));
+        }
+        let sources = sessions
+            .startup_sources(session_id, generation)
+            .map_err(|error| {
+                stop.cancel();
+                failure(error)
+            })?;
+        for adopted in std::iter::once(source.clone()).chain(
+            sources
+                .into_iter()
+                .filter(|item| same_destination(item, source)),
+        ) {
             bindings
                 .connections
-                .entry(source.id.clone())
+                .entry(adopted.id.clone())
                 .or_insert_with(|| Binding {
-                    source: source.clone(),
+                    source: adopted.clone(),
                     connection: connection.clone(),
                 });
             bindings
                 .owners
-                .entry(source.id.clone())
+                .entry(adopted.id)
                 .or_default()
-                .insert(session.id().to_owned());
-            for previous in crate::agents::Sessions::adopted_sources(session) {
-                if same_destination(&previous, source) {
-                    bindings
-                        .connections
-                        .entry(previous.id.clone())
-                        .or_insert_with(|| Binding {
-                            source: previous.clone(),
-                            connection: connection.clone(),
-                        });
-                    bindings
-                        .owners
-                        .entry(previous.id.clone())
-                        .or_default()
-                        .insert(session.id().to_owned());
-                }
-            }
+                .insert(session_id.to_owned());
         }
-        self.watch_startup(session.clone());
+        bindings.watched.insert(session_id.to_owned(), watch);
         Ok(())
     }
 
@@ -620,27 +642,6 @@ impl ProviderService {
         } else {
             stop.cancel();
         }
-    }
-
-    pub(super) fn watch_startup(self: &Arc<Self>, session: Session) {
-        let id = session.id().to_owned();
-        let generation = uuid::Uuid::new_v4();
-        {
-            let mut bindings = self.startup.lock().unwrap();
-            if !bindings.owners.values().any(|owners| owners.contains(&id)) {
-                return;
-            }
-            bindings.watched.insert(id.clone(), generation);
-        }
-        let owner = self.clone();
-        self.tasks.spawn(async move {
-            tokio::select! {
-                _ = owner.stop.cancelled() => {}
-                reason = crate::agents::Sessions::session_end(&session) => {
-                    owner.startup.lock().unwrap().end_watch(&id, generation, reason);
-                }
-            }
-        });
     }
 
     pub(super) fn forget_startup(&self, session_id: &str) {

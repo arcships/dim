@@ -1407,6 +1407,7 @@ fn reseed_candidate(
 }
 
 pub struct ProviderService {
+    sessions: Option<Arc<crate::agents::Sessions>>,
     db: Arc<SqliteStorage>,
     oauth: Arc<ManagedProviders>,
     codex: Arc<OpenAICodexOAuthService>,
@@ -3356,6 +3357,7 @@ impl DynPlugin for ProviderPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let service =
                 Arc::new(ProviderService {
+                    sessions: sessions.clone(),
                     db,
                     oauth,
                     codex,

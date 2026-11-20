@@ -403,7 +403,14 @@ impl Collaboration {
                 .ok_or_else(|| "startup connection provider is unavailable".to_owned())
                 .and_then(|provider| {
                     provider
-                        .retain_startup(&session, &session.config().model)
+                        .retain_startup(
+                            session.id(),
+                            &session
+                                .instance()
+                                .map_err(|error| error.to_string())?
+                                .to_string(),
+                            &session.config().model,
+                        )
                         .map_err(|error| error.to_string())
                 });
             if let Err(error) = retained {
