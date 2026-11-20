@@ -195,12 +195,8 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 | 名字 | scope | provider | reason |
 | --- | --- | --- | --- |
-| `serverControl` | process | ServerControl | control |
-| `connectionHub` | process | Connection | control |
 | `grokOAuthService` | process | GrokOAuth | secret |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | secret |
-| `uiHost` | process | UiHost | control |
-| `uiExtensions` | process | UiExtensions | control |
 | `mentionIndex` | process | WorkspaceToolsOwner | host-resource |
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |

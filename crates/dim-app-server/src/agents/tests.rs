@@ -129,10 +129,10 @@ async fn process_startup_and_restart_follow_rows_becoming_active() {
     let (completed, _) = tokio::sync::watch::channel(0);
     for step in 0..4 {
         let completed = completed.clone();
-        builder.plugin(move |names| {
+        builder.plugin(move |_| {
             Ok(Box::new(ProgressingProcess {
                 name: format!("test.process-progress-{step}"),
-                hub: names.key()?,
+                hub: rutis::host::Key::of(),
                 step,
                 completed: completed.clone(),
             }))
@@ -272,10 +272,10 @@ async fn a_stored_agent_creation_timeout_settles_during_progressing_startup() {
     let mut held = HeldCreation::new(&stored.default_agent);
     let mut progressing = builder();
     let (completed, _) = tokio::sync::watch::channel(0);
-    progressing.plugin(move |names| {
+    progressing.plugin(move |_| {
         Ok(Box::new(ProgressingProcess {
             name: "test.stored-owner-progress".into(),
-            hub: names.key()?,
+            hub: rutis::host::Key::of(),
             step: 0,
             completed: completed.clone(),
         }))

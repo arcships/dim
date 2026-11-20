@@ -2226,7 +2226,7 @@ impl ConnectionPlugin {
     pub fn new(names: &Names<'_>, config: Arc<ServerConfig>) -> rutis::Result<Self> {
         Ok(Self {
             config,
-            control: names.key()?,
+            control: Key::of(),
             ui: names.key()?,
             clients: names.key()?,
             parts: names.key()?,
@@ -2469,8 +2469,8 @@ impl RpcPlugin {
             root,
             index: names.key()?,
             collaboration: names.key()?,
-            hub: names.key()?,
-            control: names.key()?,
+            hub: Key::of(),
+            control: Key::of(),
             loader: names.key()?,
             management: names.key()?,
             callers: Key::of(),

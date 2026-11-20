@@ -1426,7 +1426,6 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
 pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     use dim_agent_capabilities::host::SelectableModelsHost;
     use dim_agent_runtime::{SESSION_GROUP, names::register};
-    register::<ServerControl>(catalog, None);
     register::<ProcessActivity>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
     catalog.register_shared("sqliteStorage");
@@ -1439,7 +1438,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     catalog.register_shared(dim_agent_runtime::names::name_of::<
         collaboration::CollaborationDirectory,
     >());
-    register::<ConnectionHub>(catalog, None);
     catalog.register_shared(dim_agent_runtime::names::name_of::<ListenAddresses>());
     register::<ui_host::UiHost>(catalog, None);
     catalog.register_shared("uiHost");
@@ -1492,7 +1490,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("compactionStrategyHost", "hot-path"),
         ("configurationPublisher", "hot-path"),
         ("configureControl", "hot-path"),
-        ("connectionHub", "control"),
         ("contextModelHost", "hot-path"),
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
@@ -1514,7 +1511,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("prompt", "hot-path"),
         ("providerConnectionResolver", "host-resource"),
         ("providerService", "secret"),
-        ("serverControl", "control"),
         ("sessionLoader", "control"),
         ("sessionStore", "owner-api"),
         ("settingsService", "owner-api"),
