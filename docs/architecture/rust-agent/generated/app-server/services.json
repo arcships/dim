@@ -485,12 +485,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::host::ModelSelectionHost",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
-            "service": "dim_agent_capabilities::host::SelectableModelsHost",
+            "service": "dim_agent_capabilities::host::ProviderService",
             "scope": null,
             "status": "Ready"
           },
@@ -518,13 +513,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::host::ModelSelectionHost",
-            "scope": null,
-            "provider": 17,
-            "generation": 1
-          },
-          {
-            "service": "dim_agent_capabilities::host::SelectableModelsHost",
+            "service": "dim_agent_capabilities::host::ProviderService",
             "scope": null,
             "provider": 17,
             "generation": 1
@@ -556,13 +545,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::host::ModelSelectionHost",
-            "provider": 17,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_agent_capabilities::host::SelectableModelsHost",
+            "service": "dim_agent_capabilities::host::ProviderService",
             "provider": 17,
             "declared": true,
             "external": true
@@ -3379,12 +3362,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host::ModelSelectionHost",
-        "provider": 17,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::host::ProviderConnectionResolver",
         "provider": 17,
         "generation": 1,
@@ -3392,12 +3369,6 @@
       },
       {
         "service": "dim_agent_capabilities::host::ProviderService",
-        "provider": 17,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::host::SelectableModelsHost",
         "provider": 17,
         "generation": 1,
         "removing": false
@@ -3817,12 +3788,6 @@
         "removing": false
       },
       {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#modelSelectionHost",
-        "provider": 17,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#partRegistry",
         "provider": 46,
         "generation": 1,
@@ -3867,12 +3832,6 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
         "provider": 72,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#selectableModelsHost",
-        "provider": 17,
         "generation": 1,
         "removing": false
       },

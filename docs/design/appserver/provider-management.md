@@ -987,7 +987,7 @@ Aimux applies it at its [HTTP send boundary](../../../crates/dim-agent-aimux/REA
 
 ### 3.6 Selectable models for process owners
 
-The [target process binding](../contracts/process-owner-operations.md) moves `modelSelectionHost.resolve`, both `selectableModelsHost` reads and `auxiliaryModel.complete` to the data face `providerService` on the configured profile. Consumers switch their injection and retain the operation arguments, results and credential ownership. The separate binding names below describe the pre-migration catalog.
+The active model owner provides `resolve`, `selectableModels`, `selectableForModality` and `complete` on [`providerService`](../contracts/process-owner-operations.md).
 
 A process owner that routes work by model capability cannot keep its own copy of
 the availability rules of the models it routes to. The port below has one provider
@@ -1142,7 +1142,7 @@ both. A consumer that needs the read declares
 that must load without Provider reads the name when it is provided and gates
 nothing (Collaboration's `models` action); it takes a snapshot at load, so a
 Provider reload does not reload it. No consumer reads `ProviderService` directly.
-A non-Rust consumer calls `selectableModelsHost` by name, with the operations §3.6
+A non-Rust consumer calls `providerService` by name, with the operations §3.6
 states; the face delegates to the same owner read, so a consumer of either language
 gets the models execution would.
 

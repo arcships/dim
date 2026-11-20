@@ -12,7 +12,6 @@ use dim_agent_capabilities::{
         AuxiliaryErrorCode, AuxiliaryRequest, CredentialRecoveryPhase, CredentialRejection,
         HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget, ModelChunk, ModelHost,
         ModelProtocol, ProviderConnectionResolver, ProviderService as ModelProviderService,
-        SelectableModelsHost,
     },
 };
 use dim_agent_runtime::Names;
@@ -1104,7 +1103,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 .unwrap();
         }
         if index == 0 {
-            let listed = root.get::<SelectableModelsHost>().unwrap();
+            let listed = root.get::<ModelProviderService>().unwrap();
             assert!(
                 listed
                     .selectable_for_modality(cancel.clone())

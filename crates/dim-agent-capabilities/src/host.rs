@@ -3,7 +3,7 @@ use dim_agent_runtime::{AgentError, CAPABILITY_RELOADING, PromptSourceTarget};
 use dim_agent_types::*;
 use futures_util::Stream;
 use rutis::Ctx;
-use rutis::host::{CtxHost, Key};
+use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, Reply, Value as BridgeValue};
 use serde_json::json;
 use std::{collections::HashMap, future::Future, path::PathBuf, pin::Pin, sync::Arc};
@@ -809,7 +809,7 @@ impl From<HostError> for ModelPortError {
     }
 }
 
-/// The `resolve` request of `modelSelectionHost`: the model the caller names,
+/// The `resolve` request of `providerService`: the model the caller names,
 /// if any, and the directory a project's configuration is read from.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -861,9 +861,7 @@ pub type ResolveModelSelection = Arc<
         + Sync,
 >;
 
-/// The `modelSelectionHost` face: `resolve` is the one operation, served under
-/// the name for any language and called directly by a Rust reader through the
-/// binding that holds it.
+/// The active model owner's resolution operation.
 #[derive(Clone)]
 pub struct ModelSelectionHost(ResolveModelSelection);
 
@@ -882,7 +880,7 @@ impl ModelSelectionHost {
         crate::port_faces::read(
             cancel,
             || ModelPortError::Cancelled {
-                message: format!("{MODEL_SELECTION}: cancelled"),
+                message: format!("{PROVIDER_SERVICE}: cancelled"),
             },
             |cancel| async move {
                 (self.0)(
@@ -898,16 +896,7 @@ impl ModelSelectionHost {
     }
 }
 
-/// Provides one owner's [`ModelSelectionHost`]: the binding its Rust readers
-/// hold and the face any other language calls by name.
-pub fn provide_model_selection(ctx: &Ctx, host: &ModelSelectionHost) -> rutis::Result<()> {
-    let host = Arc::new(host.clone());
-    ctx.provide_at(Key::<ModelSelectionHost>::of(), host.clone())?;
-    ctx.provide_at(crate::port_faces::face_key::<ModelSelectionHost>(), host)?;
-    Ok(())
-}
-
-const MODEL_SELECTION: &str = "modelSelectionHost";
+const PROVIDER_SERVICE: &str = "providerService";
 
 impl HostDispatch for ModelSelectionHost {
     fn methods(&self) -> Option<serde_json::Value> {
@@ -916,11 +905,11 @@ impl HostDispatch for ModelSelectionHost {
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         if method != "resolve" {
-            return Err(crate::port_faces::unknown_method(MODEL_SELECTION, method));
+            return Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
         }
-        let request: ModelSelectionRequest = crate::port_faces::request(MODEL_SELECTION, args)?;
+        let request: ModelSelectionRequest = crate::port_faces::request(PROVIDER_SERVICE, args)?;
         let host = self.clone();
-        crate::port_faces::serving(MODEL_SELECTION, async move {
+        crate::port_faces::serving(PROVIDER_SERVICE, async move {
             host.resolve(request, CancellationToken::new()).await
         })
     }
@@ -989,9 +978,7 @@ pub type SelectableModelsRead = Arc<
 pub type ModalityModelsRead =
     Arc<dyn Fn(CancellationToken) -> HostFuture<'static, Vec<ModalityModelSnapshot>> + Send + Sync>;
 
-/// The `selectableModelsHost` face: its two reads are its operations, served
-/// under the name for any language and called directly by a Rust reader
-/// through the binding that holds them.
+/// The active model owner's model and modality listing operations.
 #[derive(Clone)]
 pub struct SelectableModelsHost {
     selectable: SelectableModelsRead,
@@ -1015,7 +1002,7 @@ impl SelectableModelsHost {
         crate::port_faces::read(
             cancel,
             || ModelPortError::Cancelled {
-                message: format!("{SELECTABLE_MODELS}: cancelled"),
+                message: format!("{PROVIDER_SERVICE}: cancelled"),
             },
             |cancel| async move {
                 let models = (self.selectable)(cancel)
@@ -1039,7 +1026,7 @@ impl SelectableModelsHost {
         crate::port_faces::read(
             cancel,
             || ModelPortError::Cancelled {
-                message: format!("{SELECTABLE_MODELS}: cancelled"),
+                message: format!("{PROVIDER_SERVICE}: cancelled"),
             },
             |cancel| async move {
                 let models = (self.modality)(cancel)
@@ -1052,17 +1039,6 @@ impl SelectableModelsHost {
     }
 }
 
-/// Provides one owner's [`SelectableModelsHost`]: the binding its Rust readers
-/// hold and the face any other language calls by name.
-pub fn provide_selectable_models(ctx: &Ctx, host: &SelectableModelsHost) -> rutis::Result<()> {
-    let host = Arc::new(host.clone());
-    ctx.provide_at(Key::<SelectableModelsHost>::of(), host.clone())?;
-    ctx.provide_at(crate::port_faces::face_key::<SelectableModelsHost>(), host)?;
-    Ok(())
-}
-
-const SELECTABLE_MODELS: &str = "selectableModelsHost";
-
 impl HostDispatch for SelectableModelsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({"selectableModels": "async", "selectableForModality": "async"}))
@@ -1070,16 +1046,16 @@ impl HostDispatch for SelectableModelsHost {
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         if !matches!(method, "selectableModels" | "selectableForModality") {
-            return Err(crate::port_faces::unknown_method(SELECTABLE_MODELS, method));
+            return Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
         }
-        let crate::port_faces::Empty {} = crate::port_faces::request(SELECTABLE_MODELS, args)?;
+        let crate::port_faces::Empty {} = crate::port_faces::request(PROVIDER_SERVICE, args)?;
         let host = self.clone();
         if method == "selectableModels" {
-            crate::port_faces::serving(SELECTABLE_MODELS, async move {
+            crate::port_faces::serving(PROVIDER_SERVICE, async move {
                 host.selectable_models(CancellationToken::new()).await
             })
         } else {
-            crate::port_faces::serving(SELECTABLE_MODELS, async move {
+            crate::port_faces::serving(PROVIDER_SERVICE, async move {
                 host.selectable_for_modality(CancellationToken::new()).await
             })
         }
@@ -1150,9 +1126,11 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
+#[derive(Clone)]
 pub(crate) struct AuxiliaryModel(pub(crate) Arc<dyn CompleteAuxiliary>);
 
 /// Model selection and completion provided by the active model catalog.
+#[derive(Clone)]
 pub struct ProviderService {
     selection: ModelSelectionHost,
     selectable: SelectableModelsHost,
@@ -1161,6 +1139,14 @@ pub struct ProviderService {
 }
 
 impl ProviderService {
+    #[cfg(feature = "testing")]
+    pub fn with_selection(&self, selection: ModelSelectionHost) -> Self {
+        Self {
+            selection,
+            ..self.clone()
+        }
+    }
+
     pub fn provide(
         ctx: &Ctx,
         selection: ModelSelectionHost,
@@ -1176,7 +1162,7 @@ impl ProviderService {
         });
         ctx.provide_as::<Self>(owner.clone())?;
         ctx.provide_at(
-            rutis_bridge::session::host_key("providerService"),
+            rutis_bridge::session::host_key(PROVIDER_SERVICE),
             owner as Arc<dyn HostDispatch>,
         )?;
         Ok(())
@@ -1231,7 +1217,7 @@ impl HostDispatch for ProviderService {
             "complete" => self.auxiliary.invoke(method, args),
             _ => match &self.configuration {
                 Some(owner) => owner.invoke(method, args),
-                None => Err(crate::port_faces::unknown_method("providerService", method)),
+                None => Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method)),
             },
         }
     }

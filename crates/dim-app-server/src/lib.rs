@@ -1424,7 +1424,6 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
 /// the names its process parts share across languages. Registering them again
 /// does nothing, so each installer applies them.
 pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
-    use dim_agent_capabilities::host::SelectableModelsHost;
     use dim_agent_runtime::{SESSION_GROUP, names::register};
     register::<ServerControl>(catalog, None);
     register::<ProcessActivity>(catalog, None);
@@ -1452,7 +1451,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<codex_oauth::OpenAICodexOAuthService>(catalog, None);
     register::<grok_oauth::GrokOAuthService>(catalog, None);
     register::<provider::ProviderSecretHost>(catalog, None);
-    catalog.register_shared(dim_agent_runtime::names::name_of::<SelectableModelsHost>());
     catalog.register_shared("mcpService");
     register::<hooks_settings::HooksService>(catalog, None);
     catalog.register_shared("hooksService");

@@ -3567,7 +3567,7 @@ async fn native_model_switch_keeps_stored_thinking_for_its_protocol() {
         assert_eq!(claude.endpoint.requests.lock().unwrap().len(), 2);
         let selection = |provider_id: &str| {
             let provider_id = provider_id.to_owned();
-            let host = agent.root().get::<ModelSelectionHost>().unwrap();
+            let host = agent.root().get::<ProviderService>().unwrap();
             async move {
                 host.resolve(
                     ModelSelectionRequest::at(

@@ -3405,7 +3405,6 @@ impl DynPlugin for ProviderPlugin {
             let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
                 selection.resolve(explicit, cwd, cancel)
             }));
-            dim_agent_capabilities::host::provide_model_selection(ctx, &selection_host)?;
             ctx.provide(ModalityConnectionHost(resolver.clone()))?;
             let selectable = resolver.clone();
             let modalities = resolver;
@@ -3413,7 +3412,6 @@ impl DynPlugin for ProviderPlugin {
                 Arc::new(move |cancel| selectable.selectable(cancel)),
                 Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
             );
-            dim_agent_capabilities::host::provide_selectable_models(ctx, &selectable_host)?;
             let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
                 owner: service.clone(),
                 host,

@@ -10,7 +10,7 @@ use dim_agent_capabilities::{
     host::{
         HostError, HostFuture, ModalityConnectionHost, ModalityTarget, ModelConnection,
         ModelDriver, ModelHost, ModelProtocol, ModelStream, ProviderConnectionResolver,
-        SelectableModelsHost,
+        ProviderService as ModelProviderService,
     },
 };
 use dim_agent_runtime::Names;
@@ -1419,7 +1419,7 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
         .await
         .unwrap();
     let operations = root
-        .get::<SelectableModelsHost>()
+        .get::<ModelProviderService>()
         .unwrap()
         .selectable_for_modality(cancel())
         .await
@@ -1515,7 +1515,7 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     drop(database);
 
     let listed = root
-        .get::<SelectableModelsHost>()
+        .get::<ModelProviderService>()
         .unwrap()
         .selectable_for_modality(cancel())
         .await
