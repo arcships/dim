@@ -107,7 +107,7 @@ impl Fixture {
                 dim_app_server::methods::ManagementMethodsPlugin::typed(&dim_app_server::catalog())
                     .unwrap(),
             ),
-            root.plugin(McpPlugin::new(&names, 0).unwrap()),
+            root.plugin(McpPlugin::new(&names, fs::canonicalize(&home).unwrap()).unwrap()),
             root.plugin(Capture {
                 service: capture.clone(),
                 mcp: dim_app_server::mcp::owner_key(),

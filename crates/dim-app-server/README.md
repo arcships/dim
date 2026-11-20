@@ -368,7 +368,7 @@ Explicit disconnect drains all generations of the selected source/server, withou
 configuration; a later acquisition can reconnect. It reports cleanup failure rather than treating
 loader reconciliation as proof of successful cleanup.
 
-Standalone hosts using `McpPlugin::new(home_root)` register `McpPublication` and its
+Standalone hosts using `McpPlugin::new(names, home)` register `McpPublication` and its
 `standalone_template` with their `Builtins` and the catalog their loader uses
 (`dim_app_server::catalog()` holds the App Server's names), and include both rows in the
 immutable assembly. The publication plugin owns its coordinator worker: it starts after

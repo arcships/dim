@@ -515,7 +515,8 @@ fn mcp_host_rows(builder: &mut AgentBuilder, home: &Path) {
         SettingsPlugin::new(&Names::copy(&catalog, &build), 0, vec![]).unwrap()
     };
     builder.plugin(move |_| Ok(Box::new(settings.clone())));
-    builder.plugin(|names| Ok(Box::new(McpPlugin::new(names, 0)?)));
+    let home = home.to_owned();
+    builder.plugin(move |names| Ok(Box::new(McpPlugin::new(names, home.clone())?)));
 }
 /// Authorizes `home`'s project in the host's Settings.
 async fn authorize_project(host: &MinimalHost, home: &Path) {

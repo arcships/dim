@@ -984,7 +984,9 @@ mod tests {
                     .unwrap(),
                 ),
                 root.plugin(crate::methods::ManagementMethodsPlugin::typed(&catalog).unwrap()),
-                root.plugin(McpPlugin::new(&Names::check(&catalog, &[], None), 0).unwrap()),
+                root.plugin(
+                    McpPlugin::new(&Names::check(&catalog, &[], None), home.clone()).unwrap(),
+                ),
             ];
             wait_active(&root, &views, Duration::from_secs(5), &stop)
                 .await

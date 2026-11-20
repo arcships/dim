@@ -110,7 +110,17 @@ impl Fixture {
             dim_agent_runtime::PartRegistry::default(),
         ))
         .unwrap();
-        let plugin = root.plugin(McpPlugin::new(&names, 0).unwrap());
+        let plugin = root.plugin(
+            McpPlugin::new(
+                &names,
+                if reversed {
+                    home.join("project")
+                } else {
+                    home.clone()
+                },
+            )
+            .unwrap(),
+        );
         let mut roots = vec![home.clone(), home.join("project")];
         if reversed {
             roots.reverse();

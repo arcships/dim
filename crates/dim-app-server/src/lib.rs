@@ -922,6 +922,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     if let Some(home_root) = execution_root {
         let platform_home = config.platform_home.clone();
         let exec_shell_file = config.file_roots[home_root].join("exec-shell.json");
+        let mcp_home = config.file_roots[home_root].clone();
         mcp::install(&mut builder);
         if native_home.is_some() {
             dim_agent_attachments::install(&mut builder);
@@ -933,7 +934,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
-            move |names| Ok(Box::new(mcp::McpPlugin::new(names, home_root)?)),
+            move |names| Ok(Box::new(mcp::McpPlugin::new(names, mcp_home.clone())?)),
         )?);
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(execution_settings::ExecutionSettingsPlugin::new(
