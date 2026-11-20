@@ -225,6 +225,24 @@ async fn node_settings_typescript_owner_reads_and_writes() {
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);
     let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let custom = owner(&mut client, &session, "custom_read", json!({})).await;
+    assert_eq!(custom["value"]["document"], json!({"count":3}), "{custom}");
+    let revision = &custom["value"]["revision"];
+    let update = |count| json!({"expectedRevision":revision, "count":count});
+    let rejected = owner(&mut client, &session, "custom_update", update(-1)).await;
+    assert_eq!(rejected["error"]["code"], "invalid_document", "{rejected}");
+    let written = owner(&mut client, &session, "custom_update", update(6)).await;
+    assert_eq!(
+        written["value"]["document"],
+        json!({"count":6}),
+        "{written}"
+    );
+    assert_eq!(
+        owner(&mut client, &session, "custom_read", json!({})).await,
+        written
+    );
+    let stale = owner(&mut client, &session, "custom_update", update(5)).await;
+    assert_eq!(stale["error"]["code"], "conflict", "{stale}");
     let user = json!({"source":"example","scope":"user"});
     let mut changes = log.0.subscribe();
 

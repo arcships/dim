@@ -100,14 +100,31 @@ impl Format for Declared {
     fn source(&self) -> &str {
         &self.declaration.source
     }
-    fn decode(&self, bytes: Option<&[u8]>) -> Result<Value> {
-        let document = match bytes {
-            Some(bytes) => serde_json::from_slice(bytes)
-                .map_err(|_| SettingsError::Invalid("invalid settings document"))?,
-            None => json!({}),
-        };
-        self.prepare(document).map_err(|_| {
-            SettingsError::Invalid("persisted settings document does not match its schema")
+    fn validate<'a>(
+        &'a self,
+        document: &'a Value,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.prepare(document.clone())
+                .map(drop)
+                .map_err(SettingsError::Document)
+        })
+    }
+    fn decode<'a>(
+        &'a self,
+        bytes: Option<&'a [u8]>,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Value>> {
+        Box::pin(async move {
+            let document = match bytes {
+                Some(bytes) => serde_json::from_slice(bytes)
+                    .map_err(|_| SettingsError::Invalid("invalid settings document"))?,
+                None => json!({}),
+            };
+            self.prepare(document).map_err(|_| {
+                SettingsError::Invalid("persisted settings document does not match its schema")
+            })
         })
     }
 }
@@ -187,7 +204,7 @@ impl SettingsService {
             .get(source)
             .and_then(|registered| match &registered.value.kind {
                 Kind::Declared(declared) => Some(declared.clone()),
-                Kind::Rust(_) => None,
+                Kind::Rust(_) | Kind::Custom => None,
             })
             .ok_or(SettingsError::UnknownSource)?;
         if let SettingsScope::Project(root) = scope {
@@ -268,6 +285,11 @@ pub(crate) struct Update {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Projects {}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizeProject {
+    cwd: PathBuf,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -296,7 +318,7 @@ impl SettingsError {
     }
 }
 /// `{ok: true, value}` or `{ok: false, error: {code, message}}`, as `sessions`.
-fn envelope(result: Result<impl Serialize>) -> RpcValue {
+pub(super) fn envelope(result: Result<impl Serialize>) -> RpcValue {
     match result {
         Ok(value) => json!({"ok": true, "value": value}),
         Err(error) => {
@@ -319,6 +341,19 @@ fn request<T: DeserializeOwned>(args: RpcValue) -> std::result::Result<T, Error>
 /// calling row unloads; each source has one owner (AGENTS.md rule 11).
 pub struct Settings(Arc<SettingsService>);
 impl Settings {
+    /// Registers a source with its existing decoder, defaults and write validation.
+    pub fn register_document<D: BusinessDocument>(
+        &self,
+        owner: &Ctx,
+    ) -> rutis::Result<Arc<RegisteredDocument<D>>> {
+        let registration = self.0.register_typed::<D>(owner)?;
+        Ok(Arc::new(RegisteredDocument {
+            settings: self.0.clone(),
+            registration: Arc::downgrade(&registration),
+            format: typed::<D>(),
+        }))
+    }
+
     /// The declarations of the JSON Schema sources the row `instance_id`
     /// registered and still holds, by source name.
     pub fn declared_by(&self, instance_id: &str) -> Vec<SourceDeclaration> {
@@ -329,7 +364,7 @@ impl Settings {
             .filter(|registered| registered.value.owner == instance_id)
             .filter_map(|registered| match &registered.value.kind {
                 Kind::Declared(declared) => Some(declared.declaration().clone()),
-                Kind::Rust(_) => None,
+                Kind::Rust(_) | Kind::Custom => None,
             })
             .collect()
     }
@@ -362,6 +397,15 @@ impl Settings {
             .await
     }
 
+    /// Admits a project root and publishes its existing authorization notice.
+    pub async fn authorize_project(
+        &self,
+        cwd: PathBuf,
+        cancel: &CancellationToken,
+    ) -> Result<usize> {
+        self.0.authorize_project(cwd, cancel).await
+    }
+
     /// Lists authorized project scopes.
     pub fn projects(&self) -> Vec<ProjectAuthorized> {
         self.0
@@ -378,14 +422,14 @@ impl Settings {
 impl HostDispatch for Settings {
     fn methods(&self) -> Option<Value> {
         Some(
-            json!({"register": "async", "read": "async", "update": "async", "projects": "sync", "declaredBy": "sync"}),
+            json!({"registerDocument": "async", "register": "async", "read": "async", "update": "async", "projects": "sync", "authorizeProject": "async", "declaredBy": "sync"}),
         )
     }
     fn invoke(&self, method: &str, args: RpcValue) -> Reply {
         let service = Self(self.0.clone());
         let cancel = CancellationToken::new();
         match method {
-            "register" => {
+            "register" | "registerDocument" => {
                 let caller = rutis_bridge::session::caller_row()
                     .map(|row| row.ctx().clone())
                     .ok_or_else(|| {
@@ -394,6 +438,10 @@ impl HostDispatch for Settings {
                                 .into(),
                         )
                     })?;
+                if method == "registerDocument" {
+                    let result = super::document::register(service.0, &caller, args);
+                    return Ok(RpcValue::future(async move { result }));
+                }
                 let registered = request(args).and_then(|declaration| {
                     service
                         .register(&caller, declaration)
@@ -405,6 +453,13 @@ impl HostDispatch for Settings {
             "declaredBy" => {
                 let DeclaredBy { instance_id } = request(args)?;
                 Ok(json!(service.declared_by(&instance_id)).into())
+            }
+            "authorizeProject" => {
+                let AuthorizeProject { cwd } = request(args)?;
+                Ok(RpcValue::future(async move {
+                    let _guard = cancel.clone().drop_guard();
+                    Ok(envelope(service.authorize_project(cwd, &cancel).await))
+                }))
             }
             "projects" => {
                 let Projects {} = request(args)?;

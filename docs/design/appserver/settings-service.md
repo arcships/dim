@@ -212,6 +212,8 @@ Process scope, no instance key, provided by Settings.
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
 | `register` | async | a declaration (§3.1) | nothing; rejects when refused |
+| `registerDocument` | async | `({source, userFile, projectFile?}, codec)` | Source-bound `read(scope)` and `update(scope, expectedRevision, document)`, each returning the Settings result with a snapshot. The owner supplies `decode(bytes or null)` and `validate(document)`. The registration ends on owner unload. |
+| `authorizeProject` | async | `{cwd}` | Settings result with the authorized root number. A newly admitted root emits the project authorization notice (§4.4). |
 | `read` | async | `{source, scope: Scope}` | `Snapshot` |
 | `update` | async | `{source, scope: Scope, expectedRevision, document}` | `Snapshot` (the stored document) |
 | `declaredBy` | sync | `{instanceId: string}` (the live loader instance ID in decimal) | The JSON Schema declarations registered by that instance, ordered by source name. An instance with no live declarations returns an empty array. |
@@ -230,7 +232,7 @@ Process scope, no instance key, provided by Settings.
 - Errors of `read`, `update` and `projects` (§6): `unknown_source`, `invalid_scope`,
   `invalid_document`, `user_only_field`, `conflict`, `unsynced`, `failed`, `closed`, `cancelled`.
 
-Only `register` uses the caller's identity, to withdraw the registration with the calling row.
+Both registration methods use the caller's identity, to withdraw the registration with the calling row.
 Ownership comes from the registering row: each source has one owner, and only that package is
 written against it. This is the trust model of in-process plugins
 (AGENTS.md rule 11): dependency declarations are not a sandbox.

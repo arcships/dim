@@ -191,6 +191,8 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
 | `register` | async | 一份声明（§3.1） | 无；被拒绝时 reject |
+| `registerDocument` | 异步 | `({source, userFile, projectFile?}, codec)` | 返回本次登记的 `read(scope)` 和 `update(scope, expectedRevision, document)`，两者都返回含快照的 Settings 结果。所有者提供 `decode(bytes 或 null)` 和 `validate(document)`。所有者卸载时登记结束。 |
+| `authorizeProject` | 异步 | `{cwd}` | 返回含已授权根目录编号的 Settings 结果。首次授权会发布 §4.4 的项目授权通知。 |
 | `read` | async | `{source, scope: Scope}` | `Snapshot` |
 | `update` | async | `{source, scope: Scope, expectedRevision, document}` | `Snapshot`（保存后的文档） |
 | `declaredBy` | sync | `{instanceId: string}`，加载器实例 ID 的十进制字符串 | 该实例已注册且仍有效的 JSON Schema 声明，按来源名称排序。无有效声明时返回空数组。 |
@@ -206,7 +208,7 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 - `read`、`update` 和 `projects` 的错误（§6）：`unknown_source`、`invalid_scope`、`invalid_document`、
   `user_only_field`、`conflict`、`unsynced`、`failed`、`closed`、`cancelled`。
 
-只有 `register` 使用调用方身份，以便随调用行撤回登记。所有权来自登记它的行：每个来源只有一个所有者，
+两种登记方法都使用调用方身份，以便随调用行撤回登记。所有权来自登记它的行：每个来源只有一个所有者，
 只有那个包针对它编写。这是进程内
 插件的信任模型（AGENTS.md 规则 11）：依赖声明不是沙箱。
 

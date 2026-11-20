@@ -99,7 +99,7 @@ flowchart LR
   p3 -->|"dim_app_server::control::ProcessActivity"| p72
   p10 -->|"dim_app_server::methods::ManagementMethods"| p72
   p14 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p72
-  p18 -->|"dim_app_server::settings::SettingsService"| p72
+  p18 -->|"dim_app_server::settings::declared::Settings"| p72
   p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p72
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p71
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p70
@@ -108,7 +108,7 @@ flowchart LR
   p17 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p68
   p10 -->|"dim_app_server::methods::ManagementMethods"| p68
   p14 -->|"dim_app_server::plugin_files::PluginFileTransactions"| p68
-  p18 -->|"dim_app_server::settings::SettingsService"| p68
+  p18 -->|"dim_app_server::settings::declared::Settings"| p68
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p67
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p66
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p65
@@ -151,7 +151,7 @@ flowchart LR
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p40
   p38 -->|"dim_app_server::agents::AgentDirectory"| p40
   p3 -->|"dim_app_server::control::ProcessActivity"| p40
-  p18 -->|"dim_app_server::settings::SettingsService"| p40
+  p18 -->|"dim_app_server::settings::declared::Settings"| p40
   p8 -->|"dim_app_server::storage::face::Store"| p40
   p8 -->|"dim_app_server::storage::metadata::binding::SessionMetadata"| p40
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p40
@@ -164,16 +164,16 @@ flowchart LR
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p36
   p10 -->|"dim_app_server::methods::ManagementMethods"| p36
   p10 -->|"dim_app_server::methods::ManagementMethods"| p35
-  p18 -->|"dim_app_server::settings::SettingsService"| p35
+  p18 -->|"dim_app_server::settings::declared::Settings"| p35
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p34
   p10 -->|"dim_app_server::methods::ManagementMethods"| p34
   p18 -->|"dim_app_server::settings::SettingsService"| p34
   p10 -->|"dim_app_server::methods::ManagementMethods"| p33
-  p18 -->|"dim_app_server::settings::SettingsService"| p33
+  p18 -->|"dim_app_server::settings::declared::Settings"| p33
   p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p32
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p32
   p10 -->|"dim_app_server::methods::ManagementMethods"| p32
-  p18 -->|"dim_app_server::settings::SettingsService"| p32
+  p18 -->|"dim_app_server::settings::declared::Settings"| p32
   p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p31
   p10 -->|"dim_app_server::methods::ManagementMethods"| p31
   p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p30

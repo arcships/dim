@@ -4,7 +4,7 @@
 use crate::{
     methods::ManagementMethods,
     protocol::Empty,
-    settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
+    settings::{BusinessDocument, Settings, SettingsError, SettingsScope},
 };
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
@@ -95,7 +95,7 @@ fn error(error: SettingsError) -> RpcError {
 /// Process owner of the `collaboration` source and its management methods,
 /// apart from Collaboration so it reloads without unloading Rpc.
 pub struct CollaborationModelPolicyPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     methods: Key<ManagementMethods>,
 }
 impl CollaborationModelPolicyPlugin {
@@ -117,7 +117,7 @@ impl DynPlugin for CollaborationModelPolicyPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
-            settings.register::<ModelPolicy>(ctx)?;
+            let settings = settings.register_document::<ModelPolicy>(ctx)?;
             methods.register(
                 ctx,
                 "collaboration",
@@ -146,7 +146,7 @@ impl DynPlugin for CollaborationModelPolicyPlugin {
                             "collaboration.model_policy" => {
                                 let _: Empty = params(value)?;
                                 let snapshot = settings
-                                    .read::<ModelPolicy>(SettingsScope::User, &stopping)
+                                    .read(SettingsScope::User, &stopping)
                                     .await
                                     .map_err(error)?;
                                 reply(PolicyView {

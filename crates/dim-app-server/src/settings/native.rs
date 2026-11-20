@@ -14,9 +14,10 @@ fn write_error(error: dim_agent_runtime::AgentError) -> SettingsError {
     }
 }
 
-fn decode<F: Format>(
+async fn decode<F: Format + ?Sized>(
     format: &F,
     row: UserDocument,
+    cancel: &CancellationToken,
 ) -> Result<(i64, SettingsSnapshot<F::Document>)> {
     if row.version <= 0 {
         return Err(SettingsError::Invalid(
@@ -26,13 +27,13 @@ fn decode<F: Format>(
     Ok((
         row.version,
         SettingsSnapshot {
-            document: format.decode(Some(row.document.as_bytes()))?,
+            document: format.decode(Some(row.document.as_bytes()), cancel).await?,
             revision: token(format.source(), row.version),
         },
     ))
 }
 impl SettingsService {
-    pub(super) async fn native_read<F: Format>(
+    pub(super) async fn native_read<F: Format + ?Sized>(
         &self,
         format: Arc<F>,
         path: FilePath,
@@ -55,9 +56,10 @@ impl SettingsService {
                     .await
                     .map_err(|_| SettingsError::Persistence)?
                 {
-                    return decode(&*format, row);
+                    return decode(&*format, row, &cancel).await;
                 }
-                let imported = snapshot(&*format, files.read(&path, &cancel).await)?;
+                let imported =
+                    snapshot(&*format, files.read(&path, &cancel).await, &cancel).await?;
                 let body = serde_json::to_string(&imported.document)
                     .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
                 let row = db
@@ -67,17 +69,17 @@ impl SettingsService {
                             document: body,
                             imported_revision: imported.revision,
                         },
-                        cancel,
+                        cancel.clone(),
                         stopping,
                     )
                     .await
                     .map_err(write_error)?;
-                decode(&*format, row)
+                decode(&*format, row, &cancel).await
             })
         };
         task.await?
     }
-    pub(super) async fn native_replace<F: Format>(
+    pub(super) async fn native_replace<F: Format + ?Sized>(
         self: &Arc<Self>,
         format: Arc<F>,
         path: FilePath,

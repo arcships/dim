@@ -2,6 +2,7 @@
 //! `BusinessDocument` sources and JSON Schema sources, each registered by
 //! the plugin that owns it (settings-service design).
 mod declared;
+mod document;
 mod native;
 pub mod workflow_files;
 pub use workflow_files::WorkflowFiles;
@@ -9,7 +10,7 @@ pub(crate) use workflow_files::WorkflowPackages;
 
 use crate::storage::SqliteStorage;
 use dim_agent_capabilities::file_storage::{FilePath, FileStorage, FileStorageError};
-use dim_agent_runtime::{Names, Registrations};
+use dim_agent_runtime::{Names, Registration, Registrations};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use rutis::{Ctx, Event};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -19,7 +20,7 @@ use std::{
     collections::BTreeMap,
     marker::PhantomData,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
@@ -147,10 +148,19 @@ pub struct SettingsSnapshot<D> {
 /// How one source's documents cross the persistence boundary, so Rust and
 /// declared sources share the file and native paths, keyed by source name.
 trait Format: Send + Sync + 'static {
-    type Document: Serialize + Send + 'static;
+    type Document: Serialize + Send + Sync + 'static;
     fn source(&self) -> &str;
     /// Decodes and checks a persisted document; `None` is a missing file.
-    fn decode(&self, bytes: Option<&[u8]>) -> Result<Self::Document>;
+    fn decode<'a>(
+        &'a self,
+        bytes: Option<&'a [u8]>,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<Self::Document>>;
+    fn validate<'a>(
+        &'a self,
+        document: &'a Self::Document,
+        cancel: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<()>>;
 }
 struct Typed<D>(PhantomData<fn() -> D>);
 impl<D: BusinessDocument> Format for Typed<D> {
@@ -158,13 +168,26 @@ impl<D: BusinessDocument> Format for Typed<D> {
     fn source(&self) -> &str {
         D::NAMESPACE
     }
-    fn decode(&self, bytes: Option<&[u8]>) -> Result<D> {
-        let document: D = match bytes {
-            Some(bytes) => D::decode(bytes)?,
-            None => D::default(),
-        };
-        document.validate()?;
-        Ok(document)
+    fn validate<'a>(
+        &'a self,
+        document: &'a D,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { document.validate() })
+    }
+    fn decode<'a>(
+        &'a self,
+        bytes: Option<&'a [u8]>,
+        _: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<D>> {
+        Box::pin(async move {
+            let document: D = match bytes {
+                Some(bytes) => D::decode(bytes)?,
+                None => D::default(),
+            };
+            document.validate()?;
+            Ok(document)
+        })
     }
 }
 fn typed<D: BusinessDocument>() -> Arc<Typed<D>> {
@@ -181,7 +204,64 @@ struct Source {
 }
 enum Kind {
     Rust(TypeId),
+    Custom,
     Declared(Arc<Declared>),
+}
+
+/// A custom source registered by one plugin generation.
+pub struct RegisteredDocument<D> {
+    settings: Arc<SettingsService>,
+    registration: Weak<Registration<Source>>,
+    format: Arc<dyn Format<Document = D>>,
+}
+
+impl<D: Serialize + Send + Sync + 'static> RegisteredDocument<D> {
+    fn path(&self, scope: SettingsScope) -> Result<FilePath> {
+        let entry = self
+            .settings
+            .sources
+            .get(self.format.source())
+            .ok_or(SettingsError::UnknownSource)?;
+        if !self.registration.ptr_eq(&Arc::downgrade(&entry)) {
+            return Err(SettingsError::UnknownSource);
+        }
+        self.settings.locate(
+            &entry.value.user_file,
+            entry.value.project_file.as_deref(),
+            scope,
+        )
+    }
+    pub async fn read(
+        &self,
+        scope: SettingsScope,
+        cancel: &CancellationToken,
+    ) -> Result<SettingsSnapshot<D>> {
+        self.settings.check_open(cancel)?;
+        self.settings
+            .read_source(self.format.clone(), self.path(scope)?, scope, cancel)
+            .await
+    }
+    pub async fn update(
+        &self,
+        scope: SettingsScope,
+        expected: &str,
+        document: D,
+        cancel: &CancellationToken,
+    ) -> Result<SettingsSnapshot<D>> {
+        self.format.validate(&document, cancel).await?;
+        self.settings.check_open(cancel)?;
+        self.settings
+            .replace(
+                self.format.clone(),
+                self.path(scope)?,
+                scope,
+                expected,
+                document,
+                |_, _| Ok(()),
+                cancel,
+            )
+            .await
+    }
 }
 
 pub struct SettingsService {
@@ -205,6 +285,12 @@ impl SettingsService {
     /// Registers the Rust source `D` for as long as the plugin that owns
     /// `ctx` is loaded. A source name or file registered already fails.
     pub fn register<D: BusinessDocument>(&self, ctx: &Ctx) -> rutis::Result<()> {
+        self.register_typed::<D>(ctx).map(drop)
+    }
+    fn register_typed<D: BusinessDocument>(
+        &self,
+        ctx: &Ctx,
+    ) -> rutis::Result<Arc<Registration<Source>>> {
         let failed = |error: SettingsError| registration_failed(D::NAMESPACE, error.to_string());
         validate_namespace(D::NAMESPACE).map_err(failed)?;
         validate_file(D::USER_FILE).map_err(failed)?;
@@ -244,6 +330,7 @@ impl SettingsService {
                 kind: Kind::Declared(Arc::new(declared)),
             },
         )
+        .map(drop)
     }
     /// The declarations of every registered JSON Schema source, by source
     /// name, for the client's `settings.sources` listing.
@@ -253,12 +340,17 @@ impl SettingsService {
             .iter()
             .filter_map(|registered| match &registered.value.kind {
                 Kind::Declared(declared) => Some(declared.declaration().clone()),
-                Kind::Rust(_) => None,
+                Kind::Rust(_) | Kind::Custom => None,
             })
             .collect()
     }
     /// Two sources sharing a name or a file would share a persisted document.
-    fn insert(&self, ctx: &Ctx, name: &str, source: Source) -> rutis::Result<()> {
+    fn insert(
+        &self,
+        ctx: &Ctx,
+        name: &str,
+        source: Source,
+    ) -> rutis::Result<Arc<Registration<Source>>> {
         let _guard = self.registering.lock().unwrap();
         let taken = self.sources.get(name).is_some()
             || self.sources.all().iter().any(|other| {
@@ -272,8 +364,7 @@ impl SettingsService {
                 "its name or file is registered already".into(),
             ));
         }
-        self.sources.register(ctx, name, source)?;
-        Ok(())
+        self.sources.register(ctx, name, source)
     }
     pub async fn authorize_project(
         self: &Arc<Self>,
@@ -409,7 +500,7 @@ impl SettingsService {
         )
         .await
     }
-    async fn read_source<F: Format>(
+    async fn read_source<F: Format + ?Sized>(
         &self,
         format: Arc<F>,
         path: FilePath,
@@ -422,7 +513,7 @@ impl SettingsService {
                 .await
                 .map(|(_, snapshot)| snapshot);
         }
-        snapshot(&*format, self.files.read(&path, cancel).await)
+        snapshot(&*format, self.files.read(&path, cancel).await, cancel).await
     }
     /// CAS on the revision. `check` sees the current and the new document
     /// under the file lease or at the expected native revision.
@@ -430,7 +521,7 @@ impl SettingsService {
         clippy::too_many_arguments,
         reason = "one parameter per part of the compare-and-set write"
     )]
-    async fn replace<F: Format>(
+    async fn replace<F: Format + ?Sized>(
         self: &Arc<Self>,
         format: Arc<F>,
         path: FilePath,
@@ -453,7 +544,7 @@ impl SettingsService {
                         .await;
                 }
                 let mut lease = owner.lease(&path, &cancel).await?;
-                let current = snapshot(&*format, lease.read(&cancel).await)?;
+                let current = snapshot(&*format, lease.read(&cancel).await, &cancel).await?;
                 if current.revision != expected {
                     return Err(SettingsError::Conflict);
                 }
@@ -538,9 +629,10 @@ fn revision(bytes: Option<&[u8]>) -> String {
         |bytes| format!("{:x}", Sha256::digest(bytes)),
     )
 }
-fn snapshot<F: Format>(
+async fn snapshot<F: Format + ?Sized>(
     format: &F,
     read: std::result::Result<Vec<u8>, FileStorageError>,
+    cancel: &CancellationToken,
 ) -> Result<SettingsSnapshot<F::Document>> {
     let bytes = match read {
         Ok(bytes) => Some(bytes),
@@ -548,7 +640,7 @@ fn snapshot<F: Format>(
         Err(error) => return Err(error.into()),
     };
     Ok(SettingsSnapshot {
-        document: format.decode(bytes.as_deref())?,
+        document: format.decode(bytes.as_deref(), cancel).await?,
         revision: revision(bytes.as_deref()),
     })
 }

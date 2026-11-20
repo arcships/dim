@@ -28,7 +28,7 @@ use dim_agent_capabilities::host_platform::{
 use dim_agent_capabilities::methods::{Progress, RpcError};
 use dim_agent_types::ModelId;
 use dim_app_server::plugin_files::PluginFileTransactions;
-use dim_app_server::settings::SettingsService;
+use dim_app_server::settings::RegisteredDocument;
 use jiff::{SignedDuration, Timestamp};
 use rutis::Ctx;
 use rutis::host::{CtxHost, Key};
@@ -466,7 +466,7 @@ pub struct TaskResultReply {
 /// running tasks read.
 pub(crate) struct Shared {
     pub(crate) files: Arc<PluginFileTransactions>,
-    pub(crate) settings: Arc<SettingsService>,
+    pub(crate) settings: Arc<RegisteredDocument<crate::ModalitySettings>>,
     pub(crate) selection: Arc<ModelSelectionHost>,
     pub(crate) selectable: Arc<SelectableModelsHost>,
     pub(crate) ctx: Ctx,
@@ -491,7 +491,7 @@ impl Shared {
     )]
     pub(crate) fn new(
         files: Arc<PluginFileTransactions>,
-        settings: Arc<SettingsService>,
+        settings: Arc<RegisteredDocument<crate::ModalitySettings>>,
         selection: Arc<ModelSelectionHost>,
         selectable: Arc<SelectableModelsHost>,
         ctx: Ctx,

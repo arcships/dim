@@ -3,7 +3,7 @@
 use crate::{
     methods::ManagementMethods,
     protocol::Empty,
-    settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
+    settings::{BusinessDocument, Settings, SettingsError, SettingsScope, SettingsService},
 };
 use dim_agent_capabilities::{
     host::{HostError, HostFuture},
@@ -138,7 +138,7 @@ fn error(error: SettingsError) -> RpcError {
 
 /// Process owner of the `permission` source and its management methods.
 pub struct PermissionRulesPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     methods: Key<ManagementMethods>,
 }
 impl PermissionRulesPlugin {
@@ -160,7 +160,7 @@ impl DynPlugin for PermissionRulesPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
-            settings.register::<PermissionSettings>(ctx)?;
+            let settings = settings.register_document::<PermissionSettings>(ctx)?;
             methods.register(
                 ctx,
                 "permission",
@@ -182,7 +182,7 @@ impl DynPlugin for PermissionRulesPlugin {
                             "permission.rules" => {
                                 let _: Empty = params(value)?;
                                 let snapshot = settings
-                                    .read::<PermissionSettings>(SettingsScope::User, &stopping)
+                                    .read(SettingsScope::User, &stopping)
                                     .await
                                     .map_err(error)?;
                                 reply(RulesView {

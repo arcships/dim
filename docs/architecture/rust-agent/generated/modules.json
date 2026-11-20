@@ -3684,6 +3684,15 @@
       ]
     },
     {
+      "id": "dim_app_server::settings::document",
+      "crate": "dim_app_server",
+      "parent": "dim_app_server::settings",
+      "file": "crates/dim-app-server/src/settings/document.rs",
+      "unexpandedMacros": [
+        "tokio::select"
+      ]
+    },
+    {
       "id": "dim_app_server::settings::native",
       "crate": "dim_app_server",
       "parent": "dim_app_server::settings",
@@ -23111,16 +23120,24 @@
       "from": "dim_agent_scheduler::methods",
       "to": "dim_app_server::settings",
       "references": [
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Conflict",
         "path SettingsError::Document",
         "path SettingsError::DocumentShape",
         "path SettingsError::Invalid",
-        "path SettingsService",
         "path dim_app_server::settings::SettingsSnapshot",
         "use dim_app_server::settings::BusinessDocument",
-        "use dim_app_server::settings::SettingsError",
-        "use dim_app_server::settings::SettingsService"
+        "use dim_app_server::settings::RegisteredDocument",
+        "use dim_app_server::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_agent_scheduler::methods",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use dim_app_server::settings::Settings"
       ]
     },
     {
@@ -25088,10 +25105,10 @@
     },
     {
       "from": "dim_app_server::agents",
-      "to": "dim_app_server::settings",
+      "to": "dim_app_server::settings::declared",
       "references": [
-        "path SettingsService",
-        "use crate::settings::SettingsService"
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -27120,11 +27137,17 @@
         "path SettingsError::Closed",
         "path SettingsError::Conflict",
         "path SettingsError::Invalid",
-        "path SettingsService",
         "path crate::settings::Result",
         "use crate::settings::BusinessDocument",
-        "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService"
+        "use crate::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration_model_policy",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -30732,6 +30755,14 @@
       ]
     },
     {
+      "from": "dim_app_server::permission_rules",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
+      ]
+    },
+    {
       "from": "dim_app_server::plugin_files",
       "to": "dim_agent_capabilities::file_storage",
       "references": [
@@ -33554,7 +33585,9 @@
       "from": "dim_app_server::settings",
       "to": "dim_agent_runtime::registrations",
       "references": [
+        "path Registration",
         "path Registrations",
+        "use dim_agent_runtime::Registration",
         "use dim_agent_runtime::Registrations"
       ]
     },
@@ -33576,6 +33609,14 @@
         "use declared::Writer",
         "use declared::holds_write_only",
         "use declared::without_write_only"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings",
+      "to": "dim_app_server::settings::document",
+      "references": [
+        "mod document",
+        "path document"
       ]
     },
     {
@@ -33623,10 +33664,13 @@
       "from": "dim_app_server::settings::declared",
       "to": "dim_app_server::settings",
       "references": [
+        "path BusinessDocument",
         "path Format",
+        "path Kind::Custom",
         "path Kind::Declared",
         "path Kind::Rust",
         "path ProjectAuthorized",
+        "path RegisteredDocument",
         "path Result",
         "path SettingsError",
         "path SettingsError::Cancelled",
@@ -33644,8 +33688,47 @@
         "path SettingsService",
         "path SettingsSnapshot",
         "path project_authorizations",
+        "path typed",
         "path validate_file",
         "path validate_namespace"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::declared",
+      "to": "dim_app_server::settings::document",
+      "references": [
+        "path document",
+        "path super::document::register"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::document",
+      "to": "dim_agent_capabilities::settings",
+      "references": [
+        "path SettingsScope"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::document",
+      "to": "dim_app_server::settings",
+      "references": [
+        "path Format",
+        "path Kind::Custom",
+        "path RegisteredDocument",
+        "path Result",
+        "path SettingsError::Document",
+        "path SettingsService",
+        "path Source",
+        "path revision",
+        "path validate_file",
+        "path validate_namespace"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::document",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path declared::envelope"
       ]
     },
     {
@@ -33688,6 +33771,13 @@
         "path SettingsSnapshot",
         "path revision",
         "path snapshot"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::native",
+      "to": "dim_app_server::settings::document",
+      "references": [
+        "path document"
       ]
     },
     {
@@ -33997,16 +34087,24 @@
       "to": "dim_app_server::settings",
       "references": [
         "path BusinessDocument",
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Cancelled",
         "path SettingsError::Closed",
         "path SettingsError::Conflict",
         "path SettingsError::Invalid",
-        "path SettingsService",
         "path crate::settings::Result",
         "use crate::settings::BusinessDocument",
-        "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService"
+        "use crate::settings::RegisteredDocument",
+        "use crate::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_app_server::skills_management",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -54909,16 +55007,24 @@
       "to": "dim_app_server::settings",
       "references": [
         "path BusinessDocument",
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Cancelled",
         "path SettingsError::Closed",
         "path SettingsError::Conflict",
         "path SettingsError::Invalid",
-        "path SettingsService",
         "path dim_app_server::settings::Result",
         "use dim_app_server::settings::BusinessDocument",
-        "use dim_app_server::settings::SettingsError",
-        "use dim_app_server::settings::SettingsService"
+        "use dim_app_server::settings::RegisteredDocument",
+        "use dim_app_server::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_modality",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use dim_app_server::settings::Settings"
       ]
     },
     {
@@ -55174,8 +55280,8 @@
       "from": "dim_modality::engine",
       "to": "dim_app_server::settings",
       "references": [
-        "path SettingsService",
-        "use dim_app_server::settings::SettingsService"
+        "path RegisteredDocument",
+        "use dim_app_server::settings::RegisteredDocument"
       ]
     },
     {
@@ -55185,6 +55291,7 @@
         "path Evaluation",
         "path ModalityAdapterService",
         "path catalog_category",
+        "path crate::ModalitySettings",
         "path crate::OcrLookup::Read",
         "path crate::OcrLookup::Skip",
         "path crate::OperationRow",

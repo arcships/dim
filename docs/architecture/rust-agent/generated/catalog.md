@@ -56,7 +56,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
 | `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
-| `settings` | process | Settings | data | `declaredBy` sync, `projects` sync, `read` async, `register` async, `update` async |
+| `settings` | process | Settings | data | `authorizeProject` async, `declaredBy` sync, `projects` sync, `read` async, `register` async, `registerDocument` async, `update` async |
 | `settingsService` | process | Settings | internal(owner-api) | — |
 | `skillsCatalog` | process | SkillsCatalog | data | `issues` async, `plugins` async, `register` async, `withdraw` async |
 | `skillsInstructionsSettingsHost` | process | PromptSettings | data | `instructions` async |
