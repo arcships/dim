@@ -7,7 +7,6 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Main check jobs join their shared groups only after path classification.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
   cancel-in-progress: true
 env:
@@ -54,9 +53,6 @@ jobs:
   dependencies:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
-    concurrency:
-      group: ci-main-dependencies-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -77,9 +73,6 @@ jobs:
   windows-cli:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
-    concurrency:
-      group: ci-main-windows-cli-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -98,9 +91,6 @@ jobs:
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true'
-    concurrency:
-      group: ci-main-web-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     steps:
@@ -152,9 +142,6 @@ jobs:
     if: >-
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
       needs.changes.outputs.scripts == 'true'
-    concurrency:
-      group: ci-main-verify-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     # PR runners must be isolated from release credentials and private networks.
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 75
@@ -296,9 +283,6 @@ jobs:
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
-    concurrency:
-      group: ci-main-acp-registry-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 30
     env:
