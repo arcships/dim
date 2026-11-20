@@ -685,7 +685,7 @@ export interface Store {
   sessionsUnderWorkspace(request: { root: string }): Promise<{ sessionIds: string[] }>;
   removeWorktreeDirectory(request: WorktreeDirectory): Promise<{ removed: boolean }>;
   worktreeUsages(request: WorktreeDirectory): Promise<{ usages: { sessionId: string; subtree: string }[] }>;
-  /** Callback runs under the native ownership mutex: do not await createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree or associateWorktree from it. */
+  /** Callback runs under the native ownership mutex: do not await createSession, createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree or associateWorktree from it. */
   removeWorktree(request: WorktreeDirectory, remove: (path: string) => Promise<void>): Promise<{ removed: boolean }>;
 }
 

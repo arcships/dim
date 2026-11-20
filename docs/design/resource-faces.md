@@ -768,7 +768,7 @@ records without an association timestamp.
 removal and directory-row deletion. Its callback receives the checked root path and
 is awaited; no SQL or Timeline commit lock is held while awaiting it. A callback failure
 leaves the directory row in place. As with the native callback, it must not await operations
-that acquire this same ownership mutex: `createOwnedSession`, `fork`, `delete`,
+that acquire this same ownership mutex: `createSession`, `createOwnedSession`, `fork`, `delete`,
 `removeWorktreeDirectory`, `removeWorktree`, or `store.associateWorktree`. Reads and
 other operations that do not acquire that mutex remain available. The callback may refuse with `invalid`, `cancelled`
 or `storage`; unexpected callback or transport failures are `storage`. There is no

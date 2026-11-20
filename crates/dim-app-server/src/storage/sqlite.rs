@@ -2848,7 +2848,6 @@ impl HostDispatch for SqliteDispatch {
                     serde_json::json!({"sequence":sequence})
                 }
                 Request::CreateSession(p) => {
-                    let _ownership = db.ownership.lock().await;
                     db.create_session(p.session_id, p.config)
                         .await
                         .map_err(dim_agent_runtime::timeline_store_failure)?;

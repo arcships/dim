@@ -433,14 +433,14 @@ A1–A12 是首版实现采用的策略。
 | --- | --- |
 | 注册到 `sessionMethods` 的命名空间 `session.rename` | Session 部分在 `Key<SessionMethods>` 依赖上调用 `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` |
 | 已发布历史 | 稳定目录绑定上的 既有具名 `sessions.history` HostDispatch（在插件边界解析外部回复） |
-| 标题元数据 | `Store::read` 与 `Store::set_title` |
+| 标题元数据 | `Store::read_metadata` 与 `Store::set_title` |
 | 辅助调用 | 既有 `AuxiliaryModel.0.complete` 与取消 token |
 | Session 广播监听器 | `session_channel(session_id)` 上针对 `Event` 记录的监听器，由 `ctx.effect` 移除 |
 | 生成任务 | 在 `ctx.effect` 下派生 |
 
 ```rust
 // Store (S5b; named service `store`)
-async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+async fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
 fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)
     -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }

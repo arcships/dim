@@ -708,6 +708,7 @@ impl SqliteStorage {
         session: String,
         config: SessionConfig,
     ) -> Result<()> {
+        let _ownership = self.ownership.lock().await;
         self.run(move |connection| {
             let tx = connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)
