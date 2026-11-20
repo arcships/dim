@@ -1073,24 +1073,30 @@ impl TimelineTree {
                 if let (Some(parent), Some((timeline, cut)), Some(input)) =
                     (&info.parent, &validate, &mut first)
                 {
-                    // A nested line inherits its parent's parent block, which
-                    // names a line it cannot read; its own opening input
-                    // supersedes that state with one naming the line that
-                    // opened it (§7.1.1). The read runs here, as a resumed
-                    // line's facts do, so a failed read fails this create
-                    // through the existing path and the parent keeps
+                    // A child inherits the keyed state above it: a parent
+                    // block naming a line it cannot read, and a roster listing
+                    // the lines the parent opened. Its opening input supersedes
+                    // both with its own state, so the inherited blocks stop
+                    // being its latest (§7.1, §7.1.1). The reads run here, as a
+                    // resumed line's facts do, so a failed read fails this
+                    // create through the existing path and the parent keeps
                     // dispatching.
-                    let key = parent_key();
-                    let live = tokio::time::timeout(
-                        owner.factory.startup_timeout(),
-                        owner.keyed_live(parent, timeline, *cut, &key),
-                    );
-                    let carried = tokio::select! {
+                    let live = tokio::time::timeout(owner.factory.startup_timeout(), async {
+                        let roster = owner
+                            .keyed_live(parent, timeline, *cut, &roster_key())
+                            .await?;
+                        let above = owner.keyed_live(parent, timeline, *cut, &parent_key()).await?;
+                        Ok::<_, AgentError>((roster, above))
+                    });
+                    let (roster, above) = tokio::select! {
                         result = live =>
                             result.map_err(|_| AgentError::Build("branch opening timed out".into()))??,
                         _ = owner.cancel.cancelled() => return Err(AgentError::Cancelled("branch creation".into())),
                     };
-                    if carried {
+                    if roster {
+                        input.blocks.push(roster_open_block(&info.id, parent));
+                    }
+                    if above {
                         input.blocks.push(parent_open_block(parent, *cut));
                     }
                 }
@@ -1354,8 +1360,11 @@ impl TimelineTree {
     ) -> Result<bool> {
         let mut chain = timeline.ancestors();
         chain.push((parent.to_owned(), cut));
+        // The root writes no `branch:parent` block, because it has no parent
+        // (design §7.1.1), so only the roster's key can be live there.
+        let skip_root = key == parent_key();
         for (line, through) in chain.into_iter().rev() {
-            if self.info(&line).is_none_or(|info| info.parent.is_none()) {
+            if self.info(&line).is_none() || (skip_root && line == ROOT_BRANCH_ID) {
                 continue;
             }
             let scope = self.stored_scope(&line, 1, through);
@@ -3161,7 +3170,17 @@ struct LineView {
     idle_notice: IdleNotice,
     /// The lines this line opened, open or not, by the order it opened them.
     children: BTreeMap<String, Child>,
+    /// The latest `branch:line` block on the line, with whether it is
+    /// retired: its identity, or the note that replaced it.
+    identity: Option<(String, bool)>,
+    /// The latest `branch:roster` block on the line, with whether it is
+    /// retired: the tool lines it listed (design §7.1).
     roster: Option<(String, bool)>,
+    /// Whether the root's load found a live `branch:line` block, its roster
+    /// from before the key split, still owed one retirement (design §7.1).
+    legacy: bool,
+    /// Whether the root's load has read `branch:line` for such a block.
+    legacy_read: bool,
     /// The turn that steered the parent, when one did.
     steered: Option<String>,
     steering: Option<(String, String)>,
@@ -3183,7 +3202,7 @@ struct LineView {
 impl LineView {
     fn input_block(&mut self, id: &str, text: &str, key: &str, retire: bool) {
         if key == line_key() {
-            let birth = self.roster.is_none();
+            let birth = self.identity.is_none();
             if self.role == Some(LineRole::Tool)
                 && birth
                 && !retire
@@ -3194,6 +3213,8 @@ impl LineView {
             {
                 self.idle_notice = IdleNotice::None;
             }
+            self.identity = Some((text.to_owned(), retire));
+        } else if key == roster_key() {
             self.roster = Some((text.to_owned(), retire));
         } else if key == parent_key() {
             self.parent_input = Some(id.to_owned());
@@ -3249,8 +3270,9 @@ impl LineView {
 /// `<dim-branch-line>`, written by TimelineTree at the start of every child.
 const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
 
-/// `<dim-branch-lines>`, the roster BranchLine writes on main.
-const ROSTER_ENTRY: &str = r#"<dim-branch-lines branch="main">: on main, the runtime lists the lines you opened that are still open, each with the first line of its purpose. A later block of this name replaces the earlier one; it is state about the lines, not a request."#;
+/// `<dim-branch-lines>`, the roster BranchLine writes under [`roster_key`] on
+/// a line that opened lines.
+const ROSTER_ENTRY: &str = r#"<dim-branch-lines branch="main">: the lines you opened, under the key `branch:roster` and apart from your own identity under `branch:line`: the runtime lists the tool lines you opened that are still open, each with the first line of its purpose. A later block of this name replaces the earlier one; it is state about the lines, not a request."#;
 
 /// The roster's closing sentence, coordination text for `main`
 /// ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)),
@@ -3714,11 +3736,24 @@ impl BranchLine {
                 });
         }
         if self.view.lock().unwrap().roster.is_none() {
-            let observed = self.block(&line_key()).await?;
+            let observed = self.block(&roster_key()).await?;
             let mut view = self.view.lock().unwrap();
             if view.roster.is_none() {
                 view.roster = observed.map(|(_, text, retire)| (text, retire));
             }
+        }
+        // A root stored before the roster's key split kept its roster under
+        // `branch:line`; nothing else retires that block, so its load reads it
+        // once and the roster decision writes the retirement (design §7.1).
+        if self
+            .resolved()
+            .is_some_and(|(role, _)| role == LineRole::Main)
+            && !self.view.lock().unwrap().legacy_read
+        {
+            let found = self.block(&line_key()).await?;
+            let mut view = self.view.lock().unwrap();
+            view.legacy_read = true;
+            view.legacy = found.is_some_and(|(_, _, retire)| !retire);
         }
         Ok(())
     }
@@ -4115,26 +4150,25 @@ impl BranchLine {
         };
         match decision {
             Decision::Roster => {
-                if role != LineRole::Main {
-                    return Ok(());
-                }
                 self.roster_state().await?;
                 let (text, retired) = self.roster();
-                let observed = self.view.lock().unwrap().roster.clone();
+                let (observed, legacy) = {
+                    let view = self.view.lock().unwrap();
+                    (view.roster.clone(), view.legacy)
+                };
                 let settled = observed.as_ref() == Some(&(text.clone(), retired))
                     || (retired && observed.as_ref().is_none_or(|(_, retired)| *retired));
-                if settled {
+                if settled && !legacy {
                     return Ok(());
                 }
-                self.write_roster(text, retired, None).await
+                let roster = (!settled).then_some((text, retired));
+                self.write_roster(roster, None, legacy).await
             }
             Decision::Ended(branch) => {
-                if role != LineRole::Main {
-                    return Ok(());
-                }
                 self.roster_state().await?;
                 let (text, retired) = self.roster();
-                self.write_roster(text, retired, Some(branch)).await
+                self.write_roster(Some((text, retired)), Some(branch), false)
+                    .await
             }
             Decision::Idle { turn, status } => {
                 let Some(parent) = parent.filter(|_| role == LineRole::Tool) else {
@@ -4147,7 +4181,7 @@ impl BranchLine {
                 {
                     return Ok(());
                 }
-                let needs_identity = self.view.lock().unwrap().roster.is_none();
+                let needs_identity = self.view.lock().unwrap().identity.is_none();
                 if needs_identity && let Some((id, text, retire)) = self.block(&line_key()).await? {
                     self.view
                         .lock()
@@ -4391,17 +4425,22 @@ impl BranchLine {
     }
     async fn write_roster(
         &self,
-        text: String,
-        retired: bool,
+        roster: Option<(String, bool)>,
         notice: Option<String>,
+        legacy: bool,
     ) -> Result<()> {
-        let key = line_key();
-        let block = if retired {
-            crate::context_block::retire(text.clone(), key)
-        } else {
-            crate::context_block::raw(text.clone(), Some(key))
-        };
-        let mut blocks = vec![block];
+        let key = roster_key();
+        let mut blocks = Vec::new();
+        if legacy {
+            blocks.push(legacy_roster_retirement(&self.own));
+        }
+        if let Some((text, retired)) = &roster {
+            blocks.push(if *retired {
+                crate::context_block::retire(text.clone(), key)
+            } else {
+                crate::context_block::raw(text.clone(), Some(key))
+            });
+        }
         if let Some(branch) = &notice {
             blocks.push(crate::context_block::raw(
                 crate::context_block::element(
@@ -4422,7 +4461,11 @@ impl BranchLine {
             ..InputMessageData::default()
         };
         self.tree.input(self.own.clone(), data).await?;
-        self.view.lock().unwrap().roster = Some((text, retired));
+        let mut view = self.view.lock().unwrap();
+        if let Some((text, retired)) = roster {
+            view.roster = Some((text, retired));
+        }
+        view.legacy = false;
         Ok(())
     }
 }
@@ -4505,7 +4548,7 @@ impl BranchLine {
         // The fold has seen no block on a load, so the comparison starts from
         // the latest one stored, read on the line's own Timeline before the
         // tree registers the line.
-        let block = if self.view.lock().unwrap().roster.is_none() {
+        let block = if self.view.lock().unwrap().identity.is_none() {
             self.load_block(&line_key()).await?
         } else {
             None
@@ -4522,7 +4565,7 @@ impl BranchLine {
             ..InputMessageData::default()
         };
         crate::branch_input::append_own(&self.timeline, data, Vec::new()).map(|_| ())?;
-        self.view.lock().unwrap().roster = Some((text, false));
+        self.view.lock().unwrap().identity = Some((text, false));
         Ok(())
     }
     /// Writes the note a committed move owes this line: the role the move
@@ -4539,7 +4582,7 @@ impl BranchLine {
         if !receives_note(role) {
             return Ok(());
         }
-        let block = if self.view.lock().unwrap().roster.is_none() {
+        let block = if self.view.lock().unwrap().identity.is_none() {
             self.block(&line_key()).await?
         } else {
             None
@@ -4548,7 +4591,7 @@ impl BranchLine {
         let Some(text) = self.note_text(parent, became_default, &other).await? else {
             return Ok(());
         };
-        let latest = self.view.lock().unwrap().roster.clone();
+        let latest = self.view.lock().unwrap().identity.clone();
         if stated == Some(became_default) && latest.is_some_and(|(latest, _)| latest == text) {
             return Ok(());
         }
@@ -4560,7 +4603,7 @@ impl BranchLine {
         // Once the line runs, input goes through the tree, which refuses it on
         // an ended line.
         self.tree.input(self.own.clone(), data).await?;
-        self.view.lock().unwrap().roster = Some((text, false));
+        self.view.lock().unwrap().identity = Some((text, false));
         Ok(())
     }
     /// The text of the status note either decision writes, `None` when this
@@ -4608,7 +4651,7 @@ impl BranchLine {
         if let Some((id, text, retire)) = block {
             view.input_block(&id, &text, &line_key(), retire);
         }
-        view.roster
+        view.identity
             .as_ref()
             .and_then(|(text, _)| default_attribute(text))
     }
@@ -4971,6 +5014,12 @@ impl BranchTool {
         let Some(target) = target else {
             return Ok(self.not_kin());
         };
+        // A plugin line's protocol is its creator's: it sends the line it was
+        // cut from no message, and the refusal names the caller as the line
+        // that is not a tool line (design §6).
+        if own.role == LineRole::Host && own.parent.as_deref() == Some(target.id.as_str()) {
+            return Ok(self.not_tool_line(&own.id));
+        }
         if !kin(own, &target) {
             return Ok(self.not_kin());
         }
@@ -5002,16 +5051,13 @@ impl BranchTool {
         let Some(target) = self.line(&id) else {
             return Ok(self.not_kin());
         };
-        let permitted = match own.role {
-            LineRole::Main => kin(own, &target),
-            LineRole::Tool | LineRole::Host | LineRole::User => {
-                own.parent.as_deref() == Some(target.id.as_str())
-            }
-        };
-        if !permitted {
+        // A plugin line reads the line it was cut from; every other line reads
+        // the line it was cut from and the lines it opened (design §6).
+        let cut_from = own.parent.as_deref() == Some(target.id.as_str());
+        if !cut_from && !kin(own, &target) {
             return Ok(self.not_kin());
         }
-        if own.role == LineRole::Main && matches!(target.source, Some(BranchSource::Host { .. })) {
+        if !cut_from && matches!(target.source, Some(BranchSource::Host { .. })) {
             return Ok(self.not_tool_line(&target.id));
         }
         let limit = match input.limit.unwrap_or(READ_PAGE_LIMIT as u64) {
@@ -5022,20 +5068,21 @@ impl BranchTool {
                 )));
             }
         };
-        // main reads from a line's start; a line reads from its cut. Without
-        // `after`, a read continues after the reader's last read of the
-        // target, and a parent read never goes below the cut (design §6).
-        let cut = if own.role == LineRole::Main {
-            0
-        } else {
-            self.tree
+        // A read of the line the caller was cut from starts at its cut; a read
+        // of a line it opened starts at that line's first event. Without
+        // `after`, a read continues after the caller's last read of the target,
+        // and a read of the line it was cut from never goes below the cut
+        // (design §6).
+        let cut = match cut_from {
+            true => self
+                .tree
                 .info(own.id.clone())
                 .ok()
                 .and_then(|info| info.branch_point)
-                .unwrap_or(0)
+                .unwrap_or(0),
+            false => 0,
         };
         let after = match input.after {
-            Some(after) if own.role == LineRole::Main => after,
             Some(after) => after.max(cut),
             None => line
                 .cursor(&target.id)
@@ -5152,12 +5199,19 @@ struct OwnLine {
     /// The line committed its own `branch/end`: it is ending.
     ending: bool,
 }
+/// The line a caller may message: the line it was cut from, and each line it
+/// opened, whatever opened that line (design §6). A line the user opened is
+/// on no roster, so the line it was cut from neither messages nor reads it,
+/// and a plugin line sends its creator's protocol no message.
 fn kin(own: &OwnLine, target: &TimelineInfo) -> bool {
-    match own.role {
-        LineRole::Tool => target.id == own.parent.clone().unwrap_or_default(),
-        LineRole::Main => target.parent.as_deref() == Some(own.id.as_str()),
-        LineRole::Host | LineRole::User => false,
+    if own.role == LineRole::Host {
+        return false;
     }
+    if own.parent.as_deref() == Some(target.id.as_str()) {
+        return true;
+    }
+    target.parent.as_deref() == Some(own.id.as_str())
+        && !matches!(target.source, Some(BranchSource::User { .. }))
 }
 /// The submission id a tool end's final message carries, derived from the end
 /// it belongs to: `branch-final:<line>:<sequence>`. Both the delivery after the
@@ -5466,6 +5520,12 @@ impl ToolHandler for BranchTool {
 fn line_key() -> String {
     "branch:line".into()
 }
+/// The roster's own key: the lines one line opened, kept apart from the
+/// identity under [`line_key`] so a roster write never retires the line's own
+/// identity and a status note never retires its roster (design §7.1).
+fn roster_key() -> String {
+    "branch:roster".into()
+}
 /// The `default` attribute of a `<dim-branch-line>` block, `None` when it
 /// carries none: a birth identity has no attribute, and a note is `true` or
 /// `false` (design §12.1).
@@ -5521,6 +5581,37 @@ fn first_input(parent: &str, data: &BranchCreateData, idle_notice: IdleNotice) -
         mode: Some(InputMode::Queue),
         ..InputMessageData::default()
     }
+}
+
+/// The block a load writes on the root when its stored history was written
+/// before the roster's key split: the live roster sits under the identity's
+/// key, so retiring it leaves the root with no identity, which it has none of
+/// (design §7.1).
+fn legacy_roster_retirement(line: &str) -> InputBlock {
+    crate::context_block::retire(
+        crate::context_block::element(
+            "dim-branch-lines",
+            &[("branch", line)],
+            "This replaces the list of your open lines above. The current list, when any line is open, follows.",
+        ),
+        line_key(),
+    )
+}
+
+/// The block a child gets at open when the prefix it inherits holds a live
+/// roster: it retires the key under the child's own id, so a line that opened
+/// none of its own keeps no list instead of its parent's (design §7.1).
+fn roster_open_block(line: &str, parent: &str) -> InputBlock {
+    crate::context_block::retire(
+        crate::context_block::element(
+            "dim-branch-lines",
+            &[("branch", line)],
+            &format!(
+                "The list above belongs to line {parent} and names the lines it opened. This line has opened none of its own, so it keeps no list."
+            ),
+        ),
+        roster_key(),
+    )
 }
 
 /// The block a nested line gets at open: it keeps the parent key live and

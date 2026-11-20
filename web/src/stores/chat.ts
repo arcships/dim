@@ -533,7 +533,7 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const loaded = await window(channel, branchId, before, branch.through)
       if (branch.projection !== projection) return
-      projection.prepend(loaded.projection.rows, `before-${before}`)
+      projection.prepend(loaded.projection, `before-${before}`)
       branch.before = loaded.window.before
     } catch (error) {
       branch.historyError = error instanceof Error ? error.message : String(error)
