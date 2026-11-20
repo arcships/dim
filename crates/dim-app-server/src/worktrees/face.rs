@@ -40,6 +40,64 @@ fn failure(error: WorktreeError) -> Error {
     )
 }
 
+impl ManagedWorktrees {
+    async fn handoff(&self, request: Create, cancel: CancellationToken) -> Reply {
+        let admission = self.preparing.token();
+        if self.closing.is_cancelled() {
+            return Err(failure(WorktreeError::Store(
+                "worktree owner is closing".into(),
+            )));
+        }
+        let (offer, delivery) = tokio::sync::oneshot::channel();
+        let (accept, mut accepted) = tokio::sync::oneshot::channel();
+        let owner = self.clone();
+        self.preparing.spawn(async move {
+            let created = match owner
+                .create(
+                    &request.source,
+                    request.base.as_deref(),
+                    request.branch.as_deref(),
+                    &cancel,
+                )
+                .await
+            {
+                Ok(created) => created,
+                Err(error) => {
+                    let _ = offer.send(Err(failure(error)));
+                    return;
+                }
+            };
+            let reply = created.reply();
+            owner
+                .preparations
+                .lock()
+                .unwrap()
+                .insert(created.task_id.clone(), created.clone());
+            let handed = offer.send(Ok(reply)).is_ok()
+                && tokio::select! {
+                    delivered = &mut accepted => delivered.is_ok(),
+                    _ = owner.closing.cancelled() => {
+                        accepted.close();
+                        accepted.try_recv().is_ok()
+                    }
+                };
+            if !handed {
+                owner.preparations.lock().unwrap().remove(&created.task_id);
+                owner.discard(&created, &CancellationToken::new()).await;
+            }
+        });
+        drop(admission);
+        let reply = delivery
+            .await
+            .map_err(|error| failure(WorktreeError::Store(error.to_string())))??;
+        let reply = rutis_bridge::session::arg(&reply)?;
+        accept
+            .send(())
+            .map_err(|_| failure(WorktreeError::Store("worktree preparation stopped".into())))?;
+        Ok(reply)
+    }
+}
+
 impl HostDispatch for ManagedWorktrees {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
@@ -61,37 +119,29 @@ impl HostDispatch for ManagedWorktrees {
         let guard = cancel.clone().drop_guard();
         Ok(Value::cancellable_future(async move {
             let _guard = guard;
+            if let Operation::Create(request) = operation {
+                return owner.handoff(request, cancel).await;
+            }
             tokio::spawn(async move {
                 match operation {
-                    Operation::Create(p) => {
-                        let created = owner
-                            .create(&p.source, p.base.as_deref(), p.branch.as_deref(), &cancel)
-                            .await
-                            .map_err(failure)?;
-                        rutis_bridge::session::arg(&created.reply())
-                    }
-                    Operation::Discard(created) => {
-                        let root = PathBuf::from(&created.root);
-                        let managed = super::canonical(owner.root.clone())
-                            .await
-                            .map_err(failure)?;
-                        if !super::valid_task_id(&created.task_id)
-                            || root.parent() != Some(managed.join(&created.task_id).as_path())
-                        {
-                            return Err(failure(WorktreeError::Invalid(
-                                "invalid managed worktree directory".into(),
-                            )));
-                        }
-                        super::check_recorded_root(&root, &managed)
-                            .await
-                            .map_err(failure)?;
-                        owner
-                            .rollback_add(
-                                std::path::Path::new(&created.repository),
-                                &root,
-                                &created.branch,
-                            )
-                            .await;
+                    Operation::Create(_) => unreachable!(),
+                    Operation::Discard(reply) => {
+                        let prepared = {
+                            let mut pending = owner.preparations.lock().unwrap();
+                            match pending.entry(reply.task_id.clone()) {
+                                std::collections::hash_map::Entry::Occupied(entry)
+                                    if entry.get().reply() == reply =>
+                                {
+                                    entry.remove()
+                                }
+                                _ => {
+                                    return Err(failure(WorktreeError::Invalid(
+                                        "unknown worktree preparation".into(),
+                                    )));
+                                }
+                            }
+                        };
+                        owner.discard(&prepared, &cancel).await;
                         Ok(Value::Undefined)
                     }
                     Operation::List(_) => {
@@ -126,5 +176,97 @@ impl HostDispatch for ManagedWorktrees {
             .await
             .map_err(|error| failure(WorktreeError::Store(error.to_string())))?
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dim_agent_runtime::{AgentBuilder, AgentConfig};
+    use std::{process::Command, sync::Arc};
+
+    #[tokio::test]
+    async fn abandoning_a_completed_checkout_before_handoff_removes_its_tree_and_branch() {
+        let directory = tempfile::tempdir().unwrap();
+        let repo = directory.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output.stdout
+        };
+        git(&["init", "-q"]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "initial",
+        ]);
+        let mut builder = AgentBuilder::new(AgentConfig::default());
+        dim_agent_capabilities::defaults::install(&mut builder);
+        dim_agent_capabilities::defaults::mock_model_hosts(&mut builder);
+        dim_agent_capabilities::defaults::tool_host(
+            &mut builder,
+            Arc::new(dim_agent_capabilities::adapters::MockTools),
+        );
+        let server = crate::serve(
+            builder,
+            crate::ServerConfig {
+                database_path: Some(directory.path().join("store.sqlite")),
+                product_home: Some(directory.path().into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let owner = server.root.get::<ManagedWorktrees>().unwrap();
+        let mut handoff = Box::pin(owner.handoff(
+            Create {
+                source: repo.clone(),
+                base: None,
+                branch: Some("abandoned".into()),
+            },
+            CancellationToken::new(),
+        ));
+        assert!(futures_util::poll!(&mut handoff).is_pending());
+        let root = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(root) = owner
+                    .preparations
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .map(|p| p.prepared.directory.root.clone())
+                {
+                    break root;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(root.join(".git").is_file());
+        drop(handoff);
+        owner.preparing.close();
+        tokio::time::timeout(Duration::from_secs(10), owner.preparing.wait())
+            .await
+            .unwrap();
+        assert!(!root.exists());
+        assert!(git(&["branch", "--list", "abandoned"]).is_empty());
+        server.shutdown();
+        server.join().await.unwrap();
     }
 }

@@ -1501,7 +1501,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("historyRenderer", "hot-path"),
         ("hostPlatform", "object"),
         ("loopState", "hot-path"),
-        // Session creation calls it directly; no leaf needs the service.
         ("mentionIndex", "host-resource"),
         ("modelHost", "owner-api"),
         ("openAICodexOAuthService", "secret"),

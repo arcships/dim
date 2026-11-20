@@ -20,6 +20,8 @@ export default definePlugin({
         assert.deepEqual(selected.candidates, [])
         assert.deepEqual(selected.kept.map(row => row.worktree.taskId), [created.taskId])
         await assert.rejects(() => owner.remove({ taskId: 'invalid', force: false }), { code: 'worktree_invalid' })
+        await assert.rejects(owner.discard({ ...created, branch: 'another-branch' }), { code: 'worktree_invalid' })
+        assert.deepEqual((await owner.list({})).map(row => row.taskId), [created.taskId])
         await owner.discard(created)
         return { kind: 'value', value: { created, remaining: await owner.list({}) } }
       },
