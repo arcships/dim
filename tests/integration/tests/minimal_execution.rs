@@ -123,16 +123,17 @@ fn test_platform(platform: ExecHost) -> impl FnOnce(&mut AgentBuilder) {
 /// `exec-shell.json` there, rows of the harness's host.
 fn configured_platform(home: PathBuf) -> impl FnOnce(&mut AgentBuilder) {
     move |builder| {
+        let exec_shell_file = home.join("exec-shell.json");
         let files = FileStoragePlugin::new(vec![home]);
         builder.plugin(move |_| Ok(Box::new(files.clone())));
-        builder.plugin(|names| {
+        builder.plugin(move |names| {
             Ok(Box::new(HostPlatformPlugin::new(
                 names,
                 HostPlatformConfig {
                     execution: names.key()?,
                     toolchain: names.key()?,
-                    command_files: Some((0, "command-output".into())),
-                    exec_shell_file: Some((0, "exec-shell.json".into())),
+                    exec_shell_file: Some(exec_shell_file.clone()),
+                    command_files: Some(exec_shell_file.with_file_name("command-output")),
                     home: None,
                 },
             )?))

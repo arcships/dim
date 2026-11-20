@@ -1256,7 +1256,7 @@ async fn model_log_switch_starts_the_recorder() {
         root.plugin(
             dim_app_server::model_log::ModelLogPlugin::new(
                 &Names::copy(&dim_app_server::catalog(), &Build::default()),
-                0,
+                home.join("model-log"),
             )
             .unwrap(),
         ),

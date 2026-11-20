@@ -1708,6 +1708,17 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
     );
     let starter = client_session(&mut client, &agent, json!({"preset":"full-access"})).await;
     let at = json!({"sessionId":starter.id(),"branchId":"main"});
+    let mut inputs = starter
+        .on::<dim_agent_runtime::InputSnapshot>("main")
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        inputs.wait_for(|state| state.queued == 2),
+    )
+    .await
+    .expect("client presence and execution settings inputs are published")
+    .unwrap();
     let before = starter.sequence("main").unwrap();
     let initial = client.rpc("permissions.branch", at.clone()).await;
     assert_ok(&initial);

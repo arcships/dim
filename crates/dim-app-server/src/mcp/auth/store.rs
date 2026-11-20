@@ -1,7 +1,7 @@
 //! `mcp-oauth.json` under the home root: Mcp's own credential store. One
-//! writer (Mcp), atomic 0600 replace through FileStorage, versioned.
+//! writer (Mcp), atomic 0600 replace through fsHost, versioned.
 use super::{CredentialKey, McpAuthError};
-use dim_agent_capabilities::file_storage::{FileLease, FilePath, FileStorage, FileStorageError};
+use dim_agent_capabilities::file_storage::{FileStorageError, FsHost, FsPermissions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{io, sync::Arc, time::Duration};
@@ -135,8 +135,8 @@ pub(super) struct Tokens {
 }
 
 pub(super) struct Store {
-    files: Arc<FileStorage>,
-    path: FilePath,
+    files: Arc<FsHost>,
+    path: std::path::PathBuf,
     /// In front of the FileStorage lock, which admits or fails at once.
     local: Mutex<()>,
     #[cfg(feature = "testing")]
@@ -147,12 +147,19 @@ pub(super) struct Store {
 /// made in between.
 pub(super) struct Locked<'a> {
     _local: MutexGuard<'a, ()>,
-    lease: FileLease,
+    lease: uuid::Uuid,
+    store: &'a Store,
     pub document: Document,
-    #[cfg(feature = "testing")]
-    home: &'a std::path::Path,
 }
 impl Locked<'_> {
+    pub async fn unlock(self) -> Result<(), McpAuthError> {
+        self.store
+            .files
+            .unlock(self.lease)
+            .await
+            .map_err(|_| McpAuthError::Unavailable)
+    }
+
     /// Commits once started: the replace ignores cancellation. A replace in
     /// place whose sync failed counts as written: readers already see it,
     /// and a crash that loses it ends like a kill (design §7).
@@ -166,14 +173,17 @@ impl Locked<'_> {
         let mut bytes = serde_json::to_vec_pretty(&value).map_err(|_| McpAuthError::Unavailable)?;
         bytes.push(b'\n');
         #[cfg(feature = "testing")]
-        testing::pause(self.home).await;
-        #[cfg(unix)]
-        let permissions = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
-        #[cfg(not(unix))]
-        let permissions = None;
+        testing::pause(&self.store.home).await;
         match self
-            .lease
-            .replace(bytes, permissions, &CancellationToken::new())
+            .store
+            .files
+            .replace(
+                &self.store.path,
+                bytes,
+                FsPermissions::Private,
+                Some(self.lease),
+                &CancellationToken::new(),
+            )
             .await
         {
             Ok(()) => Ok(()),
@@ -187,19 +197,23 @@ impl Locked<'_> {
 }
 
 impl Store {
-    pub fn new(files: Arc<FileStorage>, root: usize) -> Result<Self, FileStorageError> {
-        Ok(Self {
-            path: files.path(root, FILE)?,
+    pub fn new(files: Arc<FsHost>, home: std::path::PathBuf) -> Self {
+        Self {
+            path: home.join(FILE),
             #[cfg(feature = "testing")]
-            home: files.root_path(root)?,
+            home,
             files,
             local: Mutex::new(()),
-        })
+        }
     }
 
     /// A lock-free read: writes are atomic replaces.
     pub async fn read(&self, cancel: &CancellationToken) -> Result<Document, McpAuthError> {
-        decode(self.files.read(&self.path, cancel).await)
+        decode(
+            self.files
+                .read_bytes(&self.path, usize::MAX, None, cancel)
+                .await,
+        )
     }
 
     /// Another daemon sharing the home may hold the file lock; retry until
@@ -210,8 +224,8 @@ impl Store {
             _ = cancel.cancelled() => return Err(McpAuthError::Cancelled),
             guard = self.local.lock() => guard,
         };
-        let mut lease = loop {
-            match self.files.lock(&self.path, cancel).await {
+        let lease = loop {
+            match self.files.lock(None, &self.path, cancel).await {
                 Ok(lease) => break lease,
                 Err(FileStorageError::Locked) => tokio::select! {
                     _ = cancel.cancelled() => return Err(McpAuthError::Cancelled),
@@ -221,13 +235,22 @@ impl Store {
                 Err(_) => return Err(McpAuthError::Unavailable),
             }
         };
-        let document = decode(lease.read(cancel).await)?;
+        let document = match decode(
+            self.files
+                .read_bytes(&self.path, usize::MAX, Some(lease), cancel)
+                .await,
+        ) {
+            Ok(document) => document,
+            Err(error) => {
+                let _ = self.files.unlock(lease).await;
+                return Err(error);
+            }
+        };
         Ok(Locked {
             _local: local,
             lease,
             document,
-            #[cfg(feature = "testing")]
-            home: &self.home,
+            store: self,
         })
     }
 }

@@ -6,7 +6,7 @@ mod oauth;
 mod store;
 
 use super::config::{BearerAuth, McpOAuthSettings, McpServerSettings};
-use dim_agent_capabilities::file_storage::FileStorage;
+use dim_agent_capabilities::file_storage::FsHost;
 use reqwest_mcp::Url;
 use std::{
     collections::HashMap,
@@ -217,12 +217,9 @@ pub struct McpAuth {
 }
 
 impl McpAuth {
-    pub(super) fn new(
-        files: Arc<FileStorage>,
-        root: usize,
-    ) -> Result<Arc<Self>, Box<dyn std::error::Error + Send + Sync>> {
-        Ok(Arc::new(Self {
-            store: Store::new(files, root)?,
+    pub(super) fn new(files: Arc<FsHost>, home: std::path::PathBuf) -> Arc<Self> {
+        Arc::new(Self {
+            store: Store::new(files, home),
             http: tokio::sync::OnceCell::new(),
             #[cfg(feature = "testing")]
             fail_http_build: std::sync::atomic::AtomicBool::new(false),
@@ -231,7 +228,7 @@ impl McpAuth {
             stopping: CancellationToken::new(),
             gate: Mutex::new(()),
             tasks: TaskTracker::new(),
-        }))
+        })
     }
 
     async fn http(&self) -> Result<&reqwest_mcp::Client, McpAuthError> {
@@ -511,91 +508,96 @@ impl McpAuth {
                 return Err(closed(error));
             }
         };
-        let current = self
-            .attempts
-            .lock()
-            .await
-            .get_mut(&key)
-            .and_then(|slot| slot.get(attempt_id))
-            .map(|attempt| {
-                let a = &attempt.authorization;
-                (a.verifier.clone(), a.client.clone(), a.binding.clone())
-            });
-        let Some((verifier, client, binding)) = current else {
-            return Err(McpAuthError::AttemptClosed);
-        };
-        let response = match self.http().await {
-            Ok(http) => {
-                oauth::token(
-                    http,
-                    &binding.token_endpoint,
-                    &client,
-                    &binding.resource,
-                    oauth::Grant::Code {
-                        code: &code,
-                        verifier: &verifier,
-                    },
-                    &binding.requested_scopes,
-                )
+        let result = async {
+            let current = self
+                .attempts
+                .lock()
                 .await
-            }
-            Err(_) => Err(oauth::TokenError::Unavailable),
-        };
-        let mut attempts = self.attempts.lock().await;
-        let Some(slot) = attempts.get_mut(&key).filter(|slot| slot.is(attempt_id)) else {
+                .get_mut(&key)
+                .and_then(|slot| slot.get(attempt_id))
+                .map(|attempt| {
+                    let a = &attempt.authorization;
+                    (a.verifier.clone(), a.client.clone(), a.binding.clone())
+                });
+            let Some((verifier, client, binding)) = current else {
+                return Err(McpAuthError::AttemptClosed);
+            };
+            let response = match self.http().await {
+                Ok(http) => {
+                    oauth::token(
+                        http,
+                        &binding.token_endpoint,
+                        &client,
+                        &binding.resource,
+                        oauth::Grant::Code {
+                            code: &code,
+                            verifier: &verifier,
+                        },
+                        &binding.requested_scopes,
+                    )
+                    .await
+                }
+                Err(_) => Err(oauth::TokenError::Unavailable),
+            };
+            let mut attempts = self.attempts.lock().await;
+            let Some(slot) = attempts.get_mut(&key).filter(|slot| slot.is(attempt_id)) else {
+                drop(attempts);
+                if let (Ok(tokens), Some(endpoint)) = (&response, &binding.revocation_endpoint) {
+                    self.revoke(endpoint, &key.url, &client, tokens).await;
+                }
+                return Err(McpAuthError::AttemptClosed);
+            };
+            let mut unwritten = None;
+            let result = match response {
+                Ok(tokens) => {
+                    let record = Record::new(&key, binding.clone(), client.clone(), tokens.clone());
+                    locked.document.put(record);
+                    let written = locked.write().await;
+                    if written.is_ok() {
+                        self.key(&key, |state| {
+                            state.challenge = None;
+                            state.missing_scopes.clear();
+                        });
+                        self.changed(&key, true);
+                    } else {
+                        unwritten = Some(tokens);
+                    }
+                    written
+                }
+                Err(oauth::TokenError::Unavailable) => {
+                    if let Some(attempt) = &mut slot.current {
+                        attempt.exchanging = false;
+                    }
+                    return Err(McpAuthError::Unavailable);
+                }
+                Err(oauth::TokenError::InvalidClient) => {
+                    if let Some(record) = locked.document.get_mut(&key)
+                        && record
+                            .client
+                            .as_ref()
+                            .is_some_and(|stored| stored.client_id == client.client_id)
+                    {
+                        record.client = None;
+                        record.tokens = None;
+                        if locked.write().await.is_ok() {
+                            self.changed(&key, false);
+                        }
+                    }
+                    Err(McpAuthError::Failed("invalid_client"))
+                }
+                Err(oauth::TokenError::Rejected) => Err(McpAuthError::Failed("invalid_grant")),
+                Err(oauth::TokenError::Failed(code)) => Err(McpAuthError::Failed(code)),
+            };
+            slot.current = None;
             drop(attempts);
-            if let (Ok(tokens), Some(endpoint)) = (&response, &binding.revocation_endpoint) {
+            if let (Some(tokens), Some(endpoint)) = (&unwritten, &binding.revocation_endpoint) {
                 self.revoke(endpoint, &key.url, &client, tokens).await;
             }
-            return Err(McpAuthError::AttemptClosed);
-        };
-        let mut unwritten = None;
-        let result = match response {
-            Ok(tokens) => {
-                let record = Record::new(&key, binding.clone(), client.clone(), tokens.clone());
-                locked.document.put(record);
-                let written = locked.write().await;
-                if written.is_ok() {
-                    self.key(&key, |state| {
-                        state.challenge = None;
-                        state.missing_scopes.clear();
-                    });
-                    self.changed(&key, true);
-                } else {
-                    unwritten = Some(tokens);
-                }
-                written
-            }
-            Err(oauth::TokenError::Unavailable) => {
-                if let Some(attempt) = &mut slot.current {
-                    attempt.exchanging = false;
-                }
-                return Err(McpAuthError::Unavailable);
-            }
-            Err(oauth::TokenError::InvalidClient) => {
-                if let Some(record) = locked.document.get_mut(&key)
-                    && record
-                        .client
-                        .as_ref()
-                        .is_some_and(|stored| stored.client_id == client.client_id)
-                {
-                    record.client = None;
-                    record.tokens = None;
-                    if locked.write().await.is_ok() {
-                        self.changed(&key, false);
-                    }
-                }
-                Err(McpAuthError::Failed("invalid_client"))
-            }
-            Err(oauth::TokenError::Rejected) => Err(McpAuthError::Failed("invalid_grant")),
-            Err(oauth::TokenError::Failed(code)) => Err(McpAuthError::Failed(code)),
-        };
-        slot.current = None;
-        drop(attempts);
-        if let (Some(tokens), Some(endpoint)) = (&unwritten, &binding.revocation_endpoint) {
-            self.revoke(endpoint, &key.url, &client, tokens).await;
+            result
         }
-        result
+        .await;
+        let released = locked.unlock().await;
+        result.and(released)
     }
 
     /// Revokes the refresh token, then the access token (RFC 7009), best
@@ -641,31 +643,38 @@ impl McpAuth {
             }
             self.owned(cancel, move |auth| async move {
                 let mut locked = auth.store.lock(&auth.stopping).await.map_err(closed)?;
-                let record = locked.document.remove(&target);
-                let revoked = match &record {
-                    Some(Record {
-                        revocation_endpoint: Some(endpoint),
-                        client: Some(client),
-                        tokens: Some(tokens),
-                        ..
-                    }) => auth.revoke(endpoint, &target.url, client, tokens).await,
-                    _ => false,
-                };
-                if record.is_some() {
-                    locked.write().await?;
+                let result: Result<_, McpAuthError> = async {
+                    let record = locked.document.remove(&target);
+                    let revoked = match &record {
+                        Some(Record {
+                            revocation_endpoint: Some(endpoint),
+                            client: Some(client),
+                            tokens: Some(tokens),
+                            ..
+                        }) => auth.revoke(endpoint, &target.url, client, tokens).await,
+                        _ => false,
+                    };
+                    if record.is_some() {
+                        locked.write().await?;
+                    }
+                    {
+                        let mut attempts = auth.attempts.lock().await;
+                        let slot = attempts.entry(target.clone()).or_default();
+                        slot.current = None;
+                        slot.signouts += 1;
+                        auth.key(&target, |state| {
+                            state.challenge = None;
+                            state.missing_scopes.clear();
+                        });
+                        auth.changed(&target, false);
+                    }
+                    Ok((revoked, record.map(|record| record.issuer)))
                 }
-                {
-                    let mut attempts = auth.attempts.lock().await;
-                    let slot = attempts.entry(target.clone()).or_default();
-                    slot.current = None;
-                    slot.signouts += 1;
-                    auth.key(&target, |state| {
-                        state.challenge = None;
-                        state.missing_scopes.clear();
-                    });
-                    auth.changed(&target, false);
-                }
-                Ok((revoked, record.map(|record| record.issuer)))
+                .await;
+                let released = locked.unlock().await;
+                let value = result?;
+                released?;
+                Ok(value)
             })
             .await
         }
@@ -685,82 +694,89 @@ impl McpAuth {
             .lock(&self.stopping)
             .await
             .map_err(|_| Refusal::Unavailable)?;
-        let record = locked.document.get(&key).ok_or(Refusal::Required)?;
-        let tokens = record.tokens.as_ref().ok_or(Refusal::Expired)?;
-        match &stale {
-            Stale::Expiring if fresh(tokens) => return Ok(tokens.access_token.clone()),
-            Stale::Rejected(sent) if *sent != tokens.access_token => {
-                return Ok(tokens.access_token.clone());
-            }
-            _ => {}
-        }
-        let issuer = record.issuer.clone();
-        let still_valid = tokens.expires_at.is_none_or(|at| at > oauth::now());
-        let current = tokens.access_token.clone();
-        let (Some(refresh_token), Some(client)) =
-            (tokens.refresh_token.clone(), record.client.clone())
-        else {
-            if matches!(stale, Stale::Expiring) && still_valid {
-                return Ok(current);
-            }
-            locked.document.get_mut(&key).unwrap().tokens = None;
-            locked.write().await.map_err(|_| Refusal::Unavailable)?;
-            self.changed(&key, false);
-            return Err(Refusal::Expired);
-        };
-        if self.stopping.is_cancelled() {
-            return Err(Refusal::Unavailable);
-        }
-        let response = match self.http().await {
-            Ok(http) => {
-                oauth::token(
-                    http,
-                    &record.token_endpoint,
-                    &client,
-                    &record.resource,
-                    oauth::Grant::Refresh(&refresh_token),
-                    &tokens.scopes,
-                )
-                .await
-            }
-            Err(_) => Err(oauth::TokenError::Unavailable),
-        };
-        let record = locked.document.get_mut(&key).unwrap();
-        let result = match response {
-            Ok(mut tokens) => {
-                tokens.refresh_token.get_or_insert(refresh_token);
-                let access = tokens.access_token.clone();
-                record.tokens = Some(tokens);
-                locked.write().await.map_err(|_| Refusal::Unavailable)?;
-                self.changed(&key, true);
-                Ok(access)
-            }
-            // Only a refused grant or client ends the credential (§5.6).
-            Err(error @ (oauth::TokenError::Rejected | oauth::TokenError::InvalidClient)) => {
-                record.tokens = None;
-                if matches!(error, oauth::TokenError::InvalidClient) {
-                    record.client = None;
+        let result = async {
+            let record = locked.document.get(&key).ok_or(Refusal::Required)?;
+            let tokens = record.tokens.as_ref().ok_or(Refusal::Expired)?;
+            match &stale {
+                Stale::Expiring if fresh(tokens) => return Ok(tokens.access_token.clone()),
+                Stale::Rejected(sent) if *sent != tokens.access_token => {
+                    return Ok(tokens.access_token.clone());
                 }
+                _ => {}
+            }
+            let issuer = record.issuer.clone();
+            let still_valid = tokens.expires_at.is_none_or(|at| at > oauth::now());
+            let current = tokens.access_token.clone();
+            let (Some(refresh_token), Some(client)) =
+                (tokens.refresh_token.clone(), record.client.clone())
+            else {
+                if matches!(stale, Stale::Expiring) && still_valid {
+                    return Ok(current);
+                }
+                locked.document.get_mut(&key).unwrap().tokens = None;
                 locked.write().await.map_err(|_| Refusal::Unavailable)?;
                 self.changed(&key, false);
-                Err(Refusal::Expired)
+                return Err(Refusal::Expired);
+            };
+            if self.stopping.is_cancelled() {
+                return Err(Refusal::Unavailable);
             }
-            Err(oauth::TokenError::Unavailable | oauth::TokenError::Failed(_)) => match stale {
-                Stale::Expiring if still_valid => Ok(current),
-                _ => Err(Refusal::Unavailable),
-            },
-        };
-        trace(
-            &key,
-            Some(&issuer),
-            "refresh",
-            match &result {
-                Ok(_) => "ok",
-                Err(refusal) => refusal.code(),
-            },
-            started,
-        );
-        result
+            let response = match self.http().await {
+                Ok(http) => {
+                    oauth::token(
+                        http,
+                        &record.token_endpoint,
+                        &client,
+                        &record.resource,
+                        oauth::Grant::Refresh(&refresh_token),
+                        &tokens.scopes,
+                    )
+                    .await
+                }
+                Err(_) => Err(oauth::TokenError::Unavailable),
+            };
+            let record = locked.document.get_mut(&key).unwrap();
+            let result = match response {
+                Ok(mut tokens) => {
+                    tokens.refresh_token.get_or_insert(refresh_token);
+                    let access = tokens.access_token.clone();
+                    record.tokens = Some(tokens);
+                    locked.write().await.map_err(|_| Refusal::Unavailable)?;
+                    self.changed(&key, true);
+                    Ok(access)
+                }
+                // Only a refused grant or client ends the credential (§5.6).
+                Err(error @ (oauth::TokenError::Rejected | oauth::TokenError::InvalidClient)) => {
+                    record.tokens = None;
+                    if matches!(error, oauth::TokenError::InvalidClient) {
+                        record.client = None;
+                    }
+                    locked.write().await.map_err(|_| Refusal::Unavailable)?;
+                    self.changed(&key, false);
+                    Err(Refusal::Expired)
+                }
+                Err(oauth::TokenError::Unavailable | oauth::TokenError::Failed(_)) => match stale {
+                    Stale::Expiring if still_valid => Ok(current),
+                    _ => Err(Refusal::Unavailable),
+                },
+            };
+            trace(
+                &key,
+                Some(&issuer),
+                "refresh",
+                match &result {
+                    Ok(_) => "ok",
+                    Err(refusal) => refusal.code(),
+                },
+                started,
+            );
+            result
+        }
+        .await;
+        let released = locked.unlock().await.map_err(|_| Refusal::Unavailable);
+        let value = result?;
+        released?;
+        Ok(value)
     }
 
     /// Marks the key expired after a refreshed token was refused too.
@@ -770,17 +786,22 @@ impl McpAuth {
             .lock(&self.stopping)
             .await
             .map_err(|_| Refusal::Unavailable)?;
-        if let Some(record) = locked.document.get_mut(&key)
-            && record
-                .tokens
-                .as_ref()
-                .is_some_and(|tokens| tokens.access_token == sent)
-        {
-            record.tokens = None;
-            locked.write().await.map_err(|_| Refusal::Unavailable)?;
-            self.changed(&key, false);
+        let result: Result<(), Refusal> = async {
+            if let Some(record) = locked.document.get_mut(&key)
+                && record
+                    .tokens
+                    .as_ref()
+                    .is_some_and(|tokens| tokens.access_token == sent)
+            {
+                record.tokens = None;
+                locked.write().await.map_err(|_| Refusal::Unavailable)?;
+                self.changed(&key, false);
+            }
+            Ok(())
         }
-        Ok(())
+        .await;
+        let released = locked.unlock().await.map_err(|_| Refusal::Unavailable);
+        result.and(released)
     }
 }
 

@@ -12,7 +12,7 @@ mod usage;
 pub use http::ClientIds;
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use dim_agent_capabilities::file_storage::FileStorage;
+use dim_agent_capabilities::file_storage::FsHost;
 use dim_agent_runtime::{Names, register_part};
 use dim_app_server::{
     managed_provider::{
@@ -1204,14 +1204,14 @@ impl ManagedProvider for DimOAuth {
 
 /// Provides the Dim account service under the product home's file root.
 pub struct DimOAuthPlugin {
-    root: usize,
+    home: std::path::PathBuf,
     ids: ClientIds,
-    files: Key<FileStorage>,
+    files: Key<FsHost>,
 }
 impl DimOAuthPlugin {
-    pub fn new(names: &Names<'_>, root: usize, ids: ClientIds) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, home: std::path::PathBuf, ids: ClientIds) -> rutis::Result<Self> {
         Ok(Self {
-            root,
+            home,
             ids,
             files: names.key()?,
         })
@@ -1220,10 +1220,14 @@ impl DimOAuthPlugin {
 
 /// The App Server row that installs DimOAuth under the product root.
 pub fn row(ids: ClientIds) -> ManagedProviderRow {
-    ManagedProviderRow(Arc::new(move |builtins, root| {
+    ManagedProviderRow(Arc::new(move |builtins, home| {
         let ids = ids.clone();
         register_part(builtins, &dim_app_server::catalog(), move |names| {
-            Ok(Box::new(DimOAuthPlugin::new(names, root, ids.clone())?))
+            Ok(Box::new(DimOAuthPlugin::new(
+                names,
+                home.clone(),
+                ids.clone(),
+            )?))
         })
         .expect("DimOAuth dependencies")
     }))
@@ -1244,7 +1248,7 @@ impl DynPlugin for DimOAuthPlugin {
                 .build()
                 .map_err(|e| rutis::Error::from(ErrorKind::PluginFailed(e.to_string().into())))?;
             let service = Arc::new(DimOAuth(Arc::new(Inner {
-                store: Store::new(files, self.root, client.clone()),
+                store: Store::new(files, self.home.clone(), client.clone()),
                 client,
                 ids: self.ids.clone(),
                 bundled: OnceLock::new(),

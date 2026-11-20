@@ -125,10 +125,10 @@ after it.
 No Timeline subscriptions/production or background tasks in this Session plugin.
 Each source shares a generation cancellation token and checks it on load.
 Reload publishes new source handles; PromptSourcesBranch checks mutable sources.
-Instructions come from the public AGENTS.md search logic, not private agent
-documentation. Sources must be loaded then adopted by Prompt before reaching
+PromptSources looks for the nearest ancestor AGENTS.md and the user rule through
+`fsHost.stat` and `fsHost.readBytes`. It compares the canonical paths to adopt a shared file once. Sources must be loaded then adopted by Prompt before reaching
 model context. Polling does not guarantee immediate visibility of file changes.
-The environment source reads `HostPlatform::exec_shell()` on each load, so the
+The environment source reads `execHost.info` on each load, so the
 existing refresh/adoption flow also picks up exec shell preference changes.
 Explicit refresh, like periodic checks, refreshes only instructions, environment
 and date. Base and Session System entries stay adopted. Profile adoption uses

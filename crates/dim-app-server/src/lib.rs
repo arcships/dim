@@ -642,15 +642,10 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 .ok_or_else(|| ServerError::Configuration("database must name a file".into()))?;
             create_private_directory(&directory)?;
             let directory = std::fs::canonicalize(directory)?;
-            Some(
-                match config.file_roots.iter().position(|root| root == &directory) {
-                    Some(index) => index,
-                    None => {
-                        config.file_roots.push(directory);
-                        config.file_roots.len() - 1
-                    }
-                },
-            )
+            if !config.file_roots.contains(&directory) {
+                config.file_roots.push(directory.clone());
+            }
+            Some(directory)
         }
         None => None,
     };
@@ -722,7 +717,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     )?];
     let native_home = execution_root.filter(|_| config.database_path.is_some());
     let files =
-        dim_agent_capabilities::file_storage::FileStoragePlugin::new(config.file_roots.clone());
+        dim_agent_capabilities::file_storage::FileStoragePlugin::new(config.file_roots.clone())
+            .with_node_home(config.platform_home.clone());
     rows.push(register_part(
         &mut builtins,
         builder.catalog(),
@@ -761,6 +757,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             },
         )?);
     }
+    let command_files = session_files_root
+        .as_ref()
+        .map(|root| root.join(crate::storage::COMMAND_OUTPUT_DIRECTORY));
     if let (Some(path), Some(files_root)) = (&config.database_path, session_files_root) {
         let path = path.clone();
         let assembly_progress = assembly_progress.clone();
@@ -783,7 +782,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             builder.catalog(),
             move |names| {
                 Ok(Box::new(storage::SessionStorePlugin::new(
-                    names, files_root,
+                    names,
+                    files_root.clone(),
                 )?))
             },
         )?);
@@ -834,39 +834,48 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             )))
         },
     )?);
-    if let Some(home_root) = plugin_root {
+    if let Some(root) = &plugin_files {
+        let root = root.clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
                 Ok(Box::new(plugin_files::PluginFilesPlugin::new(
-                    names, home_root,
+                    names,
+                    root.clone(),
                 )?))
             },
         )?);
     }
     if let Some(home_root) = product_root {
         if let Some(provider) = &config.managed_provider {
-            rows.push((provider.0)(&mut builtins, home_root));
+            rows.push((provider.0)(
+                &mut builtins,
+                config.file_roots[home_root].clone(),
+            ));
             rows.push(register_part(&mut builtins, builder.catalog(), |_| {
                 Ok(Box::new(managed_provider::ManagedProviderBinding))
             })?);
         }
+        let codex_home = config.file_roots[home_root].clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
                 Ok(Box::new(codex_oauth::OpenAICodexOAuthPlugin::new(
-                    names, home_root,
+                    names,
+                    codex_home.clone(),
                 )?))
             },
         )?);
+        let grok_home = config.file_roots[home_root].clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
                 Ok(Box::new(grok_oauth::GrokOAuthPlugin::new(
-                    names, home_root,
+                    names,
+                    grok_home.clone(),
                 )?))
             },
         )?);
@@ -910,15 +919,23 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                     )?))
                 },
             )?);
+            let log_directory = config.file_roots[home_root].join("model-log");
             rows.push(register_part(
                 &mut builtins,
                 builder.catalog(),
-                move |names| Ok(Box::new(model_log::ModelLogPlugin::new(names, home_root)?)),
+                move |names| {
+                    Ok(Box::new(model_log::ModelLogPlugin::new(
+                        names,
+                        log_directory.clone(),
+                    )?))
+                },
             )?);
         }
     }
     if let Some(home_root) = execution_root {
         let platform_home = config.platform_home.clone();
+        let exec_shell_file = config.file_roots[home_root].join("exec-shell.json");
+        let mcp_home = config.file_roots[home_root].clone();
         mcp::install(&mut builder);
         if native_home.is_some() {
             dim_agent_attachments::install(&mut builder);
@@ -930,7 +947,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
-            move |names| Ok(Box::new(mcp::McpPlugin::new(names, home_root)?)),
+            move |names| Ok(Box::new(mcp::McpPlugin::new(names, mcp_home.clone())?)),
         )?);
         rows.push(register_part(&mut builtins, builder.catalog(), |names| {
             Ok(Box::new(execution_settings::ExecutionSettingsPlugin::new(
@@ -974,10 +991,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                         dim_agent_capabilities::host_platform::HostPlatformConfig {
                             execution: names.key()?,
                             toolchain: names.key()?,
-                            command_files: session_files_root.map(|root| {
-                                (root, crate::storage::COMMAND_OUTPUT_DIRECTORY.into())
-                            }),
-                            exec_shell_file: Some((home_root, "exec-shell.json".into())),
+                            exec_shell_file: Some(exec_shell_file.clone()),
+                            command_files: command_files.clone(),
                             home: platform_home.clone(),
                         },
                     )?,
@@ -1499,14 +1514,12 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextUsage", "hot-path"),
         ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),
-        ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.
         ("managedWorktrees", "hot-path"),
-        ("mentionIndex", "host-resource"),
         ("modelHost", "owner-api"),
         ("openAICodexOAuthService", "secret"),
         ("prepareContextHost", "hot-path"),

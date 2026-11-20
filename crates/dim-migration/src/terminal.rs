@@ -51,7 +51,7 @@ impl Terminal {
         stopped: bool,
         retry: Option<String>,
     ) -> Result<TaskReport> {
-        let target = migration.ledger.files.root_path(0)?;
+        let target = migration.ledger.home.clone();
         let started = Instant::now();
         let mut screen = Screen::open(self.interactive).map_err(Error::Terminal)?;
         let mut progress = migration.progress();

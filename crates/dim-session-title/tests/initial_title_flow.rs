@@ -161,39 +161,47 @@ async fn entry_of(client: &mut Client, id: &str) -> Value {
         .clone()
 }
 
-/// The title entry of `id`, once its notice has arrived. The caller attaches
-/// first: a notice reaches only a client the Session is attached to.
-async fn titled(client: &mut Client, id: &str, text: &str, source: &str) -> Value {
-    tokio::time::timeout(Duration::from_secs(10), async {
+async fn initial_title(client: &mut Client, id: &str, text: &str) {
+    let entry = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            let listed = client.rpc("session.summaries", json!({})).await.unwrap();
-            let Some(entry) = listed
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|entry| entry["sessionId"] == id)
-                .cloned()
-            else {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                continue;
-            };
-            if entry["title"] == text
-                && entry["titleSource"] == source
-                && client.notices.iter().any(|notice| {
-                    matches!(notice,
-                    Message::Notice { method, params }
-                    if method == "session.notice" && params["sessionId"] == id
-                        && params["kind"] == "title"
-                        && params["data"]["titleRevision"] == entry["titleRevision"])
-                })
-            {
+            let entry = entry_of(client, id).await;
+            if entry["titleRevision"] != 0 {
                 return entry;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("the committed title and its notice arrive")
+    .expect("the launch title is committed");
+    assert_eq!(entry["title"], text, "{entry}");
+    assert_eq!(entry["titleSource"], "manual", "{entry}");
+    assert_eq!(entry["titleRevision"], 1, "{entry}");
+}
+
+async fn rename_and_observe(client: &mut Client, id: &str) {
+    let renamed = when_served(
+        client,
+        "session.rename",
+        json!({"sessionId":id,"title":"  Renamed by hand  "}),
+    )
+    .await;
+    assert_eq!(renamed["title"], "Renamed by hand", "{renamed}");
+    let entry = entry_of(client, id).await;
+    assert_eq!(entry["title"], renamed["title"], "{entry}");
+    assert_eq!(entry["titleSource"], "manual", "{entry}");
+    assert_eq!(entry["titleRevision"], renamed["revision"], "{entry}");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(client.next().await.unwrap(), Message::Notice { method, params }
+                if method == "session.notice" && params["sessionId"] == id
+                    && params["kind"] == "title" && params["data"]["titleRevision"] == renamed["revision"])
+            {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("the attached client receives the rename notice");
 }
 
 /// A Session whose creation requests a title gets it once, as the first manual
@@ -211,17 +219,8 @@ async fn a_requested_title_is_written_once_and_a_later_rename_wins() {
         .rpc("session.attach", json!({"sessionId":id}))
         .await
         .unwrap();
-    let entry = titled(&mut client, &id, "Nightly build", "manual").await;
-    assert_eq!(entry["titleRevision"], 1, "{entry}");
-
-    let renamed = when_served(
-        &mut client,
-        "session.rename",
-        json!({"sessionId":id,"title":"  Renamed by hand  "}),
-    )
-    .await;
-    assert_eq!(renamed["title"], "Renamed by hand");
-    titled(&mut client, &id, "Renamed by hand", "manual").await;
+    initial_title(&mut client, &id, "Nightly build").await;
+    rename_and_observe(&mut client, &id).await;
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
@@ -280,7 +279,7 @@ async fn a_requested_title_is_bounded_by_max_length() {
         .rpc("session.attach", json!({"sessionId":id}))
         .await
         .unwrap();
-    titled(&mut client, &id, "A name much", "manual").await;
+    initial_title(&mut client, &id, "A name much").await;
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
@@ -350,18 +349,12 @@ async fn a_fork_of_a_renamed_launch_stays_untitled_across_a_restart() {
         .await;
     assert_eq!(launched["ok"], true, "{launched}");
     let source = launched["value"]["sessionId"].as_str().unwrap().to_owned();
+    initial_title(&mut client, &source, "Nightly build").await;
     client
         .rpc("session.attach", json!({"sessionId":source}))
         .await
         .unwrap();
-    titled(&mut client, &source, "Nightly build", "manual").await;
-    when_served(
-        &mut client,
-        "session.rename",
-        json!({"sessionId":source,"title":"  Renamed by hand  "}),
-    )
-    .await;
-    titled(&mut client, &source, "Renamed by hand", "manual").await;
+    rename_and_observe(&mut client, &source).await;
 
     let forked = client
         .rpc("session.fork", json!({"sessionId":source,"at":0}))
@@ -417,7 +410,7 @@ async fn a_fork_of_an_untouched_launch_stays_untitled_across_a_restart() {
         .rpc("session.attach", json!({"sessionId":source}))
         .await
         .unwrap();
-    titled(&mut client, &source, "Nightly build", "manual").await;
+    initial_title(&mut client, &source, "Nightly build").await;
 
     let forked = client
         .rpc("session.fork", json!({"sessionId":source,"at":0}))

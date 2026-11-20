@@ -6,8 +6,8 @@ use super::super::file_reads::{
 use super::codec;
 use super::edit::unified_diff;
 use super::{
-    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, cancelled,
-    failed, field, hex, invalid_input, not_regular, refused, resolve_path, revision, wrote,
+    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, failed,
+    field, hex, invalid_input, not_regular, refused, resolve_path, revision, wrote,
 };
 use crate::host::HostError;
 use dim_agent_types::{JsonObject, ToolEffect, ToolResult};
@@ -77,36 +77,28 @@ pub(super) async fn run(
     }
     let _lock = tools.locks.lock(&path, &cancel).await?;
     let binding = reads.write_binding(&path).await?;
-    let (display, content, target, bounded) = (
-        display.clone(),
-        content.clone(),
+    let (_lock, reply) = super::Mutation::Write {
+        display: display.clone(),
+        content: content.clone(),
+        binding,
+    }
+    .apply(
+        tools.fs.as_deref(),
         path.clone(),
         tools.boundary.is_some(),
-    );
-    #[cfg(test)]
-    let hook = tools.before_commit.clone();
-    let (_lock, written) = blocking(move || {
-        let written = write_locked(
-            &target,
-            bounded,
-            &display,
-            &content,
-            binding,
-            &cancel,
-            #[cfg(test)]
-            hook,
-        );
-        (_lock, written)
-    })
+        _lock,
+        &cancel,
+        #[cfg(test)]
+        tools.before_commit.clone(),
+    )
     .await?;
-    let (result, binding) = written.map_err(|Cancelled| cancelled())?;
-    if let Some(binding) = binding {
+    if let Some(binding) = reply.binding {
         reads.set(path, binding, established);
     }
-    Ok(result)
+    Ok(reply.result)
 }
 
-fn write_locked(
+pub(super) fn write_locked(
     path: &Path,
     bounded: bool,
     display: &str,

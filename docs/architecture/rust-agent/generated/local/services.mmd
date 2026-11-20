@@ -28,7 +28,6 @@ flowchart LR
   subgraph process["process"]
     p2["rutis-loader"]
     p28["SkillsCatalog"]
-    p19["WorkspaceToolsOwner"]
     p5["HostPlatform"]
     p4["FileStorage"]
   end
@@ -162,11 +161,11 @@ flowchart LR
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p63
   p73 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main"| p63
   p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p28
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p5
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p5
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p56
   p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p56
   p49 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p56
   p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p56
-  p19 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p56
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p56
   p33 -->|"dim_agent_runtime::config::SessionIdentity@session"| p56
   p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p55

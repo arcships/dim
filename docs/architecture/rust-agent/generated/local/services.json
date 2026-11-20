@@ -2328,36 +2328,6 @@
         ]
       },
       {
-        "id": 19,
-        "parent": 2,
-        "name": "WorkspaceToolsOwner",
-        "state": "Active",
-        "generation": 1,
-        "injects": [
-          {
-            "service": "dim_agent_runtime::parts::PartRegistry",
-            "scope": null,
-            "status": "Ready"
-          }
-        ],
-        "resolved": [
-          {
-            "service": "dim_agent_runtime::parts::PartRegistry",
-            "scope": null,
-            "provider": 3,
-            "generation": 1
-          }
-        ],
-        "reads": [
-          {
-            "service": "dim_agent_runtime::parts::PartRegistry",
-            "provider": 3,
-            "declared": true,
-            "external": true
-          }
-        ]
-      },
-      {
         "id": 5,
         "parent": 2,
         "name": "HostPlatform",
@@ -2370,7 +2340,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2388,7 +2358,7 @@
             "generation": 0
           },
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -2454,12 +2424,6 @@
       {
         "service": "dim_agent_capabilities::skills::face::SkillsCatalog",
         "provider": 28,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-        "provider": 19,
         "generation": 1,
         "removing": false
       },
@@ -2578,6 +2542,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::host_platform::HostPlatform",
             "scope": null,
             "status": "Ready"
@@ -2593,11 +2562,6 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
             "service": "dim_agent_runtime::config::SessionConfig@session",
             "scope": null,
             "status": "Ready"
@@ -2609,6 +2573,12 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "provider": 4,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::host_platform::HostPlatform",
             "scope": null,
@@ -2628,12 +2598,6 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-            "scope": null,
-            "provider": 19,
-            "generation": 1
-          },
-          {
             "service": "dim_agent_runtime::config::SessionConfig@session",
             "scope": null,
             "provider": 33,
@@ -2647,6 +2611,12 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "provider": 4,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_capabilities::host::SessionFiles",
             "provider": 1,
@@ -2668,12 +2638,6 @@
           {
             "service": "dim_agent_capabilities::timeline_tree::TreeCommands@session",
             "provider": 52,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-            "provider": 19,
             "declared": true,
             "external": true
           },

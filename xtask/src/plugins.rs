@@ -10,8 +10,7 @@
 use dim_agent_capabilities::{
     defaults,
     execution_settings::ExecutionSettingsHost,
-    file_storage::FileStorage,
-    file_storage::FileStoragePlugin,
+    file_storage::{FileStoragePlugin, FsHost},
     hooks::{HookSourcesHost, NoHookSources},
     host::{
         SessionFileError, SessionFileErrorCode, SessionFiles, SessionFilesService,
@@ -62,7 +61,7 @@ const INFRASTRUCTURE: [&str; 12] = [
 /// the developer's home or make the graph depend on their installed skills.
 struct GraphPlatform {
     home: PathBuf,
-    storage: Key<FileStorage>,
+    storage: Key<FsHost>,
     execution: Key<ExecutionSettingsHost>,
     toolchain: Key<ToolchainSourceHost>,
 }

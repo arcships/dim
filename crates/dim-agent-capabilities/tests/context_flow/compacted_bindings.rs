@@ -209,6 +209,11 @@ impl Files {
                 }),
             }),
         );
+        builder.plugin(|_| {
+            Ok(Box::new(
+                dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+            ))
+        });
         workspace_tools::install(
             &mut builder,
             WorkspaceToolsConfig {

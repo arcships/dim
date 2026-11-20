@@ -124,7 +124,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     catalog.register_shared_instance("branchLine", BRANCH_GROUP);
     register::<host_platform::ExecHost>(catalog, None);
     catalog.register_shared("execHost");
-    register::<file_storage::FileStorage>(catalog, None);
     register::<file_storage::FsHost>(catalog, None);
     catalog.register_shared("fsHost");
     register::<host::ModelHost>(catalog, None);
@@ -132,7 +131,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     catalog.register_shared(name_of::<host::ModelSelectionHost>());
     catalog.register_shared(name_of::<host::CredentialVariablesHost>());
     catalog.register_shared("sessionFiles");
-    register::<workspace_tools::mentions::MentionIndex>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
     catalog.register_shared(name_of::<environment_clients::SessionClientsHost>());
     catalog.register_shared(name_of::<execution_settings::ExecutionSettingsHost>());

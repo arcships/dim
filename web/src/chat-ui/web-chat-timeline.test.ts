@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, createApp, defineComponent, h, nextTick, ref, type App } from "vue"
+import { computed, createApp, defineComponent, h, nextTick, ref, shallowReactive, type App } from "vue"
 import { createPinia, setActivePinia, type Pinia } from "pinia"
 import { createMemoryHistory, createRouter, type Router } from "vue-router"
 import type { ChatUiHost } from "@dimcode/chat-ui"
@@ -251,6 +251,588 @@ describe("WebChatTimeline", () => {
     expect(after[0]).toBe(before[0])
     expect(after[1]).not.toBe(before[1])
     expect(after[1]?.kind === "turn" && after[1].turn.blocks[0]?.content).toBe("partial")
+  })
+})
+
+describe("WebChatTimeline history and following", () => {
+  const ROW_PX = 600
+  const VIEWPORT_PX = 600
+  /** The surface's top padding and the earlier divider, above the first row. */
+  const HEAD_PX = 64
+  let observers: { callback: IntersectionObserverCallback; targets: Element[] }[]
+  const scrolled = new Set<Element>()
+  const resized: (() => void)[] = []
+  let frame: ReturnType<typeof setTimeout> | undefined
+  /** Instant `scrollTop` assignments, collected while set; a smooth scroll's own steps are not among them. */
+  let instant: number[] | undefined
+  let animating = false
+  /** Rows measured at other than 600 px. */
+  const grown = new Map<Element, number>()
+  const resizeObservers: { observe: (target: Element) => void; targets: Element[] }[] = []
+  /** Delivers a resize observation of `target` in the next frame, as a changed size would. */
+  function remeasure(target: Element): void {
+    for (const observer of resizeObservers) if (observer.targets.includes(target)) observer.observe(target)
+  }
+  function nextFrame(): void {
+    frame ??= setTimeout(async () => {
+      frame = undefined
+      for (const element of scrolled) {
+        scrolled.delete(element)
+        element.dispatchEvent(new Event("scroll"))
+      }
+      await nextTick()
+      for (const observe of resized.splice(0)) observe()
+    }, 0)
+  }
+
+  /**
+   * Lays the scroll content out as the browser would: the head, then every row
+   * at 600 px (the virtualizer estimates 120), the spacers at their styled
+   * height and a clamped scrollTop. A frame delivers
+   * scroll events first and resize observations after the updates they cause.
+   */
+  function layOut(): void {
+    const scrollTops = new WeakMap<Element, number>()
+    const isViewport = (element: Element): boolean => element.classList.contains("chat-scroll-viewport")
+    const height = (element: Element): number => element instanceof HTMLElement && element.dataset.timelineRowSpacer !== undefined
+      ? Number.parseFloat(element.style.height)
+      : element.hasAttribute("data-timeline-row-index") ? grown.get(element) ?? ROW_PX : 0
+    const contentHeight = (viewport: Element): number => {
+      const content = viewport.querySelector("[data-testid='timeline-plain-scroller']")
+      return content === null ? 0 : [...content.children].reduce((sum, child) => sum + height(child), HEAD_PX)
+    }
+    vi.spyOn(Element.prototype, "scrollHeight", "get").mockImplementation(function (this: Element) { return isViewport(this) ? contentHeight(this) : 0 })
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) { return grown.get(this) ?? 600 })
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockImplementation(function (this: Element) { return isViewport(this) ? VIEWPORT_PX : 0 })
+    vi.spyOn(Element.prototype, "scrollTop", "get").mockImplementation(function (this: Element) { return scrollTops.get(this) ?? 0 })
+    vi.spyOn(Element.prototype, "scrollTop", "set").mockImplementation(function (this: Element, value: number) {
+      const max = Math.max(0, this.scrollHeight - this.clientHeight)
+      scrollTops.set(this, Math.min(max, Math.max(0, value)))
+      if (!animating) instant?.push(value)
+      scrolled.add(this)
+      nextFrame()
+    })
+    Element.prototype.scrollTo = vi.fn(function (this: Element, options?: ScrollToOptions | number) {
+      if (typeof options === "object" && options.top !== undefined) this.scrollTop = options.top
+    }) as Element["scrollTo"]
+    Element.prototype.scrollBy = function (this: Element, options?: ScrollToOptions | number) {
+      if (typeof options === "object" && options.top !== undefined) this.scrollTop += options.top
+    } as Element["scrollBy"]
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      const viewport = this.closest(".chat-scroll-viewport")
+      let top = 0
+      let size = 0
+      if (this === viewport) size = VIEWPORT_PX
+      else if (viewport !== null && this.matches("[data-testid='timeline-plain-scroller']")) {
+        top = HEAD_PX - viewport.scrollTop
+        size = contentHeight(viewport) - HEAD_PX
+      } else if (viewport !== null && this.parentElement?.matches("[data-testid='timeline-plain-scroller']")) {
+        top = HEAD_PX
+        for (let sibling = this.previousElementSibling; sibling !== null; sibling = sibling.previousElementSibling) top += height(sibling)
+        top -= viewport.scrollTop
+        size = height(this)
+      }
+      return { top, bottom: top + size, height: size, left: 0, right: 800, width: 800, x: 0, y: top, toJSON: () => ({}) } as DOMRect
+    })
+  }
+
+  beforeEach(() => {
+    observers = []
+    clearTimeout(frame)
+    instant = undefined
+    grown.clear()
+    resizeObservers.length = 0
+    frame = undefined
+    scrolled.clear()
+    resized.length = 0
+    vi.stubGlobal("IntersectionObserver", class {
+      readonly entry: { callback: IntersectionObserverCallback; targets: Element[] }
+      constructor(callback: IntersectionObserverCallback) {
+        this.entry = { callback, targets: [] }
+        observers.push(this.entry)
+      }
+      observe(target: Element): void {
+        if (!(target instanceof Element)) throw new TypeError("IntersectionObserver.observe: target is not an Element")
+        this.entry.targets.push(target)
+      }
+      disconnect(): void { this.entry.targets = [] }
+    })
+    vi.stubGlobal("ResizeObserver", class {
+      readonly entry: { observe: (target: Element) => void; targets: Element[] }
+      constructor(private readonly callback: ResizeObserverCallback) {
+        this.entry = {
+          targets: [],
+          observe: (target) => {
+            resized.push(() => this.callback([{ target } as ResizeObserverEntry], this as unknown as ResizeObserver))
+            nextFrame()
+          },
+        }
+        resizeObservers.push(this.entry)
+      }
+      observe(target: Element): void {
+        this.entry.targets.push(target)
+        this.entry.observe(target)
+      }
+      unobserve(): void {}
+      disconnect(): void {}
+    })
+    layOut()
+  })
+  afterEach(() => {
+    delete (Element.prototype as Partial<Element>).scrollTo
+    delete (Element.prototype as Partial<Element>).scrollBy
+  })
+
+  /**
+   * Runs frames until scrolling and measuring stop scheduling more, past the
+   * virtualizer's 150 ms scrolling reset, which measures again.
+   */
+  async function idle(): Promise<void> {
+    for (let round = 0; round < 50; round++) {
+      await settle()
+      if (frame !== undefined) continue
+      await new Promise(resolve => setTimeout(resolve, 200))
+      await settle()
+      if (frame === undefined) return
+    }
+    throw new Error("the timeline kept scrolling")
+  }
+
+  function intersect(target: Element): void {
+    for (const observer of observers) {
+      if (observer.targets.includes(target)) observer.callback([{ isIntersecting: true, target } as IntersectionObserverEntry], observer as unknown as IntersectionObserver)
+    }
+  }
+
+  /** `count` completed turns whose sequences start after `from`. */
+  function turns(count: number, from: number): SessionEvent[] {
+    return Array.from({ length: count }, (_, index) => {
+      const sequence = from + index * 4
+      const request = `r${sequence}`
+      return [
+        event(sequence, { kind: "input", text: `question ${sequence}`, content: [{ type: "text", text: `question ${sequence}` }], blocks: [] }),
+        event(sequence + 1, { kind: "text", requestId: request, delta: `answer ${sequence}` }),
+        event(sequence + 2, { kind: "model-end", requestId: request }),
+        event(sequence + 3, { kind: "turn-end", outcome: "completed" }),
+      ]
+    }).flat()
+  }
+
+  function viewportOf(root: HTMLElement): HTMLElement {
+    return root.querySelector<HTMLElement>(".chat-scroll-viewport")!
+  }
+
+  async function scrollTo(root: HTMLElement, top: number): Promise<void> {
+    viewportOf(root).scrollTop = top
+    await idle()
+  }
+
+  function visibleRow(root: HTMLElement): { key: string; top: number } {
+    const row = [...root.querySelectorAll<HTMLElement>("[data-timeline-row-key]")].find(element => element.getBoundingClientRect().bottom > 0)!
+    return { key: row.dataset.timelineRowKey!, top: row.getBoundingClientRect().top }
+  }
+
+  it("draws Load earlier messages above the oldest row inside the scroll content, with its loading and error states", async () => {
+    const state = shallowReactive<Record<string, unknown>>({ rows: project(turns(3, 1)).rows, earlier: true, loadingEarlier: false, historyError: "", onEarlier: vi.fn() })
+    const { root } = mountWith([], { props: state })
+    await idle()
+
+    const earlier = (): HTMLElement | null => root.querySelector<HTMLElement>("[data-testid='web-chat-earlier']")
+    expect(root.querySelector(".web-chat-history")).toBeNull()
+    expect(viewportOf(root).contains(earlier())).toBe(true)
+    expect(earlier()!.compareDocumentPosition(root.querySelector("[data-testid='timeline-plain-scroller']")!) & Node.DOCUMENT_POSITION_FOLLOWING, "the divider comes before the rows").toBeTruthy()
+    expect(earlier()!.textContent?.trim()).toBe("Load earlier messages")
+    earlier()!.querySelector("button")!.click()
+    expect(state.onEarlier).toHaveBeenCalledTimes(1)
+
+    state.loadingEarlier = true
+    await settle()
+    expect(earlier()!.querySelector("[role='status']")?.textContent?.trim()).toBe("Loading…")
+    expect(earlier()!.querySelector("button")).toBeNull()
+
+    state.loadingEarlier = false
+    state.historyError = "connection lost"
+    await settle()
+    const alert = earlier()!.querySelector("[role='alert']")!
+    expect(alert.textContent).toContain("connection lost")
+    expect(alert.querySelector("button")?.textContent).toBe("Retry")
+    alert.querySelector("button")!.click()
+    expect(state.onEarlier).toHaveBeenCalledTimes(2)
+
+    state.earlier = false
+    await settle()
+    expect(earlier()).toBeNull()
+  })
+
+  it("offers Load earlier when the loaded window has no rows", async () => {
+    const onEarlier = vi.fn()
+    const { root } = mountWith([], { props: { earlier: true, running: false, onEarlier } })
+    await idle()
+    const earlier = root.querySelector<HTMLElement>("[data-testid='web-chat-earlier']")
+    expect(viewportOf(root).contains(earlier)).toBe(true)
+    expect(root.textContent, "the empty state stays below the divider").toContain("Send a message")
+    earlier!.querySelector("button")!.click()
+    expect(onEarlier).toHaveBeenCalledTimes(1)
+  })
+
+  it("does not mark an earlier page loaded into an empty window as new output", async () => {
+    const state = shallowReactive<Record<string, unknown>>({ rows: [], earlier: true, running: false })
+    const onEarlier = vi.fn(() => { state.loadingEarlier = true })
+    state.onEarlier = onEarlier
+    const { root } = mountWith([], { props: state })
+    await idle()
+    root.querySelector<HTMLButtonElement>("[data-testid='web-chat-earlier'] button")!.click()
+    expect(onEarlier).toHaveBeenCalledTimes(1)
+
+    state.rows = project(turns(3, 1)).rows
+    state.loadingEarlier = false
+    await idle()
+    const jump = root.querySelector("[data-testid='web-chat-jump-latest']")
+    expect(jump?.textContent).toContain("Return to latest")
+    expect(jump?.textContent).not.toContain("New messages")
+  })
+
+  it("loads earlier once when the reader scrolls up to the row, one request at a time", async () => {
+    const state = shallowReactive<Record<string, unknown>>({ rows: project(turns(8, 1)).rows, earlier: true, loadingEarlier: false })
+    const onEarlier = vi.fn(() => { state.loadingEarlier = true })
+    state.onEarlier = onEarlier
+    const { root } = mountWith([], { props: state })
+    await idle()
+    const row = root.querySelector("[data-testid='web-chat-earlier']")!
+
+    intersect(row)
+    expect(onEarlier, "a reader following the end has not scrolled up to it").not.toHaveBeenCalled()
+
+    await scrollTo(root, 0)
+    intersect(row)
+    intersect(row)
+    expect(onEarlier).toHaveBeenCalledTimes(1)
+    await settle()
+    intersect(row)
+    expect(onEarlier).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps the first visible row at its offset when earlier rows are prepended", async () => {
+    const projection = project(turns(12, 101))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows], earlier: true })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 3 * ROW_PX + 250)
+    const before = visibleRow(root)
+
+    projection.prepend(project(turns(20, 1)), "before-101")
+    state.rows = [...projection.rows]
+    await idle()
+
+    const row = root.querySelector<HTMLElement>(`[data-timeline-row-key="${before.key}"]`)
+    expect(row?.getBoundingClientRect().top).toBe(before.top)
+  })
+
+  it("keeps the first row where it was when a page lands while the top of history is in view", async () => {
+    const projection = project(turns(12, 101))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows], earlier: true })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 0)
+    const before = visibleRow(root)
+    expect(before.top, "the first row starts below the head").toBe(HEAD_PX)
+
+    projection.prepend(project(turns(20, 1)), "before-101")
+    state.rows = [...projection.rows]
+    await idle()
+
+    const row = root.querySelector<HTMLElement>(`[data-timeline-row-key="${before.key}"]`)
+    expect(row?.getBoundingClientRect().top).toBe(before.top)
+  })
+
+  it("stops observing once the last earlier page is loaded", async () => {
+    const state = shallowReactive<Record<string, unknown>>({ rows: project(turns(8, 1)).rows, earlier: true })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    const divider = root.querySelector("[data-testid='web-chat-earlier']")!
+    expect(observers.some(observer => observer.targets.includes(divider))).toBe(true)
+
+    state.earlier = false
+    await idle()
+    expect(root.querySelector("[data-testid='web-chat-earlier']")).toBeNull()
+    expect(observers.filter(observer => observer.targets.includes(divider))).toEqual([])
+  })
+
+  it("loads earlier when following stops while the divider is already in view", async () => {
+    const state = shallowReactive<Record<string, unknown>>({ rows: project(turns(3, 1)).rows, earlier: true, loadingEarlier: false })
+    const onEarlier = vi.fn(() => { state.loadingEarlier = true })
+    state.onEarlier = onEarlier
+    const { root } = mountWith([], { props: state })
+    await idle()
+    const viewport = viewportOf(root)
+    const end = viewport.scrollHeight - VIEWPORT_PX
+    expect(viewport.scrollTop).toBe(end)
+
+    intersect(root.querySelector("[data-testid='web-chat-earlier']")!)
+    await scrollTo(root, end - 50)
+    expect(onEarlier, "within the follow threshold the reader still follows").not.toHaveBeenCalled()
+
+    await scrollTo(root, end - 200)
+    expect(onEarlier).toHaveBeenCalledTimes(1)
+    await scrollTo(root, end - 300)
+    expect(onEarlier).toHaveBeenCalledTimes(1)
+
+    state.loadingEarlier = false
+    state.historyError = "connection lost"
+    await idle()
+    intersect(root.querySelector("[data-testid='web-chat-earlier']")!)
+    await scrollTo(root, end - 350)
+    expect(onEarlier, "a failed read waits for Retry").toHaveBeenCalledTimes(1)
+  })
+
+  it("offers a jump to the latest message while scrolled up, marks new output and resumes following", async () => {
+    const projection = project(turns(6, 1))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows] })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    const jump = (): HTMLButtonElement | null => root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")
+    expect(jump()).toBeNull()
+    expect(root.querySelector("[data-testid='timeline-scroll-to-bottom']")).toBeNull()
+
+    await scrollTo(root, ROW_PX)
+    expect(jump()?.textContent?.trim()).toBe("Return to latest")
+    expect(root.querySelector("[data-testid='timeline-scroll-to-bottom']")).toBeNull()
+
+    for (const item of turns(1, 101)) projection.apply(item)
+    state.rows = [...projection.rows]
+    await idle()
+    expect(jump()?.textContent).toContain("New messages")
+    expect(viewportOf(root).scrollTop, "new output does not move a reader who scrolled up").toBe(ROW_PX)
+
+    jump()!.click()
+    expect(viewportOf(root).scrollTo).toHaveBeenCalledWith({ top: viewportOf(root).scrollHeight, behavior: "smooth" })
+    await idle()
+    const viewport = viewportOf(root)
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - VIEWPORT_PX)
+    await vi.waitFor(() => expect(jump(), "the pill fades out once following resumes").toBeNull())
+
+    await scrollTo(root, ROW_PX)
+    expect(jump(), "the jump ends at the bottom; a later scroll away stops following").not.toBeNull()
+  })
+
+  it("marks a tool result that updates a row above the tail, but not an earlier page", async () => {
+    const projection = project(turns(6, 101))
+    for (const item of [
+      event(201, { kind: "input", text: "read both files", content: [{ type: "text", text: "read both files" }], blocks: [] }),
+      event(202, { kind: "tool-use", requestId: "r201", callId: "call-a", name: "read", input: { path: "a.rs" } }),
+      event(203, { kind: "tool-use", requestId: "r201", callId: "call-b", name: "read", input: { path: "b.rs" } }),
+    ]) projection.apply(item)
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows], earlier: true, running: true })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    const jump = (): HTMLButtonElement | null => root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")
+    await scrollTo(root, ROW_PX)
+    expect(jump()?.textContent).not.toContain("New messages")
+
+    projection.prepend(project(turns(3, 1)), "before-101")
+    state.rows = [...projection.rows]
+    await idle()
+    expect(jump()?.textContent, "an earlier page is not new output").not.toContain("New messages")
+
+    const tail = projection.rows.at(-1)
+    const top = viewportOf(root).scrollTop
+    projection.apply(event(204, { kind: "tool-completed", requestId: "r201", callId: "call-a", result: { text: "fn a() {}", isError: false } }))
+    state.rows = [...projection.rows]
+    await idle()
+    expect(projection.rows.at(-1), "call B is still the same tail row").toBe(tail)
+    expect(jump()?.textContent).toContain("New messages")
+    expect(viewportOf(root).scrollTop, "the result does not move a reader who scrolled up").toBe(top)
+  })
+
+  it("keeps the jump smooth while rows grow under it and lands at the end", async () => {
+    const projection = project(turns(6, 1))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows] })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 0)
+    const viewport = viewportOf(root)
+    let target = 0
+    let step: ReturnType<typeof setTimeout> | undefined
+    const animate = (): void => {
+      step = undefined
+      const goal = Math.min(target, viewport.scrollHeight - VIEWPORT_PX)
+      const now = viewport.scrollTop
+      if (now === goal) return
+      animating = true
+      viewport.scrollTop = now + Math.sign(goal - now) * Math.min(300, Math.abs(goal - now))
+      animating = false
+      step = setTimeout(animate, 5)
+    }
+    viewport.scrollTo = ((options: ScrollToOptions) => {
+      if (options.behavior !== "smooth") {
+        viewport.scrollTop = options.top!
+        return
+      }
+      target = options.top!
+      step ??= setTimeout(animate, 5)
+    }) as Element["scrollTo"]
+
+    instant = []
+    root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")!.click()
+    await new Promise(resolve => setTimeout(resolve, 12))
+    const heightBefore = viewport.scrollHeight
+    for (const item of turns(2, 101)) projection.apply(item)
+    state.rows = [...projection.rows]
+    await vi.waitFor(() => expect(step).toBeUndefined(), { timeout: 5_000 })
+    await idle()
+
+    expect(viewport.scrollHeight, "the rows grew during the jump").toBeGreaterThan(heightBefore)
+    expect(instant, "no instant scroll replaced the animation").toEqual([])
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - VIEWPORT_PX)
+    await vi.waitFor(() => expect(root.querySelector("[data-testid='web-chat-jump-latest']")).toBeNull())
+  })
+
+  it("keeps the jump smooth when a row above the viewport is measured again", async () => {
+    const projection = project(turns(6, 1))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows] })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 0)
+    const viewport = viewportOf(root)
+    const first = root.querySelector("[data-timeline-row-index='0']")!
+    let target = 0
+    let step: ReturnType<typeof setTimeout> | undefined
+    const animate = (): void => {
+      step = undefined
+      const goal = Math.min(target, viewport.scrollHeight - VIEWPORT_PX)
+      const now = viewport.scrollTop
+      if (now === goal) return
+      animating = true
+      viewport.scrollTop = now + Math.sign(goal - now) * Math.min(300, Math.abs(goal - now))
+      animating = false
+      if (viewport.scrollTop > 750 && !grown.has(first)) {
+        grown.set(first, 700)
+        remeasure(first)
+      }
+      step = setTimeout(animate, 5)
+    }
+    viewport.scrollTo = ((options: ScrollToOptions) => {
+      if (options.behavior !== "smooth") {
+        viewport.scrollTop = options.top!
+        return
+      }
+      target = options.top!
+      step ??= setTimeout(animate, 5)
+    }) as Element["scrollTo"]
+
+    instant = []
+    root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")!.click()
+    await vi.waitFor(() => expect(step).toBeUndefined(), { timeout: 5_000 })
+    await idle()
+
+    expect(grown.get(first), "row 0 was measured again above the viewport").toBe(700)
+    expect(instant, "no instant scroll replaced the animation").toEqual([])
+    expect(viewport.scrollTop).toBe(viewport.scrollHeight - VIEWPORT_PX)
+  })
+
+  it("stops following when a plain scroll cancels the jump short of the end", async () => {
+    const projection = project(turns(6, 1))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows] })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 0)
+    const viewport = viewportOf(root)
+    let step: ReturnType<typeof setTimeout> | undefined
+    let target = 0
+    const animate = (): void => {
+      step = undefined
+      const goal = Math.min(target, viewport.scrollHeight - VIEWPORT_PX)
+      if (viewport.scrollTop === goal) return
+      viewport.scrollTop = Math.min(goal, viewport.scrollTop + 300)
+      step = setTimeout(animate, 5)
+    }
+    viewport.scrollTo = ((options: ScrollToOptions) => {
+      target = options.top!
+      if (options.behavior === "smooth") step ??= setTimeout(animate, 5)
+      else viewport.scrollTop = target
+    }) as Element["scrollTo"]
+
+    root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")!.click()
+    await vi.waitFor(() => expect(viewport.scrollTop).toBeGreaterThanOrEqual(600))
+    clearTimeout(step)
+    step = undefined
+    viewport.scrollTop -= 600
+    await idle()
+    viewport.dispatchEvent(new Event("scrollend"))
+    await idle()
+    const top = viewport.scrollTop
+    expect(viewport.scrollHeight - top - VIEWPORT_PX).toBeGreaterThan(96)
+    expect(root.querySelector("[data-testid='web-chat-jump-latest']"), "the pill returns").not.toBeNull()
+
+    for (const item of turns(1, 101)) projection.apply(item)
+    state.rows = [...projection.rows]
+    await idle()
+    expect(viewport.scrollTop, "output does not pull the reader back").toBe(top)
+  })
+
+  it("stops following when the jump's scroll ends short of the end", async () => {
+    const projection = project(turns(6, 1))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows] })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 0)
+    const viewport = viewportOf(root)
+    let step: ReturnType<typeof setTimeout> | undefined
+    let target = 0
+    const animate = (): void => {
+      step = undefined
+      const goal = Math.min(target, viewport.scrollHeight - VIEWPORT_PX)
+      if (viewport.scrollTop === goal) return
+      viewport.scrollTop = Math.min(goal, viewport.scrollTop + 300)
+      step = setTimeout(animate, 5)
+    }
+    viewport.scrollTo = ((options: ScrollToOptions) => {
+      target = options.top!
+      if (options.behavior === "smooth") step ??= setTimeout(animate, 5)
+      else viewport.scrollTop = target
+    }) as Element["scrollTo"]
+
+    root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")!.click()
+    await vi.waitFor(() => expect(viewport.scrollTop).toBeGreaterThanOrEqual(600))
+    clearTimeout(step)
+    step = undefined
+    viewport.scrollTop += 300
+    await idle()
+    const top = viewport.scrollTop
+    expect(viewport.scrollHeight - top - VIEWPORT_PX).toBeGreaterThan(96)
+    viewport.dispatchEvent(new Event("scrollend"))
+    await idle()
+    expect(root.querySelector("[data-testid='web-chat-jump-latest']"), "the pill returns").not.toBeNull()
+
+    for (const item of turns(1, 101)) projection.apply(item)
+    state.rows = [...projection.rows]
+    await idle()
+    expect(viewport.scrollTop, "output does not pull the reader back").toBe(top)
+  })
+
+  it("stops following when the reader wheels up on the rail during a jump", async () => {
+    const projection = project(turns(6, 1))
+    const state = shallowReactive<Record<string, unknown>>({ rows: [...projection.rows] })
+    const { root } = mountWith([], { props: state })
+    await idle()
+    await scrollTo(root, 0)
+    const viewport = viewportOf(root)
+    const smooth = vi.fn()
+    viewport.scrollTo = smooth as Element["scrollTo"]
+    root.querySelector<HTMLButtonElement>("[data-testid='web-chat-jump-latest']")!.click()
+    expect(smooth).toHaveBeenCalledOnce()
+    await scrollTo(root, ROW_PX)
+
+    const rail = root.querySelector(".web-chat-rail")!.firstElementChild!
+    rail.dispatchEvent(new WheelEvent("wheel", { deltaY: -300, bubbles: true, cancelable: true }))
+    await idle()
+    const top = viewport.scrollTop
+    expect(viewport.scrollHeight - top - VIEWPORT_PX).toBeGreaterThan(96)
+
+    for (const item of turns(1, 101)) projection.apply(item)
+    state.rows = [...projection.rows]
+    await idle()
+    expect(viewport.scrollTop, "a reader who scrolled up from the rail stays where they are").toBe(top)
   })
 })
 

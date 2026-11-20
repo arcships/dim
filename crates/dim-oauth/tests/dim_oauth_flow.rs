@@ -106,7 +106,7 @@ async fn process(home: &Path) -> Process {
     let views = [
         root.plugin(FileStoragePlugin::new(vec![home.to_path_buf()])),
         root.plugin(ManagedProvidersPlugin::new(None)),
-        root.plugin(DimOAuthPlugin::new(&names, 0, ids).unwrap()),
+        root.plugin(DimOAuthPlugin::new(&names, home.to_path_buf(), ids).unwrap()),
         root.plugin(ManagedProviderBinding),
         root.plugin(Capture(captured.clone())),
     ];
@@ -1252,12 +1252,13 @@ async fn provider_process(home: &Path) -> Process {
         process
             .root
             .plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
-        process
-            .root
-            .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, 0).unwrap()),
-        process
-            .root
-            .plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, 0).unwrap()),
+        process.root.plugin(
+            dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, home.to_path_buf())
+                .unwrap(),
+        ),
+        process.root.plugin(
+            dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, home.to_path_buf()).unwrap(),
+        ),
         process.root.plugin(ModelHostFixture),
         process.root.plugin(ProviderPlugin::new(&names).unwrap()),
     ];

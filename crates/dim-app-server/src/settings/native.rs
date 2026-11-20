@@ -35,7 +35,7 @@ impl SettingsService {
     pub(super) async fn native_read<F: Format>(
         &self,
         format: Arc<F>,
-        path: FilePath,
+        path: PathBuf,
         cancel: &CancellationToken,
     ) -> Result<(i64, SettingsSnapshot<F::Document>)> {
         let task = {
@@ -57,7 +57,10 @@ impl SettingsService {
                 {
                     return decode(&*format, row);
                 }
-                let imported = snapshot(&*format, files.read(&path, &cancel).await)?;
+                let imported = snapshot(
+                    &*format,
+                    files.read_bytes(&path, usize::MAX, None, &cancel).await,
+                )?;
                 let body = serde_json::to_string(&imported.document)
                     .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
                 let row = db
@@ -80,7 +83,7 @@ impl SettingsService {
     pub(super) async fn native_replace<F: Format>(
         self: &Arc<Self>,
         format: Arc<F>,
-        path: FilePath,
+        path: PathBuf,
         expected: String,
         document: F::Document,
         check: impl FnOnce(&F::Document, &F::Document) -> Result<()> + Send + 'static,

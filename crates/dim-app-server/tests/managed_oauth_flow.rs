@@ -267,8 +267,10 @@ async fn codex(
     let names = Names::copy(&catalog, &build);
     root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
     let files = root.plugin(FileStoragePlugin::new(vec![home.to_owned()]));
-    let plugin =
-        root.plugin(OpenAICodexOAuthPlugin::with_config(&names, 0, config(base, true)).unwrap());
+    let plugin = root.plugin(
+        OpenAICodexOAuthPlugin::with_config(&names, home.to_path_buf(), config(base, true))
+            .unwrap(),
+    );
     active(&files).await;
     active(&plugin).await;
     let service = root.get::<OpenAICodexOAuthService>().unwrap();
@@ -660,10 +662,18 @@ async fn minimal_ts_legacy_records_recover_only_from_fixed_plugin_config() {
         let files = root.plugin(FileStoragePlugin::new(vec![home.clone()]));
         let plugin = if codex_owner {
             root.plugin(
-                OpenAICodexOAuthPlugin::with_config(&names, 0, config(&f.base, true)).unwrap(),
+                OpenAICodexOAuthPlugin::with_config(
+                    &names,
+                    home.to_path_buf(),
+                    config(&f.base, true),
+                )
+                .unwrap(),
             )
         } else {
-            root.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap())
+            root.plugin(
+                GrokOAuthPlugin::with_config(&names, home.to_path_buf(), config(&f.base, false))
+                    .unwrap(),
+            )
         };
         active(&files).await;
         active(&plugin).await;
@@ -840,8 +850,9 @@ async fn grok_device_flow_observes_slowdown_expiry_cancellation_and_uri_trust() 
     let names = Names::copy(&catalog, &build);
     root.plugin(dim_app_server::methods::ManagementMethodsPlugin::typed(&catalog).unwrap());
     let files = root.plugin(FileStoragePlugin::new(vec![home.clone()]));
-    let plugin =
-        root.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap());
+    let plugin = root.plugin(
+        GrokOAuthPlugin::with_config(&names, home.to_path_buf(), config(&f.base, false)).unwrap(),
+    );
     active(&files).await;
     active(&plugin).await;
     let grok = root.get::<GrokOAuthService>().unwrap();
@@ -960,8 +971,9 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     let build = rutis_loader::resolve::Build::default();
     let names = Names::copy(&catalog, &build);
     let (root, _, _, codex) = codex(&home, &f.base).await;
-    let grok_plugin =
-        root.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap());
+    let grok_plugin = root.plugin(
+        GrokOAuthPlugin::with_config(&names, home.to_path_buf(), config(&f.base, false)).unwrap(),
+    );
     let dim = root.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin::new(None));
     let sqlite = root.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
         home.join("native.sqlite"),
@@ -1490,7 +1502,10 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     drop(db);
     let (restarted, _, _, _) = self::codex(&home, &f.base).await;
     let plugins = [
-        restarted.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap()),
+        restarted.plugin(
+            GrokOAuthPlugin::with_config(&names, home.to_path_buf(), config(&f.base, false))
+                .unwrap(),
+        ),
         restarted.plugin(dim_app_server::managed_provider::ManagedProvidersPlugin::new(None)),
         restarted.plugin(dim_app_server::storage::SqliteStoragePlugin::new(
             home.join("native.sqlite"),
@@ -1568,8 +1583,9 @@ async fn login_retains_ts_claim_precedence_and_bounds_pending_attempts() {
         .unwrap();
     service.begin_browser(&cancel).await.unwrap();
 
-    let grok_plugin =
-        root.plugin(GrokOAuthPlugin::with_config(&names, 0, config(&f.base, false)).unwrap());
+    let grok_plugin = root.plugin(
+        GrokOAuthPlugin::with_config(&names, home.to_path_buf(), config(&f.base, false)).unwrap(),
+    );
     active(&grok_plugin).await;
     let grok = root.get::<GrokOAuthService>().unwrap();
     *f.device_response.lock().unwrap() = Some(json!({

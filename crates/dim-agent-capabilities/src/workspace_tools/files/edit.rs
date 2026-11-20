@@ -4,8 +4,8 @@ use super::super::file_reads::{Eol, FileReads, TextFileBinding};
 use super::codec;
 use super::write::write_target;
 use super::{
-    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, cancelled,
-    failed, field, hex, invalid_input, js_len, not_regular, refused, resolve_path, revision, wrote,
+    Access, Cancelled, FileTools, NotRegular, PathError, Target, TargetError, blocking, failed,
+    field, hex, invalid_input, js_len, not_regular, refused, resolve_path, revision, wrote,
 };
 use crate::host::HostError;
 use dim_agent_types::{JsonObject, ToolContent, ToolResult};
@@ -65,15 +65,15 @@ struct Replacement {
     replace_all: bool,
 }
 
-struct Input {
-    path: String,
+pub(super) struct Input {
+    pub(super) path: String,
     edits: Vec<Replacement>,
 }
 
 /// Reads the replacement list. A recorded call that carries the top-level
 /// `oldText` and `newText` instead is read as one replacement; a call that
 /// carries both shapes, or an empty list, is refused.
-fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
+pub(super) fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
     let Some(Value::String(path)) = field(input, "path").filter(|path| path.as_str() != Some(""))
     else {
         return Err(invalid_input("edit requires a non-empty string path."));
@@ -104,10 +104,37 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         }
         None => vec![replacement(input).map_err(|result| for_index(result, 0))?],
     };
-    Ok(Input {
+    let input = Input {
         path: path.clone(),
         edits,
-    })
+    };
+    let chars = input
+        .edits
+        .iter()
+        .map(|replacement| js_len(&replacement.old_text) + js_len(&replacement.new_text))
+        .sum::<usize>();
+    if chars > EDIT_INPUT_MAX_CHARS {
+        return Err(failed(
+            format!(
+                "edit input too large: the replacements' oldText and newText total {chars} chars, limit is {EDIT_INPUT_MAX_CHARS} chars."
+            ),
+            json!({ "code": "input_too_large", "chars": chars, "limit": EDIT_INPUT_MAX_CHARS }),
+        ));
+    }
+    if let Some(index) = input
+        .edits
+        .iter()
+        .position(|replacement| replacement.old_text == replacement.new_text)
+    {
+        return Err(for_index(
+            failed(
+                "oldText and newText are identical; no change needed.",
+                json!({ "code": "no_change" }),
+            ),
+            index,
+        ));
+    }
+    Ok(input)
 }
 
 /// One replacement read from `fields`; a failure names its entry through
@@ -141,32 +168,6 @@ pub(super) async fn run(
         Err(result) => return Ok(result),
     };
     let established = reads.established();
-    let chars = input
-        .edits
-        .iter()
-        .map(|replacement| js_len(&replacement.old_text) + js_len(&replacement.new_text))
-        .sum::<usize>();
-    if chars > EDIT_INPUT_MAX_CHARS {
-        return Ok(failed(
-            format!(
-                "edit input too large: the replacements' oldText and newText total {chars} chars, limit is {EDIT_INPUT_MAX_CHARS} chars."
-            ),
-            json!({ "code": "input_too_large", "chars": chars, "limit": EDIT_INPUT_MAX_CHARS }),
-        ));
-    }
-    if let Some(index) = input
-        .edits
-        .iter()
-        .position(|replacement| replacement.old_text == replacement.new_text)
-    {
-        return Ok(for_index(
-            failed(
-                "oldText and newText are identical; no change needed.",
-                json!({ "code": "no_change" }),
-            ),
-            index,
-        ));
-    }
     let (cwd, home, requested, boundary) = (
         tools.cwd.clone(),
         tools.home.clone(),
@@ -188,30 +189,24 @@ pub(super) async fn run(
     }
     let _lock = tools.locks.lock(&path, &cancel).await?;
     let binding = reads.get(&path);
-    let (target, bounded) = (path.clone(), tools.boundary.is_some());
-    #[cfg(test)]
-    let hook = tools.before_commit.clone();
-    let (_lock, written) = blocking(move || {
-        let written = edit_locked(
-            &target,
-            bounded,
-            &input,
-            binding,
+    let (_lock, reply) = super::Mutation::Edit(input, binding)
+        .apply(
+            tools.fs.as_deref(),
+            path.clone(),
+            tools.boundary.is_some(),
+            _lock,
             &cancel,
             #[cfg(test)]
-            hook,
-        );
-        (_lock, written)
-    })
-    .await?;
-    let (result, binding) = written.map_err(|Cancelled| cancelled())?;
-    if let Some(binding) = binding {
+            tools.before_commit.clone(),
+        )
+        .await?;
+    if let Some(binding) = reply.binding {
         reads.set(path, binding, established);
     }
-    Ok(result)
+    Ok(reply.result)
 }
 
-fn edit_locked(
+pub(super) fn edit_locked(
     path: &Path,
     bounded: bool,
     input: &Input,

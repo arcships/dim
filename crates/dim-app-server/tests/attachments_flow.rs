@@ -410,7 +410,7 @@ impl Contract {
         let catalog = dim_app_server::catalog();
         let build = rutis_loader::resolve::Build::default();
         let names = dim_agent_runtime::Names::copy(&catalog, &build);
-        (&root.plugin(SessionStorePlugin::new(&names, 0).unwrap()))
+        (&root.plugin(SessionStorePlugin::new(&names, home.0.clone()).unwrap()))
             .await
             .unwrap();
         let store = root.get::<SessionStore>().unwrap();

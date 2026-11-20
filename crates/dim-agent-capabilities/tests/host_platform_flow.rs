@@ -232,9 +232,9 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             HostPlatformConfig {
                 execution: names.key().unwrap(),
                 toolchain: names.key().unwrap(),
-                command_files: Some((0, "command-output".into())),
-                exec_shell_file: Some((0, "exec-shell.json".into())),
+                exec_shell_file: Some(home.join("exec-shell.json")),
                 home: Some(home.clone()),
+                command_files: Some(home.join("command-output")),
             },
         )
         .unwrap(),
@@ -1094,10 +1094,6 @@ async fn a_confined_helper_returns_when_its_root_exits_with_a_descendant_on_its_
     std::fs::remove_dir_all(&base).unwrap();
 }
 
-/// A descendant that left the process group keeps the pipes open past the
-/// drain bound. The call still returns with the root's status and the bytes
-/// read so far, and the escaped process is the caller's to kill: that is the
-/// limit the confinement documents for macOS and unconfined Linux.
 #[tokio::test]
 async fn a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes() {
     let Some(perl) = perl() else {
@@ -1109,7 +1105,8 @@ async fn a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes() 
     std::fs::create_dir_all(&write).unwrap();
     let pid_file = write.join("escapee.pid");
     let escape = format!(
-        "setpgrp(0, 0); open my $f, q(>), q({}) or die; print $f $$; close $f; sleep 100;",
+        "use Fcntl qw(:flock); setpgrp(0, 0); open my $f, q(>), q({}) or die; \
+         flock($f, LOCK_EX) or die; syswrite($f, $$) or die; sleep 100;",
         pid_file.display()
     );
     let script = format!(
@@ -1135,6 +1132,15 @@ async fn a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes() 
         elapsed < Duration::from_secs(5),
         "the call took {elapsed:?} with the drain bound at one second"
     );
+    #[cfg(target_os = "linux")]
+    if output.confined {
+        std::fs::File::open(&pid_file)
+            .unwrap()
+            .try_lock()
+            .expect("the descendant must release its file lock when the PID namespace ends");
+        std::fs::remove_dir_all(&base).unwrap();
+        return;
+    }
     let pid: i32 = std::fs::read_to_string(&pid_file)
         .expect("the escapee records its pid")
         .trim()

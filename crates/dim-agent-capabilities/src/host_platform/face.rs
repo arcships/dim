@@ -46,20 +46,14 @@ impl ExecHost {
         };
         use std::io::SeekFrom;
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        if let Some((files, root, directory)) = &self.command_files {
-            let base = files
-                .root_path(*root)
-                .map_err(|_| OutputPageError::Unavailable)?;
-            let relative = path
-                .strip_prefix(base.join(directory))
-                .map_err(|_| OutputPageError::Unavailable)?;
-            let file = files
-                .path(*root, directory.join(relative))
-                .map_err(|_| OutputPageError::Unavailable)?;
+        if let Some((files, directory)) = &self.command_files {
+            if !path.starts_with(directory) {
+                return Err(OutputPageError::Unavailable);
+            }
             let cancel = CancellationToken::new();
             let _guard = cancel.clone().drop_guard();
             let reader = files
-                .open_read(&file, &cancel)
+                .pin_read(path, &cancel)
                 .await
                 .map_err(|_| OutputPageError::Unavailable)?;
             let size = reader
@@ -461,17 +455,13 @@ impl HostDispatch for Dispatch {
                         .map_err(|e| exec_error("output_unavailable", e.to_string()))?
                 } else {
                     let path = path.expect("file request");
-                    let (files, root, directory) =
-                        owner.command_files.as_ref().ok_or_else(|| {
-                            exec_error(
-                                "output_unavailable",
-                                "Command output storage is unavailable",
-                            )
-                        })?;
-                    let base = files
-                        .root_path(*root)
-                        .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
-                    if !path.starts_with(base.join(directory)) {
+                    let (_, directory) = owner.command_files.as_ref().ok_or_else(|| {
+                        exec_error(
+                            "output_unavailable",
+                            "Command output storage is unavailable",
+                        )
+                    })?;
+                    if !path.starts_with(directory) {
                         return Err(exec_error(
                             "invalid",
                             "Path is outside command output storage",

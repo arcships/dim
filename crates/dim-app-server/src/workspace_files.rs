@@ -1,6 +1,5 @@
 //! The sessionless workspace file search, `workspace.files.search`
-//! (WorkspaceTools §1). The row injects the process `MentionIndex` the
-//! WorkspaceTools owner provides, so the Session part that serves
+//! (WorkspaceTools §1). The row calls `fsHost.mentions`, so the Session part that serves
 //! `session.files.search` reads the same walked index. It is assembled only
 //! where the profile requires the WorkspaceTools part. A local connection is
 //! the user: an absolute, canonical, readable directory is the whole
@@ -8,12 +7,12 @@
 //! Settings.
 use crate::methods::ManagementMethods;
 use dim_agent_capabilities::{
+    file_storage::FsHost,
+    file_storage::mentions::MentionsRequest,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
-    workspace_tools::mentions::{self, MentionIndex},
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -24,7 +23,7 @@ const SEARCH_METHOD: &str = "workspace.files.search";
 
 pub(crate) struct WorkspaceFilesPlugin {
     methods: Key<ManagementMethods>,
-    index: Key<MentionIndex>,
+    index: Key<FsHost>,
 }
 
 impl WorkspaceFilesPlugin {
@@ -53,7 +52,7 @@ impl DynPlugin for WorkspaceFilesPlugin {
                 ctx,
                 NAMESPACE,
                 vec![MethodDecl::new(SEARCH_METHOD, false, Interruption::Report)],
-                Arc::new(move |call, _, _| {
+                Arc::new(move |call, cancel, _| {
                     let MethodCall { params: value, .. } = call;
                     let index = index.clone();
                     Box::pin(async move {
@@ -65,19 +64,25 @@ impl DynPlugin for WorkspaceFilesPlugin {
                             limit: Option<usize>,
                         }
                         let Params { cwd, query, limit } = params(value)?;
-                        let limit = mentions::parse_limit(limit);
                         let root = tokio::task::spawn_blocking(move || canonical_cwd(&cwd))
                             .await
                             .map_err(|error| {
                                 RpcError::app(-32000, "session_files_failed", error.to_string())
                             })??;
-                        let found =
-                            tokio::task::spawn_blocking(move || index.search(&root, &query, limit))
-                                .await
-                                .map_err(|error| {
-                                    RpcError::app(-32000, "session_files_failed", error.to_string())
-                                })?;
-                        reply(json!({"candidates": mentions::candidates(&found)}))
+                        let found = index
+                            .mentions(
+                                MentionsRequest {
+                                    path: root,
+                                    query,
+                                    limit,
+                                },
+                                &cancel,
+                            )
+                            .await
+                            .map_err(|error| {
+                                RpcError::app(-32000, "session_files_failed", error.to_string())
+                            })?;
+                        reply(found)
                     })
                 }),
             )?;

@@ -713,12 +713,14 @@ async fn signed_in_provider_root(home: &Path) -> (Ctx, Arc<ProviderService>) {
     root.plugin(
         dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::with_config(
             &names(),
-            0,
+            home.to_path_buf(),
             codex_fixture(),
         )
         .unwrap(),
     );
-    root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), 0).unwrap());
+    root.plugin(
+        dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names(), home.to_path_buf()).unwrap(),
+    );
     root.plugin(dim_agent_aimux::AimuxPlugin::default());
     let view = root.plugin(provider_part(ProviderPlugin::new));
     tokio::time::timeout(std::time::Duration::from_secs(30), active(&view))

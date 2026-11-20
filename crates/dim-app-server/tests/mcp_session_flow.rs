@@ -515,7 +515,8 @@ fn mcp_host_rows(builder: &mut AgentBuilder, home: &Path) {
         SettingsPlugin::new(&Names::copy(&catalog, &build), 0, vec![]).unwrap()
     };
     builder.plugin(move |_| Ok(Box::new(settings.clone())));
-    builder.plugin(|names| Ok(Box::new(McpPlugin::new(names, 0)?)));
+    let home = home.to_owned();
+    builder.plugin(move |names| Ok(Box::new(McpPlugin::new(names, home.clone())?)));
 }
 /// Authorizes `home`'s project in the host's Settings.
 async fn authorize_project(host: &MinimalHost, home: &Path) {
@@ -2590,11 +2591,13 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             let storage = dim_app_server::storage::SqliteStoragePlugin::new(database.clone());
             Ok(Box::new(storage))
         });
-        builder.plugin(|_| {
+        let files_root = home.clone();
+        builder.plugin(move |_| {
             let catalog = dim_app_server::catalog();
             let build = Build::default();
             let names = Names::copy(&catalog, &build);
-            let plugin = dim_app_server::storage::SessionStorePlugin::new(&names, 0)?;
+            use dim_app_server::storage::SessionStorePlugin;
+            let plugin = SessionStorePlugin::new(&names, files_root.clone())?;
             Ok(Box::new(plugin))
         });
         builder

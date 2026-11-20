@@ -26,11 +26,11 @@ use config::{
     McpEntryError, McpPluginDocument, McpPluginServers, McpProjectEnablement, McpSecretEntry,
     McpSecrets, McpServerSettings, McpSettings,
 };
-use dim_agent_capabilities::file_storage::FileStorage;
+use dim_agent_capabilities::file_storage::FsHost;
 use dim_agent_capabilities::host::CredentialVariablesHost;
 use dim_agent_runtime::Names;
 use rutis::Ctx;
-use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
+use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use server::{McpServer, McpServerError};
 use sha2::{Digest, Sha256};
 use std::{
@@ -1777,18 +1777,18 @@ async fn set_project_enabled(
 /// authority, whose store `mcp-oauth.json` lives in the home root, and the
 /// Session part `McpSession`, which it registers.
 pub struct McpPlugin {
-    home_root: usize,
+    home: std::path::PathBuf,
     settings: Key<SettingsService>,
     publication: Key<publication::Publication>,
-    files: Key<FileStorage>,
+    files: Key<FsHost>,
     methods: Key<crate::methods::ManagementMethods>,
     parts: Key<dim_agent_runtime::PartRegistry>,
     credentials: Key<CredentialVariablesHost>,
 }
 impl McpPlugin {
-    pub fn new(names: &Names<'_>, home_root: usize) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, home: std::path::PathBuf) -> rutis::Result<Self> {
         Ok(Self {
-            home_root,
+            home,
             settings: names.key()?,
             publication: Key::of(),
             files: names.key()?,
@@ -1824,7 +1824,7 @@ impl DynPlugin for McpPlugin {
             settings.register::<McpProjectEnablement>(ctx)?;
             settings.register::<McpPluginServers>(ctx)?;
             settings.register::<McpSecrets>(ctx)?;
-            let auth = McpAuth::new(files, self.home_root).map_err(ErrorKind::PluginFailed)?;
+            let auth = McpAuth::new(files, self.home.clone());
             let service = Arc::new(McpService {
                 settings,
                 credentials,

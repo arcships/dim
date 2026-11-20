@@ -175,7 +175,7 @@ flowchart LR
   p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p30
   p10 -->|"dim_app_server::methods::ManagementMethods"| p30
   p25 -->|"dim_agent_capabilities::execution_settings::ExecutionSettingsHost"| p29
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p29
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p29
   p26 -->|"dim_agent_capabilities::toolchain::ToolchainSourceHost"| p29
   p18 -->|"dim_app_server::settings::declared::Settings"| p28
   p18 -->|"dim_app_server::settings::declared::Settings"| p27
@@ -189,7 +189,6 @@ flowchart LR
   p18 -->|"dim_app_server::settings::SettingsService"| p24
   p1 -->|"dim_agent_capabilities::host::CredentialVariablesHost"| p23
   p18 -->|"dim_app_server::settings::SettingsService"| p23
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p22
   p18 -->|"dim_app_server::settings::declared::Settings"| p22
   p18 -->|"dim_app_server::settings::declared::Settings"| p21
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p20
@@ -211,7 +210,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p15
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p14
   p10 -->|"dim_app_server::methods::ManagementMethods"| p13
-  p60 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p9
   p8 -->|"dim_app_server::storage::face::Store"| p9

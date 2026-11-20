@@ -10,9 +10,10 @@
 )]
 
 mod codec;
+pub(super) use codec::deserialize_legacy_encoding;
 mod edit;
 mod read;
-mod search;
+pub(crate) mod search;
 mod write;
 
 use super::file_reads::FileReads;
@@ -31,17 +32,167 @@ use tokio_util::sync::CancellationToken;
 const TOOL_NAMES: [&str; 5] = ["read", "write", "edit", "glob", "grep"];
 const CANCELLED: &str = "Tool execution cancelled.";
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkspaceWrite {
+    path: String,
+    content: String,
+    binding: Option<super::file_reads::TextFileBinding>,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct WorkspaceMutationReply {
+    result: ToolResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding: Option<super::file_reads::TextFileBinding>,
+}
+
+pub(crate) enum WorkspaceMutation {
+    Write(WorkspaceWrite),
+    Edit(JsonObject),
+}
+
+enum Mutation {
+    Write {
+        display: String,
+        content: String,
+        binding: super::file_reads::WriteBinding,
+    },
+    Edit(edit::Input, Option<super::file_reads::TextFileBinding>),
+}
+
+impl Mutation {
+    async fn apply(
+        self,
+        owner: Option<&crate::file_storage::FsHost>,
+        path: PathBuf,
+        bounded: bool,
+        lock: PathLock,
+        cancel: &CancellationToken,
+        #[cfg(test)] hook: Option<CommitHook>,
+    ) -> Result<(PathLock, WorkspaceMutationReply), HostError> {
+        let generation = owner
+            .map(|host| host.begin_workspace_operation(cancel))
+            .transpose()?;
+        let stopping = generation
+            .as_ref()
+            .map_or_else(|| cancel.child_token(), |(_, stop)| stop.clone());
+        let _drop = stopping.clone().drop_guard();
+        let stop = stopping.clone();
+        let write = blocking(move || {
+            let _generation = generation;
+            let written = match self {
+                Self::Write {
+                    display,
+                    content,
+                    binding,
+                } => write::write_locked(
+                    &path,
+                    bounded,
+                    &display,
+                    &content,
+                    binding,
+                    &stop,
+                    #[cfg(test)]
+                    hook,
+                ),
+                Self::Edit(input, binding) => edit::edit_locked(
+                    &path,
+                    bounded,
+                    &input,
+                    binding,
+                    &stop,
+                    #[cfg(test)]
+                    hook,
+                ),
+            };
+            written.map(|(result, binding)| (lock, WorkspaceMutationReply { result, binding }))
+        });
+        tokio::pin!(write);
+        tokio::select! {
+            result = &mut write => result,
+            _ = cancel.cancelled() => { stopping.cancel(); write.await }
+        }?
+        .map_err(|Cancelled| cancelled())
+    }
+}
+
+impl crate::file_storage::FsHost {
+    pub(crate) async fn mutate_workspace_file(
+        &self,
+        request: WorkspaceMutation,
+        cancel: &CancellationToken,
+    ) -> Result<WorkspaceMutationReply, HostError> {
+        use super::file_reads::WriteBinding;
+        let mutation = match request {
+            WorkspaceMutation::Write(request) => Mutation::Write {
+                display: request.path,
+                content: request.content,
+                binding: request
+                    .binding
+                    .map_or(WriteBinding::None, WriteBinding::Text),
+            },
+            WorkspaceMutation::Edit(mut request) => {
+                let binding = request
+                    .remove("binding")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|error| HostError::failed(error.to_string()))?
+                    .flatten();
+                match edit::parse(&request) {
+                    Ok(input) => Mutation::Edit(input, binding),
+                    Err(result) => {
+                        return Ok(WorkspaceMutationReply {
+                            result,
+                            binding: None,
+                        });
+                    }
+                }
+            }
+        };
+        let path = PathBuf::from(match &mutation {
+            Mutation::Write { display, .. } => display,
+            Mutation::Edit(input, _) => &input.path,
+        });
+        if !path.is_absolute() {
+            return Err(HostError::failed("Expected an absolute file path"));
+        }
+        let (waiting, stopping) = self.begin_workspace_operation(cancel)?;
+        let path = blocking(move || canonical_prefix(lexical(&path)))
+            .await?
+            .map_err(HostError::failed)?;
+        let lock = tokio::select! {
+            result = self.writes.lock(&path, &stopping) => result?,
+            _ = cancel.cancelled() => return Err(cancelled()),
+        };
+        drop(waiting);
+        let (_lock, reply) = mutation
+            .apply(
+                Some(self),
+                path,
+                false,
+                lock,
+                cancel,
+                #[cfg(test)]
+                None,
+            )
+            .await?;
+        Ok(reply)
+    }
+}
+
 /// Session-level executor of the file tools. Bindings belong to the calling
 /// branch and are passed per call. Product Sessions share a process-owned
 /// coordinator; standalone callers may use an isolated coordinator.
 pub struct FileTools {
+    pub(super) fs: Option<Arc<crate::file_storage::FsHost>>,
     cwd: PathBuf,
     home: PathBuf,
     /// Session output directory; large `read` results are written here.
     output_dir: PathBuf,
     /// The root boundary a host configured for this session's file tools;
     /// `None` keeps the unbounded behaviour.
-    boundary: Option<FileToolBoundary>,
+    pub(super) boundary: Option<FileToolBoundary>,
     locks: Arc<FileWriteCoordinator>,
     #[cfg(test)]
     /// Runs after a mutation's target resolved and before the per-path
@@ -91,6 +242,7 @@ impl FileTools {
         boundary: Option<FileToolBoundary>,
     ) -> Self {
         Self {
+            fs: None,
             cwd,
             home,
             output_dir,
@@ -389,7 +541,7 @@ fn js_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

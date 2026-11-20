@@ -66,9 +66,16 @@ async fn provider_activation_and_target_reads_release_their_catalogs() {
             root.plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
             root.plugin(ManagedProvidersPlugin::new(None)),
             root.plugin(
-                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, 0).unwrap(),
+                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(
+                    &names,
+                    home.to_path_buf(),
+                )
+                .unwrap(),
             ),
-            root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, 0).unwrap()),
+            root.plugin(
+                dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, home.to_path_buf())
+                    .unwrap(),
+            ),
             root.plugin(dim_agent_aimux::AimuxPlugin::default()),
         ];
         for plugin in &plugins {

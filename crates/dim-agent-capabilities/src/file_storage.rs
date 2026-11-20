@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 mod face;
+pub mod mentions;
 pub use face::{FsHost, FsPermissions, FsRemove, OpenRead};
 
 /// Read-only reader lifetime observations for filesystem flow tests.
@@ -138,6 +139,30 @@ fn reserved_name(name: &OsStr) -> bool {
     name.to_string_lossy().starts_with(RESOURCE_PREFIX) || name == "auth.json.lock"
 }
 
+/// Parses a relative path supplied by a storage client before joining it to an authorized root.
+pub fn relative_file_path(relative: &Path) -> Result<PathBuf> {
+    let mut path = PathBuf::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(FileStorageError::InvalidPath(
+                "expected a relative file path",
+            ));
+        };
+        #[cfg(windows)]
+        native::validate_component(name)?;
+        if reserved_name(name) {
+            return Err(FileStorageError::InvalidPath(
+                "reserved storage resource name",
+            ));
+        }
+        path.push(name);
+    }
+    if path.as_os_str().is_empty() {
+        return Err(FileStorageError::InvalidPath("file name is required"));
+    }
+    Ok(path)
+}
+
 struct State {
     roots: Vec<File>,
     active: usize,
@@ -159,6 +184,7 @@ struct ReaderEntry {
 }
 
 pub struct FileStorage {
+    mentions: mentions::MentionIndex,
     generation: Uuid,
     roots: Arc<Mutex<Vec<PathBuf>>>,
     state: Mutex<State>,
@@ -281,6 +307,7 @@ impl FileStorage {
             .map(|root| native::open_root(root))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
+            mentions: Default::default(),
             generation: Uuid::new_v4(),
             roots,
             state: Mutex::new(State {
@@ -359,29 +386,10 @@ impl FileStorage {
                 return Err(FileStorageError::InvalidPath("unknown authorized root"));
             }
         }
-        let mut path = PathBuf::new();
-        for component in relative.as_ref().components() {
-            let Component::Normal(name) = component else {
-                return Err(FileStorageError::InvalidPath(
-                    "expected a relative file path",
-                ));
-            };
-            #[cfg(windows)]
-            native::validate_component(name)?;
-            if reserved_name(name) {
-                return Err(FileStorageError::InvalidPath(
-                    "reserved storage resource name",
-                ));
-            }
-            path.push(name);
-        }
-        if path.as_os_str().is_empty() {
-            return Err(FileStorageError::InvalidPath("file name is required"));
-        }
         Ok(FilePath {
             generation: self.generation,
             root,
-            relative: path,
+            relative: relative_file_path(relative.as_ref())?,
         })
     }
 
@@ -556,12 +564,12 @@ impl FileStorage {
 
     /// Copies an authorized source into `path`, with bounded memory and atomic publication.
     /// The source must be a regular file and stay at its initial length during copying.
-    pub async fn import(
+    async fn import(
         self: &Arc<Self>,
         path: &FilePath,
         source: std::path::PathBuf,
         limit: u64,
-        permissions: Option<Permissions>,
+        permissions: ReplacementMode,
         cancel: &CancellationToken,
     ) -> Result<u64> {
         self.check(cancel)?;
@@ -593,7 +601,7 @@ impl FileStorage {
         .await??;
         self.lock(path, cancel)
             .await?
-            .replace_from(source, permissions, cancel)
+            .replace_from_with(source, permissions, cancel)
             .await?;
         Ok(length)
     }
@@ -887,15 +895,25 @@ impl FileLease {
     /// durability and cancellation rules are the same.
     pub async fn replace_from<R: Read + Send + 'static>(
         &mut self,
-        mut source: R,
+        source: R,
         permissions: Option<Permissions>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.replace_from_with(source, ReplacementMode::Native(permissions), cancel)
+            .await
+    }
+
+    async fn replace_from_with<R: Read + Send + 'static>(
+        &mut self,
+        mut source: R,
+        permissions: ReplacementMode,
         cancel: &CancellationToken,
     ) -> Result<()> {
         self.run(cancel, move |parent, name, owner, cancel| {
             replace_file(
                 &parent,
                 &name,
-                ReplacementMode::Native(permissions),
+                permissions,
                 &owner,
                 &cancel,
                 |temp, owner, cancel| {
@@ -1021,7 +1039,15 @@ fn read(
     cancel: &CancellationToken,
     limit: usize,
 ) -> Result<Vec<u8>> {
-    let mut file = native::read_user_file(parent, name)?;
+    read_file(native::read_user_file(parent, name)?, owner, cancel, limit)
+}
+
+fn read_file(
+    mut file: File,
+    owner: &FileStorage,
+    cancel: &CancellationToken,
+    limit: usize,
+) -> Result<Vec<u8>> {
     if file.metadata()?.len() > limit as u64 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, ReadLimitExceeded).into());
     }
@@ -1532,13 +1558,22 @@ fn absent_is_removed(result: std::result::Result<(), impl Into<FileStorageError>
 /// Clones share authorized root identities; each apply opens fresh I/O resources.
 #[derive(Clone)]
 pub struct FileStoragePlugin {
+    node_home: Option<PathBuf>,
+    writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
 }
 impl FileStoragePlugin {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             roots: Arc::new(Mutex::new(roots)),
+            writes: Arc::default(),
+            node_home: None,
         }
+    }
+
+    pub fn with_node_home(mut self, home: Option<PathBuf>) -> Self {
+        self.node_home = home;
+        self
     }
 }
 impl Plugin for FileStoragePlugin {
@@ -1559,7 +1594,12 @@ impl Plugin for FileStoragePlugin {
                 .await
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))
         })?;
-        let binding = Arc::new(FsHost::new(storage.clone()));
+        let binding = Arc::new(FsHost::new(
+            storage.clone(),
+            ctx.clone(),
+            self.writes.clone(),
+            self.node_home.clone().or_else(std::env::home_dir),
+        ));
         ctx.provide_as::<FsHost>(binding.clone())?;
         ctx.provide_at(
             rutis_bridge::session::host_key("fsHost"),

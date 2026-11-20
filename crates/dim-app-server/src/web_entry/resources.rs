@@ -92,7 +92,7 @@ fn response<H: Send + 'static>(
     headers: HeaderMap,
     hold: H,
 ) -> Response {
-    let total = read.file.len();
+    let total = read.file.size;
     let mut response = Response::new(Body::empty());
     let target = response.headers_mut();
     target.insert(
@@ -176,13 +176,18 @@ fn response<H: Send + 'static>(
     let guard = stop.clone().drop_guard();
     let (sender, receiver) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(1);
     tokio::spawn(async move {
-        let (_token, _hold) = (read.token, hold);
+        let _hold = hold;
         let end = offset + length;
         let mut offset = offset;
         while offset < end {
             let result = read
-                .file
-                .read_at(offset, (end - offset).min(65536) as usize, &stop)
+                .files
+                .read_at(
+                    read.file.read_id.clone(),
+                    offset,
+                    (end - offset).min(65536) as usize,
+                    &stop,
+                )
                 .await;
             let failed = result.is_err();
             let result = result
@@ -197,7 +202,7 @@ fn response<H: Send + 'static>(
                 sent = sender.send(result) => if sent.is_err() || failed { break; },
             }
         }
-        drop(read.file);
+        drop(read);
     });
     *response.body_mut() = Body::from_stream(stream::unfold(
         (receiver, guard),

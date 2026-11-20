@@ -270,6 +270,11 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
             output_root: work.join("command-output"),
         },
     );
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     let agent = MinimalHost::start_with(&builder, |root, _| {
         root.provide_as::<ExecHost>(Arc::new(platform))?;
         Ok(())
@@ -512,6 +517,11 @@ async fn an_offloaded_read_result_registers_its_output_path() {
             output_root: home.join("command-output"),
         },
     );
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     let agent = MinimalHost::start_with(&builder, move |root, _| {
         root.provide_as::<ExecHost>(Arc::new(platform))?;
         root.provide_as::<SessionFiles>(owner)?;

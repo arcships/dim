@@ -284,13 +284,13 @@ impl rutis_bridge::session::HostDispatch for SessionFiles {
         }
         let parameters = args.json()?;
         let [mut object] = serde_json::from_value::<[serde_json::Value; 1]>(parameters)
-            .map_err(|e| Error::Value(e.to_string()))?;
+            .map_err(|e| Error::value(e.to_string()))?;
         object
             .as_object_mut()
-            .ok_or_else(|| Error::Value("Expected one request object".into()))?
+            .ok_or_else(|| Error::value("Expected one request object"))?
             .insert("method".into(), method.into());
         let operation: Operation =
-            serde_json::from_value(object).map_err(|e| Error::Value(e.to_string()))?;
+            serde_json::from_value(object).map_err(|e| Error::value(e.to_string()))?;
         let files = self.0.clone();
         Ok(Value::cancellable_future(async move {
             let cancel = CancellationToken::new();

@@ -2,7 +2,7 @@ use crate::{
     Error, Outcome, Result,
     source::{SessionData, fingerprint},
 };
-use dim_agent_capabilities::file_storage::FileStorage;
+use dim_agent_capabilities::file_storage::{FsHost, FsPermissions, FsRemove, relative_file_path};
 use dim_agent_runtime::{BranchRecord, SessionConfig, StoredEvent};
 use dim_agent_types::*;
 use dim_app_server::storage::SqliteStorage;
@@ -34,20 +34,24 @@ pub(crate) fn failure(_: impl std::fmt::Display) -> Error {
 
 pub(crate) struct Native {
     pub db: Mutex<Connection>,
-    pub files: Arc<FileStorage>,
-    pub directory: PathBuf,
+    pub files: Arc<FsHost>,
+    pub home: PathBuf,
+    directory: PathBuf,
     _lease: File,
 }
 
 impl Native {
-    pub async fn open(files: Arc<FileStorage>, directory: &Path) -> Result<Self> {
-        if !directory.as_os_str().is_empty() {
-            let relative = files.path(0, directory)?;
+    pub async fn open(files: Arc<FsHost>, home: &Path, relative: &Path) -> Result<Self> {
+        let directory = if relative.as_os_str().is_empty() {
+            home.to_owned()
+        } else {
+            let directory = home.join(relative_file_path(relative)?);
             files
-                .create_directory(&relative, &CancellationToken::new())
+                .create_directory(&directory, &CancellationToken::new())
                 .await?;
-        }
-        let path = files.root_path(0)?.join(directory).join("dimcode.sqlite");
+            directory
+        };
+        let path = directory.join("dimcode.sqlite");
         let storage = SqliteStorage::open(path.clone()).map_err(|error| {
             Error::Target(format!(
                 "Cannot open native target store: {error}; target preserved"
@@ -78,7 +82,8 @@ impl Native {
         Ok(Self {
             db: Mutex::new(db),
             files,
-            directory: directory.to_owned(),
+            home: home.to_owned(),
+            directory,
             _lease: lease,
         })
     }
@@ -90,48 +95,25 @@ impl Native {
         cancel: &CancellationToken,
     ) -> Result<(String, String)> {
         let container = self.directory.join("dimcode.sqlite.session-files");
-        self.files
-            .create_directory(&self.files.path(0, &container)?, cancel)
-            .await?;
+        self.files.create_directory(&container, cancel).await?;
         let id = uuid::Uuid::new_v4().to_string();
         let directory = container.join(&id);
-        self.files
-            .create_directory(&self.files.path(0, &directory)?, cancel)
-            .await?;
-        let relative = directory.join(name);
-        #[cfg(unix)]
-        let permissions = Some(std::os::unix::fs::PermissionsExt::from_mode(0o400));
-        #[cfg(not(unix))]
-        let permissions = {
-            let mut permissions = std::fs::metadata(
-                self.files
-                    .root_path(0)?
-                    .join(&self.directory)
-                    .join("dimcode.sqlite"),
-            )
-            .map_err(failure)?
-            .permissions();
-            permissions.set_readonly(true);
-            Some(permissions)
-        };
+        self.files.create_directory(&directory, cancel).await?;
+        let path = directory.join(name);
         let written = self
             .files
-            .replace(&self.files.path(0, &relative)?, bytes, permissions, cancel)
+            .replace(&path, bytes, FsPermissions::PrivateReadOnly, None, cancel)
             .await;
         if written.is_err() {
             self.files
-                .remove(&self.files.path(0, &directory)?, &CancellationToken::new())
+                .remove(
+                    FsRemove::Path { path: directory },
+                    &CancellationToken::new(),
+                )
                 .await?;
         }
         written?;
-        Ok((
-            id,
-            self.files
-                .root_path(0)?
-                .join(relative)
-                .to_string_lossy()
-                .into_owned(),
-        ))
+        Ok((id, path.to_string_lossy().into_owned()))
     }
 
     pub async fn discard_files(&self, ids: &[String]) -> Result<()> {
@@ -149,10 +131,9 @@ impl Native {
             if !owned {
                 self.files
                     .remove(
-                        &self.files.path(
-                            0,
-                            self.directory.join("dimcode.sqlite.session-files").join(id),
-                        )?,
+                        FsRemove::Path {
+                            path: self.directory.join("dimcode.sqlite.session-files").join(id),
+                        },
                         &CancellationToken::new(),
                     )
                     .await?;
@@ -282,7 +263,12 @@ impl Native {
             Some(value) => value,
             None => match self
                 .files
-                .read(&self.files.path(0, format!("{source}.json"))?, cancel)
+                .read_bytes(
+                    &self.home.join(format!("{source}.json")),
+                    usize::MAX,
+                    None,
+                    cancel,
+                )
                 .await
             {
                 Ok(bytes) => serde_json::from_slice(&bytes)
@@ -314,73 +300,81 @@ impl Native {
                 return Ok(Outcome::AlreadyImported);
             }
         }
-        let path = self.files.path(0, "plugins.json")?;
-        let mut lease = self.files.lock(&path, cancel).await?;
-        let mut record: Value = match lease.read(cancel).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
-                Error::Object("Invalid target plugin configuration is preserved".into())
-            })?,
-            Err(dim_agent_capabilities::file_storage::FileStorageError::Io(e))
-                if e.kind() == std::io::ErrorKind::NotFound =>
+        let path = self.home.join("plugins.json");
+        crate::ledger::while_locked(&self.files, &path, cancel, async |lease| {
+            let mut record: Value = match self
+                .files
+                .read_bytes(&path, usize::MAX, Some(lease), cancel)
+                .await
             {
-                json!({"version":1,"names":{}})
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| {
+                    Error::Object("Invalid target plugin configuration is preserved".into())
+                })?,
+                Err(dim_agent_capabilities::file_storage::FileStorageError::Io(e))
+                    if e.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    json!({"version":1,"names":{}})
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if record["version"] != 1
+                || !record.is_object()
+                || record
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .any(|key| !["version", "installed", "names"].contains(&key.as_str()))
+            {
+                return Err(Error::Object(
+                    "Unsupported target plugin configuration is preserved".into(),
+                ));
             }
-            Err(e) => return Err(e.into()),
-        };
-        if record["version"] != 1
-            || !record.is_object()
-            || record
-                .as_object()
-                .unwrap()
-                .keys()
-                .any(|key| !["version", "installed", "names"].contains(&key.as_str()))
-        {
-            return Err(Error::Object(
-                "Unsupported target plugin configuration is preserved".into(),
-            ));
-        }
-        if record.get("names").is_none() {
-            record["names"] = json!({});
-        }
-        let names = record["names"]
-            .as_object_mut()
-            .ok_or_else(|| Error::Object("Invalid target plugin choices are preserved".into()))?;
-        if previous.is_some() {
-            if names.get(name) == Some(&json!({"off":!enabled})) {
-                Self::save_document(
-                    &self.db.lock().unwrap(),
-                    &receipt,
-                    &json!({"enabled":enabled,"complete":true}),
-                )?;
-                return Ok(Outcome::AlreadyImported);
+            if record.get("names").is_none() {
+                record["names"] = json!({});
             }
-            return Ok(Outcome::Conflict);
-        }
-        if names.contains_key(name) {
-            return Ok(Outcome::Conflict);
-        }
-        if cancel.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        Self::save_document(
-            &self.db.lock().unwrap(),
-            &receipt,
-            &json!({"enabled":enabled,"complete":false}),
-        )?;
-        names.insert(name.into(), json!({"off":!enabled}));
-        lease
-            .replace(
-                serde_json::to_vec_pretty(&record).map_err(failure)?,
-                None,
-                &CancellationToken::new(),
-            )
-            .await?;
-        Self::save_document(
-            &self.db.lock().unwrap(),
-            &receipt,
-            &json!({"enabled":enabled,"complete":true}),
-        )?;
-        Ok(Outcome::Imported)
+            let names = record["names"].as_object_mut().ok_or_else(|| {
+                Error::Object("Invalid target plugin choices are preserved".into())
+            })?;
+            if previous.is_some() {
+                if names.get(name) == Some(&json!({"off":!enabled})) {
+                    Self::save_document(
+                        &self.db.lock().unwrap(),
+                        &receipt,
+                        &json!({"enabled":enabled,"complete":true}),
+                    )?;
+                    return Ok(Outcome::AlreadyImported);
+                }
+                return Ok(Outcome::Conflict);
+            }
+            if names.contains_key(name) {
+                return Ok(Outcome::Conflict);
+            }
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            Self::save_document(
+                &self.db.lock().unwrap(),
+                &receipt,
+                &json!({"enabled":enabled,"complete":false}),
+            )?;
+            names.insert(name.into(), json!({"off":!enabled}));
+            self.files
+                .replace(
+                    &path,
+                    serde_json::to_vec_pretty(&record).map_err(failure)?,
+                    FsPermissions::Preserve,
+                    Some(lease),
+                    &CancellationToken::new(),
+                )
+                .await?;
+            Self::save_document(
+                &self.db.lock().unwrap(),
+                &receipt,
+                &json!({"enabled":enabled,"complete":true}),
+            )?;
+            Ok(Outcome::Imported)
+        })
+        .await
     }
 
     pub fn session_receipt(&self, id: &str, digest: &str) -> Result<Option<(Outcome, String)>> {

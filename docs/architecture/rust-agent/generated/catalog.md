@@ -22,7 +22,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `execHost` | process | HostPlatform | data | `configured` async, `confined` async, `info` async, `removeOutputDirectory` async, `retainOutput` async, `tail` async |
 | `executionSettingsHost` | process | ExecutionSettings | data | `read` async |
 | `fileStorage` | process | FileStorage | internal(object) | — |
-| `fsHost` | process | FileStorage | data | `backup` async, `closeRead` async, `createDirectory` async, `list` async, `lock` async, `openRead` async, `readAt` async, `readBytes` async, `remove` async, `replace` async, `stat` async, `unlock` async |
+| `fsHost` | process | FileStorage | data | `backup` async, `closeRead` async, `createDirectory` async, `list` async, `lock` async, `mentions` async, `openRead` async, `readAt` async, `readBytes` async, `remove` async, `replace` async, `stat` async, `unlock` async |
 | `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
 | `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
@@ -34,7 +34,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `managedWorktrees` | process | ManagedWorktrees | internal(hot-path) | — |
 | `managementMethods` | process | ManagementMethods | data | `register` async |
 | `mcpService` | process | Mcp | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
-| `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
 | `modalityTargets` | process | Modality | data | `resolve` async |
 | `modelHost` | process | Aimux | internal(owner-api) | — |
 | `modelSelectionHost` | process | Provider | data | `resolve` async |

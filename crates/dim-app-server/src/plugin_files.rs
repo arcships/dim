@@ -1,7 +1,8 @@
 //! Generic, host-owned file transactions for an explicitly authorized plugin root.
 //! No account formats or provider policy belong at this boundary.
 use dim_agent_capabilities::file_storage::{
-    DirectoryEntry, EntryKind, FileLease, FilePath, FileStorage, FileStorageError, OpenRead,
+    DirectoryEntry, EntryKind, FileStorageError, FsHost, FsPermissions, FsRemove, OpenRead,
+    relative_file_path,
 };
 use dim_agent_runtime::Names;
 use rutis::Ctx;
@@ -10,7 +11,6 @@ use rutis_bridge::session::{Error, HostDispatch, Reply, Value, host_key};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    fs::Permissions,
     io,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -19,11 +19,16 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const FORMAT_VERSION: u32 = 1;
 
-/// The largest file a whole-buffer operation accepts. Bytes cross the plugin
-/// runtime's channel base64-encoded in a 16 MiB frame, which costs four bytes
-/// for every three; 8 MiB leaves the frame envelope and both sides' copies
-/// room, and bounds one allocation. Streaming operations have no such limit.
+/// The largest file a whole-buffer operation accepts. 8 MiB bounds one
+/// allocation and leaves room for both sides' copies; streaming operations
+/// have no such limit.
 pub const MAX_WHOLE_FILE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The serialized text record must fit the runtime's 16 MiB frame. rutis 0.23
+/// chunks a frame over the transport limit, so the plugin runtime no longer
+/// refuses this call before it arrives: this boundary keeps the admission limit
+/// and leaves the file unchanged.
+const TEXT_REPLACE_FRAME_BYTES: usize = crate::outbound::MAX_FRAME_BYTES;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -50,18 +55,7 @@ fn success(value: Value) -> Value {
     Value::Record([("ok".into(), json!(true).into()), ("value".into(), value)].into())
 }
 fn invalid() -> Error {
-    Error::Value("invalid file operation".into())
-}
-fn private_permissions() -> Option<Permissions> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        Some(Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
+    Error::value("invalid file operation")
 }
 async fn resolve(value: Value) -> Reply {
     match value {
@@ -71,12 +65,25 @@ async fn resolve(value: Value) -> Reply {
 }
 
 struct Files {
-    storage: Arc<FileStorage>,
-    root: usize,
+    fs: Arc<FsHost>,
+    root_path: PathBuf,
     admission: Mutex<()>,
     stopping: CancellationToken,
     tasks: TaskTracker,
 }
+impl Files {
+    fn path(&self, name: &str) -> Result<PathBuf, FileStorageError> {
+        Ok(self.root_path.join(relative_file_path(Path::new(name))?))
+    }
+    async fn directory(
+        &self,
+        path: &Path,
+        stopping: &CancellationToken,
+    ) -> Result<PathBuf, FileStorageError> {
+        self.fs.create_directories(path, stopping).await
+    }
+}
+
 pub struct FileScope {
     caller: Option<Ctx>,
     files: Arc<Files>,
@@ -148,15 +155,11 @@ impl FileScope {
     fn dispatch_directory(self: &Arc<Self>, args: Value) -> Reply {
         self.operation(args, |files, _, path, cancel| {
             Box::pin(async move {
-                let result = files
-                    .storage
-                    .create_directories(&path, &cancel)
-                    .await
-                    .and_then(|dir| {
-                        dir.into_os_string()
-                            .into_string()
-                            .map_err(|_| FileStorageError::InvalidPath("non-UTF-8 directory path"))
-                    });
+                let result = files.directory(&path, &cancel).await.and_then(|dir| {
+                    dir.into_os_string()
+                        .into_string()
+                        .map_err(|_| FileStorageError::InvalidPath("non-UTF-8 directory path"))
+                });
                 Ok(match result {
                     Ok(path) => success(json!(path).into()),
                     Err(error) => failure(error),
@@ -169,20 +172,16 @@ impl FileScope {
         let caller = self
             .caller
             .clone()
-            .ok_or_else(|| Error::Value("openRead requires a calling row".into()))?;
+            .ok_or_else(|| Error::value("openRead requires a calling row"))?;
         self.operation(args, move |files, _, path, cancel| {
             Box::pin(async move {
-                Ok(
-                    match files.storage.open_reader(&caller, &path, &cancel).await {
-                        Ok(reader) => success(json!(reader).into()),
-                        Err(FileStorageError::Io(error))
-                            if error.kind() == io::ErrorKind::NotFound =>
-                        {
-                            success(json!(null).into())
-                        }
-                        Err(error) => failure(error),
-                    },
-                )
+                Ok(match files.fs.open_read(&caller, &path, &cancel).await {
+                    Ok(reader) => success(json!(reader).into()),
+                    Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                        success(json!(null).into())
+                    }
+                    Err(error) => failure(error),
+                })
             })
         })
     }
@@ -194,7 +193,7 @@ impl FileScope {
             Box::pin(async move {
                 let reader = callback_reader(next, cancel.clone());
                 Ok(
-                    match write_stream_file(&files.storage, &path, reader, &cancel).await {
+                    match write_stream_file(&files, &path, reader, &cancel).await {
                         Ok(()) => success(json!(null).into()),
                         Err(FileStorageError::Io(error))
                             if error.kind() == io::ErrorKind::ConnectionAborted
@@ -214,7 +213,7 @@ impl FileScope {
     fn dispatch_list(self: &Arc<Self>, args: Value) -> Reply {
         self.operation(args, |files, prefix, path, cancel| {
             Box::pin(async move {
-                Ok(match files.storage.list(&path, &cancel).await {
+                Ok(match files.fs.list(&path, &cancel).await {
                     Ok(entries) => success(entries_value(Path::new(&prefix), entries)),
                     Err(error) => failure(error),
                 })
@@ -225,10 +224,12 @@ impl FileScope {
     fn dispatch_remove(self: &Arc<Self>, args: Value) -> Reply {
         self.operation(args, |files, _, path, cancel| {
             Box::pin(async move {
-                Ok(match files.storage.remove(&path, &cancel).await {
-                    Ok(()) => success(json!(null).into()),
-                    Err(error) => failure(error),
-                })
+                Ok(
+                    match files.fs.remove(FsRemove::Path { path }, &cancel).await {
+                        Ok(()) => success(json!(null).into()),
+                        Err(error) => failure(error),
+                    },
+                )
             })
         })
     }
@@ -241,7 +242,7 @@ impl FileScope {
         operation: impl FnOnce(
             Arc<Files>,
             String,
-            FilePath,
+            PathBuf,
             CancellationToken,
         ) -> BoxFuture<'static, Reply>
         + Send
@@ -253,7 +254,7 @@ impl FileScope {
         if args.next().is_some() {
             return Err(invalid());
         }
-        let path = match self.files.storage.path(self.files.root, &name) {
+        let path = match self.files.path(&name) {
             Ok(path) => path,
             Err(error) => return Ok(Value::future(async move { Ok(failure(error)) })),
         };
@@ -288,7 +289,7 @@ impl FileScope {
         {
             return Err(invalid());
         }
-        let path = match self.files.storage.path(self.files.root, name) {
+        let path = match self.files.path(&name) {
             Ok(path) => path,
             Err(error) => return Ok(Value::future(async move { Ok(failure(error)) })),
         };
@@ -304,7 +305,7 @@ impl FileScope {
         let owner = self.files.tasks.token();
         let task = self.tasks.spawn(async move {
             let _owner = owner;
-            let acquire = acquire(&scope.files.storage, &path, &acquisition);
+            let acquire = acquire(&scope.files.fs, &path, &acquisition);
             let cancelled = async {
                 match cancelled {
                     Some(reference) => {
@@ -326,6 +327,8 @@ impl FileScope {
             let lease = Arc::new(tokio::sync::Mutex::new(Some(lease)));
             let result = match callback
                 .call_async(Value::List(vec![lease_value(
+                    scope.files.fs.clone(),
+                    path,
                     lease.clone(),
                     scope.tasks.clone(),
                 )]))
@@ -334,8 +337,15 @@ impl FileScope {
                 Ok(value) => resolve(value).await,
                 Err(error) => Err(error),
             };
-            lease.lock().await.take();
-            result.map(success)
+            let id = lease.lock().await.take().expect("active file transaction");
+            let released = scope.files.fs.unlock(id).await;
+            match result {
+                Ok(value) => Ok(match released {
+                    Ok(()) => success(value),
+                    Err(error) => failure(error),
+                }),
+                Err(error) => Err(error),
+            }
         });
         Ok(Value::future(async move {
             let _cancel_waiter = cancel_waiter;
@@ -375,11 +385,18 @@ enum LeaseArgument {
     Bytes(Vec<u8>),
 }
 
-fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTracker) -> Value {
+fn lease_value(
+    fs: Arc<FsHost>,
+    path: PathBuf,
+    lease: Arc<tokio::sync::Mutex<Option<uuid::Uuid>>>,
+    tasks: TaskTracker,
+) -> Value {
     Value::Record(
         ["read", "replace", "backup", "readBytes", "replaceBytes"]
             .into_iter()
             .map(|method| {
+                let fs = fs.clone();
+                let path = path.clone();
                 let lease = lease.clone();
                 let tasks = tasks.clone();
                 (
@@ -397,19 +414,21 @@ fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTra
                             }
                             _ => return Err(invalid()),
                         };
-                        let lease = lease.clone();
+                        let fs = fs.clone();
+                let path = path.clone();
+                let lease = lease.clone();
                         let task = tasks.spawn(async move {
-                            let mut guard = lease.lock().await;
-                            let Some(lease) = guard.as_mut() else {
+                            let guard = lease.lock().await;
+                            let Some(id) = *guard else {
                                 return Ok(failure(FileStorageError::Closed));
                             };
                             let cancel = CancellationToken::new();
                             let result = match (method, argument) {
-                                ("read", LeaseArgument::None) => read_text(lease, &cancel)
+                                ("read", LeaseArgument::None) => read_text(&fs, &path, id, &cancel)
                                     .await
                                     .map(|value| json!(value).into()),
                                 ("readBytes", LeaseArgument::None) => {
-                                    match lease.read_limited(MAX_WHOLE_FILE_BYTES, &cancel).await {
+                                    match fs.read_bytes(&path, MAX_WHOLE_FILE_BYTES, Some(id), &cancel).await {
                                         Ok(bytes) => Ok(Value::Bytes(bytes)),
                                         Err(FileStorageError::Io(error))
                                             if error.kind() == io::ErrorKind::NotFound =>
@@ -420,15 +439,25 @@ fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTra
                                     }
                                 }
                                 ("replace", LeaseArgument::Text(text)) => {
-                                    replace_text(lease, text, &cancel)
+                                    let bytes = serde_json::to_vec(&StoredFile {
+                                        version: FORMAT_VERSION,
+                                        text,
+                                    })
+                                    .expect("text records contain only serializable fields");
+                                    if bytes.len() > TEXT_REPLACE_FRAME_BYTES {
+                                        return Err(Error::value(format!(
+                                            "text replace is {} bytes, over the plugin runtime's 16 MiB frame",
+                                            bytes.len()
+                                        )));
+                                    }
+                                    fs.replace(&path, bytes, FsPermissions::Private, Some(id), &cancel)
                                         .await
-                                        .map(|()| json!(null).into())
+                                        .map(|_| json!(null).into())
                                 }
                                 ("replaceBytes", LeaseArgument::Bytes(bytes))
                                     if bytes.len() <= MAX_WHOLE_FILE_BYTES =>
                                 {
-                                    lease
-                                        .replace(bytes, private_permissions(), &cancel)
+                                    fs.replace(&path, bytes, FsPermissions::Private, Some(id), &cancel)
                                         .await
                                         .map(|_| json!(null).into())
                                 }
@@ -438,8 +467,7 @@ fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTra
                                         "file exceeds the whole-buffer byte limit",
                                     )))
                                 }
-                                ("backup", LeaseArgument::Text(suffix)) => lease
-                                    .backup(&suffix, private_permissions(), &cancel)
+                                ("backup", LeaseArgument::Text(suffix)) => fs.backup(id, &suffix, FsPermissions::Private, &cancel)
                                     .await
                                     .map(|_| json!(null).into()),
                                 _ => unreachable!(),
@@ -504,7 +532,7 @@ fn file_error(error: FileStorageError) -> PluginFileError {
 
 /// The name of `leaf` under `prefix`, as these operations spell relative
 /// names: the components the storage resolved, joined by `/`, with `leaf`
-/// appended. The prefix is read exactly as [`FileStorage::path`] reads it, so
+/// appended. The prefix is read exactly as [`relative_file_path`] reads it, so
 /// on Unix a backslash stays part of a component and on Windows it separates;
 /// no component can contain `/`, so a returned name always round-trips.
 fn join_name(prefix: &Path, leaf: &str) -> String {
@@ -577,7 +605,8 @@ impl FileScope {
         self.run(name, |storage, path, stopping| {
             Box::pin(async move {
                 match storage
-                    .read_limited(&path, MAX_WHOLE_FILE_BYTES, &stopping)
+                    .fs
+                    .read_bytes(&path, MAX_WHOLE_FILE_BYTES, None, &stopping)
                     .await
                 {
                     Ok(bytes) => Ok(Some(bytes)),
@@ -598,7 +627,7 @@ impl FileScope {
         let caller = self.caller.clone().ok_or(PluginFileError::Closed)?;
         self.run(name, move |storage, path, stopping| {
             Box::pin(async move {
-                match storage.open_reader(&caller, &path, &stopping).await {
+                match storage.fs.open_read(&caller, &path, &stopping).await {
                     Ok(reader) => Ok(Some(reader)),
                     Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                         Ok(None)
@@ -641,7 +670,11 @@ impl FileScope {
         let joined = name.clone();
         self.run(&name, move |storage, path, stopping| {
             Box::pin(async move {
-                let entries = storage.list(&path, &stopping).await.map_err(file_error)?;
+                let entries = storage
+                    .fs
+                    .list(&path, &stopping)
+                    .await
+                    .map_err(file_error)?;
                 Ok(entries
                     .into_iter()
                     .filter_map(|entry| {
@@ -664,7 +697,13 @@ impl FileScope {
     /// removed.
     pub async fn remove(&self, name: &str) -> Result<(), PluginFileError> {
         self.run(name, |storage, path, stopping| {
-            Box::pin(async move { storage.remove(&path, &stopping).await.map_err(file_error) })
+            Box::pin(async move {
+                storage
+                    .fs
+                    .remove(FsRemove::Path { path }, &stopping)
+                    .await
+                    .map_err(file_error)
+            })
         })
         .await
     }
@@ -680,7 +719,7 @@ impl FileScope {
         self.run(name, |storage, path, stopping| {
             Box::pin(async move {
                 storage
-                    .create_directories(&path, &stopping)
+                    .directory(&path, &stopping)
                     .await
                     .map_err(file_error)
             })
@@ -692,24 +731,21 @@ impl FileScope {
         &self,
         name: &str,
         action: impl FnOnce(
-            Arc<FileStorage>,
-            FilePath,
+            Arc<Files>,
+            PathBuf,
             CancellationToken,
         ) -> BoxFuture<'static, Result<R, PluginFileError>>
         + Send
         + 'static,
     ) -> Result<R, PluginFileError> {
         let files = &self.files;
-        let path = files
-            .storage
-            .path(files.root, name)
-            .map_err(|_| PluginFileError::InvalidPath)?;
+        let path = files.path(name).map_err(|_| PluginFileError::InvalidPath)?;
         let admission = files.admission.lock().unwrap();
         if self.stopping.is_cancelled() {
             return Err(PluginFileError::Closed);
         }
         let stopping = self.stopping.child_token();
-        let storage = files.storage.clone();
+        let storage = files.clone();
         let owner = files.tasks.token();
         let task = self.tasks.spawn(async move {
             let _owner = owner;
@@ -722,29 +758,39 @@ impl FileScope {
 }
 
 async fn transact_file<R>(
-    storage: Arc<FileStorage>,
-    path: FilePath,
+    files: Arc<Files>,
+    path: PathBuf,
     stopping: CancellationToken,
     change: impl FnOnce(Option<&str>) -> (Option<String>, R),
 ) -> Result<R, PluginFileError> {
-    let mut lease = acquire(&storage, &path, &stopping)
-        .await
-        .map_err(file_error)?;
-    let current = read_text(&mut lease, &stopping).await.map_err(file_error)?;
-    let (next, result) = change(current.as_deref());
-    if let Some(text) = next {
-        replace_text(&mut lease, text, &stopping)
+    let fs = &files.fs;
+    let id = acquire(fs, &path, &stopping).await.map_err(file_error)?;
+    let result = std::panic::AssertUnwindSafe(async {
+        let current = read_text(fs, &path, id, &stopping)
             .await
             .map_err(file_error)?;
-    }
-    Ok(result)
+        let (next, result) = change(current.as_deref());
+        if let Some(text) = next {
+            replace_text(fs, &path, id, text, &stopping)
+                .await
+                .map_err(file_error)?;
+        }
+        Ok::<_, PluginFileError>(result)
+    });
+    let result = futures_util::FutureExt::catch_unwind(result).await;
+    let released = fs.unlock(id).await.map_err(file_error);
+    let value = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+    released?;
+    Ok(value)
 }
 
 async fn read_text(
-    lease: &mut FileLease,
+    fs: &FsHost,
+    path: &Path,
+    id: uuid::Uuid,
     cancel: &CancellationToken,
 ) -> Result<Option<String>, FileStorageError> {
-    match lease.read(cancel).await {
+    match fs.read_bytes(path, usize::MAX, Some(id), cancel).await {
         Ok(bytes) => match serde_json::from_slice::<StoredFile>(&bytes) {
             Ok(StoredFile {
                 version: FORMAT_VERSION,
@@ -758,7 +804,9 @@ async fn read_text(
 }
 
 async fn replace_text(
-    lease: &mut FileLease,
+    fs: &FsHost,
+    path: &Path,
+    id: uuid::Uuid,
     text: String,
     cancel: &CancellationToken,
 ) -> Result<(), FileStorageError> {
@@ -767,7 +815,8 @@ async fn replace_text(
         text,
     })
     .expect("text records contain only serializable fields");
-    lease.replace(bytes, private_permissions(), cancel).await
+    fs.replace(path, bytes, FsPermissions::Private, Some(id), cancel)
+        .await
 }
 
 fn callback_reader(
@@ -797,25 +846,30 @@ fn callback_reader(
 }
 
 async fn write_stream_file(
-    storage: &Arc<FileStorage>,
-    path: &FilePath,
+    files: &Files,
+    path: &Path,
     source: impl io::Read + Send + 'static,
     stopping: &CancellationToken,
 ) -> Result<(), FileStorageError> {
-    acquire(storage, path, stopping)
-        .await?
-        .replace_from(source, private_permissions(), stopping)
-        .await
+    let fs = &files.fs;
+    let id = acquire(fs, path, stopping).await?;
+    let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+        fs.replace_stream(id, source, FsPermissions::Private, stopping),
+    ))
+    .await;
+    let released = fs.unlock(id).await;
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+    released
 }
 
 /// Takes the file's lease, waiting while another holder has it.
 async fn acquire(
-    storage: &Arc<FileStorage>,
-    path: &FilePath,
+    storage: &FsHost,
+    path: &Path,
     stopping: &CancellationToken,
-) -> Result<FileLease, FileStorageError> {
+) -> Result<uuid::Uuid, FileStorageError> {
     loop {
-        match storage.lock(path, stopping).await {
+        match storage.lock(None, path, stopping).await {
             Ok(lease) => return Ok(lease),
             Err(FileStorageError::Locked) => tokio::select! {
                 _ = stopping.cancelled() => return Err(FileStorageError::Closed),
@@ -842,14 +896,14 @@ impl HostDispatch for PluginFiles {
 /// The composition root chooses the authorized root; JS cannot register roots.
 #[derive(Clone)]
 pub struct PluginFilesPlugin {
-    root: usize,
-    storage: Key<FileStorage>,
+    root: PathBuf,
+    fs: Key<FsHost>,
 }
 impl PluginFilesPlugin {
-    pub fn new(names: &Names<'_>, root: usize) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, root: PathBuf) -> rutis::Result<Self> {
         Ok(Self {
             root,
-            storage: names.key()?,
+            fs: names.key()?,
         })
     }
 }
@@ -858,14 +912,13 @@ impl DynPlugin for PluginFilesPlugin {
         "PluginFiles"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.storage.erase()]
+        vec![self.fs.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let storage = ctx.require_at(&self.storage)?;
             let files = Arc::new(Files {
-                storage,
-                root: self.root,
+                fs: ctx.require_at(&self.fs)?,
+                root_path: self.root.clone(),
                 admission: Mutex::new(()),
                 stopping: CancellationToken::new(),
                 tasks: TaskTracker::new(),

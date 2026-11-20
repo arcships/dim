@@ -679,7 +679,7 @@ async fn read_load(
     }
     let load_start = Instant::now();
     tokio::time::sleep(Duration::from_millis(1500)).await;
-    let sessions = SessionStore::new(db.clone(), rutis::Ctx::root()?, 0);
+    let sessions = SessionStore::new(db.clone(), rutis::Ctx::root()?, directory.clone());
     let fork_start = Instant::now();
     let config = sessions
         .session_config_text("source")

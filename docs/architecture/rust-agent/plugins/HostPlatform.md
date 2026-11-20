@@ -10,13 +10,13 @@ and tree-supervision primitives to local tools. The process service [`execHost.i
 | --- | --- |
 | `P:ExecutionSettingsHost` | Read the user's `Sandbox`/`Network` switches at each process preparation. Required. |
 | `P:ToolchainSourceHost` | The downloaded runtimes installed under the plan in effect, each with the bin directory appended to a started child's `PATH` and the archive directory granted to a confined one. Required; an assembly that installs no runtimes provides `ToolchainSourceHost::fixed(vec![])`. |
-| `P:FileStorage` | Read the configured exec shell; enabled only when `exec_shell_file` is configured. |
+| `P:FsHost` | Read the configured shell through `readBytes`. Updates use `lock`, `readBytes`, `replace` and `unlock`; enabled only when `exec_shell_file` is configured. |
 
 ## Events and lifetime
 
 No Timeline events or plugin background tasks. `apply` captures the process
 environment, reads the initial shell snapshot, retains the configured
-FileStorage source and requires the execution-settings port. `exec_shell()`
+configuration path and requires the execution-settings port. `exec_shell()`
 rereads that source on every invocation.
 Available resolutions and `EXEC_SHELL_CONFIG_INVALID` errors are reused while
 the read result is unchanged; `EXEC_SHELL_UNAVAILABLE` is resolved again on the
@@ -31,7 +31,7 @@ shell returns `EXEC_SHELL_UNAVAILABLE` without fallback. Resolution uses the
 captured service environment, never a caller's environment.
 
 When no shell file is configured, `exec_shell()` returns the supplied initial snapshot.
-FileStorage is disabled when `exec_shell_file` is not configured.
+The fsHost dependency is omitted when `exec_shell_file` is not configured.
 The plugin's configuration may name the user home it reports (`home`); the App Server sets it from
 `ServerConfig::platform_home`, and a host that needs an isolated user home — a test, or an
 embedding product — sets that field. It is unset otherwise, so `~` and the user Skill root stay
@@ -67,7 +67,7 @@ the directory (ADR 013 D4). An absent directory counts as removed.
 detected shell choices, returning the byte revision, optional explicit executable
 and any parse error. `update_exec_shell_settings(expected_revision, executable_path,
 cancel)` validates the selection with the same resolver used by execution, then
-replaces the preference atomically under a FileStorage lease if its byte revision
+replaces the preference atomically under an fsHost lease if its byte revision
 still matches. An absent executable selects automatic detection; a malformed
 preference can be repaired using its current revision. Missing files have revision
 `absent`. App Server exposes these operations as trusted local management methods
@@ -295,7 +295,7 @@ one sets `TMPDIR` in `spec.env` to a directory inside `write`.
 - §4 rules 1–6 and 9: no commands, handovers, before callbacks, batches or Timeline facts are
   added. Existing command execution and input adoption remain unchanged.
 - §4 rule 7: callers use the current-shell methods, command builder and `spawn()`; file access
-  stays behind the declared FileStorage service and the switches behind the declared port.
+  stays behind the declared fsHost service and the switches behind the declared port.
 - ADR 002 D4: read business configuration at use time, without watchers or reload.
 - ADR 002 D5: the native binding returns explicit command/shell and code/reason data. Hosts
   construct fixed platforms with `HostPlatform::current`; there is no mutable public shell
@@ -303,7 +303,7 @@ one sets `TMPDIR` in `spec.env` to a directory inside `write`.
 
 ## Requirements raised to mechanism owners
 
-None (§4 rule 8). Existing FileStorage, the settings port and process primitives cover the
+None (§4 rule 8). The fsHost operations, the settings port and process primitives cover the
 boundary.
 
 ## Tests
@@ -327,12 +327,13 @@ helper's tree; `a_confined_helper_leaves_no_process_after_it_exits` that a
 helper which exits on its own leaves nothing either;
 `a_confined_helper_returns_when_its_root_exits_with_a_descendant_on_its_pipes` that a descendant
 holding both pipes cannot turn a completed helper into a timeout, and
-`a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes` that a descendant which
-left the process group is returned past and is then the caller's to kill (skipped when perl is
-absent);
-`a_confined_helper_gets_the_allowlist_plus_its_own_environment` that only the
-allowlist and the helper's own entries reach it, with its `TMPDIR` honored; and
-`a_confined_helper_refuses_relative_and_missing_paths` the path refusals.
+`a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes` checks the lifetime of a
+descendant that left the group. On Linux with bubblewrap, the descendant's file lock must be
+released when the call returns. On macOS and unconfined Linux, the caller cleans up the surviving
+descendant. This probe requires Perl.
+`a_confined_helper_gets_the_allowlist_plus_its_own_environment` checks that only the allowlist
+and the helper's own entries reach it, with its `TMPDIR` honored.
+`a_confined_helper_refuses_relative_and_missing_paths` covers the path refusals.
 `a_host_without_bubblewrap_runs_the_confined_helper_unconfined` covers the
 Linux fallback.
 [host_platform_windows_flow.rs](../../../../crates/dim-agent-capabilities/tests/host_platform_windows_flow.rs):
@@ -367,7 +368,7 @@ workspace, and the same command with the sandbox off.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 进程 |
-| 注入 | `P:ExecutionSettingsHost`、`P:FileStorage`、`P:ToolchainSourceHost` |
+| 注入 | `P:ExecutionSettingsHost`、`P:FsHost`、`P:ToolchainSourceHost` |
 | 提供 | `P:HostPlatform` |
 | 被注入于 | `HooksSession`、`PromptSources`、`ShellInput`、`SkillsCatalog`、`WorkspaceTools` |
 <!-- /generated -->

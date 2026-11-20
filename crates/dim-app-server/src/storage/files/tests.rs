@@ -102,7 +102,12 @@ impl Fixture {
             .unwrap();
         let db = SqliteStorage::open(home.join("dimcode.sqlite")).unwrap();
         let timeline = SqliteTimelineStore::new(db.clone());
-        let files = SessionFiles::new(db.clone(), root.clone(), 0, Arc::new(Notify::new()));
+        let files = SessionFiles::new(
+            db.clone(),
+            root.clone(),
+            home.clone(),
+            Arc::new(Notify::new()),
+        );
         Self {
             home,
             root,
@@ -294,7 +299,11 @@ async fn puts_ended_before_txn_2_are_abandoned_and_swept() {
 #[tokio::test]
 async fn an_interrupted_delete_converges_on_retry_and_the_next_sweep() {
     let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     let output = |id: &str| fixture.home.join("command-output").join(id);
     fixture.session("deleted").await;
     fixture.session("kept").await;
@@ -339,7 +348,7 @@ async fn an_interrupted_delete_converges_on_retry_and_the_next_sweep() {
     let next = SessionFiles::new(
         fixture.db.clone(),
         fixture.root.clone(),
-        0,
+        fixture.home.clone(),
         Arc::new(Notify::new()),
     );
     next.start();
@@ -370,7 +379,11 @@ async fn an_interrupted_delete_converges_on_retry_and_the_next_sweep() {
 #[tokio::test]
 async fn a_fork_persists_the_configuration_its_caller_read() {
     let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     fixture.session("source").await;
     let read = store.session_config_text("source").await.unwrap().unwrap();
     // A concurrent update lands between the read and the fork.
@@ -408,7 +421,11 @@ async fn a_fork_persists_the_configuration_its_caller_read() {
 #[tokio::test]
 async fn a_fork_owns_output_registered_before_the_file_exists() {
     let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     fixture.session("running-source").await;
     let log = fixture.home.join("command-output/running-source/exec.log");
     fixture
@@ -451,7 +468,11 @@ async fn a_fork_owns_output_registered_before_the_file_exists() {
 #[tokio::test]
 async fn a_fork_waits_for_a_delete_that_removed_output() {
     let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     fixture.session("paused-source").await;
     let log = fixture.home.join("command-output/paused-source/exec.log");
     std::fs::create_dir_all(log.parent().unwrap()).unwrap();
@@ -521,7 +542,11 @@ fn a_windows_style_directory_pattern_matches_a_nested_row() {
 #[tokio::test]
 async fn concurrent_deletes_remove_a_shared_output_directory() {
     let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     fixture.session("source").await;
     let log = fixture.home.join("command-output/source/exec.log");
     std::fs::create_dir_all(log.parent().unwrap()).unwrap();
@@ -572,7 +597,11 @@ async fn a_delete_removes_shell_output_of_its_last_owner() {
         .root
         .provide_as::<ExecHost>(Arc::new(platform))
         .unwrap();
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     fixture.session("source").await;
     let log = fixture.home.join(".dim/exec/source/main/exec-1.log");
     std::fs::create_dir_all(log.parent().unwrap()).unwrap();
@@ -604,7 +633,11 @@ async fn a_delete_removes_the_sessions_grants() {
     use dim_agent_types::grant::{GrantKind, GrantMode};
 
     let fixture = Fixture::new().await;
-    let store = SessionStore::new(fixture.db.clone(), fixture.root.clone(), 0);
+    let store = SessionStore::new(
+        fixture.db.clone(),
+        fixture.root.clone(),
+        fixture.home.clone(),
+    );
     fixture.session("deleted").await;
     store
         .add_grant(

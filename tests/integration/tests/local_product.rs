@@ -57,6 +57,11 @@ async fn product(dirs: &Dirs) -> Product {
                 ))
             }),
         );
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     defaults::install_local_execution(
         &mut builder,
         ModelProviderPlugin::new,

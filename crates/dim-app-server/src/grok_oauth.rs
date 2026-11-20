@@ -1,6 +1,6 @@
 pub(crate) mod management;
 use crate::managed_oauth::{self, Service};
-use dim_agent_capabilities::file_storage::FileStorage;
+use dim_agent_capabilities::file_storage::FsHost;
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
@@ -59,22 +59,22 @@ impl GrokOAuthService {
     }
 }
 pub struct GrokOAuthPlugin {
-    root: usize,
+    home: std::path::PathBuf,
     config: GrokOAuthConfig,
-    files: Key<FileStorage>,
+    files: Key<FsHost>,
     methods: Key<crate::methods::ManagementMethods>,
 }
 impl GrokOAuthPlugin {
-    pub fn new(names: &Names<'_>, root: usize) -> rutis::Result<Self> {
-        Self::with_config(names, root, production())
+    pub fn new(names: &Names<'_>, home: std::path::PathBuf) -> rutis::Result<Self> {
+        Self::with_config(names, home, production())
     }
     pub fn with_config(
         names: &Names<'_>,
-        root: usize,
+        home: std::path::PathBuf,
         config: GrokOAuthConfig,
     ) -> rutis::Result<Self> {
         Ok(Self {
-            root,
+            home,
             config,
             files: names.key()?,
             methods: names.key()?,
@@ -106,7 +106,7 @@ impl DynPlugin for GrokOAuthPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let service = Service::new(
                 files,
-                self.root,
+                &self.home,
                 "xaiGrokBuild",
                 self.config.clone(),
                 &production(),

@@ -3286,10 +3286,10 @@ fn preflight_checks(
     }
     if let Some(result) = exec(results, 0) {
         let text = text_of(result);
-        let printed = text.lines().next().unwrap_or_default().trim();
+        let home = params.env_home.to_string_lossy();
         check(
             "home",
-            !is_error(result) && printed == params.env_home.to_string_lossy(),
+            !is_error(result) && text.lines().any(|line| line.trim() == home),
             if is_error(result) {
                 "echo $HOME was refused".into()
             } else {
@@ -13125,14 +13125,6 @@ mod run_tools_tests {
         path
     }
 
-    /// A socket path short enough to bind: a profile's endpoint is a unix
-    /// socket path, and the platform bounds its length (`SUN_LEN`), which the
-    /// scratch directory's own path overruns. The test never connects to it;
-    /// `serve_home` only binds it.
-    fn socket_path(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("dim-run-tools-{label}-{}.sock", std::process::id()))
-    }
-
     fn difference_message(
         profile: &str,
         declared: &BTreeSet<String>,
@@ -13152,13 +13144,19 @@ mod run_tools_tests {
         let workspace = directory.join("workspace");
         private_directory(&workspace).unwrap();
         let models = fixture_models(&directory);
+        let sockets = Sockets::new().unwrap();
         let probe = RegistryProbe::default();
         let serving = probe.clone();
         let server = app_server::serve_home(
             &directory.join("probe-home"),
             &workspace,
             directory.join("probe-output"),
-            native_probe_settings(models, socket_path("probe"), None, Overrides::default()),
+            native_probe_settings(
+                models,
+                sockets.0.join("probe.sock"),
+                None,
+                Overrides::default(),
+            ),
             move |builder| {
                 builder.require_feature(
                     Feature::new("RunToolsProbe").session("RunToolsProbe", move |names| {

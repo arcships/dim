@@ -1,17 +1,19 @@
+use super::mentions::{MentionsReply, MentionsRequest, parse_limit};
 use super::{DirectoryEntry, FileReader, FileStorage, FileStorageError, Result};
+use crate::workspace_tools::files::{WorkspaceMutation, WorkspaceWrite, search::SearchKind};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rutis::Ctx;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenRead {
     pub read_id: String,
@@ -55,10 +57,10 @@ fn deserialize_name<'de, D: serde::Deserializer<'de>>(
 #[serde(untagged, deny_unknown_fields)]
 pub enum FsRemove {
     Path {
-        path: String,
+        path: PathBuf,
     },
     Entry {
-        parent: String,
+        parent: PathBuf,
         #[serde(deserialize_with = "deserialize_name")]
         name: OsString,
     },
@@ -94,27 +96,102 @@ impl FsPermissions {
 
 /// Filesystem operations on the existing storage generation.
 #[derive(Clone)]
-pub struct FsHost(Arc<FileStorage>);
+pub struct FsHost {
+    read_paths: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>>,
+    node_home: Option<PathBuf>,
+    pub(crate) writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
+    system_roots: Arc<Vec<PathBuf>>,
+    storage: Arc<FileStorage>,
+    generation: Ctx,
+}
 
 impl FsHost {
-    pub(super) fn new(owner: Arc<FileStorage>) -> Self {
-        Self(owner)
+    pub(super) fn new(
+        owner: Arc<FileStorage>,
+        ctx: Ctx,
+        writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
+        node_home: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            read_paths: Arc::default(),
+            node_home,
+            writes,
+            system_roots: Arc::new(crate::host_platform::platform_roots()),
+            storage: owner,
+            generation: ctx,
+        }
     }
 
-    pub async fn lock(&self, caller: &Ctx, path: &str, cancel: &CancellationToken) -> Result<Uuid> {
-        let path = self.0.resolve(Path::new(path))?;
-        let lease = self.0.lock(&path, cancel).await?;
+    pub(crate) fn begin_workspace_operation(
+        &self,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<(impl Send + use<>, CancellationToken), crate::host::HostError> {
+        let mut state = self.storage.state.lock().unwrap();
+        self.storage.check(cancel).map_err(|error| match error {
+            FileStorageError::Cancelled => crate::host::HostError::Cancelled(error.to_string()),
+            error => crate::host::HostError::failed(error.to_string()),
+        })?;
+        state.active += 1;
+        Ok((
+            super::Operation(self.storage.clone()),
+            self.storage.stopping.child_token(),
+        ))
+    }
+
+    pub async fn mentions(
+        &self,
+        request: MentionsRequest,
+        cancel: &CancellationToken,
+    ) -> Result<MentionsReply> {
+        let owner = self.storage.clone();
+        if !request.path.is_absolute() {
+            return Err(FileStorageError::InvalidPath(
+                "expected an absolute search root",
+            ));
+        }
+        let operation = {
+            let mut state = owner.state.lock().unwrap();
+            owner.check(cancel)?;
+            state.active += 1;
+            super::Operation(owner.clone())
+        };
+        let cancel = cancel.child_token();
+        let _dropped = cancel.clone().drop_guard();
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            let candidates = owner.mentions.search(
+                &request.path,
+                &request.query,
+                parse_limit(request.limit),
+                || owner.check(&cancel),
+            )?;
+            Ok(MentionsReply { candidates })
+        })
+        .await?
+    }
+
+    /// A caller-bound lease closes on row unload. A caller managing its own
+    /// settlement can bind to the file owner and explicitly unlock after settlement.
+    pub async fn lock(
+        &self,
+        caller: Option<&Ctx>,
+        path: impl AsRef<Path>,
+        cancel: &CancellationToken,
+    ) -> Result<Uuid> {
+        let path = self.storage.resolve(path.as_ref())?;
+        let lease = self.storage.lock(&path, cancel).await?;
         let id = lease.0.as_ref().expect("new file lease").id;
         let held = Arc::new(super::SharedLease::new(Some(lease)));
         let cleanup = held.clone();
         let release = caller
+            .unwrap_or(&self.generation)
             .effect(move || async move {
                 cleanup.lock().await.take();
                 Ok(())
             })
             .map_err(|_| FileStorageError::Closed)?;
         {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.storage.state.lock().unwrap();
             if let Some(entry) = state.leases.get_mut(&id) {
                 entry.binding = Some((Arc::downgrade(&held), release));
                 return Ok(id);
@@ -126,7 +203,7 @@ impl FsHost {
 
     pub async fn unlock(&self, id: Uuid) -> Result<()> {
         let release = {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.storage.state.lock().unwrap();
             let (_, release) = state
                 .leases
                 .get_mut(&id)
@@ -140,10 +217,98 @@ impl FsHost {
             .map_err(|_| FileStorageError::Closed)
     }
 
+    /// Authorizes reads of these exact configured files for the mounting row's lifetime.
+    pub(crate) fn register_read_paths(&self, ctx: &Ctx, paths: Vec<PathBuf>) -> rutis::Result<()> {
+        let registry = self.read_paths.clone();
+        let mut registered = self.read_paths.lock().unwrap();
+        let remove = paths.clone();
+        ctx.effect(move || async move {
+            let mut registered = registry.lock().unwrap();
+            for path in remove {
+                if let Some(count) = registered.get_mut(&path) {
+                    *count -= 1;
+                    if *count == 0 {
+                        registered.remove(&path);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        for path in paths {
+            *registered.entry(path).or_default() += 1;
+        }
+        Ok(())
+    }
+
+    async fn read_registered<T: Send + 'static>(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+        action: impl FnOnce(&Path, &FileStorage, &CancellationToken) -> Result<T> + Send + 'static,
+    ) -> Option<Result<T>> {
+        if !self.read_paths.lock().unwrap().contains_key(path) {
+            return None;
+        }
+        let owner = self.storage.clone();
+        let operation = {
+            let mut state = owner.state.lock().unwrap();
+            if let Err(error) = owner.check(cancel) {
+                return Some(Err(error));
+            }
+            state.active += 1;
+            super::Operation(owner.clone())
+        };
+        let path = path.to_owned();
+        let cancel = cancel.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                let _operation = operation;
+                owner.check(&cancel)?;
+                let result = action(&path, &owner, &cancel)?;
+                owner.check(&cancel)?;
+                Ok(result)
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.into())),
+        )
+    }
+
     pub async fn stat(&self, path: &Path, cancel: &CancellationToken) -> Result<super::FileStat> {
-        let path = self.0.resolve(path)?;
+        Ok(self.stat_path(path, cancel).await?.0)
+    }
+
+    pub(crate) async fn stat_path(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<(super::FileStat, Option<PathBuf>)> {
+        if let Some(result) = self
+            .read_registered(path, cancel, |path, _, _| {
+                let metadata = match path.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok((super::FileStat::Missing, None));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let kind = if metadata.is_file() {
+                    super::FileStat::File {
+                        size: metadata.len(),
+                    }
+                } else if metadata.is_dir() {
+                    super::FileStat::Directory
+                } else {
+                    super::FileStat::Other
+                };
+                Ok((kind, path.canonicalize().ok()))
+            })
+            .await
+        {
+            return result;
+        }
+        let path = self.storage.resolve(path)?;
         let relative = path.relative.clone();
-        self.0
+        self.storage
             .run(&path, cancel, move |root, _, _| {
                 let (parent, name) = match super::native::parent(root, &relative) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -154,6 +319,7 @@ impl FsHost {
                 super::native::file_stat(&parent, &name)
             })
             .await
+            .map(|kind| (kind, None))
     }
 
     pub async fn read_bytes(
@@ -163,9 +329,18 @@ impl FsHost {
         lease_id: Option<Uuid>,
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>> {
-        let path = self.0.resolve(path)?;
+        if lease_id.is_none()
+            && let Some(result) = self
+                .read_registered(path, cancel, move |path, owner, cancel| {
+                    super::read_file(std::fs::File::open(path)?, owner, cancel, limit)
+                })
+                .await
+        {
+            return result;
+        }
+        let path = self.storage.resolve(path)?;
         let Some(id) = lease_id else {
-            return self.0.read_limited(&path, limit, cancel).await;
+            return self.storage.read_limited(&path, limit, cancel).await;
         };
         self.held_lease(id, Some(&path), cancel)
             .await?
@@ -181,7 +356,7 @@ impl FsHost {
     ) -> Result<tokio::sync::OwnedMappedMutexGuard<Option<super::FileLease>, super::FileLease>>
     {
         let held = {
-            let state = self.0.state.lock().unwrap();
+            let state = self.storage.state.lock().unwrap();
             state
                 .leases
                 .get(&id)
@@ -211,7 +386,7 @@ impl FsHost {
         lease_id: Option<Uuid>,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let path = self.0.resolve(path)?;
+        let path = self.storage.resolve(path)?;
         let mode = permissions.mode();
         match lease_id {
             Some(id) => {
@@ -221,13 +396,38 @@ impl FsHost {
                     .await
             }
             None => {
-                self.0
+                self.storage
                     .lock(&path, cancel)
                     .await?
                     .replace_with(bytes, mode, cancel)
                     .await
             }
         }
+    }
+
+    /// Atomically replaces a destination from a local source without buffering the file.
+    pub async fn replace_from_path(
+        &self,
+        path: &Path,
+        source: PathBuf,
+        limit: u64,
+        permissions: FsPermissions,
+        cancel: &CancellationToken,
+    ) -> Result<u64> {
+        if !source.is_absolute() {
+            return Err(FileStorageError::InvalidPath(
+                "expected an absolute source path",
+            ));
+        }
+        self.storage
+            .import(
+                &self.storage.resolve(path)?,
+                source,
+                limit,
+                permissions.mode(),
+                cancel,
+            )
+            .await
     }
 
     pub async fn backup(
@@ -257,23 +457,50 @@ impl FsHost {
             .await
     }
 
-    pub async fn create_directory(&self, path: &str, cancel: &CancellationToken) -> Result<()> {
-        let path = self.0.resolve(Path::new(path))?;
-        self.0.create_directory(&path, cancel).await
+    pub async fn create_directories(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<PathBuf> {
+        self.storage
+            .create_directories(&self.storage.resolve(path)?, cancel)
+            .await
+    }
+
+    pub async fn replace_stream(
+        &self,
+        id: Uuid,
+        source: impl std::io::Read + Send + 'static,
+        permissions: FsPermissions,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.held_lease(id, None, cancel)
+            .await?
+            .replace_from_with(source, permissions.mode(), cancel)
+            .await
+    }
+
+    pub async fn create_directory(
+        &self,
+        path: impl AsRef<Path>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        let path = self.storage.resolve(path.as_ref())?;
+        self.storage.create_directory(&path, cancel).await
     }
 
     pub async fn list(
         &self,
-        path: &str,
+        path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<Vec<DirectoryEntry>> {
-        let path = self.0.resolve(Path::new(path))?;
-        self.0.list(&path, cancel).await
+        let path = self.storage.resolve(path.as_ref())?;
+        self.storage.list(&path, cancel).await
     }
 
     pub async fn remove(&self, request: FsRemove, cancel: &CancellationToken) -> Result<()> {
         let path = match request {
-            FsRemove::Path { path } => self.0.resolve(Path::new(&path))?,
+            FsRemove::Path { path } => self.storage.resolve(Path::new(&path))?,
             FsRemove::Entry { parent, name } => {
                 if Path::new(&name).components().next() != Some(Component::Normal(name.as_os_str()))
                 {
@@ -281,22 +508,31 @@ impl FsHost {
                         "expected a single directory entry name",
                     ));
                 }
-                let parent = self.0.resolve(Path::new(&parent))?;
-                self.0.path(parent.root, parent.relative.join(name))?
+                let parent = self.storage.resolve(Path::new(&parent))?;
+                self.storage.path(parent.root, parent.relative.join(name))?
             }
         };
-        self.0.remove(&path, cancel).await
+        self.storage.remove(&path, cancel).await
+    }
+
+    pub(crate) async fn pin_read(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<super::FileReader> {
+        let path = self.storage.resolve(path)?;
+        self.storage.open_read(&path, cancel).await
     }
 
     /// Pins a file until close or the calling row's unload.
     pub async fn open_read(
         &self,
         caller: &Ctx,
-        path: String,
+        path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<OpenRead> {
-        let path = self.0.resolve(Path::new(&path))?;
-        self.0.open_reader(caller, &path, cancel).await
+        let path = self.storage.resolve(path.as_ref())?;
+        self.storage.open_reader(caller, &path, cancel).await
     }
 
     /// Reads the same pinned file, capped by the owner's existing 64 KiB limit.
@@ -307,12 +543,12 @@ impl FsHost {
         limit: usize,
         cancel: &'a CancellationToken,
     ) -> impl Future<Output = Result<Vec<u8>>> + Send + 'a {
-        self.0.read_at_id(read_id, offset, limit, cancel)
+        self.storage.read_at_id(read_id, offset, limit, cancel)
     }
 
     /// Releases the reader id; already accepted reads settle normally.
     pub fn close_read(&self, read_id: String) -> impl Future<Output = Result<()>> + Send + '_ {
-        self.0.close_reader(read_id)
+        self.storage.close_reader(read_id)
     }
 }
 
@@ -405,6 +641,13 @@ impl FileStorage {
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
 enum Request {
+    Resolve(crate::file_access::ResolvePath),
+    Read(dim_agent_types::JsonObject),
+    Write(WorkspaceWrite),
+    Edit(dim_agent_types::JsonObject),
+    Glob(dim_agent_types::JsonObject),
+    Grep(dim_agent_types::JsonObject),
+    Mentions(MentionsRequest),
     Stat(PathRequest),
     Lock(PathRequest),
     Unlock(LeaseRequest),
@@ -431,13 +674,22 @@ struct ReadBytes {
     lease_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Replace {
-    path: String,
-    bytes: String,
-    #[serde(default)]
-    permissions: FsPermissions,
-    lease_id: Option<Uuid>,
+#[serde(untagged, rename_all_fields = "camelCase", deny_unknown_fields)]
+enum Replace {
+    Bytes {
+        path: PathBuf,
+        bytes: String,
+        #[serde(default)]
+        permissions: FsPermissions,
+        lease_id: Option<Uuid>,
+    },
+    Source {
+        path: PathBuf,
+        source_path: PathBuf,
+        limit: u64,
+        #[serde(default)]
+        permissions: FsPermissions,
+    },
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -468,36 +720,159 @@ struct Close {
 impl HostDispatch for FsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
+            serde_json::json!({"resolve":"async","read":"async","write":"async","edit":"async","glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
         )
     }
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(Error::Value("fsHost request must be an object".into()));
+            return Err(Error::value("fsHost request must be an object"));
         }
         let request: Request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::value(error.to_string()))?;
         let caller = rutis_bridge::session::caller_row().map(|row| row.ctx().clone());
         let owner = self.clone();
         Ok(Value::cancellable_future(async move {
             let cancel = CancellationToken::new();
             let _dropped = cancel.clone().drop_guard();
             let reply = match request {
-                Request::Stat(request) => serde_json::json!(
-                    owner
-                        .stat(Path::new(&request.path), &cancel)
+                Request::Resolve(request) => {
+                    let home = owner
+                        .node_home
+                        .as_deref()
+                        .ok_or_else(|| failure(FileStorageError::Unsupported))?;
+                    let resolved = owner
+                        .resolve_workspace_path(request, home, &owner.system_roots, &cancel)
                         .await
-                        .map_err(failure)?
-                ),
+                        .map_err(|error| {
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                match &error {
+                                    crate::host::HostError::Cancelled(_) => "cancelled",
+                                    _ => "invalid",
+                                },
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!(resolved)
+                }
+                Request::Read(input) => {
+                    let path = input
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(Path::new)
+                        .filter(|path| path.is_absolute())
+                        .ok_or_else(|| {
+                            failure(FileStorageError::InvalidPath(
+                                "expected an absolute file path",
+                            ))
+                        })?;
+                    let (result, binding) = owner
+                        .workspace_read(&input, path, path, None, &cancel)
+                        .await
+                        .map_err(|error| {
+                            let code = match &error {
+                                crate::host::HostError::Cancelled(_) => "cancelled",
+                                _ => "io",
+                            };
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    let mut reply = serde_json::json!({"result":result});
+                    if let Some((_, binding)) = binding {
+                        reply["binding"] = serde_json::json!(binding);
+                    }
+                    reply
+                }
+                request @ (Request::Write(_) | Request::Edit(_)) => {
+                    let mutation = match request {
+                        Request::Write(input) => WorkspaceMutation::Write(input),
+                        Request::Edit(input) => WorkspaceMutation::Edit(input),
+                        _ => unreachable!(),
+                    };
+                    let result = owner
+                        .mutate_workspace_file(mutation, &cancel)
+                        .await
+                        .map_err(|error| {
+                            let code = match &error {
+                                crate::host::HostError::Cancelled(_) => "cancelled",
+                                _ => "io",
+                            };
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!(result)
+                }
+                request @ (Request::Glob(_) | Request::Grep(_)) => {
+                    let (kind, input) = match request {
+                        Request::Glob(input) => (SearchKind::Glob, input),
+                        Request::Grep(input) => (SearchKind::Grep, input),
+                        _ => unreachable!(),
+                    };
+                    let path = input
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(Path::new)
+                        .filter(|path| path.is_absolute())
+                        .ok_or_else(|| {
+                            failure(FileStorageError::InvalidPath(
+                                "expected an absolute search root",
+                            ))
+                        })?;
+                    let home = owner
+                        .node_home
+                        .as_deref()
+                        .ok_or_else(|| failure(FileStorageError::Unsupported))?;
+                    let result = owner
+                        .workspace_search(kind, path, home, None, &input, &cancel)
+                        .await
+                        .map_err(|error| {
+                            let code = match &error {
+                                crate::host::HostError::Cancelled(_) => "cancelled",
+                                _ => "io",
+                            };
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!({"result":result})
+                }
+                Request::Mentions(request) => {
+                    serde_json::json!(owner.mentions(request, &cancel).await.map_err(failure)?)
+                }
+                Request::Stat(request) => {
+                    let (kind, canonical_path) = owner
+                        .stat_path(Path::new(&request.path), &cancel)
+                        .await
+                        .map_err(failure)?;
+                    let mut reply = serde_json::json!(kind);
+                    if let Some(path) = canonical_path {
+                        reply["canonicalPath"] =
+                            serialize_name(path.as_os_str(), serde_json::value::Serializer)
+                                .map_err(|error| Error::value(error.to_string()))?;
+                    }
+                    reply
+                }
                 Request::Lock(request) => {
-                    let caller = caller
-                        .ok_or_else(|| Error::Value("fsHost.lock requires a calling row".into()))?;
+                    let caller =
+                        caller.ok_or_else(|| Error::value("fsHost.lock requires a calling row"))?;
                     let id = owner
-                        .lock(&caller, &request.path, &cancel)
+                        .lock(Some(&caller), &request.path, &cancel)
                         .await
                         .map_err(failure)?;
                     serde_json::json!({"leaseId":id})
@@ -506,21 +881,32 @@ impl HostDispatch for FsHost {
                     owner.unlock(request.lease_id).await.map_err(failure)?;
                     serde_json::json!({})
                 }
-                Request::Replace(request) => {
-                    let bytes = STANDARD.decode(request.bytes).map_err(|_| {
+                Request::Replace(Replace::Bytes {
+                    path,
+                    bytes,
+                    permissions,
+                    lease_id,
+                }) => {
+                    let bytes = STANDARD.decode(bytes).map_err(|_| {
                         failure(FileStorageError::InvalidPath("invalid base64 bytes"))
                     })?;
                     owner
-                        .replace(
-                            Path::new(&request.path),
-                            bytes,
-                            request.permissions,
-                            request.lease_id,
-                            &cancel,
-                        )
+                        .replace(&path, bytes, permissions, lease_id, &cancel)
                         .await
                         .map_err(failure)?;
                     serde_json::json!({})
+                }
+                Request::Replace(Replace::Source {
+                    path,
+                    source_path,
+                    limit,
+                    permissions,
+                }) => {
+                    let size = owner
+                        .replace_from_path(&path, source_path, limit, permissions, &cancel)
+                        .await
+                        .map_err(failure)?;
+                    serde_json::json!({"size": size})
                 }
                 Request::Backup(request) => {
                     owner
@@ -562,14 +948,13 @@ impl HostDispatch for FsHost {
                     serde_json::json!({})
                 }
                 Request::OpenRead(request) => {
-                    let caller = caller.ok_or_else(|| {
-                        Error::Value("fsHost.openRead requires a calling row".into())
-                    })?;
+                    let caller = caller
+                        .ok_or_else(|| Error::value("fsHost.openRead requires a calling row"))?;
                     let result = owner
                         .open_read(&caller, request.path, &cancel)
                         .await
                         .map_err(failure)?;
-                    serde_json::to_value(result).map_err(|error| Error::Value(error.to_string()))?
+                    serde_json::to_value(result).map_err(|error| Error::value(error.to_string()))?
                 }
                 Request::ReadAt(request) => {
                     let bytes = owner

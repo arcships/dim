@@ -277,6 +277,20 @@ async fn node_public_plugin_files_session_only_configuration() {
             client.rpc("session.files.write", params.clone()).await["result"],
             json!({"ok":true,"value":{"ok":true,"value":null}})
         );
+        let refused = client.rpc("session.files.too_large", params.clone()).await;
+        assert_eq!(refused["result"]["ok"], false, "{refused}");
+        assert_eq!(refused["result"]["name"], "BindingError", "{refused}");
+        assert_eq!(refused["result"]["code"], "bad-value", "{refused}");
+        assert!(
+            refused["result"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("16 MiB")),
+            "{refused}"
+        );
+        assert_eq!(
+            files_available(&mut client, "session.files.read", params.clone()).await,
+            json!({"ok":true,"value":{"ok":true,"value":"public Session text"}})
+        );
         let held = client.send("session.files.hold", params.clone()).await;
         let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
             .await
@@ -2256,6 +2270,51 @@ async fn node_fs_readers_share_pinned_files_and_release_with_the_caller() {
             .await,
     );
     std::fs::write(directory.join("contents"), b"payload").unwrap();
+    let resolved = client
+        .rpc(
+            "fsreader.resolve",
+            json!({
+                "cwd": directory, "workspace": directory, "path":"./future/../contents",
+                "roots":[{"root":directory,"subtree":directory,"rootIdentity":"stale"}]
+            }),
+        )
+        .await;
+    assert_ok(&resolved);
+    assert_eq!(
+        resolved["result"]["path"],
+        json!(directory.join("contents"))
+    );
+    assert_eq!(resolved["result"]["workspace"], true);
+    assert_eq!(
+        resolved["result"]["roots"],
+        json!([{"root":directory,"contains":true,"valid":false}])
+    );
+    assert!(resolved["result"].get("worktree").is_none());
+    let glob = client
+        .rpc(
+            "fsreader.glob",
+            json!({"path":directory, "pattern":"contents"}),
+        )
+        .await;
+    assert_ok(&glob);
+    assert_eq!(glob["result"]["files"][0]["path"], "contents", "{glob}");
+    let grep = client
+        .rpc(
+            "fsreader.grep",
+            json!({"path":directory,"pattern":"payload","literal":true}),
+        )
+        .await;
+    assert_ok(&grep);
+    assert_eq!(grep["result"]["matches"][0]["file"], "contents", "{grep}");
+    let text_path = directory.join("mutation.txt");
+    let mutation = client
+        .rpc("fsreader.mutate_text", json!({"path": text_path}))
+        .await;
+    assert_ok(&mutation);
+    assert_eq!(mutation["result"]["revision"].as_str().unwrap().len(), 64);
+    assert_eq!(mutation["result"]["stale"], "file_modified_since_read");
+    assert_eq!(std::fs::read_to_string(&text_path).unwrap(), "after");
+    std::fs::remove_file(text_path).unwrap();
     let link = directory.join("link");
     std::os::unix::fs::symlink(directory.join("contents"), &link).unwrap();
     for (path, expected) in [

@@ -361,7 +361,7 @@ tool semantics: no line numbers, no images, no effects.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `stat` | async | `{path}` | `{kind: "file" \| "directory" \| "missing" \| "other", size?}` |
+| `stat` | async | `{path}` | `{kind: "file" \| "directory" \| "missing" \| "other", size?, canonicalPath?}` |
 | `readBytes` | async | `{path, limit, leaseId?}` | `{bytes, size}` |
 | `openRead` | async | `{path}` | `{readId, size}` |
 | `readAt` | async | `{readId, offset, limit}` | `{bytes}` |
@@ -370,7 +370,7 @@ tool semantics: no line numbers, no images, no effects.
 | `unlock` | async | `{leaseId}` | `{}` |
 | `backup` | async | `{leaseId, suffix, permissions?}` | `{}` |
 | `createDirectory` | async | `{path}` | `{}` |
-| `replace` | async | `{path, bytes, permissions?, leaseId?}` | `{}` |
+| `replace` | async | `{path, bytes, permissions?, leaseId?}` or `{path, sourcePath, limit, permissions?}` | `{}` for bytes, `{size}` for a node-local copy |
 | `list` | async | `{path}` | `{entries: [{name, kind}]}` |
 | `remove` | async | `{path}` / `{parent, name}` | `{}` |
 
@@ -585,7 +585,7 @@ grant, and tool approval still follows the preset
 ### 4.6 Session files and exec output
 
 `sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
-store the file on the resource node. It returns a node path and owns the rows under the
+store the file on the resource node. Path imports pass the absolute source path and existing file size limit to the same replacement operation. The owner copies a regular file in chunks and atomically publishes the destination. It returns a node path and owns the rows under the
 [Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
 and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 
@@ -850,9 +850,14 @@ The owners that read node files or start node processes, and the operations they
 | Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
 | PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
 | UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
-| Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
+| Migration ledger and snapshots | `createDirectory`, `list`, `remove`, `readBytes`, `replace`. A migration worker holds its `lock` on the task until it records settlement and calls `unlock`, including during unload. |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
+
+For the lifetime of PromptSources, its project and user rule filenames are registered individually for
+`stat` and unleased `readBytes`. Those reads follow links. When available, `stat.canonicalPath`
+lets the source identify the same file at both locations. Registration grants no directory,
+sibling-file, lease or write access.
 
 ## 7. Rule check
 

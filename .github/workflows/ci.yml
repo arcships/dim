@@ -7,7 +7,6 @@ on:
 permissions:
   contents: read
 concurrency:
-  # Main check jobs join their shared groups only after path classification.
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || (github.ref == 'refs/heads/main' && github.run_id) || github.ref }}
   cancel-in-progress: true
 env:
@@ -30,6 +29,7 @@ jobs:
       execution: ${{ steps.groups.outputs.execution }}
       web: ${{ steps.groups.outputs.web }}
       scripts: ${{ steps.groups.outputs.scripts }}
+      macos_scripts: ${{ steps.groups.outputs.macos_scripts }}
       dependencies: ${{ steps.groups.outputs.dependencies }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -54,9 +54,6 @@ jobs:
   dependencies:
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
-    concurrency:
-      group: ci-main-dependencies-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -77,9 +74,6 @@ jobs:
   windows-cli:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
-    concurrency:
-      group: ci-main-windows-cli-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -98,9 +92,6 @@ jobs:
   web:
     needs: changes
     if: needs.changes.outputs.web == 'true'
-    concurrency:
-      group: ci-main-web-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     steps:
@@ -152,14 +143,15 @@ jobs:
     if: >-
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
       needs.changes.outputs.scripts == 'true'
-    concurrency:
-      group: ci-main-verify-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
-    # PR runners must be isolated from release credentials and private networks.
-    runs-on: [self-hosted, macOS, ARM64]
+    name: verify (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(github.event_name == 'pull_request' && '["linux"]' || github.event_name == 'push' && '["macos"]' || '["linux","macos"]') }}
+    runs-on: ${{ matrix.platform == 'linux' && fromJSON('["self-hosted","linux","x64","dim-verify"]') || fromJSON('["self-hosted","macOS","ARM64"]') }}
     timeout-minutes: 75
     env:
-      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_JOBS: ${{ matrix.platform == 'linux' && '8' || '4' }}
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
@@ -171,6 +163,19 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
+      - uses: actions-rust-lang/setup-rust-toolchain@c8ff772090ab9d00f7f7bd7b388f3c3032282e3b
+        if: runner.os == 'Linux'
+        with:
+          cache: false
+          build-warnings: ""
+      - name: Report Linux host support
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo "CPUs: $(nproc)"
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo
+          # Without a working bubblewrap the confined process tests return without running.
+          bwrap --ro-bind / / true
       - name: Build and lint the Rust workspace
         if: needs.changes.outputs.rust == 'true'
         shell: bash
@@ -250,14 +255,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # 0.19's TypeScript test tool runs plugins on a real rutis-host; the
+          # The TypeScript test tool runs plugins on a real rutis-host; the
           # tests run from the repository root, so name it explicitly.
           export RUTIS_HOST="$PWD/runtime/node_modules/.bin/rutis-host"
           node --test runtime/plugin-sdk.test.mjs runtime/light-ocr-*.test.mjs
-          # The workflow plugin tests stay off: no double of a
-          # test's can receive the plugin definition they register, because
-          # 0.19.3's test tool does not take one (rutis-0.19-upgrade M10). The
-          # Node-backed Rust flows below still load it for real, and `tsc`
+          # The workflow plugin has no plugin test that needs a definition
+          # double; the Node-backed Rust flows load it for real, and `tsc`
           # checks it.
           node runtime/node_modules/typescript/bin/tsc -p runtime/plugins/workflow/tsconfig.json
           export DIM_TEST_NODE="$(command -v node)"
@@ -277,10 +280,17 @@ jobs:
           set -euo pipefail
           # The Python of `py:` rows: a relocatable CPython, pinned by hash, so the
           # self-hosted runner needs neither a system Python 3.10+ nor sudo.
-          python_build="cpython-3.12.15+20261003-aarch64-apple-darwin-install_only.tar.gz"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            python_target=x86_64-unknown-linux-gnu
+            python_sha256=f937814031eab4698ca6d07ec606ede1825768f3f3e99af76d9db3900bee03c5
+          else
+            python_target=aarch64-apple-darwin
+            python_sha256=316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213
+          fi
+          python_build="cpython-3.12.15+20261003-${python_target}-install_only.tar.gz"
           curl -fsSL -o "$RUNNER_TEMP/python.tar.gz" \
             "https://github.com/astral-sh/python-build-standalone/releases/download/20261003/${python_build/+/%2B}"
-          echo "316a463172740e71d8dca1f2730784e325f3f720941137b5d674d5801a632213  $RUNNER_TEMP/python.tar.gz" | shasum -a 256 -c -
+          echo "$python_sha256  $RUNNER_TEMP/python.tar.gz" | shasum -a 256 -c -
           rm -rf "$RUNNER_TEMP/python" runtime/.venv
           tar -xzf "$RUNNER_TEMP/python.tar.gz" -C "$RUNNER_TEMP"
           "$RUNNER_TEMP/python/bin/python3" -m venv runtime/.venv
@@ -293,12 +303,35 @@ jobs:
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
+  macos-native:
+    needs: changes
+    if: github.event_name == 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.macos_scripts == 'true')
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 30
+    env:
+      CARGO_BUILD_JOBS: "4"
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Test macOS native Rust flows
+        if: needs.changes.outputs.rust == 'true'
+        run: node scripts/test-macos-native.mjs
+      - name: Test macOS code layout and release packaging
+        if: needs.changes.outputs.macos_scripts == 'true'
+        run: |
+          node --test scripts/code-layout-darwin.test.mjs
+          node --test --test-name-pattern='^native package staging' scripts/release.test.mjs
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
-    concurrency:
-      group: ci-main-acp-registry-${{ github.ref == 'refs/heads/main' && needs.changes.outputs.rust == 'true' && 'shared' || github.run_id }}
-      cancel-in-progress: true
     runs-on: [self-hosted, linux, x64]
     timeout-minutes: 30
     env:
@@ -351,7 +384,7 @@ jobs:
           retention-days: 1
   ci-ok:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
-    needs: [changes, dependencies, windows-cli, web, verify, acp-registry]
+    needs: [changes, dependencies, windows-cli, web, verify, macos-native, acp-registry]
     if: always()
     runs-on: self-hosted
     timeout-minutes: 5

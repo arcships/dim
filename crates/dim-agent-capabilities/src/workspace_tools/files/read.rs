@@ -134,17 +134,74 @@ pub(super) async fn run(
     reads: &FileReads,
     cancel: CancellationToken,
 ) -> Result<ToolResult, HostError> {
-    let input = match parse(input) {
-        Ok(input) => input,
-        Err(result) => return Ok(result),
-    };
     let established = reads.established();
-    let (cwd, home, boundary) = (
-        tools.cwd.clone(),
-        tools.home.clone(),
-        tools.boundary.clone(),
-    );
-    let outcome = blocking(move || {
+    let outcome = match &tools.fs {
+        Some(owner) => {
+            owner
+                .workspace_read(
+                    input,
+                    &tools.cwd,
+                    &tools.home,
+                    tools.boundary.as_ref(),
+                    &cancel,
+                )
+                .await?
+        }
+        None => {
+            read_file(
+                input,
+                &tools.cwd,
+                &tools.home,
+                tools.boundary.as_ref(),
+                cancel,
+                (),
+            )
+            .await?
+        }
+    };
+    let (result, binding) = outcome;
+    let result = offload(tools, call_id, result).await?;
+    if let Some((path, binding)) = binding {
+        reads.set(path, binding, established);
+    }
+    Ok(result)
+}
+
+impl crate::file_storage::FsHost {
+    pub(crate) async fn workspace_read(
+        &self,
+        request: &JsonObject,
+        cwd: &Path,
+        home: &Path,
+        boundary: Option<&super::FileToolBoundary>,
+        cancel: &CancellationToken,
+    ) -> Result<Outcome, HostError> {
+        let (operation, stop) = self.begin_workspace_operation(cancel)?;
+        let _drop = stop.clone().drop_guard();
+        let read = read_file(request, cwd, home, boundary, stop.clone(), operation);
+        tokio::pin!(read);
+        tokio::select! {
+            result = &mut read => result,
+            _ = cancel.cancelled() => { stop.cancel(); read.await }
+        }
+    }
+}
+
+async fn read_file(
+    request: &JsonObject,
+    cwd: &Path,
+    home: &Path,
+    boundary: Option<&super::FileToolBoundary>,
+    cancel: CancellationToken,
+    operation: impl Send + 'static,
+) -> Result<Outcome, HostError> {
+    let input = match parse(request) {
+        Ok(input) => input,
+        Err(result) => return Ok((result, None)),
+    };
+    let (cwd, home, boundary) = (cwd.to_owned(), home.to_owned(), boundary.cloned());
+    blocking(move || {
+        let _operation = operation;
         let path = match resolve_path(&cwd, &home, boundary.as_ref(), Access::Read, &input.path) {
             Ok(path) => path,
             Err(PathError::Refused(path)) => return Ok((refused(&path), None)),
@@ -160,13 +217,7 @@ pub(super) async fn run(
         read_text(&input, &target, &cancel)
     })
     .await?
-    .map_err(|Cancelled| cancelled())?;
-    let (result, binding) = outcome;
-    let result = offload(tools, call_id, result).await?;
-    if let Some((path, binding)) = binding {
-        reads.set(path, binding, established);
-    }
-    Ok(result)
+    .map_err(|Cancelled| cancelled())
 }
 
 /// TS `offloadReadResultIfNeeded`: a successful text result longer than

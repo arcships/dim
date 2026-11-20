@@ -1204,7 +1204,7 @@ impl SessionStore {
     /// `ctx` is SessionStore's own context, from which each file step reads
     /// the node's FileStorage; `files_root` is the FileStorage root of the
     /// database directory.
-    pub fn new(db: Arc<SqliteStorage>, ctx: Ctx, files_root: usize) -> Self {
+    pub fn new(db: Arc<SqliteStorage>, ctx: Ctx, files_root: PathBuf) -> Self {
         let timeline = SqliteTimelineStore::new(db.clone());
         let binding = TimelineStoreBinding::new(timeline.clone());
         binding.install(&ctx);
@@ -1845,11 +1845,11 @@ fn stored_worktree_path(path: &Path) -> Result<&str> {
 /// `sessionMetadata` service. Session files live below the FileStorage root
 /// `files_root`, which is the database directory.
 pub struct SessionStorePlugin {
-    files_root: usize,
+    files_root: PathBuf,
     db: Key<SqliteStorage>,
 }
 impl SessionStorePlugin {
-    pub fn new(names: &Names<'_>, files_root: usize) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, files_root: PathBuf) -> rutis::Result<Self> {
         Ok(Self {
             files_root,
             db: names.key()?,
@@ -1866,7 +1866,7 @@ impl DynPlugin for SessionStorePlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
-            let store = Arc::new(SessionStore::new(db, ctx.clone(), self.files_root));
+            let store = Arc::new(SessionStore::new(db, ctx.clone(), self.files_root.clone()));
             let files = store.files.clone();
             let (timeline, owned_files, titles) =
                 (store.timeline.clone(), files.clone(), store.titles.clone());

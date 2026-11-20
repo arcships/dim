@@ -1,6 +1,6 @@
 //! Row-scoped definition files; business parsing and enablement belong to Workflow.
 use super::SettingsService;
-use dim_agent_capabilities::file_storage::{EntryKind, FileStorageError};
+use dim_agent_capabilities::file_storage::{EntryKind, FileStorageError, FsPermissions};
 use rutis::host::{CtxHost, ErrorKind, Key};
 use rutis::{Ctx, Error};
 use rutis_bridge::session::Bytes;
@@ -188,14 +188,16 @@ impl WorkflowFiles {
         let (root, prefix) = self.root(caller, &request.root, false)?;
         let path = self
             .0
-            .files
-            .path(root, PathBuf::from(prefix).join(filename(&request.path)?))?;
+            .roots
+            .root_path(root)?
+            .join(prefix)
+            .join(filename(&request.path)?);
         let cancel = caller.cancellation_token().child_token();
         let _cancel = cancel.clone().drop_guard();
         Ok(self
             .0
             .files
-            .read_limited(&path, DEFINITION_BYTES, &cancel)
+            .read_bytes(&path, DEFINITION_BYTES, None, &cancel)
             .await?
             .into())
     }
@@ -207,7 +209,7 @@ impl WorkflowFiles {
         request: WorkflowDirectoryRequest,
     ) -> std::result::Result<Vec<WorkflowFileEntry>, WorkflowFilesError> {
         let (root, prefix) = self.root(caller, &request.root, false)?;
-        let path = self.0.files.path(root, prefix)?;
+        let path = self.0.roots.root_path(root)?.join(prefix);
         let cancel = caller.cancellation_token().child_token();
         let _cancel = cancel.clone().drop_guard();
         self.0
@@ -242,14 +244,22 @@ impl WorkflowFiles {
         }
         let path = self
             .0
-            .files
-            .path(root, PathBuf::from(prefix).join(filename(&request.path)?))?;
+            .roots
+            .root_path(root)?
+            .join(prefix)
+            .join(filename(&request.path)?);
         let cancel = caller.cancellation_token().child_token();
         let _cancel = cancel.clone().drop_guard();
         Ok(self
             .0
             .files
-            .replace(&path, request.bytes.into(), None, &cancel)
+            .replace(
+                &path,
+                request.bytes.into(),
+                FsPermissions::Preserve,
+                None,
+                &cancel,
+            )
             .await?)
     }
 
@@ -263,7 +273,7 @@ impl WorkflowFiles {
         let cancel = caller.cancellation_token().child_token();
         let _cancel = cancel.clone().drop_guard();
         for relative in [".dimcode", prefix] {
-            let path = self.0.files.path(root, relative)?;
+            let path = self.0.roots.root_path(root)?.join(relative);
             self.0.files.create_directory(&path, &cancel).await?;
         }
         Ok(())

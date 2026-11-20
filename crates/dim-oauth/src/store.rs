@@ -5,7 +5,7 @@ use crate::{
     http::{self, MAX_SAFE_INTEGER, http_url, safe_integer, text},
     now,
 };
-use dim_agent_capabilities::file_storage::{FileLease, FileStorage, FileStorageError};
+use dim_agent_capabilities::file_storage::{FileStorageError, FsHost, FsPermissions};
 use dim_app_server::managed_provider::{AccountSnapshot, AccountView, ManagedError};
 use reqwest::Client;
 use serde_json::{Map, Value, json};
@@ -72,18 +72,6 @@ fn file_error(error: FileStorageError) -> ManagedError {
         _ => ManagedError::StorageError,
     }
 }
-fn private_permissions() -> Option<std::fs::Permissions> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        Some(std::fs::Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
-
 /// Canonical JSON (RFC 8785) digest, byte-equal to the TypeScript account
 /// files: UTF-16 key order and ECMAScript number encoding.
 pub(super) fn digest(value: &Value) -> Result<String> {
@@ -323,11 +311,22 @@ fn document(bytes: &[u8]) -> Result<Doc> {
 
 /// One locked `auth.json`.
 struct AuthFile {
-    lease: FileLease,
+    files: Arc<FsHost>,
+    path: std::path::PathBuf,
+    lease: Uuid,
 }
 impl AuthFile {
     async fn read(&mut self) -> Result<(Doc, Option<Vec<u8>>)> {
-        let bytes = match self.lease.read(&CancellationToken::new()).await {
+        let bytes = match self
+            .files
+            .read_bytes(
+                &self.path,
+                usize::MAX,
+                Some(self.lease),
+                &CancellationToken::new(),
+            )
+            .await
+        {
             Ok(bytes) => bytes,
             Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok((Map::new(), None));
@@ -339,8 +338,14 @@ impl AuthFile {
     async fn write(&mut self, doc: &Doc) -> Result<()> {
         let mut bytes = serde_json::to_vec_pretty(doc).map_err(|_| ManagedError::InvalidStore)?;
         bytes.push(b'\n');
-        self.lease
-            .replace(bytes, private_permissions(), &CancellationToken::new())
+        self.files
+            .replace(
+                &self.path,
+                bytes,
+                FsPermissions::Private,
+                Some(self.lease),
+                &CancellationToken::new(),
+            )
             .await
             .map_err(file_error)
     }
@@ -405,10 +410,11 @@ impl AuthFile {
         {
             return Err(ManagedError::UnsupportedSchema);
         }
-        self.lease
+        self.files
             .backup(
+                self.lease,
                 "dim-reset-backup",
-                private_permissions(),
+                FsPermissions::Private,
                 &CancellationToken::new(),
             )
             .await
@@ -420,16 +426,16 @@ impl AuthFile {
 }
 
 pub(super) struct Store {
-    files: Arc<FileStorage>,
-    root: usize,
+    files: Arc<FsHost>,
+    home: std::path::PathBuf,
     client: Client,
     stopping: CancellationToken,
 }
 impl Store {
-    pub fn new(files: Arc<FileStorage>, root: usize, client: Client) -> Self {
+    pub fn new(files: Arc<FsHost>, home: std::path::PathBuf, client: Client) -> Self {
         Self {
             files,
-            root,
+            home,
             client,
             stopping: CancellationToken::new(),
         }
@@ -439,14 +445,17 @@ impl Store {
     pub fn quiesce(&self) {
         self.stopping.cancel();
     }
-    async fn lease(&self, name: &str, cancel: Option<&CancellationToken>) -> Result<FileLease> {
-        let path = self.files.path(self.root, name).map_err(file_error)?;
+    async fn lease(
+        &self,
+        path: &std::path::Path,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<Uuid> {
         let cancel = cancel.cloned().unwrap_or_default();
         loop {
             if self.stopping.is_cancelled() || cancel.is_cancelled() {
                 return Err(ManagedError::ServiceReloading);
             }
-            match self.files.lock(&path, &self.stopping).await {
+            match self.files.lock(None, path, &self.stopping).await {
                 Ok(lease) => return Ok(lease),
                 Err(FileStorageError::Locked) => tokio::select! {
                     _ = self.stopping.cancelled() => {}
@@ -457,20 +466,36 @@ impl Store {
             }
         }
     }
-    async fn open(&self, cancel: Option<&CancellationToken>) -> Result<AuthFile> {
-        Ok(AuthFile {
-            lease: self.lease(AUTH_FILE, cancel).await?,
+    async fn with_auth<T, F>(
+        &self,
+        cancel: Option<&CancellationToken>,
+        work: impl FnOnce(AuthFile) -> F,
+    ) -> Result<T>
+    where
+        F: std::future::Future<Output = Result<T>>,
+    {
+        let path = self.home.join(AUTH_FILE);
+        let lease = self.lease(&path, cancel).await?;
+        let result = work(AuthFile {
+            files: self.files.clone(),
+            path,
+            lease,
         })
+        .await;
+        let released = self.files.unlock(lease).await.map_err(file_error);
+        let value = result?;
+        released?;
+        Ok(value)
     }
 
     /// Reads the account file without its lease. Writes are atomic replaces,
     /// so a fresh grant needs neither the cross-process marker nor its fsync;
     /// any error sends the caller down the leased path.
     async fn read_current(&self) -> Option<Doc> {
-        let path = self.files.path(self.root, AUTH_FILE).ok()?;
+        let path = self.home.join(AUTH_FILE);
         let bytes = self
             .files
-            .read(&path, &CancellationToken::new())
+            .read_bytes(&path, usize::MAX, None, &CancellationToken::new())
             .await
             .ok()?;
         document(&bytes).ok()
@@ -528,32 +553,36 @@ impl Store {
         if let Some(status) = self.current_status().await {
             return status;
         }
-        let mut file = self.open(None).await?;
-        let (mut doc, _) = file.read().await?;
-        file.normalize(&mut doc).await?;
-        // No Dim record at all, even beside other owners' records, is signed
-        // out; Dim tokens without their state still need recovery.
-        if !doc.contains_key(STATE) && !doc.contains_key(TOKENS) {
-            doc.insert(STATE.into(), signed_out(None, false)?);
-            file.write(&doc).await?;
-        }
-        snapshot(&doc)
+        self.with_auth(None, |mut file| async move {
+            let (mut doc, _) = file.read().await?;
+            file.normalize(&mut doc).await?;
+            // No Dim record at all, even beside other owners' records, is signed
+            // out; Dim tokens without their state still need recovery.
+            if !doc.contains_key(STATE) && !doc.contains_key(TOKENS) {
+                doc.insert(STATE.into(), signed_out(None, false)?);
+                file.write(&doc).await?;
+            }
+            snapshot(&doc)
+        })
+        .await
     }
 
     pub async fn login_revision(&self) -> Result<Revision> {
-        let mut file = self.open(None).await?;
-        let (mut doc, raw) = file.read().await?;
-        if raw.is_none() {
-            doc.insert(STATE.into(), signed_out(None, false)?);
-            file.write(&doc).await?;
-        }
-        match revision(&doc) {
-            Err(error) if recoverable(error) && raw.is_some() => {
-                file.reset(&mut doc).await?;
-                revision(&doc)
+        self.with_auth(None, |mut file| async move {
+            let (mut doc, raw) = file.read().await?;
+            if raw.is_none() {
+                doc.insert(STATE.into(), signed_out(None, false)?);
+                file.write(&doc).await?;
             }
-            result => result,
-        }
+            match revision(&doc) {
+                Err(error) if recoverable(error) && raw.is_some() => {
+                    file.reset(&mut doc).await?;
+                    revision(&doc)
+                }
+                result => result,
+            }
+        })
+        .await
     }
 
     pub async fn commit(
@@ -568,58 +597,74 @@ impl Store {
             return Err(ManagedError::IdentityRejected);
         }
         tokens.0.remove("clientSecret");
-        let mut file = self.open(Some(cancel)).await?;
-        let (mut doc, _) = file.read().await?;
-        let current = revision(&doc)?;
-        if cancel.is_cancelled() {
-            return Err(ManagedError::ServiceReloading);
-        }
-        if *expected != current {
-            return Err(ManagedError::AccountChanged);
-        }
-        let old = doc.get(STATE).and_then(Value::as_object);
-        let field = |key: &str| safe_integer(old.and_then(|o| o.get(key))).unwrap_or(0);
-        let epoch = old
-            .and_then(|o| o.get("credentialEpoch"))
-            .and_then(Value::as_str)
-            .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
-        let state = authenticated(
-            epoch,
-            next(field("generation"))?,
-            next(field("credentialRevision"))?,
-            identity,
-            &tokens,
-        )?;
-        doc.insert(TOKENS.into(), Value::Object(tokens.0));
-        doc.insert(STATE.into(), state);
-        // The admitted compare-and-swap owns persistence even when its caller cancels.
-        file.write(&doc).await?;
-        snapshot(&doc)
+        self.with_auth(Some(cancel), |mut file| async move {
+            let (mut doc, _) = file.read().await?;
+            let current = revision(&doc)?;
+            if cancel.is_cancelled() {
+                return Err(ManagedError::ServiceReloading);
+            }
+            if *expected != current {
+                return Err(ManagedError::AccountChanged);
+            }
+            let old = doc.get(STATE).and_then(Value::as_object);
+            let field = |key: &str| safe_integer(old.and_then(|o| o.get(key))).unwrap_or(0);
+            let epoch = old
+                .and_then(|o| o.get("credentialEpoch"))
+                .and_then(Value::as_str)
+                .map_or_else(|| Uuid::new_v4().to_string(), str::to_owned);
+            let state = authenticated(
+                epoch,
+                next(field("generation"))?,
+                next(field("credentialRevision"))?,
+                identity,
+                &tokens,
+            )?;
+            doc.insert(TOKENS.into(), Value::Object(tokens.0));
+            doc.insert(STATE.into(), state);
+            // The admitted compare-and-swap owns persistence even when its caller cancels.
+            file.write(&doc).await?;
+            snapshot(&doc)
+        })
+        .await
     }
 
     pub async fn device_id(&self) -> Result<String> {
-        let mut lease = self.lease(DEVICE_FILE, None).await?;
-        let current = match lease.read(&CancellationToken::new()).await {
-            Ok(bytes) => String::from_utf8(unwrap_record(&bytes).unwrap_or(bytes))
-                .map_err(|_| ManagedError::InvalidStore)?,
-            Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
-                String::new()
+        let path = self.home.join(DEVICE_FILE);
+        let lease = self.lease(&path, None).await?;
+        let result: Result<String> = async {
+            let current = match self
+                .files
+                .read_bytes(&path, usize::MAX, Some(lease), &CancellationToken::new())
+                .await
+            {
+                Ok(bytes) => String::from_utf8(unwrap_record(&bytes).unwrap_or(bytes))
+                    .map_err(|_| ManagedError::InvalidStore)?,
+                Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+                    String::new()
+                }
+                Err(error) => return Err(file_error(error)),
+            };
+            if !current.trim().is_empty() {
+                return Ok(current.trim().to_owned());
             }
-            Err(error) => return Err(file_error(error)),
-        };
-        if !current.trim().is_empty() {
-            return Ok(current.trim().to_owned());
+            let id = format!("dim_{}", Uuid::new_v4());
+            self.files
+                .replace(
+                    &path,
+                    format!("{id}\n").into_bytes(),
+                    FsPermissions::Private,
+                    Some(lease),
+                    &CancellationToken::new(),
+                )
+                .await
+                .map_err(file_error)?;
+            Ok(id)
         }
-        let id = format!("dim_{}", Uuid::new_v4());
-        lease
-            .replace(
-                format!("{id}\n").into_bytes(),
-                private_permissions(),
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(file_error)?;
-        Ok(id)
+        .await;
+        let released = self.files.unlock(lease).await.map_err(file_error);
+        let value = result?;
+        released?;
+        Ok(value)
     }
 
     /// The current grant, refreshed within the freshness window, or after a
@@ -629,150 +674,166 @@ impl Store {
         if let Some(grant) = self.current(rejected).await? {
             return Ok(grant);
         }
-        let mut file = self.open(None).await?;
-        let (mut doc, _) = file.read().await?;
-        file.normalize(&mut doc).await?;
-        let Parsed { tokens, state } = parse(&doc, true)?;
-        // A home that never signed in needs login, not recovery.
-        if tokens.is_none() && state.is_none() {
-            return Err(ManagedError::TokenMissing);
-        }
-        let current = snapshot(&doc)?;
-        let (Some(tokens), Some(state)) = (tokens, state) else {
-            return Err(ManagedError::TokenMissing);
-        };
-        let fresh = safe_integer(tokens.0.get("expires")).unwrap_or(0) > now() + FRESH_MS;
-        let reuse = match rejected {
-            Some(rejected) => !same_grant(&state, rejected),
-            None => fresh,
-        };
-        if reuse {
-            return Ok(Grant {
-                tokens,
-                account: current,
-                revision: state.revision,
-            });
-        }
-        let rotated = match http::refresh(&self.client, &tokens).await {
-            Ok(rotated) => rotated,
-            Err(ManagedError::RefreshRejected) => {
-                doc.remove(TOKENS);
-                doc.insert(STATE.into(), signed_out(Some(&state), true)?);
-                file.write(&doc).await?;
-                return Err(ManagedError::RefreshRejected);
+        self.with_auth(None, |mut file| async move {
+            let (mut doc, _) = file.read().await?;
+            file.normalize(&mut doc).await?;
+            let Parsed { tokens, state } = parse(&doc, true)?;
+            // A home that never signed in needs login, not recovery.
+            if tokens.is_none() && state.is_none() {
+                return Err(ManagedError::TokenMissing);
             }
-            Err(error) => return Err(error),
-        };
-        let mut rotated = validate_tokens(&Value::Object(rotated.0))?;
-        rotated.0.remove("clientSecret");
-        if state
-            .identity
-            .as_ref()
-            .is_none_or(|identity| identity.issuer != rotated.str("issuer"))
-        {
-            return Err(ManagedError::InvalidResponse);
-        }
-        let revision = next(state.revision)?;
-        let fields = doc[STATE].as_object_mut().expect("validated account state");
-        fields.insert("credentialRevision".into(), revision.into());
-        fields.insert(
-            "tokenDigest".into(),
-            digest(&Value::Object(rotated.0.clone()))?.into(),
-        );
-        doc.insert(TOKENS.into(), Value::Object(rotated.0.clone()));
-        file.write(&doc).await?;
-        Ok(Grant {
-            tokens: rotated,
-            account: snapshot(&doc)?,
-            revision,
+            let current = snapshot(&doc)?;
+            let (Some(tokens), Some(state)) = (tokens, state) else {
+                return Err(ManagedError::TokenMissing);
+            };
+            let fresh = safe_integer(tokens.0.get("expires")).unwrap_or(0) > now() + FRESH_MS;
+            let reuse = match rejected {
+                Some(rejected) => !same_grant(&state, rejected),
+                None => fresh,
+            };
+            if reuse {
+                return Ok(Grant {
+                    tokens,
+                    account: current,
+                    revision: state.revision,
+                });
+            }
+            let rotated = match http::refresh(&self.client, &tokens).await {
+                Ok(rotated) => rotated,
+                Err(ManagedError::RefreshRejected) => {
+                    doc.remove(TOKENS);
+                    doc.insert(STATE.into(), signed_out(Some(&state), true)?);
+                    file.write(&doc).await?;
+                    return Err(ManagedError::RefreshRejected);
+                }
+                Err(error) => return Err(error),
+            };
+            let mut rotated = validate_tokens(&Value::Object(rotated.0))?;
+            rotated.0.remove("clientSecret");
+            if state
+                .identity
+                .as_ref()
+                .is_none_or(|identity| identity.issuer != rotated.str("issuer"))
+            {
+                return Err(ManagedError::InvalidResponse);
+            }
+            let revision = next(state.revision)?;
+            let fields = doc[STATE].as_object_mut().expect("validated account state");
+            fields.insert("credentialRevision".into(), revision.into());
+            fields.insert(
+                "tokenDigest".into(),
+                digest(&Value::Object(rotated.0.clone()))?.into(),
+            );
+            doc.insert(TOKENS.into(), Value::Object(rotated.0.clone()));
+            file.write(&doc).await?;
+            Ok(Grant {
+                tokens: rotated,
+                account: snapshot(&doc)?,
+                revision,
+            })
         })
+        .await
     }
 
     /// Signs out only when `rejected` still owns the account.
     pub async fn finish(&self, rejected: &Grant) -> Result<()> {
-        let mut file = self.open(None).await?;
-        let (mut doc, _) = file.read().await?;
-        let Parsed { tokens, state } = parse(&doc, true)?;
-        if let (Some(_), Some(state)) = (tokens, state)
-            && same_grant(&state, rejected)
-        {
-            doc.remove(TOKENS);
-            doc.insert(STATE.into(), signed_out(Some(&state), true)?);
-            file.write(&doc).await?;
-        }
-        Ok(())
+        self.with_auth(None, |mut file| async move {
+            let (mut doc, _) = file.read().await?;
+            let Parsed { tokens, state } = parse(&doc, true)?;
+            if let (Some(_), Some(state)) = (tokens, state)
+                && same_grant(&state, rejected)
+            {
+                doc.remove(TOKENS);
+                doc.insert(STATE.into(), signed_out(Some(&state), true)?);
+                file.write(&doc).await?;
+            }
+            Ok(())
+        })
+        .await
     }
 
     pub async fn logout(&self) -> Result<(AccountSnapshot, Option<Tokens>)> {
-        let mut file = self.open(None).await?;
-        let (mut doc, raw) = file.read().await?;
-        let Parsed { tokens, state } = match parse(&doc, true) {
-            Ok(parsed) => parsed,
-            Err(error) if recoverable(error) && raw.is_some() => {
-                file.reset(&mut doc).await?;
-                return Ok((snapshot(&doc)?, None));
-            }
-            Err(error) => return Err(error),
-        };
-        doc.remove(TOKENS);
-        doc.insert(STATE.into(), signed_out(state.as_ref(), true)?);
-        file.write(&doc).await?;
-        Ok((snapshot(&doc)?, tokens))
+        self.with_auth(None, |mut file| async move {
+            let (mut doc, raw) = file.read().await?;
+            let Parsed { tokens, state } = match parse(&doc, true) {
+                Ok(parsed) => parsed,
+                Err(error) if recoverable(error) && raw.is_some() => {
+                    file.reset(&mut doc).await?;
+                    return Ok((snapshot(&doc)?, None));
+                }
+                Err(error) => return Err(error),
+            };
+            doc.remove(TOKENS);
+            doc.insert(STATE.into(), signed_out(state.as_ref(), true)?);
+            file.write(&doc).await?;
+            Ok((snapshot(&doc)?, tokens))
+        })
+        .await
     }
 
     /// Explicit identity recovery for a legacy grant or a digest mismatch.
     /// Never applies to unknown or corrupt schema.
     pub async fn recover(&self) -> Result<AccountSnapshot> {
-        let (tokens, raw) = {
-            let mut file = self.open(None).await?;
-            let (mut doc, _) = file.read().await?;
-            let mut legacy = false;
-            match parse(&doc, true) {
-                Ok(_) if doc.contains_key(STATE) => return snapshot(&doc),
-                Ok(_) => legacy = true,
-                Err(ManagedError::AccountRecoveryRequired) => {}
-                Err(error) => return Err(error),
-            }
-            if legacy {
-                file.normalize(&mut doc).await?;
-            }
-            let Parsed { tokens, state } = parse(&doc, false)?;
-            let Some(mut tokens) = tokens else {
-                doc.insert(STATE.into(), signed_out(None, false)?);
-                file.write(&doc).await?;
-                return snapshot(&doc);
-            };
-            if safe_integer(tokens.0.get("expires")).unwrap_or(0) <= now() + FRESH_MS {
-                tokens = match http::refresh(&self.client, &tokens).await {
-                    Ok(rotated) => rotated,
-                    Err(ManagedError::RefreshRejected) => {
-                        doc.remove(TOKENS);
-                        doc.insert(STATE.into(), signed_out(state.as_ref(), true)?);
-                        file.write(&doc).await?;
-                        return Err(ManagedError::RefreshRejected);
+        use std::ops::ControlFlow;
+        let recovery = self
+            .with_auth(None, |mut file| async move {
+                let (mut doc, _) = file.read().await?;
+                let mut legacy = false;
+                match parse(&doc, true) {
+                    Ok(_) if doc.contains_key(STATE) => {
+                        return snapshot(&doc).map(ControlFlow::Break);
                     }
+                    Ok(_) => legacy = true,
+                    Err(ManagedError::AccountRecoveryRequired) => {}
                     Err(error) => return Err(error),
+                }
+                if legacy {
+                    file.normalize(&mut doc).await?;
+                }
+                let Parsed { tokens, state } = parse(&doc, false)?;
+                let Some(mut tokens) = tokens else {
+                    doc.insert(STATE.into(), signed_out(None, false)?);
+                    file.write(&doc).await?;
+                    return snapshot(&doc).map(ControlFlow::Break);
                 };
-                // Persist the rotated grant and drop unverified identity
-                // before going online for userinfo.
-                doc.insert(TOKENS.into(), Value::Object(tokens.0.clone()));
-                doc.remove(STATE);
-                file.write(&doc).await?;
-            }
-            (tokens, file.read().await?.1)
+                if safe_integer(tokens.0.get("expires")).unwrap_or(0) <= now() + FRESH_MS {
+                    tokens = match http::refresh(&self.client, &tokens).await {
+                        Ok(rotated) => rotated,
+                        Err(ManagedError::RefreshRejected) => {
+                            doc.remove(TOKENS);
+                            doc.insert(STATE.into(), signed_out(state.as_ref(), true)?);
+                            file.write(&doc).await?;
+                            return Err(ManagedError::RefreshRejected);
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    // Persist the rotated grant and drop unverified identity
+                    // before going online for userinfo.
+                    doc.insert(TOKENS.into(), Value::Object(tokens.0.clone()));
+                    doc.remove(STATE);
+                    file.write(&doc).await?;
+                }
+                Ok(ControlFlow::Continue((tokens, file.read().await?.1)))
+            })
+            .await?;
+        let (tokens, raw) = match recovery {
+            ControlFlow::Break(snapshot) => return Ok(snapshot),
+            ControlFlow::Continue(pending) => pending,
         };
         let identity = http::userinfo(&self.client, &tokens, None).await?;
-        let mut file = self.open(None).await?;
-        let (mut doc, current) = file.read().await?;
-        if current != raw {
-            return Err(ManagedError::AccountChanged);
-        }
-        let mut tokens = tokens;
-        tokens.0.remove("clientSecret");
-        let state = authenticated(Uuid::new_v4().to_string(), 1, 1, &identity, &tokens)?;
-        doc.insert(TOKENS.into(), Value::Object(tokens.0));
-        doc.insert(STATE.into(), state);
-        file.write(&doc).await?;
-        snapshot(&doc)
+        self.with_auth(None, |mut file| async move {
+            let (mut doc, current) = file.read().await?;
+            if current != raw {
+                return Err(ManagedError::AccountChanged);
+            }
+            let mut tokens = tokens;
+            tokens.0.remove("clientSecret");
+            let state = authenticated(Uuid::new_v4().to_string(), 1, 1, &identity, &tokens)?;
+            doc.insert(TOKENS.into(), Value::Object(tokens.0));
+            doc.insert(STATE.into(), state);
+            file.write(&doc).await?;
+            snapshot(&doc)
+        })
+        .await
     }
 }

@@ -13,11 +13,11 @@ pub mod background;
 pub mod exec;
 pub mod file_reads;
 pub mod files;
-pub mod mentions;
 mod pending;
 pub use pending::call_positions;
 
 use crate::{
+    file_storage::mentions::MentionsRequest,
     host::{HostError, HostFuture, SessionFiles, ToolDriver, ToolExecutionContext, ToolHost},
     host_platform::ExecHost,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
@@ -31,7 +31,7 @@ use dim_agent_runtime::{
 };
 use dim_agent_types::*;
 use file_reads::{FileReads, FileReadsPlugin};
-use files::{FileTools, FileWriteCoordinator};
+use files::FileTools;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{path::PathBuf, sync::Arc};
@@ -65,17 +65,10 @@ pub struct WorkspaceToolsConfig {
 pub use files::FileToolBoundary;
 
 /// Installs WorkspaceTools: the process owner, which registers its Session and
-/// branch parts, and the parts themselves. The owner holds the file-write
-/// coordinator, one lock domain for every Session it serves, across their
-/// generations and its own, and hands it to each Session's part.
+/// branch parts, and the parts themselves.
 pub fn install(builder: &mut AgentBuilder, config: WorkspaceToolsConfig) {
-    let coordinator = Arc::<FileWriteCoordinator>::default();
     builder.plugin(move |names| {
-        Ok(Box::new(WorkspaceToolsOwner::new(
-            names,
-            config.clone(),
-            coordinator.clone(),
-        )?) as Box<dyn DynPlugin>)
+        Ok(Box::new(WorkspaceToolsOwner::new(names, config.clone())?) as Box<dyn DynPlugin>)
     });
     builder.require_part("WorkspaceTools");
     builder.require_part("FileReads");
@@ -83,24 +76,16 @@ pub fn install(builder: &mut AgentBuilder, config: WorkspaceToolsConfig) {
 }
 
 /// The process plugin: it registers the Session part and both branch parts
-/// with the part registry, holds the file-write coordinator, and provides the
-/// one `MentionIndex` its Session parts read, so `session.files.search` and
-/// `workspace.files.search` share one walked index (WorkspaceTools §1).
+/// with the part registry.
 struct WorkspaceToolsOwner {
     parts: Key<PartRegistry>,
     config: WorkspaceToolsConfig,
-    coordinator: Arc<FileWriteCoordinator>,
 }
 impl WorkspaceToolsOwner {
-    fn new(
-        names: &Names<'_>,
-        config: WorkspaceToolsConfig,
-        coordinator: Arc<FileWriteCoordinator>,
-    ) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, config: WorkspaceToolsConfig) -> rutis::Result<Self> {
         Ok(Self {
             parts: names.key()?,
             config,
-            coordinator,
         })
     }
 }
@@ -114,17 +99,12 @@ impl DynPlugin for WorkspaceToolsOwner {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let parts = ctx.require_at(&self.parts)?;
-            // One index per process, read by every Session part this owner
-            // serves and by the App Server's sessionless search.
-            ctx.provide_as::<mentions::MentionIndex>(Arc::new(mentions::MentionIndex::default()))?;
             let config = self.config.clone();
-            let coordinator = self.coordinator.clone();
             parts.register(ctx, PartScope::Session, "WorkspaceTools", move |mount| {
-                Ok(Some(Box::new(WorkspaceToolsPlugin::new(
-                    mount.names,
-                    config.clone(),
-                    coordinator.clone(),
-                )?) as Box<dyn DynPlugin>))
+                Ok(Some(
+                    Box::new(WorkspaceToolsPlugin::new(mount.names, config.clone())?)
+                        as Box<dyn DynPlugin>,
+                ))
             })?;
             parts.register(ctx, PartScope::Branch, "FileReads", |mount| {
                 Ok(Some(
@@ -161,6 +141,7 @@ pub(crate) struct WorkspaceTools {
     member: bool,
     tree: Arc<TreeCommands>,
     files: FileTools,
+    fs_host: Arc<crate::file_storage::FsHost>,
     /// Cancelled on unload: new calls settle as reloading, running ones stop.
     lifecycle: CancellationToken,
     /// Calls in flight, including a command being handed to BackgroundExec.
@@ -206,7 +187,26 @@ impl WorkspaceTools {
                 let reads = branch
                     .service::<FileReads>()
                     .map_err(HostError::from_agent)?;
-                self.files.execute(&call, &reads, combined.clone()).await
+                match call.name.as_str() {
+                    "glob" | "grep" => {
+                        let kind = if call.name == "glob" {
+                            files::search::SearchKind::Glob
+                        } else {
+                            files::search::SearchKind::Grep
+                        };
+                        self.fs_host
+                            .workspace_search(
+                                kind,
+                                &self.cwd,
+                                self.files.home(),
+                                self.files.boundary.as_ref(),
+                                &call.input,
+                                &combined,
+                            )
+                            .await
+                    }
+                    _ => self.files.execute(&call, &reads, combined.clone()).await,
+                }
             } else {
                 Ok(ToolResult::error(format!("Unknown tool: {}", call.name)))
             }
@@ -287,17 +287,20 @@ impl ToolDriver for WorkspaceTools {
                 // platform's otherwise — the same home the executed tool
                 // resolves `~` against, so pre-admission resolution cannot
                 // disagree with execution.
-                let (cwd, home, path) = (
-                    self.cwd.clone(),
-                    self.files.home().to_owned(),
-                    path.to_owned(),
+                let target = self.fs_host.resolve_workspace_path(
+                    crate::file_access::ResolvePath {
+                        path: path.to_owned(),
+                        cwd: self.cwd.clone(),
+                        workspace: self.cwd.clone(),
+                        roots: Vec::new(),
+                        recognize: false,
+                    },
+                    self.files.home(),
+                    self.platform.facts().platform_roots,
+                    &cancel,
                 );
-                let target = tokio::task::spawn_blocking(move || {
-                    files::resolve_path(&cwd, &home, None, files::Access::Write, &path)
-                });
                 let path = tokio::select! {
-                    result = target => result.map_err(|error| HostError::failed(error.to_string()))?
-                        .map_err(HostError::failed)?,
+                    result = target => result?.path,
                     _ = cancel.cancelled() => return Err(HostError::Cancelled("Tool execution cancelled.".into())),
                 };
                 let path = path
@@ -329,16 +332,11 @@ struct WorkspaceToolsPlugin {
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
     /// The owner's one walked index, shared with `workspace.files.search`.
-    mentions: Key<mentions::MentionIndex>,
+    mentions: Key<crate::file_storage::FsHost>,
     config: WorkspaceToolsConfig,
-    coordinator: Arc<FileWriteCoordinator>,
 }
 impl WorkspaceToolsPlugin {
-    fn new(
-        names: &Names<'_>,
-        config: WorkspaceToolsConfig,
-        coordinator: Arc<FileWriteCoordinator>,
-    ) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, config: WorkspaceToolsConfig) -> rutis::Result<Self> {
         Ok(Self {
             facts: names.key()?,
             host: names.key()?,
@@ -349,7 +347,6 @@ impl WorkspaceToolsPlugin {
             methods: names.key()?,
             mentions: names.key()?,
             config,
-            coordinator,
         })
     }
 }
@@ -394,16 +391,20 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 .boundary
                 .as_ref()
                 .map_or_else(|| info.home.to_owned(), |boundary| boundary.home.clone());
+            let mentions = ctx.require_at(&self.mentions)?;
+            let mut files = FileTools::with_coordinator(
+                cwd.clone(),
+                home,
+                output_dir.clone(),
+                mentions.writes.clone(),
+                self.config.boundary.clone(),
+            );
+            files.fs = Some(mentions.clone());
             let tools = Arc::new(WorkspaceTools {
+                fs_host: mentions.clone(),
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
-                files: FileTools::with_coordinator(
-                    cwd.clone(),
-                    home,
-                    output_dir.clone(),
-                    self.coordinator.clone(),
-                    self.config.boundary.clone(),
-                ),
+                files,
                 output_dir,
                 owner: ctx.get::<SessionFiles>(),
                 session_id: identity.session_id.clone(),
@@ -426,13 +427,12 @@ impl DynPlugin for WorkspaceToolsPlugin {
             })?;
             // The owner's one searched index, shared with
             // `workspace.files.search`.
-            let mentions = ctx.require_at(&self.mentions)?;
             let search_root = tools.cwd.clone();
             methods.register(
                 ctx,
                 FILES_NAMESPACE,
                 vec![MethodDecl::new(SEARCH_METHOD, false, Interruption::Report)],
-                Arc::new(move |call, _, _| {
+                Arc::new(move |call, cancel, _| {
                     let MethodCall { params: value, .. } = call;
                     let (mentions, root) = (mentions.clone(), search_root.clone());
                     Box::pin(async move {
@@ -451,15 +451,20 @@ impl DynPlugin for WorkspaceToolsPlugin {
                         if session_id.is_empty() {
                             return Err(RpcError::invalid("sessionId must not be empty"));
                         }
-                        let limit = mentions::parse_limit(limit);
-                        let found = tokio::task::spawn_blocking(move || {
-                            mentions.search(&root, &query, limit)
-                        })
-                        .await
-                        .map_err(|error| {
-                            RpcError::app(-32000, "session_files_failed", error.to_string())
-                        })?;
-                        reply(serde_json::json!({"candidates": mentions::candidates(&found)}))
+                        let found = mentions
+                            .mentions(
+                                MentionsRequest {
+                                    path: root,
+                                    query,
+                                    limit,
+                                },
+                                &cancel,
+                            )
+                            .await
+                            .map_err(|error| {
+                                RpcError::app(-32000, "session_files_failed", error.to_string())
+                            })?;
+                        reply(found)
                     })
                 }),
             )?;
