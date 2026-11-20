@@ -2672,6 +2672,9 @@ impl Shared {
                 ReaderSource::new(self.fs.clone(), read_id.clone()),
             )
             .await;
+            if result.is_ok() {
+                written.push(file.name.clone());
+            }
             let closed = self.fs.close_read(read_id).await;
             let (bytes, sha256) = match result
                 .map_err(|e| e.to_string())
@@ -2685,7 +2688,6 @@ impl Shared {
                     return;
                 }
             };
-            written.push(file.name.clone());
             results.push(ResultFile {
                 name: file.name,
                 media_type: file.media_type,

@@ -7,7 +7,7 @@ flowchart LR
     p75["Report"]
     p74["goal"]
     p73["eventhub"]
-    p80["eventhub-ready"]
+    p77["eventhub-ready"]
     p72["Scheduler"]
     p71["Questions"]
     p70["PromptSuggestion"]
@@ -89,7 +89,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p73
   p14 -->|"dim_app_server::plugin_files::PluginFiles"| p73
   p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p73
-  p73 -->|"dim_event_hub::bridge::EventHub"| p80
+  p73 -->|"dim_event_hub::bridge::EventHub"| p77
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p72
   p3 -->|"dim_app_server::control::ProcessActivity"| p72
   p10 -->|"dim_app_server::methods::ManagementMethods"| p72

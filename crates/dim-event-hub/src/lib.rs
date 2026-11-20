@@ -165,7 +165,7 @@ impl DynPlugin for EventHubPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let files = ctx.require_at(&self.files)?.open(ctx)?;
+            let files = ctx.require_at(&self.files)?.scope(Some(ctx.clone()));
             let sessions = ctx.require_at(&self.sessions)?;
             let store = Arc::new(store::Store::new(files, self.state.clone()));
             // The file is read once, into the install's view; a corrupt one

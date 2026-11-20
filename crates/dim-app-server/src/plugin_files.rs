@@ -527,7 +527,9 @@ fn join_name(prefix: &Path, leaf: &str) -> String {
 pub struct PluginFiles(Arc<Files>);
 
 impl PluginFiles {
-    fn scope(&self, caller: Option<Ctx>) -> Arc<FileScope> {
+    /// Opens a caller-managed scope. Admitted work can retain it across a row
+    /// restart. All operations still end when the file service stops.
+    pub fn scope(&self, caller: Option<Ctx>) -> Arc<FileScope> {
         Arc::new(FileScope {
             caller,
             files: self.0.clone(),
