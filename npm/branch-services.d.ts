@@ -1270,13 +1270,18 @@ export type UiExtensionPlugin = {
 
 export type UiPackage = {
   directory: string
-  manifest: JsonValue
+  manifest: import('./plugin.js').BridgeJsonValue
 }
 
 export type UiExtensionRegistration = {
   plugin: string
   name: string
   package?: UiPackage | null
+}
+
+export type ResourceError = {
+  code: string
+  message: string
 }
 
 export interface UiExtensions {
@@ -1296,11 +1301,6 @@ export type PublishFile = {
 export type ResourceRef = {
   sessionId: string
   id: string
-}
-
-export type ResourceError = {
-  code: string
-  message: string
 }
 
 export interface UiResources {
@@ -1349,7 +1349,6 @@ export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceErr
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
 /** What a method returning `Err(String)` throws. */
-export type StringThrown = RustError<"Error", "Error", undefined>
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
