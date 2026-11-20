@@ -68,7 +68,15 @@ impl ContextPreparation {
             request.model,
             request.tool_adoption,
             |_, _| request.inputs,
-            |_| Ok(()),
+            |_| {
+                if self.closing() {
+                    Err(AgentError::Cancelled(
+                        "the branch closed before prompt publication".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
         )
     }
 
@@ -85,7 +93,7 @@ impl ContextPreparation {
                 return Err(error);
             }
             publication.changed().await.map_err(|_| {
-                AgentError::fault("ConfigurationPublisher", "publication channel ended")
+                AgentError::fault("ContextPreparation", "publication channel ended")
             })?;
         }
         Ok(sequence)
