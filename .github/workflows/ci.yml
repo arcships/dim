@@ -316,6 +316,7 @@ jobs:
     steps:
       - shell: bash
         run: |
+          set +e +o pipefail
           set -u
           echo "runner: $RUNNER_NAME user: $(id -un) uid=$(id -u)"
           getent passwd "$(id -un)" | cut -d: -f6,7
@@ -336,12 +337,14 @@ jobs:
           echo '--- scripts that name a journal or logging command'
           grep -lE 'systemd-cat|systemd-notify|logger|journal' /etc/profile /etc/bash.bashrc /etc/profile.d/* 2>/dev/null || true
           echo '--- each profile script alone under bubblewrap'
-          for script in /etc/profile /etc/bash.bashrc /etc/profile.d/*.sh; do
-            out="$(env -i "${vars[@]}" "${sandbox[@]}" /bin/bash --noprofile --norc -c ". '$script'" 2>&1 | head -5)"
+          for script in /etc/bash.bashrc /etc/profile.d/*.sh; do
+            out="$(env -i "${vars[@]}" "${sandbox[@]}" /bin/bash --noprofile --norc -c ". '$script'" 2>&1 | head -5 || true)"
             if [[ -n "$out" ]]; then echo "== $script"; echo "$out"; fi
           done
           echo '--- the lines of the script that prints'
           grep -nE 'systemd-cat|systemd-notify|logger|journal' /etc/profile /etc/bash.bashrc /etc/profile.d/* 2>/dev/null | cut -c1-240 || true
+          echo '--- /etc/profile'
+          cat /etc/profile
           echo '--- who owns it'
           for script in $(grep -lE 'systemd-cat|systemd-notify|logger|journal' /etc/profile.d/* 2>/dev/null); do
             dpkg -S "$script" 2>&1 | head -1
