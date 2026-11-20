@@ -305,7 +305,7 @@ P3 删除了旧形式（[#375](https://github.com/arcships/dim/issues/375)）；
 （§3.5）。Dim 不另加 trait 或适配层。列出的 key 在严格读取时发现提供者已消失，会返回它自己的错误，
 rutis 把部件退回 Pending（A.3）。绑定在 Rust 中落实 §3.5：
 
-- 按 `#[rutis::service]` 的规则给类型命名：`Timeline` 是 `timeline`，`dyn LoopState` 是 `loopState`
+- 按 `#[rutis::service]` 的规则给类型命名：`Timeline` 是 `timeline`，`dyn AgentLoop` 是 `agentLoop`
   （`names::name_of`）。一个 Rust 类型就是一个名字，所以在两个组提供的类型要拆成两个类型，或归到一个组。
 - key 按名字和副本的实例链从服务目录取得。`names.key::<T>()` 用于以 Rust 类型 `T` 登记或由它导出的名字：
   在该名字所属组的实例中是 `Key::<T>::of().instance(id)`，进程级是 `Key::<T>::of()`。

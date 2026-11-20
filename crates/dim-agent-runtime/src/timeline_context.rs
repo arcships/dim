@@ -226,7 +226,7 @@ impl TimelineContext {
                 if phase.as_ref().is_none_or(|rx| rx.has_changed().is_err()) {
                     phase = inner
                         .ctx
-                        .get_at::<dyn LoopState>(&inner.scope.key::<dyn LoopState>())
+                        .get_at::<dyn AgentLoop>(&inner.scope.key::<dyn AgentLoop>())
                         .map(|state| state.watch());
                 }
                 if signal || had != phase.is_some() {
@@ -338,8 +338,8 @@ impl TimelineContext {
     pub(crate) fn dispatch_watch(&self) -> watch::Receiver<crate::core::DispatchState> {
         self.dispatcher.watch()
     }
-    fn loop_state(&self) -> Result<Arc<dyn LoopState>> {
-        self.port::<dyn LoopState>("Loop")
+    fn loop_state(&self) -> Result<Arc<dyn AgentLoop>> {
+        self.port::<dyn AgentLoop>("Loop")
     }
     /// Capability ports are looked up per call: a reloading capability is absent.
     /// A branch service a facade reads: a name of the branch group.

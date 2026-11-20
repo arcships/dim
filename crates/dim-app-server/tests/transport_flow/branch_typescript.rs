@@ -554,3 +554,43 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
     server.join().await.unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_agent_loop_observes_idle_and_admits_the_native_compaction_command() {
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"agent-loop","name":parts.anchor.parent().unwrap().join("fixtures/agent-loop.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("AgentLoopFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!([])).await;
+    let reply = client
+        .rpc("session.loopfixture.compact", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    let value = &reply["result"];
+    assert_eq!(value["observed"], json!({"phase":"idle"}));
+    assert_eq!(value["state"], value["observed"]);
+    assert!(value["stale"].is_null());
+    let sequence = value["sequence"].as_u64().unwrap();
+    let session = agent.get_session(&id).unwrap();
+    let events = branch_events(&session, "main", sequence..=sequence)
+        .await
+        .unwrap();
+    assert!(
+        matches!(events.as_slice(), [event] if matches!(event.kind, dim_agent_types::EventKind::ContextCompact(_)))
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

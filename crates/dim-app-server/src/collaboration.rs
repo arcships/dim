@@ -2720,7 +2720,7 @@ fn close_request(open: &mut BTreeMap<String, BTreeSet<String>>, request: &str) {
 /// turn-scoped stop: a turn that already ended writes nothing.
 fn stop_member_turn(session: &Session, turn: &str, reason: &str) -> dim_agent_runtime::Result<()> {
     session
-        .service::<dim_agent_capabilities::agent_loop::AgentLoop>(ROOT_BRANCH_ID)?
+        .service::<dyn dim_agent_runtime::AgentLoop>(ROOT_BRANCH_ID)?
         .stop_turn(turn, reason.into())?;
     Ok(())
 }

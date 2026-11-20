@@ -1529,12 +1529,6 @@
     ],
     "bindings": [
       {
-        "service": "dim_agent_capabilities::agent_loop::AgentLoop@main",
-        "provider": 43,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::approval::Approval@main",
         "provider": 38,
         "generation": 1,
@@ -1655,13 +1649,19 @@
         "removing": false
       },
       {
+        "service": "dyn dim_agent_runtime::contracts::AgentLoop@main",
+        "provider": 43,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
         "provider": 46,
         "generation": 1,
         "removing": false
       },
       {
-        "service": "dyn dim_agent_runtime::contracts::LoopState@main",
+        "service": "dyn rutis_bridge::session::services::HostDispatch#agentLoop@main",
         "provider": 43,
         "generation": 1,
         "removing": false

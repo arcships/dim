@@ -105,7 +105,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<methods::SessionMethods>(catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<input_queue::InputQueue>(catalog, branch);
-    register::<agent_loop::AgentLoop>(catalog, branch);
     register::<prompt::Prompt>(catalog, branch);
     register::<context_preparation::ContextPreparation>(catalog, branch);
     register::<context_usage::ContextUsage>(catalog, branch);
@@ -154,7 +153,6 @@ impl PublicService for skills::SkillsBranch {}
 impl PublicService for prompt::Prompt {}
 impl PublicService for tool_registry::ToolSourcesView {}
 impl PublicService for methods::SessionMethods {}
-impl PublicService for agent_loop::AgentLoop {}
 impl PublicService for context_preparation::ContextPreparation {}
 
 pub mod session_files;

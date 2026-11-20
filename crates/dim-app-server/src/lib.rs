@@ -1485,7 +1485,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
         ("promptSourcesBranch", "hot-path"),
         ("agentIndex", "owner-api"),
-        ("agentLoop", "hot-path"),
         ("branchOpening", "hot-path"),
         ("compactionStrategyHost", "hot-path"),
         ("configurationPublisher", "hot-path"),
@@ -1501,7 +1500,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("historyRenderer", "hot-path"),
         ("hostPlatform", "object"),
         ("loader", "owner-api"),
-        ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.
         ("managedWorktrees", "hot-path"),
         ("mentionIndex", "host-resource"),

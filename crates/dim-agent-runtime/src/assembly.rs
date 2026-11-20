@@ -1440,7 +1440,7 @@ impl TimelineFactory {
                 }
                 let ctx = &branch.scope.ctx;
                 let scope = branch.scope.scope;
-                required::<dyn LoopState>(ctx, scope.key::<dyn LoopState>())?;
+                required::<dyn AgentLoop>(ctx, scope.key::<dyn AgentLoop>())?;
                 Ok(TimelineContext::start(
                     id,
                     ctx.clone(),

@@ -106,7 +106,7 @@ argument about the specified transitions, not a machine-checked proof of Rust or
 
 [wait_protocol.rs](../../../tests/integration/tests/wait_protocol.rs) mounts the actual WaitBranch
 plugin with the actual Timeline and Dispatcher. It neither replaces Wait with a mock nor reads
-private state. The host supplies an idle LoopState instead of the agent loop, so the test writer
+private state. The host supplies an idle AgentLoop instead of the agent loop, so the test writer
 controls all facts; it writes each input's release, consumption and deletion itself, and no model
 execution runs in the test. A test writer supplies facts through Timeline, and calls the public
 Wait service. A separate history predicate computes Q; it does not maintain a duplicate mutable

@@ -100,7 +100,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `toolSourcesView` | session | ToolRegistry | data | `get` sync, `observe` async |
 | `treeCommands` | session | TimelineTree | data | `create` async, `defaultBranch` async, `end` async, `info` async, `input` async, `list` async, `page` async, `query` async, `setDefaultBranch` async |
 | `uiResources` | session | UiResources | data | `publishFile` async, `withdraw` async |
-| `agentLoop` | branch | Loop | internal(hot-path) | — |
+| `agentLoop` | branch | Loop | data | `compact` sync, `observe` async, `state` sync, `stopTurn` sync |
 | `approval` | branch | Approval | data | `decide` async, `pending` async |
 | `backgroundExec` | branch | BackgroundExec | data | `output` async, `outputPage` async, `stop` async, `wait` async |
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
@@ -113,7 +113,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
 | `fileReads` | branch | FileReads | internal(hot-path) | — |
 | `inputQueue` | branch | InputQueue | data | `submit` async, `withdraw` async |
-| `loopState` | branch | Loop | internal(hot-path) | — |
 | `permission` | branch | Permission | data | `check` async |
 | `prompt` | branch | Prompt | internal(hot-path) | — |
 | `promptSourcesBranch` | branch | PromptSourcesBranch | internal(hot-path) | — |
