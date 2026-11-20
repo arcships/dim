@@ -11,12 +11,19 @@ const MODEL_FIELDS: &[&str] = &[
     "endpointOverrides",
 ];
 
-pub(super) enum Models<'a> {
+#[derive(Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub(crate) enum Models {
     Header,
     All,
     Mutable,
-    One(&'a str),
-    Selected(&'a [String]),
+    One { model_id: String },
+    Selected { model_ids: Vec<String> },
 }
 
 struct Image<'a> {
@@ -219,7 +226,7 @@ pub(super) fn base(
 pub(super) fn read(
     connection: &rusqlite::Connection,
     id: &str,
-    models: Models<'_>,
+    models: Models,
 ) -> Result<Option<PersistedProviderRecord>> {
     let Some((version, body)) = header(connection, id)? else {
         return Ok(None);
@@ -251,9 +258,11 @@ pub(super) fn read(
                 && let Some(revision) = base(connection, id, &bundled)?
             {
                 let image = Image::open(connection, &revision, &bundled)?;
-                let positions = match models {
-                    Models::One(target) => image.matching(&format!("t\0{id}\0{target}"))?,
-                    Models::Selected(targets) => {
+                let positions = match &models {
+                    Models::One { model_id: target } => {
+                        image.matching(&format!("t\0{id}\0{target}"))?
+                    }
+                    Models::Selected { model_ids: targets } => {
                         let mut positions = Vec::new();
                         for target in targets {
                             positions.extend(image.matching(&format!("t\0{id}\0{target}"))?);
@@ -298,19 +307,19 @@ pub(super) fn read(
                     }
                 }
             }
-            let selected = if let Models::Selected(targets) = &models {
+            let selected = if let Models::Selected { model_ids: targets } = &models {
                 Some(serde_json::to_string(targets).map_err(storage)?)
             } else {
                 None
             };
-            let (sql, target) = match models {
-                Models::Selected(_) => (
+            let (sql, target) = match &models {
+                Models::Selected { .. } => (
                     "SELECT entry FROM provider_models WHERE provider_id=?1 AND source=?2 AND model_id IN (SELECT value FROM json_each(?3)) ORDER BY position",
                     selected.as_deref(),
                 ),
-                Models::One(target) => (
+                Models::One { model_id: target } => (
                     "SELECT entry FROM provider_models WHERE provider_id=?1 AND source=?2 AND model_id=?3 ORDER BY position",
-                    Some(target),
+                    Some(target.as_str()),
                 ),
                 _ => (
                     "SELECT entry FROM provider_models WHERE provider_id=?1 AND source=?2 ORDER BY position",
@@ -342,14 +351,14 @@ pub(super) fn read(
     }
     body["endpointTypes"] = Value::Object(source_routes);
     if !matches!(models, Models::Header) {
-        let selected = if let Models::Selected(targets) = &models {
+        let selected = if let Models::Selected { model_ids: targets } = &models {
             Some(serde_json::to_string(targets).map_err(storage)?)
         } else {
             None
         };
         let sql = if selected.is_some() {
             "SELECT model_id,field,value FROM provider_model_state WHERE provider_id=?1 AND model_id IN (SELECT value FROM json_each(?2)) ORDER BY position"
-        } else if matches!(models, Models::One(_)) {
+        } else if matches!(models, Models::One { .. }) {
             "SELECT model_id,field,value FROM provider_model_state WHERE provider_id=?1 AND model_id=?2 ORDER BY position"
         } else {
             "SELECT model_id,field,value FROM provider_model_state WHERE provider_id=?1 ORDER BY position"
@@ -357,7 +366,7 @@ pub(super) fn read(
         let mut statement = connection.prepare(sql).map_err(storage)?;
         let mut rows = if let Some(selected) = &selected {
             statement.query(params![id, selected])
-        } else if let Models::One(target) = models {
+        } else if let Models::One { model_id: target } = &models {
             statement.query(params![id, target])
         } else {
             statement.query([id])
@@ -386,13 +395,11 @@ pub(super) fn read(
 pub(super) fn static_read(
     connection: &rusqlite::Connection,
     id: &str,
-    models: Models<'_>,
+    models: Models,
 ) -> Result<Option<StaticProviderRecord>> {
-    match read(connection, id, models)? {
-        Some(PersistedProviderRecord::Static(record)) => Ok(Some(*record)),
-        Some(_) => Err(storage("Invalid persisted provider record")),
-        None => Ok(None),
-    }
+    read(connection, id, models)?
+        .map(PersistedProviderRecord::into_static)
+        .transpose()
 }
 
 pub(super) fn write_header(
@@ -868,7 +875,9 @@ pub(super) fn names(
         .collect())
 }
 
-pub(super) struct OrderedModel {
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct OrderedModel {
     pub source: String,
     pub position: i64,
     pub model_id: String,

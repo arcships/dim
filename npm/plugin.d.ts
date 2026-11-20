@@ -628,7 +628,47 @@ export type StoredAgentProfile = {
   name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
+export type ProviderRecordProjection =
+  | { kind: 'header' | 'all' | 'mutable' }
+  | { kind: 'one'; modelId: string }
+  | { kind: 'selected'; modelIds: string[] };
+export type PersistedProviderRecord = JsonObject & {
+  version: number;
+  models: JsonObject[];
+  modelConfigOverrides: JsonObject[];
+  disabledModelIds: string[];
+} & (
+  | { kind: 'managed'; account: JsonObject }
+  | { kind: 'builtin' | 'custom'; displayName: string; driverKind: string; baseUrl: string;
+      auth: JsonObject; credential: string | { secretRef: string } |
+        { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null; enabled: boolean }
+);
+export type OrderedProviderModel = { source: string; position: number; modelId: string };
+export type StoredModelId = { providerId: string; modelId: string };
+export type ProviderPageAccounts = {
+  descriptors: { providerId: string; displayName: string; loginMethods: string[]; defaultDirectory?: string }[];
+  accounts: Record<string, { credentialEpoch: string; generation: number; account?: {
+    issuer: string; subject: string; email?: string; name?: string; grantedScopes: string[]
+  } }>;
+  native: Record<string, boolean>;
+};
+export type LegacyProviderRow = { id: string; version: number; digest: string; fields: JsonObject };
 export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+  readRecord(request: { providerId: string; projection: ProviderRecordProjection }): Promise<PersistedProviderRecord | null>;
+  findCandidates(request: { kind: 'providers'; modelId?: string }): Promise<string[]>;
+  findCandidates(request: { kind: 'models'; providers: string[] }): Promise<StoredModelId[]>;
+  findCandidates(request: { kind: 'ordered'; providerId: string; after?: OrderedProviderModel; limit: number }): Promise<OrderedProviderModel[]>;
+  queryModels(request: {
+    page: { selectableOnly?: boolean; providerId?: string; modelId?: string; query?: string; after?: StoredModelId; limit?: number };
+    accounts: ProviderPageAccounts;
+  }): Promise<{
+    models: { providerId: string; providerName: string; model: import('./client-protocol.js').ProviderModel; version: number; preferences: JsonObject; disabled: boolean }[];
+    next: StoredModelId | null;
+    empty: { providerId: string; providerName: string; reason: { kind: 'no_models'; listable: boolean } | { kind: 'unreadable' } }[];
+  }>;
+  activateSource(request: { revision: string; baseFacts: number[] }): Promise<{}>;
+  listProviders(request: {}): Promise<{ providers: import('./client-protocol.js').ProviderSummary[]; errors: { providerId: string; message: string }[] }>;
+  importLegacy(request: { batch: { schema: string; providers: LegacyProviderRow[]; selections: LegacyProviderRow[] } }): Promise<{ items: { kind: 'provider' | 'selection'; id: string; status: 'imported' | 'already_imported' | 'rejected'; reason: string | null; omitted?: string[] }[] }>;
   commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
   readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
   writeSelection(request: { scope: string; expectedVersion?: number | null; selection: ModelId }): Promise<StoredProviderSelection>;

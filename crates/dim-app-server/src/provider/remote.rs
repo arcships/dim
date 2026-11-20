@@ -176,9 +176,11 @@ impl ProviderService {
                 let id = provider_id.clone();
                 let mut record = owner
                     .db
-                    .run_read(move |db| read_stored_static(db, &id))
+                    .read_record(id, persistence::Models::All)
                     .await
                     .map_err(ProviderError::from)?
+                    .map(PersistedProviderRecord::into_static)
+                    .transpose()?
                     .ok_or(ProviderError::NotFound)?;
                 let expected = serde_json::to_value(&record).map_err(ProviderError::from)?;
                 let models = owner.discover(&provider_id, &record, &cancel).await?;

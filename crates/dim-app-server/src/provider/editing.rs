@@ -355,8 +355,10 @@ impl ProviderService {
                         let id = provider_id.clone();
                         let mut record = owner
                             .db
-                            .run_read(move |db| read_stored_static(db, &id))
+                            .read_record(id, persistence::Models::All)
                             .await?
+                            .map(PersistedProviderRecord::into_static)
+                            .transpose()?
                             .ok_or(ProviderError::NotFound)?;
                         connection.apply(&mut record)?;
                         (provider_id, record)
@@ -627,9 +629,11 @@ impl ProviderService {
                 let id = provider_id.clone();
                 let record = owner
                     .db
-                    .run_read(move |db| read_stored_static(db, &id))
+                    .read_record(id, persistence::Models::All)
                     .await
                     .map_err(ProviderError::from)?
+                    .map(PersistedProviderRecord::into_static)
+                    .transpose()?
                     .ok_or(ProviderError::NotFound)?;
                 if record.version != expected_version {
                     return Err(ProviderError::Conflict(

@@ -1375,6 +1375,37 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     let (server, _, _) = session_typescript::start(config(&home, parts)).await;
     let mut client = Client::new_version(&server, false, 3).await;
     files_available(&mut client, "storefixture.status", json!({})).await;
+    let provider_id = "018ec73f-0000-7000-8000-000000000089";
+    let models: Vec<_> = ["first", "second"]
+        .into_iter()
+        .map(|id| {
+            json!({
+                "modelId":id, "displayName":id, "status":"active",
+                "capabilities":dim_agent_types::CatalogCapabilities::with_limits(128_000, 16_384)
+            })
+        })
+        .collect();
+    let created = client
+        .rpc(
+            "provider.create",
+            json!({
+                "providerId":provider_id, "displayName":"Storage fixture",
+                "connection":{"driverKind":"openai-compatible","baseUrl":"http://localhost/v1",
+                "auth":{"type":"bearer"},"credential":{"action":"set","value":"fixture-inline"}},
+                "models":models,"enabled":true
+            }),
+        )
+        .await;
+    assert_ok(&created);
+    assert!(!created.to_string().contains("fixture-inline"));
+    let record = client
+        .rpc(
+            "storefixture.provider_records",
+            json!({"providerId":provider_id}),
+        )
+        .await;
+    assert_ok(&record);
+    assert_eq!(record["result"]["version"], 1);
     let wire = client.rpc("storefixture.report", json!({})).await;
     let native = client.rpc("storage.report", json!({})).await;
     assert_ok(&wire);

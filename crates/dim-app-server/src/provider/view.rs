@@ -536,7 +536,7 @@ impl ProviderService {
                             targets.truncate(limit);
                             let next = more.then(|| targets.last().cloned()).flatten();
                             let names = persistence::names(&tx, &bundled, &id, &targets)?;
-                            let selected = persistence::Models::Selected(&targets);
+                            let selected = persistence::Models::Selected { model_ids: targets.clone() };
                             let record = persistence::read(&tx, &id, selected)?;
                             return Ok((record, None, pending, next, Some(names)));
                         }

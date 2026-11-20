@@ -14,6 +14,7 @@ mod query;
 #[cfg(feature = "testing")]
 pub mod read_work;
 mod remote;
+pub(crate) use query::ModelQueryAccounts;
 pub use query::{ModelPage, ModelQuery};
 mod secrets;
 mod startup;
@@ -283,7 +284,7 @@ pub enum StoredSelectionError {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ProviderRecord {
+pub(crate) struct ProviderRecord {
     kind: ManagedRecordKind,
     account: AccountSnapshot,
     models: Vec<ManagedModel>,
@@ -307,10 +308,143 @@ enum ManagedRecordKind {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum PersistedProviderRecord {
+pub(crate) enum PersistedProviderRecord {
     Managed(Box<ProviderRecord>),
     Static(Box<StaticProviderRecord>),
 }
+impl PersistedProviderRecord {
+    fn into_static(self) -> dim_agent_runtime::Result<StaticProviderRecord> {
+        match self {
+            Self::Static(record) => Ok(*record),
+            Self::Managed(_) => Err(storage("Invalid persisted provider record")),
+        }
+    }
+}
+
+pub(crate) use persistence::{Models as ProviderRecordProjection, OrderedModel};
+
+impl SqliteStorage {
+    pub(crate) async fn read_record(
+        self: &Arc<Self>,
+        provider_id: String,
+        projection: ProviderRecordProjection,
+    ) -> dim_agent_runtime::Result<Option<PersistedProviderRecord>> {
+        self.run_read(move |connection| persistence::read(connection, &provider_id, projection))
+            .await
+    }
+
+    pub(crate) async fn candidate_providers(
+        self: &Arc<Self>,
+        model_id: Option<String>,
+        bundled: Arc<BundledCatalog>,
+    ) -> dim_agent_runtime::Result<Vec<String>> {
+        self.run_read(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            let mut selected = Vec::new();
+            let ids = if let Some(model) = &model_id {
+                persistence::providers_for_model(&tx, &bundled, model)?
+            } else {
+                persistence::ids(&tx, &bundled)?
+            };
+            for id in ids {
+                match persistence::read(&tx, &id, persistence::Models::Header) {
+                    Ok(Some(PersistedProviderRecord::Managed(_))) => selected.push((0, id)),
+                    Ok(Some(PersistedProviderRecord::Static(r)))
+                        if r.enabled
+                            && (r.auth == StaticAuth::Anonymous
+                                || r.credential.is_some()
+                                || r.credential_authority != CredentialAuthority::Static) =>
+                    {
+                        selected.push((1, id))
+                    }
+                    _ => {}
+                }
+            }
+            selected.sort();
+            Ok(selected.into_iter().map(|(_, id)| id).collect())
+        })
+        .await
+    }
+    pub(crate) async fn candidate_models(
+        self: &Arc<Self>,
+        providers: Vec<String>,
+        bundled: Arc<BundledCatalog>,
+    ) -> dim_agent_runtime::Result<Vec<ModelId>> {
+        self.run_read(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            let mut result = Vec::new();
+            for provider_id in providers {
+                for model in
+                    persistence::ordered_models(&tx, &bundled, &provider_id, None, usize::MAX)?
+                {
+                    result.push(ModelId {
+                        provider_id: provider_id.clone(),
+                        model_id: model.model_id,
+                    });
+                }
+            }
+            Ok(result)
+        })
+        .await
+    }
+    pub(crate) async fn ordered_models(
+        self: &Arc<Self>,
+        provider: String,
+        after: Option<persistence::OrderedModel>,
+        limit: usize,
+        bundled: Arc<BundledCatalog>,
+    ) -> dim_agent_runtime::Result<Vec<persistence::OrderedModel>> {
+        self.run_read(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            persistence::ordered_models(&tx, &bundled, &provider, after.as_ref(), limit)
+        })
+        .await
+    }
+    pub(crate) async fn list_providers(
+        self: &Arc<Self>,
+        bundled: Arc<BundledCatalog>,
+    ) -> dim_agent_runtime::Result<ProviderList> {
+        self.run_read(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            let mut result = ProviderList {
+                providers: Vec::new(),
+                errors: Vec::new(),
+            };
+            for id in persistence::ids(&tx, &bundled)? {
+                match persistence::read(&tx, &id, persistence::Models::Header) {
+                    Ok(Some(PersistedProviderRecord::Static(record))) => {
+                        result.providers.push(static_summary(&bundled, id, *record))
+                    }
+                    Ok(_) => {}
+                    Err(error) => result.errors.push(ProviderRecordError {
+                        provider_id: id,
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            Ok(result)
+        })
+        .await
+    }
+
+    pub(crate) async fn activate_source(
+        self: &Arc<Self>,
+        revision: impl AsRef<str> + Send + 'static,
+        base_facts: impl AsRef<[u8]> + Send + 'static,
+    ) -> dim_agent_runtime::Result<()> {
+        self.run(move |connection| {
+            let revision = revision.as_ref();
+            let tx = connection.transaction().map_err(storage)?;
+            if !tx.query_row("SELECT EXISTS(SELECT 1 FROM provider_sources WHERE revision=?1)", [revision], |r| r.get::<_, bool>(0)).map_err(storage)? {
+                tx.execute("INSERT INTO provider_sources VALUES (?1,?2)", params![revision, base_facts.as_ref()]).map_err(storage)?;
+            }
+            tx.execute("INSERT INTO provider_catalog_revision VALUES (1,?1,1) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,activation=activation+1", [revision]).map_err(storage)?;
+            tx.execute("DELETE FROM provider_sources WHERE revision!=?1 AND NOT EXISTS (SELECT 1 FROM provider_bases WHERE provider_bases.revision=provider_sources.revision)",[revision]).map_err(storage)?;
+            tx.commit().map_err(storage)
+        }).await
+    }
+}
+
 fn parse_provider_row(
     id: &str,
     version: u32,
@@ -1433,7 +1567,13 @@ fn read_model_record(
     provider_id: &str,
     model_id: &str,
 ) -> dim_agent_runtime::Result<Option<PersistedProviderRecord>> {
-    persistence::read(connection, provider_id, persistence::Models::One(model_id))
+    persistence::read(
+        connection,
+        provider_id,
+        persistence::Models::One {
+            model_id: model_id.to_owned(),
+        },
+    )
 }
 
 fn read_catalog(
@@ -1782,12 +1922,15 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.run_read(move |connection| {
-                    Ok(read_stored_static(connection, &provider_id)?
-                        .map(|record| static_catalog(&bundled, &provider_id, &record, available)))
-                })
-                .await
-                .map_err(failure)
+                let record = db
+                    .read_record(provider_id.clone(), persistence::Models::All)
+                    .await
+                    .map_err(failure)?;
+                Ok(record
+                    .map(PersistedProviderRecord::into_static)
+                    .transpose()
+                    .map_err(failure)?
+                    .map(|record| static_catalog(&bundled, &provider_id, &record, available)))
             })
         })
         .await
@@ -1857,17 +2000,14 @@ impl ProviderService {
     async fn activate_source(self: &Arc<Self>) -> Result<(), HostError> {
         let bundled = self.bundled.clone();
         let db = self.db.clone();
-        self.owned(&CancellationToken::new(), move |_| Box::pin(async move {
-            db.run(move |connection| {
-                let tx = connection.transaction().map_err(storage)?;
-                if !tx.query_row("SELECT EXISTS(SELECT 1 FROM provider_sources WHERE revision=?1)", [bundled.revision()], |r| r.get::<_,bool>(0)).map_err(storage)? {
-                    tx.execute("INSERT INTO provider_sources VALUES (?1,?2)", params![bundled.revision(),bundled.image()]).map_err(storage)?;
-                }
-                tx.execute("INSERT INTO provider_catalog_revision VALUES (1,?1,1) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,activation=activation+1", [bundled.revision()]).map_err(storage)?;
-                tx.execute("DELETE FROM provider_sources WHERE revision!=?1 AND NOT EXISTS (SELECT 1 FROM provider_bases WHERE provider_bases.revision=provider_sources.revision)",[bundled.revision()]).map_err(storage)?;
-                tx.commit().map_err(storage)
-            }).await.map_err(failure)
-        })).await
+        self.owned(&CancellationToken::new(), move |_| {
+            Box::pin(async move {
+                db.activate_source(bundled.revision(), bundled.image())
+                    .await
+                    .map_err(failure)
+            })
+        })
+        .await
     }
 
     async fn adopt_provider(
@@ -1900,30 +2040,7 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         let mut list = self
             .owned(cancel, move |_| {
-                Box::pin(async move {
-                    db.run_read(move |connection| {
-                        let tx = connection.transaction().map_err(storage)?;
-                        let mut result = ProviderList {
-                            providers: Vec::new(),
-                            errors: Vec::new(),
-                        };
-                        for id in persistence::ids(&tx, &bundled)? {
-                            match persistence::read(&tx, &id, persistence::Models::Header) {
-                                Ok(Some(PersistedProviderRecord::Static(record))) => {
-                                    result.providers.push(static_summary(&bundled, id, *record))
-                                }
-                                Ok(_) => {}
-                                Err(error) => result.errors.push(ProviderRecordError {
-                                    provider_id: id,
-                                    message: error.to_string(),
-                                }),
-                            }
-                        }
-                        Ok(result)
-                    })
-                    .await
-                    .map_err(failure)
-                })
+                Box::pin(async move { db.list_providers(bundled).await.map_err(failure) })
             })
             .await?;
         for provider in &mut list.providers {
@@ -2144,13 +2261,17 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.run_read(move |c| {
-                    Ok(read_catalog(c, &provider_id)?
-                        .filter(|r| account.account.is_some() && same_account(&r.account, &account))
-                        .map(|r| r.catalog(&bundled)))
-                })
-                .await
-                .map_err(failure)
+                let record = db
+                    .read_record(provider_id, persistence::Models::All)
+                    .await
+                    .map_err(failure)?;
+                match record {
+                    Some(PersistedProviderRecord::Managed(r)) => Ok((account.account.is_some()
+                        && same_account(&r.account, &account))
+                    .then(|| r.catalog(&bundled))),
+                    Some(_) => Err(failure(storage("Invalid managed catalog"))),
+                    None => Ok(None),
+                }
             })
         })
         .await
@@ -2362,34 +2483,9 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.run_read(move |connection| {
-                    let tx = connection.transaction().map_err(storage)?;
-                    let mut selected = Vec::new();
-                    let ids = if let Some(model) = &model_id {
-                        persistence::providers_for_model(&tx, &bundled, model)?
-                    } else {
-                        persistence::ids(&tx, &bundled)?
-                    };
-                    for id in ids {
-                        match persistence::read(&tx, &id, persistence::Models::Header) {
-                            Ok(Some(PersistedProviderRecord::Managed(_))) => selected.push((0, id)),
-                            Ok(Some(PersistedProviderRecord::Static(r)))
-                                if r.enabled
-                                    && (r.auth == StaticAuth::Anonymous
-                                        || r.credential.is_some()
-                                        || r.credential_authority
-                                            != CredentialAuthority::Static) =>
-                            {
-                                selected.push((1, id))
-                            }
-                            _ => {}
-                        }
-                    }
-                    selected.sort();
-                    Ok(selected.into_iter().map(|(_, id)| id).collect())
-                })
-                .await
-                .map_err(failure)
+                db.candidate_providers(model_id, bundled)
+                    .await
+                    .map_err(failure)
             })
         })
         .await
@@ -2404,27 +2500,9 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.run_read(move |connection| {
-                    let tx = connection.transaction().map_err(storage)?;
-                    let mut result = Vec::new();
-                    for provider_id in providers {
-                        for model in persistence::ordered_models(
-                            &tx,
-                            &bundled,
-                            &provider_id,
-                            None,
-                            usize::MAX,
-                        )? {
-                            result.push(ModelId {
-                                provider_id: provider_id.clone(),
-                                model_id: model.model_id,
-                            });
-                        }
-                    }
-                    Ok(result)
-                })
-                .await
-                .map_err(failure)
+                db.candidate_models(providers, bundled)
+                    .await
+                    .map_err(failure)
             })
         })
         .await
@@ -2486,18 +2564,9 @@ impl ProviderService {
                 let rows = self
                     .owned(cancel, move |_| {
                         Box::pin(async move {
-                            db.run_read(move |connection| {
-                                let tx = connection.transaction().map_err(storage)?;
-                                persistence::ordered_models(
-                                    &tx,
-                                    &bundled,
-                                    &provider,
-                                    after.as_ref(),
-                                    32,
-                                )
-                            })
-                            .await
-                            .map_err(failure)
+                            db.ordered_models(provider, after, 32, bundled)
+                                .await
+                                .map_err(failure)
                         })
                     })
                     .await?;
@@ -2813,14 +2882,16 @@ impl ProviderService {
             let record = self
                 .owned(cancel, move |_| {
                     Box::pin(async move {
-                        db.run_read(move |connection| {
-                            Ok(match read_model_record(connection, &lookup, &target)? {
+                        Ok(
+                            match db
+                                .read_record(lookup, persistence::Models::One { model_id: target })
+                                .await
+                                .map_err(failure)?
+                            {
                                 Some(PersistedProviderRecord::Static(record)) => Some(*record),
                                 _ => None,
-                            })
-                        })
-                        .await
-                        .map_err(failure)
+                            },
+                        )
                     })
                 })
                 .await?

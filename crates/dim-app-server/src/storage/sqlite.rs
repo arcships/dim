@@ -2546,7 +2546,7 @@ struct SqliteDispatch(Arc<SqliteStorage>);
 impl HostDispatch for SqliteDispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
+            serde_json::json!({"queryModels":"async","findCandidates":"async","importLegacy":"async","listProviders":"async","readRecord":"async","activateSource":"async","batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
         )
     }
 
@@ -2566,6 +2566,25 @@ impl HostDispatch for SqliteDispatch {
             deny_unknown_fields
         )]
         enum Request {
+            QueryModels {
+                page: crate::provider::ModelQuery,
+                accounts: crate::provider::ModelQueryAccounts,
+            },
+            FindCandidates(Candidates),
+            ImportLegacy {
+                batch: crate::provider::LegacySnapshot,
+            },
+            ListProviders {},
+            #[serde(rename_all = "camelCase")]
+            ReadRecord {
+                provider_id: String,
+                projection: crate::provider::ProviderRecordProjection,
+            },
+            #[serde(rename_all = "camelCase")]
+            ActivateSource {
+                revision: String,
+                base_facts: Vec<u8>,
+            },
             BatchEnd(dim_agent_runtime::TimelinePositionRequest),
             BatchEndAt(dim_agent_runtime::TimelinePositionRequest),
             CreateSession(Box<dim_agent_runtime::TimelineCreateRequest>),
@@ -2657,6 +2676,26 @@ impl HostDispatch for SqliteDispatch {
             },
             ImportUserIfAbsent(ImportUser),
             ReplaceUser(ReplaceUser),
+        }
+        #[derive(Deserialize)]
+        #[serde(
+            tag = "kind",
+            rename_all = "camelCase",
+            rename_all_fields = "camelCase",
+            deny_unknown_fields
+        )]
+        enum Candidates {
+            Providers {
+                model_id: Option<String>,
+            },
+            Models {
+                providers: Vec<String>,
+            },
+            Ordered {
+                provider_id: String,
+                after: Option<crate::provider::OrderedModel>,
+                limit: usize,
+            },
         }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
@@ -2755,6 +2794,86 @@ impl HostDispatch for SqliteDispatch {
                         .await
                         .map_err(storage_failure)?
                 ),
+                Request::FindCandidates(request) => {
+                    let bundled = Arc::new(
+                        crate::model_catalog::BundledCatalog::load()
+                            .map_err(|e| BridgeError::Value(e.to_string()))?,
+                    );
+                    match request {
+                        Candidates::Providers { model_id } => serde_json::json!(
+                            db.candidate_providers(model_id, bundled)
+                                .await
+                                .map_err(storage_failure)?
+                        ),
+                        Candidates::Models { providers } => serde_json::json!(
+                            db.candidate_models(providers, bundled)
+                                .await
+                                .map_err(storage_failure)?
+                        ),
+                        Candidates::Ordered {
+                            provider_id,
+                            after,
+                            limit,
+                        } => serde_json::json!(
+                            db.ordered_models(provider_id, after, limit, bundled)
+                                .await
+                                .map_err(storage_failure)?
+                        ),
+                    }
+                }
+                Request::QueryModels { page, accounts } => {
+                    let limit = page
+                        .page_limit()
+                        .map_err(|e| BridgeError::Value(e.to_string()))?;
+                    let bundled = Arc::new(
+                        crate::model_catalog::BundledCatalog::load()
+                            .map_err(|e| BridgeError::Value(e.to_string()))?,
+                    );
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    serde_json::json!(
+                        db.query_models(page, limit, accounts, bundled, cancel)
+                            .await
+                            .map_err(storage_failure)?
+                    )
+                }
+                Request::ImportLegacy { batch } => {
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    let bundled = crate::model_catalog::BundledCatalog::load()
+                        .map_err(|e| BridgeError::Value(e.to_string()))?;
+                    serde_json::json!(
+                        db.import_legacy(batch, Arc::new(bundled), cancel)
+                            .await
+                            .map_err(storage_failure)?
+                    )
+                }
+                Request::ListProviders {} => {
+                    let bundled = crate::model_catalog::BundledCatalog::load()
+                        .map_err(|e| BridgeError::Value(e.to_string()))?;
+                    serde_json::json!(
+                        db.list_providers(Arc::new(bundled))
+                            .await
+                            .map_err(storage_failure)?
+                    )
+                }
+                Request::ReadRecord {
+                    provider_id,
+                    projection,
+                } => serde_json::json!(
+                    db.read_record(provider_id, projection)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::ActivateSource {
+                    revision,
+                    base_facts,
+                } => {
+                    db.activate_source(revision, base_facts)
+                        .await
+                        .map_err(storage_failure)?;
+                    serde_json::json!({})
+                }
                 Request::ReadSelection { scope } => {
                     serde_json::json!(db.read_selection(scope).await.map_err(storage_failure)?)
                 }
