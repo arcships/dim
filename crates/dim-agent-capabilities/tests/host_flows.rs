@@ -33,7 +33,7 @@ fn builder(model: Arc<dyn ModelDriver>, tools: Arc<dyn ToolDriver>) -> AgentBuil
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -614,7 +614,7 @@ async fn run_announcing_failure(
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -818,7 +818,7 @@ async fn a_continuation_spends_the_rest_of_the_failed_request_chain() {
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -886,7 +886,7 @@ async fn a_compaction_step_before_the_continuation_keeps_its_chain() {
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -1938,7 +1938,7 @@ async fn recovery_agent_with(
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -2205,7 +2205,7 @@ async fn process_model_recovery_respects_output_cleanup_and_cancellation() {
                 .session_value(Arc::new(
                     dim_agent_capabilities::history::HistoryRenderer::default(),
                 ))
-                .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+                .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
                 .session_value(Arc::new(ContextModelHost(None)))
                 .session_value(Arc::new(CompactionStrategyHost(None)))
                 .require_feature(
@@ -2309,7 +2309,7 @@ async fn transient_retries_are_bounded_and_stop_after_irreversible_output() {
                 .session_value(Arc::new(
                     dim_agent_capabilities::history::HistoryRenderer::default(),
                 ))
-                .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+                .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
                 .session_value(Arc::new(ContextModelHost(None)))
                 .session_value(Arc::new(CompactionStrategyHost(None)))
                 .require_feature(
@@ -2432,7 +2432,7 @@ async fn waiting_to_retry_obeys_stop_steer_and_provider_reload() {
                 .session_value(Arc::new(
                     dim_agent_capabilities::history::HistoryRenderer::default(),
                 ))
-                .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+                .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
                 .session_value(Arc::new(ContextModelHost(None)))
                 .session_value(Arc::new(CompactionStrategyHost(None)))
                 .require_feature(
@@ -4822,7 +4822,7 @@ async fn tool_result_estimates(with_image: bool) -> Vec<f64> {
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

@@ -241,7 +241,7 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
                 barrier: native.clone(),
                 calls: tool_calls.clone(),
             }))))
-            .session_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
+            .session_data_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
                 stage,
                 barrier: native.clone(),
                 calls: AtomicUsize::new(0),
@@ -620,7 +620,7 @@ async fn a_tool_call_already_committed_when_the_interrupt_arrives_is_not_execute
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(ProposesTool))))
         .session_value(Arc::new(ToolHost(Arc::new(CountedTools(executed.clone())))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
             stage: Stage::Model,
             barrier: Arc::new(Barrier::default()),
             calls: AtomicUsize::new(1),
@@ -692,7 +692,7 @@ async fn stop_waits_for_an_interrupted_turn_whose_start_is_not_yet_dispatched() 
             calls: Arc::new(AtomicUsize::new(0)),
         }))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -841,7 +841,7 @@ fn channel_builder(model: Arc<ChannelModel>) -> AgentBuilder {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(model)))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -1190,7 +1190,7 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
             barrier: native.clone(),
             calls: model_calls.clone(),
         }))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
             stage: Stage::Preparation,
             barrier: native.clone(),
             calls: AtomicUsize::new(0),
@@ -1578,7 +1578,7 @@ async fn a_steer_is_not_consumed_between_a_failed_preparation_and_its_terminal()
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
-        .session_value(Arc::new(PrepareContextHost(prepare.clone())))
+        .session_data_value(Arc::new(PrepareContextHost(prepare.clone())))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -1830,7 +1830,7 @@ async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(BatchModel))))
         .session_value(Arc::new(ToolHost(tools)))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(

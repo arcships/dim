@@ -565,7 +565,7 @@ impl Env {
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
-            .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+            .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(context_model)))
             .session_data_value(Arc::new(CommandRules(rules.clone())))
             .session_value(Arc::new(CompactionStrategyHost(compaction)))

@@ -295,7 +295,7 @@ async fn serve_with(setup: Setup) -> Served {
             builder
                 .session_value(Arc::new(history::HistoryRenderer::default()))
                 .process_value(Arc::new(host::ModelHost(model)))
-                .session_value(Arc::new(host::PrepareContextHost(Arc::new(
+                .session_data_value(Arc::new(host::PrepareContextHost(Arc::new(
                     host::IdentityContext,
                 ))))
                 .session_value(Arc::new(host::ContextModelHost(None)))

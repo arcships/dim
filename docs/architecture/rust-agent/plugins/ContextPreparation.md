@@ -17,7 +17,7 @@ cannot fit the request fails terminally without requesting another recovery.
 | `S:HistoryRenderer` | Render supported history for preparation/budget checks. |
 | `S:ContextModelHost` | Optional window facts for context policy and recovery. |
 | `S:CompactionStrategyHost` | Optional compaction strategy; the policy exists when both hosts are bound. |
-| `S:PrepareContextHost` | Host preparation hook. |
+| `S:PrepareContextHost` | Call `prepare({request, source:{turnId, requestId, through}}, cancelled)` with the request and its original Timeline cutoff. |
 | `S:GuideEntries` | Register the digest entry while a strategy is bound. |
 | `B:TimelineIdentity` | Identify configuration publication scope; Session and branch ids of the `context.prepare` span. |
 | `B:Dispatcher` | Hand off recovery to live preparation/steer/interrupt transitions and report faults. |

@@ -187,7 +187,7 @@ impl Files {
             )))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(HistoryRenderer::default()))
-            .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+            .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(Some(Arc::new(Model)))))
             .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Cuts(cut))))))
             .require_feature(

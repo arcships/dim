@@ -885,7 +885,6 @@ impl ContextPreparation {
         crate::context_policy::check_cancel(&cancel)?;
         let request = self
             .host
-            .0
             .prepare(
                 source.request.clone(),
                 ContextSource {

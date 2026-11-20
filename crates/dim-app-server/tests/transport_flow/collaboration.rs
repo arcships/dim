@@ -831,7 +831,7 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(Arc::new(LargeReportModel))))
-            .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+            .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(None)))
             .session_value(Arc::new(CompactionStrategyHost(None)))
             .require_feature(
@@ -5472,7 +5472,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(PartialCallModel))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(

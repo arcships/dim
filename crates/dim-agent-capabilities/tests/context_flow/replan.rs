@@ -115,7 +115,7 @@ async fn replanned_session_with(
         .process_value(Arc::new(ModelHost(driver)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(Some(Arc::new(facts)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(strategy))))
         .require_feature(

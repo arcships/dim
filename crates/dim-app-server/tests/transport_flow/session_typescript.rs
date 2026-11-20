@@ -1230,17 +1230,21 @@ pub(super) async fn start_recording(
         "dm-ts-{}/server.sock",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     )));
-    let (builder, requests, release, tools) = setup_recording();
+    let (builder, requests, release, tools) =
+        setup_recording(PrepareContextHost(Arc::new(IdentityContext)));
     let server = serve(builder, config).await.unwrap();
     (server, requests, release, tools)
 }
 
 pub(super) fn setup() -> (AgentBuilder, ModelRequests, Arc<tokio::sync::Notify>) {
-    let (builder, requests, release, _) = setup_recording();
+    let (builder, requests, release, _) =
+        setup_recording(PrepareContextHost(Arc::new(IdentityContext)));
     (builder, requests, release)
 }
 
-fn setup_recording() -> (
+fn setup_recording(
+    context: PrepareContextHost,
+) -> (
     AgentBuilder,
     ModelRequests,
     Arc<tokio::sync::Notify>,
@@ -1254,7 +1258,7 @@ fn setup_recording() -> (
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(CheckedModel { names, tools }))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(context))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -3168,7 +3172,7 @@ async fn node_session_command_rules_share_the_native_owner_and_survive_another_s
         ))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
@@ -3795,17 +3799,44 @@ async fn node_model_preparation_uses_the_session_model_and_preserves_pinned_tool
     parts.rows = vec![
         json!({"id":"prepare-model","name":parts.anchor.parent().unwrap().join("fixtures/prepare-model.ts"),"provides":{}}),
     ];
-    let (server, agent) = launch_with(
-        Arc::new(MockTools),
+    use dim_agent_capabilities::host::{ContextSource, HostError, HostFuture, PrepareContext};
+    struct Context;
+    impl PrepareContext for Context {
+        fn prepare(
+            &self,
+            request: Arc<ModelRequest>,
+            source: ContextSource,
+            cancel: CancellationToken,
+        ) -> HostFuture<'_, Arc<ModelRequest>> {
+            Box::pin(async move {
+                if source.request_id == "waiting" {
+                    cancel.cancelled().await;
+                    return Err(HostError::Cancelled("preparation stopped".into()));
+                }
+                assert_eq!(source.request_id, "request");
+                assert_eq!(source.turn_id, "turn");
+                assert_eq!(source.through, 9_007_199_254_740_993);
+                Ok(request)
+            })
+        }
+    }
+    let (mut builder, _requests, _release, _tools) =
+        setup_recording(PrepareContextHost(Arc::new(Context)));
+    builder.require_part("PrepareModelFixture");
+    let server = serve(
+        builder,
         ServerConfig {
+            unix_path: Some(std::env::temp_dir().join(format!(
+                "dm-ts-{}/server.sock",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            ))),
             session_typescript: Some(parts),
             ..Default::default()
         },
-        |builder| {
-            builder.require_part("PrepareModelFixture");
-        },
     )
-    .await;
+    .await
+    .unwrap();
+    let agent = server.agent().unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     let id = new_session(&mut client, json!(["echo"])).await;
     let reply = client

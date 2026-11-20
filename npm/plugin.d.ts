@@ -439,17 +439,22 @@ export interface ToolDefinition {
     postExecutePaths?: 'path' | 'affectedPaths';
   };
 }
+export interface PrepareContextHost {
+  prepare(request: { request: PreparedModelRequest; source: { turnId: string; requestId: string; through: number | bigint } }, cancelled: () => Promise<void>): Promise<PreparedModelRequest>;
+}
+export type PreparedModelRequest = ModelSettings & { messages: Message[] };
 export interface PrepareModelHost {
   prepare(request: {
     turnId: string;
     requestId: string;
     history: Message[];
     availableTools: (Omit<ToolDefinition, 'risk'> & { risk?: string })[];
-  }): import('./branch-services.js').ModelSelection & {
+  }): ModelSettings;
+}
+export type ModelSettings = import('./branch-services.js').ModelSelection & {
     tools?: (Omit<ToolDefinition, 'risk'> & { risk?: string })[];
     system?: string | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[];
-  };
-}
+};
 export interface ToolCall extends SessionRef {
   turnId: string;
   callId: string;

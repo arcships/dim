@@ -203,7 +203,7 @@ async fn configured_agent()
         );
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
-            .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+            .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))));
         dim_agent_aimux::install(&mut builder);
         builder.plugin(|_| Ok(Box::new(AimuxPlugin::default())));

@@ -507,7 +507,7 @@ async fn serve_compaction_fixture_with(
     let model = Scripted::new(reply);
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .process_value(Arc::new(ModelHost(model.clone())))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

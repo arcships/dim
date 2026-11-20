@@ -225,7 +225,8 @@ impl HostDispatch for PrepareModelHost {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContextSource {
     pub turn_id: String,
     pub request_id: String,
@@ -239,7 +240,90 @@ pub trait PrepareContext: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> HostFuture<'_, Arc<ModelRequest>>;
 }
+#[derive(Clone)]
 pub struct PrepareContextHost(pub Arc<dyn PrepareContext>);
+
+impl PrepareContextHost {
+    pub fn prepare(
+        &self,
+        request: Arc<ModelRequest>,
+        source: ContextSource,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Arc<ModelRequest>> {
+        self.0.prepare(request, source, cancel)
+    }
+}
+
+impl HostDispatch for PrepareContextHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"prepare":"async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        const NAME: &str = "prepareContextHost";
+        if method != "prepare" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            request: Arc<ModelRequest>,
+            source: ContextSource,
+        }
+        let args = args.list()?;
+        let [data, BridgeValue::Reference(cancelled)] = args.as_slice() else {
+            return Err(crate::port_faces::invalid(
+                NAME,
+                "prepare requires its request and cancellation function",
+            ));
+        };
+        if !cancelled.is_function() {
+            return Err(crate::port_faces::invalid(
+                NAME,
+                "cancellation must be a function",
+            ));
+        }
+        let Request { request, source } = serde_json::from_value(data.clone().json()?)
+            .map_err(|error| crate::port_faces::invalid(NAME, error))?;
+        let owner = self.clone();
+        let caller = rutis_bridge::session::caller_row()
+            .map(|row| row.ctx().cancellation_token())
+            .unwrap_or_default();
+        let cancel = caller.child_token();
+        let cancelled = wire_cancellation(caller, cancelled.clone());
+        Ok(BridgeValue::future(async move {
+            let _finished = cancel.clone().drop_guard();
+            let result = call_until_cancelled(
+                cancelled,
+                cancel.clone(),
+                owner.prepare(request, source, cancel),
+            )
+            .await
+            .map_err(|error| crate::port_faces::failure(NAME, ModelPortError::from(error)))?;
+            rutis_bridge::session::arg(&result)
+        }))
+    }
+}
+
+fn wire_cancellation(
+    caller: CancellationToken,
+    cancelled: rutis_bridge::session::Reference,
+) -> CancelledFn {
+    Arc::new(move || {
+        let cancelled = cancelled.clone();
+        let caller = caller.clone();
+        Box::pin(async move {
+            tokio::select! {
+                _ = caller.cancelled() => {},
+                _ = async {
+                    let reply = cancelled.call_async(BridgeValue::List(vec![])).await?;
+                    rutis_bridge::session::settle(reply).await
+                } => {},
+            }
+            Ok(())
+        })
+    })
+}
 
 pub trait LoadPrompt: Send + Sync + 'static {
     fn load(
@@ -294,20 +378,7 @@ impl HostDispatch for PromptHost {
         Ok(BridgeValue::future(async move {
             let cancel = caller.child_token();
             let _finished = cancel.clone().drop_guard();
-            let cancelled: CancelledFn = Arc::new(move || {
-                let cancelled = cancelled.clone();
-                let caller = caller.clone();
-                Box::pin(async move {
-                    tokio::select! {
-                        _ = caller.cancelled() => {},
-                        _ = async {
-                            let reply = cancelled.call_async(BridgeValue::List(vec![])).await?;
-                            rutis_bridge::session::settle(reply).await
-                        } => {},
-                    }
-                    Ok(())
-                })
-            });
+            let cancelled = wire_cancellation(caller, cancelled);
             let result =
                 call_until_cancelled(cancelled, cancel.clone(), owner.load(target, cancel)).await;
             match result {

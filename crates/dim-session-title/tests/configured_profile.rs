@@ -144,7 +144,7 @@ fn configured_builder(directory: &Path, models: Arc<AimuxModels>) -> AgentBuilde
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .session_value(Arc::new(dim_agent_capabilities::host::PrepareContextHost(
+        .session_data_value(Arc::new(dim_agent_capabilities::host::PrepareContextHost(
             Arc::new(dim_agent_capabilities::host::IdentityContext),
         )));
     dim_session_title::install(&mut builder);
