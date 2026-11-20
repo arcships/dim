@@ -741,6 +741,52 @@ export interface TimelineStore {
   latestSnapshot(request: { sessionId: string; branchId: string; through: number; interpreter: string }): Promise<{ snapshot: TimelineRecoverySnapshot | null }>;
 }
 
+/** Host facts of the node that executes commands. */
+export interface ExecHost {
+  shell(request: {taskId: string; cwd: string; workspace: string; roots: string[]; outputDir: string; cols: number; rows: number}): Promise<{outputPath: string}>;
+  write(request: {taskId: string; data: string}): Promise<Record<string, never>>;
+  resize(request: {taskId: string; cols: number; rows: number}): Promise<Record<string, never>>;
+  output(request: ({taskId: string} | {outputPath: string}) & {cursor?: number; limit?: number}): Promise<{
+    text: string; bytes: number; nextCursor?: number; truncated: boolean; retainedFrom: number; reset?: boolean;
+  }>;
+  start(request: {taskId: string; command: string; cwd: string; workspace: string; roots: string[]; outputDir: string}): Promise<{outputPath: string}>;
+  wait(request: {taskId: string; timeoutMs?: number}): Promise<{
+    status: 'exited' | 'signaled' | 'timed_out' | 'cancelled' | 'failed';
+    exitCode?: number; signal?: string; durationMs: number; outputPath: string;
+    outputBytes: number; outputTruncated: boolean; preview: string; previewTruncated: boolean; failureNote?: string;
+  }>;
+  kill(request: {taskId: string}): Promise<Record<string, never>>;
+  settle(request: {taskId: string}): Promise<Record<string, never>>;
+  retainOutput(request: {taskId: string}): Promise<{outputPath: string}>;
+  tail(request: {taskId: string}): Promise<{text: string; totalBytes: number; truncated: boolean}>;
+  configured(request: {
+    command: string; cwd: string; env?: Record<string, string | null>; stdin?: string;
+    timeoutMs: number; limits: {stdout: number; stderr: number};
+  }): Promise<{status: 'exited' | 'signaled' | 'timed_out' | 'cancelled'; exitCode?: number; signal?: string; durationMs: number; stdout: string; stderr: string; stdoutTruncated: boolean; stderrTruncated: boolean}>;
+  removeOutputDirectory(request: {path: string}): Promise<Record<string, never>>;
+  confined(request: {
+    program: string; args: string[]; read: string[]; write: string[];
+    env?: Record<string, string>; timeoutMs: number; outputLimit: {stdout: number; stderr: number};
+    services: 'none' | 'onDeviceRecognition';
+  }): Promise<{status: number | null; stdout: string; stderr: string; confined: boolean; stdoutTruncated: boolean; stderrTruncated: boolean}>;
+  info(request: Record<string, never>): Promise<{
+    os: 'darwin' | 'linux' | 'win32';
+    arch: string;
+    home: string;
+    timezone?: string;
+    execRoot: string;
+    platformRoots: string[];
+    backend: { state: 'available' } | { state: 'unavailable'; reason: string };
+    execShell: {
+      state: 'available';
+      executable: string;
+      edition: 'bash' | 'zsh' | 'sh' | 'dash' | 'ksh' | 'git-bash' | 'pwsh' | 'windows-powershell' | 'cmd';
+      source: 'explicit' | 'login' | 'fallback' | 'automatic';
+      outputEncoding: 'utf8' | 'unknown';
+    } | { state: 'unavailable'; code: string; reason: string };
+  }>;
+}
+
 export type FsEntryName = string | { Unix: number[] } | { Windows: number[] };
 /** Directory operations and pinned reads on the filesystem owner; see resource-faces §4.1. */
 export type FsConfirmedRoot = { root: string; subtree: string; rootIdentity: string };

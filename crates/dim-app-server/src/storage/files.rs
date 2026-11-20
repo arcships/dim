@@ -349,11 +349,8 @@ impl SessionFiles {
                 .as_ref()
                 .filter(|host| candidate.starts_with(host.exec_root()))
             {
-                let path = candidate.clone();
-                let host = host.clone();
-                tokio::task::spawn_blocking(move || host.remove_exec_directory(&path))
+                host.remove_output_directory(candidate)
                     .await
-                    .map_err(error)?
                     .map_err(error)?;
                 continue;
             }

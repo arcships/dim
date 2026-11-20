@@ -7,7 +7,7 @@ use crate::{
     context_block,
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     host_platform::{
-        ExecShellRuntime, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
+        ExecShellRuntime, HostInfo, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
     prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
@@ -223,22 +223,13 @@ fn xml_tag(name: &str, value: &str) -> String {
 
 /// The runtime environment (TS `renderRuntimeEnvironment`): one tag per
 /// line, values escaped; the date is its own source.
-fn environment(
-    platform: &HostPlatform,
-    shell: &ShellStatus,
-    cwd: &str,
-    policy: &PromptSourcesConfig,
-) -> String {
-    let os = match platform.os {
-        Os::Macos => "darwin",
-        Os::Linux => "linux",
-        Os::Windows => "win32",
-    };
+fn environment(platform: &HostInfo<'_>, cwd: &str, policy: &PromptSourcesConfig) -> String {
+    let os = platform.facts.os.node_platform();
     let mut entries = vec![
         xml_tag("cwd", cwd),
-        xml_tag("home", &platform.home.to_string_lossy()),
+        xml_tag("home", &platform.facts.home.to_string_lossy()),
     ];
-    match shell {
+    match &platform.exec_shell {
         ShellStatus::Available(ExecShellRuntime {
             executable_path,
             edition,
@@ -261,7 +252,7 @@ fn environment(
                     OutputEncoding::Unknown => "unknown",
                 },
             ));
-            if platform.os == Os::Windows {
+            if platform.facts.os == Os::Windows {
                 let guidance = policy
                     .file_encoding_guidance
                     .as_deref()
@@ -274,7 +265,7 @@ fn environment(
         }
     }
     entries.push(xml_tag("platform", os));
-    if let Some(timezone) = &platform.timezone {
+    if let Some(timezone) = platform.facts.timezone {
         entries.push(xml_tag("timezone", timezone));
     }
     format!("\n{}\n", entries.join("\n"))
@@ -450,6 +441,7 @@ impl PromptSourcesBranch {
 }
 
 struct Sources {
+    home: PathBuf,
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
     today: Today,
@@ -483,7 +475,7 @@ impl LoadPrompt for Sources {
                 PROJECT_INSTRUCTIONS | USER_INSTRUCTIONS => {
                     let body = load_instructions(
                         &self.config.cwd,
-                        &self.platform.home,
+                        &self.home,
                         target.source == PROJECT_INSTRUCTIONS,
                     )
                     .await?;
@@ -496,8 +488,7 @@ impl LoadPrompt for Sources {
                 }
                 ENVIRONMENT => (
                     Some(environment(
-                        &self.platform,
-                        &self.platform.exec_shell().await,
+                        &self.platform.info().await,
                         &self.config.cwd,
                         &self.policy,
                     )),
@@ -612,6 +603,7 @@ impl DynPlugin for PromptSourcesPlugin {
                 }
             }
             let sources: Arc<dyn LoadPrompt> = Arc::new(Sources {
+                home: platform.facts().home.to_owned(),
                 platform,
                 config,
                 today: self.today.clone(),

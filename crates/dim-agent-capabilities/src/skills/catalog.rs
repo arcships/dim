@@ -751,7 +751,7 @@ impl DynPlugin for SkillsCatalogPlugin {
             let platform = ctx.require_at(&self.platform)?;
             let settings = ctx.require_at(&self.settings)?;
             let parts = ctx.require_at(&self.parts)?;
-            let catalog = Self::mount(ctx, (platform, settings)).await?;
+            let catalog = Self::mount(ctx, (platform.facts().home.to_owned(), settings)).await?;
             ctx.provide_at(owner_key(), catalog.clone())?;
             let binding = Arc::new(super::SkillsCatalogBinding::new(catalog));
             ctx.provide_as::<super::SkillsCatalogBinding>(binding.clone())?;
@@ -770,7 +770,7 @@ impl SkillsCatalogPlugin {
     /// and registers the parts there too ([`super::register_parts`]).
     pub async fn mount(
         ctx: &Ctx,
-        (platform, settings): (Arc<HostPlatform>, Arc<SkillSettingsHost>),
+        (home, settings): (PathBuf, Arc<SkillSettingsHost>),
     ) -> Result<Arc<SkillsCatalog>, Error> {
         let settings = settings.0.clone();
         let lifecycle = ctx.cancellation_token();
@@ -786,7 +786,7 @@ impl SkillsCatalogPlugin {
             .await
             .map_err(|error| SkillsError::SettingsRead(error.to_string()));
         let catalog = Arc::new(SkillsCatalog {
-            user_root: platform.home.join(SKILLS_DIR),
+            user_root: home.join(SKILLS_DIR),
             settings: settings.clone(),
             state: tokio::sync::Mutex::new(CatalogState {
                 user: None,

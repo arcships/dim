@@ -141,7 +141,8 @@ pub fn install(builder: &mut AgentBuilder) {
 struct Facts {
     fs: Arc<crate::file_storage::FsHost>,
     config: Arc<SessionConfig>,
-    platform: Arc<HostPlatform>,
+    home: PathBuf,
+    platform_roots: Vec<PathBuf>,
     files: Arc<SessionFiles>,
     grants: Arc<SessionGrantsHost>,
     worktrees: Arc<Worktrees>,
@@ -172,8 +173,8 @@ impl ReadFileAccessFacts for Facts {
                         roots: Vec::new(),
                         recognize: false,
                     },
-                    &self.platform.home,
-                    &self.platform.platform_roots,
+                    &self.home,
+                    &self.platform_roots,
                     &cancel,
                 )
                 .await?;
@@ -284,7 +285,8 @@ impl DynPlugin for FileAccessFactsPlugin {
                 Arc::new(FileAccessFacts(Arc::new(Facts {
                     fs,
                     config,
-                    platform,
+                    home: platform.facts().home.to_owned(),
+                    platform_roots: platform.facts().platform_roots.to_vec(),
                     files: ctx.require_at(&self.files)?,
                     grants: ctx.require_at(&self.grants)?,
                     worktrees,
@@ -652,8 +654,8 @@ impl Worktrees {
                     roots,
                     recognize: false,
                 },
-                &self.platform.home,
-                &self.platform.platform_roots,
+                self.platform.facts().home,
+                self.platform.facts().platform_roots,
                 &self.stopping,
             )
             .await

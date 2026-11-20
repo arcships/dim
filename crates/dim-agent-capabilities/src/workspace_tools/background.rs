@@ -5,7 +5,7 @@
 //! dispatch of every `exec/ended` that is not `cancelled`. Each running task
 //! holds its Session (`SessionLifecycle::take_hold`) until its `exec/ended` is
 //! appended, so an idle unload never ends it (idle unload §5, R2).
-use super::exec::{ExecProcess, OUTPUT_FILE_BYTE_LIMIT, Output, recovered_result, sanitize};
+use super::exec::{ExecProcess, Output, recovered_result, sanitize};
 use crate::{
     context_block,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
@@ -20,13 +20,9 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{
     collections::HashMap,
-    io::SeekFrom,
     sync::{Arc, Mutex},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
-    sync::watch,
-};
+use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub struct StartRequest {
@@ -130,9 +126,64 @@ pub struct OutputPage {
     pub truncated: bool,
 }
 
+pub(crate) fn decode_page(
+    buffer: &[u8],
+    cursor: u64,
+    limit: usize,
+    truncated: bool,
+) -> Result<OutputPage, OutputPageError> {
+    // The file holds the pipe decoder's output, so its bytes are valid
+    // UTF-8; every completed write ends on a character boundary, though a
+    // reader can catch a write while it is in progress and see the file
+    // end inside a character. The page ends at the last character
+    // boundary at or before `limit`, so a character the limit splits is
+    // served whole: at the start of the next page when the cut falls
+    // after other characters, and whole in this page when the budget cuts
+    // the very first character. A page therefore consumes at least one
+    // character while the file holds one, and can carry up to `limit`
+    // plus three bytes. Complete characters before a trailing partial one
+    // are served normally; only a cursor opening inside a character, or a
+    // file ending inside the first character at the cursor, leaves the
+    // page with nothing whole to serve, and it stays empty for that call.
+    let read = buffer.len();
+    let budget = read.min(limit);
+    let mut end = std::str::from_utf8(&buffer[..budget]).map_or_else(|e| e.valid_up_to(), str::len);
+    if end == 0 && read > 0 {
+        let whole = match buffer[0] {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => 0,
+        };
+        // Only a character the read completed is served whole; one the
+        // read cut short stays for the next call, which sees the write
+        // finish.
+        if whole <= read {
+            end = whole;
+        }
+    }
+    // The writer appends only valid UTF-8, and the loop above ends the slice on a boundary.
+    let text =
+        sanitize(std::str::from_utf8(&buffer[..end]).map_err(|_| OutputPageError::Unavailable)?);
+    // A read that reached the page budget found at least `limit` bytes,
+    // so `nextCursor` lets the client continue immediately; a shorter
+    // read ended at the file's current length, which a running task may
+    // extend later, so the client advances by `bytes` and asks again.
+    // The read length decides it: the file's size races with the
+    // appender. An empty page (caught up, ended, or a client cursor
+    // inside a character) carries no `nextCursor`.
+    let next_cursor = (read >= limit && end > 0).then_some(cursor + end as u64);
+    Ok(OutputPage {
+        text,
+        bytes: end as u64,
+        next_cursor,
+        truncated,
+    })
+}
+
 /// How far a page may exceed its budget to hold a whole character: a UTF-8
 /// character is at most four bytes, so at most three lie past the limit.
-const PAGE_CHAR_TRAILING_BYTES: usize = 3;
+pub(crate) const PAGE_CHAR_TRAILING_BYTES: usize = 3;
 
 struct Task {
     description: String,
@@ -170,6 +221,7 @@ struct State {
 }
 
 pub struct BackgroundExec {
+    platform: Arc<crate::host_platform::HostPlatform>,
     timeline: Arc<Timeline>,
     from: Option<TimelinePosition>,
     /// Gives each task its Session hold.
@@ -379,85 +431,19 @@ impl BackgroundExec {
                 (start.output_path, ended, None)
             }
         };
-        let mut file = tokio::fs::File::open(&output_path)
-            .await
-            .map_err(|_| OutputPageError::Unavailable)?;
-        file.seek(SeekFrom::Start(cursor))
-            .await
-            .map_err(|_| OutputPageError::Unavailable)?;
-        let mut buffer = vec![0u8; limit + PAGE_CHAR_TRAILING_BYTES];
-        let mut read = 0;
-        while read < buffer.len() {
-            match file.read(&mut buffer[read..]).await {
-                Ok(0) => break,
-                Ok(bytes) => read += bytes,
-                Err(_) => return Err(OutputPageError::Unavailable),
-            }
-        }
-        // The file holds the pipe decoder's output, so its bytes are valid
-        // UTF-8; every completed write ends on a character boundary, though a
-        // reader can catch a write while it is in progress and see the file
-        // end inside a character. The page ends at the last character
-        // boundary at or before `limit`, so a character the limit splits is
-        // served whole: at the start of the next page when the cut falls
-        // after other characters, and whole in this page when the budget cuts
-        // the very first character. A page therefore consumes at least one
-        // character while the file holds one, and can carry up to `limit`
-        // plus three bytes. Complete characters before a trailing partial one
-        // are served normally; only a cursor opening inside a character, or a
-        // file ending inside the first character at the cursor, leaves the
-        // page with nothing whole to serve, and it stays empty for that call.
-        let mut end = read.min(limit);
-        while end > 0 && std::str::from_utf8(&buffer[..end]).is_err() {
-            end -= 1;
-        }
-        if end == 0 && read > 0 {
-            let whole = match buffer[0] {
-                0xc2..=0xdf => 2,
-                0xe0..=0xef => 3,
-                0xf0..=0xf4 => 4,
-                _ => 0,
-            };
-            // Only a character the read completed is served whole; one the
-            // read cut short stays for the next call, which sees the write
-            // finish.
-            if whole <= read {
-                end = whole;
-            }
-        }
-        // The writer appends only valid UTF-8, and the loop above ends the slice on a boundary.
-        let text =
-            sanitize(std::str::from_utf8(&buffer[..end]).expect("the page ends on a boundary"));
-        // A read that reached the page budget found at least `limit` bytes,
-        // so `nextCursor` lets the client continue immediately; a shorter
-        // read ended at the file's current length, which a running task may
-        // extend later, so the client advances by `bytes` and asks again.
-        // The read length decides it: the file's size races with the
-        // appender. An empty page (caught up, ended, or a client cursor
-        // inside a character) carries no `nextCursor`.
-        let next_cursor = (read >= limit && end > 0).then_some(cursor + end as u64);
-        let truncated = match ended
+        let mut page = self
+            .platform
+            .registered_output_page(std::path::Path::new(&output_path), cursor, limit)
+            .await?;
+        if let Some(truncated) = ended
             .as_ref()
             .and_then(|data| output_truncated(&data.result))
         {
-            Some(truncated) => truncated,
-            None => match &live {
-                Some(output) => output.truncated().await,
-                // Only the recovery terminal (`recovered_result`) carries no
-                // flag; its truncation is the file's size alone.
-                None => file
-                    .metadata()
-                    .await
-                    .map(|metadata| metadata.len() >= OUTPUT_FILE_BYTE_LIMIT)
-                    .unwrap_or(false),
-            },
-        };
-        Ok(OutputPage {
-            text,
-            bytes: end as u64,
-            next_cursor,
-            truncated,
-        })
+            page.truncated = truncated;
+        } else if let Some(output) = live {
+            page.truncated = output.truncated().await;
+        }
+        Ok(page)
     }
 
     /// Waits until the task ends, or `timeout_ms` elapses: what
@@ -977,6 +963,7 @@ fn output_truncated(result: &ToolResult) -> Option<bool> {
 const EXEC_ENTRY: &str = r#"<dim-notification source="exec" task="exec-7f2">: something you started has finished, failed or been cancelled, such as a background command. It is information, not a new request. The output preview belongs to that command. Use the read tool with its output path to read the full result. If the work it belongs to is no longer wanted, note the result and do not restart that work."#;
 
 pub struct BackgroundExecPlugin {
+    platform: Key<crate::host_platform::HostPlatform>,
     exec: Key<BackgroundExec>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
@@ -987,6 +974,7 @@ pub struct BackgroundExecPlugin {
 impl BackgroundExecPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            platform: names.key()?,
             exec: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
@@ -1002,6 +990,7 @@ impl DynPlugin for BackgroundExecPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.platform.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.session.erase(),
@@ -1061,6 +1050,7 @@ impl DynPlugin for BackgroundExecPlugin {
                 position
             });
             let service = Arc::new(BackgroundExec {
+                platform: ctx.require_at(&self.platform)?,
                 timeline,
                 from,
                 session,
