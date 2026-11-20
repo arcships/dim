@@ -7,7 +7,7 @@ use crate::{
     host::{ToolDriver, ToolExecutionContext, ToolHost},
     host_platform::{HostPlatform, ISOLATION_SUMMARY},
     shell_session::{CallContext, ShellSession},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{AgentBuilder, Names};
 use dim_agent_types::{ToolCall, ToolResult};
@@ -46,7 +46,7 @@ fn execute_definition(platform: &HostPlatform) -> dim_agent_types::ToolDefinitio
 /// The tool driver.
 struct ShellToolsDriver {
     platform: Arc<HostPlatform>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
 }
 
 impl ToolDriver for ShellToolsDriver {
@@ -110,7 +110,7 @@ pub fn install(builder: &mut AgentBuilder) {
 pub struct ShellToolsPlugin {
     host: Key<ToolHost>,
     platform: Key<HostPlatform>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
 }
 
 impl ShellToolsPlugin {

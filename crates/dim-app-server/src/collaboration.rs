@@ -26,7 +26,7 @@ use dim_agent_capabilities::{
     methods::RpcError,
     prompt::Prompt,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{
@@ -826,6 +826,7 @@ struct Op {
     waiter: Option<Waiter>,
 }
 struct BranchRecord {
+    phase: Arc<BranchLifecycle>,
     ctx: Ctx,
     dispatcher: Arc<Dispatcher>,
     approvals: BTreeMap<String, approvals::Route>,
@@ -949,7 +950,7 @@ pub struct CollaborationSession {
     collaboration: Arc<Collaboration>,
     session_id: String,
     role: CollaborationRole,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     /// Gives each request its hold on this Session.
     lifecycle: Arc<SessionLifecycle>,
     /// The deployment's selectable models, when it reads them: the `models`
@@ -1305,7 +1306,11 @@ impl CollaborationSession {
             return Err(RpcError::invalid("branchId must not be empty"));
         }
         // An ended or unknown branch answers its own error, never `idle`.
-        let _branch = self.tree.get(branch_id)?;
+        if self.tree.directory_entry(branch_id)?.state
+            == dim_agent_runtime::BranchDirectoryState::Ended
+        {
+            return Err(AgentError::BranchEnded(branch_id.to_owned()).into());
+        }
         // The calling branch's own request is the only work this call may
         // stop. `branch.open` also holds a request that is still waiting for
         // its delivery or for a `Busy` refusal, which runs no turn of its
@@ -2451,12 +2456,15 @@ impl CollaborationSession {
             InputFate::Pending => {}
         }
         match session
-            .service::<dim_agent_capabilities::input_queue::InputQueue>(ROOT_BRANCH_ID)?
-            .withdraw(InputWithdrawData {
-                input_id: input.to_owned(),
-                reason: Some(reason.into()),
-                steer: None,
-            })
+            .session_service::<TimelineTree>()?
+            .withdraw(
+                ROOT_BRANCH_ID,
+                InputWithdrawData {
+                    input_id: input.to_owned(),
+                    reason: Some(reason.into()),
+                    steer: None,
+                },
+            )?
             .await?
         {
             // (W): no turn will run for the input; the settle names it.
@@ -2523,21 +2531,21 @@ impl CollaborationSession {
         result_id: &str,
         data: &CollaborationResultData,
     ) -> dim_agent_runtime::Result<()> {
-        let suppressed = {
+        let phase = {
             let mut state = self.state.lock().unwrap();
             let Some(branch) = state.branches.get_mut(branch_id) else {
                 return Ok(());
             };
-            branch
+            if branch
                 .ops
                 .remove(&data.request_event_id)
                 .is_none_or(|op| op.suppressed || branch.closing)
+            {
+                return Ok(());
+            }
+            branch.phase.clone()
         };
-        if suppressed {
-            return Ok(());
-        }
-        let branch = self.tree.get(branch_id)?;
-        if branch.is_closing() {
+        if phase.phase() >= dim_agent_runtime::BranchPhase::Closing {
             return Ok(());
         }
         let status = match &data.outcome {
@@ -2565,9 +2573,11 @@ impl CollaborationSession {
             mode: Some(InputMode::Steer),
             ..Default::default()
         };
-        match branch.input(input).await {
+        match self.tree.input(branch_id.to_owned(), input).await {
             Ok(_) => Ok(()),
-            Err(AgentError::Closed(_)) if branch.is_closing() => Ok(()),
+            Err(
+                AgentError::Closed(_) | AgentError::BranchEnded(_) | AgentError::UnknownBranch(_),
+            ) if phase.phase() >= dim_agent_runtime::BranchPhase::Closing => Ok(()),
             Err(error) => Err(error),
         }
     }
@@ -2607,22 +2617,19 @@ impl CollaborationSession {
     /// Unload: pending work stops; operations without `delivered` and
     /// requests without `result` are settled on this Timeline.
     async fn unload(self: &Arc<Self>, branch_id: &str) {
-        let tasks = {
+        let (tasks, phase) = {
             let mut state = self.state.lock().unwrap();
             let Some(branch) = state.branches.get_mut(branch_id) else {
                 return;
             };
             branch.closing = true;
             branch.abort.cancel();
-            branch.tasks.clone()
+            (branch.tasks.clone(), branch.phase.clone())
         };
         self.retire_branch_approvals(branch_id).await;
         tasks.close();
         tasks.wait().await;
-        let closing = self
-            .tree
-            .get(branch_id)
-            .map_or(true, |branch| branch.is_closing());
+        let closing = phase.phase() >= dim_agent_runtime::BranchPhase::Closing;
         let (ops, members): (Vec<String>, Vec<String>) = {
             let state = self.state.lock().unwrap();
             let ops = state
@@ -3375,7 +3382,7 @@ struct CollaborationSessionPlugin {
     collaboration: Key<Collaboration>,
     identity: Key<SessionIdentity>,
     config: Key<SessionConfig>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     lifecycle: Key<SessionLifecycle>,
     tools: Key<ToolRegistry>,
     guide: Key<GuideEntries>,
@@ -4000,6 +4007,7 @@ async fn restore(
     service.state.lock().unwrap().branches.insert(
         branch_id.clone(),
         BranchRecord {
+            phase: phase.clone(),
             ctx,
             dispatcher: dispatcher.clone(),
             approvals: BTreeMap::new(),
@@ -4022,15 +4030,17 @@ async fn restore(
                 return;
             }
             let result = async {
-                let branch = service.tree.get(&branch_id)?;
-                let queue = branch.service::<dim_agent_capabilities::input_queue::InputQueue>()?;
                 for input_id in stale_inputs {
-                    queue
-                        .withdraw(InputWithdrawData {
-                            input_id,
-                            reason: Some(RELOADING.into()),
-                            steer: None,
-                        })
+                    service
+                        .tree
+                        .withdraw(
+                            &branch_id,
+                            InputWithdrawData {
+                                input_id,
+                                reason: Some(RELOADING.into()),
+                                steer: None,
+                            },
+                        )?
                         .await?;
                 }
                 Ok::<_, AgentError>(())

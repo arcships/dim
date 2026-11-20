@@ -59,7 +59,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | Process (root) | Host start | Host shutdown | — (process parts provide their own) |
 | Agent (`agent`) | Agents creates an Agent | Agent close, host shutdown | Host-internal |
-| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionIdentity`, `sessionLifecycle`, `treeCommands` |
+| Session (`session`) | An Agent creates or restores a Session | Session close, idle unload | `sessionIdentity`, `sessionLifecycle`, `timelineTree` |
 | Branch (`branch`) | TimelineTree creates a branch | The branch ends, or its Session closes | `timeline`, `dispatcher`, `branchLifecycle`, `timelineIdentity` |
 
 Visibility follows the tree, as in [principles §2](../architecture/rust-agent/principles.md):
@@ -67,7 +67,7 @@ Visibility follows the tree, as in [principles §2](../architecture/rust-agent/p
 | Direction | How |
 | --- | --- |
 | Up (an enclosing instance, the process) | Inject the service by name |
-| Down (Session to branch) | `treeCommands`: input by branch id, branch creation. Never by injecting a branch service |
+| Down (Session to branch) | `timelineTree`: input by branch id, branch creation. Never by injecting a branch service |
 | Sideways (sibling branches, other Sessions) | Not visible. Go through a common ancestor's business service, such as `sessions` |
 
 The scope roots, the facades and their publication rules are mechanisms. Each Session and branch is
@@ -114,7 +114,7 @@ R4). This table says what each name Dim defines is for.
 | `workflowFiles` | process | App Server | yes | Marked `#[rutis::service]` |
 | `eventHub` | process | EventHub | designed, not implemented | A producer declares a source and publishes an event; EventHub delivers it to the Sessions subscribed, through Agents' `sessions` ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | process | the member provider | designed, not implemented | [ExternalAgent](plugins/ExternalAgent.md); registers with Collaboration when built (rutis usage R6) |
-| `treeCommands` | `session` | TimelineTree | yes | `input` by branch id, `create`, `list`, `info` |
+| `timelineTree` | `session` | TimelineTree | yes | `input` by branch id, `create`, `list`, `info` |
 | `sessionIdentity` | `session` | SessionScope | yes | `get()`: `{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | yes | `activated`, `closing`, `hold`, `release`: a hold is an id the calling row owns, ended by `release(id)` or that row's unload |
 | `sessionConfig` | `session` | SessionScope | yes | `get()`: the creation-time configuration, the snapshot a tool call carries |

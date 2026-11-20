@@ -1,4 +1,4 @@
-use dim_agent_capabilities::{defaults, timeline_tree::TreeCommands};
+use dim_agent_capabilities::{defaults, timeline_tree::TimelineTree};
 use dim_agent_runtime::Names;
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{
@@ -55,14 +55,14 @@ impl DynPlugin for CaptureTimeline {
 }
 
 struct GenericCleanupFault {
-    tree: Arc<Mutex<Option<Arc<TreeCommands>>>>,
+    tree: Arc<Mutex<Option<Arc<TimelineTree>>>>,
     timeline: Key<Timeline>,
     identity: Key<TimelineIdentity>,
     dispatcher: Key<Dispatcher>,
-    commands: Key<TreeCommands>,
+    commands: Key<TimelineTree>,
 }
 impl GenericCleanupFault {
-    fn new(names: &Names<'_>, tree: Arc<Mutex<Option<Arc<TreeCommands>>>>) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, tree: Arc<Mutex<Option<Arc<TimelineTree>>>>) -> rutis::Result<Self> {
         Ok(Self {
             tree,
             timeline: names.key()?,

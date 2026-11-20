@@ -285,7 +285,7 @@ FTS 表属于 v36；v35 仍只增加提交标识索引。v35→v36 是明确的�
 ### 7.2 改造顺序与兼容性
 
 1. **查询契约与两个存储实现。** 先落实字段语义、完整范围、正文解码和分页；用同一组公开查询在内存与 SQLite 验证。旧接口迁移期间只委托新引擎，不维护两套筛选规则。
-2. **入口及直接查询调用方。** 修改 Timeline、门面、TreeCommands 和语言绑定。按 id、最新记录、配置等查询先改为字段结果；普通门面不能因此获得未发布事实。
+2. **入口及直接查询调用方。** 修改 Timeline、门面、TimelineTree 和语言绑定。按 id、最新记录、配置等查询先改为字段结果；普通门面不能因此获得未发布事实。
 3. **恢复消费者。** 逐个完成第 5 节的恢复与实时交接验证，最后删除 `rebuild_facts` 及只服务于它的收集代码。
 4. **请求构造。** 完成第 6 节的内容选择、正文消费和请求生命周期，删除两个 `prepared` 缓存；保留上下文结果一致性的流程验证。
 
@@ -301,7 +301,7 @@ Rust 类型只在 runtime 定义一次，服务和存储端口共用查询表达
 Timeline::query(TimelineQuery) -> Result<TimelineQueryReply>
 Branch::query(TimelineQuery) -> Result<TimelineQueryReply>
 Session::query(branch_id, TimelineQuery) -> Result<TimelineQueryReply>
-TreeCommands::query(branch_id, TimelineQuery) -> Result<TimelineQueryReply>
+TimelineTree::query(branch_id, TimelineQuery) -> Result<TimelineQueryReply>
 TimelineStore::query(TimelineReadScope, QuerySpec, QueryPage) -> Result<QueryResult>
 ```
 

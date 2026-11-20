@@ -4,7 +4,7 @@ mod draft;
 mod evidence;
 mod render;
 
-use dim_agent_capabilities::{methods::SessionMethods, timeline_tree::TreeCommands};
+use dim_agent_capabilities::{methods::SessionMethods, timeline_tree::TimelineTree};
 use dim_agent_runtime::{AgentBuilder, Names, PartRegistry, PartScope, SessionLifecycle};
 use dim_app_server::methods::ManagementMethods;
 use rutis::Ctx;
@@ -50,7 +50,7 @@ impl DynPlugin for Report {
 struct ReportSession {
     methods: Key<SessionMethods>,
     lifecycle: Key<SessionLifecycle>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
 }
 
 impl ReportSession {

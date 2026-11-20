@@ -165,7 +165,7 @@ fork 与 Session 删除在复制连接上分块提交（事件与快照每 256 �
 | 能力重载重建 | 各所有者固定已提交截点后读取必要字段，`Dispatcher::consume` 在该截点之后接续实时事实；Goal 的旧事件收集尚未删除 |
 | TimelineTree 建分支 | 查询边界控制字段校验截点，祖先段由 Timeline 提供 |
 | 协作读取 | 取得并持有对端 Session，通过其 query 选择必要字段或正文 |
-| App Server 历史、导出 | acquire Session；活动分支走 `Branch::query`，结束分支经 `TreeCommands` 在固定 head 上读存储 |
+| App Server 历史、导出 | acquire Session；活动分支走 `Branch::query`，结束分支经 `TimelineTree` 在固定 head 上读存储 |
 
 请求中的事件页面只在操作内持有。没有有效检查点时，完整上下文投影仍需要读取其有效前缀，属性查询不会自动消除这项业务工作。
 

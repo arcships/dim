@@ -118,9 +118,9 @@ Timeline::query(TimelineQuery) -> Result<TimelineQueryReply>
 Session::query(...) / Branch::query(...)   // forward, published bound
 
 // ended line
-TreeCommands::page(id: String, after: u64, limit: usize, through: u64) -> Result<Vec<Arc<AgentEvent>>>
-TreeCommands::query(id: String, TimelineQuery) -> Result<TimelineQueryReply>   // window anchors and pages
-TreeCommands::batch_end(id: String, sequence: u64) -> Result<()>                // a window page's ends
+TimelineTree::page(id: String, after: u64, limit: usize, through: u64) -> Result<Vec<Arc<AgentEvent>>>
+TimelineTree::query(id: String, TimelineQuery) -> Result<TimelineQueryReply>   // window anchors and pages
+TimelineTree::batch_end(id: String, sequence: u64) -> Result<()>                // a window page's ends
 
 // branches and metadata
 TimelineStore::branches(session_id) -> Result<Vec<StoredBranch>>

@@ -5,7 +5,7 @@
 mod support;
 
 use axum::{Router, http::StatusCode, routing::post};
-use dim_agent_capabilities::{adapters::MockTools, defaults, timeline_tree::TreeCommands};
+use dim_agent_capabilities::{adapters::MockTools, defaults, timeline_tree::TimelineTree};
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature};
 use dim_agent_types::{InputBlock, InputMessageData, InputMode};
 use dim_app_server::{RunningServer, ServerConfig, serve};
@@ -24,10 +24,10 @@ const PROVIDER: &str = "018ec73f-0000-7000-8000-00000000000a";
 /// records with, so a test can write the record shape Goal owns without Goal
 /// having to produce it.
 #[derive(Clone, Default)]
-struct Probe(Arc<Mutex<Option<Arc<TreeCommands>>>>);
+struct Probe(Arc<Mutex<Option<Arc<TimelineTree>>>>);
 struct RecordPlugin {
     probe: Probe,
-    tree: rutis::host::Key<TreeCommands>,
+    tree: rutis::host::Key<TimelineTree>,
 }
 impl RecordPlugin {
     fn new(names: &dim_agent_runtime::Names<'_>, probe: Probe) -> rutis::Result<Self> {

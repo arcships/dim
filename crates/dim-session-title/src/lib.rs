@@ -2,7 +2,7 @@ use dim_agent_capabilities::{
     host::{AuxiliaryModel, AuxiliaryRequest},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     session_broadcast::{SessionBroadcast, SessionBroadcastEvent, session_channel},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{
     AgentBuilder, CollaborationRole, Names, PartRegistry, PartScope, QueryFilter, QueryOperand,
@@ -138,7 +138,7 @@ impl DynPlugin for SessionTitlePlugin {
 
 struct SessionTitle {
     settings: Key<Settings>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     store: Key<SessionMetadataService>,
     auxiliary: Key<AuxiliaryModel>,
     identity: Key<SessionIdentity>,
@@ -286,7 +286,7 @@ struct Owner {
     ctx: Ctx,
     id: String,
     settings: Arc<Settings>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     store: Arc<SessionMetadataService>,
     auxiliary: Arc<AuxiliaryModel>,
     state: Mutex<State>,

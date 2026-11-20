@@ -46,7 +46,7 @@ operator submit-check context remains inside user content, as specified by
 ### Rule check
 
 This extends the existing stateless InputMethods read, not the InputQueue
-Capability's decisions. Its dependencies remain the `treeCommands` and
+Capability's decisions. Its dependencies remain the `timelineTree` and
 `sessionMethods` data faces documented by [InputQueue](../architecture/rust-agent/plugins/InputQueue.md#inputmethods).
 It writes no facts, owns no background work, and retains no state between calls.
 Principles §4 rules 1–3, 5–6 and 9 require no new mechanism here: there is no
@@ -66,7 +66,7 @@ assembly or lifecycle change is required.
 ## Turn identity read
 
 Loop owns `session.turn.get`, registered by its Session part `LoopMethods` with declared
-TreeCommands and SessionMethods dependencies. It takes `sessionId`, `branchId`, optional
+TimelineTree and SessionMethods dependencies. It takes `sessionId`, `branchId`, optional
 `through`, optional `turnId` or `inputId`; returns `branchId`, published `through`, and nullable `turn`.
 `turnId` and `inputId` are mutually exclusive and a supplied identity must be nonempty.
 A turn has `turnId`, boundary `sequence`, and `ended`; an ended boundary also carries its

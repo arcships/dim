@@ -4,7 +4,7 @@
 
 需求（[功能列表](../../../feature-list.md)，分支 Agent 行为）：`/goal` 设置、编辑、暂停、恢复和清除目标（"切换 Goal 模式"）；Goal 续跑朝明确的目标继续工作，并记录完成或受阻。
 
-Goal 在分支上保持一个常驻目标，并自动续跑该分支，直到模型报告目标已完成或受阻、用户暂停、清除或中断，或达到显式设置的续跑上限。Goal 是分支上的事件驱动状态机。**Goal 的状态是一条 `goal:state` 块**：一条普通的 `input/message`，带一个带 key 的 raw 块，Append，只由 Goal 的分支部分写入，因此模型、客户端与折叠读到同一个事实（§2、A.5）。**变更是一个触发器，不是状态陈述**：`session.goal.*` 的 `set`、`edit`、`pause`、`resume`、`clear` 与模型 `goal_update` 工具的 `completed` / `blocked` 各经 `treeCommands.inputs`（即 `Branch::inputs`）提交一个原子批次、两条输入：回答它的状态记录，然后是触发器；触发器是一个无 key 的块，说明被要求了什么；Goal 把每个触发器的记录写进同一批次、紧排在其前。记录出现之前写成的历史带旧 key `goal:objective` 与 `goal:status`，按旧规则折叠；其上第一个被回答的触发器写入一条记录。**一个目标只属于一个分支**：Goal 对分支 `B` 的折叠只使用写在 `B` 自身上的事件（从 `B` 的 `branch/start` 起的本地后缀），从不使用继承的前缀，因此子分支和分叉 Session 的 `main` 都从没有目标开始；若新分支继承的前缀中仍有存活的目标 key，它用自己的一次起始 clear 退役它（[§3.4](#34-新分支清除继承的目标)）。续跑不带 key，也不是变更。工具和方法只写触发器；它们不读 Goal 的状态，也不判断变更是否允许。**Goal 的折叠就是最新记录陈述的状态**，按序号顺序，用固定规则计算（[§2](#2-数据与状态)）。**分支部分**拥有这个折叠结果；它的 Dispatcher 处理器消费 `turn/end`、`stop/interrupt`、`input/deleted` 或 cancelled 的 `exec/ended` 时，只依据已消费的状态自己决定是否续跑；决定需要写入（续跑、状态记录或自动暂停）时，处理器把写入登记为自己拥有的工作，然后返回。**Session 部分**把 `goal_update` 工具注册到本 Session 的 `toolRegistry`，并把命名空间 `session.goal` 注册到本 Session 的 `sessionMethods`，以此提供 `session.goal.*` 方法（[session-boundary](../contracts/session-boundary.md)）；每次调用按分支 id 经 `treeCommands.inputs`（即分支的公开多输入入口 `Branch::inputs`）把它的记录与触发器作为一个原子批次提交到调用方分支或指定分支。没有调用读取折叠结果：Session 部分从不向分支部分询问任何东西，Session 部分也不能依赖每个分支各一份的服务（ADR 002 D3）。Goal 不写自己类型的事件，也没有单独的"Goal 模式"：目标的存在与状态可通过分支上存活的 goal 块看到（§6），覆盖了功能列表中"切换 Goal 模式"的说法。本文的每个契约都是语言中立的（服务名、作用域、key、带数据形状的方法、工具注册）；Rust 绑定见[附录 G](#附录-g-rust-绑定)。Goal 通过公开的 Rust 导出使用运行时服务：Session 部分用 `TreeCommands` 和 `ToolRegistry`，分支部分用 `Dispatcher`、`Timeline`、`TimelineIdentity` 和 `TreeCommands`。
+Goal 在分支上保持一个常驻目标，并自动续跑该分支，直到模型报告目标已完成或受阻、用户暂停、清除或中断，或达到显式设置的续跑上限。Goal 是分支上的事件驱动状态机。**Goal 的状态是一条 `goal:state` 块**：一条普通的 `input/message`，带一个带 key 的 raw 块，Append，只由 Goal 的分支部分写入，因此模型、客户端与折叠读到同一个事实（§2、A.5）。**变更是一个触发器，不是状态陈述**：`session.goal.*` 的 `set`、`edit`、`pause`、`resume`、`clear` 与模型 `goal_update` 工具的 `completed` / `blocked` 各经 `timelineTree.inputs`（即 `Branch::inputs`）提交一个原子批次、两条输入：回答它的状态记录，然后是触发器；触发器是一个无 key 的块，说明被要求了什么；Goal 把每个触发器的记录写进同一批次、紧排在其前。记录出现之前写成的历史带旧 key `goal:objective` 与 `goal:status`，按旧规则折叠；其上第一个被回答的触发器写入一条记录。**一个目标只属于一个分支**：Goal 对分支 `B` 的折叠只使用写在 `B` 自身上的事件（从 `B` 的 `branch/start` 起的本地后缀），从不使用继承的前缀，因此子分支和分叉 Session 的 `main` 都从没有目标开始；若新分支继承的前缀中仍有存活的目标 key，它用自己的一次起始 clear 退役它（[§3.4](#34-新分支清除继承的目标)）。续跑不带 key，也不是变更。工具和方法只写触发器；它们不读 Goal 的状态，也不判断变更是否允许。**Goal 的折叠就是最新记录陈述的状态**，按序号顺序，用固定规则计算（[§2](#2-数据与状态)）。**分支部分**拥有这个折叠结果；它的 Dispatcher 处理器消费 `turn/end`、`stop/interrupt`、`input/deleted` 或 cancelled 的 `exec/ended` 时，只依据已消费的状态自己决定是否续跑；决定需要写入（续跑、状态记录或自动暂停）时，处理器把写入登记为自己拥有的工作，然后返回。**Session 部分**把 `goal_update` 工具注册到本 Session 的 `toolRegistry`，并把命名空间 `session.goal` 注册到本 Session 的 `sessionMethods`，以此提供 `session.goal.*` 方法（[session-boundary](../contracts/session-boundary.md)）；每次调用按分支 id 经 `timelineTree.inputs`（即分支的公开多输入入口 `Branch::inputs`）把它的记录与触发器作为一个原子批次提交到调用方分支或指定分支。没有调用读取折叠结果：Session 部分从不向分支部分询问任何东西，Session 部分也不能依赖每个分支各一份的服务（ADR 002 D3）。Goal 不写自己类型的事件，也没有单独的"Goal 模式"：目标的存在与状态可通过分支上存活的 goal 块看到（§6），覆盖了功能列表中"切换 Goal 模式"的说法。本文的每个契约都是语言中立的（服务名、作用域、key、带数据形状的方法、工具注册）；Rust 绑定见[附录 G](#附录-g-rust-绑定)。Goal 通过公开的 Rust 导出使用运行时服务：Session 部分用 `TimelineTree` 和 `ToolRegistry`，分支部分用 `Dispatcher`、`Timeline`、`TimelineIdentity` 和 `TimelineTree`。
 
 ## 1. 结构
 
@@ -17,7 +17,7 @@ flowchart LR
   subgraph SESS["Session 作用域"]
     GS["GoalSession：工具 goal_update，sessionMethods session.goal"]:::new
     TR["ToolRegistry"]
-    TC["TreeCommands"]
+    TC["TimelineTree"]
   end
   subgraph BR["分支作用域"]
     GB["GoalBranch（goal：折叠、决策）"]:::new
@@ -26,7 +26,7 @@ flowchart LR
   end
   GS -- "注册 goal_update" --> TR
   Rpc -- "解析 Session，调用 sessionMethods session.goal" --> GS
-  GS -- "每次调用：treeCommands.inputs(branchId, [记录, 触发器])" --> TC
+  GS -- "每次调用：timelineTree.inputs(branchId, [记录, 触发器])" --> TC
   TC -- "Branch::inputs：kind=state 记录（goal:state，Append）然后 kind=goal 触发器（无 key），一个原子批次" --> TL
   TL -- "按顺序 branch/start、input/*、turn/*、stop/interrupt" --> GB
   GB -- "自有写入任务：turn end 或删除之后的记录、续跑或起始 clear" --> TL
@@ -39,8 +39,8 @@ flowchart LR
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `GoalSession` | Session | `TreeCommands`、`ToolRegistry`、`SessionMethods`、`GuideEntries`（Session 导出） | 把 `goal_update` 注册到 `ToolRegistry`，把 `session.goal` 注册到 `SessionMethods`；经 `TreeCommands::inputs` 按分支 id 把每次变更作为一个原子批次提交（记录在前，触发器在后） |
-| `GoalBranch` | 分支 | `Dispatcher`、`Timeline`、`TimelineIdentity`、`BranchLifecycle`（分支导出）、`SessionLifecycle`（Session 导出，用于加载时核对）、`TreeCommands`、用于其来源 `goal` 的进程服务 `Settings`（S8b） | 不提供服务；拥有折叠结果、续跑决策、状态记录和 Goal 自己的写入 |
+| `GoalSession` | Session | `TimelineTree`、`ToolRegistry`、`SessionMethods`、`GuideEntries`（Session 导出） | 把 `goal_update` 注册到 `ToolRegistry`，把 `session.goal` 注册到 `SessionMethods`；经 `TimelineTree::inputs` 按分支 id 把每次变更作为一个原子批次提交（记录在前，触发器在后） |
+| `GoalBranch` | 分支 | `Dispatcher`、`Timeline`、`TimelineIdentity`、`BranchLifecycle`（分支导出）、`SessionLifecycle`（Session 导出，用于加载时核对）、`TimelineTree`、用于其来源 `goal` 的进程服务 `Settings`（S8b） | 不提供服务；拥有折叠结果、续跑决策、状态记录和 Goal 自己的写入 |
 
 Session 部分在 apply 中把工具注册到 `ToolRegistry`，把方法命名空间 `session.goal` 注册到 `SessionMethods`。分支部分不提供服务；它作为分支定义注册，因此每个分支都有一份副本（C5）。安装了 Goal 的装配的每个 Session 都运行 Goal 的 Session 部分，因此该部分激活后，每个这样的 Session 都有 `session.goal`（[session-boundary A.1](../contracts/session-boundary.md#a1-方法贡献)）。`maxContinuations` 是 Goal 的 Settings 来源 `goal` 中文档的可选字段，属于业务配置（[ADR 002](../../adr/002-plugin-scope.md) D4）。Goal 只通过 S8b 的进程服务 `settings` 读取它（[Settings 服务](../appserver/settings-service.md)）：每次使用时调用 `Settings::read`，经其公开的 Rust 绑定。Goal 的行在其 `apply` 中按 S8b §3.1 登记该来源：`source: "goal"`，一个用户文件，没有项目文件（只有用户作用域），没有 user-only 字段，JSON Schema 中 `maxContinuations` 为整数，`minimum: 1`、`maximum: 1000`，没有默认值（A4）。字段缺失表示没有上限；`null` 不是合法值。Settings 在写入和读取持久化文件时校验，因此 Goal 按交付的样子使用文档；变更是数据更新，从不重载。Dispatcher 回调登记自有任务后即返回，不等待 Settings。分支发布后，每个 turn/end 任务使用时调用 `settings.read {source: "goal", scope: "user"}`，再在写入前复核其决定轮次及当前已消费的折叠结果（A.6）。不缓存上限，也不监听 `settings.changed`。在该读取前已提交的变更无须重载即生效，包括文件后端 Settings 用户文档的直接编辑。来源不可读时停止该次决策，不产生自动输入，也不使用回退上限（附录 C）。中断暂停与继承目标的起始 clear 不需要读取上限。Goal 的工具都不写它；客户端经 `settings.read`/`settings.update` 写入它。Goal 只读取 `branch/start`、`input/message`、`input/consumed`、`input/deleted`、`turn/start`、`turn/end`、`stop/interrupt`、`exec/started` 和 `exec/ended` 的公开数据契约，并在 turn/end 决策时读取结束回合的一页有界 `step/tool-call`（A.4 C7）；从不读取其他插件的状态。
 
@@ -70,7 +70,7 @@ flowchart TB
 
 Goal 不拥有自己类型的持久状态。分支 `B` 的目标是 `B` 本地事件中最新的存活 `goal:state` 块所陈述的状态；在记录出现之前写成的历史上，则是按下面规则折叠的两个旧 key。只有 Goal 的分支部分写这条记录。它是一条普通的 `input/message`，带一个 key 为 `goal:state` 的 raw 块，模式 Append，因此模型、客户端与 Goal 的折叠读到同一个事实：模型经 `render_input`，客户端经分支历史或通用带 key 投影，折叠经其 Dispatcher 订阅。没有为它特判任何规则或 ADR：这个块像其他被采用的输入一样进入模型上下文，压缩也像其他 key 一样经带 key 的基线重放它。
 
-**变更**是触发器，不是状态陈述。`session.goal.set/edit/pause/resume/clear` 与 `goal_update` 经 `TreeCommands::inputs`（`Branch::inputs`）提交一个原子批次、两条输入：回答该变更的状态记录，然后是触发器，其唯一的 raw 块 `kind="goal"`，说明被要求了什么（A.5），模式不变。记录排在前面，因此无论调度如何，InputQueue 都先应用记录、再应用触发器：触发器的轮次开始时，记录已经应用。分支部分在自己的写锁下撰写记录，且要等折叠已推进 Goal 自己的上一次写入，因此记录基于它之前的状态陈述该变更。记录按 submission id 在 `trigger="goal:<uuid>"` 中写名触发器，而不是 `after`（A.5）；折叠把这样的记录暂留一个事件，当下一个事件正是写名的触发器时，在触发器的序号处先应用变更、再应用记录（A14）。给定 `after` 的快照只写一次。没有记录的触发器——更早版本写成的历史，或批次之外写入的触发器——在加载时被回答一次（§4.2）。被 InputQueue 删除的变更触发器从未生效：折叠去掉它重新计算；只要已有写名该触发器的记录或任何更晚的记录曾被写入或正在被写入，Goal 就写一条补偿记录，其 `after` 是 `input/deleted` 的序号，陈述分支去掉该触发器后的状态。是否存在这样的记录在写锁下决定，因此在删除被折叠期间提交的记录会被补偿记录取代，绝不会成为最新的存活记录。
+**变更**是触发器，不是状态陈述。`session.goal.set/edit/pause/resume/clear` 与 `goal_update` 经 `TimelineTree::inputs`（`Branch::inputs`）提交一个原子批次、两条输入：回答该变更的状态记录，然后是触发器，其唯一的 raw 块 `kind="goal"`，说明被要求了什么（A.5），模式不变。记录排在前面，因此无论调度如何，InputQueue 都先应用记录、再应用触发器：触发器的轮次开始时，记录已经应用。分支部分在自己的写锁下撰写记录，且要等折叠已推进 Goal 自己的上一次写入，因此记录基于它之前的状态陈述该变更。记录按 submission id 在 `trigger="goal:<uuid>"` 中写名触发器，而不是 `after`（A.5）；折叠把这样的记录暂留一个事件，当下一个事件正是写名的触发器时，在触发器的序号处先应用变更、再应用记录（A14）。给定 `after` 的快照只写一次。没有记录的触发器——更早版本写成的历史，或批次之外写入的触发器——在加载时被回答一次（§4.2）。被 InputQueue 删除的变更触发器从未生效：折叠去掉它重新计算；只要已有写名该触发器的记录或任何更晚的记录曾被写入或正在被写入，Goal 就写一条补偿记录，其 `after` 是 `input/deleted` 的序号，陈述分支去掉该触发器后的状态。是否存在这样的记录在写锁下决定，因此在删除被折叠期间提交的记录会被补偿记录取代，绝不会成为最新的存活记录。
 
 折叠在变更 `input/message` 的序号处应用它，并在同一条序号处应用批次中的记录（A14），因此没有任何决策会看到没有记录的触发器。它忽略三类记录：`after` 写名已被删除的变更的、比已折叠的最新变更更旧的、以及比已应用的最新记录更旧的；Goal 也从不撰写 `after` 低于自己已写记录的记录，因此无论写入任务的提交顺序如何，最新的存活记录总是陈述最新的状态。**模型**在受该变更影响的第一个请求处得知它：记录在同一原子批次中排在触发器之前提交，且 InputQueue 按序号顺序应用输入，因此携带触发器的第一个请求已经带着排在它之前的记录。Queue 命令仍驱动自己的轮次（A14）。之后被 InputQueue 删除（`input/deleted`）的变更被移除，折叠去掉它重新计算（[session access](../contracts/session-access.md)）。
 
@@ -287,13 +287,13 @@ Goal 只在它服务的分支上以来源 `goal` 写入 `input/message`；由此
 | §1 Capability 与 App Server 边界 | 两个部分都是各自包中的 Capability；Rpc 只分派 `sessionMethods`。 |
 | ADR 002 D1 作用域跟随状态所有者 | 工具与方法是 Session 服务；目标、其折叠结果与决策是分支状态。 |
 | ADR 002 D2 不设接线模块 | Goal 自己把命名空间注册到 `sessionMethods`、把工具注册到 ToolRegistry；Rpc 经该 Session 的方法表分发，没有模块指名 Goal。 |
-| ADR 002 D3 依赖跟随作用域 | 分支部分依赖分支服务与外层的 Session、进程服务（`treeCommands`、`settings`）；Session 部分不依赖任何分支服务；重载重新折叠，可接受。 |
+| ADR 002 D3 依赖跟随作用域 | 分支部分依赖分支服务与外层的 Session、进程服务（`timelineTree`、`settings`）；Session 部分不依赖任何分支服务；重载重新折叠，可接受。 |
 | ADR 002 D4 结构性配置与业务配置分离 | `goal` 来源中的 `maxContinuations` 是业务配置，在自有 turn/end 任务内、已消费状态复核之前读取；不缓存或订阅配置事件。变更从不重载 Goal。 |
 | ADR 002 D5 合同语言中立 | 工具、方法与块格式以中立形式给出；§10 是 Rust 实现，附录 G 是它的绑定。 |
 
 ## 9. 向机制所有者提出的需求
 
-输入入口每次调用只提交一条输入，变更触发器与其记录因此无法共享一次提交。需求——一个原子多输入提交：批次整体校验、只准入一次，按给定顺序返回已提交事件，对已提交的 id 幂等重放——由输入入口的多输入提交满足：`TreeCommands::inputs`、`Session::inputs` 与 `Branch::inputs`，契约见 [interrupt §2](../../../architecture/rust-agent/interrupt.md#2-事件契约)。Goal 的变更批次是它的第一个消费者（#1195，[#1215](https://github.com/arcships/dim/pull/1215)）。之前的需求"运行时服务按名字暴露给非 Rust 部分"（#4）已由 C5 交付（[分支 TypeScript 绑定](../../../design/branch-typescript.md)）。
+输入入口每次调用只提交一条输入，变更触发器与其记录因此无法共享一次提交。需求——一个原子多输入提交：批次整体校验、只准入一次，按给定顺序返回已提交事件，对已提交的 id 幂等重放——由输入入口的多输入提交满足：`TimelineTree::inputs`、`Session::inputs` 与 `Branch::inputs`，契约见 [interrupt §2](../../../architecture/rust-agent/interrupt.md#2-事件契约)。Goal 的变更批次是它的第一个消费者（#1195，[#1215](https://github.com/arcships/dim/pull/1215)）。之前的需求"运行时服务按名字暴露给非 Rust 部分"（#4）已由 C5 交付（[分支 TypeScript 绑定](../../../design/branch-typescript.md)）。
 
 ## 10. 实现
 
@@ -304,10 +304,10 @@ Rust，位于 `crates/dim-goal`，为一行：其 `install` 注册 Settings 来�
 | `text.rs` | 共享：变更触发器、状态记录与续跑输入（A.5）、标记编码、两句策略文本 | — |
 | `fold.rs` | 共享：已消费事实上的折叠（§2）与决策（A.4） | — |
 | `lib.rs` | 该行：注册 `goal` Settings 来源与两个部分；`install_with` 接收两句策略文本 | 进程行 |
-| `session.rs` | `GoalSession`：把 `<dim-goal>` 引导条目（A.5.1）注册到 `GuideEntries`，把 `goal_update` 注册到 `ToolRegistry`，把 `session.goal` 注册到 `SessionMethods`；经 `TreeCommands::inputs` 提交每个变更批次 | Session 部分 |
+| `session.rs` | `GoalSession`：把 `<dim-goal>` 引导条目（A.5.1）注册到 `GuideEntries`，把 `goal_update` 注册到 `ToolRegistry`，把 `session.goal` 注册到 `SessionMethods`；经 `TimelineTree::inputs` 提交每个变更批次 | Session 部分 |
 | `branch.rs` | `GoalBranch`：用 `Dispatcher::consume` 注册，折叠重建读到的内容（先走便宜路径），对实时事件决策，并以自有任务写入状态记录、续跑与 clear；从 `goal` 来源读取 `maxContinuations`。在 [Pursuit](Pursuit.md) 的评审裁判下它还创建评审分支并担任评审者角色 | 分支部分 |
 
-新分支检查（§3.4）按祖先逐个读取继承前缀，从最近的开始，用 `TreeCommands::query` 查该祖先自己的线：`input/message`，从新到旧，每一页都在上一页之下有界，遇到第一个带 key 的块即停止。分支自己的事件从不参与这次读取，因此只看到继承前缀。嵌入方用
+新分支检查（§3.4）按祖先逐个读取继承前缀，从最近的开始，用 `TimelineTree::query` 查该祖先自己的线：`input/message`，从新到旧，每一页都在上一页之下有界，遇到第一个带 key 的块即停止。分支自己的事件从不参与这次读取，因此只看到继承前缀。嵌入方用
 `dim_goal::install(&mut AgentBuilder)` 安装 Goal，或用 `install_with` 带上候选策略文本；`dimcode` 产品 profile 在其 install 回调中这样做，App Server 库不依赖本 crate。
 
 验证覆盖精确事件顺序，以及实际插件的公开端口流程。
@@ -334,7 +334,7 @@ ToolRegistry 即提供它（[Session 边界 A.5](../contracts/session-boundary.m
 | 结果 | `ToolResult.content`：`goal_update recorded: completed.` 或 `goal_update recorded: blocked.` 结果只确认写入；按折叠规则，该块成为当前状态（A15），[Pursuit](Pursuit.md) 的评审裁判下干活模型的 `completed` 除外，它是请求（A16）。错误只有参数错误 |
 | 风险类别 | `session`（只写分支输入）（A9） |
 | 提供范围 | 安装了 Goal 的装配中的每个 Session，所有角色（A9） |
-| 处理器 | 校验参数，经 `treeCommands.inputs` 在调用方分支（`ToolCall.branchId`）上把该变更的记录与触发器作为一个原子批次提交，等待提交后返回。它不读折叠结果。在追加之前取消则不写任何内容；一旦追加，写入保持有效 |
+| 处理器 | 校验参数，经 `timelineTree.inputs` 在调用方分支（`ToolCall.branchId`）上把该变更的记录与触发器作为一个原子批次提交，等待提交后返回。它不读折叠结果。在追加之前取消则不写任何内容；一旦追加，写入保持有效 |
 
 ### A.2 Session 方法
 
@@ -348,7 +348,7 @@ ToolRegistry 即提供它（[Session 边界 A.5](../contracts/session-boundary.m
 | `session.goal.resume` | `{sessionId, branchId?}` | `{sequence}` | `resume`，Queue（A12） |
 | `session.goal.clear` | `{sessionId, branchId?}` | `{sequence}` | `clear`（退役 key），Append |
 
-`branchId` 默认为 `main`（A13）。回复中的 `sequence` 是变更触发器的序号，它在同一原子批次中紧跟在记录之后提交；客户端在分支事件的该序号处看到它的效果。写入类方法只校验自己的参数；变更起什么作用由 §2 的折叠规则决定（每个块成为其 key 的当前值），从不由方法决定。Rpc 从参数中读取 `sessionId` 并授权，经 `index.acquire` 解析 Session（若已卸载则恢复），再携带原始参数发送调用；处理器经 `treeCommands.inputs` 按 id 把该批次写入指定分支。
+`branchId` 默认为 `main`（A13）。回复中的 `sequence` 是变更触发器的序号，它在同一原子批次中紧跟在记录之后提交；客户端在分支事件的该序号处看到它的效果。写入类方法只校验自己的参数；变更起什么作用由 §2 的折叠规则决定（每个块成为其 key 的当前值），从不由方法决定。Rpc 从参数中读取 `sessionId` 并授权，经 `index.acquire` 解析 Session（若已卸载则恢复），再携带原始参数发送调用；处理器经 `timelineTree.inputs` 按 id 把该批次写入指定分支。
 
 ### A.3 读取目标
 
@@ -617,5 +617,5 @@ Goal 以 Rust 实现（§10）；中立契约的绑定如下。
 | 卸载清理函数 | `ctx.effect` |
 | `goal` Settings 来源 | 进程行中调用 `Settings::register`；每次决策用 `Settings::read(SOURCE, SettingsScope::User, &cancel)` 读取 |
 | 写入任务 | `TaskTracker` 上的自有工作，由 `Dispatcher` 处理器的 `consume` 生成，以做出决定的序号为键；`ctx.effect` 的清理关闭并等待它 |
-| 写入 | 每个变更批次经 `TreeCommands::inputs`，来自 Session 部分的调用与 `goal_update` 工具；写入任务经 `TreeCommands::input` |
-| Context 与重建 | 服务经 `ctx.require_at` 取得；分支事实经 `Timeline::query(TimelineQueryScope::Branch, ..)`，来源经 `TreeCommands::info`；角色解析前等待 `SessionLifecycle::activated`；重建先走便宜路径（一次降序输入扫描直到最新的 Goal 块），否则折叠其事实，然后执行 `decide_end`、`settle`、`decide_start`，并在任何实时事件之前回答一个未回答的变更触发器 |
+| 写入 | 每个变更批次经 `TimelineTree::inputs`，来自 Session 部分的调用与 `goal_update` 工具；写入任务经 `TimelineTree::input` |
+| Context 与重建 | 服务经 `ctx.require_at` 取得；分支事实经 `Timeline::query(TimelineQueryScope::Branch, ..)`，来源经 `TimelineTree::info`；角色解析前等待 `SessionLifecycle::activated`；重建先走便宜路径（一次降序输入扫描直到最新的 Goal 块），否则折叠其事实，然后执行 `decide_end`、`settle`、`decide_start`，并在任何实时事件之前回答一个未回答的变更触发器 |

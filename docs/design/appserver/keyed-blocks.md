@@ -94,7 +94,7 @@ The query does not introduce a persistent index on block keys. Storage still
 has to inspect candidate input properties and deletion relations; output
 pagination does not promise constant total query work.
 
-The read follows the two-owner pattern of `session.history`: an open line is read through its Session (`Session::query`, which reads at the published head), an ended line through TimelineTree at its fixed head (`TreeCommands::query`). A line that ends while the call runs answers `branch_ended`; the read is then repeated through the tree at the fixed head. Unlike the `latestTurn` window, the read needs no native store: both owners serve it.
+The read follows the two-owner pattern of `session.history`: an open line is read through its Session (`Session::query`, which reads at the published head), an ended line through TimelineTree at its fixed head (`TimelineTree::query`). A line that ends while the call runs answers `branch_ended`; the read is then repeated through the tree at the fixed head. Unlike the `latestTurn` window, the read needs no native store: both owners serve it.
 
 ## 4. `through` and the client's live overlay
 
@@ -147,7 +147,7 @@ The two orders differ by construction and are not compared: the baseline lists a
 | ADR 019 D2 (fixed semantics) | Descending pages ordered by sequence, a short page means exhausted, and the advance is a range, not an offset |
 | ADR 019 D3 (the query addresses the event contract) | Only kinds and a sequence start are named; no table, column or index |
 | ADR 019 D4 (indexes are derived or part of the format) | No index is added; the block-key predicate is not expressible in the query and stays out |
-| [ADR 020](../../adr/020-timeline-read-convergence.md) D1 (one read, the facades forward it) | Reads go through `Session::query` and `TreeCommands::query`, the same facades `session.history` uses |
+| [ADR 020](../../adr/020-timeline-read-convergence.md) D1 (one read, the facades forward it) | Reads go through `Session::query` and `TimelineTree::query`, the same facades `session.history` uses |
 | [ADR 021](../../adr/021-reads-follow-the-state-owner.md) D3 (a client read requires a live Session) | The call acquires the Session; there is no branch that reads store facts for a Session the process does not hold |
 | ADR 021 D2 (an ended line is read through the object that owns its end) | An ended line is read through TimelineTree at its fixed head, including after the line ends mid-call |
 

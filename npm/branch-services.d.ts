@@ -662,12 +662,69 @@ export interface SkillsConfig {
   get(): Promise<SkillsConfigReply>
 }
 
+export type BranchOperation =
+  | { kind: "contextUsage.read" }
+  | { kind: "compactAndWait" }
+  | { kind: "prompt.configure"; request: PromptConfigurationRequest }
+  | { kind: "prompt.adoptedConfiguration" }
+  | { kind: "approval.pending" }
+  | { kind: "approval.decide"; requestId: string; decision: ApprovalDecision }
+  | { kind: "inputQueue.withdraw"; command: InputWithdrawData }
+
+export type BranchCall = {
+  branchId: string
+  operation: BranchOperation
+}
+
+export type DirectoryRequest = {
+  id?: string | null
+}
+
 export type TimelineInfo = {
   id: string
   parent?: string | null
   branch_point?: number | bigint | null
   create_anchor?: number | bigint | null
   source?: BranchSource | null
+}
+
+/** Whether a line takes input, is finishing a committed end, or has ended. */
+export type BranchDirectoryState =
+  | /** The line takes input, and its head is live. */ "open"
+  | /** The line's own `branch/end` is committed and its ended row is not: input is refused, and its head is still live. */ "ending"
+  | /** The line has ended: its head and its end event are fixed. */ "ended"
+
+/** One line's directory record: its identity, its state, its head and its end. */
+export type BranchDirectoryEntry = {
+  info: TimelineInfo
+  /** The published head while open or ending, the fixed head once ended. */
+  head: number | bigint
+  state: BranchDirectoryState
+  /**
+   * The sequence of the line's own `branch/end`: committed while ending,
+   * recorded once ended.
+   */
+  endEvent?: number | bigint | null
+}
+
+export type DirectoryReply = BranchDirectoryEntry | BranchDirectoryEntry[]
+
+export type BranchEndData = {
+  source: BranchSource
+  ancestor?: string | null
+  /**
+   * The message the parent receives, present only on a tool end, because
+   * only a tool end owes one and restore delivers a missing one from it
+   * ([timeline branches §10](../../../docs/design/timeline-branches.md#10-ending-a-line)).
+   */
+  final?: string | null
+}
+
+export type DirectoryDisplay = {
+  entry: BranchDirectoryEntry
+  purpose?: string | null
+  cutMessages?: number | bigint | null
+  end?: BranchEndData | null
 }
 
 /** Which branches a query covers. */
@@ -782,8 +839,12 @@ export type BranchOptions = {
   source: BranchSource
 }
 
-/** Shared with Timeline roots; never owns the tree or its child roots. */
-export interface TreeCommands {
+export interface TimelineTree {
+  call(request: BranchCall, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').BridgeJsonValue>
+  /** @throws {AgentErrorThrown} */
+  directory(request: DirectoryRequest): Promise<DirectoryReply>
+  /** @throws {AgentErrorThrown} */
+  display(id: string): Promise<DirectoryDisplay>
   list(): Promise<TimelineInfo[]>
   /**
    * The directory record of branch `id`, from its reservation on, so a
@@ -799,10 +860,24 @@ export interface TreeCommands {
    */
   input(id: string, input: InputMessageData): Promise<import('./plugin.js').BranchEvent>
   /**
+   * Commits `inputs` to branch `id` as one atomic batch through its
+   * validating `Branch::inputs`: the given order, contiguous sequences and
+   * one publication.
+   * @throws {AgentErrorThrown}
+   */
+  inputs(id: string, inputs: InputMessageData[]): Promise<import('./plugin.js').BranchEvent[]>
+  /**
    * Ends the line `id` with `source`; only the target is checked (§10).
    * @throws {AgentErrorThrown}
    */
   end(id: string, source: BranchSource): Promise<void>
+  /**
+   * Ends the line `id` with a tool end's `final_message` riding on its
+   * `branch/end`, which the parent receives once the end is admitted
+   * (design §10).
+   * @throws {AgentErrorThrown}
+   */
+  endWithFinal(id: string, source: BranchSource, finalMessage: string | null): Promise<void>
   /**
    * The line the Session's conversation is on: the root until a
    * `branch/default` moves it, then that fact's line while it is open and
@@ -826,12 +901,23 @@ export interface TreeCommands {
    */
   page(id: string, after: number | bigint, limit: number | bigint, through: number | bigint): Promise<import('./plugin.js').BranchEvent[]>
   /**
+   * Ends a raw-event page on an atomic batch boundary without reading its payloads.
+   * @throws {AgentErrorThrown}
+   */
+  pageEnd(id: string, after: number | bigint, limit: number | bigint, through: number | bigint): Promise<number | bigint>
+  /**
    * Computes properties at a fixed cutoff. Chain scope reads only published
    * facts, with each ancestor bounded by its inherited cut. An ended line
    * reads its persisted facts and has no publishing tail.
    * @throws {AgentErrorThrown}
    */
   query(id: string, query: TimelineQuery): Promise<TimelineQueryReply>
+  /**
+   * Checks that `sequence` ends an atomic batch of line `id`, forwarding to
+   * its Timeline while open and reading the store once it ends.
+   * @throws {AgentErrorThrown}
+   */
+  batchEnd(id: string, sequence: number | bigint): Promise<void>
   /**
    * Creates a child of `parent` cut at `at` and returns its id.
    * `cancelled` is the caller's cancellation as an explicit argument, the
@@ -1511,7 +1597,7 @@ export interface Services {
   prompt: Prompt
   sessionLanguage: SessionLanguage
   skillsConfig: SkillsConfig
-  treeCommands: TreeCommands
+  timelineTree: TimelineTree
   branchLine: BranchLine
   wait: Wait
   backgroundExec: BackgroundExec

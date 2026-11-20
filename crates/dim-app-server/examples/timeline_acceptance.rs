@@ -15,7 +15,6 @@ use dim_agent_capabilities::{
     defaults,
     history::{HistoryRenderer, summary_message},
     host::*,
-    timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{testing::MinimalHost, *};
 use dim_agent_types::*;
@@ -85,40 +84,6 @@ fn quantile(values: &mut [f64], p: f64) -> f64 {
     values[((values.len() as f64 * p).ceil() as usize).saturating_sub(1)]
 }
 
-struct CaptureTree {
-    captured: Arc<Mutex<Option<Arc<TreeCommands>>>>,
-
-    tree: rutis::host::Key<TreeCommands>,
-}
-impl CaptureTree {
-    fn new(
-        names: &dim_agent_runtime::Names<'_>,
-        captured: Arc<Mutex<Option<Arc<TreeCommands>>>>,
-    ) -> rutis::Result<Self> {
-        Ok(Self {
-            captured,
-            tree: names.key()?,
-        })
-    }
-}
-impl rutis::host::DynPlugin for CaptureTree {
-    fn name(&self) -> &str {
-        "measurement.tree"
-    }
-    fn injects(&self) -> Vec<rutis::host::TypeKey> {
-        vec![self.tree.erase()]
-    }
-    fn apply<'a>(
-        &'a self,
-        ctx: &'a rutis::Ctx,
-    ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
-        Box::pin(async move {
-            let tree = ctx.require_at(&self.tree)?;
-            *self.captured.lock().unwrap() = Some(tree);
-            Ok(rutis::host::Effect::Done)
-        })
-    }
-}
 struct Compactor {
     samples: Arc<Mutex<PreparationSamples>>,
 }
@@ -244,8 +209,6 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
     let directory = directory("memory");
     let db = SqliteStorage::open(directory.join("dimcode.sqlite"))?;
     let store = SqliteTimelineStore::new(db.clone());
-    let captured = Arc::new(Mutex::new(None));
-    let capture = captured.clone();
     let samples = Arc::new(Mutex::new(PreparationSamples {
         count: 0,
         warm: [0; 100],
@@ -268,11 +231,6 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
             }),
-        )
-        .require_feature(
-            Feature::new("measurement.tree").session("measurement.tree", move |names| {
-                Ok(Box::new(CaptureTree::new(names, capture.clone())?))
-            }),
         );
     defaults::install(&mut builder);
     let agent = MinimalHost::start(&builder).await?;
@@ -284,8 +242,7 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
         })
         .await?;
     session.idle("main").await?;
-    let tree = captured.lock().unwrap().clone().unwrap();
-    let timeline = tree.get("main")?;
+    let timeline = session.publication("main")?;
     let mut idle = Vec::with_capacity(steps / 100 + 2);
     let mut turn_warm = [0usize; 100];
     let mut turn_recent = [0usize; 100];
@@ -815,8 +772,6 @@ async fn reads() -> std::result::Result<(), Error> {
             );
             timing.push(start.elapsed().as_secs_f64() * 1000.);
         }
-        let captured = Arc::new(Mutex::new(None));
-        let target = captured.clone();
         let observed = Arc::new(Mutex::new(Vec::with_capacity(21)));
         let stop_target = observed.clone();
         let mut builder = AgentBuilder::new(AgentConfig::default());
@@ -825,11 +780,6 @@ async fn reads() -> std::result::Result<(), Error> {
         builder
             .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .require_feature(
-                Feature::new("measurement.tree").session("measurement.tree", move |names| {
-                    Ok(Box::new(CaptureTree::new(names, target.clone())?))
-                }),
-            )
-            .require_feature(
                 Feature::new("measurement.stop").branch("measurement.stop", move |names| {
                     Ok(Box::new(CaptureStop::new(names, stop_target.clone())?))
                 }),
@@ -837,7 +787,7 @@ async fn reads() -> std::result::Result<(), Error> {
         let agent = MinimalHost::start(&builder).await?;
         let session = agent.restore_session(name.into()).await?;
         session.idle("main").await?;
-        let active = captured.lock().unwrap().clone().unwrap().get("main")?;
+        let active = session.publication("main")?;
         let mut dispatch = Vec::new();
         for _ in 0..20 {
             let reader = active.clone();

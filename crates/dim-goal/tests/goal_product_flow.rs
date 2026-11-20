@@ -15,7 +15,7 @@ use dim_agent_capabilities::history::summary_message;
 use dim_agent_capabilities::host::{
     HostError, HostFuture, ModelChunk, ModelConnection, ModelDriver, ModelStopReason, ModelStream,
 };
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
 use dim_agent_runtime::{BranchOptions, Session};
 use dim_agent_types::{
     BranchSource, ContextBaselineEntry, ContextCompactData, ContextCompactionData,
@@ -1213,7 +1213,7 @@ async fn goal_evaluator_judge_creates_an_evaluator_and_completes_on_done() {
     let head = session.sequence(child).unwrap();
     assert_eq!(session.ended_head(child), Some(head));
     let line_events = session
-        .session_service::<TreeCommands>()
+        .session_service::<TimelineTree>()
         .unwrap()
         .page(child.to_owned(), 0, 256, head)
         .await

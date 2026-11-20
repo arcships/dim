@@ -19,7 +19,7 @@ struct Params {
 }
 
 pub(super) async fn read(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     value: Value,
     cancel: &CancellationToken,
 ) -> std::result::Result<Value, RpcError> {

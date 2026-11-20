@@ -39,7 +39,7 @@ fn crossing_instance_names() -> [(String, &'static str); 19] {
         ),
         (name_of::<crate::mcp::McpSession>(), SESSION_GROUP),
         (
-            name_of::<dim_agent_capabilities::timeline_tree::TreeCommands>(),
+            name_of::<dim_agent_capabilities::timeline_tree::TimelineTree>(),
             SESSION_GROUP,
         ),
         (

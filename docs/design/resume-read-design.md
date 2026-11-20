@@ -37,7 +37,7 @@ CLI / ACP / Web
 
 需要事实的业务 owner / App Server
   -> 活分支：Session/Branch 门面或本部件的 timeline
-     结束分支：TreeCommands.query
+     结束分支：TimelineTree.query
   -> Timeline 建立固定范围与祖先截止
   -> Store.query 按索引执行，返回选定字段
 
@@ -50,7 +50,7 @@ CLI / ACP / Web
 | 层 | 负责 |
 | --- | --- |
 | 业务 owner | 定义当前状态、源事实、字段、转移、保存及恢复；拥有自己的任务。 |
-| Timeline / TreeCommands | 固定分支、祖先、through、发布尾部、权限及取消范围。TreeCommands 仍只支持 branch。 |
+| Timeline / TimelineTree | 固定分支、祖先、through、发布尾部、权限及取消范围。TimelineTree 仍只支持 branch。 |
 | Store | 用既有 query 执行索引定位、字段投影和通用关联；维护存储格式。 |
 | 客户端 | 窗口、展开视图、请求调度；采用 owner inventories，不从显示历史重建控制状态。 |
 
@@ -182,7 +182,6 @@ v42 为审批、协作交付、未通知后台结果补成员索引，保留 exe
 200ms 验收采用 release 构建、隔离 home、同一份约 25,000 条事件的 SQLite 副本；每次重新启动守护进程，PTY 回答终端协议，从 CLI 进程启动计时至历史出现且按键可见。数据库及测试用程序文件须在启动前确认驻留页为零；共享系统库的缓存条件单列。保留文件缓存的结果和热重连单列，不能代替这项验收。不得以局部查询耗时替代端到端结果。
 
 另用独立 cgroup 限制 CLI、守护进程及其子进程的合计内存并禁用该组交换，记录实际限制值、峰值、匿名内存、文件缓存、磁盘读取字节和限制触发次数。统计组内的测试工具开销单列；不能只报 RSS，也不能以预热整个数据库取得达标时间。首次格式升级仍单列。
-
 
 ### 9.1 恢复的是责任，不是旧执行现场
 

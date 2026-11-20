@@ -148,6 +148,81 @@ struct EndedLine {
     info: TimelineInfo,
     end_event: Option<u64>,
 }
+impl Node {
+    fn directory_entry(&self) -> Option<BranchDirectoryEntry> {
+        if !matches!(&*self.ready.borrow(), Some(Ok(_))) {
+            return None;
+        }
+        let context = self.context.as_ref();
+        let end_event = context.and_then(|context| context.end_event());
+        Some(BranchDirectoryEntry {
+            info: self.info.clone(),
+            head: context.map_or(0, |context| context.timeline().sequence()),
+            state: if end_event.is_some() {
+                BranchDirectoryState::Ending
+            } else {
+                BranchDirectoryState::Open
+            },
+            end_event,
+        })
+    }
+}
+
+impl EndedLine {
+    fn directory_entry(&self) -> BranchDirectoryEntry {
+        BranchDirectoryEntry {
+            info: self.info.clone(),
+            head: self.head,
+            state: BranchDirectoryState::Ended,
+            end_event: self.end_event,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectoryRequest {
+    pub id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DirectoryReply {
+    One(BranchDirectoryEntry),
+    All(Vec<BranchDirectoryEntry>),
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchCall {
+    pub branch_id: String,
+    pub operation: BranchOperation,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum BranchOperation {
+    #[serde(rename = "contextUsage.read")]
+    ContextUsage,
+    #[serde(rename = "compactAndWait")]
+    CompactAndWait,
+    #[serde(rename = "prompt.configure")]
+    ConfigurePrompt {
+        request: Box<crate::prompt::PromptConfigurationRequest>,
+    },
+    #[serde(rename = "prompt.adoptedConfiguration")]
+    AdoptedConfiguration,
+    #[serde(rename = "approval.pending")]
+    ApprovalPending,
+    #[serde(rename = "approval.decide", rename_all = "camelCase")]
+    ApprovalDecide {
+        request_id: String,
+        decision: ApprovalDecision,
+    },
+    #[serde(rename = "inputQueue.withdraw")]
+    Withdraw { command: InputWithdrawData },
+}
+
 /// A line whose `branch/end` is committed and whose close has not completed.
 struct PendingEnd {
     /// The sequence of `branch/end` on the line: the result's `endEvent`.
@@ -242,30 +317,68 @@ pub struct TimelineTree {
     /// its settling task.
     admitted: tokio::sync::Notify,
 }
-/// Shared with Timeline roots; never owns the tree or its child roots.
-pub struct TreeCommands {
-    tree: Weak<TimelineTree>,
-}
 #[service]
-impl TreeCommands {
+impl TimelineTree {
+    pub async fn call(
+        &self,
+        request: BranchCall,
+        cancelled: Arc<
+            dyn Fn() -> BoxFuture<'static, std::result::Result<(), Error>> + Send + Sync,
+        >,
+    ) -> std::result::Result<serde_json::Value, rutis_bridge::session::Error> {
+        let cancel = CancellationToken::new();
+        let _guard = cancel.clone().drop_guard();
+        let called = self.call_branch(request, cancel.clone());
+        tokio::pin!(called);
+        tokio::select! {
+            result = &mut called => result,
+            _ = cancelled() => {
+                cancel.cancel();
+                called.await
+            }
+        }
+        .map_err(|error| {
+            let code = error
+                .data
+                .as_ref()
+                .map_or("rpc_error", |data| data.app_error.as_str());
+            rutis_bridge::exports::failure(
+                "RpcError",
+                code,
+                error.message.clone(),
+                Some(serde_json::json!(error)),
+            )
+        })
+    }
+
+    pub fn directory(
+        &self,
+        request: DirectoryRequest,
+    ) -> std::result::Result<DirectoryReply, AgentError> {
+        match request.id {
+            Some(id) => self.directory_entry(&id).map(DirectoryReply::One),
+            None => Ok(DirectoryReply::All(TimelineTreeControl::directory(self))),
+        }
+    }
+
+    pub async fn display(
+        &self,
+        id: String,
+    ) -> std::result::Result<read::DirectoryDisplay, AgentError> {
+        self.display_line(id).await
+    }
+
     #[service(skip)]
     pub fn get(&self, id: &str) -> Result<Branch> {
-        let tree = self
-            .tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
-        if tree.ended_head(id).is_some() {
+        if self.ended_head(id).is_some() {
             return Err(AgentError::BranchEnded(id.into()));
         }
-        tree.owned_context(id)
+        self.owned_context(id)
             .map(|context| context.branch())
             .ok_or_else(|| AgentError::UnknownBranch(id.into()))
     }
     pub fn list(&self) -> Vec<TimelineInfo> {
-        self.tree
-            .upgrade()
-            .map(|tree| tree.list())
-            .unwrap_or_default()
+        TimelineTreeControl::list(self)
     }
     #[service(skip)]
     pub async fn branch(
@@ -286,10 +399,7 @@ impl TreeCommands {
         admission: CancellationToken,
         idle_notice: IdleNotice,
     ) -> Result<Branch> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .create_child(parent, at, options, admission, idle_notice)
+        self.create_child(parent, at, options, admission, idle_notice)
             .await
     }
     // The data methods below spell out `std::result::Result` for rutis'
@@ -298,11 +408,7 @@ impl TreeCommands {
     /// The directory record of branch `id`, from its reservation on, so a
     /// part that loads with its own line reads it during its replay.
     pub fn info(&self, id: String) -> std::result::Result<TimelineInfo, AgentError> {
-        let tree = self
-            .tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
-        tree.info(&id).ok_or(AgentError::UnknownBranch(id))
+        self.line_info(&id).ok_or(AgentError::UnknownBranch(id))
     }
     /// Commits `input` to branch `id` through its validating `Branch::input`
     /// and returns the committed event, or the input already committed with
@@ -316,8 +422,7 @@ impl TreeCommands {
     }
     /// Commits `inputs` to branch `id` as one atomic batch through its
     /// validating `Branch::inputs`: the given order, contiguous sequences and
-    /// one publication. Rust only: no other language has a consumer.
-    #[service(skip)]
+    /// one publication.
     pub async fn inputs(
         &self,
         id: String,
@@ -331,36 +436,24 @@ impl TreeCommands {
         id: String,
         source: BranchSource,
     ) -> std::result::Result<(), AgentError> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .end(&id, source)
-            .await
+        self.end_line(&id, source).await
     }
     /// Ends the line `id` with a tool end's `final_message` riding on its
     /// `branch/end`, which the parent receives once the end is admitted
-    /// (design §10). Rust only: the `branch` tool is its one caller.
-    #[service(skip)]
+    /// (design §10).
     pub async fn end_with_final(
         &self,
         id: String,
         source: BranchSource,
         final_message: Option<String>,
     ) -> std::result::Result<(), AgentError> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .end_with_final(&id, source, final_message)
-            .await
+        self.settle_end(&id, source, final_message).await
     }
     /// The line the Session's conversation is on: the root until a
     /// `branch/default` moves it, then that fact's line while it is open and
     /// selectable (design §4, §5, §20.20).
     pub fn default_branch(&self) -> Result<String> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))
-            .map(|tree| tree.state.lock().unwrap().default.clone())
+        TimelineTreeControl::default_branch(self)
     }
     /// Moves the default branch to `id` and answers it. The target must be an
     /// open conversation line that is not already the default branch, and
@@ -368,11 +461,7 @@ impl TreeCommands {
     /// writes `branch/default` on the root and one status note to each
     /// participant that is not the root (design §4, §10, §14).
     pub async fn set_default_branch(&self, id: String, source: BranchSource) -> Result<String> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .set_default_branch(&id, source)
-            .await
+        self.move_default(&id, source).await
     }
     /// One page of `id`'s committed batches up to `through`; an ended line
     /// reads at its fixed head and `through` must end an atomic batch.
@@ -383,45 +472,37 @@ impl TreeCommands {
         limit: usize,
         through: u64,
     ) -> std::result::Result<Vec<Arc<AgentEvent>>, AgentError> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .page(&id, after, limit, through)
-            .await
+        self.read_page(&id, after, limit, through).await
     }
     /// Ends a raw-event page on an atomic batch boundary without reading its payloads.
-    #[service(skip)]
     pub async fn page_end(
         &self,
-        id: &str,
+        id: String,
         after: u64,
         limit: std::num::NonZeroU64,
         through: u64,
     ) -> Result<u64> {
-        let tree = self
-            .tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?;
-        let head = tree
+        let id = id.as_str();
+        let head = self
             .head(id)
             .ok_or_else(|| AgentError::UnknownBranch(id.into()))?;
         if after > through || through > head {
             return Err(AgentError::InvalidInput("future Timeline cursor".into()));
         }
         let target = after.saturating_add(limit.get()).min(through);
-        if let Some(context) = tree.owned_context(id) {
+        if let Some(context) = self.owned_context(id) {
             let timeline = context.timeline();
             timeline.batch_end(after).await?;
             timeline.batch_end(through).await?;
             timeline.batch_end_at(target).await
         } else {
             let key = TimelineKey {
-                session_id: tree.session_id.clone(),
+                session_id: self.session_id.clone(),
                 branch_id: id.into(),
             };
-            tree.store.batch_end(&key, after).await?;
-            tree.store.batch_end(&key, through).await?;
-            tree.store.batch_end_at(&key, target).await
+            self.store.batch_end(&key, after).await?;
+            self.store.batch_end(&key, through).await?;
+            self.store.batch_end_at(&key, target).await
         }
     }
     /// Computes properties at a fixed cutoff. Chain scope reads only published
@@ -432,79 +513,30 @@ impl TreeCommands {
         id: String,
         query: dim_agent_runtime::TimelineQuery,
     ) -> std::result::Result<dim_agent_runtime::TimelineQueryReply, AgentError> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .query(&id, query)
-            .await
-    }
-    /// The head a read of `id` ends at: fixed once ended, published while
-    /// open.
-    #[service(skip)]
-    fn head(&self, id: &str) -> Option<u64> {
-        self.tree.upgrade()?.head(id)
+        self.query_line(&id, query).await
     }
     /// Checks that `sequence` ends an atomic batch of line `id`, forwarding to
-    /// its Timeline while open and reading the store once it ends. The check
-    /// stays out of the service surface because no other language reads batch
-    /// structure.
-    #[service(skip)]
+    /// its Timeline while open and reading the store once it ends.
     pub async fn batch_end(
         &self,
         id: String,
         sequence: u64,
     ) -> std::result::Result<(), AgentError> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .batch_end(&id, sequence)
-            .await
+        self.check_batch_end(&id, sequence).await
     }
     /// The line the latest `branch/default` moved from, `None` when the root
     /// held the role or no move was recorded. Rust only: the status note's
     /// reconciling load is its one reader (design §5).
     #[service(skip)]
     pub fn default_from(&self) -> Option<String> {
-        self.tree
-            .upgrade()
-            .and_then(|tree| tree.state.lock().unwrap().default_from.clone())
+        self.state.lock().unwrap().default_from.clone()
     }
     /// A signal that changes after each move; it wakes a line's writer, which
     /// reads the transitions the tree owes it from its own queue, not from this
     /// value (design §5).
     #[service(skip)]
     fn default_moves(&self) -> watch::Receiver<u64> {
-        self.tree
-            .upgrade()
-            .map(|tree| tree.default_moved.subscribe())
-            .unwrap_or_else(|| watch::channel(0).1)
-    }
-    /// The oldest move `id` owes a status note for, in commit order; this call
-    /// takes it off the line's queue (design §5, §20.21).
-    #[service(skip)]
-    fn next_move(&self, id: &str) -> Option<DefaultMove> {
-        self.tree.upgrade()?.next_move(id)
-    }
-    /// A signal that changes when line `id` ends a turn; it carries that
-    /// `turn/end`'s sequence.
-    #[service(skip)]
-    fn turn_ends(&self, id: &str) -> Option<watch::Receiver<u64>> {
-        self.tree.upgrade()?.turn_ends(id)
-    }
-    /// Whether line `id` did anything after `from` that a line it opened must
-    /// see: an operator input, or a tool call.
-    #[service(skip)]
-    async fn activity_after(
-        &self,
-        id: &str,
-        from: u64,
-        through: u64,
-    ) -> std::result::Result<bool, AgentError> {
-        self.tree
-            .upgrade()
-            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .activity_after(id, from, through)
-            .await
+        self.default_moved.subscribe()
     }
     /// Creates a child of `parent` cut at `at` and returns its id.
     /// `cancelled` is the caller's cancellation as an explicit argument, the
@@ -541,6 +573,146 @@ impl TreeCommands {
         Ok(created?.id().to_owned())
     }
 }
+impl TimelineTree {
+    /// Selects the branch now. Polling the returned operation configures that
+    /// instance even when the caller first has to persist Session state.
+    pub fn configure_prompt(
+        &self,
+        branch_id: &str,
+        request: crate::prompt::PromptConfigurationRequest,
+    ) -> Result<impl Future<Output = Result<dim_agent_runtime::ConfigureOutcome>> + Send + 'static>
+    {
+        let branch = self.get(branch_id)?;
+        Ok(async move {
+            branch
+                .admitted_service::<crate::prompt::Prompt>()?
+                .configure(request)
+                .await
+        })
+    }
+
+    /// Binds a configuration write to its branch before the caller prepares
+    /// the model. The Prompt owner is read when the prepared write runs.
+    pub fn prepare_prompt_write(
+        &self,
+        branch_id: &str,
+    ) -> Result<
+        impl FnOnce(
+            crate::prompt::PromptConfigurationRequest,
+        ) -> BoxFuture<'static, Result<dim_agent_runtime::ConfigureOutcome>>
+        + use<>,
+    > {
+        let branch = self.get(branch_id)?;
+        Ok(
+            move |request| -> BoxFuture<'static, Result<dim_agent_runtime::ConfigureOutcome>> {
+                Box::pin(async move {
+                    branch
+                        .service::<crate::prompt::Prompt>()?
+                        .configure(request)
+                        .await
+                })
+            },
+        )
+    }
+
+    /// The native result of the selected branch's `prompt.adoptedConfiguration` operation.
+    pub fn adopted_configuration(&self, branch_id: &str) -> Result<Option<ModelConfiguration>> {
+        Ok(self
+            .get(branch_id)?
+            .service::<crate::prompt::Prompt>()?
+            .adopted_configuration(Default::default()))
+    }
+
+    pub fn pending_approvals(&self, branch_id: &str) -> Result<Vec<ApprovalRequestData>> {
+        let branch = self.get(branch_id)?;
+        if branch.is_closing() {
+            return Err(AgentError::Closed(branch_id.into()));
+        }
+        Ok(branch.service::<crate::approval::Approval>()?.pending())
+    }
+
+    pub fn decide_approval(
+        &self,
+        branch_id: &str,
+        request_id: String,
+        decision: ApprovalDecision,
+    ) -> Result<
+        impl Future<Output = std::result::Result<(), crate::approval::ApprovalRespondError>>
+        + Send
+        + 'static
+        + use<>,
+    > {
+        let approval = self
+            .get(branch_id)?
+            .service::<crate::approval::Approval>()?;
+        Ok(async move { approval.decide(request_id, decision).await })
+    }
+
+    pub fn withdraw(
+        &self,
+        branch_id: &str,
+        command: InputWithdrawData,
+    ) -> Result<impl Future<Output = Result<crate::input_queue::Withdrawal>> + Send + 'static + use<>>
+    {
+        let queue = self
+            .get(branch_id)?
+            .service::<crate::input_queue::InputQueue>()?;
+        Ok(async move { queue.withdraw(command).await })
+    }
+
+    pub(crate) async fn call_branch(
+        &self,
+        request: BranchCall,
+        cancel: CancellationToken,
+    ) -> std::result::Result<serde_json::Value, crate::methods::RpcError> {
+        let branch_id = &request.branch_id;
+        match request.operation {
+            BranchOperation::ContextUsage => {
+                crate::methods::reply(self.context_usage(branch_id, cancel).await?)
+            }
+            BranchOperation::CompactAndWait => {
+                crate::context_methods::compact(&self.get(branch_id)?, &cancel).await
+            }
+            BranchOperation::ConfigurePrompt { request } => {
+                let configure = self.configure_prompt(branch_id, *request)?;
+                let outcome = tokio::select! {
+                    result = configure => result?,
+                    _ = cancel.cancelled() => return Err(crate::methods::RpcError::interrupted()),
+                };
+                crate::methods::reply(outcome)
+            }
+            BranchOperation::AdoptedConfiguration => {
+                crate::methods::reply(self.adopted_configuration(branch_id)?)
+            }
+            BranchOperation::ApprovalDecide {
+                request_id,
+                decision,
+            } => {
+                self.decide_approval(branch_id, request_id, decision)?
+                    .await
+                    .map_err(|error| {
+                        use crate::approval::ApprovalRespondError;
+                        let code = match error {
+                            ApprovalRespondError::Unknown => "Unknown",
+                            ApprovalRespondError::Cancelled => "Cancelled",
+                            ApprovalRespondError::Closed => "Closed",
+                        };
+                        crate::methods::RpcError::service(code, error.to_string())
+                    })?;
+                Ok(serde_json::Value::Null)
+            }
+            BranchOperation::Withdraw { command } => {
+                crate::methods::reply(self.withdraw(branch_id, command)?.await.map_err(
+                    |error| crate::methods::RpcError::service(error.variant(), error.to_string()),
+                )?)
+            }
+            BranchOperation::ApprovalPending => {
+                crate::methods::reply(self.pending_approvals(branch_id)?)
+            }
+        }
+    }
+}
+
 /// One page of an open line's own facts after `after`, at most `limit`, never
 /// past `through`, ending on an atomic batch: a page that reaches its limit
 /// inside one runs to that batch's end, so an open and an ended line's pages
@@ -1170,7 +1342,7 @@ impl TimelineTree {
     /// One page of `id`'s committed batches, never past `through`: an ended
     /// line reads at its fixed head. `through` must end an atomic batch, as it
     /// does for a live line's read, so a page cannot be cut inside one.
-    async fn page(
+    async fn read_page(
         &self,
         id: &str,
         after: u64,
@@ -1204,7 +1376,7 @@ impl TimelineTree {
             .map(|record| record.event)
             .collect())
     }
-    async fn query(
+    async fn query_line(
         &self,
         id: &str,
         query: TimelineQuery,
@@ -1283,7 +1455,7 @@ impl TimelineTree {
     }
     /// The batch-end check of one line, forwarding to its Timeline while open
     /// and reading the store at the tree's key after it ends.
-    async fn batch_end(&self, id: &str, sequence: u64) -> Result<()> {
+    async fn check_batch_end(&self, id: &str, sequence: u64) -> Result<()> {
         if let Some(context) = self.owned_context(id) {
             return context.timeline().batch_end(sequence).await;
         }
@@ -1364,7 +1536,7 @@ impl TimelineTree {
         // (design §7.1.1), so only the roster's key can be live there.
         let skip_root = key == parent_key();
         for (line, through) in chain.into_iter().rev() {
-            if self.info(&line).is_none() || (skip_root && line == ROOT_BRANCH_ID) {
+            if self.line_info(&line).is_none() || (skip_root && line == ROOT_BRANCH_ID) {
                 continue;
             }
             let scope = self.stored_scope(&line, 1, through);
@@ -1603,7 +1775,17 @@ impl TimelineTree {
     }
     /// A line's directory record, published or still opening; absent once a
     /// failed creation removed it.
-    fn info(&self, id: &str) -> Option<TimelineInfo> {
+    pub fn directory_entry(&self, id: &str) -> Result<BranchDirectoryEntry> {
+        let state = self.state.lock().unwrap();
+        state
+            .nodes
+            .get(id)
+            .and_then(Node::directory_entry)
+            .or_else(|| state.ended.get(id).map(EndedLine::directory_entry))
+            .ok_or_else(|| AgentError::UnknownBranch(id.into()))
+    }
+
+    fn line_info(&self, id: &str) -> Option<TimelineInfo> {
         let state = self.state.lock().unwrap();
         state
             .nodes
@@ -1611,15 +1793,15 @@ impl TimelineTree {
             .map(|node| node.info.clone())
             .or_else(|| state.ended.get(id).map(|ended| ended.info.clone()))
     }
-    async fn end(&self, id: &str, source: BranchSource) -> Result<()> {
-        self.end_with_final(id, source, None).await
+    async fn end_line(&self, id: &str, source: BranchSource) -> Result<()> {
+        self.settle_end(id, source, None).await
     }
     /// Ends `id` with `final_message` riding on `branch/end` when it is a tool
     /// end, and waits for the close. The guard, the command and the message are
     /// one operation: a refused end writes neither, so a line the user has just
     /// made the default branch never tells its parent it ended (design §10,
     /// §20.26a).
-    async fn end_with_final(
+    async fn settle_end(
         &self,
         id: &str,
         source: BranchSource,
@@ -1777,7 +1959,7 @@ impl TimelineTree {
     /// that fails answers its error and changes nothing. Once the write is
     /// admitted the tree settles it, so a caller that goes away after that
     /// point does not leave the fact unapplied.
-    async fn set_default_branch(&self, id: &str, source: BranchSource) -> Result<String> {
+    async fn move_default(&self, id: &str, source: BranchSource) -> Result<String> {
         let operations = self.operations.clone().lock_owned().await;
         let owner = self
             .weak
@@ -2827,7 +3009,7 @@ impl TimelineTreeControl for TimelineTree {
         })
     }
     fn end(&self, id: String, source: BranchSource) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move { TimelineTree::end(self, &id, source).await })
+        Box::pin(async move { TimelineTree::end_line(self, &id, source).await })
     }
     fn default_branch(&self) -> Result<String> {
         Ok(self.state.lock().unwrap().default.clone())
@@ -2837,7 +3019,7 @@ impl TimelineTreeControl for TimelineTree {
         id: String,
         source: BranchSource,
     ) -> BoxFuture<'_, Result<String>> {
-        Box::pin(async move { TimelineTree::set_default_branch(self, &id, source).await })
+        Box::pin(async move { TimelineTree::move_default(self, &id, source).await })
     }
     fn ended_head(&self, id: &str) -> Option<u64> {
         TimelineTree::ended_head(self, id)
@@ -2853,45 +3035,15 @@ impl TimelineTreeControl for TimelineTree {
             .collect()
     }
     fn directory(&self) -> Vec<BranchDirectoryEntry> {
-        // Collect the records under the lock, then resolve heads through
-        // `head()`, which takes the lock itself.
-        let mut entries: Vec<BranchDirectoryEntry> = {
+        let mut entries = {
             let state = self.state.lock().unwrap();
-            let mut entries: Vec<BranchDirectoryEntry> = state
+            state
                 .nodes
                 .values()
-                .filter(|node| matches!(&*node.ready.borrow(), Some(Ok(_))))
-                .map(|node| {
-                    let end_event = node
-                        .context
-                        .as_ref()
-                        .and_then(|context| context.end_event());
-                    BranchDirectoryEntry {
-                        info: node.info.clone(),
-                        head: 0,
-                        state: match end_event {
-                            Some(_) => BranchDirectoryState::Ending,
-                            None => BranchDirectoryState::Open,
-                        },
-                        end_event,
-                    }
-                })
-                .collect();
-            for ended in state.ended.values() {
-                entries.push(BranchDirectoryEntry {
-                    info: ended.info.clone(),
-                    head: ended.head,
-                    state: BranchDirectoryState::Ended,
-                    end_event: ended.end_event,
-                });
-            }
-            entries
+                .filter_map(Node::directory_entry)
+                .chain(state.ended.values().map(EndedLine::directory_entry))
+                .collect::<Vec<_>>()
         };
-        for entry in &mut entries {
-            if entry.state != BranchDirectoryState::Ended {
-                entry.head = self.head(&entry.info.id).unwrap_or(0);
-            }
-        }
         entries.sort_by(|a, b| {
             let order = |id: &str| id != ROOT_BRANCH_ID;
             (order(&a.info.id), &a.info.id).cmp(&(order(&b.info.id), &b.info.id))
@@ -2924,7 +3076,7 @@ impl TimelineTreeControl for TimelineTree {
 pub struct TreeTimelinePlugin {
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    commands: Key<TreeCommands>,
+    commands: Key<TimelineTree>,
     identity: Key<dim_agent_runtime::TimelineIdentity>,
 }
 impl TreeTimelinePlugin {
@@ -2955,10 +3107,11 @@ impl DynPlugin for TreeTimelinePlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let commands = ctx.require_at(&self.commands)?;
             let identity = ctx.require_at(&self.identity)?;
+            let commands = Arc::downgrade(&commands);
             let cleanup = commands.clone();
             let parent = identity.branch_id.clone();
             ctx.effect(move || async move {
-                if let Some(tree) = cleanup.tree.upgrade() {
+                if let Some(tree) = cleanup.upgrade() {
                     let cancelled = TimelineTree::cancel_pending(
                         &mut tree.state.lock().unwrap(),
                         Some(&parent),
@@ -2975,17 +3128,14 @@ impl DynPlugin for TreeTimelinePlugin {
                     let branch = &identity.branch_id;
                     let result = match &event.kind {
                         EventKind::BranchCreate(_) => commands
-                            .tree
                             .upgrade()
                             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))
                             .and_then(|tree| tree.on_create(branch, &timeline, &event)),
                         EventKind::BranchEnd(data) => commands
-                            .tree
                             .upgrade()
                             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))
                             .map(|tree| tree.on_end(branch, event.sequence, data.clone())),
                         EventKind::TurnEnd(_) => commands
-                            .tree
                             .upgrade()
                             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))
                             .map(|tree| tree.on_turn_end(branch, event.sequence)),
@@ -2999,7 +3149,6 @@ impl DynPlugin for TreeTimelinePlugin {
     }
 }
 pub struct TimelineTreePlugin {
-    commands: Key<TreeCommands>,
     tree: Key<TimelineTree>,
     control: Key<dyn TimelineTreeControl>,
     factory: Key<TimelineFactory>,
@@ -3009,11 +3158,11 @@ pub struct TimelineTreePlugin {
 }
 impl TimelineTreePlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        let session = names.instance(dim_agent_runtime::SESSION_GROUP)?;
         Ok(Self {
-            commands: names.key()?,
             tree: names.key()?,
-            control: names.key()?,
-            factory: names.key()?,
+            control: Key::of().instance(session),
+            factory: Key::of().instance(session),
             store: names.key()?,
             identity: names.key()?,
             guide: names.key()?,
@@ -3059,10 +3208,6 @@ impl DynPlugin for TimelineTreePlugin {
             let tree = TimelineTree::new(factory, store, identity.session_id.clone());
             let owner = tree.clone();
             ctx.effect(move || async move { owner.close().await.map_err(Into::into) })?;
-            let commands = Arc::new(TreeCommands {
-                tree: Arc::downgrade(&tree),
-            });
-            ctx.provide_at(self.commands.clone(), commands)?;
             ctx.provide_at(self.tree.clone(), tree.clone())?;
             ctx.provide_at(self.control.clone(), tree as Arc<dyn TimelineTreeControl>)?;
             Ok(Effect::Done)
@@ -3072,7 +3217,7 @@ impl DynPlugin for TimelineTreePlugin {
 /// Session part: registers the `branch` tool, which forks the calling
 /// branch through the tree.
 pub struct BranchToolPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     tools: Key<ToolRegistry>,
     config: BranchToolConfig,
 }
@@ -3292,7 +3437,7 @@ pub struct BranchLinePlugin {
     identity: Key<TimelineIdentity>,
     lifecycle: Key<BranchLifecycle>,
     session: Key<dim_agent_runtime::SessionLifecycle>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     guide: Key<GuideEntries>,
     config: BranchToolConfig,
 }
@@ -3437,7 +3582,7 @@ impl DynPlugin for BranchLinePlugin {
 }
 pub struct BranchLine {
     own: String,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     /// The line's own Timeline, which a load writes through before the tree
     /// has registered the line.
     timeline: Arc<Timeline>,
@@ -4770,7 +4915,7 @@ fn first_line(purpose: &str) -> String {
 }
 
 struct BranchTool {
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
 }
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// Target events per `read` page; the final atomic batch may exceed it.
@@ -5103,7 +5248,7 @@ impl BranchTool {
         let next = self
             .tree
             .page_end(
-                &target.id,
+                target.id.clone(),
                 after,
                 NonZeroU64::new(limit as u64).unwrap(),
                 head,
@@ -5258,7 +5403,7 @@ enum LineRead {
 }
 
 async fn line_read_items(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &str,
     after: u64,
     through: u64,

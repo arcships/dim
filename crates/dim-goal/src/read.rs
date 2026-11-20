@@ -3,7 +3,7 @@ use crate::{
     fold::Fold,
     text,
 };
-use dim_agent_capabilities::timeline_tree::TreeCommands;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
 use dim_agent_runtime::{
     AgentError, BoxFuture, QueryOutput, QueryPick, QueryValue, TimelineQuery, TimelineQueryReply,
 };
@@ -33,7 +33,7 @@ pub(crate) fn pause_reloaded(fold: &mut Fold) {
 }
 
 pub(crate) async fn current(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch_id: &str,
     cancel: &CancellationToken,
 ) -> Result<GoalRead, AgentError> {

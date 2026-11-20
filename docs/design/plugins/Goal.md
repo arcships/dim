@@ -12,10 +12,10 @@ Goal 属于一条分支。Session 部件注册命令和工具，branch 部件拥
 
 | 部件 | 依赖和职责 |
 | --- | --- |
-| GoalSession | TreeCommands、ToolRegistry、SessionMethods、GuideEntries、SessionIdentity；注册 goal_update、session.goal 和模型 guide。入口按 Session 与 branch 身份路由本插件拥有的 branch 处理句柄，不持有分支业务状态。 |
-| GoalBranch | Dispatcher、Timeline、TimelineIdentity、BranchLifecycle、SessionLifecycle、TreeCommands、Settings；拥有状态、决定、业务事件和自己的任务。 |
+| GoalSession | TimelineTree、ToolRegistry、SessionMethods、GuideEntries、SessionIdentity；注册 goal_update、session.goal 和模型 guide。入口按 Session 与 branch 身份路由本插件拥有的 branch 处理句柄，不持有分支业务状态。 |
+| GoalBranch | Dispatcher、Timeline、TimelineIdentity、BranchLifecycle、SessionLifecycle、TimelineTree、Settings；拥有状态、决定、业务事件和自己的任务。 |
 
-分支内写业务状态用声明的 timeline；普通 continuation 和评估分支操作沿用原输入/TreeCommands 服务。没有新公共分支服务、Store 依赖或恢复协调模块。部件在 apply 注册清理及服务，实际消费和任务遵守 activated/closing；关闭完成必要终态后才移除服务。
+分支内写业务状态用声明的 timeline；普通 continuation 和评估分支操作沿用原输入/TimelineTree 服务。没有新公共分支服务、Store 依赖或恢复协调模块。部件在 apply 注册清理及服务，实际消费和任务遵守 activated/closing；关闭完成必要终态后才移除服务。
 
 maxContinuations 仍是 Settings 的 goal 源中的可选业务字段，范围 1..=1000，缺失表示无限额。每次决定通过 Settings 读取；不增加默认限额、缓存或重载配置机制。
 

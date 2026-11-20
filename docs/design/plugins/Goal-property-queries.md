@@ -8,7 +8,7 @@ Issue: [#1320](https://github.com/arcships/dim/issues/1320)。
 
 ## 1. 加载读取
 
-固定本分支已发布读头 S。通过声明的 timeline.query，结束分支通过 treeCommands.query，执行两次逻辑查询：
+固定本分支已发布读头 S。通过声明的 timeline.query，结束分支通过 timelineTree.query，执行两次逻辑查询：
 
 1. branch/start、session/forked 合并范围中的最后一条位置；不按 kind 分组、不统计历史条数。
 2. 本地 opening 至 S 的 goal/state，Last、limit=1，只取 position.sequence 和 data。

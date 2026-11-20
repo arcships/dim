@@ -13,7 +13,7 @@ PromptSuggestion 提示用户接下来可能发送的消息。当一个看到某
 | 部件 | 作用域 | 它拥有的状态 | 依赖 | 提供 |
 | --- | --- | --- | --- | --- |
 | `PromptSuggestionSettings` | 进程（App Server） | `prompt-suggestion` Settings 来源 | `P:Settings` | `P:PromptSuggestionSettingsHost` |
-| `PromptSuggestion` | Session | 最近完成轮次的请求与内容、在途请求、正在显示的提示、未采用计数 | `S:SessionIdentity`、`S:SessionConfig`、`S:SessionLifecycle`、`S:SessionMethods`、`S:TreeCommands`、`P:ModelHost`、产品 process 模型模式下的 `P:ProviderConnectionResolver`，以及装配绑定时的 `P:PromptSuggestionSettingsHost` | 通过 `sessionMethods` 提供 `session.suggestion` |
+| `PromptSuggestion` | Session | 最近完成轮次的请求与内容、在途请求、正在显示的提示、未采用计数 | `S:SessionIdentity`、`S:SessionConfig`、`S:SessionLifecycle`、`S:SessionMethods`、`S:TimelineTree`、`P:ModelHost`、产品 process 模型模式下的 `P:ProviderConnectionResolver`，以及装配绑定时的 `P:PromptSuggestionSettingsHost` | 通过 `sessionMethods` 提供 `session.suggestion` |
 
 进程部件在本 daemon 其他业务来源所在的位置声明该来源，与 `ExecutionSettings`、`ModelLog` 并列；该来源是各 Session 共用的进程状态，所以不是 Session 部件（[ADR 002 D1](../../adr/002-plugin-scope.md)）。Session 部件在每次决策时通过宿主端口读取该来源（[ADR 002 D4](../../adr/002-plugin-scope.md)）：修改 `enabled` 或 `maxChars` 从不重载任何部件。
 
@@ -301,7 +301,7 @@ CLI 只在看到该轮 `turn/end` 为 `Completed` 之后、且输入框为空、
 | `ModelHost` | `invoke` | async | `{request, connection, cancel}` | `ModelChunk` 流 |
 | `ProviderConnectionResolver` | `resolve` | async | `{request, cancel}` | `{connection, failurePolicy, recovery}`（仅 process 模型；本地模型发送 `ModelConnection::Local`，其装配用 `install_local` 而不是 `install` 装载该部件） |
 | `SessionMethods` | `register` | sync | 命名空间 `session.suggestion`，两个声明 | 登记随该部件的代结束 |
-| `TreeCommands` | `get` | sync | `main` | 分支，上下文门读取其 `ContextPreparation::usage` |
+| `TimelineTree` | `get` | sync | `main` | 分支，上下文门读取其 `ContextPreparation::usage` |
 | Session 广播 | `session/{sessionId}` 上的记录 | 总线事件 | - | `Event {branchId, event}`、`Notice`、`Fence`、`Closed` |
 | Settings 来源 `prompt-suggestion` | `read` | async | 用户作用域 | `{enabled, maxChars}` |
 

@@ -502,7 +502,7 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | Neutral | Rust |
 | --- | --- |
 | Namespace `session.rename` registered with `sessionMethods` | The Session part calls `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` on a `Key<SessionMethods>` dependency |
-| Published branch properties | Required `Key<TreeCommands>`; `TreeCommands::query("main", TimelineQuery)` with branch scope, `include_publishing: false` and one-row `QuerySelect::Fields` results. Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
+| Published branch properties | Required `Key<TimelineTree>`; `TimelineTree::query("main", TimelineQuery)` with branch scope, `include_publishing: false` and one-row `QuerySelect::Fields` results. Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
 | Title metadata | `SessionMetadataService::read` and `SessionMetadataService::set_title` |
 | Auxiliary call | `AuxiliaryModel.0.complete` with its cancellation token |
 | Optional generation | `ctx.get_at(&host_key("sessionTitleGenerator"))` at use; `HostDispatch.generate` with a cancellable callback promise, using the request/reply types exported by `dim-session-title` |

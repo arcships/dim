@@ -57,7 +57,6 @@
 
 ### 1.6 存储端口（`timeline_store.rs`）
 
-
 ### 1.7 依赖图
 
 每条边都是本次审计从调用点读出来的。边上的标签列出经过它的读；指向存储端口的那条是概括写的，因为 `timeline.rs` 内部的调用只枚举了一部分。虚线表示共用的存储代码，不是调用。
@@ -287,7 +286,7 @@ flowchart LR
 ### 6.5 接线
 
 - 能力部件声明对其分支的 Timeline 服务的依赖，并直接调它的 `query`。门面不在它们的路径上。
-- goal 插件读事件时注入 Timeline 服务而不是 `dispatcher`，调用 `Timeline.query`。`npm/branch-services.d.ts` 已经在 `Timeline` 上声明了 `query`。该文件的 `Services` 接口列出了 `timeline: Timeline`，所以这个名字存在。goal 目前注入 dispatcher、timelineIdentity、treeCommands、settings、branchLifecycle 和 sessionLifecycle；绑定能否为分支部件解析 `timeline` 未核实。goal 还读到已分配位置（`dispatcher.committed()` :104、`local(turnStart, through)` :176），所以它和文件读取、协作重建属于同一个未决问题。
+- goal 插件读事件时注入 Timeline 服务而不是 `dispatcher`，调用 `Timeline.query`。`npm/branch-services.d.ts` 已经在 `Timeline` 上声明了 `query`。该文件的 `Services` 接口列出了 `timeline: Timeline`，所以这个名字存在。goal 目前注入 dispatcher、timelineIdentity、timelineTree、settings、branchLifecycle 和 sessionLifecycle；绑定能否为分支部件解析 `timeline` 未核实。goal 还读到已分配位置（`dispatcher.committed()` :104、`local(turnStart, through)` :176），所以它和文件读取、协作重建属于同一个未决问题。
 - App Server 通过 `Session::query(branch, query)` 读已装载的会话，它转发到 `Branch::query`，再到 Timeline 服务。
 - App Server 通过 `SessionStore` 读未装载的会话，因为它没有 Timeline 服务可用。页形状与 `query` 一致，所以装载与否不改变协议。
 - 删除这些读之后，`xtask types` 重新生成 `npm/branch-services.d.ts`，`xtask graph` 重新生成 `catalog.md`；生成文件里其余内容不得变化。

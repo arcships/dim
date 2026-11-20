@@ -58,7 +58,7 @@ Session 部件在自己的 `apply` 中为每个标记各注册一个条目，按
 | §4 规则 4 核心不带业务含义 | 文本属于 Collaboration，沿声明、工具结果与标记传递；Timeline、Dispatcher 与 Loop 不增加任何 Collaboration 分支 |
 | §4 规则 5 决定前读完整批次 | 本页不适用：文本由 Session 部件的工具处理与分支部件按派发序的决定写出；本页不增加读取，也不改变决定 |
 | §4 规则 6 上下文只来自交接后的事件 | 标记只作为被消费的输入到达模型，工具结果只作为 `step/tool-result`；本页不增加上下文路径 |
-| §4 规则 7 只用公开事件与服务 | Session 部件声明私有进程级 `Collaboration` 类型依赖，并使用 Session 的 `sessionIdentity`、`sessionConfig`、`treeCommands`、`sessionLifecycle`、`toolRegistry` 与 `guideEntries`，并在部署提供时读取它的公开 `selectableModels` 端口（§7）；分支部件注入 Session 的 `CollaborationSession`、`timeline`、`dispatcher`、`timelineIdentity` 与 `branchLifecycle`。公开的 `collaborationSession` 投影遵循 §3 链接的所有者契约；不读其他插件的内部状态 |
+| §4 规则 7 只用公开事件与服务 | Session 部件声明私有进程级 `Collaboration` 类型依赖，并使用 Session 的 `sessionIdentity`、`sessionConfig`、`timelineTree`、`sessionLifecycle`、`toolRegistry` 与 `guideEntries`，并在部署提供时读取它的公开 `selectableModels` 端口（§7）；分支部件注入 Session 的 `CollaborationSession`、`timeline`、`dispatcher`、`timelineIdentity` 与 `branchLifecycle`。公开的 `collaborationSession` 投影遵循 §3 链接的所有者契约；不读其他插件的内部状态 |
 | §4 规则 8 向机制所有者提需求 | 对运行时、rutis、loader、生命周期与工具契约无：条目走 Prompt 既有契约，声明走 ToolRegistry，输入走分支既有操作。委派的需求提给 Agents、SessionStore 与删除设计（§6.5） |
 | §4 规则 9 只有后续决定要用的事实进 Timeline | 不增加 Timeline 事实。两个标记是委派本就需要的模型可见结果，guide 条目是 Prompt 作用域内的注册。委派的所有权与 leader 是不进 Timeline 的业务记录，经 Agents 与 SessionStore 的具名写操作写入（§6），不是事件 |
 | §1 插件、部件与 Capability 有界 | Collaboration 仍是它现有的 App Server 能力。Session 部件注册声明、工具与条目；分支部件消费委派的事实。不新增 Capability，核心模块不增加业务代码 |

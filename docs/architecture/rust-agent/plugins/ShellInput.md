@@ -14,7 +14,7 @@ working directory, through the Session methods `shell.run`, `shell.stop` and
 | `P:HostPlatform` | Build each command as `exec` does (`build_process_spec`) and spawn its process tree. |
 | `S:SessionConfig` | The Session working directory. |
 | `S:GuideEntries` | Register the shell-input marker's guide entry at Session scope, until this plugin unloads. |
-| `S:TreeCommands` | Check `branchId` at start; write a recorded run's input on that branch. |
+| `S:TimelineTree` | Check `branchId` at start; write a recorded run's input on that branch. |
 | `S:SessionLifecycle` | `closing()` ends a run without writing; `hold()` keeps the Session from an idle unload while a run is registered. |
 | `S:SessionIdentity` | Session id of the `shell.run` span, one per started run. |
 | `S:SessionMethods` | Register the `shell` namespace from `apply`, until this generation unloads. |
@@ -111,7 +111,7 @@ branch ids, the `runId` and the outcome (`completed:<exit>`, `stopped`,
   recorded result enters the Timeline, while progress is reply data of one call.
 - §4 rules 6 and 7: the output reaches the model only through the consumed
   input; ShellInput uses only public services (`Branch::input` through
-  `TreeCommands`, `SessionConfig`, `SessionLifecycle`, `SessionIdentity`,
+  `TimelineTree`, `SessionConfig`, `SessionLifecycle`, `SessionIdentity`,
   HostPlatform and `sessionMethods`).
 - ADR 002 D4–D5: no configuration of its own; the exec shell is HostPlatform's.
   The commands are the user's, not an agent's tool calls, so no Approval or
@@ -147,7 +147,7 @@ for the race flows; production builds have no hook.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`S:GuideEntries`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:SessionMethods`、`S:TreeCommands` |
+| 注入 | `P:HostPlatform`、`S:GuideEntries`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:SessionMethods`、`S:TimelineTree` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->

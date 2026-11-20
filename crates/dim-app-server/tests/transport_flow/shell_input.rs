@@ -2,7 +2,7 @@
 use super::*;
 use dim_agent_capabilities::{
     model_provider::ModelProviderPlugin, shell_input::testing::hold_start,
-    timeline_tree::TreeCommands, workspace_tools::WorkspaceToolsConfig,
+    timeline_tree::TimelineTree, workspace_tools::WorkspaceToolsConfig,
 };
 use dim_agent_runtime::BranchLifecycle;
 use dim_agent_runtime::testing::chain_events;
@@ -1026,12 +1026,12 @@ async fn reloading_workspace_tools_answers_the_page_method_with_service_reloadin
 struct Probe(Arc<std::sync::Mutex<Option<Probed>>>);
 struct Probed {
     ctx: rutis::Ctx,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
 }
 struct ProbePlugin {
     probe: Probe,
 
-    tree: rutis::host::Key<TreeCommands>,
+    tree: rutis::host::Key<TimelineTree>,
 }
 impl ProbePlugin {
     fn new(names: &dim_agent_runtime::Names<'_>, probe: Probe) -> rutis::Result<Self> {
@@ -1253,7 +1253,7 @@ impl Shell {
     ) -> rutis::host::BoxFuture<'static, Result<(), Arc<rutis::host::ErrorKind>>> {
         self.restart_plugin("ShellInput")
     }
-    fn tree(&self) -> Arc<TreeCommands> {
+    fn tree(&self) -> Arc<TimelineTree> {
         self.probe.0.lock().unwrap().as_ref().unwrap().tree.clone()
     }
     /// A host's idle unload of the Session once its main branch is idle:

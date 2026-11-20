@@ -1,6 +1,6 @@
 use crate::{
     methods::{RpcError, params},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::*;
 use dim_agent_types::{ExecEndedData, ExecStartedData, FinishedExec, PendingExec};
@@ -19,7 +19,7 @@ struct Params {
 }
 
 pub(super) async fn read(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     value: Value,
     cancel: &CancellationToken,
 ) -> std::result::Result<Value, RpcError> {
@@ -148,7 +148,7 @@ pub(super) async fn read(
 /// The newest [`FINISHED_LIMIT`] `exec/ended` facts at the cutoff, each with
 /// the `exec/started` it ends, newest end first.
 pub(super) async fn finished(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     value: Value,
     cancel: &CancellationToken,
 ) -> std::result::Result<Value, RpcError> {
@@ -301,7 +301,7 @@ pub(super) async fn finished(
 /// requests `requests` names whose response made several calls: the order of
 /// the tasks one parallel batch dispatched.
 pub async fn call_positions(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch_id: &str,
     through: u64,
     requests: impl IntoIterator<Item = String>,

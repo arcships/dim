@@ -3,7 +3,7 @@
 use crate::{
     context_preparation::{ContextOpError, ContextPreparation},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    timeline_tree::TreeCommands,
+    timeline_tree::{BranchCall, BranchOperation, TimelineTree},
 };
 use dim_agent_runtime::{
     Branch, Names, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec,
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 pub const NAMESPACE: &str = "session.context";
 
 pub struct ContextMethodsPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
 }
 impl ContextMethodsPlugin {
@@ -62,11 +62,19 @@ impl DynPlugin for ContextMethodsPlugin {
                             branch_id: String,
                         }
                         let Params { branch_id } = params(value)?;
-                        let branch = tree.get(&branch_id)?;
-                        match method.as_str() {
-                            "session.context.compact" => compact(&branch, &cancel).await,
-                            _ => usage(&branch, cancel).await,
-                        }
+                        let operation = if method == "session.context.compact" {
+                            BranchOperation::CompactAndWait
+                        } else {
+                            BranchOperation::ContextUsage
+                        };
+                        tree.call_branch(
+                            BranchCall {
+                                branch_id,
+                                operation,
+                            },
+                            cancel,
+                        )
+                        .await
                     })
                 }),
             )?;
@@ -76,7 +84,10 @@ impl DynPlugin for ContextMethodsPlugin {
 }
 /// Writes `context/compact`, or joins the outstanding command, and waits for
 /// the result that carries that command.
-async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, RpcError> {
+pub(crate) async fn compact(
+    branch: &Branch,
+    cancel: &CancellationToken,
+) -> Result<Value, RpcError> {
     let command = branch
         .service::<dyn dim_agent_runtime::AgentLoop>()?
         .compact()?;
@@ -191,24 +202,31 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
     }
 }
 
-async fn usage(branch: &Branch, cancel: CancellationToken) -> Result<Value, RpcError> {
-    match branch.service::<ContextPreparation>()?.usage(cancel).await {
-        Ok(usage) => reply(usage),
-        Err(ContextOpError::NotReady) => Err(RpcError::app(
-            -32000,
-            "context_usage_unavailable",
-            ContextOpError::NotReady.to_string(),
-        )),
-        Err(ContextOpError::NotConfigured) => Err(RpcError::app(
-            -32000,
-            "context_not_configured",
-            ContextOpError::NotConfigured.to_string(),
-        )),
-        Err(ContextOpError::Model(error)) => Err(RpcError::app(
-            -32000,
-            "context_model_failed",
-            error.to_string(),
-        )),
-        Err(ContextOpError::Read(error)) => Err(error.into()),
+impl TimelineTree {
+    pub(crate) async fn context_usage(
+        &self,
+        branch_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<crate::context_preparation::ContextUsage, RpcError> {
+        let branch = self.get(branch_id)?;
+        match branch.service::<ContextPreparation>()?.usage(cancel).await {
+            Ok(usage) => Ok(usage),
+            Err(ContextOpError::NotReady) => Err(RpcError::app(
+                -32000,
+                "context_usage_unavailable",
+                ContextOpError::NotReady.to_string(),
+            )),
+            Err(ContextOpError::NotConfigured) => Err(RpcError::app(
+                -32000,
+                "context_not_configured",
+                ContextOpError::NotConfigured.to_string(),
+            )),
+            Err(ContextOpError::Model(error)) => Err(RpcError::app(
+                -32000,
+                "context_model_failed",
+                error.to_string(),
+            )),
+            Err(ContextOpError::Read(error)) => Err(error.into()),
+        }
     }
 }

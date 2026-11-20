@@ -260,7 +260,7 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
  * `ctx.use<Services['name']>('name')`. */
 export type {
   AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
-  TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
+  TimelineIdentity, TimelineTree, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';

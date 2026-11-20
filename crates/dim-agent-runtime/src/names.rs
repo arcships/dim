@@ -5,7 +5,7 @@
 //! part is a rutis `host::DynPlugin` that keeps the keys of the services it
 //! depends on, declares them in `injects` and reads them with `require_at`
 //! in `apply`. [`Names`] gives those keys: the Rust binding takes a service's name from its type, as
-//! `#[rutis::service]` does (`TreeCommands` is `treeCommands`), its group from
+//! `#[rutis::service]` does (`TimelineTree` is `timelineTree`), its group from
 //! the catalog, and its key for each copy from the instances the copy runs in.
 //! A part therefore names no group: where its row is placed decides, and a
 //! row placed outside a group one of its names belongs to fails at
@@ -99,9 +99,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<SessionIdentity>(&mut catalog, session);
     register::<SessionLifecycle>(&mut catalog, session);
     register::<FaultReporter>(&mut catalog, session);
-    register::<TimelineFactory>(&mut catalog, session);
     catalog.register_shared_instance("timelineStore", SESSION_GROUP);
-    register::<dyn TimelineTreeControl>(&mut catalog, session);
     register::<SessionLoader>(&mut catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<Timeline>(&mut catalog, branch);

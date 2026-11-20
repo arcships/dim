@@ -49,7 +49,7 @@ pub(super) fn install(
 }
 
 async fn read(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     value: Value,
     cancel: &CancellationToken,
 ) -> std::result::Result<Value, RpcError> {
@@ -231,7 +231,7 @@ const FINISHED_LIMIT: u64 = 50;
 /// `collaboration/result` or a failed `collaboration/delivered` — each with
 /// its request and that request's latest delivery, newest end first.
 async fn finished(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     value: Value,
     cancel: &CancellationToken,
 ) -> std::result::Result<Value, RpcError> {

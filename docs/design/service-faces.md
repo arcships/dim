@@ -114,7 +114,6 @@ Rust 产品装配的现状以 [生成的 catalog](../architecture/rust-agent/gen
 | `modelHost` | `modelHost` | 完整模型请求直接调用所选配置的执行入口；辅助请求使用 `providerService.complete`。 |
 | `loader` | `rutis/loader` | 插件管理走数据面 |
 | `sessionStore` | `store`、`sessionFiles`、`timelineStore` | 标题与 worktree 关联直接调 store |
-| `treeCommands`、`timelineTreeControl` | `timelineTree` | 分支操作直接调用 Session 的树；不保留别名 |
 
 ### 3.4 对象/句柄：拆成操作加 id
 
@@ -200,7 +199,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
 | `providerConnectionResolver` | process | Provider | host-resource |
 | `sessionLoader` | session | SessionScope | control |
-| `timelineFactory` | session | SessionScope | control |
 
 ## 4. 批次契约（#1292）
 

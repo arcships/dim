@@ -47,7 +47,7 @@ Contracts are given in language-neutral form; the Rust form is [Appendix G](#app
 
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
-| `QuestionsPlugin` | Session | `S:SessionConfig`, `S:ToolRegistry`, `S:SessionMethods`, `S:TreeCommands` | Registers `ask_user` with `toolRegistry` and `session.question` (`session.question.respond`, `session.question.pending`) with `sessionMethods` |
+| `QuestionsPlugin` | Session | `S:SessionConfig`, `S:ToolRegistry`, `S:SessionMethods`, `S:TimelineTree` | Registers `ask_user` with `toolRegistry` and `session.question` (`session.question.respond`, `session.question.pending`) with `sessionMethods` |
 
 Installation: the part is installed whenever the plugin is enabled; installation never reads `SessionConfig.interactive` ([session access §9.4](../contracts/session-access.md#94-optional-parts-per-enabled-plugin)), so every Session that mounts `ask_user` declares it whatever its `interactive` (a Session without a mount list mounts it, one with a list when the list names it), and a fork keeps the same tool set and prompt prefix.
 
@@ -348,7 +348,7 @@ None. Every mechanism Questions uses is implemented (§1). Considered and not ra
 | Element | Result |
 | --- | --- |
 | `question/*` events, Questions replay, dynamic events | Removed in #178 (§2) |
-| Branch part `questions`, its Dispatcher subscription on `step/tool-result`, retained answered/cancelled entries, `question_already_answered` and `question_cancelled` | Removed in this revision. The handler that waits already belongs to the Session part, and branch close (through its interrupt) and reload reach it through ToolExecutor's cancel token, so a branch part only added a lookup through `TreeCommands` and a second lifetime. Retained entries only let a second client tell "answered elsewhere" from "not ready" before `step/tool-result`; without them both get `question_not_pending`, and the prompt still closes correctly at `step/tool-result`. Rechecked: answer, decline, interrupt, reload, close, restart and two clients (Appendix B) keep their outcomes |
+| Branch part `questions`, its Dispatcher subscription on `step/tool-result`, retained answered/cancelled entries, `question_already_answered` and `question_cancelled` | Removed in this revision. The handler that waits already belongs to the Session part, and branch close (through its interrupt) and reload reach it through ToolExecutor's cancel token, so a branch part only added a lookup through `TimelineTree` and a second lifetime. Retained entries only let a second client tell "answered elsewhere" from "not ready" before `step/tool-result`; without them both get `question_not_pending`, and the prompt still closes correctly at `step/tool-result`. Rechecked: answer, decline, interrupt, reload, close, restart and two clients (Appendix B) keep their outcomes |
 | `branchId` default `"main"` in `respond` | Removed: a client always has the branch from `session.event`; a default only invites answering the wrong branch |
 | Former F2 (approvals in non-interactive Sessions) | Removed: Approval's, decided in [CLI commands](../cli-commands.md#execution-and-jsonl-output) and [sessions-service D10](../appserver/sessions-service.md) |
 | Mutex table instead of `StateCell` | Kept: entries are live I/O waits, not state rebuildable from the Timeline |

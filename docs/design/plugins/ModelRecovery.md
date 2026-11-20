@@ -35,7 +35,7 @@ flowchart LR
     LP["Loop"]
     MR["ModelRecovery: disposer"]:::new
     TL["Timeline + Dispatcher"]
-    TC["TreeCommands: Branch::input"]
+    TC["TimelineTree: Branch::input"]
     IQ["InputQueue"]
   end
   MP -- "step/model-output-end (failed)" --> LP
@@ -51,7 +51,7 @@ flowchart LR
 
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
-| `ModelRecovery` branch part | Branch | `B:AgentLoop` (the disposer port), `B:Timeline` (committed-fact query), `S:TreeCommands` (the handover input) | A disposer registration; no service |
+| `ModelRecovery` branch part | Branch | `B:AgentLoop` (the disposer port), `B:Timeline` (committed-fact query), `S:TimelineTree` (the handover input) | A disposer registration; no service |
 
 The Loop's port admits one disposer on a branch, and a second registration
 fails. Registration is an effect of the part, so an unload withdraws it; the

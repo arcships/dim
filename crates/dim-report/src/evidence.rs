@@ -1,7 +1,10 @@
-use dim_agent_capabilities::{methods::RpcError, prompt::Prompt, timeline_tree::TreeCommands};
+use dim_agent_capabilities::{
+    methods::RpcError,
+    timeline_tree::{DirectoryReply, DirectoryRequest, TimelineTree},
+};
 use dim_agent_runtime::{
-    AgentError, Branch, QueryEvent, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
-    QuerySpec, TimelineQuery, TimelineQueryScope,
+    AgentError, BranchDirectoryState, QueryEvent, QueryFilter, QueryOperand, QueryOutput,
+    QueryPage, QuerySelect, QuerySpec, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateFailedData, ContentBlock, DEFAULT_BRANCH_ID, EventKind, FinishReason,
@@ -48,7 +51,7 @@ pub(super) enum ErrorReference {
 impl ErrorReference {
     pub(super) async fn capture(
         self,
-        tree: Option<&TreeCommands>,
+        tree: Option<&TimelineTree>,
     ) -> Result<(Snapshot, Option<ModelId>), RpcError> {
         let (observed, branch, timeline) = match self {
             Self::Observed { observed } => (
@@ -73,10 +76,7 @@ impl ErrorReference {
             return Err(RpcError::invalid("Client version is required"));
         }
         let client_version = Some(observed.client_version.clone());
-        let default_model = tree
-            .and_then(|tree| tree.get(&branch).ok())
-            .as_ref()
-            .and_then(adopted_model);
+        let default_model = tree.and_then(|tree| adopted_model(tree, &branch));
         Ok((
             Snapshot {
                 error: Some(observed.into()),
@@ -188,9 +188,15 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    pub(super) async fn capture_session(tree: &TreeCommands) -> (Self, Option<ModelId>) {
-        let branch = tree.get(DEFAULT_BRANCH_ID).ok();
-        let conversation_through = branch.as_ref().map(Branch::sequence);
+    pub(super) async fn capture_session(tree: &TimelineTree) -> (Self, Option<ModelId>) {
+        let conversation_through = match tree.directory(DirectoryRequest {
+            id: Some(DEFAULT_BRANCH_ID.to_owned()),
+        }) {
+            Ok(DirectoryReply::One(entry)) if entry.state != BranchDirectoryState::Ended => {
+                Some(entry.head)
+            }
+            _ => None,
+        };
         let timeline = match conversation_through {
             Some(through) => read_window(tree, DEFAULT_BRANCH_ID, through, ACTIVITY_KINDS)
                 .await
@@ -201,7 +207,7 @@ impl Snapshot {
                 .map_err(|_| Missing::ReadFailed),
             None => Err(Missing::ReadFailed),
         };
-        let model = branch.as_ref().and_then(adopted_model);
+        let model = adopted_model(tree, DEFAULT_BRANCH_ID);
         (
             Self {
                 error: None,
@@ -223,7 +229,7 @@ pub(super) struct ConversationExcerpt {
 }
 
 pub(super) async fn capture_conversation(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     through: u64,
 ) -> Vec<ConversationExcerpt> {
     let Ok((events, _)) = read_window(
@@ -383,11 +389,8 @@ fn eligible_line(line: &str) -> bool {
     .any(|pattern| lower.contains(pattern))
 }
 
-fn adopted_model(branch: &Branch) -> Option<ModelId> {
-    let configuration = branch
-        .service::<Prompt>()
-        .ok()?
-        .adopted_configuration(Default::default())?;
+fn adopted_model(tree: &TimelineTree, branch_id: &str) -> Option<ModelId> {
+    let configuration = tree.adopted_configuration(branch_id).ok()??;
     Some(ModelId {
         provider_id: configuration.provider_id,
         model_id: configuration.model_id,
@@ -478,7 +481,7 @@ fn project(event: &AgentEvent, include_completed_model: bool) -> Option<Record> 
 }
 
 async fn read(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &str,
     sequence: u64,
     operation: Operation,
@@ -521,7 +524,7 @@ async fn read(
 }
 
 async fn read_window(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &str,
     through: u64,
     extra_kinds: &[&str],

@@ -12,7 +12,7 @@
 use crate::{
     context_policy::check_cancel,
     host::{HostError, HostFuture, ToolExecutionContext},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
 };
 use dim_agent_runtime::{
@@ -91,7 +91,7 @@ fn recall_definition() -> ToolDefinition {
 }
 
 pub struct RecallPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     tools: Key<ToolRegistry>,
 }
 
@@ -127,7 +127,7 @@ impl DynPlugin for RecallPlugin {
     }
 }
 
-struct RecallTool(Arc<TreeCommands>);
+struct RecallTool(Arc<TimelineTree>);
 
 impl RecallTool {
     async fn run(

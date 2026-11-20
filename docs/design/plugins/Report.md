@@ -1,7 +1,5 @@
 # Report plugin
 
-The [target Session tree binding](../contracts/runtime-owner-operations.md) moves calls from `treeCommands` to `timelineTree` with the same arguments and replies. The catalog entry and consumer injections change together. References to `treeCommands` below describe the pre-migration binding.
-
 Status: Draft. Scope: Session reports and a process entry for errors without a readable Session.
 Issue: [#1319](https://github.com/arcships/dim/issues/1319).
 
@@ -130,7 +128,7 @@ The client keeps the completed preview and bytes when a share action fails. The 
 
 ## 8. Dependencies and rule check
 
-The Session part declares the `sessionMethods`, `sessionLifecycle` and `treeCommands` data faces. It uses the [public branch read surface](../timeline-read-ownership.md#8-binding-appendix) for the published cutoff and adopted model selection. The process part declares the `managementMethods` and `partRegistry` data faces. Both use caller origin and the process build metadata already available to App Server. With no approved typed diagnostics source, build and platform information are sufficient process evidence. Model-assisted generation depends on the model owners in §7. App Server composes the parts as one feature. [Service catalog](../../architecture/rust-agent/generated/catalog.md).
+The Session part declares the `sessionMethods`, `sessionLifecycle` and `timelineTree` data faces. It uses the [public branch read surface](../timeline-read-ownership.md#8-binding-appendix) for the published cutoff and adopted model selection. The process part declares the `managementMethods` and `partRegistry` data faces. Both use caller origin and the process build metadata already available to App Server. With no approved typed diagnostics source, build and platform information are sufficient process evidence. Model-assisted generation depends on the model owners in §7. App Server composes the parts as one feature. [Service catalog](../../architecture/rust-agent/generated/catalog.md).
 
 | Rule | Check |
 | --- | --- |

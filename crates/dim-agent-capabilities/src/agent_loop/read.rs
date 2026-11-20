@@ -1,6 +1,6 @@
 use crate::{
     methods::{Interruption, MethodDecl, RpcError, SessionMethods, params},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -20,7 +20,7 @@ struct Params {
 }
 
 pub struct LoopMethodsPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
 }
 impl LoopMethodsPlugin {

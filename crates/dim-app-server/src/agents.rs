@@ -456,7 +456,7 @@ async fn ended_page(
     through: u64,
 ) -> dim_agent_runtime::Result<Vec<Arc<dim_agent_types::AgentEvent>>> {
     session
-        .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()?
+        .session_service::<dim_agent_capabilities::timeline_tree::TimelineTree>()?
         .page(branch.to_owned(), after, limit, through)
         .await
 }

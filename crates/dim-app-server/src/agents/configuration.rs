@@ -3,9 +3,9 @@ use crate::connection::{configuration_outcome, port_error};
 use dim_agent_capabilities::{
     host::ModelSelectionRequest,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    prompt::{Prompt, PromptConfigurationRequest},
+    prompt::PromptConfigurationRequest,
     prompt_sources,
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{Names, PromptSourceTarget};
 use dim_agent_types::{DEFAULT_BRANCH_ID, ModelSelection, PromptScope};
@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 /// and reads back the profile the branch's configuration was adopted from.
 pub(crate) struct AgentsSessionPlugin {
     index: Key<AgentIndex>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
 }
 impl AgentsSessionPlugin {
@@ -74,7 +74,7 @@ impl DynPlugin for AgentsSessionPlugin {
 /// `session.agent.get`: the profile recorded on the branch's adopted
 /// configuration. It reads the branch's published Prompt snapshot, which
 /// projects the configuration inherited from the branch's ancestry.
-fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError> {
+fn configured_agent(tree: &TimelineTree, value: Value) -> Result<Value, RpcError> {
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct Params {
@@ -90,10 +90,7 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
     }
     let Params { branch_id, .. } = params(value)?;
     let agent_id = tree
-        .get(&branch_id)?
-        .service::<Prompt>()
-        .map_err(|_| RpcError::reloading())?
-        .adopted_configuration(Default::default())
+        .adopted_configuration(&branch_id)?
         .and_then(|configuration| configuration.metadata)
         .and_then(|metadata| metadata.agent_id);
     reply(Answer { agent_id })
@@ -104,7 +101,7 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
 /// the record is the adopted configuration's own metadata.
 async fn adopt_profile(
     index: Arc<AgentIndex>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     value: Value,
     cancel: CancellationToken,
 ) -> Result<Value, RpcError> {
@@ -126,7 +123,7 @@ async fn adopt_profile(
             "Agent configuration updates only support main",
         ));
     }
-    let branch = tree.get(&branch_id)?;
+    let configure = tree.prepare_prompt_write(&branch_id)?;
     let profile = index
         .host(Some(&agent_id))
         .ok_or_else(crate::protocol::agent_unknown)?
@@ -153,10 +150,9 @@ async fn adopt_profile(
         }),
         // A profile without a model keeps the adopted configuration; it is
         // materialized so the configuration can carry the profile's record.
-        None => branch
-            .service::<Prompt>()
+        None => tree
+            .adopted_configuration(&branch_id)
             .map_err(|_| RpcError::reloading())?
-            .adopted_configuration(Default::default())
             .map(|configuration| ModelSelection {
                 provider_id: configuration.provider_id,
                 model_id: configuration.model_id,
@@ -181,13 +177,10 @@ async fn adopt_profile(
         scope: scope.clone(),
     };
     let entry = prompt_sources::session_entry(profile.system_prompt, scope);
-    let prompt = branch.service::<Prompt>()?;
-    let adoption = prompt
-        .as_ref()
-        .configure(PromptConfigurationRequest::Loaded {
-            model,
-            sources: vec![(target, entry)],
-        });
+    let adoption = configure(PromptConfigurationRequest::Loaded {
+        model,
+        sources: vec![(target, entry)],
+    });
     tokio::select! {
         result = adoption => reply(json!({"outcome": configuration_outcome(result?)?})),
         _ = cancel.cancelled() => Err(RpcError::interrupted()),

@@ -13,7 +13,7 @@ timeout or an interruption.
 
 | Service | Purpose |
 | --- | --- |
-| `S:TreeCommands` | Resolve the calling branch and its Wait service per call. |
+| `S:TimelineTree` | Resolve the calling branch and its Wait service per call. |
 | `S:ToolRegistry` | Register `wait`, until this part unloads. |
 
 ### Events and lifetime
@@ -65,7 +65,7 @@ input it refused and how the input is wrong.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:ToolRegistry`、`S:TreeCommands` |
+| 注入 | `S:TimelineTree`、`S:ToolRegistry` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->

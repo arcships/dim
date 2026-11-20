@@ -18,6 +18,7 @@
 | --- | --- |
 | Branch directory readers → `timelineTree` | `timelineTree.directory({}) → [{info, head, state, endEvent?}]`, including ending and ended branches. |
 | Skills content and MCP publication → Session loader | `sessionLoader.create({group, definitionId, instanceData}) → {instanceId}`; `remove({instanceId}) → void`. The Session anchors each instance. Skills supplies its content definition; MCP supplies its connection definition and resolves driver and credentials locally. |
+| Branch tool → timelineTree | `endWithFinal(id, source, finalMessage)` commits the final message on the existing branch end fact. |
 | Goal → timelineTree | `inputs(id, inputs) → committed events`. One validated atomic batch for the Goal record and trigger. |
 | Branch-detail RPC → timelineTree | `display(id) → {entry,purpose?,cutMessages?,end?}`. |
 | History RPC and line-read tools → timelineTree | `batchEnd(id, sequence) → void`, `pageEnd(id, after, limit, through) → sequence`, and `page` at the same cutoff. Preserve complete batches and the fixed head of ended lines. |
@@ -35,7 +36,12 @@
 Within a branch, inject its owner face directly. For Session callers the existing
 `timelineTree` face gains `call({branchId,operation}, cancelled) → operation reply`.
 TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
+dispatches on that branch instance. The operation is tagged by `kind`. The Context calls and `approval.pending` take only
+this tag. `approval.decide` takes `requestId` and `decision`; `inputQueue.withdraw`
+takes `command` in the InputQueue owner's existing event shape. The
+`prompt.configure` variant takes the owner's `request`. The
+`prompt.adoptedConfiguration` variant takes only its tag.
+
 Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
 Ended and unknown branches retain their original errors. Calls admitted before close stay
 with that generation. Tree history, directory and batch input continue to use the tree's

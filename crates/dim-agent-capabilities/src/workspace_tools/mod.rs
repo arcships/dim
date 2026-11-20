@@ -21,7 +21,7 @@ use crate::{
     host::{HostError, HostFuture, SessionFiles, ToolDriver, ToolExecutionContext, ToolHost},
     host_platform::HostPlatform,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
     tool_registry::ToolConcurrency,
 };
 use background::BackgroundExecPlugin;
@@ -156,7 +156,7 @@ pub(crate) struct WorkspaceTools {
     /// would finish after its result. Member asynchronous execution is a
     /// separate design.
     member: bool,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     files: FileTools,
     /// Cancelled on unload: new calls settle as reloading, running ones stop.
     lifecycle: CancellationToken,
@@ -323,7 +323,7 @@ struct WorkspaceToolsPlugin {
     platform: Key<HostPlatform>,
     session_config: Key<SessionConfig>,
     identity: Key<SessionIdentity>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
     /// The owner's one walked index, shared with `workspace.files.search`.
     mentions: Key<mentions::MentionIndex>,

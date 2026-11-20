@@ -51,7 +51,7 @@ provider and the methods it serves to other languages. This table says which to 
 | Register Session and branch parts | `partRegistry`, process | `registerDefinition(scope, name, definition)` ([One row per plugin](#one-row-per-plugin)). |
 | Know this Session and its phases | `sessionIdentity`, `sessionConfig`, `sessionLifecycle`, Session | `get()` returns `{sessionId, restored}` or the creation-time configuration; `activated()`, `closing()`, `hold()` and `release(id)` ([Session observation](#session-observation)). |
 | Observe this Session | the `session/{sessionId}` channel | Listen with `ctx.on` ([Session observation](#session-observation)). |
-| Consume branch events in order or act on branches | `dispatcher`, `branchLifecycle`, `timelineIdentity`, branch; `treeCommands`, Session | Use `Services` from the SDK. |
+| Consume branch events in order or act on branches | `dispatcher`, `branchLifecycle`, `timelineIdentity`, branch; `timelineTree`, Session | Use `Services` from the SDK. |
 | Write events of your own domain | `timeline`, branch | Implemented ([extension events](#extension-events)); subscribe and read them through `dispatcher` like any event. |
 
 See [Session TypeScript bindings](design/session-typescript.md) and
@@ -651,7 +651,7 @@ Return `{kind: 'value', value}`, return a failure as data, `{code, message}`, or
 rethrow the service error you received. An omitted value becomes JSON null. Rpc maps a failure to
 the wire error: `code` becomes `appError`, with JSON-RPC code -32602 for `invalid_params` and
 -32000 for the others, and a rethrown native error (such as an `AgentErrorThrown` from
-`treeCommands.input`) maps as it does for built-in methods. Do not choose JSON-RPC codes yourself; a
+`timelineTree.input`) maps as it does for built-in methods. Do not choose JSON-RPC codes yourself; a
 throw without a `code` is a binding failure. Handoff is not provided by this
 binding; connection-bound notifications are
 ([Connection-bound notifications](#connection-bound-notifications)). On unload, C1 stops
@@ -846,7 +846,7 @@ parts.
 | Service | Contract |
 | --- | --- |
 | `dispatcher` | `consume(name, keys, rebuild, handler)` registers an ordered consumer on the calling part's context. It subscribes first and holds the matching facts, calls `rebuild` once — the part reads the facts it folds through `timeline.query` including its publishing facts and returns the cutoff that read took — then delivers the held facts above the cutoff and each later matching fact, in sequence order, and none twice. `listen(name, keys, handler)` registers a live consumer only, for a part that does not rebuild. A handler's throw/rejection follows the native branch failure path. `committed()` returns the committed cutoff; read facts and properties through `timeline.query`. `notify/sequence/changed` expose native dispatch progress and wakeups, not an ordered event subscription. |
-| `treeCommands` | Session directory `list/info`, validated `input` by branch id and `create`. These are the Rust data methods, not the process `sessions` request envelopes. |
+| `timelineTree` | Session directory `list/info`, validated `input` by branch id and `create`. These are the Rust data methods, not the process `sessions` request envelopes. |
 | `branchLifecycle` | Background work waits for `activated()` and releases its resources when `closing()` resolves. Never wait for activation inside a Dispatcher callback. |
 | `timelineIdentity` | `get()` returns the original Session and branch ids. |
 
@@ -909,8 +909,8 @@ nothing may use `listen` instead, which delivers live facts only. The [real Node
 
 Callbacks can run on opening facts before publication. Register long work in the part's owned
 tasks and return; do not wait for dispatch, activation or a child creation whose progress depends
-on this callback returning. `treeCommands.input` commits validated input to the Timeline tail;
-its reply does not prove dispatch or adoption. `treeCommands.create(parent, at, options, cancelled)` takes a by-reference callback whose
+on this callback returning. `timelineTree.input` commits validated input to the Timeline tail;
+its reply does not prove dispatch or adoption. `timelineTree.create(parent, at, options, cancelled)` takes a by-reference callback whose
 Promise completes when the caller cancels. Complete it during the part's cleanup; the native call owns
 and ends the wait when creation completes. Cancellation before acceptance stops admission;
 after the creation anchor commits, TimelineTree finishes the branch or records `branch/create-failed`,
@@ -946,7 +946,7 @@ it.
 The core's domains (`input`, `turn`, `step`, `context` and the others its events use) decode only
 through their typed contracts, so a malformed event there is rejected. Which events a part writes
 is otherwise the events' contract, as for native capabilities: core facts belong to their owners,
-so ask them through their commands, such as input through `treeCommands.input`, rather than
+so ask them through their commands, such as input through `timelineTree.input`, rather than
 appending their events. The branch's Timeline is closed by the branch itself, so `timeline` has no
 `close`.
 
@@ -1025,7 +1025,6 @@ the Python binding is in [How Dim uses rutis, appendix B](design/rutis-usage.md#
 An unmodified plugin for rutis's Cordis 4 (`@deepseek-ai/cordis`) can be registered as a part:
 pass the plugin module, or its object or function, to `registerDefinition`, and its `inject` and
 `ctx.get(name)` resolve to its own instance's copies.
-
 
 ## Packaging and trust
 

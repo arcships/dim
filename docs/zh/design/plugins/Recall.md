@@ -40,7 +40,7 @@ Recall 就像客户端里的会话视图，只是讲给模型而不是展示给�
 
 ### 3.1 固定的读取
 
-每次调用开始时，工具读取 `head = branch.sequence()`（已发布序号）和 `events = branch.history(Some(head))`：对子分支，是父分支到 fork 点为止的事件（继承前缀）加上它自己的事件；对 fork 出的 Session 的 `main`，是复制来的事实、它的 `session/forked`，再加上它自己的事件。两者都是 fork 之前的历史，Recall 像读其他历史一样读取。其余一切都基于这一份固定的列表计算，所以一次调用不会混用两个 head。这与 `wait` 已有的做法一致（[wait.rs](../../../../crates/dim-agent-capabilities/src/wait.rs)）：一个 Session 工具从 `ToolExecutionContext.branch_id` 经 `TreeCommands` 找到调用方分支。Recall 不应用压缩，遍历的是整个列表。
+每次调用开始时，工具读取 `head = branch.sequence()`（已发布序号）和 `events = branch.history(Some(head))`：对子分支，是父分支到 fork 点为止的事件（继承前缀）加上它自己的事件；对 fork 出的 Session 的 `main`，是复制来的事实、它的 `session/forked`，再加上它自己的事件。两者都是 fork 之前的历史，Recall 像读其他历史一样读取。其余一切都基于这一份固定的列表计算，所以一次调用不会混用两个 head。这与 `wait` 已有的做法一致（[wait.rs](../../../../crates/dim-agent-capabilities/src/wait.rs)）：一个 Session 工具从 `ToolExecutionContext.branch_id` 经 `TimelineTree` 找到调用方分支。Recall 不应用压缩，遍历的是整个列表。
 
 在行结束的过程中，`branch/end` 不讲，`end` 调用像其他调用一样讲述。
 
@@ -335,7 +335,7 @@ End of turn. Open one: open=<id>.
 | 设计规则 §4 第 4 条（核心不带业务含义） | 不改核心。Recall 自己也不认识生产者：它按块文本的标签与属性以及 `key`/`retire` 讲述运行时块，Prompt、Goal 和后台通知的块都不需要专门处理。 |
 | 设计规则 §4 第 5 条（原子批次） | 不适用：它不写入；读取固定在一个已发布的 head 上。 |
 | 设计规则 §4 第 6 条（上下文只来自交接后的事件） | 它按上下文拼装的规则选取，只额外加入它点名的公开经历事件；其他类型都不讲。结果只以工具结果进入模型。 |
-| 设计规则 §4 第 7 条（公开事件与服务） | 使用 `TreeCommands`、Branch 门面，以及公开事件和它们的关联 id。不读任何插件的内部状态。 |
+| 设计规则 §4 第 7 条（公开事件与服务） | 使用 `TimelineTree`、Branch 门面，以及公开事件和它们的关联 id。不读任何插件的内部状态。 |
 | 设计规则 §4 第 8 条（基础设施不变） | Timeline、Dispatcher、信封、装配、门面和投影类型都不变。 |
 | 设计规则 §4 第 9 条（只有后续决定要用的事实进 Timeline） | 不新增事件。 |
 | 设计规则 §1（Capability 与 App Server 边界） | 是 `dim-agent-capabilities` 中的 Session Capability，装在 `defaults::install_local_execution` 中、与 `wait` 并列，所以 App Server 的产品 profile 和 `--models` profile 都有它。 |
@@ -394,7 +394,7 @@ End of turn. Open one: open=<id>.
 
 ## 15. Ready
 
-以上每条规则和引用的合同都已在 main 的 `bf95eaf6` 上重新核对（事件、Branch 门面、`TreeCommands`、`wait`、ToolExecutor 的取消、块的生产者、`session/forked`、2026-10-20 的 ADR 001）。
+以上每条规则和引用的合同都已在 main 的 `bf95eaf6` 上重新核对（事件、Branch 门面、`TimelineTree`、`wait`、ToolExecutor 的取消、块的生产者、`session/forked`、2026-10-20 的 ADR 001）。
 
 维护者已于 2026-10-21 批准本文为 Ready，并作出以下决定：
 
@@ -416,7 +416,7 @@ pub fn feature() -> Feature {
     Feature::new("Recall").session("Recall", |names| Ok(Box::new(RecallPlugin::new(names)?)))
 }
 pub struct RecallPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     tools: Key<ToolRegistry>,
 }
 impl RecallPlugin {
@@ -426,7 +426,7 @@ impl DynPlugin for RecallPlugin {
     // injects: [tree.erase(), tools.erase()]
     // apply: tools.register(ctx, ToolContribution { definition, handler: RecallTool(tree) })
 }
-struct RecallTool(Arc<TreeCommands>);
+struct RecallTool(Arc<TimelineTree>);
 impl ToolHandler for RecallTool { /* §3–§6 */ }
 
 // dim-agent-capabilities/src/defaults.rs，install_local_execution，与 wait::install 并列

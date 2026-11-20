@@ -281,7 +281,7 @@ prompts or implemented as a parallel tree.
 ## Unfinished delegation read
 
 CollaborationSession registers nonmutating `session.collaboration.pending`, using its existing
-TreeCommands and SessionMethods dependencies. Parameters: `sessionId`, `branchId`, optional
+TimelineTree and SessionMethods dependencies. Parameters: `sessionId`, `branchId`, optional
 published `through`, optional property-query `after`. Reply: `branchId`, fixed `through`,
 `requests`, `next`; at most 128 requests per page, ascending start sequence.
 

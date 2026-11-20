@@ -97,7 +97,7 @@ sequenceDiagram
 
 | 项目 | 约定 |
 | --- | --- |
-| TreeTimeline | 新增独立 Timeline 级 rutis 插件，订阅本分支 `branch/create`；依赖 Dispatcher、TimelineTree/TreeCommands |
+| TreeTimeline | 新增独立 Timeline 级 rutis 插件，订阅本分支 `branch/create`；依赖 Dispatcher、TimelineTree/TimelineTree |
 | TimelineTree | 拥有所有分支实例、分支身份预留、构建任务、就绪结果和关闭；不限制分支数量 |
 | 首条输入 | 两种来源的子分支，首条输入都是一条 Queue 输入，第一个块是 raw 块 `<dim-branch-line branch="C" parent="P" source="tool">`（宿主来源时为 `source="host"`），写明它是同一 Session 的一条线、由哪条线在其历史的何处开启。工具创建的块内还写目的和该线对父线的协议，没有操作者原文；宿主（RPC `session.branch_create`）创建的块只写身份，创建者的 prompt 作为同一输入的 `user` 原文紧随其后。两者都经输入注入，不另设注入通道 |
 | 创建准入 | 模型的 `branch` 工具与其他工具一样由 ToolExecutor 经 [Approval](plugins/Permission.md#approval) 准入（risk `session`）；宿主 RPC `session.branch_create` 属于外部控制，不经准入，但要求 Session 挂载 `branch`（没有挂载列表即挂载全部工具），否则返回 `Branch tool is not enabled` |

@@ -57,7 +57,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | --- | --- | --- | --- |
 | 进程（根） | 宿主启动 | 宿主关闭 | —（进程部件自行提供） |
 | Agent（`agent`） | Agents 创建一个 Agent | Agent 关闭、宿主关闭 | 宿主内部 |
-| Session（`session`） | 某个 Agent 创建或恢复一个 Session | Session 关闭、空闲卸载 | `sessionIdentity`、`sessionLifecycle`、`treeCommands` |
+| Session（`session`） | 某个 Agent 创建或恢复一个 Session | Session 关闭、空闲卸载 | `sessionIdentity`、`sessionLifecycle`、`timelineTree` |
 | 分支（`branch`） | TimelineTree 创建一条分支 | 分支结束，或其 Session 关闭 | `timeline`、`dispatcher`、`branchLifecycle`、`timelineIdentity` |
 
 可见性沿树，与[原则 §2](../../architecture/rust-agent/principles.md) 一致：
@@ -65,7 +65,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | 方向 | 方式 |
 | --- | --- |
 | 向上（外层实例、进程） | 按名称注入服务 |
-| 向下（Session 到分支） | `treeCommands`：按分支 id 输入、创建分支。从不通过注入分支服务 |
+| 向下（Session 到分支） | `timelineTree`：按分支 id 输入、创建分支。从不通过注入分支服务 |
 | 横向（兄弟分支、其他 Session） | 不可见。经共同祖先的业务服务，例如 `sessions` |
 
 作用域根、门面及其发布规则属于机制。每个 Session 和分支只在其装配 profile 要求的部件都处于 Active
@@ -103,7 +103,7 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | `workflowFiles` | 进程 | App Server | 是 | 标记了 `#[rutis::service]` |
 | `eventHub` | 进程 | EventHub | 已设计，未实现 | 生产方声明来源并发布事件；EventHub 经 Agents 的 `sessions` 把它投递给订阅了的 Session ([EventHub](plugins/EventHub.md)) |
 | `collaborationMembers:<kind>` | 进程 | 成员提供者 | 已设计，未实现 | [ExternalAgent](plugins/ExternalAgent.md)；实现时向 Collaboration 登记（rutis 使用 R6） |
-| `treeCommands` | `session` | TimelineTree | 是 | 按分支 id 的 `input`、`create`、`list`、`info` |
+| `timelineTree` | `session` | TimelineTree | 是 | 按分支 id 的 `input`、`create`、`list`、`info` |
 | `sessionIdentity` | `session` | SessionScope | 是 | `get()`：`{sessionId, restored}` |
 | `sessionLifecycle` | `session` | SessionScope | 是 | `activated`、`closing`、`hold`、`release`：hold 是调用方的行拥有的 id，由 `release(id)` 或该行卸载结束 |
 | `sessionConfig` | `session` | SessionScope | 是 | `get()`：创建时的配置，即工具调用携带的快照 |

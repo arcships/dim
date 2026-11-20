@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 
 export const name = 'cordis-branch-fixture'
-export const inject = ['dispatcher', 'timelineIdentity', 'treeCommands']
+export const inject = ['dispatcher', 'timelineIdentity', 'timelineTree']
 
 export async function apply(ctx: Context) {
   const { sessionId, branchId } = await ctx.get('timelineIdentity').get()
@@ -9,7 +9,7 @@ export async function apply(ctx: Context) {
   await ctx.get('dispatcher').listen('cordis-branch-fixture', ['turn/end'], async () => {
     if (written) return
     written = true
-    await ctx.get('treeCommands').input(branchId, {
+    await ctx.get('timelineTree').input(branchId, {
       blocks: [{ type: 'raw', text: `<cordis-marker session="${sessionId}" branch="${branchId}"/>` }],
       mode: 'queue',
     })

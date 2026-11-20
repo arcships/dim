@@ -76,7 +76,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     };
     let session = Some(SESSION_GROUP);
     register::<timeline_tree::TimelineTree>(catalog, session);
-    register::<timeline_tree::TreeCommands>(catalog, session);
     register::<tool_registry::ToolRegistry>(catalog, session);
     catalog.register_shared_instance("toolSourcesView", SESSION_GROUP);
     register::<history::HistoryRenderer>(catalog, session);
@@ -144,7 +143,7 @@ impl PublicService for shell_session::ShellSession {}
 impl PublicService for dyn exec_stop::ExecStop {}
 impl PublicService for workspace_tools::file_reads::FileReads {}
 impl PublicService for timeline_tree::BranchLine {}
-impl PublicService for timeline_tree::TreeCommands {}
+impl PublicService for timeline_tree::TimelineTree {}
 impl PublicService for wait::Wait {}
 impl PublicService for skills::SkillsBranch {}
 impl PublicService for prompt::Prompt {}

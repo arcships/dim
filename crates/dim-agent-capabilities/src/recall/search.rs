@@ -677,7 +677,7 @@ fn text_candidates(words: &[String]) -> Option<QueryFilter> {
 }
 
 pub(super) async fn run(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &Branch,
     branch_id: &str,
     arguments: &Arguments,
@@ -875,7 +875,7 @@ fn mark_current(
 }
 
 pub(super) async fn open(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &Branch,
     branch_id: &str,
     head: u64,
@@ -1097,7 +1097,7 @@ impl Search<'_> {
 }
 
 pub(super) async fn index(
-    tree: &TreeCommands,
+    tree: &TimelineTree,
     branch: &Branch,
     branch_id: &str,
     calling_turn: &str,

@@ -11,7 +11,7 @@ The tool is risk `session`; unknown input fields are rejected.
 | Service | Purpose |
 | --- | --- |
 | `S:ToolRegistry` | Register the tool for this generation. |
-| `S:TreeCommands` | Query published inherited images and own-line tool facts. |
+| `S:TimelineTree` | Query published inherited images and own-line tool facts. |
 | `P:SessionFiles` | Materialize immutable image bytes within the Session. |
 | `S:SessionIdentity` | Scope file reads to the calling Session. |
 | `P:ModalityTargets` | Resolve `image.understand` on every call, including reuse. |
@@ -19,7 +19,7 @@ The tool is risk `session`; unknown input fields are rejected.
 | `S:GuideEntries` | Explain image references through the input guide. |
 
 These are the existing owners' faces, not new services. The tool consumes only
-`treeCommands.query` with published chain scope, `sessionFiles.read`,
+`timelineTree.query` with published chain scope, `sessionFiles.read`,
 `modalityTargets.resolve`, `auxiliaryModel.complete`, and the registration routes
 of ToolRegistry and GuideEntries. See their owner contracts rather than a separate
 image-specific model or storage interface.

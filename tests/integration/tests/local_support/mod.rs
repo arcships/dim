@@ -19,7 +19,7 @@ use dim_agent_capabilities::{
     prompt_sources,
     skill_settings::{SkillSettings, SkillSettingsHost},
     skills::{self, MemorySkillSettings, SkillsCatalog, SkillsCatalogPlugin},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::testing::chain_events;
@@ -243,7 +243,7 @@ pub struct LifecycleProbe {
     pub events: Mutex<Vec<(String, &'static str)>>,
     pub recorded: Notify,
     lifecycles: Mutex<std::collections::HashMap<String, Arc<SessionLifecycle>>>,
-    trees: Mutex<std::collections::HashMap<String, Arc<TreeCommands>>>,
+    trees: Mutex<std::collections::HashMap<String, Arc<TimelineTree>>>,
     hold_close: std::sync::atomic::AtomicBool,
     pub close_held: Notify,
     pub release_close: Notify,
@@ -259,7 +259,7 @@ impl LifecycleProbe {
     }
     /// The branch tree commands a part of `session` injects, which reach each
     /// published branch's own operations.
-    pub fn tree(&self, session: &str) -> Arc<TreeCommands> {
+    pub fn tree(&self, session: &str) -> Arc<TimelineTree> {
         self.trees.lock().unwrap()[session].clone()
     }
     pub fn count(&self, event: &str) -> usize {
@@ -292,7 +292,7 @@ struct LifecycleProbePlugin {
     probe: Arc<LifecycleProbe>,
     lifecycle: Key<SessionLifecycle>,
     identity: Key<SessionIdentity>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
 }
 impl LifecycleProbePlugin {
     fn new(names: &Names<'_>, probe: Arc<LifecycleProbe>) -> rutis::Result<Self> {

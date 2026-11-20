@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use dim_agent_capabilities::{defaults, timeline_tree::TreeCommands};
+use dim_agent_capabilities::{defaults, timeline_tree::TimelineTree};
 use dim_agent_runtime::testing::{MinimalHost, branch_events};
 use dim_agent_runtime::{
     AgentBuilder, AgentConfig, AgentError, BoxFuture, MemoryTimelineStore, PublishCallback,
@@ -198,7 +198,7 @@ async fn a_subscriber_receives_the_batch_in_order_and_nothing_before_it_commits(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_invalid_second_input_writes_nothing() {
     let Fixture { host, session } = start(memory()).await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let before = session.sequence("main").unwrap();
     let invalid = InputMessageData {
         submission_id: Some("test:invalid".into()),
@@ -226,7 +226,7 @@ async fn an_invalid_second_input_writes_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_empty_batch_is_refused() {
     let Fixture { host, session } = start(memory()).await;
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let before = session.sequence("main").unwrap();
     let error = tree.inputs("main".into(), Vec::new()).await;
     assert!(
@@ -262,7 +262,7 @@ async fn a_full_replay_returns_the_committed_events() {
     let batch = || vec![input("test:one", "one"), input("test:two", "two")];
     let first = session.inputs(batch(), "main").await.unwrap();
     session.idle("main").await.unwrap();
-    let tree = session.session_service::<TreeCommands>().unwrap();
+    let tree = session.session_service::<TimelineTree>().unwrap();
     let replay = tree.inputs("main".into(), batch()).await.unwrap();
     assert_eq!(
         replay

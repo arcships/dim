@@ -241,7 +241,7 @@ Feature::new(name).session(..).branch(..)          不持有进程状态的插�
 | 方向 | 方式 |
 | --- | --- |
 | 向上（祖先作用域、进程） | `Deps` 注入 |
-| 向下（Session → 分支） | `TreeCommands` / `Branch` |
+| 向下（Session → 分支） | `TimelineTree` / `Branch` |
 | 横向（兄弟分支、其他 Session） | 不可见；经共同祖先的业务接口 |
 
 门面（`Session::session_service::<T>()`、`Session::service::<T>(branch)`、`Branch::service::<T>()`）只读取 `PublicService` 类型，并拒绝未在对应组（`session` 或 `branch`）注册的名字。

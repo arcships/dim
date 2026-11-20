@@ -4,7 +4,7 @@ mod recovery;
 use crate::{
     host::HostFuture,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    timeline_tree::TreeCommands,
+    timeline_tree::TimelineTree,
 };
 use dim_agent_runtime::{
     AgentError, Dispatcher, InputSnapshot, Names, Registrations, Result, StateCell, Timeline,
@@ -207,7 +207,7 @@ pub struct InputQueue {
     observable: Arc<StateCell<InputSnapshot>>,
     pending_snapshot: Mutex<Option<(u64, usize)>>,
     timeline: Arc<Timeline>,
-    tree: Arc<TreeCommands>,
+    tree: Arc<TimelineTree>,
     branch_id: String,
     /// Answers to `input/withdraw` commands by their sequence, until the
     /// withdrawal that wrote each one collects it.
@@ -232,7 +232,7 @@ impl Drop for WithdrawalWaiter<'_> {
 impl InputQueue {
     /// Commits an input through the branch entry, accepting each submission id once.
     pub async fn submit(&self, input: InputMessageData) -> Result<InputRef> {
-        let event = self.tree.get(&self.branch_id)?.input(input).await?;
+        let event = self.tree.input(self.branch_id.clone(), input).await?;
         Ok(InputRef {
             input_id: event.id.clone(),
             sequence: event.sequence,
@@ -365,7 +365,7 @@ pub struct InputQueuePlugin {
     queue: Key<InputQueue>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     identity: Key<TimelineIdentity>,
 }
 impl InputQueuePlugin {
@@ -642,10 +642,42 @@ struct WithdrawParams {
     steer: Option<UserInput>,
 }
 
+impl TimelineTree {
+    async fn withdraw_checked(
+        &self,
+        branch_id: &str,
+        command: impl Future<Output = std::result::Result<InputWithdrawData, RpcError>> + Send,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<WithdrawalAnswer, RpcError> {
+        let branch = self.get(branch_id)?;
+        let queue = branch.service::<InputQueue>()?;
+        let answer = queue.withdraw_checked(command.await?).await?;
+        if let (Withdrawal::Deleted { sequence }, Some(_)) = &answer {
+            let publication = branch.publication();
+            let mut progress = publication.watch();
+            tokio::select! {
+                _ = progress.wait_for(
+                    |&(published, closed)| published >= *sequence || closed,
+                ) => {}
+                _ = cancel.cancelled() =>
+                    return Err(RpcError::interrupted()),
+            }
+            if publication.sequence() < *sequence {
+                return Err(RpcError::app(
+                    -32000,
+                    "publication_unknown",
+                    "committed, but publication was not confirmed; query history after recovery",
+                ));
+            }
+        }
+        Ok(answer)
+    }
+}
+
 /// Serves `session.input.withdraw` for every branch of its Session through
 /// the branch's InputQueue, so Rpc names no owning service.
 pub struct InputMethodsPlugin {
-    tree: Key<TreeCommands>,
+    tree: Key<TimelineTree>,
     methods: Key<SessionMethods>,
     checks: Key<SubmitChecks>,
 }
@@ -687,14 +719,13 @@ impl DynPlugin for InputMethodsPlugin {
                             return pending::read(&tree, value, &cancel).await;
                         }
                         let p: WithdrawParams = params(value)?;
-                        let branch = tree.get(&p.branch_id)?;
-                        let queue = branch.service::<InputQueue>()?;
+                        let mut checks_warnings = Vec::new();
+                        let command = async {
                         let mut steer = p.steer.map(|user| InputMessageData {
                             user: Some(user),
                             mode: Some(InputMode::Steer),
                             ..Default::default()
                         });
-                        let mut checks_warnings = Vec::new();
                         if let Some(input) = &steer {
                             // The operator's own content is validated before
                             // the checks run: a check's context must never be
@@ -734,35 +765,11 @@ impl DynPlugin for InputMethodsPlugin {
                                 }
                             }
                         }
-                        let (answer, replacement) = queue
-                            .withdraw_checked(
-                                InputWithdrawData {
-                                    input_id: p.input_id,
-                                    reason: p.reason,
-                                    steer,
-                                },
-                            )
-                            .await?;
+                            Ok(InputWithdrawData {input_id:p.input_id,reason:p.reason,steer})
+                        };
+                        let (answer, replacement) = tree.withdraw_checked(&p.branch_id, command, &cancel).await?;
                         let mut result = match answer {
                             Withdrawal::Deleted { sequence } => {
-                                if replacement.is_some() {
-                                    let publication = branch.publication();
-                                    let mut progress = publication.watch();
-                                    tokio::select! {
-                                        _ = progress.wait_for(
-                                            |&(published, closed)| published >= sequence || closed,
-                                        ) => {}
-                                        _ = cancel.cancelled() =>
-                                            return Err(RpcError::interrupted()),
-                                    }
-                                    if publication.sequence() < sequence {
-                                        return Err(RpcError::app(
-                                            -32000,
-                                            "publication_unknown",
-                                            "committed, but publication was not confirmed; query history after recovery",
-                                        ));
-                                    }
-                                }
                                 serde_json::json!({"status": "deleted", "sequence": sequence})
                             }
                             Withdrawal::NotHeld => serde_json::json!({"status": "notHeld"}),

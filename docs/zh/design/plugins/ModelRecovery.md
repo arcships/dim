@@ -17,7 +17,7 @@ flowchart LR
     LP["Loop"]
     MR["ModelRecovery：处置方"]:::new
     TL["Timeline + Dispatcher"]
-    TC["TreeCommands：Branch::input"]
+    TC["TimelineTree：Branch::input"]
     IQ["InputQueue"]
   end
   MP -- "step/model-output-end（failed）" --> LP
@@ -33,7 +33,7 @@ flowchart LR
 
 | 部分 | 作用域 | 依赖 | 提供 |
 | --- | --- | --- | --- |
-| `ModelRecovery` 分支部分 | 分支 | `B:AgentLoop`（处置方端口）、`B:Timeline`（已提交事实查询）、`S:TreeCommands`（handover 输入） | 一个处置方注册；不提供服务 |
+| `ModelRecovery` 分支部分 | 分支 | `B:AgentLoop`（处置方端口）、`B:Timeline`（已提交事实查询）、`S:TimelineTree`（handover 输入） | 一个处置方注册；不提供服务 |
 
 Loop 的端口在每个分支上只接受一个处置方，第二次注册失败。注册是该部分的效果，因此卸载会撤回它；Loop 的任务随后回答 `finish`，打开的交接结束。该部分是分支部分，因此每个分支各有一份。
 

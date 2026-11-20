@@ -15,7 +15,7 @@ its `ToolResult`, so Questions writes no events. Design:
 | `S:SessionConfig` | `interactive`, read on each call: a non-interactive Session gets an error result at once. |
 | `S:ToolRegistry` | Register `ask_user`, until this part unloads. |
 | `S:SessionMethods` | Register the `session.question` namespace, until this part unloads. |
-| `S:TreeCommands` | Resolve the branch facade for pending-question queries. |
+| `S:TimelineTree` | Resolve the branch facade for pending-question queries. |
 
 ## Tool
 
@@ -116,7 +116,7 @@ reuses its id.
 
 ## Pending reads
 
-`session.question.pending` resolves the branch through `TreeCommands` and queries
+`session.question.pending` resolves the branch through `TimelineTree` and queries
 unsettled `step/tool-call` identities at a fixed published cutoff. It reads the
 arguments of only the selected `ask_user` array elements and returns up to 128
 batches plus a continuation. The result is independent of the transcript window
@@ -161,7 +161,7 @@ Rules: [principles](../principles.md) §1 and §4,
 
 | Rule | Answer |
 | --- | --- |
-| §1 Bounded Capability | One Session Capability in its own crate, registered by its feature and required by `install` (`require_feature`). Dependencies are `SessionConfig`, `ToolRegistry`, `SessionMethods` and `TreeCommands`, keyed by name for each Session (`names.part`); `apply` registers the unload disposer with `ctx.effect` before it registers the tool and the method, and starts no background work. Rpc and ToolExecutor hold no Questions logic. |
+| §1 Bounded Capability | One Session Capability in its own crate, registered by its feature and required by `install` (`require_feature`). Dependencies are `SessionConfig`, `ToolRegistry`, `SessionMethods` and `TimelineTree`, keyed by name for each Session (`names.part`); `apply` registers the unload disposer with `ctx.effect` before it registers the tool and the method, and starts no background work. Rpc and ToolExecutor hold no Questions logic. |
 | §4.1 Command events for others' state | Not applicable: Questions changes no other module's state. The answer is the output of its own tool; ToolExecutor writes the call's terminal fact. A `respond` that finds nothing writes nothing; its reply says why. |
 | §4.2 No recall after handoff | The answer is handed to the waiting handler once, under the lock, and is never withdrawn; a later cancel does not replace it. |
 | §4.3 Before callbacks | Not applicable: no before callback. Rpc checks shape and `sessionId`; Questions checks the answer as the feature owner. |
@@ -182,7 +182,7 @@ Rules: [principles](../principles.md) §1 and §4,
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:SessionConfig`、`S:SessionMethods`、`S:ToolRegistry`、`S:TreeCommands` |
+| 注入 | `S:SessionConfig`、`S:SessionMethods`、`S:TimelineTree`、`S:ToolRegistry` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->

@@ -24,14 +24,14 @@ descendant which is, is refused, because ending a line ends every line below it.
 
 | Service | Purpose |
 | --- | --- |
-| `S:TreeCommands` | Create a child, write and read a line, and end a line, per call. |
+| `S:TimelineTree` | Create a child, write and read a line, and end a line, per call. |
 | `S:ToolRegistry` | Register `branch`, until this part unloads. |
 
 ## Events and lifetime
 
 No events of its own: the tree writes `branch/create`, `branch/start` and
 `branch/end`; a call writes its result, and `message` and `end` write their
-inputs through `TreeCommands.input` (`end` the final message before the
+inputs through `TimelineTree.input` (`end` the final message before the
 command it writes). The input is one
 action-based object, `{action, prompt?, at?, to?, content?, mode?, branch?,
 after?, limit?}`, with `action` required and no other properties; risk stays
@@ -46,7 +46,7 @@ the calling line's BranchLine are found per
 call; the registration is withdrawn when this part unloads, and a reloaded
 TimelineTree reloads it with the services it injects.
 
-`read` first resolves the raw page’s complete-batch endpoint through `TreeCommands.page_end`, then queries only display fields within that range through `TreeCommands.query`. It does not decode model requests, tool-call inputs or tool-result content. Both the raw-event limit and continuation remain batch based. It renders one item each: input,
+`read` first resolves the raw page’s complete-batch endpoint through `TimelineTree.page_end`, then queries only display fields within that range through `TimelineTree.query`. It does not decode model requests, tool-call inputs or tool-result content. Both the raw-event limit and continuation remain batch based. It renders one item each: input,
 text, tool call, tool result and turn end. A tool result whose call lies on an
 earlier page carries no name: each page is rendered on its own. A tool
 result with declared effects carries them on its item, absent when the
@@ -77,7 +77,7 @@ specific target from its own `step/tool-use` and `step/tool-result` (design [§6
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:ToolRegistry`、`S:TreeCommands` |
+| 注入 | `S:TimelineTree`、`S:ToolRegistry` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->
@@ -88,10 +88,10 @@ Owner: [timeline_tree.rs](../../../../crates/dim-agent-capabilities/src/timeline
 Folds the line's own committed facts into its role, the tool lines it opened,
 the state of its current turn and the line's read cursors, and writes its roster,
 the parent block, the idle notice, the ended notice and the one status note a
-move of the default branch writes on a participant, through `S:TreeCommands`.
+move of the default branch writes on a participant, through `S:TimelineTree`.
 
 Its role and its parent come from
-`TreeCommands.info`, which is filled from the parent's `branch/create` at
+`TimelineTree.info`, which is filled from the parent's `branch/create` at
 creation and at restore.
 
 ### Data face
@@ -116,7 +116,7 @@ are unchanged. See [service faces](../../../design/service-faces.md).
 | `B:TimelineIdentity` | The line's own id. |
 | `B:BranchLifecycle` | Wait for the branch to be Active before writing. |
 | `S:SessionLifecycle` | Wait for the restored child directory to be published before roster repair. |
-| `S:TreeCommands` | `info` for the role and its lines; `head`, the crate-internal `turn_ends` and the parent's new-activity check for the parent block; `default_branch`, the crate-internal move signal and the line's own queue of owed moves for the status note; `input` for every write. |
+| `S:TimelineTree` | `info` for the role and its lines; `head`, the crate-internal `turn_ends` and the parent's new-activity check for the parent block; `default_branch`, the crate-internal move signal and the line's own queue of owed moves for the status note; `input` for every write. |
 | `S:GuideEntries` | Register the roster and message entries on every line, until this part unloads. |
 
 ### Events and lifetime
@@ -198,7 +198,7 @@ BranchLine mounts at the committed Dispatcher cutoff without reading historical 
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle`、`S:TreeCommands` |
+| 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle`、`S:TimelineTree` |
 | 提供 | `B:BranchLine`、`B:dyn HostDispatch#branchLine` |
 | 被注入于 | — |
 <!-- /generated -->

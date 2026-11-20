@@ -11,7 +11,7 @@ PAGE = 1024
 async def apply(ctx, config):
     dispatcher = ctx.use("dispatcher")
     timeline = ctx.use("timeline")
-    tree = ctx.use("treeCommands")
+    tree = ctx.use("timelineTree")
     identity = await ctx.use("timelineIdentity").get()
     session, branch = identity["sessionId"], identity["branchId"]
     seen = []
@@ -66,6 +66,6 @@ async def apply(ctx, config):
 
 part = define_plugin(
     apply,
-    inject=["dispatcher", "timeline", "timelineIdentity", "treeCommands"],
+    inject=["dispatcher", "timeline", "timelineIdentity", "timelineTree"],
     name="PythonBranchPart",
 )
