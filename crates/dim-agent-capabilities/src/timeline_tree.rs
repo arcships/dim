@@ -440,8 +440,7 @@ impl TimelineTree {
     }
     /// Ends the line `id` with a tool end's `final_message` riding on its
     /// `branch/end`, which the parent receives once the end is admitted
-    /// (design §10). Rust only: the `branch` tool is its one caller.
-    #[service(skip)]
+    /// (design §10).
     pub async fn end_with_final(
         &self,
         id: String,

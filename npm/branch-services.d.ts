@@ -872,6 +872,13 @@ export interface TimelineTree {
    */
   end(id: string, source: BranchSource): Promise<void>
   /**
+   * Ends the line `id` with a tool end's `final_message` riding on its
+   * `branch/end`, which the parent receives once the end is admitted
+   * (design §10).
+   * @throws {AgentErrorThrown}
+   */
+  endWithFinal(id: string, source: BranchSource, finalMessage: string | null): Promise<void>
+  /**
    * The line the Session's conversation is on: the root until a
    * `branch/default` moves it, then that fact's line while it is open and
    * selectable (design §4, §5, §20.20).
