@@ -145,6 +145,7 @@ pub(crate) struct WorkspaceTools {
     ctx: Ctx,
     facts: Key<crate::file_access::FileAccessFacts>,
     platform: Arc<HostPlatform>,
+    exec_definition: ToolDefinition,
     cwd: PathBuf,
     output_dir: PathBuf,
     /// SessionStore's output ownership (ADR 013); absent in hosts without
@@ -257,7 +258,7 @@ impl WorkspaceTools {
 impl ToolDriver for WorkspaceTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = FileTools::definitions();
-        definitions.push(exec::definition_for(&self.platform));
+        definitions.push(self.exec_definition.clone());
         definitions.push(exec::stop_definition());
         definitions
     }
@@ -384,11 +385,13 @@ impl DynPlugin for WorkspaceToolsPlugin {
             let output_dir = self.config.output_root.join(&identity.session_id);
             // A configured boundary is the file tools' home too: `~`
             // resolves against it, never against the platform home.
+            let info = platform.info().await;
+            let exec_definition = exec::definition_for(&info);
             let home = self
                 .config
                 .boundary
                 .as_ref()
-                .map_or(platform.home.clone(), |boundary| boundary.home.clone());
+                .map_or(info.home, |boundary| boundary.home.clone());
             let tools = Arc::new(WorkspaceTools {
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
@@ -404,6 +407,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 session_id: identity.session_id.clone(),
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
+                exec_definition,
                 platform,
                 tree,
                 lifecycle: CancellationToken::new(),

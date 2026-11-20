@@ -46,7 +46,7 @@ pub(super) const OUTPUT_FILE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 pub const EXIT_STDIO_GRACE: Duration = Duration::from_millis(100);
 const DESCRIPTION_CHARS: usize = 200;
 
-pub fn definition_for(platform: &HostPlatform) -> ToolDefinition {
+pub fn definition_for(platform: &crate::host_platform::HostInfo) -> ToolDefinition {
     let mut env_line = format!(
         "Environment: {}/{}",
         platform.os.node_platform(),
