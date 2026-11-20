@@ -13147,6 +13147,13 @@
     },
     {
       "from": "dim_agent_capabilities::history",
+      "to": "dim_agent_types::markup",
+      "references": [
+        "path dim_agent_types::markup::request_scoped"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::history",
       "to": "dim_agent_types::prompt",
       "references": [
         "path ContextBaselineEntry",
