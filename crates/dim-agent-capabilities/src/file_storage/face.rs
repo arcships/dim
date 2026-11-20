@@ -277,6 +277,31 @@ impl FsHost {
         }
     }
 
+    /// Atomically replaces a destination from a local source without buffering the file.
+    pub async fn replace_from_path(
+        &self,
+        path: &Path,
+        source: PathBuf,
+        limit: u64,
+        permissions: FsPermissions,
+        cancel: &CancellationToken,
+    ) -> Result<u64> {
+        if !source.is_absolute() {
+            return Err(FileStorageError::InvalidPath(
+                "expected an absolute source path",
+            ));
+        }
+        self.storage
+            .import(
+                &self.storage.resolve(path)?,
+                source,
+                limit,
+                permissions.mode(),
+                cancel,
+            )
+            .await
+    }
+
     pub async fn backup(
         &self,
         id: Uuid,
@@ -483,13 +508,22 @@ struct ReadBytes {
     lease_id: Option<Uuid>,
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Replace {
-    path: String,
-    bytes: String,
-    #[serde(default)]
-    permissions: FsPermissions,
-    lease_id: Option<Uuid>,
+#[serde(untagged, rename_all_fields = "camelCase", deny_unknown_fields)]
+enum Replace {
+    Bytes {
+        path: PathBuf,
+        bytes: String,
+        #[serde(default)]
+        permissions: FsPermissions,
+        lease_id: Option<Uuid>,
+    },
+    Source {
+        path: PathBuf,
+        source_path: PathBuf,
+        limit: u64,
+        #[serde(default)]
+        permissions: FsPermissions,
+    },
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -561,21 +595,32 @@ impl HostDispatch for FsHost {
                     owner.unlock(request.lease_id).await.map_err(failure)?;
                     serde_json::json!({})
                 }
-                Request::Replace(request) => {
-                    let bytes = STANDARD.decode(request.bytes).map_err(|_| {
+                Request::Replace(Replace::Bytes {
+                    path,
+                    bytes,
+                    permissions,
+                    lease_id,
+                }) => {
+                    let bytes = STANDARD.decode(bytes).map_err(|_| {
                         failure(FileStorageError::InvalidPath("invalid base64 bytes"))
                     })?;
                     owner
-                        .replace(
-                            Path::new(&request.path),
-                            bytes,
-                            request.permissions,
-                            request.lease_id,
-                            &cancel,
-                        )
+                        .replace(&path, bytes, permissions, lease_id, &cancel)
                         .await
                         .map_err(failure)?;
                     serde_json::json!({})
+                }
+                Request::Replace(Replace::Source {
+                    path,
+                    source_path,
+                    limit,
+                    permissions,
+                }) => {
+                    let size = owner
+                        .replace_from_path(&path, source_path, limit, permissions, &cancel)
+                        .await
+                        .map_err(failure)?;
+                    serde_json::json!({"size": size})
                 }
                 Request::Backup(request) => {
                     owner

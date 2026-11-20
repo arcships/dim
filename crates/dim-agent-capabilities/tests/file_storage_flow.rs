@@ -121,6 +121,31 @@ async fn streaming_reads_pin_files_and_end_with_storage() {
             "relativePath":"media.bin", "absolutePath":source,"dir":false
         }]})
     );
+    let destination = authorized.join("immutable-copy.bin");
+    let copy = |limit| {
+        wire.invoke(
+            "replace",
+            serde_json::json!([{
+                "path":destination, "sourcePath":source, "limit":limit,
+                "permissions":"privateReadOnly"
+            }])
+            .into(),
+        )
+        .unwrap()
+    };
+    let copied = rutis_bridge::session::settle(copy(bytes.len()))
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(copied, serde_json::json!({"size": bytes.len()}));
+    assert!(
+        rutis_bridge::session::settle(copy(bytes.len() - 1))
+            .await
+            .is_err()
+    );
+    assert_eq!(fs::read(&destination).unwrap(), bytes);
+    assert!(fs::metadata(&destination).unwrap().permissions().readonly());
     use dim_agent_capabilities::file_storage::testing;
     let native_id = testing::reader_id(&reader);
     assert!(matches!(

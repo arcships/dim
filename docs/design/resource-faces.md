@@ -369,7 +369,7 @@ tool semantics: no line numbers, no images, no effects.
 | `unlock` | async | `{leaseId}` | `{}` |
 | `backup` | async | `{leaseId, suffix, permissions?}` | `{}` |
 | `createDirectory` | async | `{path}` | `{}` |
-| `replace` | async | `{path, bytes, permissions?, leaseId?}` | `{}` |
+| `replace` | async | `{path, bytes, permissions?, leaseId?}` or `{path, sourcePath, limit, permissions?}` | `{}` for bytes, `{size}` for a node-local copy |
 | `list` | async | `{path}` | `{entries: [{name, kind}]}` |
 | `remove` | async | `{path}` / `{parent, name}` | `{}` |
 
@@ -584,7 +584,7 @@ grant, and tool approval still follows the preset
 ### 4.6 Session files and exec output
 
 `sessionFiles.put` uses `createDirectory` and `replace` with `permissions: "privateReadOnly"` to
-store the file on the resource node. It returns a node path and owns the rows under the
+store the file on the resource node. Path imports pass the absolute source path and existing file size limit to the same replacement operation. The owner copies a regular file in chunks and atomically publishes the destination. It returns a node path and owns the rows under the
 [Session-file contract](appserver/session-files.md#31-on-disk). Command output stays on the node
 and is read through `execHost.output` and `execHost.tail` (§3.4–§3.5).
 

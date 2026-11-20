@@ -559,12 +559,12 @@ impl FileStorage {
 
     /// Copies an authorized source into `path`, with bounded memory and atomic publication.
     /// The source must be a regular file and stay at its initial length during copying.
-    pub async fn import(
+    async fn import(
         self: &Arc<Self>,
         path: &FilePath,
         source: std::path::PathBuf,
         limit: u64,
-        permissions: Option<Permissions>,
+        permissions: ReplacementMode,
         cancel: &CancellationToken,
     ) -> Result<u64> {
         self.check(cancel)?;
@@ -596,7 +596,7 @@ impl FileStorage {
         .await??;
         self.lock(path, cancel)
             .await?
-            .replace_from(source, permissions, cancel)
+            .replace_from_with(source, permissions, cancel)
             .await?;
         Ok(length)
     }
@@ -890,15 +890,25 @@ impl FileLease {
     /// durability and cancellation rules are the same.
     pub async fn replace_from<R: Read + Send + 'static>(
         &mut self,
-        mut source: R,
+        source: R,
         permissions: Option<Permissions>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.replace_from_with(source, ReplacementMode::Native(permissions), cancel)
+            .await
+    }
+
+    async fn replace_from_with<R: Read + Send + 'static>(
+        &mut self,
+        mut source: R,
+        permissions: ReplacementMode,
         cancel: &CancellationToken,
     ) -> Result<()> {
         self.run(cancel, move |parent, name, owner, cancel| {
             replace_file(
                 &parent,
                 &name,
-                ReplacementMode::Native(permissions),
+                permissions,
                 &owner,
                 &cancel,
                 |temp, owner, cancel| {

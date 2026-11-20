@@ -747,6 +747,7 @@ export interface FsHost {
   mentions(request: {path: string; query: string; limit?: number}): Promise<{candidates: {relativePath: string; absolutePath: string; dir: boolean}[]}>;
   stat(request: { path: string }): Promise<{ kind: 'file'; size: number } | { kind: 'directory' | 'other' | 'missing' }>;
   replace(request: { path: string; bytes: string; permissions?: 'preserve' | 'private' | 'privateReadOnly'; leaseId?: string }): Promise<Record<string, never>>;
+  replace(request: { path: string; sourcePath: string; limit: number; permissions?: 'preserve' | 'private' | 'privateReadOnly' }): Promise<{ size: number }>;
   backup(request: { leaseId: string; suffix: string; permissions?: 'preserve' | 'private' }): Promise<Record<string, never>>;
   lock(request: { path: string }): Promise<{ leaseId: string }>;
   unlock(request: { leaseId: string }): Promise<Record<string, never>>;

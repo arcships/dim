@@ -14,7 +14,7 @@
 //! row was deleted.
 use super::{SqliteStorage, sqlite::error};
 use dim_agent_capabilities::{
-    file_storage::{FileStorage, FileStorageError, FsHost, FsPermissions, FsRemove},
+    file_storage::{FileStorageError, FsHost, FsPermissions, FsRemove},
     host::{SessionFileError, SessionFileErrorCode, SessionFilesService, StoredSessionFile},
     host_platform::HostPlatform,
 };
@@ -23,7 +23,6 @@ use rutis::Ctx;
 use std::{
     collections::BTreeSet,
     ffi::OsString,
-    fs::Permissions,
     future::Future,
     ops::ControlFlow,
     path::{Component, Path, PathBuf},
@@ -102,21 +101,6 @@ pub(super) fn valid_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
         && !name.eq_ignore_ascii_case("auth.json")
         && !name.eq_ignore_ascii_case("auth.json.lock")
-}
-
-/// Written once, read-only: a guard against `write` and `edit`, not isolation.
-#[cfg(unix)]
-fn read_only(_: &Path) -> std::io::Result<Permissions> {
-    use std::os::unix::fs::PermissionsExt;
-    Ok(Permissions::from_mode(0o400))
-}
-/// Windows permissions carry file attributes and come only from metadata; the
-/// database file is a regular file in the same root.
-#[cfg(not(unix))]
-fn read_only(database: &Path) -> std::io::Result<Permissions> {
-    let mut permissions = std::fs::metadata(database)?.permissions();
-    permissions.set_readonly(true);
-    Ok(permissions)
 }
 
 fn session_exists(connection: &Connection, session_id: &str) -> rusqlite::Result<bool> {
@@ -734,18 +718,12 @@ impl Files {
                     Ok(bytes)
                 }
                 ImportContent::Path(source) => {
-                    let owner = self
-                        .ctx
-                        .get::<FileStorage>()
-                        .ok_or(FileStorageError::Closed)?;
-                    let destination = owner.resolve(&file)?;
-                    let permissions = read_only(&self.db.path)?;
-                    owner
-                        .import(
-                            &destination,
+                    storage
+                        .replace_from_path(
+                            &file,
                             source,
                             MAX_BYTES as u64,
-                            Some(permissions),
+                            FsPermissions::PrivateReadOnly,
                             &cancel,
                         )
                         .await
