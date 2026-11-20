@@ -158,7 +158,15 @@ impl Plugin for TestContextHosts {
             counter,
         )?;
 
-        ctx.provide_at(strategy.clone(), Arc::new(CompactionStrategyHost(None)))?;
+        let compaction = Arc::new(CompactionStrategyHost::default());
+        ctx.provide_at(strategy.clone(), compaction.clone())?;
+        ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+            rutis_bridge::session::host_key_in(
+                "compactionStrategyHost",
+                strategy.erase().instance_id().unwrap(),
+            ),
+            compaction,
+        )?;
         Ok(())
     }
 }
@@ -1139,15 +1147,17 @@ impl ResolveContextModel for CompleteRequestOnly {
 
 fn builder_with_usage_resolver(resolver: Arc<dyn ResolveContextModel>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(resolver)));
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(resolver))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
-            Context::default(),
-        )))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Context::default()),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -2473,17 +2483,17 @@ async fn a_request_written_after_an_interrupt_loop_has_not_handled_does_not_run(
     let store = Arc::new(CountContextReads::default());
     let gate = Arc::new(InterruptGate::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Context::default()))));
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(
-            Context::default(),
-        )))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
-            Context::default(),
-        )))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Context::default()),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -2644,7 +2654,7 @@ async fn progress_keeps_committed_output_until_it_is_published() {
             .process_value(Arc::new(ModelHost(Arc::new(HeldTextModel(end.clone())))))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
-            .session_value(Arc::new(CompactionStrategyHost(None)))
+            .session_data_value(Arc::new(CompactionStrategyHost::default()))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

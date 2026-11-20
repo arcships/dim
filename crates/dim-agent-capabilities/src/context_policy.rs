@@ -105,7 +105,7 @@ const WINDOW_PAGE: u64 = 256;
 pub(crate) struct ContextPolicy {
     pub timeline: Arc<Timeline>,
     pub resolver: Arc<ContextModelHost>,
-    pub strategy: Arc<dyn CompactionStrategy>,
+    pub strategy: Arc<CompactionStrategyHost>,
     pub history: Arc<HistoryRenderer>,
 }
 
@@ -425,17 +425,17 @@ impl ContextPolicy {
     pub fn bind(
         timeline: &Arc<Timeline>,
         model: &Arc<ContextModelHost>,
-        strategy: &CompactionStrategyHost,
+        strategy: &Arc<CompactionStrategyHost>,
         history: &Arc<HistoryRenderer>,
     ) -> Result<Option<Self>, String> {
-        match (model.is_bound(), &strategy.0) {
-            (true, Some(strategy)) => Ok(Some(Self {
+        match (model.is_bound(), strategy.is_bound()) {
+            (true, true) => Ok(Some(Self {
                 timeline: timeline.clone(),
                 resolver: model.clone(),
                 strategy: strategy.clone(),
                 history: history.clone(),
             })),
-            (false, None) => Ok(None),
+            (false, false) => Ok(None),
             _ => Err("ContextModelHost and CompactionStrategyHost must be bound together".into()),
         }
     }

@@ -515,7 +515,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
        .require_feature(Feature::new("ContextCompaction")
            .session("ProductSummaryStrategy", |names| names.part(ProductSummaryStrategyPlugin::new(names)?))
            .session("ContextMethods", |names| names.part(ContextMethodsPlugin)));
-// The mock profile binds ContextModelHost(None) and CompactionStrategyHost(None).
+// The mock profile binds ContextModelHost(None) and CompactionStrategyHost::default().
 ```
 
 ## 5. Flows

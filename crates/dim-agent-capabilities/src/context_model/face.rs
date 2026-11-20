@@ -72,7 +72,7 @@ impl ContextModelHost {
             .await
     }
 
-    async fn model(
+    pub(crate) async fn model(
         &self,
         facts: ModelSelection,
         cancel: CancellationToken,

@@ -275,7 +275,7 @@ fn builder(models: Arc<AimuxModels>, tools: Arc<dyn ToolDriver>) -> AgentBuilder
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .session_value(Arc::new(ToolHost(tools)));
     dim_agent_aimux::install(&mut builder);
     builder

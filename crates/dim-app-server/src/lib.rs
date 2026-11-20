@@ -1485,7 +1485,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
         ("agentIndex", "owner-api"),
         ("branchOpening", "hot-path"),
-        ("compactionStrategyHost", "hot-path"),
         ("connectionHub", "control"),
         ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),

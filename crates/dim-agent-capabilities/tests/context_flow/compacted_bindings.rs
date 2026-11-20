@@ -180,6 +180,7 @@ impl Files {
         platform.home = dir.clone();
         let model = Arc::new(Script::default());
         let mut builder = AgentBuilder::new(AgentConfig::default());
+        let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Model))));
         builder
             .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
                 MemoryTimelineStore::default(),
@@ -187,8 +188,11 @@ impl Files {
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_value(Arc::new(HistoryRenderer::default()))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-            .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Model)))))
-            .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Cuts(cut))))))
+            .session_data_value(strategy_model.clone())
+            .session_data_value(Arc::new(CompactionStrategyHost::new(
+                Arc::new(Cuts(cut)),
+                strategy_model,
+            )))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

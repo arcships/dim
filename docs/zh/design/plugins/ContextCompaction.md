@@ -326,7 +326,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
        .require_feature(Feature::new("ContextCompaction")
            .session("ProductSummaryStrategy", |names| names.part(ProductSummaryStrategyPlugin::new(names)?))
            .session("ContextMethods", |names| names.part(ContextMethodsPlugin)));
-// mock 配置绑定 ContextModelHost(None) 和 CompactionStrategyHost(None)。
+// mock 配置绑定 ContextModelHost(None) 和 CompactionStrategyHost::default()。
 ```
 
 ## 5. 流程

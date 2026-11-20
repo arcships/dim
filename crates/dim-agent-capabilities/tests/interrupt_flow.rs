@@ -247,7 +247,7 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
                 calls: AtomicUsize::new(0),
             }))))
             .session_data_value(Arc::new(ContextModelHost(None)))
-            .session_value(Arc::new(CompactionStrategyHost(None)))
+            .session_data_value(Arc::new(CompactionStrategyHost::default()))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -626,7 +626,7 @@ async fn a_tool_call_already_committed_when_the_interrupt_arrives_is_not_execute
             calls: AtomicUsize::new(1),
         }))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -694,7 +694,7 @@ async fn stop_waits_for_an_interrupted_turn_whose_start_is_not_yet_dispatched() 
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -843,7 +843,7 @@ fn channel_builder(model: Arc<ChannelModel>) -> AgentBuilder {
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -1196,7 +1196,7 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
             calls: AtomicUsize::new(0),
         }))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -1580,7 +1580,7 @@ async fn a_steer_is_not_consumed_between_a_failed_preparation_and_its_terminal()
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_data_value(Arc::new(PrepareContextHost(prepare.clone())))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -1832,7 +1832,7 @@ async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
         .session_value(Arc::new(ToolHost(tools)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

@@ -111,13 +111,17 @@ async fn replanned_session_with(
     strategy: Arc<Overshoot>,
 ) -> (MinimalHost, dim_agent_runtime::Session) {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(facts))));
     builder
         .process_value(Arc::new(ModelHost(driver)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(facts)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(strategy))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            strategy,
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

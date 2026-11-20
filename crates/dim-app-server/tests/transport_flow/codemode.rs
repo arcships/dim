@@ -119,16 +119,18 @@ async fn launch_codemode_with_model(
         dim_agent_runtime::MemoryTimelineStore::default(),
     )));
     defaults::install(&mut builder);
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(UsageResolver))));
     builder
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(UsageResolver)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
-            UsageResolver,
-        )))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(UsageResolver),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

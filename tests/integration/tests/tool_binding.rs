@@ -223,7 +223,7 @@ async fn env_named(
         .process_value(Arc::new(ModelHost(model.clone())))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(
@@ -489,7 +489,7 @@ fn unconfigured_builder(prepare: Arc<dyn PrepareModel>) -> AgentBuilder {
         ))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .session_data_value(Arc::new(PrepareModelHost(prepare)));
     defaults::install(&mut builder);
     builder
@@ -1304,7 +1304,7 @@ async fn tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_ass
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
-            .session_value(Arc::new(CompactionStrategyHost(None)))
+            .session_data_value(Arc::new(CompactionStrategyHost::default()))
             .require_feature(Feature::new("PrepareModelHost").session(
                 "PrepareModelHost",
                 |names| {

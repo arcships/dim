@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { definePlugin } from '@arcships/rutis'
-import type { ContextModelHost, ContextPreparation, ContextUsage, Message, SessionMethods } from '../../npm/plugin.js'
+import type { CompactionStrategyHost, ContextModelHost, ContextPreparation, ContextUsage, Message, SessionMethods } from '../../npm/plugin.js'
 import { partRow } from './part-row.ts'
 
 const part = definePlugin({
   name: 'ContextUsageFixture',
-  inject: ['contextModelHost', 'contextPreparation', 'contextUsage', 'sessionMethods'],
+  inject: ['compactionStrategyHost', 'contextModelHost', 'contextPreparation', 'contextUsage', 'sessionMethods'],
   async apply(ctx) {
+    const strategy = ctx.use<CompactionStrategyHost>('compactionStrategyHost')
     const counter = ctx.use<ContextModelHost>('contextModelHost')
     const preparation = ctx.use<ContextPreparation>('contextPreparation')
     const usage = ctx.use<ContextUsage>('contextUsage')
@@ -31,6 +32,11 @@ const part = definePlugin({
         assert.equal(prepared.providerId, model.providerId)
         assert.equal(prepared.modelId, model.modelId)
         await preparation.validate({ requestId: source.request_id, request: prepared }, () => cancelled)
+        assert.deepEqual(await strategy.describe(model), { name: 'fixture', replacementSize: 0 })
+        await assert.rejects(strategy.compact({
+          history: [], cuts: [], request: source.request, trigger: 'manual',
+          estimatedInputTokens: 0, baselineSource: 'full_estimate',
+        }, () => cancelled), /the CodeMode fixture fits without compaction/)
         const facts = await counter.describe(model)
         assert.equal(facts.contextWindow, reply.contextWindow)
         assert.equal(facts.outputTokens, reply.outputTokens)

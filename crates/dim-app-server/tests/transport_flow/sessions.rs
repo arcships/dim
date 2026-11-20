@@ -299,7 +299,7 @@ async fn serve_with(setup: Setup) -> Served {
                     host::IdentityContext,
                 ))))
                 .session_data_value(Arc::new(host::ContextModelHost(None)))
-                .session_value(Arc::new(host::CompactionStrategyHost(None)))
+                .session_data_value(Arc::new(host::CompactionStrategyHost::default()))
                 .require_feature(
                     Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                         Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

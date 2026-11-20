@@ -246,13 +246,17 @@ fn builder_with_prepare(
     prepare: Arc<dyn PrepareContext>,
 ) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(context))));
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(history))
         .session_data_value(Arc::new(PrepareContextHost(prepare)))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(context)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(context)))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(context),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -2088,13 +2092,17 @@ async fn a_compaction_completed_after_a_stop_is_committed_not_discarded() {
         gate.clone(),
     );
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(context.clone()))));
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(context.clone())))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(context)))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(context),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

@@ -115,13 +115,17 @@ async fn tool_session(
 /// manual step needs to build its request.
 fn configured(model: Arc<dyn ModelDriver>, context: Context) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(context))));
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(context)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(context)))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(context),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

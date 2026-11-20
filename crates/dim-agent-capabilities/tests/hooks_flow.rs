@@ -562,13 +562,18 @@ impl Env {
         builder.startup_timeout(startup_timeout);
         let store = Arc::new(MemoryTimelineStore::default());
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
+        let strategy_model = Arc::new(ContextModelHost(context_model));
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-            .session_data_value(Arc::new(ContextModelHost(context_model)))
+            .session_data_value(strategy_model.clone())
             .session_data_value(Arc::new(CommandRules(rules.clone())))
-            .session_value(Arc::new(CompactionStrategyHost(compaction)))
+            .session_data_value(Arc::new(
+                compaction.map_or_else(CompactionStrategyHost::default, |strategy| {
+                    CompactionStrategyHost::new(strategy, strategy_model)
+                }),
+            ))
             .session_value(Arc::new(HookSourcesHost(sources.clone())))
             .require_feature(Feature::new("PrepareModelHost").session(
                 "PrepareModelHost",

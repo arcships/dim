@@ -1104,7 +1104,7 @@ impl DynPlugin for ContextPreparationPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let guide = ctx.require_at(&self.guide)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
-            if strategy.0.is_some() {
+            if strategy.is_bound() {
                 guide.register(
                     ctx,
                     GuideScope::Branch(identity.branch_id.clone()),

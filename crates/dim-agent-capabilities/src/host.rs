@@ -1392,13 +1392,15 @@ impl ToolHost {
 /// What ContextPolicy hands a strategy: the entries from the previous cut
 /// on, the previous result, the request whose context is compacted and the
 /// cuts the retention rule allows.
-#[derive(Clone)]
-pub struct CompactionInput {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionInput<M = Arc<dyn ContextModel>> {
     /// The projected entries from the previous `retain_from` on.
     pub history: Vec<HistoryEntry>,
     pub checkpoint: Option<CompactionCheckpoint>,
     pub request: Arc<ModelRequest>,
-    pub model: Arc<dyn ContextModel>,
+    #[serde(skip)]
+    pub model: M,
     /// `retain_from` of the earliest cut whose kept tail fits the retention
     /// budget (for a manual step, at least the latest turn's start).
     pub retain_limit: Option<String>,
@@ -1418,7 +1420,8 @@ pub struct CompactionInput {
     pub prior: Option<StrategyDiagnostics>,
 }
 /// A legal cut: `history[..entry]` is replaced, `history[entry..]` is kept.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionCut {
     pub retain_from: String,
     pub entry: usize,
@@ -1449,7 +1452,8 @@ impl CompactionInput {
         self.provider_budget.is_some() || cut.entry < self.history.len()
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionCheckpoint {
     pub retain_from: String,
     pub replacement: Arc<[Message]>,
@@ -1496,7 +1500,8 @@ pub trait ContextCounter: Send + Sync {
 }
 /// A strategy's diagnostics: its model calls, their summed usage and its own
 /// record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StrategyDiagnostics {
     pub model_call_count: u64,
     pub model_usage: Option<Usage>,
@@ -1537,7 +1542,13 @@ pub(crate) fn add_usage(total: &mut Option<Usage>, usage: Usage) {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum StrategyOutcome {
     Completed {
         retain_from: String,
@@ -1573,7 +1584,117 @@ pub trait CompactionStrategy: Send + Sync + 'static {
 }
 /// An explicit optional binding, like `ContextModelHost`; the policy exists
 /// when both are `Some`.
-pub struct CompactionStrategyHost(pub Option<Arc<dyn CompactionStrategy>>);
+#[derive(Clone, Default)]
+pub struct CompactionStrategyHost(Option<(Arc<dyn CompactionStrategy>, Arc<ContextModelHost>)>);
+
+impl CompactionStrategyHost {
+    pub fn new(strategy: Arc<dyn CompactionStrategy>, model: Arc<ContextModelHost>) -> Self {
+        Self(Some((strategy, model)))
+    }
+
+    pub(crate) fn is_bound(&self) -> bool {
+        self.0.is_some()
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.0
+            .as_ref()
+            .map_or("none", |(strategy, _)| strategy.name())
+    }
+
+    pub(crate) fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+        self.0
+            .as_ref()
+            .expect("active compaction policy")
+            .0
+            .replacement_size(model)
+    }
+
+    pub(crate) async fn compact(
+        &self,
+        input: CompactionInput,
+        cancel: CancellationToken,
+    ) -> Result<StrategyOutcome, HostError> {
+        let (strategy, _) = self
+            .0
+            .as_ref()
+            .ok_or_else(|| HostError::failed("Context compaction is not available"))?;
+        strategy.compact(input, cancel).await
+    }
+}
+
+impl HostDispatch for CompactionStrategyHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"describe": "async", "compact": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        const NAME: &str = "compactionStrategyHost";
+        let owner = self.clone();
+        match method {
+            "describe" => {
+                let facts = crate::port_faces::request(NAME, args)?;
+                let cancel = rutis_bridge::session::caller_row()
+                    .map(|row| row.ctx().cancellation_token())
+                    .unwrap_or_default()
+                    .child_token();
+                crate::port_faces::serving(NAME, async move {
+                    let _finished = cancel.clone().drop_guard();
+                    let (_, resolver) = owner.0.as_ref().ok_or_else(|| {
+                        ModelPortError::from(HostError::failed(
+                            "Context compaction is not available",
+                        ))
+                    })?;
+                    let model = resolver
+                        .model(facts, cancel)
+                        .await
+                        .map_err(ModelPortError::from)?;
+                    Ok::<_, ModelPortError>(
+                        json!({"name":owner.name(),"replacementSize":owner.replacement_size(model.as_ref())}),
+                    )
+                })
+            }
+            "compact" => {
+                let (input, cancel, cancelled) =
+                    cancellable_request::<CompactionInput<()>>(NAME, args)?;
+                crate::port_faces::serving(NAME, async move {
+                    let _finished = cancel.clone().drop_guard();
+                    call_until_cancelled(cancelled, cancel.clone(), async {
+                        let (_, resolver) = owner.0.as_ref().ok_or_else(|| {
+                            HostError::failed("Context compaction is not available")
+                        })?;
+                        let model = resolver
+                            .resolve(input.request.clone(), cancel.clone())
+                            .await?;
+                        owner
+                            .compact(
+                                CompactionInput {
+                                    history: input.history,
+                                    checkpoint: input.checkpoint,
+                                    request: input.request,
+                                    model,
+                                    retain_limit: input.retain_limit,
+                                    cuts: input.cuts,
+                                    trigger: input.trigger,
+                                    estimated_input_tokens: input.estimated_input_tokens,
+                                    baseline_source: input.baseline_source,
+                                    baseline_prompt_tokens: input.baseline_prompt_tokens,
+                                    delta_tokens: input.delta_tokens,
+                                    provider_budget: input.provider_budget,
+                                    prior: input.prior,
+                                },
+                                cancel,
+                            )
+                            .await
+                    })
+                    .await
+                    .map_err(ModelPortError::from)
+                })
+            }
+            _ => Err(crate::port_faces::unknown_method(NAME, method)),
+        }
+    }
+}
 pub trait ResolveContextModel: Send + Sync + 'static {
     /// A model exposing a contribution counter must resolve its algorithm and
     /// limits from provider/model, capabilities, config and metadata alone.

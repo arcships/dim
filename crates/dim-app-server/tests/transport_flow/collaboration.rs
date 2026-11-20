@@ -833,7 +833,7 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
             .process_value(Arc::new(ModelHost(Arc::new(LargeReportModel))))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
-            .session_value(Arc::new(CompactionStrategyHost(None)))
+            .session_data_value(Arc::new(CompactionStrategyHost::default()))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -5474,7 +5474,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
         .process_value(Arc::new(ModelHost(Arc::new(PartialCallModel))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

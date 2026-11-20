@@ -450,6 +450,38 @@ export interface ContextModelHost {
   }>;
   estimate(request: { model: import('./branch-services.js').ModelSelection; algorithm: string; contribution: ContextContribution }): Promise<number>;
 }
+export type StrategyDiagnostics = {
+  modelCallCount: number | bigint;
+  modelUsage: NonNullable<AuxiliaryReply['usage']> | null;
+  record: JsonObject & { kind: string };
+};
+export type CompactionInput = {
+  history: import('./branch-services.js').HistoryEntry[];
+  checkpoint?: {
+    retainFrom: string;
+    replacement: Message[];
+    contextBaseline: import('./branch-services.js').ContextBaselineEntry[];
+    replacementParts?: { strategy: number; digest: number } | null;
+  } | null;
+  request: import('./branch-services.js').ModelRequest;
+  retainLimit?: string | null;
+  cuts: { retainFrom: string; entry: number; withinLimit: boolean }[];
+  trigger: 'threshold' | 'provider_output_budget_exhausted' | 'manual';
+  estimatedInputTokens: number;
+  baselineSource: 'provider_baseline' | 'full_estimate';
+  baselinePromptTokens?: number | null;
+  deltaTokens?: number | null;
+  providerBudget?: ContextPrepareData['recovery'] | null;
+  prior?: StrategyDiagnostics | null;
+};
+export interface CompactionStrategyHost {
+  describe(model: import('./branch-services.js').ModelSelection): Promise<{ name: string; replacementSize: number }>;
+  compact(input: CompactionInput, cancelled: () => Promise<void>): Promise<(
+    | { kind: 'completed'; retainFrom: string; replacement: Message[] }
+    | { kind: 'skipped'; reason: string }
+    | { kind: 'failed'; error: string }
+  ) & { diagnostics: StrategyDiagnostics }>;
+}
 export type ContextPrepareData = {
   turn_id: string;
   request_id: string;

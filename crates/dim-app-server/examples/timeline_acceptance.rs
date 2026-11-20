@@ -252,18 +252,20 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
         recent: [0; 100],
     }));
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compactor {
+        samples: samples.clone(),
+    }))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compactor {
-            samples: samples.clone(),
-        })))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
-            FixedSummary,
-        )))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(FixedSummary),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
