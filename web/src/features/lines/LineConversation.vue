@@ -132,6 +132,7 @@ function noModel(): void {
     </div>
     <template v-else>
       <WebChatTimeline :session-id="sessionId"
+        :branch-id="branchId"
         :rows="rows"
         :earlier="branch.earlier"
         :loading-earlier="branch.loadingEarlier"

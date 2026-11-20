@@ -44,6 +44,23 @@ export const hostMessagesEn = {
   "chatTimeline.user.withdraw": "Withdraw",
   "chatTimeline.user.edit": "Edit",
   "chatTimeline.imageAttachment": "Image attachment",
+  "chatTimeline.toolImage": "Tool image",
+  "chatTimeline.forkConfirm": "Fork the session before “{preview}”? The new session copies main up to that point; this session stays unchanged.",
+  "chatTimeline.unavailable.server": "This server does not offer {method}.",
+  "chatTimeline.unavailable.session": "The session is not loaded.",
+  "chatTimeline.unavailable.sessionMethod": "This session does not offer {method}.",
+  "chatTimeline.unavailable.retry": "Retrying a turn is not available in the web workspace yet.",
+  "chatTimeline.unavailable.edit": "Editing a sent message is not available in the web workspace yet.",
+  "chatTimeline.unavailable.openFile": "Opening files from the timeline is not available in the web workspace.",
+  "chatTimeline.unavailable.attachments": "Attach files from the composer.",
+  "chatTimeline.unavailable.mode": "The web workspace sends a message queued or steered, not appended.",
+  "chatTimeline.unavailable.forkLine": "A fork copies the main line; branch opens a line here instead.",
+  "chatTimeline.unavailable.branchBlocked": "Branching waits until the pending prompt is answered, and an ended line cannot branch.",
+  "chatTimeline.unavailable.branchRunning": "You can branch from here once this turn finishes.",
+  "chatTimeline.unavailable.forkRunning": "You can fork from here once this turn finishes.",
+  "chatTimeline.unavailable.message": "That message is no longer in the timeline.",
+  "chatTimeline.unavailable.request": "That request is no longer waiting.",
+  "chatTimeline.unavailable.answer": "“{answer}” is not an option of this question.",
 } as const
 
 /** The package's tool label vocabulary, resolved by the host. */

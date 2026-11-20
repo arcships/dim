@@ -22909,7 +22909,7 @@
       "from": "dim_agent_scheduler::loops",
       "to": "dim_app_server::plugin_files",
       "references": [
-        "path dim_app_server::plugin_files::PluginFileTransactions"
+        "path dim_app_server::plugin_files::FileScope"
       ]
     },
     {
@@ -23115,8 +23115,9 @@
       "from": "dim_agent_scheduler::methods",
       "to": "dim_app_server::plugin_files",
       "references": [
-        "path PluginFileTransactions",
-        "use dim_app_server::plugin_files::PluginFileTransactions"
+        "path FileScope",
+        "path dim_app_server::plugin_files::PluginFiles",
+        "use dim_app_server::plugin_files::FileScope"
       ]
     },
     {
@@ -23172,15 +23173,15 @@
       "from": "dim_agent_scheduler::runs",
       "to": "dim_app_server::plugin_files",
       "references": [
+        "path FileScope",
         "path PluginFileError",
         "path PluginFileError::Closed",
         "path PluginFileError::InvalidData",
         "path PluginFileError::InvalidPath",
         "path PluginFileError::Io",
         "path PluginFileError::Locked",
-        "path PluginFileTransactions",
-        "use dim_app_server::plugin_files::PluginFileError",
-        "use dim_app_server::plugin_files::PluginFileTransactions"
+        "use dim_app_server::plugin_files::FileScope",
+        "use dim_app_server::plugin_files::PluginFileError"
       ]
     },
     {
@@ -23595,7 +23596,7 @@
       "from": "dim_agent_scheduler::wakeups",
       "to": "dim_app_server::plugin_files",
       "references": [
-        "path dim_app_server::plugin_files::PluginFileTransactions"
+        "path dim_app_server::plugin_files::FileScope"
       ]
     },
     {
@@ -24536,7 +24537,6 @@
       "references": [
         "mod plugin_files",
         "path plugin_files",
-        "path plugin_files::PluginFileTransactions",
         "path plugin_files::PluginFilesPlugin::new"
       ]
     },
@@ -30808,7 +30808,6 @@
         "path EntryKind",
         "path FileLease",
         "path FilePath",
-        "path FileReader",
         "path FileStorage",
         "path FileStorageError",
         "path FileStorageError::Cancelled",
@@ -30821,9 +30820,16 @@
         "use dim_agent_capabilities::file_storage::EntryKind",
         "use dim_agent_capabilities::file_storage::FileLease",
         "use dim_agent_capabilities::file_storage::FilePath",
-        "use dim_agent_capabilities::file_storage::FileReader",
         "use dim_agent_capabilities::file_storage::FileStorage",
         "use dim_agent_capabilities::file_storage::FileStorageError"
+      ]
+    },
+    {
+      "from": "dim_app_server::plugin_files",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path OpenRead",
+        "use dim_agent_capabilities::file_storage::OpenRead"
       ]
     },
     {
@@ -33725,6 +33731,7 @@
         "path SettingsError::Worker",
         "path SettingsService",
         "path SettingsSnapshot",
+        "path WriteCheck::Compare",
         "path project_authorizations",
         "path typed",
         "path validate_file",
@@ -33807,6 +33814,10 @@
         "path SettingsError::UserOnlyField",
         "path SettingsService",
         "path SettingsSnapshot",
+        "path WriteCheck",
+        "path WriteCheck::Compare",
+        "path WriteCheck::Registered",
+        "path current_registration",
         "path revision",
         "path snapshot"
       ]
@@ -54925,6 +54936,13 @@
     },
     {
       "from": "dim_modality",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path dim_agent_capabilities::file_storage::FsHost"
+      ]
+    },
+    {
+      "from": "dim_modality",
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
@@ -55029,8 +55047,7 @@
       "from": "dim_modality",
       "to": "dim_app_server::plugin_files",
       "references": [
-        "path PluginFileTransactions",
-        "use dim_app_server::plugin_files::PluginFileTransactions"
+        "path dim_app_server::plugin_files::PluginFiles"
       ]
     },
     {
@@ -55226,9 +55243,17 @@
       "to": "dim_agent_capabilities::file_storage",
       "references": [
         "path EntryKind::Directory",
-        "path FileReader",
-        "use dim_agent_capabilities::file_storage::EntryKind",
-        "use dim_agent_capabilities::file_storage::FileReader"
+        "use dim_agent_capabilities::file_storage::EntryKind"
+      ]
+    },
+    {
+      "from": "dim_modality::engine",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path FsHost",
+        "path OpenRead",
+        "use dim_agent_capabilities::file_storage::FsHost",
+        "use dim_agent_capabilities::file_storage::OpenRead"
       ]
     },
     {
@@ -55311,8 +55336,8 @@
       "from": "dim_modality::engine",
       "to": "dim_app_server::plugin_files",
       "references": [
-        "path PluginFileTransactions",
-        "use dim_app_server::plugin_files::PluginFileTransactions"
+        "path FileScope",
+        "use dim_app_server::plugin_files::FileScope"
       ]
     },
     {
@@ -55627,10 +55652,10 @@
       "from": "dim_modality::task",
       "to": "dim_app_server::plugin_files",
       "references": [
+        "path FileScope",
         "path PluginFileError",
-        "path PluginFileTransactions",
-        "use dim_app_server::plugin_files::PluginFileError",
-        "use dim_app_server::plugin_files::PluginFileTransactions"
+        "use dim_app_server::plugin_files::FileScope",
+        "use dim_app_server::plugin_files::PluginFileError"
       ]
     },
     {
