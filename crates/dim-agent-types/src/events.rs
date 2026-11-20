@@ -203,6 +203,19 @@ impl InputMessageData {
         })
     }
 
+    /// Whether the input belongs to the one request whose batch consumed it:
+    /// it carries no operator content and every block opens a request-scoped
+    /// marker ([`crate::markup::request_scoped`]). Such an input is rendered
+    /// in that request only and is never pinned or summarised.
+    pub fn request_scoped(&self) -> bool {
+        self.user.is_none()
+            && !self.blocks.is_empty()
+            && self
+                .blocks
+                .iter()
+                .all(|InputBlock::Raw { text, .. }| crate::markup::request_scoped(text))
+    }
+
     /// Checks input arriving from outside: user content, if present, carries
     /// operator content, and the input carries user content or blocks.
     pub fn validate(&self) -> Result<(), &'static str> {

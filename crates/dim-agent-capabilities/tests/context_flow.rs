@@ -911,6 +911,8 @@ mod pinning;
 mod product_summary;
 #[path = "context_flow/replan.rs"]
 mod replan;
+#[path = "context_flow/request_scope.rs"]
+mod request_scope;
 #[path = "context_flow/retention.rs"]
 mod retention;
 

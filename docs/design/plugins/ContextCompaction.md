@@ -1032,9 +1032,9 @@ rest of the replaced range. The replacement carries them verbatim.
 
 - **Where it lives.** ContextPolicy, not the strategy. The rule needs only public facts
   (`input/message`, `input/consumed` and the turn's `turn/start`), it is the same for every
-  strategy, and a strategy must not be able to drop it. The summary also covers the same entries,
-  because they lie in the replaced range; the pin repeats them because a summary is lossy and the
-  running turn's own words are what must not be lost.
+  strategy, and a strategy must not be able to drop it. The summary also covers the same entries
+  (except request-scoped ones), because they lie in the replaced range; the pin repeats them
+  because a summary is lossy and the running turn's own words are what must not be lost.
 - **When.** The step has a running turn — `turn_id` is `Some`, which an automatic compaction
   always has and a manual step has only inside a turn — and the cut is later than that turn's
   `turn/start`. A cut at the turn's start or in an earlier turn pins nothing.
@@ -1067,10 +1067,17 @@ rest of the replaced range. The replacement carries them verbatim.
   each as the message the renderer places for it. That rendering is the projection's own rule,
   shared with the renderer, so the pinned text is exactly what the model saw. A block that
   declares a key is excluded whether or not it retires: the keyed baseline replays the key's live
-  value, and a retirement is the key's absence. An input is told apart by its events and these
-  public fields only; no marker inside an input's text is parsed, so a plugin that writes keyed
-  content (TimelineTree's branch context, for example) is excluded by its key and never by its
-  text. A pin a previous record wrote is already a rendered message and is carried unchanged.
+  value, and a retirement is the key's absence. A plugin that writes keyed content
+  (TimelineTree's branch context, for example) is excluded by its key. A pin a previous record
+  wrote is already a rendered message and is carried unchanged.
+- **Request-scoped inputs.** An input the renderer treats as request-scoped — no operator
+  content and every block a request-scoped marker
+  ([session access](../contracts/session-access.md)'s mapping table) — belongs to the request
+  whose batch consumed it: it is never pinned, and the strategy's `history` and `cuts` are the
+  copy without those entries, each cut re-indexed so a `retain_from` it returns still places.
+  The request being prepared keeps its own reminder: when a cut replaces one it consumed, the
+  provider request renders it again after the compacted context, so that request and the
+  recorded replacement differ only by that tail.
 - **Budget.** The pinned messages total at most `0.1 × B`, counted with `count_tokens` over the
   whole list — the carried pins and the turn's new inputs together. When all of them fit they
   are pinned verbatim; when they do not, each input keeps its head and tail within an equal

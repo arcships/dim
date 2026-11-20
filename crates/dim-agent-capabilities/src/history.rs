@@ -798,23 +798,12 @@ pub(crate) struct ProjectionEntry {
     state: Option<(String, Option<ContextBaselineEntry>)>,
 }
 
-/// An input is request-scoped when it carries no operator content and every
-/// block is a request-scoped marker.
-fn request_scoped(input: &InputMessageData) -> bool {
-    input.user.is_none()
-        && !input.blocks.is_empty()
-        && input
-            .blocks
-            .iter()
-            .all(|InputBlock::Raw { text, .. }| dim_agent_types::markup::request_scoped(text))
-}
-
 /// Raw blocks in order, then the operator's words; each is one message.
 pub(crate) fn render_input<'a>(
     consumed_id: &'a str,
     input: &'a InputMessageData,
 ) -> impl Iterator<Item = ProjectionEntry> + 'a {
-    let scoped = request_scoped(input);
+    let scoped = input.request_scoped();
     input
         .blocks
         .iter()

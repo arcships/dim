@@ -1375,7 +1375,7 @@ impl ContextPolicy {
                      prior: Option<StrategyDiagnostics>| CompactionInput {
             history,
             checkpoint,
-            request: view.prepared.clone(),
+            request: view.compacted_request(),
             model: model.clone(),
             retain_limit,
             cuts,
@@ -1387,11 +1387,12 @@ impl ContextPolicy {
             provider_budget: step.provider_budget.clone(),
             prior,
         };
+        let (strategy_history, strategy_cuts) = strategy_input(&view.history, &cuts);
         let first_input = input(
-            view.history.clone(),
+            strategy_history,
             view.checkpoint.clone(),
             limit_from.clone(),
-            cuts.clone(),
+            strategy_cuts,
             None,
         );
         let record = |retain_from: Option<String>,
@@ -1449,10 +1450,12 @@ impl ContextPolicy {
                     digest_entries: composed.digest,
                 }
             };
+        let first_cut = first_input.cut().and_then(|cut| {
+            cuts.iter()
+                .find(|candidate| candidate.retain_from == cut.retain_from)
+        });
         if step.trigger == CompactionTrigger::Threshold
-            && first_input
-                .cut()
-                .is_some_and(|cut| !self.shrinks(view, model.as_ref(), turn, cut))
+            && first_cut.is_some_and(|cut| !self.shrinks(view, model.as_ref(), turn, cut))
         {
             let outcome = ContextCompactionResult::Skipped {
                 reason: "nothing_to_compact".into(),
@@ -1507,6 +1510,8 @@ impl ContextPolicy {
                     None => completed(composed, diagnostics, limit_from),
                     Some(redo) => {
                         let redo_limit = Some(redo.cuts[redo.limit].retain_from.clone());
+                        let (strategy_history, strategy_cuts) =
+                            strategy_input(&redo.history, &redo.cuts);
                         let second = self
                             .pass(
                                 &Pass {
@@ -1519,7 +1524,7 @@ impl ContextPolicy {
                                     cuts: &redo.cuts,
                                 },
                                 input(
-                                    redo.history.clone(),
+                                    strategy_history,
                                     Some(CompactionCheckpoint {
                                         retain_from: composed.retain_from.clone(),
                                         replacement: composed.replacement.clone().into(),
@@ -1527,7 +1532,7 @@ impl ContextPolicy {
                                         replacement_parts: composed.parts,
                                     }),
                                     redo_limit.clone(),
-                                    redo.cuts.clone(),
+                                    strategy_cuts,
                                     Some(diagnostics.clone()),
                                 ),
                                 &cancel,
@@ -1854,7 +1859,37 @@ impl ContextPolicy {
 }
 
 impl View {
-    /// The request with `history[..kept]` replaced and its token estimate.
+    /// `prepared` without the request-scoped entries' messages: the request
+    /// whose context is compacted carries nothing that belongs to the request
+    /// alone (ContextCompaction §5.9).
+    fn compacted_request(&self) -> Arc<ModelRequest> {
+        let appended = self.request.messages.len() - self.prefix_len;
+        let first = self.prepared.messages.len() - appended - self.history.len();
+        let scoped: Vec<usize> = self
+            .history
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.request_scoped)
+            .map(|(index, _)| first + index)
+            .collect();
+        if scoped.is_empty() {
+            return self.prepared.clone();
+        }
+        let mut request = (*self.prepared).clone();
+        let mut messages = Vec::with_capacity(request.messages.len() - scoped.len());
+        for (index, message) in request.messages.into_iter().enumerate() {
+            if !scoped.contains(&index) {
+                messages.push(message);
+            }
+        }
+        request.messages = messages;
+        Arc::new(request)
+    }
+
+    /// The request with `history[..kept]` replaced and its token estimate. A
+    /// request-scoped entry the cut replaces is appended after the kept tail:
+    /// it belongs to the request being prepared, which consumed it, so the
+    /// provider request and the persisted compaction differ only by it.
     fn compacted(
         &self,
         model: &dyn ContextModel,
@@ -1862,13 +1897,23 @@ impl View {
         replacement: &[Message],
         baseline: &[ContextBaselineEntry],
     ) -> (Arc<ModelRequest>, f64) {
-        let request = project(
+        let mut request = project(
             &self.request,
             self.prefix_len,
             replacement,
             baseline,
             &self.history[kept..],
         );
+        let tail: Vec<Arc<Message>> = self.history[..kept]
+            .iter()
+            .filter(|entry| entry.request_scoped)
+            .map(|entry| entry.message.clone())
+            .collect();
+        if !tail.is_empty() {
+            let mut projected = (*request).clone();
+            projected.messages.extend(tail);
+            request = Arc::new(projected);
+        }
         let tokens = model.count_tokens(&request);
         (request, tokens)
     }
@@ -2113,9 +2158,11 @@ fn carried_pins(view: &View, turn_id: &str) -> Option<CarriedPins> {
 /// cut and before `retain_from`, in event order. Without one, they are every
 /// input the turn consumed since its `turn/start`. The user content and every
 /// keyless raw block of each input, as the renderer places it; keyed blocks
-/// are excluded, because the keyed baseline replays them. The messages take
-/// at most `PINNED_SHARE` of the input budget, beyond which each input keeps
-/// its head and tail with a marker naming its `input/message` event id.
+/// are excluded, because the keyed baseline replays them, and so are
+/// request-scoped inputs, which belong to the request that consumed them.
+/// The messages take at most `PINNED_SHARE` of the input budget, beyond which
+/// each input keeps its head and tail with a marker naming its `input/message`
+/// event id.
 fn pinned_inputs(
     view: &View,
     window: Option<&CutWindow>,
@@ -2180,6 +2227,9 @@ fn pinned_inputs(
         let Some(input) = input else {
             continue;
         };
+        if input.request_scoped() {
+            continue;
+        }
         let mut rendered = Vec::new();
         for block in &input.blocks {
             if let InputBlock::Raw {
@@ -2662,6 +2712,34 @@ fn recovery_overflow(
         _ => "Context recovery could not fit the request.".into(),
     };
     HostError::failed(message)
+}
+
+/// The strategy's copy of `history` and `cuts` (ContextCompaction §5.9):
+/// no request-scoped entry, and every cut's entry re-indexed into the copy,
+/// so a cut the strategy returns still names the same `retain_from`.
+fn strategy_input(
+    history: &[HistoryEntry],
+    cuts: &[CompactionCut],
+) -> (Vec<HistoryEntry>, Vec<CompactionCut>) {
+    let mut before = Vec::with_capacity(history.len() + 1);
+    before.push(0);
+    for entry in history {
+        let kept = before[before.len() - 1];
+        before.push(kept + usize::from(!entry.request_scoped));
+    }
+    (
+        history
+            .iter()
+            .filter(|entry| !entry.request_scoped)
+            .cloned()
+            .collect(),
+        cuts.iter()
+            .map(|cut| CompactionCut {
+                entry: before[cut.entry],
+                ..cut.clone()
+            })
+            .collect(),
+    )
 }
 
 /// Every event boundary that replaces at least one entry without separating
