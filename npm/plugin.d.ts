@@ -682,7 +682,7 @@ export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "se
     records: [string, { Ok: PersistedProviderRecord } | { Err: { code: number; message: string; data: JsonObject } } | null][];
     next: string | null;
   }>;
-  managementPage(request: { providerId: string; modelId?: string; page?: { after?: string; limit?: number; query?: string } }): Promise<{
+  managementPage(request: { providerId: string; modelId?: string; includePending?: boolean; page?: { after?: string; limit?: number; query?: string } }): Promise<{
     record: PersistedProviderRecord | null; targetName: string | null; pending: string[] | null;
     next: string | null; pageNames: Record<string,string> | null;
   }>;

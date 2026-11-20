@@ -459,7 +459,7 @@ impl ProviderService {
         } = self
             .owned(cancel, move |cancel| {
                 Box::pin(async move {
-                    db.management_window(id, target, page, bundled, cancel)
+                    db.management_window(id, target, page, true, bundled, cancel)
                         .await
                         .map_err(ProviderError::from)
                 })
@@ -752,8 +752,8 @@ impl SqliteStorage {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ManagementWindow {
-    record: Option<PersistedProviderRecord>,
-    target_name: Option<String>,
+    pub(super) record: Option<PersistedProviderRecord>,
+    pub(super) target_name: Option<String>,
     pending: Option<Vec<String>>,
     next: Option<String>,
     page_names: Option<HashMap<String, String>>,
@@ -783,12 +783,13 @@ impl SqliteStorage {
         id: String,
         target: Option<String>,
         page: Option<ManagementModelPage>,
+        include_pending: bool,
         bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<ManagementWindow> {
         self.run_read(move |connection| {
                         let tx=connection.transaction().map_err(storage)?;
-                        let pending = tx
+                        let pending = include_pending && tx
                             .query_row(
                                 "SELECT pending FROM provider_bundle WHERE provider_id=?1",
                                 [&id],
@@ -821,8 +822,7 @@ impl SqliteStorage {
                         if let Some(target) = target {
                             let record = read_model_record(&tx, &id, &target)?;
                             let targets = std::slice::from_ref(&target);
-                            let mut listed = persistence::names(&tx, &bundled, &id, targets)?;
-                            let name = listed.remove(&target);
+                            let name = if record.is_some() { persistence::names(&tx, &bundled, &id, targets)?.remove(&target) } else { None };
                             return Ok(ManagementWindow {
                                 record,
                                 target_name: name,

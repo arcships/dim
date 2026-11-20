@@ -2052,38 +2052,37 @@ impl ProviderService {
         let available = self.account_available(&provider_id, cancel).await?;
         let db = self.db.clone();
         let bundled = self.bundled.clone();
-        self.owned(cancel, move |_| {
+        self.owned(cancel, move |cancel| {
             Box::pin(async move {
-                db.run_read(move |connection| {
-                    let tx = connection.transaction().map_err(storage)?;
-                    let Some(record) = read_model_record(&tx, &provider_id, &model_id)? else {
-                        return Ok(None);
-                    };
-                    let mut catalog = match record {
-                        PersistedProviderRecord::Static(record) => {
-                            Some(static_catalog(&bundled, &provider_id, &record, available))
-                        }
-                        PersistedProviderRecord::Managed(record) => account
-                            .filter(|a| a.account.is_some() && same_account(&record.account, a))
-                            .map(|_| record.catalog(&bundled)),
-                    };
-                    if let Some(model) = catalog
-                        .as_mut()
-                        .and_then(|c| c.models.iter_mut().find(|m| m.id == model_id))
-                    {
-                        model.name = persistence::names(
-                            &tx,
-                            &bundled,
-                            &provider_id,
-                            std::slice::from_ref(&model_id),
-                        )?
-                        .remove(&model_id)
-                        .ok_or_else(|| storage("Selected model disappeared"))?;
+                let window = db
+                    .management_window(
+                        provider_id.clone(),
+                        Some(model_id.clone()),
+                        None,
+                        false,
+                        bundled.clone(),
+                        cancel,
+                    )
+                    .await
+                    .map_err(failure)?;
+                let mut catalog = match window.record {
+                    None => None,
+                    Some(PersistedProviderRecord::Static(record)) => {
+                        Some(static_catalog(&bundled, &provider_id, &record, available))
                     }
-                    Ok(catalog)
-                })
-                .await
-                .map_err(failure)
+                    Some(PersistedProviderRecord::Managed(record)) => account
+                        .filter(|a| a.account.is_some() && same_account(&record.account, a))
+                        .map(|_| record.catalog(&bundled)),
+                };
+                if let Some(model) = catalog
+                    .as_mut()
+                    .and_then(|c| c.models.iter_mut().find(|m| m.id == model_id))
+                {
+                    model.name = window
+                        .target_name
+                        .ok_or_else(|| failure("Selected model disappeared"))?;
+                }
+                Ok(catalog)
             })
         })
         .await

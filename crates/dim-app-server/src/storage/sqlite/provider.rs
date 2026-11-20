@@ -63,6 +63,7 @@ pub(super) enum ManagementRead {
     Models {
         provider_id: String,
         model_id: Option<String>,
+        include_pending: Option<bool>,
         page: Option<crate::provider::ManagementModelPage>,
     },
 }
@@ -334,6 +335,7 @@ impl ProviderOperation {
                 provider_id,
                 model_id,
                 page,
+                include_pending,
             }) => {
                 crate::provider::ManagementModelPage::validate_window(
                     model_id.as_deref(),
@@ -344,9 +346,16 @@ impl ProviderOperation {
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
                 serde_json::json!(
-                    db.management_window(provider_id, model_id, page, bundled, cancel)
-                        .await
-                        .map_err(storage_failure)?
+                    db.management_window(
+                        provider_id,
+                        model_id,
+                        page,
+                        include_pending.unwrap_or(true),
+                        bundled,
+                        cancel
+                    )
+                    .await
+                    .map_err(storage_failure)?
                 )
             }
             Self::ManagementPage(ManagementRead::Providers { page, accounts }) => {

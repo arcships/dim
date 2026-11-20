@@ -85,7 +85,7 @@ First import emits no notice. File and project profiles retain their lease and n
 | --- | --- |
 | readSelection(scope); writeSelection(scope,expectedVersion,selection) | selection/select. Return the stored selection and version; the write checks the scope version and commits the selected model atomically. |
 | readPreferences(providerId,modelId) | saved_preferences. Read the one model preference field and keep the existing absent-value behavior in Provider. |
-| readRecord({providerId,projection}) | catalog, catalog_for, catalog_target, resolve_connection, probe, discovery and edit preparation. Select header/version, one target model, managed catalog or full editable record as required. Return missing or the matching persisted projection. A projection containing an inline credential returns its stored value. |
+| readRecord({providerId,projection}) | catalog, catalog_for, resolve_connection, probe, discovery and edit preparation. Select header/version, one target model, managed catalog or full editable record as required. Return missing or the matching persisted projection. A projection containing an inline credential returns its stored value. |
 | findCandidates(criteria); listProviders(filter); queryModels(page); managementPage(page) | Candidate IDs/ordered models, provider list, filtered model pages and management windows use their existing indexed selectors, limits, ordering and row-error behavior. Pass bundle identity, required catalog inputs and account facts as data. Keep transaction-local adoption and page selection together wherever the existing query does both. |
 | activateSource(revision,baseFacts); adoptProvider(id,revision,baseFacts) | Existing source activation and per-provider adoption transactions. Supply only the bundle facts required by the existing operation. |
 | commitEdit({providerId,edit}) | Closed edit variants: create, delete, connection/header patch, model create/edit/reset/delete, preferences, single/bulk enablement and discovery refresh. Preserve each existing transaction's touched columns, indexes, write precondition and projection. Create checks absence; versioned edits check the expected version. Refresh and connection changes that compare the prior record keep that exact comparison. Return the committed version and requested existing projection. |
@@ -93,6 +93,8 @@ First import emits no notice. File and project profiles retain their lease and n
 
 Provider validates edits and runs probe/discovery HTTP requests outside SQLite. A conditional
 commit returns the original conflict on a stale snapshot.
+
+For one catalog target, Provider calls `managementPage({providerId, modelId, includePending:false})`. SQLite returns the record and target name from one snapshot and omits pending import data. Provider applies account identity, availability and catalog rules. Management callers include pending data by default.
 
 **Record reads.** `readRecord({providerId,projection}) → PersistedProviderRecord | null`.
 Use the existing persisted managed/static variants and the five SQLite model projections:
