@@ -5,7 +5,10 @@
 use crate::{
     methods::{ManagementMethods, SelectionScope},
     protocol::canonical_cwd,
-    settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService, SettingsSnapshot},
+    settings::{
+        BusinessDocument, RegisteredDocument, Settings, SettingsError, SettingsScope,
+        SettingsSnapshot,
+    },
 };
 use dim_agent_capabilities::{
     file_storage::{FileStorageError, FsHost},
@@ -129,7 +132,10 @@ fn plugin_sources(documents: HooksPlugins) -> Vec<HookSourceSnapshot> {
 /// a Settings source; the project file is read through fsHost under the
 /// root Settings authorized for the workspace.
 struct SettingsHookSources {
-    settings: Arc<SettingsService>,
+    settings: Arc<Settings>,
+    user: Arc<RegisteredDocument<HooksDocument>>,
+    projects: Arc<RegisteredDocument<HooksProjects>>,
+    plugins: Arc<RegisteredDocument<HooksPlugins>>,
     files: Arc<FsHost>,
     home: Option<PathBuf>,
 }
@@ -159,25 +165,30 @@ impl ReadHookSources for SettingsHookSources {
         let cwd = cwd.to_path_buf();
         Box::pin(async move {
             let user = self
-                .settings
-                .read::<HooksDocument>(SettingsScope::User, &cancel)
+                .user
+                .read(SettingsScope::User, &cancel)
                 .await
                 .map_err(host_error)?;
             let projects = self
-                .settings
-                .read::<HooksProjects>(SettingsScope::User, &cancel)
+                .projects
+                .read(SettingsScope::User, &cancel)
                 .await
                 .map_err(host_error)?;
             let plugins = self
-                .settings
-                .read::<HooksPlugins>(SettingsScope::User, &cancel)
+                .plugins
+                .read(SettingsScope::User, &cancel)
                 .await
                 .map_err(host_error)?;
             let mut sources = vec![user_source(&user.revision, user.document)];
             // A hook point reads; it never authorizes. The Session's own
             // creation registered its root.
-            if let Some(root) = self.settings.project_root(&cwd) {
-                sources.push(self.project(root, &projects.document, &cancel).await?);
+            if self
+                .settings
+                .projects()
+                .iter()
+                .any(|project| project.cwd == cwd)
+            {
+                sources.push(self.project(&cwd, &projects.document, &cancel).await?);
             }
             sources.extend(plugin_sources(plugins.document));
             Ok(HookSourcesSnapshot { sources })
@@ -193,7 +204,7 @@ impl SettingsHookSources {
     /// The sources of a workspace whose root the caller authorized.
     async fn authorized(
         &self,
-        root: usize,
+        workspace: &Path,
         user: &SettingsSnapshot<HooksDocument>,
         projects: &SettingsSnapshot<HooksProjects>,
         plugins: &SettingsSnapshot<HooksPlugins>,
@@ -201,7 +212,7 @@ impl SettingsHookSources {
     ) -> Result<HookSourcesSnapshot, dim_agent_capabilities::host::HostError> {
         let mut sources = vec![
             user_source(&user.revision, user.document.clone()),
-            self.project(root, &projects.document, cancel).await?,
+            self.project(workspace, &projects.document, cancel).await?,
         ];
         sources.extend(plugin_sources(plugins.document.clone()));
         Ok(HookSourcesSnapshot { sources })
@@ -210,11 +221,10 @@ impl SettingsHookSources {
     /// The workspace's source, from the root Settings authorized for it.
     async fn project(
         &self,
-        root: usize,
+        workspace: &Path,
         projects: &HooksProjects,
         cancel: &CancellationToken,
     ) -> Result<HookSourceSnapshot, dim_agent_capabilities::host::HostError> {
-        let workspace = self.settings.project_path(root).map_err(host_error)?;
         let workspace_key = workspace.to_string_lossy().into_owned();
         let path = workspace.join(PROJECT_FILE);
         let state = match self
@@ -284,18 +294,34 @@ pub fn install(builder: &mut AgentBuilder, product_home: Option<PathBuf>) {
     );
 }
 
+struct SessionHookSources {
+    owner: Arc<HooksService>,
+    home: Option<PathBuf>,
+}
+impl ReadHookSources for SessionHookSources {
+    fn sources(
+        &self,
+        cwd: &Path,
+        cancel: CancellationToken,
+    ) -> dim_agent_capabilities::host::HostFuture<'_, HookSourcesSnapshot> {
+        let cwd = cwd.to_path_buf();
+        Box::pin(async move { self.owner.sources(&cwd, cancel).await })
+    }
+    fn home(&self) -> Option<PathBuf> {
+        self.home.clone()
+    }
+}
+
 struct HookSourcesPlugin {
     host: Key<HookSourcesHost>,
-    settings: Key<SettingsService>,
-    files: Key<FsHost>,
+    owner: Key<HooksService>,
     home: Option<PathBuf>,
 }
 impl HookSourcesPlugin {
     fn new(names: &Names<'_>, home: Option<PathBuf>) -> rutis::Result<Self> {
         Ok(Self {
             host: names.key()?,
-            settings: names.key()?,
-            files: names.key()?,
+            owner: names.key()?,
             home,
         })
     }
@@ -305,18 +331,16 @@ impl DynPlugin for HookSourcesPlugin {
         "HookSources"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.settings.erase(), self.files.erase()]
+        vec![self.owner.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let settings = ctx.require_at(&self.settings)?;
-            let files = ctx.require_at(&self.files)?;
+            let owner = ctx.require_at(&self.owner)?;
             ctx.provide_at(
                 self.host.clone(),
-                Arc::new(HookSourcesHost(Arc::new(SettingsHookSources {
-                    settings,
-                    files,
+                Arc::new(HookSourcesHost(Arc::new(SessionHookSources {
                     home: self.home.clone(),
+                    owner,
                 }))),
             )?;
             Ok(Effect::Done)
@@ -396,19 +420,6 @@ fn error(error: SettingsError) -> RpcError {
     RpcError::app(-32000, kind, error.to_string())
 }
 
-/// The port over this host's Settings and files.
-fn reader(
-    settings: &Arc<SettingsService>,
-    files: &Arc<FsHost>,
-    home: Option<PathBuf>,
-) -> Arc<SettingsHookSources> {
-    Arc::new(SettingsHookSources {
-        settings: settings.clone(),
-        files: files.clone(),
-        home,
-    })
-}
-
 /// A refused plugin document's error and optional credential-safe reason.
 pub type HookRefusal = (String, Option<&'static str>);
 
@@ -417,7 +428,7 @@ pub type HookRefusal = (String, Option<&'static str>);
 /// `hooks-plugins`.
 #[derive(Clone)]
 pub struct HooksService {
-    settings: Arc<SettingsService>,
+    reader: Arc<SettingsHookSources>,
     /// Why the last registration of a plugin was refused, by plugin id: the
     /// raw error, and its static reason when the cause has one
     /// (PluginManager A.2).
@@ -440,6 +451,12 @@ struct PluginRequest {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NoArguments {}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourceRequest {
+    cwd: PathBuf,
+}
 
 fn face_request<T: serde::de::DeserializeOwned>(
     args: rutis_bridge::session::Value,
@@ -480,7 +497,7 @@ fn face_reply<T: Serialize>(result: crate::settings::Result<T>) -> rutis_bridge:
 impl rutis_bridge::session::HostDispatch for HooksService {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"register":"async", "withdraw":"async", "plugins":"async", "refusal":"sync"}),
+            serde_json::json!({"register":"async", "withdraw":"async", "plugins":"async", "refusal":"sync", "sources":"async"}),
         )
     }
 
@@ -522,6 +539,25 @@ impl rutis_bridge::session::HostDispatch for HooksService {
                     face_reply(owner.plugins(&cancel).await)
                 }))
             }
+            "sources" => {
+                let SourceRequest { cwd } = face_request(args)?;
+                Ok(Value::future(async move {
+                    let _guard = cancel.clone().drop_guard();
+                    let sources = owner.sources(&cwd, cancel).await.map_err(|error| {
+                        let code = match error {
+                            dim_agent_capabilities::host::HostError::Cancelled(_) => "cancelled",
+                            _ => "failed",
+                        };
+                        rutis_bridge::exports::failure(
+                            "hooksService",
+                            code,
+                            error.to_string(),
+                            None,
+                        )
+                    })?;
+                    rutis_bridge::session::arg(&sources)
+                }))
+            }
             "refusal" => {
                 let PluginRequest { plugin } = face_request(args)?;
                 rutis_bridge::session::arg(&self.plugin_refusal(&plugin))
@@ -534,6 +570,14 @@ impl rutis_bridge::session::HostDispatch for HooksService {
 }
 
 impl HooksService {
+    pub async fn sources(
+        &self,
+        cwd: &Path,
+        cancel: CancellationToken,
+    ) -> Result<HookSourcesSnapshot, dim_agent_capabilities::host::HostError> {
+        self.reader.sources(cwd, cancel).await
+    }
+
     /// Adds or replaces the hook document of `plugin` (a plugin id, §3.7),
     /// whose commands read `dir` as `DIM_PLUGIN_ROOT` (Hooks A.2, A.3). The
     /// registration is kept in `hooks-plugins.json` and survives Hooks'
@@ -603,8 +647,9 @@ impl HooksService {
         cancel: &CancellationToken,
     ) -> crate::settings::Result<Vec<String>> {
         Ok(self
-            .settings
-            .read::<HooksPlugins>(SettingsScope::User, cancel)
+            .reader
+            .plugins
+            .read(SettingsScope::User, cancel)
             .await?
             .document
             .plugins
@@ -623,8 +668,9 @@ impl HooksService {
     ) -> crate::settings::Result<()> {
         loop {
             let current = self
-                .settings
-                .read::<HooksPlugins>(SettingsScope::User, cancel)
+                .reader
+                .plugins
+                .read(SettingsScope::User, cancel)
                 .await?;
             let mut document = current.document;
             if document.plugins.get(&plugin) == registration.as_ref() {
@@ -641,7 +687,8 @@ impl HooksService {
                 }
             }
             match self
-                .settings
+                .reader
+                .plugins
                 .update(SettingsScope::User, &current.revision, document, cancel)
                 .await
             {
@@ -655,7 +702,7 @@ impl HooksService {
 
 /// Process owner of the `hooks` sources and their management methods.
 pub struct HooksSettingsPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     files: Key<FsHost>,
     methods: Key<ManagementMethods>,
     product_home: Option<PathBuf>,
@@ -686,11 +733,16 @@ impl DynPlugin for HooksSettingsPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let files = ctx.require_at(&self.files)?;
             let methods = ctx.require_at(&self.methods)?;
-            settings.register::<HooksDocument>(ctx)?;
-            settings.register::<HooksProjects>(ctx)?;
-            settings.register::<HooksPlugins>(ctx)?;
-            let service = Arc::new(HooksService {
+            let reader = Arc::new(SettingsHookSources {
+                user: settings.register_document::<HooksDocument>(ctx)?,
+                projects: settings.register_document::<HooksProjects>(ctx)?,
+                plugins: settings.register_document::<HooksPlugins>(ctx)?,
                 settings: settings.clone(),
+                files,
+                home: self.product_home.clone(),
+            });
+            let service = Arc::new(HooksService {
+                reader: reader.clone(),
                 refused: Arc::default(),
             });
             ctx.provide_as::<HooksService>(service.clone())?;
@@ -698,7 +750,6 @@ impl DynPlugin for HooksSettingsPlugin {
                 rutis_bridge::session::host_key("hooksService"),
                 service,
             )?;
-            let reader = reader(&settings, &files, self.product_home.clone());
             methods.register(
                 ctx,
                 "hooks",
@@ -720,27 +771,30 @@ impl DynPlugin for HooksSettingsPlugin {
                         match method.as_str() {
                             "hooks.catalog" => {
                                 let p: SelectionScope = params(value)?;
-                                let user = settings
-                                    .read::<HooksDocument>(SettingsScope::User, &stopping)
+                                let user = reader
+                                    .user
+                                    .read(SettingsScope::User, &stopping)
                                     .await
                                     .map_err(error)?;
-                                let projects = settings
-                                    .read::<HooksProjects>(SettingsScope::User, &stopping)
+                                let projects = reader
+                                    .projects
+                                    .read(SettingsScope::User, &stopping)
                                     .await
                                     .map_err(error)?;
-                                let plugins = settings
-                                    .read::<HooksPlugins>(SettingsScope::User, &stopping)
+                                let plugins = reader
+                                    .plugins
+                                    .read(SettingsScope::User, &stopping)
                                     .await
                                     .map_err(error)?;
                                 let snapshot = match p.cwd {
                                     Some(cwd) => {
                                         let cwd = canonical_cwd(&cwd).await?;
-                                        let root = settings
-                                            .authorize_project(cwd, &stopping)
+                                        settings
+                                            .authorize_project(cwd.clone(), &stopping)
                                             .await
                                             .map_err(error)?;
                                         reader
-                                            .authorized(root, &user, &projects, &plugins, &stopping)
+                                            .authorized(&cwd, &user, &projects, &plugins, &stopping)
                                             .await
                                             .map_err(|error| {
                                                 RpcError::app(
@@ -776,7 +830,8 @@ impl DynPlugin for HooksSettingsPlugin {
                             }
                             "hooks.save" => {
                                 let p: SaveHooks = params(value)?;
-                                let snapshot = settings
+                                let snapshot = reader
+                                    .user
                                     .update(
                                         SettingsScope::User,
                                         &p.expected_revision,
@@ -792,17 +847,14 @@ impl DynPlugin for HooksSettingsPlugin {
                             "hooks.set_enabled" => {
                                 let p: SetHookProject = params(value)?;
                                 let cwd = canonical_cwd(&p.cwd).await?;
-                                let root = settings
-                                    .authorize_project(cwd, &stopping)
+                                settings
+                                    .authorize_project(cwd.clone(), &stopping)
                                     .await
                                     .map_err(error)?;
-                                let workspace = settings
-                                    .project_path(root)
-                                    .map_err(error)?
-                                    .to_string_lossy()
-                                    .into_owned();
-                                let snapshot = settings
-                                    .read::<HooksProjects>(SettingsScope::User, &stopping)
+                                let workspace = cwd.to_string_lossy().into_owned();
+                                let snapshot = reader
+                                    .projects
+                                    .read(SettingsScope::User, &stopping)
                                     .await
                                     .map_err(error)?;
                                 if snapshot.revision != p.expected_revision {
@@ -819,7 +871,8 @@ impl DynPlugin for HooksSettingsPlugin {
                                         revision: snapshot.revision,
                                     });
                                 }
-                                let snapshot = settings
+                                let snapshot = reader
+                                    .projects
                                     .update(
                                         SettingsScope::User,
                                         &snapshot.revision,
@@ -884,13 +937,8 @@ mod tests {
         wait_active(&root, &views, Duration::from_secs(5), &cancel)
             .await
             .unwrap();
-        let settings = root.get::<SettingsService>().unwrap();
-        let files = root.get::<FsHost>().unwrap();
-        let sources = SettingsHookSources {
-            settings: settings.clone(),
-            files,
-            home: Some(home.clone()),
-        };
+        let settings = root.get::<Settings>().unwrap();
+        let sources = root.get::<HooksService>().unwrap();
         let snapshot = sources.sources(&project, cancel.clone()).await.unwrap();
         assert_eq!(
             snapshot.sources.len(),
@@ -898,7 +946,7 @@ mod tests {
             "an unauthorized workspace has no project source"
         );
         assert!(
-            settings.project_root(&project).is_none(),
+            settings.projects().iter().all(|entry| entry.cwd != project),
             "a hook point authorized a project"
         );
 

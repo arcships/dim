@@ -3689,7 +3689,8 @@
       "parent": "dim_app_server::settings",
       "file": "crates/dim-app-server/src/settings/document.rs",
       "unexpandedMacros": [
-        "tokio::select"
+        "tokio::select",
+        "vec"
       ]
     },
     {
@@ -28599,18 +28600,26 @@
       "to": "dim_app_server::settings",
       "references": [
         "path BusinessDocument",
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Cancelled",
         "path SettingsError::Closed",
         "path SettingsError::Conflict",
         "path SettingsError::Invalid",
-        "path SettingsService",
         "path SettingsSnapshot",
         "path crate::settings::Result",
         "use crate::settings::BusinessDocument",
+        "use crate::settings::RegisteredDocument",
         "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService",
         "use crate::settings::SettingsSnapshot"
+      ]
+    },
+    {
+      "from": "dim_app_server::hooks_settings",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -28618,13 +28627,6 @@
       "to": "dim_agent_capabilities::file_storage",
       "references": [
         "use dim_agent_capabilities::file_storage::FileStoragePlugin"
-      ]
-    },
-    {
-      "from": "dim_app_server::hooks_settings::tests",
-      "to": "dim_agent_capabilities::file_storage::face",
-      "references": [
-        "path FsHost"
       ]
     },
     {
@@ -28646,7 +28648,7 @@
       "from": "dim_app_server::hooks_settings::tests",
       "to": "dim_app_server::hooks_settings",
       "references": [
-        "path SettingsHookSources"
+        "path HooksService"
       ]
     },
     {
@@ -28660,8 +28662,14 @@
       "from": "dim_app_server::hooks_settings::tests",
       "to": "dim_app_server::settings",
       "references": [
-        "path SettingsService",
         "use crate::settings::SettingsPlugin"
+      ]
+    },
+    {
+      "from": "dim_app_server::hooks_settings::tests",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings"
       ]
     },
     {

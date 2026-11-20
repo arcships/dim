@@ -417,6 +417,8 @@ AcpGateway 自己的设计把 Hooks 对 `session.submit` 的 `input_blocked` 拒
 `hooksService` 是现有插件内容操作的进程数据面，与 A.7 的本地客户端管理入口分开。
 每个操作只接受一个 JSON 对象；位置参数数组和标量请求无效。
 
+Session 的 Hook 执行器通过 `hooksService.sources({cwd})` 获取生效的来源文档，返回 `{sources: [{id, path, enabled, state, document}]}`。只有工作目录已获授权时，读取才包含项目来源。
+
 | 操作 | 请求 | 回复 |
 | --- | --- | --- |
 | `register`（异步） | `{plugin, dir, document}`；插件 ID 和目录为字符串 | `null` |

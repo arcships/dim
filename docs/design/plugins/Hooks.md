@@ -418,6 +418,8 @@ Plugin documents are kept in the Settings source `hooks-plugins`, one `{dir, hoo
 It is separate from the local client management entry in A.7. Each operation accepts exactly
 one JSON object; positional arrays and scalar requests are invalid.
 
+The Session hook runner obtains the effective source documents through `hooksService.sources({cwd})`. The reply contains `{sources: [{id, path, enabled, state, document}]}`. A lookup reads the project source only for an already authorized working directory.
+
 | Operation | Request | Reply |
 | --- | --- | --- |
 | `register` (async) | `{plugin, dir, document}`; plugin id and directory are strings | `null` |

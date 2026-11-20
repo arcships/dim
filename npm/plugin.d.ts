@@ -819,6 +819,13 @@ export interface SummaryPromptSettingsHost {
 
 /** Hooks-owned plugin content registration; see Hooks A.2. */
 export interface HooksService {
+  sources(request: { cwd: string }): Promise<{ sources: {
+    id: "user" | "project" | `plugin:${string}`;
+    path: string | null;
+    enabled: boolean;
+    state: "ok" | "missing" | { invalid: string };
+    document: { hooks: Record<string, JsonObject[]>; disableAllHooks: boolean } | null;
+  }[] }>;
   register(request: { plugin: string; dir: string; document: JsonValue }): Promise<null>;
   withdraw(request: { plugin: string }): Promise<null>;
   plugins(request: Record<string, never>): Promise<string[]>;

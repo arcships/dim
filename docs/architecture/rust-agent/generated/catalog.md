@@ -23,7 +23,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `fsHost` | process | FileStorage | data | `backup` async, `closeRead` async, `createDirectory` async, `list` async, `lock` async, `openRead` async, `readAt` async, `readBytes` async, `remove` async, `replace` async, `stat` async, `unlock` async |
 | `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
-| `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
+| `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `sources` async, `withdraw` async |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
 | `listenAddresses` | process | Transport | data | `read` async |
 | `loader` | process | rutis-loader | internal(owner-api) | — |

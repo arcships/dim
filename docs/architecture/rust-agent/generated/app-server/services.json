@@ -1945,7 +1945,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "status": "Ready"
           }
@@ -1964,7 +1964,7 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "provider": 18,
             "generation": 1
@@ -1984,7 +1984,7 @@
             "external": true
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "provider": 18,
             "declared": true,
             "external": true

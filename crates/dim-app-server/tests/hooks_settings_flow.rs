@@ -159,6 +159,19 @@ async fn catalog_reports_sources_states_and_never_reads_foreign_hook_files() {
         )
         .await
         .unwrap();
+    let service = fixture.root.get::<HooksService>().unwrap();
+    let native = service
+        .sources(&fixture.project, fixture.cancel.clone())
+        .await
+        .unwrap();
+    let wire = fixture
+        .face("sources", json!({"cwd":fixture.project}))
+        .await
+        .unwrap();
+    assert_eq!(wire, serde_json::to_value(native).unwrap());
+    assert_eq!(wire["sources"][1]["state"], "ok");
+    assert_eq!(wire["sources"][1]["enabled"], false);
+    assert!(wire["sources"][1]["document"]["hooks"]["Stop"].is_array());
     assert_eq!(catalog["sources"][1]["state"], "ok");
     assert_eq!(catalog["sources"][1]["enabled"], false);
     let hooks = catalog["hooks"].as_array().unwrap();
