@@ -494,6 +494,21 @@ impl SqliteStorage {
         .await
     }
 
+    pub(crate) async fn adopt_provider(
+        self: &Arc<Self>,
+        id: String,
+        revision: impl AsRef<str> + Send + 'static,
+        facts: Option<persistence::AdoptionFacts>,
+        bundled: Arc<BundledCatalog>,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<()> {
+        self.run(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            persistence::adopt_source(&tx, &id, &bundled, revision.as_ref(), facts, &cancel)?;
+            tx.commit().map_err(storage)
+        })
+        .await
+    }
     pub(crate) async fn activate_source(
         self: &Arc<Self>,
         revision: impl AsRef<str> + Send + 'static,
@@ -2087,13 +2102,9 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |cancel| {
             Box::pin(async move {
-                db.run(move |connection| {
-                    let tx = connection.transaction().map_err(storage)?;
-                    persistence::adopt(&tx, &id, &bundled, &cancel)?;
-                    tx.commit().map_err(storage)
-                })
-                .await
-                .map_err(failure)
+                db.adopt_provider(id, bundled.revision(), None, bundled, cancel)
+                    .await
+                    .map_err(failure)
             })
         })
         .await

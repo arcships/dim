@@ -148,18 +148,16 @@ impl ProviderService {
                 "Account catalogs do not accept user models".into(),
             ));
         }
-        let id = provider_id.clone();
+        let bundled = self.bundled.clone();
         self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
-        let record = self
-            .owned(cancel, move |_| {
-                Box::pin(async move {
-                    db.create_model_record(provider_id, expected_version, model)
-                        .await
-                })
+        self.owned(cancel, move |_| {
+            Box::pin(async move {
+                db.create_model_record(provider_id, expected_version, model, bundled)
+                    .await
             })
-            .await?;
-        Ok(static_catalog(&self.bundled, &id, &record, true))
+        })
+        .await
     }
 
     pub async fn delete_model(
@@ -174,18 +172,16 @@ impl ProviderService {
                 "Account catalogs do not own user models".into(),
             ));
         }
-        let id = provider_id.clone();
+        let bundled = self.bundled.clone();
         self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
-        let record = self
-            .owned(cancel, move |_| {
-                Box::pin(async move {
-                    db.delete_model_record(provider_id, expected_version, model_id)
-                        .await
-                })
+        self.owned(cancel, move |_| {
+            Box::pin(async move {
+                db.delete_model_record(provider_id, expected_version, model_id, bundled)
+                    .await
             })
-            .await?;
-        Ok(static_catalog(&self.bundled, &id, &record, true))
+        })
+        .await
     }
 
     pub async fn update_model_config(
@@ -373,39 +369,43 @@ impl SqliteStorage {
         provider_id: String,
         expected_version: u32,
         mut model: ModelEntry,
-    ) -> Result<StaticProviderRecord, ProviderError> {
-        self.mutate_static(provider_id, expected_version, move |record, _| {
-            if record.credential_authority != CredentialAuthority::Static {
-                return Err(ProviderError::Unsupported(
-                    "Account catalogs do not accept user models".into(),
-                ));
-            }
-            // A user model states its own limits, so what it declares
-            // is what the bundle must not override.
-            if model.capabilities.context_window.is_some() {
-                declare(&mut model, "contextWindow");
-            }
-            if model.capabilities.max_output_tokens.is_some() {
-                declare(&mut model, "maxOutputTokens");
-            }
-            if record
-                .models
-                .iter()
-                .chain(&record.user_models)
-                .any(|entry| entry.model_id == model.model_id)
-            {
-                return Err(ProviderError::Conflict("Model ID already exists".into()));
-            }
-            record
-                .model_config_overrides
-                .retain(|entry| entry.model_id != model.model_id);
-            record.disabled_model_ids.retain(|id| id != &model.model_id);
-            record.model_preferences.remove(&model.model_id);
-            record.endpoint_overrides.remove(&model.model_id);
-            record.user_models.push(model);
-            Ok(())
-        })
-        .await
+        bundled: Arc<BundledCatalog>,
+    ) -> Result<ProviderCatalog, ProviderError> {
+        let id = provider_id.clone();
+        let record = self
+            .mutate_static(provider_id, expected_version, move |record, _| {
+                if record.credential_authority != CredentialAuthority::Static {
+                    return Err(ProviderError::Unsupported(
+                        "Account catalogs do not accept user models".into(),
+                    ));
+                }
+                // A user model states its own limits, so what it declares
+                // is what the bundle must not override.
+                if model.capabilities.context_window.is_some() {
+                    declare(&mut model, "contextWindow");
+                }
+                if model.capabilities.max_output_tokens.is_some() {
+                    declare(&mut model, "maxOutputTokens");
+                }
+                if record
+                    .models
+                    .iter()
+                    .chain(&record.user_models)
+                    .any(|entry| entry.model_id == model.model_id)
+                {
+                    return Err(ProviderError::Conflict("Model ID already exists".into()));
+                }
+                record
+                    .model_config_overrides
+                    .retain(|entry| entry.model_id != model.model_id);
+                record.disabled_model_ids.retain(|id| id != &model.model_id);
+                record.model_preferences.remove(&model.model_id);
+                record.endpoint_overrides.remove(&model.model_id);
+                record.user_models.push(model);
+                Ok(())
+            })
+            .await?;
+        Ok(static_catalog(&bundled, &id, &record, true))
     }
 
     pub(crate) async fn delete_model_record(
@@ -413,32 +413,36 @@ impl SqliteStorage {
         provider_id: String,
         expected_version: u32,
         model_id: String,
-    ) -> Result<StaticProviderRecord, ProviderError> {
-        self.mutate_static(provider_id.clone(), expected_version, move |record, tx| {
-            let Some(index) = record
-                .user_models
-                .iter()
-                .position(|entry| entry.model_id == model_id)
-            else {
-                return Err(
-                    if record.models.iter().any(|entry| entry.model_id == model_id) {
-                        ProviderError::Unsupported("Only user models can be deleted".into())
-                    } else {
-                        ProviderError::NotFound
-                    },
-                );
-            };
-            record.user_models.remove(index);
-            record.disabled_model_ids.retain(|id| id != &model_id);
-            record.model_preferences.remove(&model_id);
-            record.endpoint_overrides.remove(&model_id);
-            tx.execute(
-                "DELETE FROM provider_selections WHERE provider_id=?1 AND model_id=?2",
-                params![provider_id, model_id],
-            )?;
-            Ok(())
-        })
-        .await
+        bundled: Arc<BundledCatalog>,
+    ) -> Result<ProviderCatalog, ProviderError> {
+        let id = provider_id.clone();
+        let record = self
+            .mutate_static(provider_id.clone(), expected_version, move |record, tx| {
+                let Some(index) = record
+                    .user_models
+                    .iter()
+                    .position(|entry| entry.model_id == model_id)
+                else {
+                    return Err(
+                        if record.models.iter().any(|entry| entry.model_id == model_id) {
+                            ProviderError::Unsupported("Only user models can be deleted".into())
+                        } else {
+                            ProviderError::NotFound
+                        },
+                    );
+                };
+                record.user_models.remove(index);
+                record.disabled_model_ids.retain(|id| id != &model_id);
+                record.model_preferences.remove(&model_id);
+                record.endpoint_overrides.remove(&model_id);
+                tx.execute(
+                    "DELETE FROM provider_selections WHERE provider_id=?1 AND model_id=?2",
+                    params![provider_id, model_id],
+                )?;
+                Ok(())
+            })
+            .await?;
+        Ok(static_catalog(&bundled, &id, &record, true))
     }
 }
 

@@ -58,8 +58,16 @@ export default definePlugin({
           assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'replaceConnection', expected: full, record: changed } }), changed)
           await assert.rejects(() => sqlite.commitEdit({ providerId: copyId, edit: { kind: 'refreshStatic', expected: full, record: changed } }),
             (error: any) => error.code === 'provider_conflict')
-          assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'delete', expectedVersion: changed.version } }), {})
+          const window = await sqlite.managementPage({providerId: copyId, page: { limit: 1 }})
+          assert.equal(window.next, 'first')
+          assert.deepEqual(Object.keys(window.pageNames ?? {}), ['first'])
+          const catalog = await sqlite.commitEdit({providerId: copyId, edit: {kind: 'createModel', expectedVersion: changed.version, model: {...full.models[0], modelId:'third',displayName:'Third'}}})
+          assert.ok(catalog.models.some(model => model.id === 'third'))
+          const removed = await sqlite.commitEdit({providerId: copyId, edit: {kind: 'deleteModel', expectedVersion: changed.version + 1, modelId:'third'}})
+          assert.deepEqual(removed.models.map(model => model.id), ['first', 'second'])
+          assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'delete', expectedVersion: changed.version + 2 } }), {})
           assert.equal(await sqlite.readRecord({ providerId: copyId, projection: { kind: 'header' } }), null)
+          assert.deepEqual(await sqlite.adoptProvider({id: providerId, revision:'fixture-source', baseFacts:{fingerprint:null, definition:null}}), {})
           return { kind: 'value', value: { version: header.version } }
         }
         if (call.method === 'storefixture.timeline_directory') {

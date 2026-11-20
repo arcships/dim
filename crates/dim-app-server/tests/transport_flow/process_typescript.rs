@@ -1406,6 +1406,18 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         .await;
     assert_ok(&record);
     assert_eq!(record["result"]["version"], 1);
+    let revision: String = rusqlite::Connection::open_with_flags(
+        home.join("rust/dimcode.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap()
+    .query_row(
+        "SELECT naming_revision FROM provider_bundle WHERE provider_id=?1",
+        [provider_id],
+        |row| row.get(0),
+    )
+    .unwrap();
+    assert_eq!(revision, "fixture-source");
     let wire = client.rpc("storefixture.report", json!({})).await;
     let native = client.rpc("storage.report", json!({})).await;
     assert_ok(&wire);

@@ -434,15 +434,31 @@ pub(super) fn admit_base(
     record: &StaticProviderRecord,
     bundled: &BundledCatalog,
 ) -> Result<()> {
+    admit_source_base(
+        connection,
+        id,
+        record,
+        bundled.fingerprint(id),
+        bundled.revision(),
+    )
+}
+
+fn admit_source_base(
+    connection: &rusqlite::Connection,
+    id: &str,
+    record: &StaticProviderRecord,
+    fingerprint: Option<&str>,
+    revision: &str,
+) -> Result<()> {
     if record.kind == StaticRecordKind::Builtin
         && !record.remote_models
-        && bundled.fingerprint(id).is_some_and(|fingerprint| {
+        && fingerprint.is_some_and(|fingerprint| {
             record.definition_fingerprint.as_deref() == Some(fingerprint)
         })
     {
-        connection.execute("INSERT OR IGNORE INTO provider_bases SELECT ?1,revision FROM provider_sources WHERE revision=?2", params![id, bundled.revision()]).map_err(storage)?;
+        connection.execute("INSERT OR IGNORE INTO provider_bases SELECT ?1,revision FROM provider_sources WHERE revision=?2", params![id, revision]).map_err(storage)?;
     }
-    connection.execute("INSERT OR IGNORE INTO provider_bundle SELECT ?1,?2,?3,0,activation,?4 FROM provider_catalog_revision WHERE id=1", params![id,bundled.fingerprint(id),record.definition_fingerprint,bundled.revision()]).map_err(storage)?;
+    connection.execute("INSERT OR IGNORE INTO provider_bundle SELECT ?1,?2,?3,0,activation,?4 FROM provider_catalog_revision WHERE id=1", params![id,fingerprint,record.definition_fingerprint,revision]).map_err(storage)?;
     Ok(())
 }
 
@@ -944,6 +960,29 @@ pub(super) fn adopt(
     bundled: &BundledCatalog,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    adopt_source(connection, id, bundled, bundled.revision(), None, cancel)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AdoptionFacts {
+    pub fingerprint: Option<String>,
+    pub definition: Option<StaticProviderRecord>,
+}
+
+pub(super) fn adopt_source(
+    connection: &rusqlite::Connection,
+    id: &str,
+    bundled: &BundledCatalog,
+    revision: &str,
+    facts: Option<AdoptionFacts>,
+    cancel: &CancellationToken,
+) -> Result<()> {
+    let (fingerprint, definition) = match facts {
+        Some(facts) => (facts.fingerprint.map(Cow::Owned), Some(facts.definition)),
+        None => (bundled.fingerprint(id).map(Cow::Borrowed), None),
+    };
+    let fingerprint = fingerprint.as_deref();
     let activation: i64 = connection
         .query_row(
             "SELECT activation FROM provider_catalog_revision WHERE id=1",
@@ -959,8 +998,8 @@ pub(super) fn adopt(
         )
         .optional()
         .map_err(storage)?;
-    if let Some((fingerprint, pending, attempted, generation)) = &installed {
-        if generation != bundled.revision() {
+    if let Some((installed_fingerprint, pending, attempted, generation)) = &installed {
+        if generation != revision {
             if let Ok(Some(record)) = read(connection, id, Models::Mutable) {
                 let body = serde_json::to_value(&record).map_err(storage)?;
                 write_names(
@@ -978,12 +1017,12 @@ pub(super) fn adopt(
             connection
                 .execute(
                     "UPDATE provider_bundle SET naming_revision=?2 WHERE provider_id=?1",
-                    params![id, bundled.revision()],
+                    params![id, revision],
                 )
                 .map_err(storage)?;
         }
-        if ((fingerprint.as_deref() == bundled.fingerprint(id)
-            || fingerprint.as_deref() == Some(bundled.revision()))
+        if ((installed_fingerprint.as_deref() == fingerprint
+            || installed_fingerprint.as_deref() == Some(revision))
             && !pending)
             || (*pending && *attempted == activation)
         {
@@ -1020,19 +1059,23 @@ pub(super) fn adopt(
                     bundled,
                 )?;
             }
-            connection.execute("INSERT INTO provider_bundle VALUES (?1,?2,NULL,0,?3,?2) ON CONFLICT(provider_id) DO UPDATE SET fingerprint=excluded.fingerprint,naming_revision=excluded.naming_revision",params![id,bundled.revision(),activation]).map_err(storage)?;
+            connection.execute("INSERT INTO provider_bundle VALUES (?1,?2,NULL,0,?3,?2) ON CONFLICT(provider_id) DO UPDATE SET fingerprint=excluded.fingerprint,naming_revision=excluded.naming_revision",params![id,revision,activation]).map_err(storage)?;
             return Ok(());
         }
     };
-    let fingerprint = bundled.fingerprint(id);
-    let expected = bundled
-        .provider_header(id)
-        .filter(seeded)
-        .and(fingerprint)
-        .map(str::to_owned);
+    let seeded_here = match &definition {
+        Some(definition) => definition.is_some(),
+        None => bundled
+            .provider_header(id)
+            .is_some_and(|header| seeded(&header)),
+    };
+    let expected = fingerprint.filter(|_| seeded_here).map(str::to_owned);
     let mut pending = false;
     if header.definition_fingerprint != expected || (expected.is_none() && header.enabled) {
-        let definition = bundled_seed_for(bundled, id).map_err(storage)?;
+        let definition = match definition {
+            Some(definition) => definition,
+            None => bundled_seed_for(bundled, id).map_err(storage)?,
+        };
         let previous =
             read_stored_static(connection, id)?.ok_or_else(|| storage("Provider disappeared"))?;
         let mut record = if let Some(definition) = definition {
@@ -1060,7 +1103,7 @@ pub(super) fn adopt(
             connection
                 .execute("DELETE FROM provider_bases WHERE provider_id=?1", [id])
                 .map_err(storage)?;
-            admit_base(connection, id, &record, bundled)?;
+            admit_source_base(connection, id, &record, fingerprint, revision)?;
             persistence::write(
                 connection,
                 id,
@@ -1072,14 +1115,7 @@ pub(super) fn adopt(
     connection
         .execute(
             "INSERT OR REPLACE INTO provider_bundle VALUES (?1,?2,?3,?4,?5,?6)",
-            params![
-                id,
-                fingerprint,
-                expected,
-                pending,
-                activation,
-                bundled.revision()
-            ],
+            params![id, fingerprint, expected, pending, activation, revision],
         )
         .map_err(storage)?;
     Ok(())
