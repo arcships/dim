@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, type Component } from 'vue'
 import type { ChatUiTimelineBlock } from '../model/timeline'
 import { useTimelineAssistantFooter } from '../timeline/assistant-footer'
+import { useChatUiCopy } from './clipboard'
 import type { ChatUiAssistantActionCopyLabels, ChatUiAssistantActionIcons, ChatUiAssistantActionLabels } from './assistant-actions'
 
 defineOptions({
@@ -37,6 +38,7 @@ const emit = defineEmits<{
 }>()
 
 const buttonComponent = computed<Component | string>(() => props.buttonComponent ?? 'button')
+const copy = useChatUiCopy()
 const copied = ref(false)
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -59,7 +61,7 @@ const {
 })
 
 async function copyText(content: string): Promise<void> {
-  await navigator.clipboard.writeText(content)
+  await copy(content)
   copied.value = true
   props.onCopySuccess?.()
   if (copiedTimer !== undefined) clearTimeout(copiedTimer)

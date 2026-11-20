@@ -49,6 +49,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Architecture decisions](adr/README.md)
 - [ADR 022 — Timeline 属性查询与正文重建](adr/022-event-property-queries.md)（中文）：目标 API 与模块结构、属性查询、业务状态恢复和正文释放
 - [ADR 023 — 上下文用量由独立分支部件维护](adr/023-context-usage.md)（中文）：ContextUsage 的职责、增量统计、服务商校准及后续设计边界
+- [ADR 026 — Verification tiers, test coverage and CI governance](adr/026-verification-tiers-and-ci-governance.md)（[中文](zh/adr/026-verification-tiers-and-ci-governance.md)）：three operational test states, verification tiers (L0–L4), form-only doc checks and CI governance (#1938)
 - [Resume：按业务对象设计计算与读取](design/resume-read-design.md)（中文，草案）：usage、输入队列、Prompt、显示详情、SQL 执行和恢复校验的分项设计与成本验收
 - [当前状态字段索引](design/appserver/timeline-state-read-indexes.md)（中文，草案）：现有API缺口、完整索引键、源位置前驱和SQL扫描验收
 - [状态保存与恢复读取](design/owner-state-indexed-reads.md)（中文，草案）：按业务对象决定持久化；当前队列点查、Prompt有效引用、Usage数字和真实流程读写数量
