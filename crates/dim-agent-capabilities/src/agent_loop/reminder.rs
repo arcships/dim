@@ -1,9 +1,9 @@
 //! The progress reminder the Loop adds to a request it starts: after a silent
-//! stretch of tool calls it writes one input in that request's own batch, so
-//! the request consumes it at once and no later turn can see it.
+//! stretch of tool calls it writes one handover-bound input in that request's
+//! own batch, so the request consumes it at once and no later turn can see it.
 use crate::context_block;
 use dim_agent_runtime::core::unix_millis;
-use dim_agent_types::{InputMessageData, InputMode};
+use dim_agent_types::{InputHandover, InputMessageData, InputMode};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -62,8 +62,9 @@ impl Stretch {
     }
 }
 
-/// The reminder input for a request that starts `seconds` into the stretch.
-pub(super) fn input(seconds: u64) -> InputMessageData {
+/// The reminder input for a request that starts `seconds` into the stretch,
+/// addressed to the continuation of `handover`.
+pub(super) fn input(seconds: u64, handover: InputHandover) -> InputMessageData {
     let body = BODY.replace("{seconds}", &seconds.to_string());
     let block = context_block::raw(
         context_block::element(REMINDER, &[("seconds", &seconds.to_string())], &body),
@@ -72,6 +73,7 @@ pub(super) fn input(seconds: u64) -> InputMessageData {
     InputMessageData {
         blocks: vec![block],
         mode: Some(InputMode::Append),
+        handover: Some(handover),
         ..InputMessageData::default()
     }
 }

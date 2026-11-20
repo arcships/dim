@@ -56,16 +56,20 @@ what it is doing. The check runs when the Loop starts a request in an open
 turn: at least one top-level `step/tool-use` since the later of the turn's
 start, its last non-empty `step/text` and its last reminder, and that anchor at
 least `LoopConfig::reminder_after` old (60 seconds by default). A due reminder
-is written in the same atomic batch as the request's `input/consumed` events,
-after every pending input, so the request consumes
+is written as a handover-bound input, `handover: {turn_id, request_id}`
+addressed to the request this one continues ([ModelRecovery §3](../../../design/plugins/ModelRecovery.md#3-the-handover-input)),
+in the same atomic batch as the request's `input/consumed` events and before
+its `step/model-start`, so the request consumes
 `<dim-progress-reminder seconds="N">` at once as its last model message; the
-batch ends on that consumption and `step/model-start` follows in its own
+batch ends on the consumptions and `step/model-start` follows in its own
 append, so the branch tool's cut immediately before a request stays on a batch
-boundary. The reminder therefore never waits for `input/applied`, never drives
-a turn and cannot outlive the turn it was written for. Writing the reminder
-starts a new stretch, so the next one needs another tool call and another full
-threshold; text also resets the stretch. A non-interactive Session registers neither the
-reminder nor its guide entry.
+boundary. InputQueue never applies a handover input: it holds the reminder for
+its turn, drops it at that `input/consumed`, and deletes it if the turn ends
+with it still unconsumed. The reminder therefore has no `input/applied`, never
+drives a turn and cannot outlive the turn it was written for. Writing the
+reminder starts a new stretch, so the next one needs another tool call and
+another full threshold; text also resets the stretch. A non-interactive Session
+registers neither the reminder nor its guide entry.
 
 A restored open turn ends Failed and starts no request, so reload never decides
 the reminder again for a request that already started; the next turn starts a
@@ -164,8 +168,8 @@ that were never executed, the retry chain it shares, turn progression,
 interruption, pending-input restore and the manual compaction step.
 [progress_reminder_flow.rs](../../../../crates/dim-agent-capabilities/tests/progress_reminder_flow.rs)
 covers the reminder: the silent stretch, text and interrupt resets, one reminder
-per stretch, a request in flight at the threshold, a non-interactive Session and
-a reload.
+per stretch, a request in flight at the threshold, a non-interactive Session, a
+reload before the request starts and a reload after the reminder's turn.
 
 <!-- generated:plugin Loop — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |

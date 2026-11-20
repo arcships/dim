@@ -7,6 +7,7 @@ use dim_agent_capabilities::{
     defaults,
     history::HistoryRenderer,
     host::*,
+    input_queue::InputQueue,
     tool_registry::definition,
 };
 use dim_agent_runtime::testing::{MinimalHost, chain_events};
@@ -206,23 +207,33 @@ async fn idle(session: &Session) {
     session.idle("main").await.unwrap();
 }
 
+/// Whether `data` is a progress reminder input.
+fn is_reminder(data: &InputMessageData) -> bool {
+    data.blocks.iter().any(|block| {
+        let InputBlock::Raw { text, .. } = block;
+        text.starts_with(&format!("<{REMINDER}"))
+    })
+}
+
 /// Every reminder input of `main`, oldest first.
 async fn reminders(session: &Session) -> Vec<InputMessageData> {
+    reminder_events(session)
+        .await
+        .into_iter()
+        .filter_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => Some(data.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Every reminder event of `main`, oldest first.
+async fn reminder_events(session: &Session) -> Vec<Arc<AgentEvent>> {
     chain_events(session, "main", ..)
         .await
         .unwrap()
-        .iter()
-        .filter_map(|event| match &event.kind {
-            EventKind::InputMessage(data)
-                if data.blocks.iter().any(|block| {
-                    let InputBlock::Raw { text, .. } = block;
-                    text.starts_with(&format!("<{REMINDER}"))
-                }) =>
-            {
-                Some(data.clone())
-            }
-            _ => None,
-        })
+        .into_iter()
+        .filter(|event| matches!(&event.kind, EventKind::InputMessage(data) if is_reminder(data)))
         .collect()
 }
 async fn requests(session: &Session) -> Vec<Arc<ModelRequest>> {
@@ -304,6 +315,86 @@ async fn a_silent_tool_call_earns_one_reminder_in_the_next_request() {
     assert!(
         sent[1].messages.starts_with(&sent[0].messages),
         "the earlier messages stay as they were"
+    );
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let reminder = reminder_events(&session).await;
+    assert_eq!(reminder.len(), 1, "one reminder");
+    let reminder_id = reminder[0].id.clone();
+    let consumed = events
+        .iter()
+        .find(|event| {
+            matches!(&event.kind, EventKind::InputConsumed(data) if data.input_id == reminder_id)
+        })
+        .expect("the request consumes the reminder");
+    let turn = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::TurnStart(data) => Some(data.turn_id.clone()),
+            _ => None,
+        })
+        .expect("a turn");
+    let ran = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelStart(data) => Some(data.request_id.clone()),
+            _ => None,
+        })
+        .expect("the request that ran the tool call");
+    let EventKind::InputMessage(data) = &reminder[0].kind else {
+        unreachable!("a reminder is an input")
+    };
+    assert_eq!(
+        data.handover,
+        Some(InputHandover {
+            turn_id: turn,
+            request_id: ran,
+        }),
+        "the reminder is addressed to the continuation of the request whose tool call ran"
+    );
+    let carrier = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ModelCall(data)
+                if said(&data.request).contains("<dim-progress-reminder") =>
+            {
+                Some(data.request_id.clone())
+            }
+            _ => None,
+        })
+        .expect("the request that carries the reminder");
+    let start = events
+        .iter()
+        .find(|event| matches!(&event.kind, EventKind::ModelStart(data) if data.request_id == carrier))
+        .expect("the reminder's request starts");
+    assert!(
+        reminder[0].sequence < consumed.sequence && consumed.sequence < start.sequence,
+        "the reminder is written, consumed, and only then does its request start: {} < {} < {}",
+        reminder[0].sequence,
+        consumed.sequence,
+        start.sequence
+    );
+    assert!(
+        !events.iter().any(|event| matches!(&event.kind,
+            EventKind::InputApplied(data) if data.input_id == reminder_id)),
+        "the queue never applies a handover reminder"
+    );
+
+    submit_again(&session).await;
+    idle(&session).await;
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        !events.iter().any(|event| matches!(&event.kind,
+            EventKind::InputApplied(data) if data.input_id == reminder_id)),
+        "no applied fact appears for the reminder after the next turn starts"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+                EventKind::InputConsumed(data) if data.input_id == reminder_id))
+            .count(),
+        1,
+        "the reminder is consumed once"
     );
     env.host.close().await.unwrap();
 }
@@ -501,6 +592,64 @@ async fn a_reload_does_not_decide_again() {
     assert!(
         reminders(&session).await.is_empty(),
         "restore never re-decides a request that already started"
+    );
+    env.host.close().await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_reload_after_the_reminders_turn_keeps_only_its_consumption() {
+    let model = ScriptedModel::new(vec![Step::Tool("gate"), Step::Text("done")]);
+    let env = Env::start(model, Duration::from_secs(10)).await;
+    let session = env.session(true).await;
+    submit(&session).await;
+    reached(&env.gate).await;
+
+    pass(11).await;
+    env.gate.release.notify_waiters();
+    idle(&session).await;
+    let reminder = reminder_events(&session).await.pop().expect("one reminder");
+    let id = reminder.id.clone();
+    let loop_id = env
+        .host
+        .root()
+        .diagnostics()
+        .plugins
+        .into_iter()
+        .find(|plugin| plugin.name == "Loop")
+        .expect("the part is mounted")
+        .id;
+    env.host
+        .root()
+        .view(loop_id)
+        .expect("the part's fiber")
+        .restart()
+        .await
+        .unwrap();
+
+    let queue = session.service::<InputQueue>("main").unwrap();
+    assert!(
+        !queue.pending(&id),
+        "the consumed reminder is not pending after reload"
+    );
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    assert!(
+        !events.iter().any(|event| matches!(&event.kind,
+            EventKind::InputApplied(data) if data.input_id == id)),
+        "reload reveals no applied fact for the reminder"
+    );
+    assert!(
+        !events.iter().any(|event| matches!(&event.kind,
+            EventKind::InputDeleted(data) if data.input_id == id)),
+        "reload writes no deletion for the reminder"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(&event.kind,
+                EventKind::InputConsumed(data) if data.input_id == id))
+            .count(),
+        1,
+        "the reminder is consumed once, not again after reload"
     );
     env.host.close().await.unwrap();
 }

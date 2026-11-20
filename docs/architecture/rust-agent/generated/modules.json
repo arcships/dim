@@ -10470,6 +10470,7 @@
         "path FinishReason::ToolUse",
         "path InputAppliedData",
         "path InputConsumedData",
+        "path InputHandover",
         "path InputMode",
         "path InputMode::Append",
         "path InputMode::default",
@@ -10647,9 +10648,11 @@
       "from": "dim_agent_capabilities::agent_loop::reminder",
       "to": "dim_agent_types::events",
       "references": [
+        "path InputHandover",
         "path InputMessageData",
         "path InputMessageData::default",
         "path InputMode::Append",
+        "use dim_agent_types::InputHandover",
         "use dim_agent_types::InputMessageData",
         "use dim_agent_types::InputMode"
       ]

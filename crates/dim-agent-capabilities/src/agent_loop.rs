@@ -62,6 +62,9 @@ struct Turn {
     id: String,
     /// The turn's silent stretch, folded from its text and tool facts.
     stretch: Stretch,
+    /// The latest `step/model-start` this turn wrote: the request whose
+    /// continuation a due reminder addresses its handover to.
+    latest_request: Option<String>,
     /// `turn/start` was dispatched; before that the turn only guards
     /// against a second start and is not published as running.
     open: bool,
@@ -262,6 +265,7 @@ impl AgentLoop {
         *slot = Some(Turn {
             id: id.clone(),
             stretch: Stretch::default(),
+            latest_request: None,
             open: false,
             request: None,
             ending: false,
@@ -504,8 +508,10 @@ impl AgentLoop {
         Ok(())
     }
     /// Writes the inputs the next request consumes, then its `step/model-start`.
-    /// A due progress reminder is written in the same batch as an ordinary
-    /// input, after every pending input, and consumed at once.
+    /// A due progress reminder is written as a handover-bound input addressed
+    /// to the request that continues the turn, in the same batch as the other
+    /// consumed inputs and before the request's `step/model-start`, and is
+    /// consumed at once.
     fn start_request(
         &self,
         turn: &mut Turn,
@@ -535,21 +541,28 @@ impl AgentLoop {
         let mut events: Vec<EventDraft> = Vec::new();
         let mut consumed = Vec::new();
         if let Some(seconds) = reminder {
+            let handover = InputHandover {
+                turn_id: turn.id.clone(),
+                request_id: turn
+                    .latest_request
+                    .clone()
+                    .expect("a reminder follows a started request"),
+            };
             let input_id = uuid::Uuid::new_v4().to_string();
             events.push(
-                EventDraft::new(EventKind::InputMessage(reminder::input(seconds)))
+                EventDraft::new(EventKind::InputMessage(reminder::input(seconds, handover)))
                     .with_id(input_id.clone()),
             );
             consumed.push(input_id);
         }
-        consumed.extend(chosen);
+        consumed.extend(chosen.iter().cloned());
         events.extend(consumed.iter().map(|input_id| {
             EventKind::InputConsumed(InputConsumedData {
                 input_id: input_id.clone(),
             })
             .into()
         }));
-        self.claimed.lock().unwrap().extend(consumed);
+        self.claimed.lock().unwrap().extend(chosen);
         if !events.is_empty() {
             self.timeline.append_batch_registered(events, |_| Ok(()))?;
         }
@@ -560,6 +573,7 @@ impl AgentLoop {
             })
             .into(),
         )?;
+        turn.latest_request = Some(id.clone());
         turn.request = Some(Request {
             id,
             stage: Stage::Preparing,
@@ -980,6 +994,7 @@ impl AgentLoop {
                 restored = Some(Turn {
                     id,
                     stretch: Stretch::default(),
+                    latest_request: None,
                     open: true,
                     request: None,
                     ending: false,
@@ -1118,7 +1133,7 @@ impl AgentLoop {
                             ));
                         };
                         turn.request = Some(Request {
-                            id,
+                            id: id.clone(),
                             stage: Stage::Model,
                             calls: Vec::new(),
                             call_event_id: None,
@@ -1128,6 +1143,7 @@ impl AgentLoop {
                             replaced: false,
                             chain: None,
                         });
+                        turn.latest_request = Some(id);
                         handed_over = false;
                         completed.clear();
                         continue;
@@ -1415,9 +1431,6 @@ impl AgentLoop {
         match &event.kind {
             EventKind::InputApplied(data) => {
                 let input = Applied::new(&event, data);
-                if self.claimed.lock().unwrap().remove(&input.id) {
-                    return Ok(());
-                }
                 let drives = input.mode != InputMode::Append;
                 self.pending.lock().unwrap().push(input);
                 match slot.as_mut() {
@@ -1429,11 +1442,11 @@ impl AgentLoop {
             }
             EventKind::InputConsumed(data) => {
                 let mut claimed = self.claimed.lock().unwrap();
-                let mut pending = self.pending.lock().unwrap();
-                if let Some(index) = pending.iter().position(|input| input.id == data.input_id) {
-                    pending.remove(index);
-                    claimed.remove(&data.input_id);
-                }
+                self.pending
+                    .lock()
+                    .unwrap()
+                    .retain(|input| input.id != data.input_id);
+                claimed.remove(&data.input_id);
                 return Ok(());
             }
             EventKind::Text(data) => {
