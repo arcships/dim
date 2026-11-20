@@ -29,8 +29,9 @@ test('long workspace targets start first, overlap and drain the queue after a fa
   const temporary = mkdtempSync(path.join(os.tmpdir(), 'dim parallel artifacts '));
   t.after(() => rmSync(temporary, { recursive: true, force: true }));
   const artifacts = path.join(temporary, 'artifacts.jsonl');
-  const initial = ['transport_flow', 'cli_flow'];
-  const records = ['queued', ...initial].map(name => {
+  const longTargets = ['transport_flow', 'cli_flow'];
+  const initial = [...longTargets, 'parallel'];
+  const records = ['parallel', 'queued', ...longTargets].map(name => {
     const directory = path.join(temporary, name);
     mkdirSync(directory);
     return { reason: 'compiler-artifact', profile: { test: true }, target: { name }, manifest_path: path.join(directory, 'Cargo.toml'), executable: process.execPath };

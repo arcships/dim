@@ -1,5 +1,7 @@
 # Report plugin
 
+The [target Session tree binding](../contracts/runtime-owner-operations.md) moves calls from `treeCommands` to `timelineTree` with the same arguments and replies. The catalog entry and consumer injections change together. References to `treeCommands` below describe the pre-migration binding.
+
 Status: Draft. Scope: Session reports and a process entry for errors without a readable Session.
 Issue: [#1319](https://github.com/arcships/dim/issues/1319).
 

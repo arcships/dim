@@ -44,9 +44,12 @@ use std::{
 const ROUND_WINDOW: Duration = Duration::from_millis(20);
 
 struct Pending {
+    batch: TimelineBatch,
+    publish: Option<PublishCallback>,
+}
+pub(super) struct TimelineBatch {
     key: TimelineKey,
     events: Vec<StoredEvent>,
-    publish: Option<PublishCallback>,
     #[cfg(test)]
     fault: Option<fn(&str)>,
 }
@@ -55,7 +58,7 @@ impl Pending {
         if let Some(publish) = self.publish.take()
             && let Err(panic) = catch_unwind(AssertUnwindSafe(|| publish(result)))
         {
-            tracing::error!(session_id = %self.key.session_id, branch_id = %self.key.branch_id, panic = %panic_message(panic), "Timeline publication callback panicked");
+            tracing::error!(session_id = %self.batch.key.session_id, branch_id = %self.batch.key.branch_id, panic = %panic_message(panic), "Timeline publication callback panicked");
         }
     }
 }
@@ -96,13 +99,7 @@ pub struct SqliteTimelineStore {
     admission: Mutex<Admission>,
     worker: Mutex<Option<thread::JoinHandle<()>>>,
     closing: Mutex<Option<tokio::sync::watch::Receiver<Option<Result<()>>>>>,
-    /// The writer memo (§6.2 of the request storage design), `None` when a
-    /// flow test disabled it. Only the writer thread changes it.
-    memo: Option<Mutex<Memo>>,
-    /// Each Session's default branch, for the catalog's recent activity (design
-    /// §5, §15). Derived from `branch/default` and `session/forked`, rebuilt on
-    /// a restart, and evicted beside `memo`. Only the writer thread changes it.
-    defaults: Mutex<BTreeMap<String, String>>,
+    memo_enabled: bool,
     #[cfg(feature = "testing")]
     node_loads: Mutex<codec::NodeLoads>,
     #[cfg(feature = "testing")]
@@ -117,8 +114,8 @@ struct Admission {
 }
 /// Per Session and branch, the last request row the writer committed: its
 /// sequence, its request while the runtime still holds it, and its list.
-type Memo = BTreeMap<String, BTreeMap<String, MemoEntry>>;
-struct MemoEntry {
+pub(super) type Memo = BTreeMap<String, BTreeMap<String, MemoEntry>>;
+pub(super) struct MemoEntry {
     sequence: u64,
     request: Weak<ModelRequest>,
     refs: ListReferences,
@@ -203,8 +200,10 @@ impl SqliteTimelineStore {
     /// Feature `testing` only.
     #[cfg(feature = "testing")]
     pub fn writer_memo_requests(&self, session: &str) -> usize {
-        self.memo.as_ref().map_or(0, |memo| {
-            memo.lock()
+        if self.memo_enabled {
+            self.db
+                .timeline_memo
+                .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .get(session)
                 .map_or(0, |branches| {
@@ -213,7 +212,9 @@ impl SqliteTimelineStore {
                         .filter(|entry| entry.request.strong_count() > 0)
                         .count()
                 })
-        })
+        } else {
+            0
+        }
     }
     fn start(
         db: Arc<SqliteStorage>,
@@ -233,8 +234,7 @@ impl SqliteTimelineStore {
             }),
             worker: Mutex::new(None),
             closing: Mutex::new(None),
-            memo: memo.then(Mutex::default),
-            defaults: Mutex::default(),
+            memo_enabled: memo,
             #[cfg(feature = "testing")]
             node_loads: Mutex::default(),
             #[cfg(feature = "testing")]
@@ -289,6 +289,7 @@ impl SqliteTimelineStore {
                 };
                 let outputs = |batch: &Pending| {
                     batch
+                        .batch
                         .events
                         .iter()
                         .all(|record| output_row(record.event.kind.key()))
@@ -438,174 +439,262 @@ impl SqliteTimelineStore {
         drop(reader);
     }
     fn commit_round(&self, pending: Vec<Pending>) {
-        let mut sessions: BTreeMap<String, Vec<Pending>> = BTreeMap::new();
-        for mut batch in pending {
+        let mut accepted = Vec::new();
+        for mut entry in pending {
             let failure = self
                 .admission
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .failures
-                .get(&batch.key.session_id)
+                .get(&entry.batch.key.session_id)
                 .cloned();
             if let Some(failure) = failure {
-                batch.publish(Err(failure));
+                entry.publish(Err(failure));
             } else {
-                sessions
-                    .entry(batch.key.session_id.clone())
-                    .or_default()
-                    .push(batch);
+                accepted.push(entry);
             }
         }
+        let outcomes = self.db.commit_timeline_round(
+            accepted.iter().map(|entry| &entry.batch),
+            self.content_budget,
+            self.memo_enabled,
+            #[cfg(feature = "testing")]
+            Some(&self.node_loads),
+        );
+        {
+            let mut admission = self
+                .admission
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (session, result) in &outcomes {
+                if let Err(error) = result {
+                    admission.failures.insert(session.clone(), error.clone());
+                }
+            }
+        }
+        for mut entry in accepted {
+            entry.publish(outcomes[&entry.batch.key.session_id].clone());
+        }
+        self.db.checkpoint();
+    }
+    #[cfg(feature = "testing")]
+    pub fn default_of(&self, session: &str) -> String {
+        self.db
+            .defaults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session)
+            .cloned()
+            .unwrap_or_else(|| ROOT_BRANCH_ID.into())
+    }
+    fn forget(&self, session: &str) {
+        self.db
+            .defaults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+        self.db
+            .timeline_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+    }
+}
+
+impl From<dim_agent_runtime::TimelineAppend> for TimelineBatch {
+    fn from(batch: dim_agent_runtime::TimelineAppend) -> Self {
+        Self {
+            key: TimelineKey {
+                session_id: batch.session_id,
+                branch_id: batch.branch_id,
+            },
+            events: batch.events,
+            #[cfg(test)]
+            fault: None,
+        }
+    }
+}
+
+impl SqliteStorage {
+    pub(super) async fn batch_end(self: &Arc<Self>, key: TimelineKey, sequence: u64) -> Result<()> {
+        if self.batch_end_at(key, sequence).await? > sequence {
+            return Err(AgentError::InvalidInput(format!(
+                "sequence {sequence} is inside an atomic batch"
+            )));
+        }
+        Ok(())
+    }
+    pub(super) async fn batch_end_at(
+        self: &Arc<Self>,
+        key: TimelineKey,
+        sequence: u64,
+    ) -> Result<u64> {
+        if sequence == 0 {
+            return Ok(0);
+        }
+        let (session, branch) = (key.session_id, key.branch_id);
+        let row = self
+            .run_read(move |connection| {
+                connection
+                    .prepare_cached(
+                        "SELECT last_sequence, COALESCE(CASE json_extract(body, '$.encoding') \
+                               WHEN 'event' THEN json_extract(body, '$.record.batch_end') \
+                               ELSE (SELECT json_extract(value, '$.batch_end') \
+                                     FROM json_each(body, '$.records') \
+                                     WHERE json_extract(value, '$.event.sequence') = ?3) \
+                             END, last_sequence) \
+                             FROM timeline_events \
+                             WHERE session_id = ?1 AND branch_id = ?2 AND sequence <= ?3 \
+                             ORDER BY sequence DESC LIMIT 1",
+                    )
+                    .map_err(error)?
+                    .query_row(params![session, branch, sql_sequence(sequence)?], |row| {
+                        Ok((read_sequence(row, 0)?, row.get::<_, i64>(1)?))
+                    })
+                    .optional()
+                    .map_err(error)
+            })
+            .await?;
+        let Some((_, end)) = row.filter(|(last, _)| *last >= sequence) else {
+            return Err(error(format!("Timeline has no sequence {sequence}")));
+        };
+        sequence_value(end)
+    }
+
+    pub(super) async fn create_session(
+        self: &Arc<Self>,
+        session: String,
+        config: SessionConfig,
+    ) -> Result<()> {
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
+            tx.commit().map_err(error)
+        })
+        .await
+    }
+    pub(super) async fn session_config(
+        self: &Arc<Self>,
+        session: String,
+    ) -> Result<Option<SessionConfig>> {
+        self.run_read(move |connection| {
+            let config: Option<String> = connection
+                .query_row(
+                    "SELECT config FROM agent_sessions WHERE session_id = ?1",
+                    [&session],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(error)?;
+            config
+                .map(|config| serde_json::from_str(&config).map_err(error))
+                .transpose()
+        })
+        .await
+    }
+    pub(super) async fn branches(self: &Arc<Self>, id: String) -> Result<Vec<StoredBranch>> {
+        self.run_read(move |connection| directory_rows(connection, &id))
+            .await
+    }
+    pub(super) async fn head(self: &Arc<Self>, key: TimelineKey) -> Result<u64> {
+        self.run_read(move |connection| head(connection, &key))
+            .await
+    }
+
+    pub(super) fn commit_timeline_round<'a>(
+        &self,
+        batches: impl Iterator<Item = &'a TimelineBatch>,
+        content_budget: usize,
+        memo_enabled: bool,
+        #[cfg(feature = "testing")] node_loads: Option<&Mutex<codec::NodeLoads>>,
+    ) -> BTreeMap<String, Result<()>> {
+        let mut sessions = BTreeMap::<_, Vec<_>>::new();
+        for batch in batches {
+            sessions
+                .entry(batch.key.session_id.clone())
+                .or_default()
+                .push(batch);
+        }
+        let mut memo = self
+            .timeline_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let writer = RoundWriter {
+            db: self,
+            memo: memo_enabled.then_some(&*memo),
+            #[cfg(feature = "testing")]
+            node_loads,
+            content_budget,
+        };
         let mut prepared = BTreeMap::new();
+        let mut outcomes = BTreeMap::new();
         for (session, batches) in sessions {
-            match writer_operation(|| self.prepare(&session, &batches)) {
+            match writer_operation(|| writer.prepare(&session, &batches)) {
                 Ok(encoding) => {
-                    prepared.insert(session, (batches, encoding));
+                    let default = self.default_for(&session, &batches);
+                    prepared.insert(session, (batches, encoding, default));
                 }
                 Err(failure) => {
-                    tracing::error!(db_path = %self.db.path.display(), adapter = "rust", phase = "prepare", pid = std::process::id(), %failure, "storage.transaction");
-                    self.fail(session, batches, failure);
+                    tracing::error!(db_path = %self.path.display(), adapter = "rust", phase = "prepare", pid = std::process::id(), %failure, "storage.transaction");
+                    outcomes.insert(session, Err(failure));
                 }
             }
         }
         if !prepared.is_empty() {
-            self.commit_prepared(prepared);
-        }
-        if let Some(memo) = &self.memo {
-            memo.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .retain(|_, branches| {
-                    branches.retain(|_, entry| entry.request.strong_count() > 0);
-                    !branches.is_empty()
-                });
-        }
-        self.db.checkpoint();
-    }
-    fn commit_prepared(&self, prepared: BTreeMap<String, (Vec<Pending>, Prepared)>) {
-        let defaults: BTreeMap<String, String> = prepared
-            .iter()
-            .map(|(session, (batches, _))| (session.clone(), self.default_for(session, batches)))
-            .collect();
-        let mut guard = self
-            .db
-            .connection
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = guard
-            .as_mut()
-            .ok_or_else(|| error("SQLite storage is closed"))
-            .and_then(|connection| {
-                transaction(
-                    connection,
-                    &self.db.path,
-                    defaults,
-                    prepared
-                        .values()
-                        .map(|(batches, encoding)| (batches.as_slice(), encoding)),
-                )
-            });
-        if result.is_ok() {
-            drop(guard);
-            for (session, (batches, encoding)) in prepared {
-                self.remember(&session, encoding);
-                self.refresh_default(&session, &batches);
-                for mut batch in batches {
-                    batch.publish(Ok(()));
-                }
-            }
-            return;
-        }
-        for (session, (batches, encoding)) in prepared {
-            drop(guard);
-            let defaults =
-                BTreeMap::from([(session.clone(), self.default_for(&session, &batches))]);
-            guard = self
-                .db
-                .connection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let existing = self
-                .admission
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .failures
-                .get(&session)
-                .cloned();
-            let result = match existing {
-                Some(failure) => Err(failure),
-                None => guard
-                    .as_mut()
-                    .ok_or_else(|| error("SQLite storage is closed"))
-                    .and_then(|connection| {
-                        transaction(
-                            connection,
-                            &self.db.path,
-                            defaults,
-                            std::iter::once((batches.as_slice(), &encoding)),
-                        )
-                    }),
-            };
-            drop(guard);
-            match &result {
-                Ok(()) => {
-                    self.remember(&session, encoding);
-                    self.refresh_default(&session, &batches);
-                }
-                Err(failure) => {
-                    self.forget(&session);
-                    self.admission
+            let grouped =
+                self.write_round_sessions(prepared.values().map(|(batches, encoding, default)| {
+                    (batches.as_slice(), encoding, default.as_str())
+                }));
+            for (session, (batches, encoding, default)) in prepared {
+                let result = if grouped.is_ok() {
+                    Ok(())
+                } else {
+                    self.write_round_sessions(std::iter::once((
+                        batches.as_slice(),
+                        &encoding,
+                        default.as_str(),
+                    )))
+                };
+                if result.is_ok() {
+                    self.defaults
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .failures
-                        .insert(session, failure.clone());
+                        .insert(session.clone(), default);
                 }
+                if result.is_ok() && memo_enabled {
+                    let branches = memo.entry(session.clone()).or_default();
+                    for (branch, (sequence, request, refs)) in encoding.last {
+                        branches.insert(
+                            branch,
+                            MemoEntry {
+                                sequence,
+                                request: Arc::downgrade(&request),
+                                refs,
+                            },
+                        );
+                    }
+                }
+                outcomes.insert(session, result);
             }
-            for mut batch in batches {
-                batch.publish(result.clone());
-            }
-            guard = self
-                .db
-                .connection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-    }
-    /// Fails `batches` of `session` without writing them.
-    fn fail(&self, session: String, batches: Vec<Pending>, failure: AgentError) {
-        self.forget(&session);
-        self.admission
+        self.defaults
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failures
-            .insert(session, failure.clone());
-        for mut batch in batches {
-            batch.publish(Err(failure.clone()));
-        }
-    }
-    /// Records the last request of each branch a commit wrote.
-    fn remember(&self, session: &str, encoding: Prepared) {
-        let Some(memo) = &self.memo else { return };
-        let mut memo = memo
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let branches = memo.entry(session.to_owned()).or_default();
-        for (branch, (sequence, request, refs)) in encoding.last {
-            branches.insert(
-                branch,
-                MemoEntry {
-                    sequence,
-                    request: Arc::downgrade(&request),
-                    refs,
-                },
-            );
-        }
+            .retain(|session, _| !outcomes.get(session).is_some_and(Result::is_err));
+        memo.retain(|session, branches| {
+            branches.retain(|_, entry| entry.request.strong_count() > 0);
+            !branches.is_empty() && !outcomes.get(session).is_some_and(Result::is_err)
+        });
+        outcomes
     }
     /// The default branch `session`'s batches write on, for the catalog's recent
     /// activity: the cache's answer, then the moves and forks among the batches
     /// themselves, newest last, because those rows are not readable before the
     /// transaction commits. A Session the cache does not hold reads the fact the
     /// way restore does, once (design §5, §15).
-    fn default_for(&self, session: &str, batches: &[Pending]) -> String {
+    fn default_for(&self, session: &str, batches: &[&TimelineBatch]) -> String {
         let mut current = self
             .cached_default(session)
             .unwrap_or_else(|| ROOT_BRANCH_ID.into());
@@ -633,7 +722,6 @@ impl SqliteTimelineStore {
             return Some(default.clone());
         }
         let guard = self
-            .db
             .connection
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -663,46 +751,28 @@ impl SqliteTimelineStore {
             .insert(session.to_owned(), default.clone());
         Some(default)
     }
-    /// Records the default branch the round leaves `session` on.
-    fn refresh_default(&self, session: &str, batches: &[Pending]) {
-        let moved = batches.iter().any(|batch| {
-            batch.events.iter().any(|record| {
-                matches!(
-                    record.event.kind,
-                    EventKind::BranchDefault(_) | EventKind::SessionForked(_)
-                )
-            })
-        });
-        if moved {
-            let default = self.default_for(session, batches);
-            self.defaults
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(session.to_owned(), default);
-        }
-    }
-    fn forget(&self, session: &str) {
-        if let Some(memo) = &self.memo {
-            memo.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .remove(session);
-        }
-        self.defaults
+    fn write_round_sessions<'a>(
+        &self,
+        sessions: impl Iterator<Item = (&'a [&'a TimelineBatch], &'a Prepared, &'a str)>,
+    ) -> Result<()> {
+        let mut guard = self
+            .connection
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(session);
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let connection = guard
+            .as_mut()
+            .ok_or_else(|| error("SQLite storage is closed"))?;
+        transaction(connection, &self.path, sessions)
     }
-    /// The default branch the writer's cache holds for `session`, the root when
-    /// it holds none. Feature `testing` only.
+}
+struct RoundWriter<'a> {
+    db: &'a SqliteStorage,
+    memo: Option<&'a Memo>,
     #[cfg(feature = "testing")]
-    pub fn default_of(&self, session: &str) -> String {
-        self.defaults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(session)
-            .cloned()
-            .unwrap_or_else(|| ROOT_BRANCH_ID.into())
-    }
+    node_loads: Option<&'a Mutex<codec::NodeLoads>>,
+    content_budget: usize,
+}
+impl RoundWriter<'_> {
     /// Runs `step` with `reader` in connection holds of at most
     /// `NODE_LOADS_PER_HOLD` node loads until it returns a value; the
     /// writer's form of `holds`.
@@ -730,8 +800,8 @@ impl SqliteTimelineStore {
     /// request's list against its previous request (§6.1 of the request
     /// storage design), and each request draft's against its record's
     /// request.
-    fn prepare(&self, session: &str, batches: &[Pending]) -> Result<Prepared> {
-        let mut reader = self.reader(RequestBodies::Rebuild);
+    fn prepare(&self, session: &str, batches: &[&TimelineBatch]) -> Result<Prepared> {
+        let mut reader = Reader::new(self.content_budget);
         let mut round = Round::default();
         let mut prepared = Prepared {
             lists: Vec::with_capacity(batches.len()),
@@ -813,14 +883,15 @@ impl SqliteTimelineStore {
             Ok(())
         })();
         #[cfg(feature = "testing")]
-        {
-            self.node_loads.lock().unwrap().encoded += prepared
+        if let Some(loads) = self.node_loads {
+            let mut loads = loads.lock().unwrap();
+            loads.encoded += prepared
                 .content
                 .iter()
                 .filter(|row| row.kind == "node")
                 .count();
+            loads.add(reader.loads());
         }
-        self.finish(reader);
         result.map(|()| prepared)
     }
     /// `request`'s list against `previous`: the common prefix keeps
@@ -901,12 +972,8 @@ impl SqliteTimelineStore {
             }) {
                 return Ok(Some(previous.clone()));
             }
-            if let Some(memo) = &self.memo
-                && let Some(entry) = memo
-                    .lock()
-                    .unwrap()
-                    .get(session)
-                    .and_then(|branches| branches.get(&branch))
+            if let Some(memo) = self.memo
+                && let Some(entry) = memo.get(session).and_then(|branches| branches.get(&branch))
                 && entry.sequence <= through
                 && let Some(request) = entry.request.upgrade()
             {
@@ -974,6 +1041,8 @@ impl SqliteTimelineStore {
             }
         }
     }
+}
+impl SqliteTimelineStore {
     #[cfg(test)]
     fn rollback_creation(&self, session_id: &str, fault: Option<fn()>) -> Result<()> {
         self.forget(session_id);
@@ -1057,6 +1126,12 @@ impl SqliteTimelineStore {
                             .and(requested),
                             None => requested,
                         };
+                        owned
+                            .db
+                            .timeline_memo
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clear();
                         sender.send_replace(Some(result));
                         drop(owned);
                     });
@@ -1145,6 +1220,11 @@ impl SessionStore {
     }
     pub fn timeline_store(&self) -> Arc<TimelineStoreBinding> {
         self.binding.clone()
+    }
+
+    #[cfg(feature = "testing")]
+    pub fn file_writer_generation(&self) -> &str {
+        self.files.generation()
     }
 
     /// Native query counters for product-flow verification.
@@ -1900,8 +1980,7 @@ fn writer_operation<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
 fn transaction<'a>(
     connection: &mut Connection,
     path: &std::path::Path,
-    defaults: BTreeMap<String, String>,
-    mut sessions: impl Iterator<Item = (&'a [Pending], &'a Prepared)>,
+    mut sessions: impl Iterator<Item = (&'a [&'a TimelineBatch], &'a Prepared, &'a str)>,
 ) -> Result<()> {
     writer_operation(|| {
         let tx = connection
@@ -1910,7 +1989,7 @@ fn transaction<'a>(
                 tracing::error!(db_path = %path.display(), adapter = "rust", phase = "BEGIN", pid = std::process::id(), sqlite_code = ?failure.sqlite_error_code(), %failure, "storage.transaction");
                 error(failure)
             })?;
-        let written = sessions.try_for_each(|(batches, prepared)| {
+        let written = sessions.try_for_each(|(batches, prepared, default)| {
             let mut insert = tx
                 .prepare_cached("INSERT OR IGNORE INTO timeline_content VALUES (?1, ?2, ?3, ?4)")
                 .map_err(error)?;
@@ -1921,10 +2000,6 @@ fn transaction<'a>(
                     .map_err(error)?;
             }
             let mut outputs = BTreeMap::new();
-            let default = defaults
-                .get(session)
-                .map(String::as_str)
-                .unwrap_or(ROOT_BRANCH_ID);
             batches
                 .iter()
                 .zip(&prepared.lists)
@@ -2013,7 +2088,7 @@ struct OutputRow {
 /// Writes `batch`, with `lists` the prepared lists of each of its records.
 fn write_batch(
     connection: &Connection,
-    batch: &Pending,
+    batch: &TimelineBatch,
     lists: &[Vec<Option<ListReferences>>],
     default: &str,
     outputs: &mut BTreeMap<String, OutputRow>,
@@ -2517,7 +2592,8 @@ impl SqliteTimelineStore {
             // A fork's default branch is its root: the cache starts the fork
             // there, and forgets the source's entry nothing reads again (design
             // §5, §13).
-            self.defaults
+            self.db
+                .defaults
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .insert(reset, ROOT_BRANCH_ID.into());
@@ -3061,19 +3137,10 @@ impl TimelineStore for SqliteTimelineStore {
         session_id: &'a str,
         config: &'a SessionConfig,
     ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let session = session_id.to_owned();
-            let config = config.clone();
+        Box::pin(
             self.db
-                .run(move |connection| {
-                    let tx = connection
-                        .transaction_with_behavior(TransactionBehavior::Immediate)
-                        .map_err(error)?;
-                    create_session(&tx, &session, &config, None, SessionOrigin::Unknown)?;
-                    tx.commit().map_err(error)
-                })
-                .await
-        })
+                .create_session(session_id.to_owned(), config.clone()),
+        )
     }
     fn rollback_session<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
@@ -3110,84 +3177,23 @@ impl TimelineStore for SqliteTimelineStore {
         &'a self,
         session_id: &'a str,
     ) -> BoxFuture<'a, Result<Option<SessionConfig>>> {
-        Box::pin(async move {
-            let session = session_id.to_owned();
-            self.db
-                .run_read(move |connection| {
-                    let config: Option<String> = connection
-                        .query_row(
-                            "SELECT config FROM agent_sessions WHERE session_id = ?1",
-                            [&session],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(error)?;
-                    config
-                        .map(|config| serde_json::from_str(&config).map_err(error))
-                        .transpose()
-                })
-                .await
-        })
+        Box::pin(self.db.session_config(session_id.to_owned()))
     }
     fn branches<'a>(&'a self, session_id: &'a str) -> BoxFuture<'a, Result<Vec<StoredBranch>>> {
-        Box::pin(read_directory(&self.db, session_id))
+        Box::pin(self.db.branches(session_id.to_owned()))
     }
     fn head<'a>(&'a self, key: &'a TimelineKey) -> BoxFuture<'a, Result<u64>> {
-        Box::pin(async move {
-            let key = key.clone();
-            self.db
-                .run_read(move |connection| head(connection, &key))
-                .await
-        })
+        Box::pin(self.db.head(key.clone()))
     }
     fn batch_end<'a>(&'a self, key: &'a TimelineKey, sequence: u64) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if self.batch_end_at(key, sequence).await? > sequence {
-                return Err(AgentError::InvalidInput(format!(
-                    "sequence {sequence} is inside an atomic batch"
-                )));
-            }
-            Ok(())
-        })
+        Box::pin(self.db.batch_end(key.clone(), sequence))
     }
     fn batch_end_at<'a>(
         &'a self,
         key: &'a TimelineKey,
         sequence: u64,
     ) -> BoxFuture<'a, Result<u64>> {
-        Box::pin(async move {
-            if sequence == 0 {
-                return Ok(0);
-            }
-            let (session, branch) = (key.session_id.clone(), key.branch_id.clone());
-            let row = self
-                .db
-                .run_read(move |connection| {
-                    connection
-                        .prepare_cached(
-                            "SELECT last_sequence, COALESCE(CASE json_extract(body, '$.encoding') \
-                               WHEN 'event' THEN json_extract(body, '$.record.batch_end') \
-                               ELSE (SELECT json_extract(value, '$.batch_end') \
-                                     FROM json_each(body, '$.records') \
-                                     WHERE json_extract(value, '$.event.sequence') = ?3) \
-                             END, last_sequence) \
-                             FROM timeline_events \
-                             WHERE session_id = ?1 AND branch_id = ?2 AND sequence <= ?3 \
-                             ORDER BY sequence DESC LIMIT 1",
-                        )
-                        .map_err(error)?
-                        .query_row(params![session, branch, sql_sequence(sequence)?], |row| {
-                            Ok((read_sequence(row, 0)?, row.get::<_, i64>(1)?))
-                        })
-                        .optional()
-                        .map_err(error)
-                })
-                .await?;
-            let Some((_, end)) = row.filter(|(last, _)| *last >= sequence) else {
-                return Err(error(format!("Timeline has no sequence {sequence}")));
-            };
-            sequence_value(end)
-        })
+        Box::pin(self.db.batch_end_at(key.clone(), sequence))
     }
     fn append(
         &self,
@@ -3206,11 +3212,13 @@ impl TimelineStore for SqliteTimelineStore {
             return Err(failure.clone());
         }
         let requested = admission.sender.send(Command::Append(Pending {
-            key,
-            events,
+            batch: TimelineBatch {
+                key,
+                events,
+                #[cfg(test)]
+                fault: None,
+            },
             publish: Some(publish),
-            #[cfg(test)]
-            fault: None,
         }));
         drop(admission);
         requested.map_err(|failure| {
@@ -3413,15 +3421,6 @@ fn directory_rows(connection: &Connection, session: &str) -> Result<Vec<StoredBr
     }
     Ok(branches.into_values().collect())
 }
-/// The directory read of a restore or export pass.
-pub(super) async fn read_directory(
-    db: &Arc<SqliteStorage>,
-    session: &str,
-) -> Result<Vec<StoredBranch>> {
-    let id = session.to_owned();
-    db.run_read(move |connection| directory_rows(connection, &id))
-        .await
-}
 
 #[cfg(test)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3612,9 +3611,12 @@ async fn storage_panic_flow_preserves_connection_and_settles_accepted_batches() 
                 let admission = store.admission.lock().unwrap();
                 admission.sender.send(Command::Rollback { session_id: "barrier".into(), done, fault: None }).unwrap();
                 admission.sender.send(Command::Append(Pending {
-                    key: key(phase), events: vec![record(1)],
+                    batch: TimelineBatch {
+                        key: key(phase),
+                        events: vec![record(1)],
+                        fault: Some(fault),
+                    },
                     publish: Some(Box::new(move |result| { let _ = failed.send(result); })),
-                    fault: Some(fault),
                 })).unwrap();
                 drop(admission);
                 store.append(key("healthy"), vec![record(index as u64 + 3)], Box::new(move |result| { let _ = healthy.send(result); })).unwrap();

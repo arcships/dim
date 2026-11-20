@@ -5,7 +5,7 @@
 //! binding calls the same operations. These tests pin that the binding and the
 //! wire answer the same, that a cancelled or abandoned call ends the owner's
 //! read, and that a failure keeps the code its caller acts on
-//! ([service faces §4.10](../../../docs/design/service-faces.md#410-宿主端口executionsettingshost-等五个)).
+//! ([service faces §4.10](../../../docs/design/service-faces.md#410-宿主读取端口与-provider-选择)).
 use dim_agent_capabilities::execution_settings::{
     ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost,
 };

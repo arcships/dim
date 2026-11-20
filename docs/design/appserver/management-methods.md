@@ -57,8 +57,7 @@ BusinessDocument persistence and the declared sources of
 [the settings service](settings-service.md), not approvals, a method contribution or a configuration
 namespace; SettingsMethods, which depends on it, owns
 `settings.read`/`settings.update`/`settings.sources`/`settings.projects`.
-The store supplies its own bytes and free pages as a service; StorageMethods,
-which depends on it, owns `storage.report`.
+StorageMethods serves `storage.report` through the native binding of the same SQLite owner operation exposed as `sqliteStorage.storageReport({})`.
 MCP owns its configuration types in `mcp/config.rs`; the Skills owner supplies
 the existing `SkillSettingsHost`. App Server's SkillsCatalog mounts the reusable catalog
 and publishes both catalog and management interfaces in one plugin, with the

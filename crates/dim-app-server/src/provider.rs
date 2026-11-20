@@ -1643,6 +1643,84 @@ fn save_catalog(
     .map_err(storage)?;
     Ok(())
 }
+impl SqliteStorage {
+    pub(crate) async fn read_preferences(
+        self: &Arc<Self>,
+        provider_id: String,
+        model_id: String,
+    ) -> dim_agent_runtime::Result<Option<ModelPreferences>> {
+        self.run_read(move |connection| {
+            let value: Option<String> = connection
+                .query_row(
+                    "SELECT value FROM provider_model_state
+                     WHERE provider_id=?1 AND model_id=?2 AND field='modelPreferences'",
+                    params![provider_id, model_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            value
+                .map(|text| serde_json::from_str(&text).map_err(storage))
+                .transpose()
+        })
+        .await
+    }
+
+    pub(crate) async fn read_selection(
+        self: &Arc<Self>,
+        scope: String,
+    ) -> dim_agent_runtime::Result<Option<ProviderSelection>> {
+        self.run_read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT provider_id, model_id, version FROM provider_selections WHERE scope=?1",
+                    [scope],
+                    |row| {
+                        Ok(ProviderSelection {
+                            provider_id: row.get(0)?,
+                            model_id: row.get(1)?,
+                            version: row.get(2)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(storage)
+        })
+        .await
+    }
+
+    pub(crate) async fn write_selection(
+        self: &Arc<Self>,
+        scope: String,
+        expected_version: Option<u32>,
+        target: ModelId,
+    ) -> Result<ProviderSelection, ProviderError> {
+        self.run(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            let version: Option<u32> = tx.query_row(
+                "SELECT version FROM provider_selections WHERE scope=?1",
+                [&scope], |row| row.get(0),
+            ).optional().map_err(storage)?;
+            if version != expected_version {
+                return Ok(None);
+            }
+            let version = version.unwrap_or(0).checked_add(1)
+                .ok_or_else(|| storage("selection version overflow"))?;
+            tx.execute(
+                "INSERT INTO provider_selections(scope,version,provider_id,model_id) VALUES (?1,?2,?3,?4)
+                 ON CONFLICT(scope) DO UPDATE SET version=excluded.version,provider_id=excluded.provider_id,model_id=excluded.model_id",
+                params![scope, version, target.provider_id, target.model_id],
+            ).map_err(storage)?;
+            tx.commit().map_err(storage)?;
+            Ok(Some(ProviderSelection {
+                provider_id: target.provider_id,
+                model_id: target.model_id,
+                version,
+            }))
+        }).await?.ok_or_else(|| ProviderError::Conflict("Selection version changed".into()))
+    }
+}
+
 fn selection_scope(cwd: Option<&Path>) -> Result<String, HostError> {
     match cwd {
         None => Ok("global".into()),
@@ -1683,22 +1761,10 @@ impl ProviderService {
         let (provider_id, model_id) = (provider_id.to_owned(), model_id.to_owned());
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.run_read(move |connection| {
-                    let value: Option<String> = connection
-                        .query_row(
-                            "SELECT value FROM provider_model_state WHERE provider_id=?1 AND model_id=?2 AND field='modelPreferences'",
-                            params![provider_id, model_id],
-                            |row| row.get(0),
-                        )
-                        .optional()
-                        .map_err(storage)?;
-                    value
-                        .map(|value| serde_json::from_str(&value).map_err(storage))
-                        .transpose()
-                        .map(Option::unwrap_or_default)
-                })
-                .await
-                .map_err(failure)
+                db.read_preferences(provider_id, model_id)
+                    .await
+                    .map(Option::unwrap_or_default)
+                    .map_err(failure)
             })
         })
         .await
@@ -2259,26 +2325,7 @@ impl ProviderService {
         let scope = selection_scope(cwd)?;
         let db = self.db.clone();
         self.owned(cancel, move |_cancel| {
-            Box::pin(async move {
-                db.run_read(move |connection| {
-                    connection
-                        .query_row(
-                            "SELECT provider_id, model_id, version FROM provider_selections WHERE scope=?1",
-                            [scope],
-                            |row| {
-                                Ok(ProviderSelection {
-                                    provider_id: row.get(0)?,
-                                    model_id: row.get(1)?,
-                                    version: row.get(2)?,
-                                })
-                            },
-                        )
-                        .optional()
-                        .map_err(storage)
-                })
-                .await
-                .map_err(failure)
-            })
+            Box::pin(async move { db.read_selection(scope).await.map_err(failure) })
         })
         .await
     }
@@ -2317,38 +2364,7 @@ impl ProviderService {
         }
         let db = self.db.clone();
         self.owned(cancel, move |_| {
-            Box::pin(async move {
-                db.run(move |connection| {
-                    Ok((|| -> Result<_, ProviderError> {
-                        let tx = connection.transaction()?;
-                        let version: Option<u32> = tx
-                            .query_row(
-                                "SELECT version FROM provider_selections WHERE scope=?1",
-                                [&scope],
-                                |row| row.get(0),
-                            )
-                            .optional()?;
-                        if version != expected_version {
-                            return Err(ProviderError::Conflict("Selection version changed".into()));
-                        }
-                        let version = version
-                            .unwrap_or(0)
-                            .checked_add(1)
-                            .ok_or(ProviderError::Failed)?;
-                        tx.execute(
-                            "INSERT INTO provider_selections(scope,version,provider_id,model_id) VALUES (?1,?2,?3,?4) ON CONFLICT(scope) DO UPDATE SET version=excluded.version,provider_id=excluded.provider_id,model_id=excluded.model_id",
-                            params![scope, version, target.provider_id, target.model_id],
-                        )?;
-                        tx.commit()?;
-                        Ok(ProviderSelection {
-                            provider_id: target.provider_id,
-                            model_id: target.model_id,
-                            version,
-                        })
-                    })())
-                })
-                .await?
-            })
+            Box::pin(async move { db.write_selection(scope, expected_version, target).await })
         })
         .await
     }

@@ -690,7 +690,7 @@ Dispatcher、before 回调、Session 与分支部件；driver、路由和非 cha
 `SelectableModelsHost`，位于 `ModelSelectionHost` 旁。它的两个读取就是 §3.6 列出的操作：
 端口类型持有 owner 的闭包，dispatcher 写出 wire 形状，Rust 读取方通过绑定调用同样的操作。
 Provider 在 `ProviderPlugin::apply` 中用 `provide_selectable_models` 提供该端口；catalog 以
-shared 名注册它（[服务面 §4.10](../../../design/service-faces.md#410-宿主端口executionsettingshost-等五个)）。
+shared 名注册它（[服务面 §4.10](../../../design/service-faces.md#410-宿主读取端口与-provider-选择)）。
 
 owner 实现是 `ProviderService::selectable_models` 与
 `ProviderService::selectable_modality_models`，`ProductResolver` 转调两者；配置式模型配置
@@ -1087,7 +1087,7 @@ RPC 流程覆盖 CAS 与丢失 create 回复后的恢复。Desktop UI 验收归�
 | §4.5 | 自有模型/选择/偏好/路由同事务；既有采用原子性不变 |
 | §4.6 | 管理数据不进模型上下文，配置只沿现有采用路径 |
 | §4.7 | 账号沿公开方法，Modality 经 §3.6 的 core host 端口读取可选模型，Migration 使用 §3.7 由 Provider 拥有的判断，不跨写其他 owner 引用 |
-| §4.8 | 下述错误数据需求使用方法 owner 的通用字段；§5 复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.10](../../../design/service-faces.md#410-宿主端口executionsettingshost-等五个)），非 Rust 消费方按名调用；§3.7 不增加需求 |
+| §4.8 | 下述错误数据需求使用方法 owner 的通用字段；§5 复用 metadata 和 v19 顶层 JSON；§3.6 的读取是数据面（[服务面 §4.10](../../../design/service-faces.md#410-宿主读取端口与-provider-选择)），非 Rust 消费方按名调用；§3.7 不增加需求 |
 | §4.9 | 不加 Timeline 事件或进程推送通知 |
 | §1 | 扩展现有进程 Provider，不增 Capability/接线插件 |
 | ADR 002 D1 | 进程记录归 Provider，已采用分支状态归原 owner，草稿归客户端 |

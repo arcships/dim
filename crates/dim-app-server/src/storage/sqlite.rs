@@ -1,9 +1,12 @@
 use super::reclaim::Reclaimed;
 use dim_agent_runtime::{AgentError, Result, panic_message};
-use rusqlite::{Connection, OpenFlags};
-use rutis::host::ErrorKind;
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rutis::host::{CtxHost, ErrorKind};
 use rutis::{Ctx, Plugin};
-use serde::Serialize;
+use rutis_bridge::session::{
+    Error as BridgeError, HostDispatch, Reply, Value as BridgeValue, host_key,
+};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs::File,
@@ -13,6 +16,7 @@ use std::{
     sync::{Arc, Condvar, Mutex, PoisonError},
     time::{Duration, Instant},
 };
+use tokio_util::sync::CancellationToken;
 
 /// The native store format this daemon creates and opens.
 pub const FORMAT: u32 = 53;
@@ -1210,6 +1214,8 @@ fn slow_upgrade_report() {
 /// The process connection and maintenance admission. Business modules never
 /// open a second connection to this database.
 pub struct SqliteStorage {
+    pub(super) defaults: Mutex<std::collections::BTreeMap<String, String>>,
+    pub(super) timeline_memo: Mutex<super::timeline::Memo>,
     pub(super) connection: Mutex<Option<Connection>>,
     pub(super) readers: Readers,
     admission: Mutex<Admission>,
@@ -1812,6 +1818,8 @@ impl SqliteStorage {
         let _ = std::fs::remove_file(startup_note_path(&path));
         let readers = Readers::demand();
         Ok(Arc::new(Self {
+            defaults: Mutex::default(),
+            timeline_memo: Mutex::default(),
             connection: Mutex::new(Some(connection)),
             readers,
             admission: Mutex::new(Admission {
@@ -1861,6 +1869,8 @@ impl SqliteStorage {
         }
         Ok((
             Arc::new(Self {
+                defaults: Mutex::default(),
+                timeline_memo: Mutex::default(),
                 connection: Mutex::new(Some(connection)),
                 readers: Readers::none(),
                 admission: Mutex::new(Admission {
@@ -2044,7 +2054,7 @@ impl SqliteStorage {
 
     /// The bytes of the store's own files, and the space an offline `VACUUM`
     /// returns: the free pages of the database as it was last committed.
-    pub(crate) async fn storage_report(self: &Arc<Self>) -> Result<StorageReport> {
+    pub async fn storage_report(self: &Arc<Self>) -> Result<StorageReport> {
         let (page_size, free_pages) = self
             .run_read(|connection| {
                 let page_size: i64 = connection
@@ -2391,6 +2401,507 @@ fn store_bytes(path: &Path) -> u64 {
     file_bytes(path) + file_bytes(&wal_path(path))
 }
 
+#[derive(Serialize)]
+pub(crate) struct UserDocument {
+    pub(crate) version: i64,
+    pub(crate) document: String,
+}
+
+impl UserDocument {
+    fn read(connection: &Connection, source: &str) -> Result<Option<Self>> {
+        connection
+            .query_row(
+                "SELECT version, document FROM settings_documents WHERE source = ?1",
+                [format!("user/{source}")],
+                |row| {
+                    Ok(Self {
+                        version: row.get(0)?,
+                        document: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(storage)
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ImportUser {
+    pub(crate) source: String,
+    pub(crate) document: String,
+    pub(crate) imported_revision: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReplaceUser {
+    pub(crate) source: String,
+    pub(crate) expected_version: i64,
+    pub(crate) decision: UserDecision,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) enum UserDecision {
+    Write { document: String },
+    Reject { field: String },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum UserWriteError {
+    #[error("persisted settings source is missing")]
+    Missing,
+    #[error("settings revision conflict")]
+    Conflict,
+    #[error("settings revision overflow")]
+    Overflow,
+    #[error("settings field {0} is changed only by the user")]
+    Rejected(String),
+}
+
+fn check_user_write(cancel: &CancellationToken, closing: &CancellationToken) -> Result<()> {
+    if closing.is_cancelled() {
+        return Err(AgentError::Closed("settings caller".into()));
+    }
+    if cancel.is_cancelled() {
+        return Err(AgentError::Cancelled("settings write".into()));
+    }
+    Ok(())
+}
+
+impl SqliteStorage {
+    pub(crate) async fn read_user(
+        self: &Arc<Self>,
+        source: String,
+    ) -> Result<Option<UserDocument>> {
+        self.run_read(move |connection| UserDocument::read(connection, &source))
+            .await
+    }
+
+    pub(crate) async fn import_user_if_absent(
+        self: &Arc<Self>,
+        request: ImportUser,
+        cancel: CancellationToken,
+        closing: CancellationToken,
+    ) -> Result<UserDocument> {
+        self.run(move |connection| {
+            check_user_write(&cancel, &closing)?;
+            let tx = connection.transaction().map_err(storage)?;
+            tx.execute(
+                "INSERT INTO settings_documents(source, version, document, imported_revision) VALUES (?1, 1, ?2, ?3) ON CONFLICT(source) DO NOTHING",
+                rusqlite::params![format!("user/{}", request.source), request.document, request.imported_revision],
+            ).map_err(storage)?;
+            let row = UserDocument::read(&tx, &request.source)?.ok_or_else(|| storage("missing imported settings row"))?;
+            tx.commit().map_err(storage)?;
+            Ok(row)
+        }).await
+    }
+
+    pub(crate) async fn replace_user(
+        self: &Arc<Self>,
+        request: ReplaceUser,
+        cancel: CancellationToken,
+        closing: CancellationToken,
+    ) -> Result<std::result::Result<i64, UserWriteError>> {
+        self.run(move |connection| {
+            check_user_write(&cancel, &closing)?;
+            let tx = connection.transaction().map_err(storage)?;
+            let key = format!("user/{}", request.source);
+            let version: Option<i64> = tx
+                .query_row(
+                    "SELECT version FROM settings_documents WHERE source = ?1",
+                    [&key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some(version) = version else {
+                return Ok(Err(UserWriteError::Missing));
+            };
+            if version != request.expected_version {
+                return Ok(Err(UserWriteError::Conflict));
+            }
+            let document = match request.decision {
+                UserDecision::Write { document } => document,
+                UserDecision::Reject { field } => return Ok(Err(UserWriteError::Rejected(field))),
+            };
+            let Some(version) = version.checked_add(1) else {
+                return Ok(Err(UserWriteError::Overflow));
+            };
+            tx.execute(
+                "UPDATE settings_documents SET version = ?1, document = ?2 WHERE source = ?3",
+                rusqlite::params![version, document, key],
+            )
+            .map_err(storage)?;
+            tx.commit().map_err(storage)?;
+            Ok(Ok(version))
+        })
+        .await
+    }
+}
+
+struct SqliteDispatch(Arc<SqliteStorage>);
+
+impl HostDispatch for SqliteDispatch {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(
+            serde_json::json!({"batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
+        )
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
+            .map_err(|error| BridgeError::Value(error.to_string()))?;
+        if !request.is_object() {
+            return Err(BridgeError::Value(
+                "sqliteStorage request must be an object".into(),
+            ));
+        }
+        #[derive(Deserialize)]
+        #[serde(
+            tag = "method",
+            content = "request",
+            rename_all = "camelCase",
+            deny_unknown_fields
+        )]
+        enum Request {
+            BatchEnd(dim_agent_runtime::TimelinePositionRequest),
+            BatchEndAt(dim_agent_runtime::TimelinePositionRequest),
+            CreateSession(Box<dim_agent_runtime::TimelineCreateRequest>),
+            SessionConfig(dim_agent_runtime::TimelineSessionRequest),
+            Branches(dim_agent_runtime::TimelineSessionRequest),
+            Head(dim_agent_runtime::TimelineKey),
+            CommitTimelineRound {
+                batches: Vec<dim_agent_runtime::TimelineAppend>,
+            },
+            #[serde(rename_all = "camelCase")]
+            AbandonFile {
+                file_id: String,
+                generation: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            CommitFile {
+                session_id: String,
+                file_id: String,
+                generation: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            ReserveFile {
+                session_id: String,
+                file_id: String,
+                generation: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            OwnsFile {
+                session_id: String,
+                file_id: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            OwnsOutput {
+                session_id: String,
+                path: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            OwnedPaths {
+                session_id: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            RegisterOutput {
+                session_id: String,
+                path: String,
+            },
+
+            ReadSelection {
+                scope: String,
+            },
+            #[serde(rename_all = "camelCase")]
+            WriteSelection {
+                scope: String,
+                expected_version: Option<u32>,
+                selection: dim_agent_types::ModelId,
+            },
+            #[serde(rename_all = "camelCase")]
+            ReadPreferences {
+                provider_id: String,
+                model_id: String,
+            },
+            Agents {},
+            Owners {},
+            Save {
+                id: String,
+                profile: dim_agent_types::AgentProfile,
+                default: bool,
+                owner: Option<String>,
+            },
+            Delete {
+                id: String,
+            },
+            Members {},
+            LedMembers {
+                leader: String,
+            },
+            OwnedAgents {
+                owner: String,
+            },
+            MemberSessions {
+                agent: String,
+            },
+            AgentOwner {
+                agent: String,
+            },
+            UnfinishedOwned {},
+            StorageReport {},
+            ReadUser {
+                source: String,
+            },
+            ImportUserIfAbsent(ImportUser),
+            ReplaceUser(ReplaceUser),
+        }
+        let request =
+            serde_json::from_value(serde_json::json!({"method":method,"request":request}))
+                .map_err(|error| BridgeError::Value(error.to_string()))?;
+        let db = self.0.clone();
+        Ok(BridgeValue::cancellable_future(async move {
+            let value = match request {
+                Request::BatchEnd(p) => {
+                    db.batch_end(
+                        dim_agent_runtime::TimelineKey {
+                            session_id: p.session_id,
+                            branch_id: p.branch_id,
+                        },
+                        p.sequence,
+                    )
+                    .await
+                    .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({})
+                }
+                Request::BatchEndAt(p) => {
+                    let sequence = db
+                        .batch_end_at(
+                            dim_agent_runtime::TimelineKey {
+                                session_id: p.session_id,
+                                branch_id: p.branch_id,
+                            },
+                            p.sequence,
+                        )
+                        .await
+                        .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({"sequence":sequence})
+                }
+                Request::CreateSession(p) => {
+                    db.create_session(p.session_id, p.config)
+                        .await
+                        .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({})
+                }
+                Request::SessionConfig(p) => {
+                    serde_json::json!({"config":db.session_config(p.session_id).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::Branches(p) => {
+                    serde_json::json!({"branches":db.branches(p.session_id).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::Head(key) => {
+                    serde_json::json!({"sequence":db.head(key).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::CommitTimelineRound { batches } => {
+                    let operation = db.admit().map_err(storage_failure)?;
+                    let sessions = tokio::task::spawn_blocking(move || {
+                        let batches: Vec<super::timeline::TimelineBatch> =
+                            batches.into_iter().map(Into::into).collect();
+                        let outcomes = operation.0.commit_timeline_round(
+                            batches.iter(),
+                            super::codec::CONTENT_BUDGET,
+                            true,
+                            #[cfg(feature = "testing")]
+                            None,
+                        );
+                        operation.0.checkpoint();
+                        outcomes
+                            .into_iter()
+                            .map(|(session, result)| {
+                                let result = result.map_err(dim_agent_runtime::CommitFailure::from);
+                                serde_json::json!({"sessionId":session,"result":result})
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .await
+                    .map_err(|failure| storage_failure(storage(failure)))?;
+                    serde_json::json!({"sessions":sessions})
+                }
+                Request::AbandonFile {
+                    file_id,
+                    generation,
+                } => serde_json::json!(
+                    db.abandon_file(file_id, generation)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::CommitFile {
+                    session_id,
+                    file_id,
+                    generation,
+                } => serde_json::json!(
+                    db.commit_file(session_id, file_id, generation)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::ReserveFile {
+                    session_id,
+                    file_id,
+                    generation,
+                } => serde_json::json!(
+                    db.reserve_file(session_id, file_id, generation)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::ReadSelection { scope } => {
+                    serde_json::json!(db.read_selection(scope).await.map_err(storage_failure)?)
+                }
+                Request::OwnsFile {
+                    session_id,
+                    file_id,
+                } => serde_json::json!(
+                    db.owns_file(session_id, file_id)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::OwnsOutput { session_id, path } => serde_json::json!(
+                    db.owns_output(session_id, path)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::OwnedPaths { session_id } => {
+                    serde_json::json!(db.owned_paths(session_id).await.map_err(storage_failure)?)
+                }
+                Request::RegisterOutput { session_id, path } => serde_json::json!(
+                    db.register_output(session_id, path)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::ReadPreferences {
+                    provider_id,
+                    model_id,
+                } => serde_json::json!(
+                    db.read_preferences(provider_id, model_id)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::WriteSelection {
+                    scope,
+                    expected_version,
+                    selection,
+                } => {
+                    let saved = db
+                        .write_selection(scope, expected_version, selection)
+                        .await
+                        .map_err(|error| {
+                            let code =
+                                if matches!(error, crate::provider::ProviderError::Conflict(_)) {
+                                    "conflict"
+                                } else {
+                                    "storage_unavailable"
+                                };
+                            rutis_bridge::exports::failure(
+                                "StorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!(saved)
+                }
+                Request::Agents {} => {
+                    serde_json::json!(db.agents().await.map_err(storage_failure)?)
+                }
+                Request::Owners {} => {
+                    serde_json::json!(db.owners().await.map_err(storage_failure)?)
+                }
+                Request::Save {
+                    id,
+                    profile,
+                    default,
+                    owner,
+                } => {
+                    db.save(&id, &profile, default, owner.as_deref())
+                        .await
+                        .map_err(storage_failure)?;
+                    return Ok(BridgeValue::Undefined);
+                }
+                Request::Delete { id } => {
+                    db.delete(&id).await.map_err(storage_failure)?;
+                    return Ok(BridgeValue::Undefined);
+                }
+                Request::Members {} => {
+                    serde_json::json!(db.members().await.map_err(storage_failure)?)
+                }
+                Request::LedMembers { leader } => {
+                    serde_json::json!(db.led_members(&leader).await.map_err(storage_failure)?)
+                }
+                Request::OwnedAgents { owner } => {
+                    serde_json::json!(db.owned_agents(&owner).await.map_err(storage_failure)?)
+                }
+                Request::MemberSessions { agent } => {
+                    serde_json::json!(db.member_sessions(&agent).await.map_err(storage_failure)?)
+                }
+                Request::AgentOwner { agent } => {
+                    serde_json::json!(db.agent_owner(&agent).await.map_err(storage_failure)?)
+                }
+                Request::UnfinishedOwned {} => {
+                    serde_json::json!(db.unfinished_owned().await.map_err(storage_failure)?)
+                }
+                Request::StorageReport {} => {
+                    serde_json::json!(db.storage_report().await.map_err(storage_failure)?)
+                }
+                Request::ReadUser { source } => {
+                    serde_json::json!(db.read_user(source).await.map_err(storage_failure)?)
+                }
+                Request::ReplaceUser(request) => {
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    let version = db
+                        .replace_user(request, cancel.clone(), cancel)
+                        .await
+                        .map_err(storage_failure)?
+                        .map_err(|error| {
+                            let code = match &error {
+                                UserWriteError::Missing => "missing",
+                                UserWriteError::Conflict => "conflict",
+                                UserWriteError::Overflow => "overflow",
+                                UserWriteError::Rejected(_) => "user_only_field",
+                            };
+                            rutis_bridge::exports::failure(
+                                "StorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!({"version":version})
+                }
+                Request::ImportUserIfAbsent(request) => {
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    serde_json::json!(
+                        db.import_user_if_absent(request, cancel.clone(), cancel)
+                            .await
+                            .map_err(storage_failure)?
+                    )
+                }
+            };
+            Ok(value.into())
+        }))
+    }
+}
+
+fn storage_failure(error: AgentError) -> BridgeError {
+    let code = match error {
+        AgentError::Cancelled(_) | AgentError::Closed(_) => "cancelled",
+        _ => "storage_unavailable",
+    };
+    rutis_bridge::exports::failure("StorageError", code, error.to_string(), None)
+}
+
 pub struct SqliteStoragePlugin {
     path: PathBuf,
     assembly: Option<Arc<AssemblyProgress>>,
@@ -2440,6 +2951,10 @@ impl Plugin for SqliteStoragePlugin {
             storage.close().await?;
             return Err(error);
         }
+        ctx.provide_at(
+            host_key("sqliteStorage"),
+            Arc::new(SqliteDispatch(storage.clone())) as Arc<dyn HostDispatch>,
+        )?;
         ctx.provide_as::<SqliteStorage>(storage)?;
         Ok(())
     }

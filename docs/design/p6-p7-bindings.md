@@ -38,6 +38,8 @@ part of this binding.
 
 ## 2. Read-only permission access
 
+The [target process binding](contracts/process-owner-operations.md) moves both reads to `sessions` and retires `sessionPermissions`. The following is the pre-migration generated binding.
+
 Agents' stable directory provides one plain Rust `SessionPermissions(Ctx)` value.
 Its two public asynchronous methods look up the current `AgentIndex` per call,
 so consumers do not reload with that index. Export the type as

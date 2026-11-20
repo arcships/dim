@@ -1,5 +1,7 @@
 # SessionStore title metadata
 
+The [target repository binding](../contracts/resource-owner-operations.md) moves SessionTitle and rename callers to `store.readMetadata` and `store.setTitle`. Remove the `sessionMetadata` catalog entry when switching its consumers. References to that binding below describe the pre-migration implementation.
+
 Status: Implemented in roadmap item S5b ([#60](https://github.com/arcships/dim/issues/60),
 [#96](https://github.com/arcships/dim/pull/96)), after C6 ([#49](https://github.com/arcships/dim/issues/49),
 [#85](https://github.com/arcships/dim/pull/85)); the implementation follows this design. Review refined when a write

@@ -1678,3 +1678,23 @@ rejects unknown mixtures before writable PRAGMAs, and older writers reject v44.
 Ordinary v44 opening does not rebuild indexes or scan history. Disposable-store
 verification covers both v43 and both v42 families, reopen, current-member
 semantics, preserved Steer candidates, automation origins and rollback.
+
+## SQLite owner operations
+
+Persistent Agents calls `sqliteStorage.agents`, `owners`, `save` and `delete` for its directory and Session ownership. Delegation reads use `members`, `ledMembers`, `ownedAgents`, `memberSessions` and `agentOwner`. Startup repair reads both lists from `unfinishedOwned`. SQLite owns all record reads and writes.
+
+SessionStore calls `sqliteStorage.createSession({sessionId,config})` to create a Session and its main branch in one transaction. `sessionConfig({sessionId})`, `branches({sessionId})`, `head({sessionId,branchId})`, `batchEnd({sessionId,branchId,sequence})` and `batchEndAt({sessionId,branchId,sequence})` use the existing TimelineStore requests and replies. The export reads the same branch directory through its read-only snapshot.
+
+SessionStore passes one writer round to `sqliteStorage.commitTimelineRound({batches})`. Each batch has the existing Timeline append fields. SQLite prepares and commits all Sessions together. If the grouped transaction fails, each prepared Session retries in its own transaction. The reply contains one `{sessionId,result}` per Session, with `{Ok:null}` or `{Err:{code,message}}`. SessionStore settles the original publication callbacks after receiving the outcomes.
+
+SessionFiles calls `sqliteStorage.reserveFile({sessionId,fileId,generation})` before writing file bytes. It uses its current SessionFiles generation for reserve, commit and abandon. Plugins writing Session files use the SessionFiles service. It returns false for a missing Session. `commitFile({sessionId,fileId,generation})` clears the writer and records ownership in one SQLite transaction, returning `owned`, `sessionGone`, or `superseded`. `abandonFile({fileId,generation})` clears a matching writer and returns the affected row count.
+
+Direct callers supply a resolved absolute UTF-8 path in the Session command-output directory or a persistent shell output directory below the host execution root. SessionFiles resolves output paths and calls `registerOutput({sessionId,path})`, which records ownership in one SQLite transaction and returns false for a missing Session. `ownsOutput({sessionId,path})` and `ownsFile({sessionId,fileId})` test exact ownership. `ownedPaths({sessionId})` returns a pair of sorted lists, file IDs followed by output paths. SessionFiles resolves file IDs to directories.
+
+Provider reads stored selections and the single model preferences field through `sqliteStorage.readSelection({scope})` and `readPreferences({providerId, modelId})`. A missing row returns null. After Provider validates a target, `writeSelection({scope, expectedVersion, selection})` commits it at the expected version and returns the stored selection.
+
+Settings reads user documents through `sqliteStorage.readUser({source})`. A missing row returns null. A present row returns its integer `version` and stored `document` text, including any inline credentials. Settings decodes it using the source's registered format. On a miss, Settings validates the legacy file and calls `importUserIfAbsent({source, document, importedRevision})`. SQLite inserts the document with its provenance if absent and returns the winning row in the same transaction. `replaceUser({source, expectedVersion, decision})` checks the version before applying a write or protected-field rejection. A successful write returns the new version. Settings publishes the change in commit order.
+
+### Storage size report
+
+StorageMethods serves `storage.report` from the SQLite owner operation `sqliteStorage.storageReport({})`. Both return `{databaseBytes, walBytes, reclaimableBytes}`. SQLite reads the current file sizes and counts free database pages.

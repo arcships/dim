@@ -10,7 +10,9 @@ merged in [#94](https://github.com/arcships/dim/pull/94)). Contract:
 process scope, inside the existing Agents plugin. Consumers: [Scheduler](../plugins/Scheduler.md) (P6) and
 [Workflow](../plugins/Workflow.md) (P7), both TypeScript.
 
-Agents also provides the generated read-only `sessionPermissions` service from
+The [target process binding](../contracts/process-owner-operations.md) places `permission` and `permissionDefaults` directly on `sessions`. Consumers change their injection from `sessionPermissions` to `sessions` and retain the values and typed errors of both reads. Retire the old name with its consumers.
+
+Before that migration, Agents provides the generated read-only `sessionPermissions` service from
 its stable directory: `permission({sessionId, branchId})` returns live
 `PermissionState`, and `permissionDefaults({})` returns the current host bound.
 Those calls return values or throw generated `RustError`, while `sessions`

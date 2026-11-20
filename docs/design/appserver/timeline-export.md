@@ -60,7 +60,7 @@ the reader always come from one build. `dimcode export` is the command name that
    │  exact schema check: the current format or one this build upgrades from
    ▼
  storage::export
-   │  read_directory(S): parse Session and branch metadata, without scanning history
+   │  sqliteStorage.branches({sessionId: S}): parse Session and branch metadata, without scanning history
    │  read_range per branch, 1..=head, in pages: events with before traces
    ▼
  stdout: header, branch lines, event lines, end line   ──►  F or the CLI's stdout

@@ -119,6 +119,8 @@ implementation; its `Deps` gain `Arc<ModelHost>`.
 
 ### 4.3 Named binding
 
+The [target process binding](../contracts/process-owner-operations.md) moves callers of `auxiliaryModel.complete` to `providerService.complete` with the same request and stream. Retire the former catalog entry with its consumers. The binding below is the pre-migration name.
+
 The same owner-provided operation implements `HostDispatch` at
 `host_key("auxiliaryModel")` through that shared `provide`; the process catalog registers
 that shared name. An ordinary C4 row injects `auxiliaryModel` and calls

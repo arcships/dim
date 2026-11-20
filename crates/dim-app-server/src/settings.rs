@@ -187,6 +187,7 @@ enum Kind {
 pub struct SettingsService {
     files: Arc<FileStorage>,
     database: Option<Arc<SqliteStorage>>,
+    native_publication: tokio::sync::Mutex<()>,
     home_root: usize,
     projects: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
     stopping: CancellationToken,
@@ -416,12 +417,15 @@ impl SettingsService {
         cancel: &CancellationToken,
     ) -> Result<SettingsSnapshot<F::Document>> {
         if scope == SettingsScope::User && self.database.is_some() {
-            return self.native_read(format, path, cancel).await;
+            return self
+                .native_read(format, path, cancel)
+                .await
+                .map(|(_, snapshot)| snapshot);
         }
         snapshot(&*format, self.files.read(&path, cancel).await)
     }
     /// CAS on the revision. `check` sees the current and the new document
-    /// under the same lease (or native transaction) as the revision check.
+    /// under the file lease or at the expected native revision.
     #[expect(
         clippy::too_many_arguments,
         reason = "one parameter per part of the compare-and-set write"
@@ -608,6 +612,7 @@ impl DynPlugin for SettingsPlugin {
             let service = Arc::new(SettingsService {
                 files,
                 database,
+                native_publication: Default::default(),
                 home_root: self.home_root,
                 projects: self.projects.clone(),
                 stopping: CancellationToken::new(),

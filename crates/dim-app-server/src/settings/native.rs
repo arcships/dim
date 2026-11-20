@@ -1,36 +1,35 @@
 //! User-source SQLite authority. Import commits the document and provenance atomically.
 use super::*;
-use rusqlite::{Connection, OptionalExtension, params};
+use crate::storage::{ImportUser, ReplaceUser, UserDecision, UserDocument, UserWriteError};
 
-fn key(source: &str) -> String {
-    format!("user/{source}")
-}
 fn token(source: &str, version: i64) -> String {
-    format!("native:{}:{version}", key(source))
+    format!("native:user/{source}:{version}")
 }
-fn read<F: Format>(
-    connection: &Connection,
+
+fn write_error(error: dim_agent_runtime::AgentError) -> SettingsError {
+    match error {
+        dim_agent_runtime::AgentError::Cancelled(_) => SettingsError::Cancelled,
+        dim_agent_runtime::AgentError::Closed(_) => SettingsError::Closed,
+        _ => SettingsError::Persistence,
+    }
+}
+
+fn decode<F: Format>(
     format: &F,
-) -> Result<Option<(i64, SettingsSnapshot<F::Document>)>> {
-    let row: Option<(i64, String)> = connection
-        .query_row(
-            "SELECT version, document FROM settings_documents WHERE source = ?1",
-            [key(format.source())],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|_| SettingsError::Persistence)?;
-    row.map(|(version, body)| {
-        if version <= 0 {
-            return Err(SettingsError::Invalid(
-                "invalid persisted settings revision",
-            ));
-        }
-        let mut snapshot = snapshot(format, Ok(body.into_bytes()))?;
-        snapshot.revision = token(format.source(), version);
-        Ok((version, snapshot))
-    })
-    .transpose()
+    row: UserDocument,
+) -> Result<(i64, SettingsSnapshot<F::Document>)> {
+    if row.version <= 0 {
+        return Err(SettingsError::Invalid(
+            "invalid persisted settings revision",
+        ));
+    }
+    Ok((
+        row.version,
+        SettingsSnapshot {
+            document: format.decode(Some(row.document.as_bytes()))?,
+            revision: token(format.source(), row.version),
+        },
+    ))
 }
 impl SettingsService {
     pub(super) async fn native_read<F: Format>(
@@ -38,7 +37,7 @@ impl SettingsService {
         format: Arc<F>,
         path: FilePath,
         cancel: &CancellationToken,
-    ) -> Result<SettingsSnapshot<F::Document>> {
+    ) -> Result<(i64, SettingsSnapshot<F::Document>)> {
         let task = {
             let _guard = self.gate.lock().unwrap();
             self.check_open(cancel)?;
@@ -51,36 +50,29 @@ impl SettingsService {
             let cancel = cancel.clone();
             let stopping = self.stopping.clone();
             self.updates.spawn(async move {
-                let stored = format.clone();
-                if let Some((_, snapshot)) = db
-                    .run_read(move |connection| Ok(read(connection, &*stored)))
+                if let Some(row) = db
+                    .read_user(format.source().to_owned())
                     .await
-                    .map_err(|_| SettingsError::Persistence)??
+                    .map_err(|_| SettingsError::Persistence)?
                 {
-                    return Ok(snapshot);
+                    return decode(&*format, row);
                 }
                 let imported = snapshot(&*format, files.read(&path, &cancel).await)?;
                 let body = serde_json::to_string(&imported.document)
                     .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
-                db.run(move |connection| {
-                    let result = (|| {
-                        if stopping.is_cancelled() {
-                            return Err(SettingsError::Closed);
-                        }
-                        if cancel.is_cancelled() {
-                            return Err(SettingsError::Cancelled);
-                        }
-                        let tx = connection.transaction().map_err(|_| SettingsError::Persistence)?;
-                        tx.execute(
-                            "INSERT INTO settings_documents(source, version, document, imported_revision) VALUES (?1, 1, ?2, ?3) ON CONFLICT(source) DO NOTHING",
-                            params![key(format.source()), body, imported.revision],
-                        ).map_err(|_| SettingsError::Persistence)?;
-                        let (_, snapshot) = read(&tx, &*format)?.expect("source inserted or already present");
-                        tx.commit().map_err(|_| SettingsError::Persistence)?;
-                        Ok(snapshot)
-                    })();
-                    Ok(result)
-                }).await.map_err(|_| SettingsError::Persistence)?
+                let row = db
+                    .import_user_if_absent(
+                        ImportUser {
+                            source: format.source().to_owned(),
+                            document: body,
+                            imported_revision: imported.revision,
+                        },
+                        cancel,
+                        stopping,
+                    )
+                    .await
+                    .map_err(write_error)?;
+                decode(&*format, row)
             })
         };
         task.await?
@@ -94,44 +86,45 @@ impl SettingsService {
         check: impl FnOnce(&F::Document, &F::Document) -> Result<()> + Send + 'static,
         cancel: &CancellationToken,
     ) -> Result<SettingsSnapshot<F::Document>> {
-        self.native_read(format.clone(), path, cancel).await?;
+        let (version, current) = self.native_read(format.clone(), path, cancel).await?;
+        let _publication = self.native_publication.lock().await;
         self.check_open(cancel)?;
-        let owner = self.clone();
-        let cancel = cancel.clone();
-        self.database
+        if current.revision != expected {
+            return Err(SettingsError::Conflict);
+        }
+        let decision = match check(&current.document, &document) {
+            Ok(()) => UserDecision::Write {
+                document: serde_json::to_string(&document)
+                    .map_err(|_| SettingsError::Invalid("cannot encode settings"))?,
+            },
+            Err(SettingsError::UserOnlyField(field)) => UserDecision::Reject { field },
+            Err(error) => return Err(error),
+        };
+        let version = self
+            .database
             .as_ref()
             .expect("native settings binding")
-            .run(move |connection| {
-                let result = (|| {
-                    owner.check_open(&cancel)?;
-                    let tx = connection
-                        .transaction()
-                        .map_err(|_| SettingsError::Persistence)?;
-                    let (version, current) = read(&tx, &*format)?.ok_or(
-                        SettingsError::Invalid("persisted settings source is missing"),
-                    )?;
-                    if current.revision != expected {
-                        return Err(SettingsError::Conflict);
-                    }
-                    check(&current.document, &document)?;
-                    let body = serde_json::to_string(&document)
-                        .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
-                    let version = version
-                        .checked_add(1)
-                        .ok_or(SettingsError::Invalid("settings revision overflow"))?;
-                    tx.execute(
-                        "UPDATE settings_documents SET version = ?1, document = ?2 WHERE source = ?3",
-                        params![version, body, key(format.source())],
-                    )
-                    .map_err(|_| SettingsError::Persistence)?;
-                    tx.commit().map_err(|_| SettingsError::Persistence)?;
-                    let revision = token(format.source(), version);
-                    owner.publish(format.source(), SettingsScope::User, &revision);
-                    Ok(SettingsSnapshot { revision, document })
-                })();
-                Ok(result)
-            })
+            .replace_user(
+                ReplaceUser {
+                    source: format.source().to_owned(),
+                    expected_version: version,
+                    decision,
+                },
+                cancel.clone(),
+                self.stopping.clone(),
+            )
             .await
-            .map_err(|_| SettingsError::Persistence)?
+            .map_err(write_error)?
+            .map_err(|error| match error {
+                UserWriteError::Conflict => SettingsError::Conflict,
+                UserWriteError::Missing => {
+                    SettingsError::Invalid("persisted settings source is missing")
+                }
+                UserWriteError::Overflow => SettingsError::Invalid("settings revision overflow"),
+                UserWriteError::Rejected(field) => SettingsError::UserOnlyField(field),
+            })?;
+        let revision = token(format.source(), version);
+        self.publish(format.source(), SettingsScope::User, &revision);
+        Ok(SettingsSnapshot { revision, document })
     }
 }

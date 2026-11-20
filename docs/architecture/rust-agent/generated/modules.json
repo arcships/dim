@@ -3689,8 +3689,7 @@
       "parent": "dim_app_server::settings",
       "file": "crates/dim-app-server/src/settings/native.rs",
       "unexpandedMacros": [
-        "format",
-        "params"
+        "format"
       ]
     },
     {
@@ -3962,6 +3961,8 @@
         "format",
         "matches",
         "panic",
+        "rusqlite::params",
+        "serde_json::json",
         "tokio::pin",
         "tracing::error",
         "vec",
@@ -20942,7 +20943,13 @@
       "to": "dim_agent_runtime::timeline_store_face",
       "references": [
         "mod timeline_store_face",
-        "use timeline_store_face::TimelineStoreBinding"
+        "use timeline_store_face::CommitFailure",
+        "use timeline_store_face::TimelineAppend",
+        "use timeline_store_face::TimelineCreateRequest",
+        "use timeline_store_face::TimelinePositionRequest",
+        "use timeline_store_face::TimelineSessionRequest",
+        "use timeline_store_face::TimelineStoreBinding",
+        "use timeline_store_face::failure"
       ]
     },
     {
@@ -25005,14 +25012,6 @@
       "references": [
         "path ServerConfig",
         "use crate::ServerConfig"
-      ]
-    },
-    {
-      "from": "dim_app_server::agents",
-      "to": "dim_app_server::agent_records",
-      "references": [
-        "path AgentRecords",
-        "use crate::agent_records::AgentRecords"
       ]
     },
     {
@@ -33665,19 +33664,50 @@
     },
     {
       "from": "dim_app_server::settings::native",
+      "to": "dim_agent_runtime::error",
+      "references": [
+        "path dim_agent_runtime::AgentError",
+        "path dim_agent_runtime::AgentError::Cancelled",
+        "path dim_agent_runtime::AgentError::Closed"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::native",
       "to": "dim_app_server::settings",
       "references": [
         "path Format",
         "path Result",
+        "path SettingsError",
         "path SettingsError::Cancelled",
         "path SettingsError::Closed",
         "path SettingsError::Conflict",
         "path SettingsError::Invalid",
         "path SettingsError::Persistence",
+        "path SettingsError::UserOnlyField",
         "path SettingsService",
         "path SettingsSnapshot",
         "path revision",
         "path snapshot"
+      ]
+    },
+    {
+      "from": "dim_app_server::settings::native",
+      "to": "dim_app_server::storage::sqlite",
+      "references": [
+        "path ImportUser",
+        "path ReplaceUser",
+        "path UserDecision::Reject",
+        "path UserDecision::Write",
+        "path UserDocument",
+        "path UserWriteError::Conflict",
+        "path UserWriteError::Missing",
+        "path UserWriteError::Overflow",
+        "path UserWriteError::Rejected",
+        "use crate::storage::ImportUser",
+        "use crate::storage::ReplaceUser",
+        "use crate::storage::UserDecision",
+        "use crate::storage::UserDocument",
+        "use crate::storage::UserWriteError"
       ]
     },
     {
@@ -34154,8 +34184,14 @@
         "mod sqlite",
         "use sqlite::AssemblyProgress",
         "use sqlite::FORMAT",
+        "use sqlite::ImportUser",
+        "use sqlite::ReplaceUser",
         "use sqlite::SqliteStorage",
         "use sqlite::SqliteStoragePlugin",
+        "use sqlite::StorageReport",
+        "use sqlite::UserDecision",
+        "use sqlite::UserDocument",
+        "use sqlite::UserWriteError",
         "use sqlite::Vacuumed",
         "use sqlite::set_upgrade_report_delay",
         "use sqlite::vacuum_store"
@@ -34580,9 +34616,7 @@
       "from": "dim_app_server::storage::export",
       "to": "dim_app_server::storage::timeline",
       "references": [
-        "path read_directory",
         "path read_range",
-        "use super::timeline::read_directory",
         "use super::timeline::read_range"
       ]
     },
@@ -35433,11 +35467,39 @@
       "references": [
         "path AgentError",
         "path AgentError::Cancelled",
+        "path AgentError::Closed",
         "path AgentError::Storage",
         "path Result",
         "use dim_agent_runtime::AgentError",
         "use dim_agent_runtime::Result",
         "use dim_agent_runtime::panic_message"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_agent_runtime::timeline_store",
+      "references": [
+        "path dim_agent_runtime::TimelineKey"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_agent_runtime::timeline_store_face",
+      "references": [
+        "path dim_agent_runtime::CommitFailure::from",
+        "path dim_agent_runtime::TimelineAppend",
+        "path dim_agent_runtime::TimelineCreateRequest",
+        "path dim_agent_runtime::TimelinePositionRequest",
+        "path dim_agent_runtime::TimelineSessionRequest",
+        "path dim_agent_runtime::timeline_store_failure"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_agent_types::profile",
+      "references": [
+        "path dim_agent_types::AgentProfile",
+        "path dim_agent_types::ModelId"
       ]
     },
     {
@@ -35467,6 +35529,13 @@
       "to": "dim_app_server::storage::catalog",
       "references": [
         "path super::catalog::backfill"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_app_server::storage::codec",
+      "references": [
+        "path super::codec::CONTENT_BUDGET"
       ]
     },
     {
@@ -35518,6 +35587,14 @@
         "path super::text::SCHEMA",
         "path super::text::backfill",
         "path super::text::restrict_coverage"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::sqlite",
+      "to": "dim_app_server::storage::timeline",
+      "references": [
+        "path super::timeline::Memo",
+        "path super::timeline::TimelineBatch"
       ]
     },
     {
@@ -35634,6 +35711,7 @@
         "path AgentError::Closed",
         "path AgentError::InvalidInput",
         "path Result",
+        "path Result::is_err",
         "use dim_agent_runtime::AgentError",
         "use dim_agent_runtime::Result",
         "use dim_agent_runtime::panic_message"
@@ -35679,6 +35757,7 @@
       "references": [
         "path TimelineStoreBinding",
         "path TimelineStoreBinding::new",
+        "path dim_agent_runtime::TimelineAppend",
         "use dim_agent_runtime::TimelineStoreBinding"
       ]
     },
@@ -57086,6 +57165,130 @@
     {
       "module": "dim_app_server::storage::query",
       "path": "StatementStatus::VmStep"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::AbandonFile"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::AgentOwner"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Agents"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::BatchEnd"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::BatchEndAt"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Branches"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::CommitFile"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::CommitTimelineRound"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::CreateSession"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Delete"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Head"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::ImportUserIfAbsent"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::LedMembers"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::MemberSessions"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Members"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::OwnedAgents"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::OwnedPaths"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Owners"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::OwnsFile"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::OwnsOutput"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::ReadPreferences"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::ReadSelection"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::ReadUser"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::RegisterOutput"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::ReplaceUser"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::ReserveFile"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::Save"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::SessionConfig"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::StorageReport"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::UnfinishedOwned"
+    },
+    {
+      "module": "dim_app_server::storage::sqlite",
+      "path": "Request::WriteSelection"
     },
     {
       "module": "dim_app_server::storage::timeline",

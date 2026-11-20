@@ -201,7 +201,9 @@ fn push_like_literal(pattern: &mut String, character: char) {
 }
 
 /// How txn 2 ended.
-enum Commit {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum Commit {
     Owned,
     SessionGone,
     /// A sweep of a later generation claimed the row.
@@ -242,6 +244,11 @@ pub(super) fn release(connection: &Connection, session_id: &str) -> rusqlite::Re
 }
 
 impl SessionFiles {
+    #[cfg(feature = "testing")]
+    pub(super) fn generation(&self) -> &str {
+        &self.0.generation
+    }
+
     pub(super) fn new(db: Arc<SqliteStorage>, ctx: Ctx, root: usize, sweep: Arc<Notify>) -> Self {
         let mut directory = db
             .path
@@ -416,25 +423,10 @@ impl SessionFiles {
                 "an output path must be UTF-8",
             )
         })?;
-        let session = session_id.clone();
         let registered = self
             .0
             .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                if !session_exists(&tx, &session).map_err(error)? {
-                    return Ok(false);
-                }
-                tx.execute(
-                    "INSERT INTO session_output_owners (session_id, path) VALUES (?1, ?2) ON CONFLICT(session_id, path) DO NOTHING",
-                    params![session, path],
-                )
-                .map_err(error)?;
-                tx.commit().map_err(error)?;
-                Ok(true)
-            })
+            .register_output(session_id, path)
             .await
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
         if registered { Ok(()) } else { Err(not_found()) }
@@ -458,20 +450,10 @@ impl SessionFiles {
             return Ok(false);
         }
         if let Some(output) = owned_path(&path) {
-            let id = session_id.clone();
-            let text = output.to_string_lossy().into_owned();
             let owned = self
                 .0
                 .db
-                .run_read(move |connection| {
-                    connection
-                        .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM session_output_owners WHERE session_id = ?1 AND path = ?2)",
-                            params![id, text],
-                            |row| row.get(0),
-                        )
-                        .map_err(error)
-                })
+                .owns_output(session_id.clone(), output.to_string_lossy().into_owned())
                 .await
                 .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
             if owned {
@@ -502,18 +484,9 @@ impl SessionFiles {
         let Some(file_id) = name.to_str() else {
             return Ok(false);
         };
-        let file_id = file_id.to_owned();
         self.0
             .db
-            .run_read(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM session_file_owners WHERE session_id = ?1 AND file_id = ?2)",
-                        params![session_id, file_id],
-                        |row| row.get(0),
-                    )
-                    .map_err(error)
-            })
+            .owns_file(session_id, file_id.to_owned())
             .await
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))
     }
@@ -528,23 +501,7 @@ impl SessionFiles {
         let (files, outputs) = self
             .0
             .db
-            .run_read(move |connection| {
-                let files: Vec<String> = connection
-                    .prepare("SELECT file_id FROM session_file_owners WHERE session_id = ?1 ORDER BY file_id")
-                    .map_err(error)?
-                    .query_map([&session_id], |row| row.get(0))
-                    .map_err(error)?
-                    .collect::<rusqlite::Result<_>>()
-                    .map_err(error)?;
-                let outputs: Vec<String> = connection
-                    .prepare("SELECT path FROM session_output_owners WHERE session_id = ?1 ORDER BY path")
-                    .map_err(error)?
-                    .query_map([&session_id], |row| row.get(0))
-                    .map_err(error)?
-                    .collect::<rusqlite::Result<_>>()
-                    .map_err(error)?;
-                Ok((files, outputs))
-            })
+            .owned_paths(session_id)
             .await
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
         Ok(files
@@ -770,25 +727,9 @@ impl Files {
         let permissions = read_only(&self.db.path)
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
 
-        let (session, id, generation) =
-            (session_id.clone(), file_id.clone(), self.generation.clone());
         let pending = self
             .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                if !session_exists(&tx, &session).map_err(error)? {
-                    return Ok(false);
-                }
-                tx.execute(
-                    "INSERT INTO session_files (file_id, node, writer) VALUES (?1, NULL, ?2)",
-                    params![id, generation],
-                )
-                .map_err(error)?;
-                tx.commit().map_err(error)?;
-                Ok(true)
-            })
+            .reserve_file(session_id.clone(), file_id.clone(), self.generation.clone())
             .await
             .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
         if !pending {
@@ -828,34 +769,9 @@ impl Files {
             return Err(cancelled());
         }
 
-        let (session, id, generation) = (session_id, file_id.clone(), self.generation.clone());
         let committed = self
             .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                if !session_exists(&tx, &session).map_err(error)? {
-                    return Ok(Commit::SessionGone);
-                }
-                if tx
-                    .execute(
-                        "UPDATE session_files SET writer = NULL WHERE file_id = ?1 AND writer = ?2",
-                        params![id, generation],
-                    )
-                    .map_err(error)?
-                    == 0
-                {
-                    return Ok(Commit::Superseded);
-                }
-                tx.execute(
-                    "INSERT INTO session_file_owners (session_id, file_id) VALUES (?1, ?2)",
-                    params![session, id],
-                )
-                .map_err(error)?;
-                tx.commit().map_err(error)?;
-                Ok(Commit::Owned)
-            })
+            .commit_file(session_id, file_id.clone(), self.generation.clone())
             .await;
         match committed {
             Ok(Commit::Owned) => Ok(StoredSessionFile {
@@ -878,17 +794,9 @@ impl Files {
     /// Makes a pending file of this generation unowned. If that fails too,
     /// the row stays pending under this generation and the next one sweeps it.
     async fn abandon(&self, file_id: &str) {
-        let (id, generation) = (file_id.to_owned(), self.generation.clone());
         let abandoned = self
             .db
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "UPDATE session_files SET writer = NULL WHERE file_id = ?1 AND writer = ?2",
-                        params![id, generation],
-                    )
-                    .map_err(error)
-            })
+            .abandon_file(file_id.to_owned(), self.generation.clone())
             .await;
         match abandoned {
             Ok(_) => self.sweep.notify_one(),
@@ -1048,6 +956,163 @@ impl Files {
                 ControlFlow::Continue(())
             }
         }
+    }
+}
+
+impl SqliteStorage {
+    pub(super) async fn abandon_file(
+        self: &Arc<Self>,
+        id: String,
+        generation: String,
+    ) -> dim_agent_runtime::Result<usize> {
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE session_files SET writer = NULL WHERE file_id = ?1 AND writer = ?2",
+                    params![id, generation],
+                )
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn commit_file(
+        self: &Arc<Self>,
+        session: String,
+        id: String,
+        generation: String,
+    ) -> dim_agent_runtime::Result<Commit> {
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            if !session_exists(&tx, &session).map_err(error)? {
+                return Ok(Commit::SessionGone);
+            }
+            if tx
+                .execute(
+                    "UPDATE session_files SET writer = NULL WHERE file_id = ?1 AND writer = ?2",
+                    params![id, generation],
+                )
+                .map_err(error)?
+                == 0
+            {
+                return Ok(Commit::Superseded);
+            }
+            tx.execute(
+                "INSERT INTO session_file_owners (session_id, file_id) VALUES (?1, ?2)",
+                params![session, id],
+            )
+            .map_err(error)?;
+            tx.commit().map_err(error)?;
+            Ok(Commit::Owned)
+        })
+        .await
+    }
+
+    pub(super) async fn reserve_file(
+        self: &Arc<Self>,
+        session: String,
+        id: String,
+        generation: String,
+    ) -> dim_agent_runtime::Result<bool> {
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            if !session_exists(&tx, &session).map_err(error)? {
+                return Ok(false);
+            }
+            tx.execute(
+                "INSERT INTO session_files (file_id, node, writer) VALUES (?1, NULL, ?2)",
+                params![id, generation],
+            )
+            .map_err(error)?;
+            tx.commit().map_err(error)?;
+            Ok(true)
+        })
+        .await
+    }
+
+    pub(super) async fn register_output(
+        self: &Arc<Self>,
+        session: String,
+        path: String,
+    ) -> dim_agent_runtime::Result<bool> {
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            if !session_exists(&tx, &session).map_err(error)? {
+                return Ok(false);
+            }
+            tx.execute(
+                "INSERT INTO session_output_owners (session_id, path) VALUES (?1, ?2) ON CONFLICT(session_id, path) DO NOTHING",
+                params![session, path],
+            )
+            .map_err(error)?;
+            tx.commit().map_err(error)?;
+            Ok(true)
+        })
+        .await
+    }
+
+    pub(super) async fn owns_output(
+        self: &Arc<Self>,
+        id: String,
+        text: String,
+    ) -> dim_agent_runtime::Result<bool> {
+        self.run_read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_output_owners WHERE session_id = ?1 AND path = ?2)",
+                    params![id, text],
+                    |row| row.get(0),
+                )
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn owns_file(
+        self: &Arc<Self>,
+        session_id: String,
+        file_id: String,
+    ) -> dim_agent_runtime::Result<bool> {
+        self.run_read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_file_owners WHERE session_id = ?1 AND file_id = ?2)",
+                    params![session_id, file_id],
+                    |row| row.get(0),
+                )
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn owned_paths(
+        self: &Arc<Self>,
+        session_id: String,
+    ) -> dim_agent_runtime::Result<(Vec<String>, Vec<String>)> {
+        self.run_read(move |connection| {
+            let files: Vec<String> = connection
+                .prepare("SELECT file_id FROM session_file_owners WHERE session_id = ?1 ORDER BY file_id")
+                .map_err(error)?
+                .query_map([&session_id], |row| row.get(0))
+                .map_err(error)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(error)?;
+            let outputs: Vec<String> = connection
+                .prepare("SELECT path FROM session_output_owners WHERE session_id = ?1 ORDER BY path")
+                .map_err(error)?
+                .query_map([&session_id], |row| row.get(0))
+                .map_err(error)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(error)?;
+            Ok((files, outputs))
+        })
+        .await
     }
 }
 

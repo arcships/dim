@@ -1375,6 +1375,49 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     let (server, _, _) = session_typescript::start(config(&home, parts)).await;
     let mut client = Client::new_version(&server, false, 3).await;
     files_available(&mut client, "storefixture.status", json!({})).await;
+    let wire = client.rpc("storefixture.report", json!({})).await;
+    let native = client.rpc("storage.report", json!({})).await;
+    assert_ok(&wire);
+    assert_ok(&native);
+    assert_eq!(wire["result"], native["result"]);
+    let missing = client
+        .rpc(
+            "storefixture.read_user",
+            json!({"source":"missing-fixture"}),
+        )
+        .await;
+    assert_ok(&missing);
+    assert!(missing["result"].is_null());
+    for text in [r#"{"value":1}"#, r#"{"value":2}"#] {
+        let winner = client
+            .rpc(
+                "storefixture.import_user",
+                json!({"source":"fixture-import","document":text,"importedRevision":"fixture"}),
+            )
+            .await;
+        assert_ok(&winner);
+        assert_eq!(
+            winner["result"],
+            json!({"version":1,"document":r#"{"value":1}"#})
+        );
+    }
+    let persisted = client
+        .rpc("storefixture.read_user", json!({"source":"fixture-import"}))
+        .await;
+    assert_ok(&persisted);
+    assert_eq!(
+        persisted["result"],
+        json!({"version":1,"document":r#"{"value":1}"#})
+    );
+    let replaced = client.rpc("storefixture.replace_user", json!({})).await;
+    assert_ok(&replaced);
+    assert_eq!(replaced["result"], json!({"version":2}));
+    let selected = client.rpc("storefixture.selection", json!({})).await;
+    assert_ok(&selected);
+    assert_eq!(
+        selected["result"],
+        json!({"provider_id":"fixture","model_id":"first","version":1})
+    );
     let store = server.service::<Store>().unwrap();
     let listed = client.rpc("agent.list", json!({})).await;
     assert_ok(&listed);
@@ -1418,6 +1461,120 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), "untouched");
     }
     let raw = server.service::<SessionStore>().unwrap().timeline_store();
+    raw.create_session("round-a", &config).await.unwrap();
+    let created = client
+        .rpc(
+            "storefixture.timeline_directory",
+            json!({"sessionId":"round-b","config":config}),
+        )
+        .await;
+    assert_ok(&created);
+    assert_eq!(created["result"]["sequence"], 0);
+    assert_eq!(
+        created["result"]["config"],
+        serde_json::to_value(&config).unwrap()
+    );
+    assert_eq!(
+        created["result"]["branches"],
+        serde_json::to_value(raw.branches("round-b").await.unwrap()).unwrap()
+    );
+    let batch_with_text = |session: &str, seq: u64, text: &str| {
+        let id = format!("{session}-{seq}");
+        let record = dim_agent_runtime::StoredEvent {
+            event: Arc::new(dim_agent_types::AgentEvent {
+                id: id.clone(),
+                sequence: seq,
+                create_at: seq,
+                tags: None,
+                parent_call_id: None,
+                kind: dim_agent_types::EventKind::InputMessage(
+                    dim_agent_types::InputMessageData::text(text, None),
+                ),
+            }),
+            trace: None,
+            batch_end: seq,
+        };
+        json!({"sessionId":session,"branchId":"main","batchId":id,"events":[record]})
+    };
+    let batch = |session: &str, seq: u64| batch_with_text(session, seq, "saved");
+    let grouped = client
+        .rpc(
+            "storefixture.commit_round",
+            json!({"batches":[batch("round-b",1),batch("round-a",1),batch("round-b",2)]}),
+        )
+        .await;
+    assert_ok(&grouped);
+    let committed = |session: &str| json!({"sessionId":session,"result":{"Ok":null}});
+    assert_eq!(
+        grouped["result"]["sessions"],
+        json!([committed("round-a"), committed("round-b")])
+    );
+    let fallback = client
+        .rpc(
+            "storefixture.commit_round",
+            json!({"batches":[batch("round-a",2),batch("round-b",3),batch("round-a",4)]}),
+        )
+        .await;
+    assert_ok(&fallback);
+    let sessions = fallback["result"]["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions[0]["sessionId"], "round-a");
+    assert_eq!(sessions[0]["result"]["Err"]["code"], "storage");
+    assert_eq!(sessions[1], committed("round-b"));
+    raw.create_session("round-wal", &config).await.unwrap();
+    let wal_generation = || {
+        use std::io::Read;
+        let mut header = [0; 16];
+        std::fs::File::open(home.join("rust/dimcode.sqlite-wal"))
+            .unwrap()
+            .read_exact(&mut header)
+            .unwrap();
+        u32::from_be_bytes(header[12..16].try_into().unwrap())
+    };
+    let initial = wal_generation();
+    let text = "w".repeat(512 * 1024);
+    for seq in 1..=24 {
+        let result = client
+            .rpc(
+                "storefixture.commit_round",
+                json!({"batches":[batch_with_text("round-wal",seq,&text)]}),
+            )
+            .await;
+        assert_ok(&result);
+        assert_eq!(
+            result["result"]["sessions"],
+            json!([committed("round-wal")])
+        );
+        if wal_generation() != initial {
+            break;
+        }
+    }
+    assert_ne!(
+        wal_generation(),
+        initial,
+        "wire commits recycle the SQLite write-ahead log"
+    );
+    raw.rollback_session("round-wal").await.unwrap();
+    for (session, expected) in [("round-a", 1), ("round-b", 3)] {
+        let key = dim_agent_runtime::TimelineKey {
+            session_id: session.into(),
+            branch_id: "main".into(),
+        };
+        assert_eq!(raw.head(&key).await.unwrap(), expected);
+        let directory = client
+            .rpc(
+                "storefixture.timeline_directory",
+                json!({"sessionId":session}),
+            )
+            .await;
+        assert_ok(&directory);
+        assert_eq!(directory["result"]["sequence"], expected);
+        assert_eq!(
+            directory["result"]["branches"],
+            serde_json::to_value(raw.branches(session).await.unwrap()).unwrap()
+        );
+        raw.rollback_session(session).await.unwrap();
+    }
     raw.create_session(protected.to_str().unwrap(), &config)
         .await
         .unwrap();
@@ -1448,6 +1605,64 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     }})).await;
     assert_ok(&created);
     assert!(store.has_records("wire-source").await.unwrap());
+    let output = server
+        .service::<dim_agent_capabilities::host_platform::HostPlatform>()
+        .unwrap()
+        .exec_root()
+        .join("fixture-owned-output")
+        .join("stdout");
+    std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+    let file_id = uuid::Uuid::new_v4().to_string();
+    let owner = server.service::<SessionStore>().unwrap();
+    let file = json!({"sessionId":"wire-source","fileId":file_id,"generation":owner.file_writer_generation()});
+    let reserved = client
+        .rpc("storefixture.reserve_file", json!({"file":file}))
+        .await;
+    assert_ok(&reserved);
+    assert_eq!(reserved["result"], true);
+    let files_directory = home.join("rust/dimcode.sqlite.session-files");
+    let pending = files_directory.join(&file_id).join("sample");
+    std::fs::create_dir_all(pending.parent().unwrap()).unwrap();
+    std::fs::write(&pending, b"pending bytes").unwrap();
+    let orphan = files_directory.join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir(&orphan).unwrap();
+    raw.create_session("trigger-sweep", &config).await.unwrap();
+    store.delete_session("trigger-sweep").await.unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while orphan.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("SessionFiles sweeps the unregistered directory");
+    assert_ok(
+        &client
+            .rpc(
+                "storefixture.file_ownership",
+                json!({"file":file,"path":output}),
+            )
+            .await,
+    );
+    assert_eq!(std::fs::read(&pending).unwrap(), b"pending bytes");
+    assert!(
+        server
+            .service::<dim_agent_capabilities::host::SessionFiles>()
+            .unwrap()
+            .0
+            .owned_paths("wire-source".to_owned())
+            .await
+            .unwrap()
+            .contains(&output)
+    );
+    let agents = client
+        .rpc(
+            "storefixture.agent_records",
+            json!({"agent":"fixture-owned","leader":"wire-source"}),
+        )
+        .await;
+    assert_ok(&agents);
+    assert_eq!(agents["result"], json!({"leaderAgent":agent_id}));
+
     let reply = client
         .rpc(
             "storefixture.cycle",

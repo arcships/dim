@@ -19,7 +19,7 @@ Resource and state operations use these public data faces:
 | `fsHost` | tool family: `resolve`, `read`, `write`, `edit`, `glob`, `grep`, `mentions`; storage family: `stat`, `readBytes`, `openRead`, `readAt`, `closeRead`, `lock`, `unlock`, `backup`, `createDirectory`, `replace`, `list`, `remove` | the file-operations owner | #1297 |
 | `store` | Session-row repository operations (§5.2) | the process state owner | #1298 |
 | `timelineStore` | Timeline operations and completion notifications (§5.1) | the Session state owner | #1298 |
-| `worktreeAssociations` | `associate` ([service faces](service-faces.md) §4.8) | the process state owner | #1298 |
+
 
 ```text
  control node                                        resource leaf (mounted per #1296)
@@ -29,14 +29,13 @@ Resource and state operations use these public data faces:
    Permission and Approval                            never asked, never decides
    Session repository      ── store ───────────────►  the state owner, locally
    Timeline facts          ── timelineStore ───────►  the same state owner, locally
-   Worktree associations   ── worktreeAssociations ►  the same state owner, locally
+   Worktree associations   ── store ──────────────►  the same state owner, locally
 ```
 
 **A face is a shape; the mount is a deployment.** `execHost` and `fsHost` are provided by the
 daemon that holds the process, the file or the session's own configuration — the control node's
 own plugins, or a resource leaf mounted per
-[#1296](https://github.com/arcships/dim/issues/1296). `store`, `timelineStore` and
-`worktreeAssociations` are provided where the Session state is, always in the daemon that owns
+[#1296](https://github.com/arcships/dim/issues/1296). `store` and `timelineStore` are provided where the Session state is, always in the daemon that owns
 that Session
 ([#1298](https://github.com/arcships/dim/issues/1298)); it is the same face whether the rows live in
 SQLite or PostgreSQL. Whether a face is reachable over a link is decided by deployment, not by a
@@ -458,7 +457,7 @@ moves the Git probe away from the Session that has to persist the result.
 | --- | --- |
 | Git probe, repository identity, fixed-prefix mapping, root directory identity | `fsHost.resolve`, on the node holding the files |
 | Session view: confirmed roots with their identities, in-flight recognitions, "already known" answers, branch-independent cache | the file facts Session part — ADR 014's `fileAccessFacts` service — on the control node (worktree access §3) |
-| Worktree directory record and Session usage association, deduplicated and written atomically | `worktreeAssociations.associate`, provided by SessionStore (worktree access §4, R2) |
+| Worktree directory record and Session usage association, deduplicated and written atomically | `store.associateWorktree`, provided by SessionStore (worktree access §4, R2) |
 | Publishing the expanded range, and its revalidation | the Session part, after the store acknowledges (§4.2.2) |
 | Admission, asks, presets | `Permission` and `Approval`, on the control side, unchanged |
 
@@ -468,7 +467,7 @@ The order is fixed, and the Session part is the only participant that both waits
    `recognize` only when its own view does not already cover the path.
 2. The node answers the resolution, the node facts, and either a `worktree` candidate or a
    `discoveryError`.
-3. A candidate goes to `worktreeAssociations.associate {sessionId, repository, root, subtree}`. That
+3. A candidate goes to `store.associateWorktree {sessionId, repository, root, subtree}`. That
    operation writes the directory record and the usage association together and answers `{}` only
    after both commit, deduplicated by repository and root and by Session and directory. A failed
    write is a `discoveryError` for the caller: the range is not published, and the user can still
@@ -487,7 +486,7 @@ and the node cannot expand a Session's range on its own.
 Session close releases the view; restore and reload start from an empty view and re-verify; fork
 copies neither the view nor the associations. Session deletion releases the associations inside
 its own delete transaction and keeps the directory records. The persisted records are read only
-through `worktreeAssociations.associate` and the store's own Session deletion step, never by reading
+through `store.associateWorktree` and the store's own Session deletion step, never by reading
 tables: no other part queries them for admission.
 
 #### 4.2.2 Revalidation before publication
@@ -495,7 +494,7 @@ tables: no other part queries them for admission.
 The candidate is a filesystem observation made before a storage wait. It must still be true when
 it is published, or it must not be published:
 
-1. After `worktreeAssociations.associate` returns, the Session part checks its own lifecycle: a Session
+1. After `store.associateWorktree` returns, the Session part checks its own lifecycle: a Session
    that is closing, deleted or between generations publishes nothing and answers the call with its normal
    closing or cancelled outcome. A committed association stays; only publication stops.
 2. It revalidates the candidate with a second `resolve` — `recognize: false`, so no Git probe and
@@ -610,15 +609,14 @@ The repository and Timeline operations use two names on the daemon that owns the
 and Session-scoped `timelineStore` provides the Timeline operations and completion notifications
 below. Both use the existing state owner; the split follows §9(6), without changing Session
 placement or the storage engine.
-Worktree association uses the separate existing `worktreeAssociations` face
-([service faces](service-faces.md) §4.8), listed alongside them below.
+SessionTitle and FileAccess use the process repository operations in the [resource owner contract](contracts/resource-owner-operations.md).
 
 | Family | Operations |
 | --- | --- |
 | Timeline (`timelineStore`) | `createSession`, `sessionConfig`, `releaseSession`, `rollbackSession`, `append` (sync), `head`, `branches`, `readPage`, `readSegments`, `query`, `trace`, `batchEnd`, `batchEndAt`, `saveSnapshot`, `latestSnapshot` |
 | Timeline completion (`timelineStore`) | `commits`, `closeCommits`; notifications `{subscriptionId, batchId, branchId, through, result}` |
 | Session rows (`store`) | The repository operations listed in §5.2 |
-| Worktree association (`worktreeAssociations`) | `associate`; [service faces](service-faces.md) §4.8 |
+| Worktree association (`store`) | `associateWorktree`; [service faces](service-faces.md) §4.8 |
 
 ### 5.1 Ordered admission and durable completion
 
@@ -771,7 +769,7 @@ removal and directory-row deletion. Its callback receives the checked root path 
 is awaited; no SQL or Timeline commit lock is held while awaiting it. A callback failure
 leaves the directory row in place. As with the native callback, it must not await operations
 that acquire this same ownership mutex: `createOwnedSession`, `fork`, `delete`,
-`removeWorktreeDirectory`, `removeWorktree`, or `worktreeAssociations.associate`. Reads and
+`removeWorktreeDirectory`, `removeWorktree`, or `store.associateWorktree`. Reads and
 other operations that do not acquire that mutex remain available. The callback may refuse with `invalid`, `cancelled`
 or `storage`; unexpected callback or transport failures are `storage`. There is no
 separate check/remove lease and no window for a concurrent Session creation to use
@@ -792,20 +790,18 @@ the owner message. Existing absence behavior is retained: `addGrant` on an unkno
 fails `storage` (foreign-key refusal), `removeGrant` succeeds without a matching row, and
 `setSessionLanguage` fails `closed`. Unsupported protocol versions retain the native database
 `storage` refusal; the lifecycle owner validates versions before preparation. These methods expose storage operations to trusted plugins, not
-new external client entry points. Session files, title metadata and worktree association
-continue to use their existing `sessionFiles`, `sessionMetadata` and
-`worktreeAssociations` public contracts rather than additional aliases on `store`.
+new external client entry points. Session files use `sessionFiles`. Metadata consumers call `store.readMetadata` and `store.setTitle`; FileAccess calls `store.associateWorktree`. Retire the catalog entries `sessionMetadata` and `worktreeAssociations` when migrating their callers.
 
 The Rust `Store` binding exposes only these repository operations and directly returns
 the same owner's operation futures. Its typed key and dispatcher share one binding;
 `SessionStore` remains the native bootstrap/implementation owner, not the public `store`
-type. Title reads use the existing `sessionMetadata` binding. Native shared result types
+type. Title reads use `store.readMetadata`. Native shared result types
 and filesystem paths retain their existing lossless Rust representation; only the wire
 boundary serializes paths as data. The existing asynchronous removal callback keeps its
 original path argument and ownership exclusion.
 
 
-- `worktreeAssociations.associate {sessionId, repository, root, subtree}` writes the worktree directory
+- `store.associateWorktree {sessionId, repository, root, subtree}` writes the worktree directory
   record and the Session usage association as one commit and answers `{}` after it, so the reply is the
   acknowledgement the file facts owner waits for before publishing a confirmed root (§4.2.1). Its
   deduplication, its place in Session deletion and its format decision belong to
@@ -833,7 +829,7 @@ original path argument and ownership exclusion.
 | --- | --- | --- |
 | `hostPlatform` | `execHost` | The provider and its Rust binding: `ProcessTree`, `PtyProcessTree`, temporary directories and shell preparation are its internals, reached through the operations |
 | `fileStorage` | `fsHost` | The provider and its binding: roots, leases, generations and one validated path component per open are its internals |
-| `sqliteStorage` | `store` | The SQL engine inside the provider |
+| `sqliteStorage` | `sqliteStorage.storageReport({})` | SQLite file, WAL and reclaimable bytes ([native storage](appserver/native-storage-format.md)). Session repository operations belong to `store`. |
 | `timelineStore` | `timelineStore` | Session-scoped Timeline operations; the `TimelineStore` trait is its native binding |
 
 For the owners below, Rust callers use a thin binding over the operations — a direct
@@ -855,7 +851,7 @@ The owners that read node files or start node processes, and the operations they
 | UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
 | Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
 | Hooks configuration commands | `execHost.configured` |
-| Worktree association | `worktreeAssociations.associate` |
+| Worktree association | `store.associateWorktree` |
 
 ## 7. Rule check
 
@@ -945,8 +941,7 @@ registered output path reuses `output` after the provider releases its task reco
 leases the node's storage already offers, needed because a path's facts and its bytes cannot be
 read on a machine that does not hold the file; `resolve` is where resolution and the worktree
 probe belong. `store` publishes the repository operations the state owner already has;
-`timelineStore` publishes its Timeline operations and completion notifications. The SQL engine
-remains private implementation, and `TimelineStore` is the native binding of `timelineStore`.
+`timelineStore` publishes its Timeline operations and completion notifications. StorageMethods reads database and WAL sizes through the native binding of `sqliteStorage.storageReport({})`; plugins can dispatch the same operation. SQLite owns the connections and SQL. `TimelineStore` is the native binding of `timelineStore`.
 Admission stays synchronous and completion keeps the callback's ordering as a notification.
 
 The `worktree` candidate carries the identity needed to recheck the mapping after the association

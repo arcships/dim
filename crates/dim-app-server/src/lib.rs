@@ -1429,6 +1429,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<ServerControl>(catalog, None);
     register::<ProcessActivity>(catalog, None);
     register::<storage::SqliteStorage>(catalog, None);
+    catalog.register_shared("sqliteStorage");
     register::<storage::SessionStore>(catalog, None);
     register::<storage::Store>(catalog, None);
     catalog.register_shared("store");
@@ -1517,7 +1518,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("sessionLoader", "control"),
         ("sessionStore", "owner-api"),
         ("settingsService", "owner-api"),
-        ("sqliteStorage", "object"),
         ("submitChecks", "hot-path"),
         ("timelineFactory", "control"),
         ("timelineTree", "owner-api"),

@@ -624,6 +624,40 @@ export interface TimelineReadScope {
   through: number;
   segments: { branchId: string; from: number; through: number; storedThrough: number; tail: AgentEvent[] }[];
 }
+export type StoredAgentProfile = {
+  name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
+};
+export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
+export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+  commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
+  readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
+  writeSelection(request: { scope: string; expectedVersion?: number | null; selection: ModelId }): Promise<StoredProviderSelection>;
+  /** Plugins write through sessionFiles. Only the SessionFiles owner supplies its active generation for reserve, commit and abandon. */
+  reserveFile(request: { sessionId: string; fileId: string; generation: string }): Promise<boolean>;
+  commitFile(request: { sessionId: string; fileId: string; generation: string }): Promise<"owned" | "sessionGone" | "superseded">;
+  abandonFile(request: { fileId: string; generation: string }): Promise<number>;
+  ownsFile(request: { sessionId: string; fileId: string }): Promise<boolean>;
+  ownsOutput(request: { sessionId: string; path: string }): Promise<boolean>;
+  ownedPaths(request: { sessionId: string }): Promise<[string[], string[]]>;
+  /** Supply a resolved absolute UTF-8 path under the Session command-output directory or a persistent shell output directory below the host execution root. */
+  registerOutput(request: { sessionId: string; path: string }): Promise<boolean>;
+  readPreferences(request: { providerId: string; modelId: string }): Promise<{ reasoningEffort?: string; serviceTier?: string } | null>;
+  agents(request: Record<string, never>): Promise<{ id: string; profile: { Ok: StoredAgentProfile } | { Err: string }; default: boolean; owner: string | null }[]>;
+  owners(request: Record<string, never>): Promise<{ sessionId: string; owner: [string, number] | null; error: string | null }[]>;
+  save(request: { id: string; profile: StoredAgentProfile; default: boolean; owner?: string | null }): Promise<void>;
+  delete(request: { id: string }): Promise<void>;
+  members(request: Record<string, never>): Promise<[string, string][]>;
+  ledMembers(request: { leader: string }): Promise<string[]>;
+  ownedAgents(request: { owner: string }): Promise<string[]>;
+  memberSessions(request: { agent: string }): Promise<string[]>;
+  agentOwner(request: { agent: string }): Promise<string | null>;
+  unfinishedOwned(request: Record<string, never>): Promise<{ incomplete: string[]; orphaned: string[] }>;
+  replaceUser(request: { source: string; expectedVersion: number | bigint; decision: { kind: 'write'; document: string } | { kind: 'reject'; field: string } }): Promise<{ version: number | bigint }>;
+  importUserIfAbsent(request: { source: string; document: string; importedRevision: string }): Promise<{ version: number | bigint; document: string }>;
+  readUser(request: { source: string }): Promise<{ version: number | bigint; document: string } | null>;
+  storageReport(request: Record<string, never>): Promise<{ databaseBytes: number; walBytes: number; reclaimableBytes: number }>;
+}
+
 /** Process repository operations for trusted plugins; ids are not scoped to the caller. Create/fork/delete reject ids that are not one normal path component. */
 export interface Store {
   query(request: { scope: TimelineReadScope; query: import('./branch-services.js').QuerySpec; page?: import('./branch-services.js').QueryPage | null }): Promise<{ result: import('./branch-services.js').QueryOutput; next: import('./branch-services.js').QueryCursor | null }>;
@@ -681,9 +715,10 @@ export interface TimelineStoreCompletion {
   through: number;
   result: 'committed' | { code: string; message: string };
 }
+export type TimelineAppend = { sessionId: string; branchId: string; batchId: string; events: StoredTimelineEvent[] };
 export interface TimelineStore {
   /** Synchronous admission is host-local; callers across a link are rejected. */
-  append(request: { sessionId: string; branchId: string; batchId: string; events: StoredTimelineEvent[] }): { accepted: true };
+  append(request: TimelineAppend): { accepted: true };
   /** Registration completes before return; observe later admissions, without replay of earlier batches. */
   commits(request: { sessionId: string }, listener: (completion: TimelineStoreCompletion) => void | Promise<void>): Promise<{ subscriptionId: string }>;
   closeCommits(request: { subscriptionId: string }): Promise<{}>;

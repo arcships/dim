@@ -5,7 +5,7 @@ use super::{
     SqliteStorage,
     codec::{CONTENT_BUDGET, Reader},
     sqlite::error,
-    timeline::{read_directory, read_range},
+    timeline::read_range,
 };
 use dim_agent_runtime::{BranchRecord, Result, TimelineKey, TimelineTrace};
 use dim_agent_types::AgentEvent;
@@ -78,7 +78,7 @@ async fn write(
         )));
     }
     let mut reader = Reader::new(CONTENT_BUDGET);
-    let branches = read_directory(db, session).await?;
+    let branches = db.branches(session.to_owned()).await?;
     line(
         out,
         &Line::Header {

@@ -1,5 +1,7 @@
 # Timeline branches
 
+The [target Session tree binding](contracts/runtime-owner-operations.md) moves calls from `treeCommands` to `timelineTree` with the same arguments and replies. The catalog entry and consumer injections change together. References to `treeCommands` below describe the pre-migration binding.
+
 Status: Accepted ([#427](https://github.com/arcships/dim/issues/427)). This document holds both the requirements and the design: §1–§3 answer #427's questions, and §4 onward is the design. Scope: the TimelineTree plugin (TimelineTree, TreeTimeline, BranchTool, plus a new branch part for BranchLine), one App Server built-in method, one core event, one `BranchSource` kind, the CLI TUI, the Web workspace, and a rewrite of [design rules §2](../architecture/rust-agent/principles.md#2-作用域的含义). Language: Rust. Chinese: [中文](../zh/design/timeline-branches.md).
 
 This design delivers two capabilities: the Session's **default branch**, the line its conversation is on and choosing another open line as that line; and **who may open a line**, which is now the root always, plus whichever line is the current default branch. Every other line is refused, so at most two lines can open at any moment, and the root keeps the ability it has today.

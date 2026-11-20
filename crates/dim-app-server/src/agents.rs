@@ -1,6 +1,5 @@
 use crate::{
     ProcessActivity, ProcessHold, ServerConfig,
-    agent_records::AgentRecords,
     protocol::{AgentInfo, CreateWorktree, SessionOrigin},
     settings::SettingsService,
     storage::{PreparedWorktree, SessionMetadataService, SessionStore, SqliteStorage, Store},
@@ -391,7 +390,7 @@ pub struct AgentIndex {
     /// created from.
     loader: OnceLock<(Loader, Ctx)>,
     startup_timeout: Duration,
-    records: Option<Arc<AgentRecords>>,
+    records: Option<Arc<SqliteStorage>>,
     session_store: Option<Arc<Store>>,
     session_metadata: Option<Arc<SessionMetadataService>>,
     settings: Option<Arc<SettingsService>>,
@@ -1782,20 +1781,20 @@ impl AgentIndex {
     }
     /// Removes what a delegation cannot leave behind: an owned Agent with no
     /// member Session, and one whose owner Session is gone with its members.
-    async fn remove_unfinished(&self, records: &AgentRecords) {
-        let (incomplete, orphaned) = match records.unfinished_owned().await {
+    async fn remove_unfinished(&self, records: &Arc<SqliteStorage>) {
+        let unfinished = match records.unfinished_owned().await {
             Ok(unfinished) => unfinished,
             Err(error) => {
                 tracing::error!(%error, "Unfinished delegations could not be read");
                 return;
             }
         };
-        for agent_id in incomplete {
+        for agent_id in unfinished.incomplete {
             if let Err(error) = records.delete(&agent_id).await {
                 tracing::error!(%error, %agent_id, "Incomplete delegation was not removed");
             }
         }
-        for agent_id in orphaned {
+        for agent_id in unfinished.orphaned {
             let members = records.member_sessions(&agent_id).await.unwrap_or_default();
             if let Some(store) = &self.session_store {
                 for member in members {
@@ -2244,11 +2243,7 @@ impl DynPlugin for AgentsPlugin {
             let (records, session_store, session_metadata) = match stored {
                 Some((store, native, storage, metadata)) => {
                     builder.timeline_store(native.timeline_store());
-                    (
-                        Some(Arc::new(AgentRecords(storage))),
-                        Some(store),
-                        Some(metadata),
-                    )
+                    (Some(storage), Some(store), Some(metadata))
                 }
                 None => (None, None, None),
             };

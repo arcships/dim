@@ -1,21 +1,96 @@
 import { definePlugin } from '@arcships/rutis'
-import type { ManagementMethods, MethodReply, Store } from '../../npm/plugin.js'
+import type { ManagementMethods, MethodReply, SqliteStorage, Store } from '../../npm/plugin.js'
 import { writeFile, rename, rm } from 'node:fs/promises'
 import assert from 'node:assert/strict'
 
 export default definePlugin({
   name: 'StoreFixture',
   provides: {},
-  inject: ['managementMethods', 'store'],
+  inject: ['managementMethods', 'store', 'sqliteStorage'],
   async apply(ctx) {
     const store = ctx.use<Store>('store')
+    const sqlite = ctx.use<SqliteStorage>('sqliteStorage')
     let release: (() => void) | undefined
     await ctx.use<ManagementMethods>('managementMethods').register(
       'storefixture',
-      ['status', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
+      ['status', 'commit_round', 'timeline_directory', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
       async (call: { method: string; params: any }): Promise<MethodReply> => {
         const params = call.params
         if (call.method === 'storefixture.status') return { kind: 'value', value: {} }
+        if (call.method === 'storefixture.timeline_directory') {
+          const { sessionId, config } = params
+          if (config) await sqlite.createSession({ sessionId, config })
+          const key = { sessionId, branchId: 'main' }
+          const { sequence } = await sqlite.head(key)
+          assert.deepEqual(await sqlite.batchEnd({ ...key, sequence }), {})
+          assert.deepEqual(await sqlite.batchEndAt({ ...key, sequence }), { sequence })
+          return { kind: 'value', value: {
+            ...await sqlite.sessionConfig({ sessionId }),
+            ...await sqlite.branches({ sessionId }),
+            sequence,
+          } }
+        }
+        if (call.method === 'storefixture.commit_round') return { kind: 'value', value: await sqlite.commitTimelineRound(params) }
+        if (call.method === 'storefixture.selection') {
+          const scope = 'workspace:/fixture'
+          const selection = {providerId:'fixture', modelId:'first'}
+          assert.equal(await sqlite.readSelection({scope}), null)
+          assert.equal(await sqlite.readPreferences(selection), null)
+          const saved = await sqlite.writeSelection({scope, selection, expectedVersion:null})
+          assert.deepEqual(saved, {provider_id:'fixture', model_id:'first', version:1})
+          await assert.rejects(() => sqlite.writeSelection({scope, selection, expectedVersion:null}),
+            (error: unknown) => error instanceof Error && 'code' in error && error.code === 'conflict')
+          return {kind:'value', value: await sqlite.readSelection({scope})}
+        }
+        if (call.method === 'storefixture.reserve_file') {
+          return { kind: 'value', value: await sqlite.reserveFile(params.file) }
+        }
+        if (call.method === 'storefixture.file_ownership') {
+          const { file, path } = params
+          const { sessionId } = file
+          assert.equal(await sqlite.commitFile({ ...file, generation: 'other' }), 'superseded')
+          assert.equal(await sqlite.commitFile(file), 'owned')
+          assert.equal(await sqlite.ownsFile({ sessionId, fileId: file.fileId }), true)
+          const abandoned = { ...file, fileId: 'fixture-abandoned' }
+          assert.equal(await sqlite.reserveFile(abandoned), true)
+          assert.equal(await sqlite.abandonFile({ fileId: abandoned.fileId, generation: file.generation }), 1)
+          assert.equal(await sqlite.registerOutput({ sessionId: 'missing', path }), false)
+          assert.equal(await sqlite.ownsFile({ sessionId, fileId: 'absent' }), false)
+          assert.equal(await sqlite.ownsOutput({ sessionId, path }), false)
+          assert.equal(await sqlite.registerOutput({ sessionId, path }), true)
+          assert.equal(await sqlite.ownsOutput({ sessionId, path }), true)
+          assert.ok((await sqlite.ownedPaths({ sessionId }))[1].includes(path))
+          return { kind: 'value', value: {} }
+        }
+        if (call.method === 'storefixture.agent_records') {
+          const { agent, leader } = params
+          const profile = { name: 'Fixture', description: '', systemPrompt: '' }
+          await sqlite.save({id: agent, profile, default: false, owner: leader})
+          assert.deepEqual((await sqlite.agents({})).find(row => row.id === agent), {id: agent, profile: {Ok: profile}, default: false, owner: leader})
+          assert.equal(await sqlite.agentOwner({agent}), leader)
+          assert.deepEqual(await sqlite.ownedAgents({owner: leader}), [agent])
+          assert.deepEqual(await sqlite.memberSessions({agent}), [])
+          assert.deepEqual(await sqlite.ledMembers({leader}), [])
+          assert.equal((await sqlite.members({})).some(([, id]) => id === leader), false)
+          assert.ok((await sqlite.unfinishedOwned({})).incomplete.includes(agent))
+          const owner = (await sqlite.owners({})).find(row => row.sessionId === leader)
+          assert.ok(owner?.owner)
+          await sqlite.delete({id:agent})
+          assert.equal(await sqlite.agentOwner({agent}), null)
+          return {kind: 'value', value: {leaderAgent: owner.owner[0]}}
+        }
+        if (call.method === 'storefixture.replace_user') {
+          const source = 'fixture-import'
+          const rejected = { kind: 'reject' as const, field: '/protected' }
+          for (const [expectedVersion, code] of [[0, 'conflict'], [1, 'user_only_field']] as const) {
+            await assert.rejects(() => sqlite.replaceUser({ source, expectedVersion, decision: rejected }),
+              (error: unknown) => error instanceof Error && 'code' in error && error.code === code)
+          }
+          return { kind: 'value', value: await sqlite.replaceUser({source, expectedVersion: 1, decision: {kind: 'write', document: '{"value":3}'}}) }
+        }
+        if (call.method === 'storefixture.import_user') return { kind: 'value', value: await sqlite.importUserIfAbsent(params) }
+        if (call.method === 'storefixture.read_user') return { kind: 'value', value: await sqlite.readUser(params) }
+        if (call.method === 'storefixture.report') return { kind: 'value', value: await sqlite.storageReport({}) }
         if (call.method === 'storefixture.create') {
           if (!params.create) throw new Error('missing creation request')
           const result = await store.createOwnedSession(params.create)

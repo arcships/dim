@@ -1,5 +1,7 @@
 # Collaboration
 
+The [target Session tree binding](../contracts/runtime-owner-operations.md) moves calls from `treeCommands` to `timelineTree` with the same arguments and replies. The catalog entry and consumer injections change together. References to `treeCommands` below describe the pre-migration binding.
+
 Status: Draft ([#551](https://github.com/arcships/dim/issues/551)). Rules: [design rules](../../architecture/rust-agent/principles.md) §1, §4 and §5, [ADR 002](../../adr/002-plugin-scope.md). Scope: Session and branch. Language: Rust. The capability is [collaboration.rs](../../../crates/dim-app-server/src/collaboration.rs).
 
 This page owns what Collaboration writes for the model — the two markers it writes, the `agent` tool's coordination text and results, and the guide entries its Session part registers — and the delegation's ownership and lifetime (§6). The delegation mechanism — the facts, the member kinds, the settlement and the member-approval route — is the [overview](../overview.md#56-collaboration-delegation-to-an-external-agent) and [ExternalAgent](ExternalAgent.md)'s, and is not restated here.

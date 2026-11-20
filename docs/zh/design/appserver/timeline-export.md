@@ -41,7 +41,7 @@
    │  精确比对结构：当前格式，或本构建可从之升级的格式
    ▼
  storage::export
-   │  read_directory(S)：只读取、校验分支元数据
+   │  sqliteStorage.branches({sessionId: S})：只读取、校验分支元数据
    │  每个分支 read_range 1..=head，分页读取：事件及其 before 轨迹
    ▼
  stdout：头行、分支行、事件行、结束行   ──►  F 或 CLI 的 stdout

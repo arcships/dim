@@ -1,5 +1,7 @@
 # SessionStore 标题元数据
 
+目标绑定为 `store.readMetadata` 和 `store.setTitle`。SessionTitle 与重命名调用方一起切换到 `store`，随后移除 `sessionMetadata`。下文的旧绑定名描述迁移前的实现。
+
 状态：已在路线图 S5b 实现（[#60](https://github.com/arcships/dim/issues/60)，[#96](https://github.com/arcships/dim/pull/96)），在 C6（[#49](https://github.com/arcships/dim/issues/49)，[#85](https://github.com/arcships/dim/pull/85)）之后；实现与本设计一致。评审细化了写入何时被接纳、卸载如何了结它（§6、D14）。需求：[SessionTitle](../plugins/SessionTitle.md) §2、§4 与 [A.2](../plugins/SessionTitle.md#a2-依赖的形状由所有者定义)。总览：[附录 B.2](../overview.md#b2-app-server-进程插件) 的 SessionStore 与 Rpc 行。范围：[ADR 002](../../adr/002-plugin-scope.md) 进程作用域，在既有 SessionStore 插件内，外加三个 Rpc 列表字段。使用方：SessionTitle。
 
 ## 1. 概要

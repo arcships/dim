@@ -3908,6 +3908,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#sqliteStorage",
+        "provider": 6,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#store",
         "provider": 8,
         "generation": 1,
