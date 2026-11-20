@@ -118,7 +118,7 @@ owner depends on `settings`.
 
 Every owner, built-in Rust and TypeScript alike, registers its sources from its own process row's
 `apply`. Declared sources use `settings.register(declaration)` through their language binding
-(§4.2, §4.5); native `BusinessDocument` sources use `SettingsService::register::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
+(§4.2, §4.5); native `BusinessDocument` sources use `Settings::register_document::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
 declares sources. A registration belongs to the plugin that made it and is withdrawn when that
 plugin unloads (turned off, removed or reloaded); a reload registers again from the new
 generation. The stored documents stay in the home whether or not their source is registered: an
@@ -263,7 +263,7 @@ with `managementMethods` (§4.5). They are never served to paired devices (overv
   the `plugin` tool's `config` command, which additionally returns the user document with
   `writeOnly` members redacted and listed in `writeOnlySet` (PluginManager §6).
 - `schedule` is not a declared source. `ScheduleDocument` is a Rust `BusinessDocument`,
-  registered with `settings.register::<ScheduleDocument>`, validated by its own `validate()`,
+  registered with `settings.register_document::<ScheduleDocument>`, validated by its own `validate()`,
   served by `schedule.*`, and `settings_unknown_source` on every `settings.*` path. A Rust
   source keeps its own typed methods and is out of a schema-driven surface; `settings.sources`
   lists declared sources only and therefore never lists it.
@@ -314,7 +314,7 @@ Permission does).
 ### 4.5 Rust binding
 
 The `Settings` binding exposes the owner operations of the public `settings` data face.
-Declared sources use `register`, `declared_by`, `read` and `update`. Custom sources use
+Declared sources use `register`, `declared_by`, `read` and `update`. Native `BusinessDocument` sources use
 `register_document` and its bound read/update operations. Project admission and listing use
 `authorize_project` and `projects`.
 The dispatcher calls these same operations, and native consumers call them directly

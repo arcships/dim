@@ -103,7 +103,7 @@ Settings 不赋予任何字段特殊含义，只有一个例外：schema 带 JSO
 
 每个所有者，不论是内置 Rust 还是 TypeScript，都在自己进程行的 `apply` 中登记来源。声明式来源
 通过对应语言绑定调用 `settings.register(declaration)`（§4.2、§4.5）；原生 `BusinessDocument` 来源
-使用 `SettingsService::register::<D>`（§4.5）。
+使用 `Settings::register_document::<D>`（§4.5）。
 App Server 的装配和 PluginManager 都不声明来源。登记属于发起它的插件，在该插件卸载（关闭、移除或
 重载）时撤回；重载时由新一代重新登记。不论来源是否已登记，存储的文档都留在 home 中：未登记的来源
 在所有路径上都是 `unknown_source`，有所有者登记它后，其文档重新可用。
@@ -235,7 +235,7 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
   agent 侧的对应物仍是 `plugin` 工具的 `config` 命令，它额外返回用户文档，并把 `writeOnly`
   成员去掉后列在 `writeOnlySet` 里（PluginManager §6）。
 - `schedule` 不是声明的来源。`ScheduleDocument` 是 Rust 的 `BusinessDocument`，经
-  `settings.register::<ScheduleDocument>` 登记，由它自己的 `validate()` 校验，由 `schedule.*`
+  `settings.register_document::<ScheduleDocument>` 登记，由它自己的 `validate()` 校验，由 `schedule.*`
   提供，在所有 `settings.*` 路径上都是 `settings_unknown_source`。Rust 来源保留自己类型化的
   方法，不属于 schema 驱动的表面；`settings.sources` 只列声明的来源，因此从不列出它。
 - `settings.sources` 从不提供给已配对设备（§4.3 开头），也不在 Web 入口的允许清单里，因此
@@ -275,7 +275,7 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 ### 4.5 Rust 绑定
 
 `Settings` 绑定公开公共 `settings` 数据面的 owner 操作，提供
-声明式来源的 `register`、`declared_by`、`read` 和 `update`，自定义来源的 `register_document` 及其绑定的读写操作，以及项目授权与枚举的 `authorize_project` 和 `projects`。
+声明式来源的 `register`、`declared_by`、`read` 和 `update`，原生 `BusinessDocument` 来源的 `register_document` 及其绑定的读写操作，以及项目授权与枚举的 `authorize_project` 和 `projects`。
 Dispatcher 调用这些相同操作；原生消费者直接调用，无需 JSON 转换。登记仍绑定调用者生命周期，
 更新仍是不能修改 user-only 字段的 owner 写入。来源注册、校验和持久化仍由同一个 Settings owner 承担。
 

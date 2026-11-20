@@ -94,7 +94,7 @@ not add automatic retry or recovery. See the [CLI submission contract](../../doc
 SettingsService reads and updates generic `BusinessDocument` values with per-source
 CAS. Business owners define and validate their payloads: MCP types live in
 `mcp/config.rs`, and the Skills owner supplies the existing `SkillSettingsHost`.
-Each owner registers its sources in its `apply` (`SettingsService::register`, or
+Each owner registers its sources in its `apply` (`Settings::register_document` for a native `BusinessDocument`, or
 `register` on the named `settings` service); a source is served only while its
 owner is loaded, and its stored document stays when the owner unloads.
 Settings owns source persistence, not approvals or business management methods.
