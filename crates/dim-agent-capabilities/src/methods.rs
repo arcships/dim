@@ -882,7 +882,7 @@ pub fn foreign_handler(call: Reference) -> Handler {
                     let [data]: [BridgeValue; 1] = args
                         .list()?
                         .try_into()
-                        .map_err(|_| BridgeError::Value("progress needs one argument".into()))?;
+                        .map_err(|_| BridgeError::value("progress needs one argument"))?;
                     progress.send(data.json()?);
                     Ok(BridgeValue::Undefined)
                 });
@@ -906,7 +906,7 @@ pub fn foreign_handler(call: Reference) -> Handler {
                 let reply = reply
                     .and_then(|value| {
                         serde_json::from_value::<ForeignReply>(value)
-                            .map_err(|error| BridgeError::Value(error.to_string()))
+                            .map_err(|error| BridgeError::value(error.to_string()))
                     })
                     .map_err(|error| {
                         rethrown(&error).unwrap_or_else(|| {
@@ -1099,14 +1099,13 @@ impl HostDispatch for ForeignMethods {
     }
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         if method != "register" {
-            return Err(BridgeError::Value(format!("no method {method}")));
+            return Err(BridgeError::value(format!("no method {method}")));
         }
         let caller = rutis_bridge::session::caller_row()
             .map(|row| row.ctx().clone())
             .ok_or_else(|| {
-                BridgeError::Value(
-                    "register needs the calling row's context: only a row of a language runtime can call it"
-                        .into(),
+                BridgeError::value(
+                    "register needs the calling row's context: only a row of a language runtime can call it",
                 )
             })?;
         let mut args = match args {
@@ -1114,7 +1113,7 @@ impl HostDispatch for ForeignMethods {
             args => args.list()?,
         };
         if args.len() > 3 {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "expected at most 3 arguments, received {}",
                 args.len()
             )));
@@ -1126,15 +1125,15 @@ impl HostDispatch for ForeignMethods {
         let Some(BridgeValue::Reference(call)) = args.next().filter(
             |call| matches!(call, BridgeValue::Reference(reference) if reference.is_function()),
         ) else {
-            return Err(BridgeError::Value(
-                "register needs a namespace, its declarations and its call function".into(),
+            return Err(BridgeError::value(
+                "register needs a namespace, its declarations and its call function",
             ));
         };
         let registered = self
             .0
             .register_foreign(&caller, &namespace, declarations, call)
             .map(|()| BridgeValue::Undefined)
-            .map_err(|error| BridgeError::Value(error.to_string()));
+            .map_err(|error| BridgeError::value(error.to_string()));
         Ok(BridgeValue::future(async move { registered }))
     }
 }

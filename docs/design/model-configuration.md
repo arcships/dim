@@ -558,12 +558,11 @@ configuration-superseded, reload/interruption and Session-closed contracts.
 ## Scrollback interaction
 
 Both native TUI modes draw the model label and its effective reasoning effort
-in the theme's highlight colour. Scrollback keeps this label in its bottom status
-row; fullscreen keeps it on the composer's top border. With fullscreen mouse
-reporting enabled, clicking the visible model label opens the existing `/models`
-picker without discarding the draft. Only a press and release on the same label
-cell counts; dragging, resizing, a hidden label or an open overlay cannot activate
-it. Esc closes the picker and returns to the draft.
+in the theme's highlight colour on the right side of the composer's top border.
+With fullscreen mouse reporting enabled, clicking the visible model label opens
+the existing `/models` picker without discarding the draft. Only a press and
+release on the same label cell counts; dragging, resizing, a hidden label or an
+open overlay cannot activate it. Esc closes the picker and returns to the draft.
 
 ```text
 ╭────────────────────── provider / model · high ─╮
@@ -579,7 +578,7 @@ and show supported choices from the existing `provider.catalog` response, withou
 mutation or a new query method. Bare `/agent` uses existing `agent.list` IDs, names
 and descriptions; selection uses an exact ID. Empty/unavailable choices are explicit.
 
-At Home there is no adopted model yet: the footer's preview is the model the first
+At Home there is no adopted model yet: the top border's preview is the model the first
 message's Session adopts, so the same commands act on it. Bare `/effort` and `/fast`
 list that model's advertised choices, and a value is held for the Session the first
 message creates instead of writing the shown one. The preview reported the model's

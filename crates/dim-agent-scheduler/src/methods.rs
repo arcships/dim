@@ -1349,7 +1349,7 @@ impl HostDispatch for ScheduleJobsFace {
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         if method != "call" {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "unknown scheduleJobs method {method}"
             )));
         }
@@ -1466,7 +1466,7 @@ pub(crate) fn face_call(
         match result {
             Ok(Ok(reply)) => Ok(reply.into()),
             Ok(Err(error)) => face_failure(error),
-            Err(error) => Err(BridgeError::Value(error.to_string())),
+            Err(error) => Err(BridgeError::value(error.to_string())),
         }
     })
 }

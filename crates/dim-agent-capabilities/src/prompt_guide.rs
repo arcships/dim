@@ -271,7 +271,7 @@ impl HostDispatch for ForeignGuideEntries {
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method != "register" {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "guideEntries has no method {method}"
             )));
         }
@@ -305,7 +305,7 @@ fn request(args: Value) -> Result<(GuideScope, GuideEntry), BridgeError> {
         args => args.list()?,
     };
     if args.len() > 2 {
-        return Err(BridgeError::Value(format!(
+        return Err(BridgeError::value(format!(
             "expected at most 2 arguments, received {}",
             args.len()
         )));
@@ -315,7 +315,7 @@ fn request(args: Value) -> Result<(GuideScope, GuideEntry), BridgeError> {
     let scope = args.next().expect("two arguments").json()?;
     let entry = args.next().expect("two arguments").json()?;
     let invalid =
-        |error| BridgeError::Value(format!("register takes a scope and an entry: {error}"));
+        |error| BridgeError::value(format!("register takes a scope and an entry: {error}"));
     Ok((
         serde_json::from_value(scope).map_err(invalid)?,
         serde_json::from_value(entry).map_err(invalid)?,
