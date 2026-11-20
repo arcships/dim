@@ -676,6 +676,8 @@ async fn exec_and_external_shell_callers_use_live_shell_preferences() {
 async fn foreground_output_is_canonical_and_offloaded_like_ts() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
     let session = harness.session().await;
+    let output_dir = harness.output_root.join(session.id());
+    std::fs::write(&output_dir, b"blocks creation of command logs").unwrap();
     harness
         .run(
             &session,
@@ -693,6 +695,7 @@ async fn foreground_output_is_canonical_and_offloaded_like_ts() {
     assert!(text(result).ends_with("\n\nCommand exited with code 3."));
     assert!(!text(result).contains('\u{FFFD}'));
 
+    std::fs::remove_file(&output_dir).unwrap();
     session.idle("main").await.unwrap();
     harness
         .run(
