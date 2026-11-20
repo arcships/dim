@@ -100,7 +100,7 @@ async fn shell_resolution_follows_the_preference_and_never_fails_the_service() {
 
 #[tokio::test]
 async fn spawn_isolates_the_environment_and_terminate_releases_the_tree() {
-    let platform = HostPlatform::current(ShellStatus::Unavailable {
+    let platform = ExecHost::current(ShellStatus::Unavailable {
         code: EXEC_SHELL_UNAVAILABLE,
         reason: "spawn does not need a shell".into(),
     })
@@ -232,14 +232,15 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             HostPlatformConfig {
                 execution: names.key().unwrap(),
                 toolchain: names.key().unwrap(),
+                command_files: Some((0, "command-output".into())),
                 exec_shell_file: Some((0, "exec-shell.json".into())),
-                home: None,
+                home: Some(home.clone()),
             },
         )
         .unwrap(),
     );
     (&platform).await.unwrap();
-    let platform = root.get::<HostPlatform>().unwrap();
+    let platform = root.get::<ExecHost>().unwrap();
     assert!(matches!(
         platform.exec_shell().await,
         ShellStatus::Unavailable {
@@ -250,6 +251,160 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     std::os::unix::fs::symlink("/bin/bash", &shell).unwrap();
     let selected = platform.exec_shell().await;
     assert!(matches!(selected, ShellStatus::Available(_)));
+    let face = root
+        .get_at(&rutis_bridge::session::host_key("execHost"))
+        .unwrap();
+    let facts =
+        rutis_bridge::session::settle(face.invoke("info", serde_json::json!([{}]).into()).unwrap())
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+    assert_eq!(facts, serde_json::to_value(platform.info().await).unwrap());
+    assert_eq!(facts["arch"], platform.arch);
+    assert_eq!(facts["execShell"]["state"], "available");
+    assert_eq!(facts["execShell"]["executable"], shell.to_str().unwrap());
+    let request = serde_json::json!([{
+        "program": "/bin/sh",
+        "args": ["-c", "printf abc; printf def >&2; exit 7"],
+        "read": [],
+        "write": [home],
+        "timeoutMs": 10000,
+        "outputLimit": {"stdout": 3, "stderr": 3},
+        "services": "none"
+    }]);
+    let reply = rutis_bridge::session::settle(face.invoke("confined", request.into()).unwrap())
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(reply["status"], 7);
+    assert_eq!(reply["stdout"], "YWJj");
+    assert_eq!(reply["stderr"], "ZGVm");
+    assert_eq!(reply["stdoutTruncated"], false);
+    assert_eq!(reply["stderrTruncated"], false);
+    let configured = serde_json::json!([{
+        "command": r#"read -r line; printf '%s' "$line"; printf '%s' "$WIRE_ENV" >&2; exit 2"#,
+        "cwd": home,
+        "env": {"WIRE_ENV":"test"},
+        "stdin":"YWJjCg==",
+        "timeoutMs":10000,
+        "limits":{"stdout":3,"stderr":2}
+    }]);
+    let reply =
+        rutis_bridge::session::settle(face.invoke("configured", configured.into()).unwrap())
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+    assert_eq!(reply["status"], "exited");
+    assert_eq!(reply["exitCode"], 2);
+    assert_eq!(reply["stdout"], "YWJj");
+    assert_eq!(reply["stderr"], "dGU=");
+    assert_eq!(reply["stdoutTruncated"], false);
+    assert_eq!(reply["stderrTruncated"], true);
+    let invoke = async |method: &str, request: serde_json::Value| {
+        let value = face.invoke(method, serde_json::json!([request]).into())?;
+        rutis_bridge::session::settle(value).await?.json()
+    };
+    let start = serde_json::json!({"taskId":"short-command", "command":"printf retained", "cwd":home,
+        "workspace":home, "roots":[], "outputDir":home.join("command-output/session")});
+    let output = invoke("start", start.clone()).await.unwrap();
+    let task = serde_json::json!({"taskId":"short-command"});
+    let terminal = invoke("wait", task.clone()).await.unwrap();
+    assert_eq!(terminal["status"], "exited");
+    assert_eq!(terminal["preview"], "retained");
+    assert_eq!(terminal["outputBytes"], 8);
+    assert_eq!(terminal["outputPath"], output["outputPath"]);
+    assert!(!std::path::Path::new(output["outputPath"].as_str().unwrap()).exists());
+    let page = invoke(
+        "output",
+        serde_json::json!({"taskId":"short-command", "limit":3}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        page,
+        serde_json::json!({"text":"ret","bytes":3,"nextCursor":3,"truncated":false,"retainedFrom":0})
+    );
+    assert!(invoke("start", start).await.is_err());
+    assert_eq!(invoke("retainOutput", task.clone()).await.unwrap(), output);
+    assert_eq!(
+        std::fs::read(output["outputPath"].as_str().unwrap()).unwrap(),
+        b"retained"
+    );
+    invoke("kill", task.clone()).await.unwrap();
+    assert_eq!(invoke("wait", task.clone()).await.unwrap(), terminal);
+    invoke("settle", task.clone()).await.unwrap();
+    assert!(invoke("wait", task).await.is_err());
+    let retained = invoke(
+        "output",
+        serde_json::json!({"outputPath":output["outputPath"],"cursor":3}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retained["text"], "ained");
+    assert!(
+        invoke(
+            "output",
+            serde_json::json!({"outputPath":home.join("exec-shell.json")})
+        )
+        .await
+        .is_err()
+    );
+    let shell_id = serde_json::json!({"taskId":"interactive"});
+    invoke("shell",serde_json::json!({"taskId":"interactive","cwd":home,"workspace":home,"roots":[],"outputDir":platform.exec_root().join("session/branch"),"cols":80,"rows":24})).await.unwrap();
+    invoke(
+        "resize",
+        serde_json::json!({"taskId":"interactive","cols":100,"rows":32}),
+    )
+    .await
+    .unwrap();
+    invoke(
+        "write",
+        serde_json::json!({"taskId":"interactive","data":"ZXhpdCA3Cg=="}),
+    )
+    .await
+    .unwrap();
+    let finished = invoke(
+        "wait",
+        serde_json::json!({"taskId":"interactive","timeoutMs":10000}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(finished["exitCode"], 7);
+    let captured = invoke("output", shell_id.clone()).await.unwrap();
+    assert_eq!(captured["retainedFrom"], 0);
+    invoke("settle", shell_id).await.unwrap();
+    let output_root = platform.exec_root();
+    let branch_output = output_root.join("session/branch");
+    std::fs::create_dir_all(&branch_output).unwrap();
+    std::fs::write(branch_output.join("command.log"), "output").unwrap();
+    for path in [&output_root, &home, &output_root.join("../bin")] {
+        let request = serde_json::json!([{"path":path}]);
+        assert!(
+            rutis_bridge::session::settle(
+                face.invoke("removeOutputDirectory", request.into())
+                    .unwrap()
+            )
+            .await
+            .is_err()
+        );
+    }
+    let request = serde_json::json!([{"path":branch_output}]);
+    for _ in 0..2 {
+        let reply = rutis_bridge::session::settle(
+            face.invoke("removeOutputDirectory", request.clone().into())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+        assert_eq!(reply, serde_json::json!({}));
+        assert!(!branch_output.exists());
+    }
+
     std::fs::remove_file(&shell).unwrap();
     let cloned = (*platform).clone();
     for status in futures_util::future::join_all([platform.exec_shell(), cloned.exec_shell()]).await
@@ -281,13 +436,34 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         platform.exec_shell().await,
         ShellStatus::Available(_)
     ));
-    root.shutdown().await.unwrap();
+    let request = serde_json::json!([{
+        "command": "printf ready > started; exec /bin/sleep 60",
+        "cwd": home, "timeoutMs": 60000, "limits": {"stdout": 0, "stderr": 0}
+    }]);
+    let pending = tokio::spawn(rutis_bridge::session::settle(
+        face.invoke("configured", request.clone().into()).unwrap(),
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !home.join("started").exists() {
+            tokio::task::yield_now().await;
+        }
+        root.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+    let stopped = pending.await.unwrap().unwrap().json().unwrap();
+    assert_eq!(stopped["status"], "cancelled");
+    assert!(
+        rutis_bridge::session::settle(face.invoke("configured", request.into()).unwrap())
+            .await
+            .is_err()
+    );
 }
 
 /// A start whose stdin carries the payload and then closes it.
 #[tokio::test]
 async fn spawn_with_stdin_delivers_the_bytes_and_closes_the_pipe() {
-    let platform = HostPlatform::current(ShellStatus::Unavailable {
+    let platform = ExecHost::current(ShellStatus::Unavailable {
         code: EXEC_SHELL_UNAVAILABLE,
         reason: "spawn does not need a shell".into(),
     })
@@ -336,7 +512,7 @@ async fn sandbox_backend_reports_the_bubblewrap_preparation_uses() {
         .unwrap()
         .join(format!("dim-backend-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&base).unwrap();
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })
@@ -355,8 +531,8 @@ async fn sandbox_backend_reports_the_bubblewrap_preparation_uses() {
 
 /// The host-owned helper is always confined where the platform can confine,
 /// whatever the Process isolation switch says.
-fn confined_platform(settings: ExecutionSettings) -> HostPlatform {
-    HostPlatform::current(ShellStatus::Unavailable {
+fn confined_platform(settings: ExecutionSettings) -> ExecHost {
+    ExecHost::current(ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })
@@ -406,7 +582,7 @@ fn perl() -> Option<PathBuf> {
 }
 
 async fn confined(
-    platform: &HostPlatform,
+    platform: &ExecHost,
     script: &str,
     write: &std::path::Path,
     timeout: Duration,
@@ -1128,8 +1304,8 @@ fn runtime_fixture(base: &std::path::Path, name: &str) -> PathBuf {
 
 /// A platform whose shell is `/bin/sh` and whose captured environment is
 /// `env`, with `toolchains` as the runtimes Dim downloaded.
-fn toolchain_platform(pairs: &[(&str, &str)], toolchains: Vec<InstalledToolchain>) -> HostPlatform {
-    let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+fn toolchain_platform(pairs: &[(&str, &str)], toolchains: Vec<InstalledToolchain>) -> ExecHost {
+    let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
         executable_path: "/bin/sh".into(),
         edition: ShellEdition::Sh,
         source: ShellSource::Login,

@@ -1087,7 +1087,7 @@ pub(crate) async fn evaluate(
             global,
             ctx: ctx.clone(),
             host_platform: ctx
-                .get::<dim_agent_capabilities::host_platform::HostPlatform>()
+                .get::<dim_agent_capabilities::host_platform::ExecHost>()
                 .is_some(),
             ocr_helper: ocr_helper.map(|path| path.to_owned()),
             pp_ocr: match ocr {

@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
     defaults,
     history::HistoryRenderer,
     host::*,
-    host_platform::{HostPlatform, ShellStatus},
+    host_platform::{ExecHost, ShellStatus},
     workspace_tools::{self, WorkspaceToolsConfig},
 };
 use dim_agent_runtime::testing::chain_events;
@@ -191,7 +191,7 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
 
     let home = tempfile::tempdir().unwrap();
     let work = home.path().canonicalize().unwrap();
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "READ_IMAGE_FLOW",
         reason: "Reading the fixture runs no command".into(),
     })
@@ -271,7 +271,7 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
         },
     );
     let agent = MinimalHost::start_with(&builder, |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(platform))?;
+        root.provide_as::<ExecHost>(Arc::new(platform))?;
         Ok(())
     })
     .await
@@ -494,7 +494,7 @@ async fn an_offloaded_read_result_registers_its_output_path() {
     )
     .unwrap();
 
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "OFFLOAD_FLOW",
         reason: "Reading a fixture runs no command".into(),
     })
@@ -513,7 +513,7 @@ async fn an_offloaded_read_result_registers_its_output_path() {
         },
     );
     let agent = MinimalHost::start_with(&builder, move |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(platform))?;
+        root.provide_as::<ExecHost>(Arc::new(platform))?;
         root.provide_as::<SessionFiles>(owner)?;
         Ok(())
     })

@@ -9,7 +9,7 @@ use crate::settings::{Settings, SettingsScope, SourceDeclaration};
 use dim_agent_capabilities::execution_settings::{
     ExecutionSettingsError, ExecutionSettingsHost, SOURCE,
 };
-use dim_agent_capabilities::host_platform::{HostPlatform, SandboxBackend};
+use dim_agent_capabilities::host_platform::{ExecHost, SandboxBackend};
 use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, params, reply};
 use dim_agent_runtime::{Names, PartRegistry};
 use rutis::Ctx;
@@ -92,7 +92,7 @@ struct BackendView {
 /// The read-only management surface HostPlatform's backend availability needs.
 /// The switches themselves stay `settings.read`/`settings.update`.
 pub struct ExecutionBackendPlugin {
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     methods: Key<ManagementMethods>,
 }
 
@@ -135,7 +135,7 @@ impl DynPlugin for ExecutionBackendPlugin {
                         match method.as_str() {
                             "host.execution.backend" => {
                                 let _: Empty = params(value)?;
-                                let (available, reason) = match platform.sandbox_backend() {
+                                let (available, reason) = match platform.info().await.backend {
                                     SandboxBackend::Available => (true, None),
                                     SandboxBackend::Unavailable { reason } => (false, Some(reason)),
                                 };

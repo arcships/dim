@@ -4,7 +4,7 @@ mod stdio;
 
 use super::auth::{Credential, McpAuth, Refusal, credential_key};
 use super::config::{BearerAuth, McpServerSettings, RemoteTransport};
-use dim_agent_capabilities::host_platform::HostPlatform;
+use dim_agent_capabilities::host_platform::ExecHost;
 use dim_agent_runtime::StateCell;
 use dim_agent_types::{
     ContentBlock, ImageSource, ImageSourceType, JsonObject, JsonSchema, ToolContent, ToolResult,
@@ -590,7 +590,7 @@ pub struct McpServer {
     /// The host a stdio child takes its `PATH` from: the entry's own, else
     /// this host's, with the installed runtimes appended. Read optionally, so
     /// a host without HostPlatform spawns as before.
-    platform: Option<Arc<HostPlatform>>,
+    platform: Option<Arc<ExecHost>>,
     tool_call_timeout: Option<Duration>,
     authorization: Option<Authorization>,
     state: StateCell<McpServerState>,
@@ -1413,7 +1413,7 @@ impl Plugin for McpServerPlugin {
         let state = StateCell::new(McpServerState::Disconnected);
         let service = Arc::new(McpServer {
             transport: self.transport.clone(),
-            platform: ctx.get_at(&Key::<HostPlatform>::of()),
+            platform: ctx.get_at(&Key::<ExecHost>::of()),
             tool_call_timeout: self.tool_call_timeout,
             authorization: self.oauth.clone().map(|(key, server)| Authorization {
                 credential: auth.credential(key),

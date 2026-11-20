@@ -245,7 +245,7 @@
         ]
       },
       {
-        "id": 77,
+        "id": 80,
         "parent": 73,
         "name": "eventhub-ready",
         "state": "Active",
@@ -3759,6 +3759,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventSubscriptions",
         "provider": 73,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#execHost",
+        "provider": 29,
         "generation": 1,
         "removing": false
       },

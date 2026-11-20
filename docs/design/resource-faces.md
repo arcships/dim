@@ -87,14 +87,15 @@ whether a call may run, or consults who is calling.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `start` | async | `{taskId, command, cwd, workspace, roots}` | `{outputPath}` |
+| `start` | async | `{taskId, command, cwd, workspace, roots, outputDir}` | `{outputPath}` |
+| `retainOutput` | async | `{taskId}` | `{outputPath}` |
 | `wait` | async | `{taskId, timeoutMs?}` | terminal record (§3.2) |
 | `kill` | async | `{taskId}` | `{}` |
 | `settle` | async | `{taskId}` | `{}` |
 | `output` | async | `{taskId, cursor?, limit?} \| {outputPath, cursor?, limit?}` | page (§3.4) |
 | `tail` | async | `{taskId}` | `{text, totalBytes, truncated}` (§3.5) |
 | `removeOutputDirectory` | async | `{path}` | `{}` (§3.8) |
-| `shell` | async | `{taskId, cwd, workspace, roots, cols, rows}` | `{outputPath}` |
+| `shell` | async | `{taskId, cwd, workspace, roots, outputDir, cols, rows}` | `{outputPath}` |
 | `write` | async | `{taskId, data}` | `{}` |
 | `resize` | async | `{taskId, cols, rows}` | `{}` |
 | `info` | async | `{}` | host facts (§3.7) |
@@ -103,11 +104,11 @@ whether a call may run, or consults who is calling.
 
 ### 3.2 `start` and `wait`
 
-`start` accepts only `{taskId, command, cwd, workspace, roots}`. `cwd` is a resolved working
+`start` accepts only `{taskId, command, cwd, workspace, roots, outputDir}`. `cwd` is a resolved working
 directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
 [worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
 known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
-`roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute.
+`roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute. WorkspaceTools passes the Session command-output directory as `outputDir`; ShellSession passes its branch shell output directory.
 A cwd that does not exist is `cwd_not_found`; the provider never resolves a relative path itself.
 
 The provider prepares the boundary with `workspace` plus exactly `roots` and adds no other
@@ -118,7 +119,7 @@ to confirm a root: a directory outside the range does not become writable becaus
 it, because `cwd` sits in it, or because the model asked. The range is the caller's confirmed
 range, in the same trust position as the workspace list preparation already takes; the switches
 still decide enforcement, and the model cannot set either (§3.9). It builds the shell, argv and
-environment from its current shell preference, spawns, and creates the task's output file.
+environment from its current shell preference, spawns, and returns the planned output path. Short foreground output stays in memory. Crossing the existing inline limit creates the file. Before a background handoff the caller awaits `retainOutput`; the owner writes the captured bytes and keeps appending to that file. Repeated retention returns the same path.
 `taskId` is assigned by the caller (the control side allocates `exec-<uuid>` as it does today); a
 second `start` with an id the provider still holds is `task_exists` and starts nothing, so a
 retried call after a lost reply cannot run the command twice.
@@ -219,7 +220,7 @@ to the existing `exec_task_unknown` response for this RPC. The terminal preview 
 
 ### 3.6 Persistent shell
 
-`shell {taskId, cwd, workspace, roots, cols, rows}` creates one persistent PTY shell as a task;
+`shell {taskId, cwd, workspace, roots, outputDir, cols, rows}` creates one persistent PTY shell as a task;
 `write {taskId, data}` sends `data` (base64 bytes) to it, `resize` sets the geometry, `output`
 reads its captured text, and `kill` ends it. `cwd` and `roots` are resolved and confirmed exactly
 as for `start` (§3.2); a running shell keeps the roots it started with. `read` is not a separate
@@ -239,7 +240,7 @@ settles the command as ended with the task's loss, never as still running.
 `info {}` answers the provider's host facts as data, because other owners read them today:
 
 ```text
-{os: "darwin" | "linux" | "win32",
+{os: "darwin" | "linux" | "win32", arch: string,
  home: string, timezone?: string, execRoot: string, platformRoots: [string],
  backend: {state: "available"} | {state: "unavailable", reason: string},
  execShell: {state: "available", executable: string, edition: string,
@@ -256,14 +257,14 @@ reads it, and this face does not write it.
 purpose, never an agent-decided command — and answers its exit status, both streams within the
 limits, whether the host could confine it, and whether either stream was cut. Its refusals are the
 ones it has today: `InvalidPath`, `TimedOut`, `OutputLimit`, `Cancelled`, `Spawn`, `Cleanup`. It
-reads no setting and grants no network.
+reads no setting and grants no network. `outputLimit` gives the stdout and stderr byte limits separately. A successful call returns the numeric exit code (null for a signal) and both streams as base64 bytes. Exceeding either limit returns `OutputLimit`.
 
 `configured` runs a **configuration command**: a command that exists because of configuration, not
 because an agent decided it (a Hooks handler,
 [Hooks A.6.3](plugins/Hooks.md#a63-process-start-with-an-initial-stdin)). It starts the command
 through the same shell spec as `start`, writes `stdin` (base64 bytes, if any) to the child's stdin
-and closes it, adds `env` entries to the spec environment, and answers the exit status and both
-streams within `limits: {stdout, stderr}`. It reads **no** isolation switch and prepares **no**
+and closes it, applies `env` entries (null removes the variable), and answers the exit status and both
+streams as base64 bytes within `limits: {stdout, stderr}`. It reads **no** isolation switch and prepares **no**
 sandbox: a configuration command runs outside the agent boundary, exactly as it does today
 ([ADR 003 D2](../adr/003-approval-scope.md)). It takes no task id, no output file and no
 background handoff; a cancelled call or `timeoutMs` kills the tree before the call answers. It is

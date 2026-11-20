@@ -14,7 +14,7 @@ use crate::{
         handlers,
     },
     host::{HostError, HostFuture},
-    host_platform::{HostPlatform, Os},
+    host_platform::{ConfiguredCommand, ConfiguredEnd, ConfiguredError, ExecHost, Os},
     input_queue::{CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks},
     permission::{AdmissionDecision, AdviseTool, Permission, ToolAdviceReply, ToolAdviceRequest},
     tool_registry::ToolRegistry,
@@ -43,10 +43,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    sync::mpsc,
-};
+use tokio::sync::mpsc;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 /// A hook's stdout is bounded; more than this is a failure (A.3).
@@ -106,7 +103,7 @@ type PendingRun = Pin<Box<dyn Future<Output = (usize, HookResult)> + Send>>;
 /// The Session service that reads the sources and runs commands.
 pub struct HooksRuntime {
     sources: Arc<HookSourcesHost>,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     config: Arc<SessionConfig>,
     identity: Arc<SessionIdentity>,
     cancel: CancellationToken,
@@ -383,80 +380,36 @@ impl HooksRuntime {
         cancel: &CancellationToken,
         gate: Option<&CancellationToken>,
     ) -> HookResult {
-        let command = handler.command(self.platform.os == Os::Windows);
+        let command = handler.command(self.platform.facts().os == Os::Windows);
         let started = Instant::now();
-        let mut spec = match self
-            .platform
-            .build_process_spec(command, Path::new(&self.config.cwd))
-            .await
-        {
-            Ok((spec, _)) => spec,
+        let request = ConfiguredCommand {
+            command: command.into(),
+            cwd: self.config.cwd.clone().into(),
+            env: self.environment(handler),
+            stdin,
+            timeout: handler.timeout,
+            stdout_limit: STDOUT_LIMIT,
+            stderr_limit: STDERR_LIMIT,
+        };
+        let result = match self.platform.configured(request, cancel, gate).await {
+            Err(ConfiguredError::Unloaded) => return unloaded_run(handler).result,
             Err(error) => {
-                let result = failed(format!("{}: {}", error.code, error.reason), &[]);
+                let result = failed(error.to_string(), error.stderr());
                 self.report(handler, &result, started.elapsed());
                 return result;
             }
-        };
-        spec.env = hook_env(spec.env, &self.environment(handler));
-        if gate.is_some_and(|gate| gate.is_cancelled()) {
-            return HookResult::Failed {
-                reason: UNLOADED.into(),
-                stderr: String::new(),
-            };
-        }
-        let mut tree = match self.platform.spawn_with_stdin(spec, stdin) {
-            Ok(tree) => tree,
-            Err(error) => {
-                let result = failed(format!("spawn failed: {error}"), &[]);
-                self.report(handler, &result, started.elapsed());
-                return result;
-            }
-        };
-        let mut stdout = tree.stdout();
-        let mut stderr = tree.stderr();
-        enum End {
-            Done(
-                (Vec<u8>, bool),
-                (Vec<u8>, bool),
-                std::io::Result<std::process::ExitStatus>,
+            Ok(ConfiguredEnd::Cancelled) => failed("cancelled", &[]),
+            Ok(ConfiguredEnd::TimedOut) => failed(
+                format!("timed out after {}s", handler.timeout.as_secs()),
+                &[],
             ),
-            Cancelled,
-            TimedOut,
-        }
-        let end = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => End::Cancelled,
-            _ = tokio::time::sleep(handler.timeout) => End::TimedOut,
-            (out, err, status) = async {
-                tokio::join!(
-                    read_capped(&mut stdout, STDOUT_LIMIT),
-                    read_capped(&mut stderr, STDERR_LIMIT),
-                    tree.wait(),
-                )
-            } => End::Done(out, err, status),
-        };
-        let result = match end {
-            End::Cancelled => {
-                let _ = tree.terminate().await;
-                failed("cancelled", &[])
-            }
-            End::TimedOut => {
-                let _ = tree.terminate().await;
-                failed(
-                    format!("timed out after {}s", handler.timeout.as_secs()),
-                    &[],
-                )
-            }
-            End::Done((bytes, overflow), (stderr, _), status) => {
-                let status = match status {
-                    Ok(status) => status,
-                    // A run whose end cannot be read still reports (§7).
-                    Err(error) => {
-                        let result = failed(format!("wait failed: {error}"), &stderr);
-                        self.report(handler, &result, started.elapsed());
-                        return result;
-                    }
-                };
+            Ok(ConfiguredEnd::Exited {
+                stdout: bytes,
+                stdout_truncated: overflow,
+                stderr,
+                status,
+                ..
+            }) => {
                 if overflow {
                     failed("stdout exceeded 64 KiB", &stderr)
                 } else if status.code() == Some(2) {
@@ -498,59 +451,36 @@ impl HooksRuntime {
         );
     }
 
-    fn environment(&self, handler: &HookHandler) -> Vec<(&'static str, OsString)> {
-        let mut vars = vec![
-            ("DIM_PROJECT_DIR", OsString::from(self.config.cwd.clone())),
-            ("DIM_HOOK_EVENT", OsString::from(handler.event.name())),
+    fn environment(
+        &self,
+        handler: &HookHandler,
+    ) -> std::collections::BTreeMap<OsString, Option<OsString>> {
+        let mut env: std::collections::BTreeMap<_, _> = MANAGED_ENV
+            .into_iter()
+            .map(|key| (OsString::from(key), None))
+            .collect();
+        for (key, value) in [
+            ("DIM_PROJECT_DIR", Some(OsString::from(&self.config.cwd))),
+            ("DIM_HOOK_EVENT", Some(OsString::from(handler.event.name()))),
             (
                 "DIM_SESSION_ID",
-                OsString::from(self.identity.session_id.clone()),
+                Some(OsString::from(&self.identity.session_id)),
             ),
-        ];
-        if let Some(home) = self.sources.0.home() {
-            vars.push(("DIMCODE_HOME", home.into_os_string()));
+            (
+                "DIMCODE_HOME",
+                self.sources.0.home().map(|home| home.into_os_string()),
+            ),
+            (
+                "DIM_PLUGIN_ROOT",
+                handler
+                    .plugin_root
+                    .as_ref()
+                    .map(|root| root.as_os_str().into()),
+            ),
+        ] {
+            env.insert(key.into(), value);
         }
-        if let Some(root) = &handler.plugin_root {
-            vars.push(("DIM_PLUGIN_ROOT", root.clone().into_os_string()));
-        }
-        vars
-    }
-}
-
-fn hook_env(
-    env: Vec<(OsString, OsString)>,
-    vars: &[(&'static str, OsString)],
-) -> Vec<(OsString, OsString)> {
-    let mut env: Vec<(OsString, OsString)> = env
-        .into_iter()
-        .filter(|(key, _)| !MANAGED_ENV.iter().any(|name| key == name))
-        .collect();
-    env.extend(
-        vars.iter()
-            .map(|(key, value)| (OsString::from(*key), value.clone())),
-    );
-    env
-}
-
-/// Reads at most `limit` bytes and drains the rest, so the writer never
-/// blocks; the bool says more was written.
-async fn read_capped<R: AsyncRead + Unpin>(reader: &mut R, limit: usize) -> (Vec<u8>, bool) {
-    let mut kept = Vec::new();
-    let mut buffer = [0u8; 8192];
-    let mut overflow = false;
-    loop {
-        match reader.read(&mut buffer).await {
-            Ok(0) | Err(_) => return (kept, overflow),
-            Ok(read) => {
-                let room = limit.saturating_sub(kept.len());
-                if read <= room {
-                    kept.extend_from_slice(&buffer[..read]);
-                } else {
-                    kept.extend_from_slice(&buffer[..room]);
-                    overflow = true;
-                }
-            }
-        }
+        env
     }
 }
 
@@ -993,7 +923,7 @@ impl CheckSubmission for PromptSubmitCheck {
 
 pub struct HooksSessionPlugin {
     sources: Key<HookSourcesHost>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     config: Key<SessionConfig>,
     identity: Key<SessionIdentity>,
     checks: Key<SubmitChecks>,
@@ -2829,10 +2759,10 @@ mod tests {
     #[cfg(unix)]
     fn test_runtime(dir: &Path, sources: Arc<dyn ReadHookSources>) -> Arc<HooksRuntime> {
         use crate::host_platform::{
-            ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+            ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
         };
         std::fs::create_dir_all(dir.join("home")).unwrap();
-        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+        let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
             executable_path: "/bin/sh".into(),
             edition: ShellEdition::Sh,
             source: ShellSource::Fallback,

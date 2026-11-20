@@ -6795,7 +6795,7 @@ mod tests {
         HostFuture, ModelConnection, ModelDriver, ModelStopReason, ResolveModelConnection,
         ResolvedModelConnection,
     };
-    use dim_agent_capabilities::host_platform::{HostPlatform, resolve_shell};
+    use dim_agent_capabilities::host_platform::{ExecHost, resolve_shell};
     use std::sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -9491,7 +9491,7 @@ mod tests {
         /// The process facts a flow's runs see: the ones this process has,
         /// with `home` pointed at the fixture's own empty directory, so a run
         /// never reads the developer's `~/AGENTS.md`, Skills list or `<home>`.
-        platform: HostPlatform,
+        platform: ExecHost,
     }
     impl Fixture {
         /// `scenario` is the scenario file's content and `workspace` the
@@ -9593,7 +9593,7 @@ mod tests {
             std::fs::create_dir_all(&platform_home).unwrap();
             let env: Vec<_> = std::env::vars_os().collect();
             let shell = resolve_shell(Ok(None), &env).await;
-            let mut platform = HostPlatform::current(shell)
+            let mut platform = ExecHost::current(shell)
                 .unwrap()
                 .with_execution_settings(
                     dim_agent_capabilities::execution_settings::ExecutionSettingsHost::fixed(

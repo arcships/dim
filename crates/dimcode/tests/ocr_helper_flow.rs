@@ -2,7 +2,7 @@
 //! a Modality host task relies on.
 #![cfg(target_os = "macos")]
 use dim_agent_capabilities::host_platform::{
-    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, HostPlatform, ShellStatus,
+    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, ExecHost, ShellStatus,
     SystemServices,
 };
 use serde_json::Value;
@@ -38,7 +38,7 @@ async fn run(
     for path in [&work, &tmp, &cache] {
         std::fs::create_dir_all(path).unwrap();
     }
-    let platform = HostPlatform::current(ShellStatus::Unavailable {
+    let platform = ExecHost::current(ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })

@@ -3,7 +3,7 @@
 #[cfg(target_os = "macos")]
 mod macos {
     use dim_agent_capabilities::host_platform::{
-        EXEC_SHELL_UNAVAILABLE, HostPlatform, ProcessSpec, PtySize, ShellStatus,
+        EXEC_SHELL_UNAVAILABLE, ExecHost, ProcessSpec, PtySize, ShellStatus,
     };
     use serde_json::json;
     use std::{
@@ -69,7 +69,7 @@ mod macos {
         spec
     }
 
-    async fn run(platform: &HostPlatform, spec: ProcessSpec) -> Result<Output> {
+    async fn run(platform: &ExecHost, spec: ProcessSpec) -> Result<Output> {
         let mut tree = platform.spawn(spec)?;
         let (mut stdout, mut stderr) = (tree.stdout(), tree.stderr());
         let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -112,7 +112,7 @@ mod macos {
         std::fs::write(&secret, "private-sentinel")?;
         std::fs::write(workspace.join("input"), "workspace-input")?;
         std::os::unix::fs::symlink(&private, workspace.join("escape"))?;
-        let platform = HostPlatform::current(ShellStatus::Unavailable {
+        let platform = ExecHost::current(ShellStatus::Unavailable {
             code: EXEC_SHELL_UNAVAILABLE,
             reason: "The probe passes explicit argv.".into(),
         })?;

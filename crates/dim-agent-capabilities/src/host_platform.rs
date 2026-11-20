@@ -24,7 +24,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod configured;
 mod confined;
+pub use configured::{ConfiguredCommand, ConfiguredEnd, ConfiguredError};
+mod face;
+pub(crate) mod shell;
+pub use face::{HostFacts, HostInfo};
 mod exec_shell_settings;
 #[cfg(unix)]
 mod isolation;
@@ -62,6 +67,12 @@ pub enum Os {
     Linux,
     Windows,
 }
+impl serde::Serialize for Os {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.node_platform())
+    }
+}
+
 impl Os {
     pub const CURRENT: Os = if cfg!(windows) {
         Os::Windows
@@ -80,7 +91,8 @@ impl Os {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ShellEdition {
     Bash,
     Zsh,
@@ -121,7 +133,8 @@ impl ShellEdition {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ShellSource {
     /// The executable path configured in `exec-shell.json`.
     Explicit,
@@ -132,19 +145,23 @@ pub enum ShellSource {
     /// The Windows automatic order `pwsh -> Windows PowerShell -> cmd`.
     Automatic,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OutputEncoding {
     Utf8,
     Unknown,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecShellRuntime {
+    #[serde(rename = "executable")]
     pub executable_path: PathBuf,
     pub edition: ShellEdition,
     pub source: ShellSource,
     pub output_encoding: OutputEncoding,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
 pub enum ShellStatus {
     Available(ExecShellRuntime),
     Unavailable { code: &'static str, reason: String },
@@ -216,7 +233,13 @@ const ENVIRONMENT: &[&str] = &[
 
 /// Process facts and the source of the exec shell preference.
 #[derive(Clone)]
-pub struct HostPlatform {
+pub(crate) enum ExecutionTask {
+    Command(Arc<crate::workspace_tools::exec::CommandTask>),
+    Shell(Arc<shell::ShellTask>),
+}
+
+#[derive(Clone)]
+pub struct ExecHost {
     pub home: PathBuf,
     pub os: Os,
     /// Node's `process.arch` name (`arm64`, `x64`), as the TS texts use it.
@@ -229,8 +252,12 @@ pub struct HostPlatform {
     /// The fixed system roots, captured when the platform mounts. The sandbox
     /// and file-access facts read this one list.
     pub platform_roots: Vec<PathBuf>,
+    pub(crate) commands: Arc<std::sync::Mutex<std::collections::HashMap<String, ExecutionTask>>>,
+    pub(crate) command_shutdown: CancellationToken,
+    pub(crate) command_workers: tokio_util::task::TaskTracker,
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
+    command_files: Option<(Arc<FileStorage>, usize, PathBuf)>,
     pub(crate) execution: Option<Arc<ExecutionSettingsHost>>,
     /// The installed runtimes a started process finds at the end of its
     /// `PATH`; `None` is a host that installs none.
@@ -242,9 +269,9 @@ struct ResolvedShell {
     status: ShellStatus,
 }
 
-impl std::fmt::Debug for HostPlatform {
+impl std::fmt::Debug for ExecHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HostPlatform")
+        f.debug_struct("ExecHost")
             .field("home", &self.home)
             .field("os", &self.os)
             .field("arch", &self.arch)
@@ -258,7 +285,7 @@ impl std::fmt::Debug for HostPlatform {
     }
 }
 
-/// A child process started by [`HostPlatform::spawn`].
+/// A child process started by [`ExecHost::spawn`].
 pub struct ProcessSpec {
     pub executable: PathBuf,
     /// The shell argv is built by the caller; the model command is one element.
@@ -276,14 +303,16 @@ pub struct ProcessSpecError {
 
 /// Whether a new process can be sandboxed on this host, or why it cannot. The
 /// Process isolation control shows this; preparation reads the same backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
 pub enum SandboxBackend {
     Available,
     Unavailable { reason: &'static str },
 }
 
 /// What a consumer keeps for a process that
-/// [`HostPlatform::prepare_isolated_process`] sandboxed.
+/// [`ExecHost::prepare_isolated_process`] sandboxed.
+#[derive(Clone, Copy)]
 pub(crate) struct Isolation;
 
 impl Isolation {
@@ -335,7 +364,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     /// Facts of the current process with an already resolved shell.
     pub fn current(shell: ShellStatus) -> io::Result<Self> {
         let env: Vec<_> = std::env::vars_os().collect();
@@ -352,11 +381,15 @@ impl HostPlatform {
             timezone: iana_time_zone::get_timezone().ok(),
             env,
             platform_roots: platform_roots(),
+            commands: Arc::default(),
+            command_shutdown: CancellationToken::new(),
+            command_workers: tokio_util::task::TaskTracker::new(),
             shell: Arc::new(Mutex::new(ResolvedShell {
                 config: Ok(None),
                 status: shell,
             })),
             shell_file: None,
+            command_files: None,
             execution: None,
             toolchain: None,
         })
@@ -499,7 +532,7 @@ const RUNTIME_BIN_ENV_KEYS: [&str; 5] = [
 ];
 const PLUGIN_BIN_DIRS_ENV: &str = "DIMCODE_PLUGIN_BIN_DIRS";
 
-impl HostPlatform {
+impl ExecHost {
     /// The downloaded runtimes installed under the plan in effect, node first;
     /// empty without the port. An entry whose bin directory is not inside its
     /// archive directory is skipped: the sandbox grant is the root, so the two
@@ -627,7 +660,7 @@ fn windows_network_share(path: &Path) -> bool {
 }
 
 /// TS `buildEnv`: the service start environment with forced overrides.
-fn build_env(platform: &HostPlatform) -> Vec<(OsString, OsString)> {
+fn build_env(platform: &ExecHost) -> Vec<(OsString, OsString)> {
     let mut env: Vec<(OsString, OsString)> = platform.env.clone();
     if platform.os == Os::Windows
         && let Some(entry) = env.iter_mut().find(|(key, _)| {
@@ -772,7 +805,7 @@ fn append_toolchain_path(env: &mut Vec<(OsString, OsString)>, directories: &[Pat
 async fn prepend_runtime_path(
     command: &str,
     env: &[(OsString, OsString)],
-    platform: &HostPlatform,
+    platform: &ExecHost,
     shell: &Path,
     edition: ShellEdition,
     cwd: &Path,
@@ -804,7 +837,7 @@ async fn prepend_runtime_path(
 
 async fn map_git_bash_entries(
     entries: &[String],
-    platform: &HostPlatform,
+    platform: &ExecHost,
     shell: &Path,
     env: &[(OsString, OsString)],
     cwd: &Path,
@@ -874,7 +907,7 @@ fn git_bash_cygpath(bash: &Path) -> Option<PathBuf> {
 }
 
 /// Runs a product helper and returns its stdout.
-async fn capture(platform: &HostPlatform, spec: ProcessSpec) -> Result<String, String> {
+async fn capture(platform: &ExecHost, spec: ProcessSpec) -> Result<String, String> {
     let mut tree = platform.spawn(spec).map_err(|error| error.to_string())?;
     let mut stdout = tree.stdout();
     drop(tree.stderr());
@@ -988,13 +1021,15 @@ pub struct HostPlatformConfig {
     /// `exec-shell.json`: FileStorage root index and relative path. `None`
     /// means the profile has no home; the shell is resolved automatically.
     pub exec_shell_file: Option<(usize, PathBuf)>,
+    /// Storage root and relative directory holding retained command logs.
+    pub command_files: Option<(usize, PathBuf)>,
     /// The user home the platform reports. `None` uses the process home; a
     /// host that runs with an isolated home sets it, so every capability
     /// resolves `~` and the user Skill root inside that home.
     pub home: Option<PathBuf>,
 }
 
-/// Process plugin providing `P:HostPlatform`.
+/// Process plugin providing `execHost`.
 pub struct HostPlatformPlugin {
     config: HostPlatformConfig,
     /// File storage only when a local configuration source is configured.
@@ -1019,7 +1054,7 @@ impl HostPlatformPlugin {
 }
 /// File storage only when a local configuration source is configured.
 fn uses_storage(config: &HostPlatformConfig) -> bool {
-    config.exec_shell_file.is_some()
+    config.exec_shell_file.is_some() || config.command_files.is_some()
 }
 impl DynPlugin for HostPlatformPlugin {
     fn name(&self) -> &str {
@@ -1051,18 +1086,48 @@ impl DynPlugin for HostPlatformPlugin {
             };
             let env: Vec<_> = std::env::vars_os().collect();
             let shell = resolve_shell(config.clone(), &env).await;
-            let mut platform = HostPlatform::current(shell)
+            let mut platform = ExecHost::current(shell)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
             if let Some(home) = &self.config.home {
                 platform.home = home.clone();
             }
+            platform.command_files = self
+                .config
+                .command_files
+                .clone()
+                .zip(storage.clone())
+                .map(|((root, directory), files)| (files, root, directory));
             platform.shell_file = shell_file;
             let execution = ctx.require_at(&self.execution)?;
             platform.execution = Some(execution.clone());
             let toolchain = ctx.require_at(&self.toolchain)?;
             platform.toolchain = Some(toolchain.clone());
             platform.shell.lock().await.config = config;
-            ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
+            let platform = Arc::new(platform);
+            let calls = tokio_util::task::TaskTracker::new();
+            let dispatch = face::Dispatch {
+                owner: platform.clone(),
+                stopping: ctx.cancellation_token(),
+                calls: calls.clone(),
+            };
+            let owner = platform.clone();
+            ctx.effect(move || async move {
+                {
+                    let _admission = owner.commands.lock().unwrap();
+                    owner.command_shutdown.cancel();
+                }
+                calls.close();
+                calls.wait().await;
+                owner.command_workers.close();
+                owner.command_workers.wait().await;
+                owner.commands.lock().unwrap().clear();
+                Ok(())
+            })?;
+            ctx.provide_at(
+                rutis_bridge::session::host_key("execHost"),
+                Arc::new(dispatch) as Arc<dyn rutis_bridge::session::HostDispatch>,
+            )?;
+            ctx.provide_as::<ExecHost>(platform)?;
             Ok(Effect::Done)
         })
     }
@@ -2180,7 +2245,7 @@ async fn wait_job_exit(pid: u32) -> io::Result<()> {
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     /// Resolves the persistent shell: bash, zsh, pwsh, or Windows PowerShell.
     /// Other shells fall back per the platform rules.
     pub async fn persistent_shell(&self) -> ShellStatus {
@@ -2289,13 +2354,37 @@ impl HostPlatform {
     /// [`exec_root`](Self::exec_root), and syncs its parent. An absent
     /// directory counts as removed. The caller has decided with the
     /// ownership rows that no Session still needs it (ADR 013 D4).
-    pub fn remove_exec_directory(&self, path: &Path) -> io::Result<()> {
+    pub async fn remove_output_directory(&self, path: PathBuf) -> io::Result<()> {
         let root = self.exec_root();
-        if path == root || !path.starts_with(&root) {
+        tokio::task::spawn_blocking(move || Self::remove_exec_directory(&root, &path))
+            .await
+            .map_err(io::Error::other)?
+    }
+
+    fn remove_exec_directory(root: &Path, path: &Path) -> io::Result<()> {
+        let relative = path.strip_prefix(root).ok();
+        if relative.is_none_or(|relative| {
+            relative.as_os_str().is_empty()
+                || relative
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not a persistent shell output directory",
             ));
+        }
+        let parent = path.parent().expect("strict descendant of execRoot");
+        match std::fs::canonicalize(parent) {
+            Ok(canonical) if canonical != parent => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "not a persistent shell output directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
         match std::fs::remove_dir_all(path) {
             Ok(()) => {}
@@ -2308,6 +2397,36 @@ impl HostPlatform {
         }
         Ok(())
     }
+}
+
+/// The name of the signal that ended a process, as `exec` reports it.
+#[cfg(unix)]
+pub fn signal_name(status: ExitStatus) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    let signal = status.signal()?;
+    let name = match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGILL => "SIGILL",
+        libc::SIGTRAP => "SIGTRAP",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGALRM => "SIGALRM",
+        libc::SIGTERM => "SIGTERM",
+        _ => return Some(format!("SIG{signal}")),
+    };
+    Some(name.into())
+}
+#[cfg(windows)]
+pub fn signal_name(_: ExitStatus) -> Option<String> {
+    None
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
@@ -2328,8 +2447,8 @@ mod tests {
     fn host_with(
         env: &[(&str, &str)],
         toolchains: Option<Vec<InstalledToolchain>>,
-    ) -> HostPlatform {
-        let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    ) -> ExecHost {
+        let mut platform = ExecHost::current(ShellStatus::Unavailable {
             code: "test",
             reason: String::new(),
         })
@@ -2429,7 +2548,7 @@ mod tests {
             source: ShellSource::Login,
             output_encoding: OutputEncoding::Utf8,
         });
-        let platform = HostPlatform::current(shell.clone()).unwrap();
+        let platform = ExecHost::current(shell.clone()).unwrap();
         let (spec, _) = platform
             .build_process_spec("true", Path::new("/"))
             .await
@@ -2440,7 +2559,7 @@ mod tests {
             "without the port the command is unchanged"
         );
 
-        let mut installed = HostPlatform::current(shell).unwrap();
+        let mut installed = ExecHost::current(shell).unwrap();
         installed.env = vec![];
         let installed =
             installed.with_toolchain_source(ToolchainSourceHost::fixed(vec![toolchain(
@@ -2476,7 +2595,7 @@ mod tests {
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         let workspace = base.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+        let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
             executable_path: "/bin/sh".into(),
             edition: ShellEdition::Sh,
             source: ShellSource::Login,

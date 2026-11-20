@@ -17,7 +17,7 @@ use dim_agent_capabilities::skills::{
     SkillsCatalogBinding, SkillsError, selection_path, valid_installation_id,
 };
 use dim_agent_capabilities::{
-    host_platform::HostPlatform,
+    host_platform::ExecHost,
     skill_settings::{
         SOURCE, SettingsVersion, SkillInstallSource, SkillInstallation, SkillSettings,
         SkillSettingsError, SkillSettingsHost, SkillSettingsSnapshot,
@@ -596,7 +596,7 @@ fn recorded(source: &SkillInstallSource) -> SourceParams {
 }
 
 pub struct SkillsCatalogPlugin {
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     settings: Key<SettingsService>,
     methods: Key<ManagementMethods>,
     parts: Key<dim_agent_runtime::PartRegistry>,
@@ -629,13 +629,13 @@ impl DynPlugin for SkillsCatalogPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
             let parts = ctx.require_at(&self.parts)?;
-            let home = platform.home.clone();
+            let home = platform.facts().home.to_owned();
             clean_staging(&home);
             settings.register::<SkillDocument>(ctx)?;
             let settings = Arc::new(SkillSettingsHost(Arc::new(SkillStorage { settings })));
             let catalog = dim_agent_capabilities::skills::SkillsCatalogPlugin::mount(
                 ctx,
-                (platform, settings),
+                (home.clone(), settings),
             )
             .await?;
             ctx.provide_at(dim_agent_capabilities::skills::owner_key(), catalog.clone())?;

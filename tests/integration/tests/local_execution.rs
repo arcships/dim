@@ -15,7 +15,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecShellRuntime, HostPlatform,
+        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecShellRuntime, ExecHost,
         HostPlatformConfig, HostPlatformPlugin, OutputEncoding, ShellEdition, ShellSource,
         ShellStatus, resolve_shell,
     },
@@ -135,19 +135,19 @@ impl ModelDriver for Script {
 }
 
 /// Provides the process HostPlatform the design lets tests construct.
-struct PlatformPlugin(Arc<HostPlatform>);
+struct PlatformPlugin(Arc<ExecHost>);
 impl Plugin for PlatformPlugin {
     type Deps = ();
     fn name(&self) -> &str {
         "TestHostPlatform"
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide_as::<HostPlatform>(self.0.clone())?;
+        ctx.provide_as::<ExecHost>(self.0.clone())?;
         Ok(())
     }
 }
 /// `platform` provided by [`PlatformPlugin`], a row of the harness's host.
-fn test_platform(platform: HostPlatform) -> impl FnOnce(&mut AgentBuilder) {
+fn test_platform(platform: ExecHost) -> impl FnOnce(&mut AgentBuilder) {
     let platform = Arc::new(platform);
     move |builder| {
         builder.plugin(move |_| Ok(Box::new(PlatformPlugin(platform.clone()))));
@@ -165,6 +165,7 @@ fn configured_platform(home: PathBuf) -> impl FnOnce(&mut AgentBuilder) {
                 HostPlatformConfig {
                     execution: names.key()?,
                     toolchain: names.key()?,
+                    command_files: Some((0, "command-output".into())),
                     exec_shell_file: Some((0, "exec-shell.json".into())),
                     home: None,
                 },
@@ -303,11 +304,11 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
-async fn platform(extra: &[(&str, &str)]) -> HostPlatform {
+async fn platform(extra: &[(&str, &str)]) -> ExecHost {
     let mut env: Vec<_> = std::env::vars_os().collect();
     env.retain(|(key, _)| key != "SHELL");
     env.push(("SHELL".into(), "/bin/bash".into()));
-    let mut platform = HostPlatform::current(resolve_shell(Ok(None), &env).await)
+    let mut platform = ExecHost::current(resolve_shell(Ok(None), &env).await)
         .unwrap()
         .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default()));
     platform.env.extend(
@@ -319,15 +320,15 @@ async fn platform(extra: &[(&str, &str)]) -> HostPlatform {
 }
 
 impl Harness {
-    async fn new(platform: HostPlatform, hook: Hook) -> Self {
+    async fn new(platform: ExecHost, hook: Hook) -> Self {
         Self::with_context(platform, hook, false).await
     }
     /// The same assembly with a context model and a strategy bound, so a flow
     /// test can compact (`local_support/compaction.rs`).
-    async fn new_compacting(platform: HostPlatform, hook: Hook) -> Self {
+    async fn new_compacting(platform: ExecHost, hook: Hook) -> Self {
         Self::with_context(platform, hook, true).await
     }
-    async fn with_context(mut platform: HostPlatform, hook: Hook, compacting: bool) -> Self {
+    async fn with_context(mut platform: ExecHost, hook: Hook, compacting: bool) -> Self {
         let cwd = scratch("cwd");
         platform.home = cwd.clone();
         platform.env.retain(|(name, _)| name != "HOME");
@@ -592,7 +593,7 @@ async fn exec_and_external_shell_callers_use_live_shell_preferences() {
         scratch("cwd"),
     )
     .await;
-    let platform = harness.root.get::<HostPlatform>().unwrap();
+    let platform = harness.root.get::<ExecHost>().unwrap();
     let session = harness.session().await;
 
     let refusal = platform
@@ -633,7 +634,7 @@ async fn exec_and_external_shell_callers_use_live_shell_preferences() {
         assert!(text(results(&events).last().unwrap()).contains(executable));
         assert!(Arc::ptr_eq(
             &platform,
-            &harness.root.get::<HostPlatform>().unwrap()
+            &harness.root.get::<ExecHost>().unwrap()
         ));
     }
 
@@ -676,6 +677,8 @@ async fn exec_and_external_shell_callers_use_live_shell_preferences() {
 async fn foreground_output_is_canonical_and_offloaded_like_ts() {
     let harness = Harness::new(platform(&[]).await, Hook::None).await;
     let session = harness.session().await;
+    let output_dir = harness.output_root.join(session.id());
+    std::fs::write(&output_dir, b"blocks creation of command logs").unwrap();
     harness
         .run(
             &session,
@@ -693,6 +696,7 @@ async fn foreground_output_is_canonical_and_offloaded_like_ts() {
     assert!(text(result).ends_with("\n\nCommand exited with code 3."));
     assert!(!text(result).contains('\u{FFFD}'));
 
+    std::fs::remove_file(&output_dir).unwrap();
     session.idle("main").await.unwrap();
     harness
         .run(
@@ -802,7 +806,7 @@ fn exit_drains_output_even_when_offload_is_slow() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unavailable_shell_or_a_missing_execution_port_refuses_the_payload() {
-    let unavailable = HostPlatform::current(ShellStatus::Unavailable {
+    let unavailable = ExecHost::current(ShellStatus::Unavailable {
         code: EXEC_SHELL_UNAVAILABLE,
         reason: "Selected command shell is unavailable: /opt/zsh".into(),
     })
@@ -828,7 +832,7 @@ async fn an_unavailable_shell_or_a_missing_execution_port_refuses_the_payload() 
     session.close().await.unwrap();
     harness.shutdown().await;
 
-    let without_port = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+    let without_port = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
         executable_path: "/bin/sh".into(),
         edition: ShellEdition::Sh,
         source: ShellSource::Fallback,
@@ -2858,13 +2862,17 @@ fn group_instance(diagnostics: &RuntimeDiagnostics, scope: &str) -> InstanceId {
 /// The call another language makes on `name` in `instance`.
 async fn face_call(
     ctx: &Ctx,
-    instance: InstanceId,
+    instance: impl Into<Option<InstanceId>>,
     name: &str,
     method: &str,
     args: Vec<BridgeValue>,
 ) -> Value {
+    let mut key = host_key(name);
+    if let Some(instance) = instance.into() {
+        key = key.instance(instance);
+    }
     let dispatch = ctx
-        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .get_at::<dyn HostDispatch>(&key)
         .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
     let reply = dispatch
         .invoke(method, BridgeValue::List(args))
@@ -2875,13 +2883,17 @@ async fn face_call(
 /// The error the call another language makes on `name` returns.
 async fn face_error(
     ctx: &Ctx,
-    instance: InstanceId,
+    instance: impl Into<Option<InstanceId>>,
     name: &str,
     method: &str,
     args: Vec<BridgeValue>,
 ) -> rutis_bridge::session::Error {
+    let mut key = host_key(name);
+    if let Some(instance) = instance.into() {
+        key = key.instance(instance);
+    }
     let dispatch = ctx
-        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .get_at::<dyn HostDispatch>(&key)
         .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
     let reply = dispatch
         .invoke(method, BridgeValue::List(args))
@@ -2893,7 +2905,13 @@ async fn face_error(
 /// and errors for the task both callers name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn background_exec_face_answers_as_the_typed_service() {
-    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let home = scratch("background-face");
+    let harness = Harness::with_platform(
+        configured_platform(home.clone()),
+        Hook::None,
+        scratch("cwd"),
+    )
+    .await;
     let session = harness.session().await;
     harness
         .run(
@@ -2925,6 +2943,49 @@ async fn background_exec_face_answers_as_the_typed_service() {
 
     let ctx = harness.seen.ctx("main");
     let instance = group_instance(&session.branch_diagnostics("main").unwrap(), "BranchScope");
+
+    let root = &harness.root;
+    let retained = face_call(
+        root,
+        None,
+        "execHost",
+        "retainOutput",
+        vec![json!({"taskId":task}).into()],
+    )
+    .await;
+    let path = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) if data.task_id == task => Some(&data.output_path),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(retained, json!({"outputPath":path}));
+    assert_eq!(std::fs::read(path).unwrap(), b"face-output");
+    let tail = face_call(
+        root,
+        None,
+        "execHost",
+        "tail",
+        vec![json!({"taskId":task}).into()],
+    )
+    .await;
+    assert_eq!(
+        tail,
+        json!({"text":"face-output", "totalBytes":11, "truncated":false})
+    );
+    assert_eq!(
+        face_error(
+            root,
+            None,
+            "execHost",
+            "retainOutput",
+            vec![json!({"taskId":"missing"}).into()]
+        )
+        .await
+        .code(),
+        Some("task_unknown")
+    );
 
     let typed = background.output(task.clone()).await.unwrap();
     let wire = face_call(
@@ -3157,6 +3218,7 @@ async fn background_exec_face_answers_as_the_typed_service() {
     ));
     restored.close().await.unwrap();
     harness.shutdown().await;
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 /// The text of every tool result of a batch, in call order.

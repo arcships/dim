@@ -11,14 +11,14 @@
 //! Session (`SessionLifecycle::take_hold`), so an idle unload never ends it.
 use crate::{
     context_block::{element, raw, text},
-    host_platform::{HostPlatform, ProcessTree},
+    host_platform::{ExecHost, ProcessTree, signal_name},
     methods::{
         Interruption, MethodCall, MethodDecl, Progress, RpcError, SessionMethods, params, reply,
     },
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     timeline_tree::TreeCommands,
     workspace_tools::exec::{
-        OutputSink, bounded_preview, capture_preview, pump, sanitize, signal_name, tail_bytes,
+        OutputSink, bounded_preview, capture_preview, pump, sanitize, tail_bytes,
     },
 };
 use dim_agent_runtime::{
@@ -134,7 +134,7 @@ struct Registry {
 }
 
 struct ShellInput {
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     cwd: PathBuf,
     tree: Arc<TreeCommands>,
     lifecycle: Arc<SessionLifecycle>,
@@ -543,7 +543,7 @@ const SHELL_INPUT_ENTRY: &str = r#"<dim-shell-input kind="command" status="compl
 
 /// Session plugin providing `sessionMethods` key `shell`.
 pub struct ShellInputPlugin {
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     config: Key<SessionConfig>,
     tree: Key<TreeCommands>,
     lifecycle: Key<SessionLifecycle>,

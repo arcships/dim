@@ -5,7 +5,7 @@
 
 use crate::{
     host::{ToolDriver, ToolExecutionContext, ToolHost},
-    host_platform::{HostPlatform, ISOLATION_SUMMARY},
+    host_platform::{HostFacts, ExecHost, ISOLATION_SUMMARY},
     shell_session::{CallContext, ShellSession},
     timeline_tree::TreeCommands,
 };
@@ -17,7 +17,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 /// The `execute` tool definition.
-fn execute_definition(platform: &HostPlatform) -> dim_agent_types::ToolDefinition {
+fn execute_definition(platform: &HostFacts<'_>) -> dim_agent_types::ToolDefinition {
     let mut env_line = format!(
         "Environment: {}/{}",
         platform.os.node_platform(),
@@ -45,15 +45,13 @@ fn execute_definition(platform: &HostPlatform) -> dim_agent_types::ToolDefinitio
 
 /// The tool driver.
 struct ShellToolsDriver {
-    platform: Arc<HostPlatform>,
+    definition: dim_agent_types::ToolDefinition,
     tree: Arc<TreeCommands>,
 }
 
 impl ToolDriver for ShellToolsDriver {
     fn definitions(&self) -> Vec<dim_agent_types::ToolDefinition> {
-        let mut definition = execute_definition(&self.platform);
-        definition.risk = Some("execute_process".into());
-        vec![definition]
+        vec![self.definition.clone()]
     }
 
     fn execute(
@@ -109,7 +107,7 @@ pub fn install(builder: &mut AgentBuilder) {
 /// The plugin.
 pub struct ShellToolsPlugin {
     host: Key<ToolHost>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     tree: Key<TreeCommands>,
 }
 
@@ -134,7 +132,9 @@ impl DynPlugin for ShellToolsPlugin {
         Box::pin(async move {
             let platform = ctx.require_at(&self.platform)?;
             let tree = ctx.require_at(&self.tree)?;
-            let driver = Arc::new(ShellToolsDriver { platform, tree });
+            let mut definition = execute_definition(&platform.facts());
+            definition.risk = Some("execute_process".into());
+            let driver = Arc::new(ShellToolsDriver { definition, tree });
             ctx.provide_at(self.host.clone(), Arc::new(ToolHost(driver)))?;
             Ok(Effect::Done)
         })

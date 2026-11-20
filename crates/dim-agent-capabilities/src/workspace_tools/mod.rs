@@ -19,7 +19,7 @@ pub use pending::call_positions;
 
 use crate::{
     host::{HostError, HostFuture, SessionFiles, ToolDriver, ToolExecutionContext, ToolHost},
-    host_platform::HostPlatform,
+    host_platform::ExecHost,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
     tool_registry::ToolConcurrency,
@@ -144,7 +144,10 @@ impl DynPlugin for WorkspaceToolsOwner {
 pub(crate) struct WorkspaceTools {
     ctx: Ctx,
     facts: Key<crate::file_access::FileAccessFacts>,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
+    exec_definition: ToolDefinition,
+    execution_home: PathBuf,
+    execution_os: crate::host_platform::Os,
     cwd: PathBuf,
     output_dir: PathBuf,
     /// SessionStore's output ownership (ADR 013); absent in hosts without
@@ -257,7 +260,7 @@ impl WorkspaceTools {
 impl ToolDriver for WorkspaceTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         let mut definitions = FileTools::definitions();
-        definitions.push(exec::definition_for(&self.platform));
+        definitions.push(self.exec_definition.clone());
         definitions.push(exec::stop_definition());
         definitions
     }
@@ -320,7 +323,7 @@ impl ToolDriver for WorkspaceTools {
 struct WorkspaceToolsPlugin {
     facts: Key<crate::file_access::FileAccessFacts>,
     host: Key<ToolHost>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     session_config: Key<SessionConfig>,
     identity: Key<SessionIdentity>,
     tree: Key<TreeCommands>,
@@ -384,11 +387,13 @@ impl DynPlugin for WorkspaceToolsPlugin {
             let output_dir = self.config.output_root.join(&identity.session_id);
             // A configured boundary is the file tools' home too: `~`
             // resolves against it, never against the platform home.
+            let info = platform.facts();
+            let exec_definition = exec::definition_for(&info);
             let home = self
                 .config
                 .boundary
                 .as_ref()
-                .map_or(platform.home.clone(), |boundary| boundary.home.clone());
+                .map_or_else(|| info.home.to_owned(), |boundary| boundary.home.clone());
             let tools = Arc::new(WorkspaceTools {
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
@@ -404,6 +409,9 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 session_id: identity.session_id.clone(),
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
+                exec_definition,
+                execution_home: info.home.to_owned(),
+                execution_os: info.os,
                 platform,
                 tree,
                 lifecycle: CancellationToken::new(),

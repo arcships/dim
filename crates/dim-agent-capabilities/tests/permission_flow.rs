@@ -3,7 +3,7 @@ use dim_agent_capabilities::{
     approval::{AdmitCall, Approval},
     defaults, file_access,
     host::*,
-    host_platform::{HostPlatform, ShellStatus},
+    host_platform::{ExecHost, ShellStatus},
     model_provider::ModelProviderPlugin,
     permission::{
         AdmissionDecision, AdviseTool, CommandRules, Decision, NoCommandRules, Permission,
@@ -328,7 +328,7 @@ async fn granted_agent(
         tools,
         grants,
         files,
-        HostPlatform::current(ShellStatus::Unavailable {
+        ExecHost::current(ShellStatus::Unavailable {
             code: "PERMISSION_TEST",
             reason: "The permission flow starts no process".into(),
         })
@@ -341,7 +341,7 @@ async fn granted_agent_with(
     tools: Arc<RiskTools>,
     grants: Arc<dyn ReadSessionGrants>,
     files: Arc<TestFiles>,
-    platform: HostPlatform,
+    platform: ExecHost,
     associations: Option<file_access::WorktreeAssociations>,
 ) -> MinimalHost {
     let mut builder = AgentBuilder::new(AgentConfig::default());

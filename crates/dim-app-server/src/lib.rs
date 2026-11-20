@@ -974,6 +974,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                         dim_agent_capabilities::host_platform::HostPlatformConfig {
                             execution: names.key()?,
                             toolchain: names.key()?,
+                            command_files: session_files_root.map(|root| {
+                                (root, crate::storage::COMMAND_OUTPUT_DIRECTORY.into())
+                            }),
                             exec_shell_file: Some((home_root, "exec-shell.json".into())),
                             home: platform_home.clone(),
                         },
@@ -1499,7 +1502,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
-        ("hostPlatform", "object"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.
