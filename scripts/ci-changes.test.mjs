@@ -36,12 +36,17 @@ test('documents that code reads keep their checks',()=>{
   assert.deepEqual(classify(['docs/design/appserver/native-storage-format.md']),only('rust'));
 });
 
+test('Web sources that xtask reads keep its check',()=>{
+  for (const file of ['web/src/main.ts','web/src/chat-ui/WebChatTimeline.vue','web/src/rpc/protocol.ts','web/src/a.mjs','web/src/a.js'])
+    assert.deepEqual(classify([file]),only('web','xtask'),file);
+});
+
 test('dependency policy changes select the scan without compiling the workspace',()=>{
   assert.deepEqual(classify(['deny.toml','LICENSE']),only('dependencies'));
 });
 
 test('source areas select their groups',()=>{
-  assert.deepEqual(classify(['web/src/main.ts']),only('web'));
+  assert.deepEqual(classify(['web/package.json','web/src/styles/base.css']),only('web'));
   assert.deepEqual(classify(['web/src/features/chat/quote-cases.json']),only('web','rust','windows'));
   assert.deepEqual(classify(['scripts/stage-web.mjs']),only('scripts','web'));
   assert.deepEqual(classify(['docker/Dockerfile']),only('scripts'));

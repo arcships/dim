@@ -36,7 +36,7 @@ Prerequisites:
 | --- | --- |
 | `target/debug/dimcode` | Built from the checkout; `--binary` names another build |
 | `target/debug/dim-app-server` | The provider scenario's `--server` profile; `--binary` looks for it beside the CLI, and the case names the build command when it is missing |
-| tmux | 3.2 or newer, on macOS or Linux. `pane_dead_signal` arrived in 3.3: on 3.2 the field is unknown, so a signal death reports an empty status and fails the case instead of naming the signal |
+| tmux | 3.2 or newer, on macOS or Linux. `pane_dead_signal` arrived in 3.3: on 3.2 the field is unknown, so a signal death reports an empty status and fails the case instead of naming the signal. tmux 3.6a exits at `new-session -x -y` when `window-size manual` is in the startup config, so the harness sets it per window after `new-session` (#1890) |
 | Node.js | The version in `.node-version`; the suite and its fixture are plain ES modules |
 | No network | The model fixture listens on loopback; the suite sets `DIMCODE_UPDATE_CHECK=0` |
 
@@ -54,7 +54,7 @@ bounded:
 | --- | --- |
 | Product home | `--home <case>/home` with `rust/` at mode 0700; the product home `~/.dimcode` is never touched |
 | User home | `HOME=<case>/user-home` and `TMPDIR=<case>/tmp`, so terminal helpers and tools write nothing outside the case |
-| tmux server | One per case, on `<case>/tmux.sock`; `remain-on-exit` keeps the pane's last screen and its exit status. The server starts with the case's global environment (`HOME`, `TMPDIR`, `PATH`, `SHELL`) and `default-shell` pinned to `/bin/sh`, so no developer login shell or profile runs. `new-session` starts an inert `/bin/sh` placeholder, the output tap is attached, and only then is the CLI respawned into the pane, so no first frame escapes the tap |
+| tmux server | One per case, on `<case>/tmux.sock`; `remain-on-exit` keeps the pane's last screen and its exit status. The server starts with the case's global environment (`HOME`, `TMPDIR`, `PATH`, `SHELL`) and `default-shell` pinned to `/bin/sh`, so no developer login shell or profile runs. `new-session` starts an inert `/bin/sh` placeholder, its window gets `window-size manual` so `resize-window` sets exact sizes, the output tap is attached, and only then is the CLI respawned into the pane, so no first frame escapes the tap |
 | Daemon | The production App Server. Most cases run the CLI's own `app-server` subcommand with `--model-config`; the provider case runs the standalone `dim-app-server` next to the CLI (`--server`, no `--model-config`), so `/connect` manages real providers in the case's home |
 | Model | A loopback OpenAI-compatible fixture; prompts map to fixed replies and scripted tool calls (`exec`, `ask_user`) |
 | Environment | `TERM=screen-256color`, `LANG=en_US.UTF-8`, `SHELL=/bin/sh`, `HOME=<case>/user-home`, `TMPDIR=<case>/tmp`, `TMUX=<case socket>,0,0` so the CLI takes its multiplexer branch, `locale: en` in `config.json` |
@@ -114,6 +114,7 @@ daemon. `--keep` leaves the home and raw streams in place for inspection.
 | approvals | `approval_panel_allows_one_command` | The permission panel names the tool and command, `y` allows once, the command output returns to the model, and the status is blocked before the answer |
 | approvals | `question_panel_answer_reaches_the_next_request` | The question panel's options, the review step, and the chosen label in the tool result the model receives |
 | tasks | `background_task_row_and_tasks_panel` | A background command's task row, `1 in background`, the Background tasks panel, and stopping it with `x` |
+| tasks | `task_strip_stays_and_switches_the_open_detail` | Two background commands keep their `◐` rows under an open task detail: in fullscreen a row click opens live output with `Esc close`, a second row click switches the detail, and Esc returns to the composer with its draft; in scrollback `/tasks` → Enter keeps the strip and `Esc back` |
 | members | `member_conversation_and_stop_all` | A delegated member's task row, the member conversation's heading and transcript, `Ctrl+X` stop-all, and the leader's settled turn; read-only input and the leader draft stay with `tui_member_conversation_is_read_only_and_preserves_the_leader_draft` in CI |
 | providers | `provider_panel_adds_and_keeps_a_custom_provider` | On the production App Server profile (`--server`, no `--model-config`) `/connect` adds a custom provider against the fixture, tests and applies it, a turn uses its key, and the product home keeps it across a daemon restart |
 | suggestions | `prompt_suggestion_offers_and_takes_the_next_message` | Every completed turn draws its own numbered offer; `Tab` takes it in scrollback, `Tab` keeps the focus in fullscreen (and `Enter` sends nothing) while `Right` takes it there, and `Escape` withdraws it without asking again |
