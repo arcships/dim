@@ -24,6 +24,81 @@ pub struct HostInfo {
 }
 
 impl HostPlatform {
+    pub(crate) async fn registered_output_page(
+        &self,
+        path: &std::path::Path,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<
+        crate::workspace_tools::background::OutputPage,
+        crate::workspace_tools::background::OutputPageError,
+    > {
+        use crate::workspace_tools::{
+            background::{OutputPageError, PAGE_CHAR_TRAILING_BYTES, decode_page},
+            exec::OUTPUT_FILE_BYTE_LIMIT,
+        };
+        use std::io::SeekFrom;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        if let Some((files, root, directory)) = &self.command_files {
+            let base = files
+                .root_path(*root)
+                .map_err(|_| OutputPageError::Unavailable)?;
+            let relative = path
+                .strip_prefix(base.join(directory))
+                .map_err(|_| OutputPageError::Unavailable)?;
+            let file = files
+                .path(*root, directory.join(relative))
+                .map_err(|_| OutputPageError::Unavailable)?;
+            let cancel = CancellationToken::new();
+            let _guard = cancel.clone().drop_guard();
+            let reader = files
+                .open_read(&file, &cancel)
+                .await
+                .map_err(|_| OutputPageError::Unavailable)?;
+            let size = reader
+                .len()
+                .saturating_sub(cursor)
+                .min((limit + PAGE_CHAR_TRAILING_BYTES) as u64) as usize;
+            let mut bytes = Vec::with_capacity(size);
+            while bytes.len() < size {
+                let chunk = reader
+                    .read_at(cursor + bytes.len() as u64, size - bytes.len(), &cancel)
+                    .await
+                    .map_err(|_| OutputPageError::Unavailable)?;
+                if chunk.is_empty() {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            return decode_page(
+                &bytes,
+                cursor,
+                limit,
+                reader.len() >= crate::workspace_tools::exec::OUTPUT_FILE_BYTE_LIMIT,
+            );
+        }
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        file.seek(SeekFrom::Start(cursor))
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        let mut buffer = vec![0u8; limit + PAGE_CHAR_TRAILING_BYTES];
+        let mut read = 0;
+        while read < buffer.len() {
+            match file.read(&mut buffer[read..]).await {
+                Ok(0) => break,
+                Ok(bytes) => read += bytes,
+                Err(_) => return Err(OutputPageError::Unavailable),
+            }
+        }
+        let truncated = file
+            .metadata()
+            .await
+            .map(|m| m.len() >= OUTPUT_FILE_BYTE_LIMIT)
+            .unwrap_or(false);
+        decode_page(&buffer[..read], cursor, limit, truncated)
+    }
     pub async fn info(&self) -> HostInfo {
         HostInfo {
             os: self.os,
@@ -316,9 +391,7 @@ impl HostDispatch for Dispatch {
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method == "output" {
-            use crate::workspace_tools::background::{
-                OUTPUT_PAGE_BYTES, OUTPUT_PAGE_BYTES_MAX, PAGE_CHAR_TRAILING_BYTES, decode_page,
-            };
+            use crate::workspace_tools::background::{OUTPUT_PAGE_BYTES, OUTPUT_PAGE_BYTES_MAX};
             let request: OutputRequest = port_faces::request("execHost", args)?;
             let owner = self.owner.clone();
             return Ok(Value::cancellable_future(async move {
@@ -385,41 +458,16 @@ impl HostDispatch for Dispatch {
                     let base = files
                         .root_path(*root)
                         .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
-                    let relative = path.strip_prefix(base.join(directory)).map_err(|_| {
-                        exec_error("invalid", "Path is outside command output storage")
-                    })?;
-                    let file = files
-                        .path(*root, directory.join(relative))
-                        .map_err(|e| exec_error("invalid", e.to_string()))?;
-                    let cancel = CancellationToken::new();
-                    let _guard = cancel.clone().drop_guard();
-                    let reader = files
-                        .open_read(&file, &cancel)
-                        .await
-                        .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
-                    let size = reader
-                        .len()
-                        .saturating_sub(cursor)
-                        .min((limit + PAGE_CHAR_TRAILING_BYTES) as u64)
-                        as usize;
-                    let mut bytes = Vec::with_capacity(size);
-                    while bytes.len() < size {
-                        let chunk = reader
-                            .read_at(cursor + bytes.len() as u64, size - bytes.len(), &cancel)
-                            .await
-                            .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
-                        if chunk.is_empty() {
-                            break;
-                        }
-                        bytes.extend_from_slice(&chunk);
+                    if !path.starts_with(base.join(directory)) {
+                        return Err(exec_error(
+                            "invalid",
+                            "Path is outside command output storage",
+                        ));
                     }
-                    decode_page(
-                        &bytes,
-                        cursor,
-                        limit,
-                        reader.len() >= crate::workspace_tools::exec::OUTPUT_FILE_BYTE_LIMIT,
-                    )
-                    .map_err(|e| exec_error("output_unavailable", e.to_string()))?
+                    owner
+                        .registered_output_page(&path, cursor, limit)
+                        .await
+                        .map_err(|e| exec_error("output_unavailable", e.to_string()))?
                 };
                 let mut reply = serde_json::json!(page);
                 reply["retainedFrom"] = 0.into();

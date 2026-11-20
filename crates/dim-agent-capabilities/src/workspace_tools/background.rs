@@ -5,7 +5,7 @@
 //! dispatch of every `exec/ended` that is not `cancelled`. Each running task
 //! holds its Session (`SessionLifecycle::take_hold`) until its `exec/ended` is
 //! appended, so an idle unload never ends it (idle unload §5, R2).
-use super::exec::{ExecProcess, OUTPUT_FILE_BYTE_LIMIT, Output, recovered_result, sanitize};
+use super::exec::{ExecProcess, Output, recovered_result, sanitize};
 use crate::{
     context_block,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
@@ -20,13 +20,9 @@ use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{
     collections::HashMap,
-    io::SeekFrom,
     sync::{Arc, Mutex},
 };
-use tokio::{
-    io::{AsyncReadExt, AsyncSeekExt},
-    sync::watch,
-};
+use tokio::sync::watch;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 pub struct StartRequest {
@@ -225,6 +221,7 @@ struct State {
 }
 
 pub struct BackgroundExec {
+    platform: Arc<crate::host_platform::HostPlatform>,
     timeline: Arc<Timeline>,
     from: Option<TimelinePosition>,
     /// Gives each task its Session hold.
@@ -434,38 +431,19 @@ impl BackgroundExec {
                 (start.output_path, ended, None)
             }
         };
-        let mut file = tokio::fs::File::open(&output_path)
-            .await
-            .map_err(|_| OutputPageError::Unavailable)?;
-        file.seek(SeekFrom::Start(cursor))
-            .await
-            .map_err(|_| OutputPageError::Unavailable)?;
-        let mut buffer = vec![0u8; limit + PAGE_CHAR_TRAILING_BYTES];
-        let mut read = 0;
-        while read < buffer.len() {
-            match file.read(&mut buffer[read..]).await {
-                Ok(0) => break,
-                Ok(bytes) => read += bytes,
-                Err(_) => return Err(OutputPageError::Unavailable),
-            }
-        }
-        let truncated = match ended
+        let mut page = self
+            .platform
+            .registered_output_page(std::path::Path::new(&output_path), cursor, limit)
+            .await?;
+        if let Some(truncated) = ended
             .as_ref()
             .and_then(|data| output_truncated(&data.result))
         {
-            Some(truncated) => truncated,
-            None => match &live {
-                Some(output) => output.truncated().await,
-                // Only the recovery terminal (`recovered_result`) carries no
-                // flag; its truncation is the file's size alone.
-                None => file
-                    .metadata()
-                    .await
-                    .map(|metadata| metadata.len() >= OUTPUT_FILE_BYTE_LIMIT)
-                    .unwrap_or(false),
-            },
-        };
-        decode_page(&buffer[..read], cursor, limit, truncated)
+            page.truncated = truncated;
+        } else if let Some(output) = live {
+            page.truncated = output.truncated().await;
+        }
+        Ok(page)
     }
 
     /// Waits until the task ends, or `timeout_ms` elapses: what
@@ -985,6 +963,7 @@ fn output_truncated(result: &ToolResult) -> Option<bool> {
 const EXEC_ENTRY: &str = r#"<dim-notification source="exec" task="exec-7f2">: something you started has finished, failed or been cancelled, such as a background command. It is information, not a new request. The output preview belongs to that command. Use the read tool with its output path to read the full result. If the work it belongs to is no longer wanted, note the result and do not restart that work."#;
 
 pub struct BackgroundExecPlugin {
+    platform: Key<crate::host_platform::HostPlatform>,
     exec: Key<BackgroundExec>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
@@ -995,6 +974,7 @@ pub struct BackgroundExecPlugin {
 impl BackgroundExecPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
+            platform: names.key()?,
             exec: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
@@ -1010,6 +990,7 @@ impl DynPlugin for BackgroundExecPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.platform.erase(),
             self.timeline.erase(),
             self.dispatcher.erase(),
             self.session.erase(),
@@ -1069,6 +1050,7 @@ impl DynPlugin for BackgroundExecPlugin {
                 position
             });
             let service = Arc::new(BackgroundExec {
+                platform: ctx.require_at(&self.platform)?,
                 timeline,
                 from,
                 session,
