@@ -397,6 +397,13 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
         assert_ok(&branched);
         let child = branched["result"]["branch"]["branchId"].as_str().unwrap().to_owned();
         idle(&mut client, &sid, &child).await;
+        for branch in ["main", child.as_str()] {
+            assert_ok(
+                &client
+                    .rpc("session.context.usage", json!({"sessionId":sid,"branchId":branch}))
+                    .await,
+            );
+        }
 
         let copy = directory.join("copies/backup.sqlite");
         backup(&database, &copy);
