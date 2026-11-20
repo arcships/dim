@@ -1,5 +1,6 @@
 use dim_agent_capabilities::{
     host::{HostError, ToolExecutionContext},
+    tool_binding::ToolBinding,
     tool_executor::{NestedGate, ToolExecutor},
 };
 use dim_agent_types::ToolDefinition;
@@ -23,17 +24,18 @@ pub trait NestedToolHost: Send + Sync + 'static {
 
 pub struct ToolExecutorHost {
     executor: Arc<ToolExecutor>,
+    binding: Arc<ToolBinding>,
 }
 
 impl ToolExecutorHost {
-    pub fn new(executor: Arc<ToolExecutor>) -> Self {
-        Self { executor }
+    pub fn new(executor: Arc<ToolExecutor>, binding: Arc<ToolBinding>) -> Self {
+        Self { executor, binding }
     }
 }
 
 impl NestedToolHost for ToolExecutorHost {
     fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
-        self.executor.definitions(request_id)
+        self.binding.definitions(request_id)
     }
 
     fn open(

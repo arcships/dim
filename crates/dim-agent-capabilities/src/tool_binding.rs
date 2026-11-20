@@ -6,6 +6,8 @@
 //! configuration, pins the source sets its prefix may still declare, and
 //! fixes each request's handlers when Loop binds it, so a call always runs
 //! the implementation of the version its request declared.
+mod face;
+
 use crate::{
     context_preparation::ToolSetAdoption,
     host::{ModelSettings, ToolExecutionContext},
@@ -399,6 +401,7 @@ fn register(
 }
 
 pub struct ToolBindingPlugin {
+    instance: rutis::host::InstanceId,
     binding: Key<ToolBinding>,
     registry: Key<ToolRegistry>,
     prompt: Key<Prompt>,
@@ -410,6 +413,7 @@ pub struct ToolBindingPlugin {
 impl ToolBindingPlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
         Ok(Self {
+            instance: names.instance(dim_agent_runtime::BRANCH_GROUP)?,
             binding: names.key()?,
             registry: names.key()?,
             prompt: names.key()?,
@@ -532,6 +536,13 @@ impl DynPlugin for ToolBindingPlugin {
                 tasks.wait().await;
                 Ok(())
             })?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in(
+                    &dim_agent_runtime::names::name_of::<ToolBinding>(),
+                    self.instance,
+                ),
+                binding.clone(),
+            )?;
             ctx.provide_at(self.binding.clone(), binding)?;
             Ok(Effect::Done)
         })

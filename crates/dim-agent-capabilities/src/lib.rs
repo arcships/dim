@@ -112,6 +112,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<context_preparation::ConfigurationPublisher>(catalog, branch);
     register::<tool_executor::ToolExecutor>(catalog, branch);
     register::<tool_binding::ToolBinding>(catalog, branch);
+    catalog.register_shared_instance(name_of::<tool_binding::ToolBinding>(), BRANCH_GROUP);
     register::<permission::Permission>(catalog, branch);
     register::<approval::Approval>(catalog, branch);
     catalog.register_shared_instance("skillsBranch", BRANCH_GROUP);

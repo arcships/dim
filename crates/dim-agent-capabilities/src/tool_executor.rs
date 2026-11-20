@@ -203,11 +203,6 @@ async fn run_child(
     Ok(result)
 }
 impl ToolExecutor {
-    /// The declarations the request pinned, for a program that may only see
-    /// the tools its own request declared.
-    pub fn definitions(&self, request_id: &str) -> Result<Vec<ToolDefinition>, String> {
-        self.binding.definitions(request_id)
-    }
     /// Opens the child-call gate for the current top-level batch. A gate
     /// exists only while its context matches the current batch; a closed or
     /// interrupted executor refuses.

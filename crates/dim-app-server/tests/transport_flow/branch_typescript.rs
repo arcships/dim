@@ -554,3 +554,40 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
     server.join().await.unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_tool_binding_transfers_pinned_handlers_in_the_native_owner() {
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"tool-binding","name":parts.anchor.parent().unwrap().join("fixtures/tool-binding.ts"),"provides":{}}),
+    ];
+    let (server, _agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("ToolBindingFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!(["echo", "wait"])).await;
+    let reply = client
+        .rpc("session.bindingfixture.pin", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    use dim_agent_capabilities::host::ToolDriver;
+    let echo = MockTools
+        .definitions()
+        .into_iter()
+        .find(|tool| tool.name == "echo")
+        .unwrap();
+    assert_eq!(reply["result"]["echo"], echo.description);
+    assert_eq!(reply["result"]["current"], reply["result"]["transferred"]);
+    assert_eq!(reply["result"]["empty"], 0);
+    server.shutdown();
+    server.join().await.unwrap();
+}

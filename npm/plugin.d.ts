@@ -817,6 +817,15 @@ export interface HooksService {
   refusal(request: { plugin: string }): [error: string, reason: string | null] | null;
 }
 
+export type BoundToolDefinition = Omit<ToolDefinition, 'risk'> & { risk?: string };
+export interface ToolBinding {
+  bind(request: { requestId: string; through: number | bigint; tools: BoundToolDefinition[]; toolSources: { key: string; version: string }[] }): void;
+  bindCurrent(request: { requestId: string; declared?: BoundToolDefinition[] | null }): BoundToolDefinition[];
+  definitions(request: { requestId: string }): BoundToolDefinition[];
+  transfer(request: { from: string; to: string }): void;
+  release(request: { requestId: string }): void;
+}
+
 /** The ToolRegistry owner's read-only source status view. */
 export interface ToolSourceRejection { version: string; reason: string }
 export interface ToolSourceStatus { adopted: string | null; rejected: ToolSourceRejection | null }

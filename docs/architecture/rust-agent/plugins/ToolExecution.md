@@ -4,6 +4,8 @@ The ToolExecution plugin registers the Session [ToolMethods](ToolMethods.md) rea
 
 ## ToolBinding
 
+Loop and Code Mode use the branch [tool binding operations](../../../design/contracts/runtime-owner-operations.md) to pin, read, transfer and release request declarations.
+
 Owner: [tool_binding.rs](../../../../crates/dim-agent-capabilities/src/tool_binding.rs).
 Adopts a Session tool set into branch model configuration and pins handlers to
 requests so later registry changes cannot silently replace executing tools.
@@ -94,7 +96,7 @@ task, mutex, lifecycle phase or protocol field is needed.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:Dispatcher`、`B:Prompt`、`B:Timeline`、`S:ToolRegistry` |
-| 提供 | `B:ToolBinding` |
+| 提供 | `B:ToolBinding`、`B:dyn HostDispatch#toolBinding` |
 | 被注入于 | `Loop`、`ToolExecutor` |
 <!-- /generated -->
 

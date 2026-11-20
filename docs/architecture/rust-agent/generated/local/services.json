@@ -2243,6 +2243,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolBinding@main",
+        "provider": 78,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#wait@main",
         "provider": 81,
         "generation": 1,
