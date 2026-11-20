@@ -63,8 +63,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `store` | process | SessionStore | data | `addGrant` async, `catalog` async, `createOwnedSession` async, `creationRecord` async, `delete` async, `fork` async, `grants` async, `hasRecords` async, `owner` async, `query` async, `removeGrant` async, `removeWorktree` async, `removeWorktreeDirectory` async, `sessionConfig` async, `sessionConfigText` async, `sessionsUnderWorkspace` async, `setSessionLanguage` async, `worktreeDirectories` async, `worktreeUsages` async |
 | `summaryPromptSettingsHost` | process | PromptSettings | data | `systemPrompt` async |
 | `toolchainSourceHost` | process | ToolchainSource | data | `list` sync |
-| `uiExtensions` | process | UiExtensions | internal(control) | — |
-| `uiHost` | process | UiHost | internal(control) | — |
+| `uiExtensions` | process | UiExtensions | data | `plugins` async, `refusal` async, `register` async, `withdraw` async |
+| `uiHost` | process | UiHost | data | `detach` sync, `finished` sync, `release` sync |
 | `wakeups` | process | Scheduler | data | `cancel` async, `create` async, `list` async |
 | `workflowFiles` | process | Settings | data | `createDirectory` async, `list` async, `read` async, `replace` async |
 | `worktreeAssociations` | process | SessionStore | data | `associate` async |

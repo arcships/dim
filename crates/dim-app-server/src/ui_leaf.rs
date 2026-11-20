@@ -166,6 +166,10 @@ impl Plugin for UiHostPlugin {
     async fn apply(&self, ctx: &Ctx, (): ()) -> rutis::Result {
         let host = crate::ui_host::UiHost::new(UiLeaves { ctx: ctx.clone() });
         ctx.provide_as::<crate::ui_host::UiHost>(host.clone())?;
+        ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+            rutis_bridge::session::host_key("uiHost"),
+            host.clone(),
+        )?;
         ctx.effect(move || async move {
             host.close_all().await;
             Ok(())

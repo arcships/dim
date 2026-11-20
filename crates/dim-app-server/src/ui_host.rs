@@ -585,6 +585,55 @@ impl UiHost {
     }
 }
 
+#[derive(serde::Deserialize)]
+#[serde(
+    tag = "method",
+    content = "request",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum ConnectionOperation {
+    Detach {
+        connection_id: String,
+        session_id: String,
+    },
+    Release {
+        connection_id: String,
+    },
+    Finished {
+        connection_id: String,
+    },
+}
+
+impl rutis_bridge::session::HostDispatch for UiHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"detach":"sync", "release":"sync", "finished":"sync"}))
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        use rutis_bridge::session::{Error, Value};
+        let [request] = <[_; 1]>::try_from(args.list()?)
+            .map_err(|_| Error::Value("expected one UI connection request".into()))?;
+        let op =
+            serde_json::from_value(serde_json::json!({"method":method, "request":request.json()?}))
+                .map_err(|error| Error::Value(error.to_string()))?;
+        match op {
+            ConnectionOperation::Detach {
+                connection_id,
+                session_id,
+            } => self.detach(&connection_id, &session_id),
+            ConnectionOperation::Release { connection_id } => self.release(&connection_id),
+            ConnectionOperation::Finished { connection_id } => self.finished(&connection_id),
+        }
+        Ok(Value::Undefined)
+    }
+}
+
 /// Claims `old` for the replacement `by`, checking its Session and the
 /// generation the caller observed.
 fn claim(

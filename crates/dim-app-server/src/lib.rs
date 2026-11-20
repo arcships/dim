@@ -1442,7 +1442,9 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<ConnectionHub>(catalog, None);
     catalog.register_shared(dim_agent_runtime::names::name_of::<ListenAddresses>());
     register::<ui_host::UiHost>(catalog, None);
+    catalog.register_shared("uiHost");
     register::<ui_extensions::UiExtensions>(catalog, None);
+    catalog.register_shared("uiExtensions");
     register::<ui_extensions::UiResources>(catalog, Some(SESSION_GROUP));
     register::<settings::SettingsService>(catalog, None);
     register::<settings::Settings>(catalog, None);
@@ -1522,8 +1524,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("timelineTreeControl", "owner-api"),
         ("toolBinding", "hot-path"),
         ("toolExecutor", "hot-path"),
-        ("uiExtensions", "control"),
-        ("uiHost", "control"),
     ] {
         builder.internal_name(name, reason);
     }

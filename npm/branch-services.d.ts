@@ -1264,6 +1264,51 @@ export interface ListenAddresses {
   read(): Promise<BoundAddresses>
 }
 
+export interface UiExtensionPlugin {
+  plugin: string
+}
+
+export interface Title {
+  default: string
+  translations?: Record<string, string>
+}
+
+export type MethodScope = "session" | "branch"
+
+export interface Method {
+  name: string
+  scope: MethodScope
+}
+
+export interface Panel {
+  id: string
+  title: Title
+  icon?: string | null
+  entry: string
+  placement: string
+  requires: string[]
+  methods: Method[]
+}
+
+export type Package =
+  | { kind: "supported"; root: string; panels: Panel[] }
+  | { kind: "unsupported"; version: number | bigint }
+  | { kind: "rejected"; message: string }
+
+export interface UiExtensionRegistration {
+  plugin: string
+  name: string
+  package?: Package | null
+}
+
+export interface UiExtensions {
+  plugins(request: Empty): Promise<string[]>
+  refusal(request: UiExtensionPlugin): Promise<string | null>
+  /** @throws {StringThrown} */
+  register(request: UiExtensionRegistration): Promise<void>
+  withdraw(request: UiExtensionPlugin): Promise<void>
+}
+
 export interface PublishFile {
   /** Absolute host path inside an already authorized FileStorage root. */
   path: string
@@ -1325,6 +1370,9 @@ export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceErr
 /** What a method returning `Err(SessionsError)` throws. */
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
+/** What a method returning `Err(String)` throws. */
+export type StringThrown = RustError<"Error", "Error", undefined>
+
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
 
@@ -1373,5 +1421,6 @@ export interface Services {
   mcpSession: McpSession
   workflowFiles: WorkflowFiles
   listenAddresses: ListenAddresses
+  uiExtensions: UiExtensions
   uiResources: UiResources
 }

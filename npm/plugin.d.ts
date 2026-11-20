@@ -262,7 +262,7 @@ export type {
   AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
-  UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
+  UiExtensions, UiExtensionRegistration, UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
@@ -628,6 +628,12 @@ export type StoredAgentProfile = {
   name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
+export interface UiHost {
+  detach(request: {connectionId: string, sessionId: string}): Promise<void>;
+  release(request: {connectionId: string}): Promise<void>;
+  finished(request: {connectionId: string}): Promise<void>;
+}
+
 export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
   commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
   readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
