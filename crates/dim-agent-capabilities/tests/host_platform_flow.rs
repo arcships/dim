@@ -100,7 +100,7 @@ async fn shell_resolution_follows_the_preference_and_never_fails_the_service() {
 
 #[tokio::test]
 async fn spawn_isolates_the_environment_and_terminate_releases_the_tree() {
-    let platform = HostPlatform::current(ShellStatus::Unavailable {
+    let platform = ExecHost::current(ShellStatus::Unavailable {
         code: EXEC_SHELL_UNAVAILABLE,
         reason: "spawn does not need a shell".into(),
     })
@@ -240,7 +240,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         .unwrap(),
     );
     (&platform).await.unwrap();
-    let platform = root.get::<HostPlatform>().unwrap();
+    let platform = root.get::<ExecHost>().unwrap();
     assert!(matches!(
         platform.exec_shell().await,
         ShellStatus::Unavailable {
@@ -463,7 +463,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
 /// A start whose stdin carries the payload and then closes it.
 #[tokio::test]
 async fn spawn_with_stdin_delivers_the_bytes_and_closes_the_pipe() {
-    let platform = HostPlatform::current(ShellStatus::Unavailable {
+    let platform = ExecHost::current(ShellStatus::Unavailable {
         code: EXEC_SHELL_UNAVAILABLE,
         reason: "spawn does not need a shell".into(),
     })
@@ -512,7 +512,7 @@ async fn sandbox_backend_reports_the_bubblewrap_preparation_uses() {
         .unwrap()
         .join(format!("dim-backend-{}", uuid::Uuid::new_v4().simple()));
     std::fs::create_dir_all(&base).unwrap();
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })
@@ -531,8 +531,8 @@ async fn sandbox_backend_reports_the_bubblewrap_preparation_uses() {
 
 /// The host-owned helper is always confined where the platform can confine,
 /// whatever the Process isolation switch says.
-fn confined_platform(settings: ExecutionSettings) -> HostPlatform {
-    HostPlatform::current(ShellStatus::Unavailable {
+fn confined_platform(settings: ExecutionSettings) -> ExecHost {
+    ExecHost::current(ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })
@@ -582,7 +582,7 @@ fn perl() -> Option<PathBuf> {
 }
 
 async fn confined(
-    platform: &HostPlatform,
+    platform: &ExecHost,
     script: &str,
     write: &std::path::Path,
     timeout: Duration,
@@ -1304,8 +1304,8 @@ fn runtime_fixture(base: &std::path::Path, name: &str) -> PathBuf {
 
 /// A platform whose shell is `/bin/sh` and whose captured environment is
 /// `env`, with `toolchains` as the runtimes Dim downloaded.
-fn toolchain_platform(pairs: &[(&str, &str)], toolchains: Vec<InstalledToolchain>) -> HostPlatform {
-    let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+fn toolchain_platform(pairs: &[(&str, &str)], toolchains: Vec<InstalledToolchain>) -> ExecHost {
+    let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
         executable_path: "/bin/sh".into(),
         edition: ShellEdition::Sh,
         source: ShellSource::Login,

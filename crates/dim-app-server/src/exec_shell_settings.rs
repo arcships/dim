@@ -1,6 +1,6 @@
 use crate::{methods::ManagementMethods, protocol::Empty};
 use dim_agent_capabilities::{
-    host_platform::{ExecShellSettingsError, HostPlatform},
+    host_platform::{ExecShellSettingsError, ExecHost},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::Names;
@@ -28,7 +28,7 @@ fn shell_failed(error: ExecShellSettingsError) -> RpcError {
 }
 
 pub(crate) struct ExecShellSettingsPlugin {
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     methods: Key<ManagementMethods>,
 }
 

@@ -786,13 +786,13 @@ impl SkillSettings for SlowFirstResponse {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_late_update_response_does_not_overwrite_a_newer_setting() {
     use dim_agent_capabilities::{
-        host_platform::HostPlatform, skill_settings::SkillSettingsHost, skills::SkillsCatalogPlugin,
+        host_platform::ExecHost, skill_settings::SkillSettingsHost, skills::SkillsCatalogPlugin,
     };
     use std::sync::Arc;
     let dirs = Dirs::new();
     let layout = layout(&dirs);
     let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
-    root.provide_as::<HostPlatform>(Arc::new(platform(&dirs.home)))
+    root.provide_as::<ExecHost>(Arc::new(platform(&dirs.home)))
         .unwrap();
     let settings = Arc::new(SlowFirstResponse {
         inner: Arc::default(),
@@ -1062,13 +1062,13 @@ async fn unavailable_settings_isolate_skills_and_refresh_recovers_existing_sessi
 #[tokio::test(flavor = "multi_thread")]
 async fn a_failed_read_back_is_reported_and_recovered_by_the_next_query() {
     use dim_agent_capabilities::{
-        host_platform::HostPlatform, skill_settings::SkillSettingsHost, skills::SkillsCatalogPlugin,
+        host_platform::ExecHost, skill_settings::SkillSettingsHost, skills::SkillsCatalogPlugin,
     };
     use std::sync::Arc;
     let dirs = Dirs::new();
     let layout = layout(&dirs);
     let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
-    root.provide_as::<HostPlatform>(Arc::new(platform(&dirs.home)))
+    root.provide_as::<ExecHost>(Arc::new(platform(&dirs.home)))
         .unwrap();
     let settings = Arc::new(FailingReads {
         inner: Arc::default(),
@@ -1871,7 +1871,7 @@ async fn remove_deletes_only_what_the_record_owns() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_catalog_restores_installations_from_settings() {
-    use dim_agent_capabilities::{host_platform::HostPlatform, skill_settings::SkillSettingsHost};
+    use dim_agent_capabilities::{host_platform::ExecHost, skill_settings::SkillSettingsHost};
 
     let dirs = Dirs::new();
     let source = installation_source(&dirs);
@@ -1894,7 +1894,7 @@ async fn a_new_catalog_restores_installations_from_settings() {
     env.agent.close().await.unwrap();
 
     let root = rutis::Ctx::root_with(tokio::runtime::Handle::current());
-    root.provide_as::<HostPlatform>(Arc::new(platform(&dirs.home)))
+    root.provide_as::<ExecHost>(Arc::new(platform(&dirs.home)))
         .unwrap();
     let settings: Arc<dyn SkillSettings> = settings;
     root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))

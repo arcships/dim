@@ -9,8 +9,8 @@ use std::{ffi::OsString, path::PathBuf, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 /// A platform whose Process isolation switch is off.
-fn platform() -> HostPlatform {
-    HostPlatform::current(ShellStatus::Unavailable {
+fn platform() -> ExecHost {
+    ExecHost::current(ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })

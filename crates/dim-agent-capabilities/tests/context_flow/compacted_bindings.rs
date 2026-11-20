@@ -7,7 +7,7 @@ use dim_agent_capabilities::{
     agent_loop::AgentLoop,
     defaults,
     history::summary_message,
-    host_platform::{HostPlatform, ShellStatus},
+    host_platform::{ExecHost, ShellStatus},
     workspace_tools::{self, WorkspaceToolsConfig},
 };
 use dim_agent_runtime::testing::chain_events;
@@ -173,7 +173,7 @@ impl Files {
         let dir = std::env::temp_dir().join(format!("dim-compacted-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
-        let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+        let mut platform = ExecHost::current(ShellStatus::Unavailable {
             code: "COMPACTED_BINDINGS_TEST",
             reason: "The file tools run no command here.".into(),
         })
@@ -222,7 +222,7 @@ impl Files {
             },
         );
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide_as::<HostPlatform>(Arc::new(platform))?;
+            root.provide_as::<ExecHost>(Arc::new(platform))?;
             Ok(())
         })
         .await

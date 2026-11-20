@@ -14,7 +14,7 @@ use crate::{
         handlers,
     },
     host::{HostError, HostFuture},
-    host_platform::{ConfiguredCommand, ConfiguredEnd, ConfiguredError, HostPlatform, Os},
+    host_platform::{ConfiguredCommand, ConfiguredEnd, ConfiguredError, ExecHost, Os},
     input_queue::{CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks},
     permission::{AdmissionDecision, AdviseTool, Permission, ToolAdviceReply, ToolAdviceRequest},
     tool_registry::ToolRegistry,
@@ -103,7 +103,7 @@ type PendingRun = Pin<Box<dyn Future<Output = (usize, HookResult)> + Send>>;
 /// The Session service that reads the sources and runs commands.
 pub struct HooksRuntime {
     sources: Arc<HookSourcesHost>,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     config: Arc<SessionConfig>,
     identity: Arc<SessionIdentity>,
     cancel: CancellationToken,
@@ -923,7 +923,7 @@ impl CheckSubmission for PromptSubmitCheck {
 
 pub struct HooksSessionPlugin {
     sources: Key<HookSourcesHost>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     config: Key<SessionConfig>,
     identity: Key<SessionIdentity>,
     checks: Key<SubmitChecks>,
@@ -2759,10 +2759,10 @@ mod tests {
     #[cfg(unix)]
     fn test_runtime(dir: &Path, sources: Arc<dyn ReadHookSources>) -> Arc<HooksRuntime> {
         use crate::host_platform::{
-            ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+            ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
         };
         std::fs::create_dir_all(dir.join("home")).unwrap();
-        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+        let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
             executable_path: "/bin/sh".into(),
             edition: ShellEdition::Sh,
             source: ShellSource::Fallback,

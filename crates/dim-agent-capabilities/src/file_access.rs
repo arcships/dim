@@ -1,7 +1,7 @@
 //! Session file facts and on-demand worktree membership.
 use crate::{
     host::{HostError, HostFuture, SessionFiles},
-    host_platform::{HostPlatform, ProcessSpec},
+    host_platform::{ExecHost, ProcessSpec},
     session_grants::SessionGrantsHost,
     workspace_tools::files::canonical_prefix,
 };
@@ -226,7 +226,7 @@ impl ReadFileAccessFacts for Facts {
 struct FileAccessFactsPlugin {
     fs: Key<crate::file_storage::FsHost>,
     config: Key<SessionConfig>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     files: Key<SessionFiles>,
     grants: Key<SessionGrantsHost>,
     identity: Key<SessionIdentity>,
@@ -497,7 +497,7 @@ struct State {
 struct Worktrees {
     fs: Arc<crate::file_storage::FsHost>,
     ctx: Ctx,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     lifecycle: Arc<SessionLifecycle>,
     session: String,
     workspace: PathBuf,
@@ -510,7 +510,7 @@ impl Worktrees {
     fn new(
         ctx: Ctx,
         fs: Arc<crate::file_storage::FsHost>,
-        platform: Arc<HostPlatform>,
+        platform: Arc<ExecHost>,
         lifecycle: Arc<SessionLifecycle>,
         session: String,
         workspace: PathBuf,
@@ -909,7 +909,7 @@ impl GitProbe<'_> {
             cwd: cwd.to_path_buf(),
             env,
         };
-        let mut tree = crate::host_platform::ProcessTree::spawn(HostPlatform::command(
+        let mut tree = crate::host_platform::ProcessTree::spawn(ExecHost::command(
             &spec,
             std::process::Stdio::null(),
         ))

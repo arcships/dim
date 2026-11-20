@@ -6,7 +6,7 @@ use super::{
     install,
 };
 use crate::{
-    host_platform::HostPlatform,
+    host_platform::ExecHost,
     settings::{SettingsChanged, settings_changes},
     skill_settings::{
         SOURCE, SettingsVersion, SkillInstallSource, SkillInstallation, SkillSettings,
@@ -722,7 +722,7 @@ fn validate_selection(selection: &[SelectedSkill]) -> Result<Vec<SelectedSkill>,
 /// The Skills plugin: `SkillsCatalog` at the process, and the Session and
 /// branch parts it registers ([`super::register_parts`]).
 pub struct SkillsCatalogPlugin {
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     settings: Key<SkillSettingsHost>,
     parts: Key<PartRegistry>,
 }

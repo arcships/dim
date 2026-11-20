@@ -1,6 +1,6 @@
 //! Server-owned stdio only; client-local processes require a separate bridge.
 use super::{DIAGNOSTIC_BYTES, McpServerError, Result};
-use dim_agent_capabilities::host_platform::HostPlatform;
+use dim_agent_capabilities::host_platform::ExecHost;
 use futures_util::{SinkExt, StreamExt};
 use rmcp::{
     RoleClient,
@@ -141,7 +141,7 @@ impl Config {
     /// system and Windows directories, and the parent's `PATH`, with `.exe`
     /// appended when the name has no extension. A `.cmd` shim such as
     /// `npx.cmd` is found only by its full name.
-    fn child_path(&self, platform: Option<&HostPlatform>) -> Option<OsString> {
+    fn child_path(&self, platform: Option<&ExecHost>) -> Option<OsString> {
         let platform = platform?;
         let base = self
             .env
@@ -163,7 +163,7 @@ impl Config {
     pub fn spawn(
         &self,
         failure: Arc<StdMutex<Option<String>>>,
-        platform: Option<&HostPlatform>,
+        platform: Option<&ExecHost>,
     ) -> Result<StdioTransport> {
         let mut command = Command::new(&self.command);
         command

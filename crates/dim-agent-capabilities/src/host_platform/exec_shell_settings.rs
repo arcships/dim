@@ -1,4 +1,4 @@
-use super::{HostPlatform, ShellStatus, native, parse_preference, resolve_shell};
+use super::{ExecHost, ShellStatus, native, parse_preference, resolve_shell};
 use crate::file_storage::{FileStorageError, FsPermissions};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -51,7 +51,7 @@ fn optional_bytes(
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     async fn shell_settings_snapshot(
         &self,
         bytes: Option<&[u8]>,

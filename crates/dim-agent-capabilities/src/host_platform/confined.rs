@@ -1,7 +1,7 @@
 //! A host-owned helper process: its own file and network boundary, a timeout
 //! and bounded output, see
 //! `docs/architecture/rust-agent/plugins/HostPlatform.md`.
-use super::{HostPlatform, ProcessSpec, ProcessTree, env_var};
+use super::{ExecHost, ProcessSpec, ProcessTree, env_var};
 use std::{
     ffi::{OsStr, OsString},
     io,
@@ -141,7 +141,7 @@ impl std::error::Error for ConfinedError {
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     /// Starts a host-owned helper under its own boundary and collects its
     /// bounded output. The helper reads the system baseline, its executable
     /// and `confinement.read`; writes only inside `confinement.write`; reaches

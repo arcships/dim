@@ -13,7 +13,7 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     history::HistoryRenderer,
     host::*,
-    host_platform::{HostPlatform, HostPlatformConfig, HostPlatformPlugin, resolve_shell},
+    host_platform::{ExecHost, HostPlatformConfig, HostPlatformPlugin, resolve_shell},
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
     skill_settings::SkillSettingsHost,
@@ -101,19 +101,19 @@ impl ModelDriver for Script {
 }
 
 /// Provides the process HostPlatform the design lets tests construct.
-struct PlatformPlugin(Arc<HostPlatform>);
+struct PlatformPlugin(Arc<ExecHost>);
 impl Plugin for PlatformPlugin {
     type Deps = ();
     fn name(&self) -> &str {
         "TestHostPlatform"
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide_as::<HostPlatform>(self.0.clone())?;
+        ctx.provide_as::<ExecHost>(self.0.clone())?;
         Ok(())
     }
 }
 /// `platform` provided by [`PlatformPlugin`], a row of the harness's host.
-fn test_platform(platform: HostPlatform) -> impl FnOnce(&mut AgentBuilder) {
+fn test_platform(platform: ExecHost) -> impl FnOnce(&mut AgentBuilder) {
     let platform = Arc::new(platform);
     move |builder| {
         builder.plugin(move |_| Ok(Box::new(PlatformPlugin(platform.clone()))));
@@ -153,11 +153,11 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
-async fn platform(extra: &[(&str, &str)]) -> HostPlatform {
+async fn platform(extra: &[(&str, &str)]) -> ExecHost {
     let mut env: Vec<_> = std::env::vars_os().collect();
     env.retain(|(key, _)| key != "SHELL");
     env.push(("SHELL".into(), "/bin/bash".into()));
-    let mut platform = HostPlatform::current(resolve_shell(Ok(None), &env).await)
+    let mut platform = ExecHost::current(resolve_shell(Ok(None), &env).await)
         .unwrap()
         .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default()));
     platform.env.extend(
@@ -178,15 +178,15 @@ struct Harness {
 }
 
 impl Harness {
-    async fn new(platform: HostPlatform) -> Self {
+    async fn new(platform: ExecHost) -> Self {
         Self::with_context(platform, false).await
     }
     /// The same assembly with a context model and a strategy bound, so a flow
     /// test can compact (`local_support/compaction.rs`).
-    async fn new_compacting(platform: HostPlatform) -> Self {
+    async fn new_compacting(platform: ExecHost) -> Self {
         Self::with_context(platform, true).await
     }
-    async fn with_context(mut platform: HostPlatform, compacting: bool) -> Self {
+    async fn with_context(mut platform: ExecHost, compacting: bool) -> Self {
         let home = scratch("home");
         platform.home = home.clone();
         let cwd = scratch("cwd");

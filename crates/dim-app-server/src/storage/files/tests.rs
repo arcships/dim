@@ -7,7 +7,7 @@
 use super::*;
 use crate::storage::{SessionStore, SqliteTimelineStore};
 use dim_agent_capabilities::file_storage::FileStoragePlugin;
-use dim_agent_capabilities::host_platform::{HostPlatform, ShellStatus};
+use dim_agent_capabilities::host_platform::{ExecHost, ShellStatus};
 use dim_agent_runtime::{SessionConfig, TimelineStore};
 use rutis::host::CtxHost;
 use std::path::PathBuf;
@@ -587,7 +587,7 @@ async fn concurrent_deletes_remove_a_shared_output_directory() {
 #[tokio::test]
 async fn a_delete_removes_shell_output_of_its_last_owner() {
     let fixture = Fixture::new().await;
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "DELETE_FLOW",
         reason: "Deleting output runs no command".into(),
     })
@@ -595,7 +595,7 @@ async fn a_delete_removes_shell_output_of_its_last_owner() {
     platform.home = fixture.home.clone();
     fixture
         .root
-        .provide_as::<HostPlatform>(Arc::new(platform))
+        .provide_as::<ExecHost>(Arc::new(platform))
         .unwrap();
     let store = SessionStore::new(
         fixture.db.clone(),

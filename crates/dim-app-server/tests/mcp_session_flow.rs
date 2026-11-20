@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response, Sse, sse::Event},
     routing::post,
 };
-use dim_agent_capabilities::host_platform::{HostPlatform, ShellStatus};
+use dim_agent_capabilities::host_platform::{ExecHost, ShellStatus};
 use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, MockTools},
@@ -572,7 +572,7 @@ impl Env {
     async fn with_stdio_toolchain(bin: PathBuf, root: PathBuf) -> Self {
         let fixture =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp-minimal.cjs");
-        let platform = HostPlatform::current(ShellStatus::Unavailable {
+        let platform = ExecHost::current(ShellStatus::Unavailable {
             code: "test",
             reason: "stdio does not need a shell".into(),
         })
@@ -601,7 +601,7 @@ impl Env {
         configure: impl FnOnce(&mut AgentBuilder, &Arc<Remote>),
         configuration: impl FnOnce(&str, &Path) -> Value,
         credential_names: BTreeSet<String>,
-        platform: Option<HostPlatform>,
+        platform: Option<ExecHost>,
     ) -> Self {
         let remote = Remote::new();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

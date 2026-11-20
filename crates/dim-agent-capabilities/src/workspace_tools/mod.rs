@@ -19,7 +19,7 @@ pub use pending::call_positions;
 use crate::{
     file_storage::mentions::MentionsRequest,
     host::{HostError, HostFuture, SessionFiles, ToolDriver, ToolExecutionContext, ToolHost},
-    host_platform::HostPlatform,
+    host_platform::ExecHost,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     timeline_tree::TreeCommands,
     tool_registry::ToolConcurrency,
@@ -124,7 +124,7 @@ impl DynPlugin for WorkspaceToolsOwner {
 pub(crate) struct WorkspaceTools {
     ctx: Ctx,
     facts: Key<crate::file_access::FileAccessFacts>,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     exec_definition: ToolDefinition,
     execution_home: PathBuf,
     execution_os: crate::host_platform::Os,
@@ -326,7 +326,7 @@ impl ToolDriver for WorkspaceTools {
 struct WorkspaceToolsPlugin {
     facts: Key<crate::file_access::FileAccessFacts>,
     host: Key<ToolHost>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     session_config: Key<SessionConfig>,
     identity: Key<SessionIdentity>,
     tree: Key<TreeCommands>,

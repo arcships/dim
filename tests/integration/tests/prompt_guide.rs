@@ -11,7 +11,7 @@ use dim_agent_capabilities::{
     defaults,
     history::HistoryRenderer,
     host::*,
-    host_platform::HostPlatform,
+    host_platform::ExecHost,
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
@@ -93,7 +93,7 @@ fn mock_model_hosts(builder: &mut AgentBuilder) {
 /// read.
 async fn platform_host(builder: &AgentBuilder, dirs: &Dirs) -> MinimalHost {
     MinimalHost::start_with(builder, |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(platform(&dirs.home)))?;
+        root.provide_as::<ExecHost>(Arc::new(platform(&dirs.home)))?;
         Ok(())
     })
     .await

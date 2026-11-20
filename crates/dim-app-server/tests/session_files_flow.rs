@@ -377,7 +377,7 @@ async fn a_put_without_active_file_storage_reports_node_unavailable() {
 async fn a_session_reads_its_own_file_without_an_approval_request() {
     use dim_agent_capabilities::{
         defaults,
-        host_platform::{HostPlatform, ShellStatus},
+        host_platform::{ExecHost, ShellStatus},
         permission::PermissionState,
         workspace_tools::WorkspaceToolsConfig,
     };
@@ -388,7 +388,7 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
     let work = home.0.join("work");
     std::fs::create_dir(&work).unwrap();
     let store = Store::mount(&home, true).await;
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "SESSION_FILES_TEST",
         reason: "Reading a Session file runs no command".into(),
     })
@@ -411,7 +411,7 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
         },
     );
     let agent = MinimalHost::start_with(&builder, |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(platform))?;
+        root.provide_as::<ExecHost>(Arc::new(platform))?;
         Ok(())
     })
     .await

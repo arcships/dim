@@ -221,7 +221,7 @@ struct State {
 }
 
 pub struct BackgroundExec {
-    platform: Arc<crate::host_platform::HostPlatform>,
+    platform: Arc<crate::host_platform::ExecHost>,
     timeline: Arc<Timeline>,
     from: Option<TimelinePosition>,
     /// Gives each task its Session hold.
@@ -963,7 +963,7 @@ fn output_truncated(result: &ToolResult) -> Option<bool> {
 const EXEC_ENTRY: &str = r#"<dim-notification source="exec" task="exec-7f2">: something you started has finished, failed or been cancelled, such as a background command. It is information, not a new request. The output preview belongs to that command. Use the read tool with its output path to read the full result. If the work it belongs to is no longer wanted, note the result and do not restart that work."#;
 
 pub struct BackgroundExecPlugin {
-    platform: Key<crate::host_platform::HostPlatform>,
+    platform: Key<crate::host_platform::ExecHost>,
     exec: Key<BackgroundExec>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,

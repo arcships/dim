@@ -11,7 +11,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules, Permission},
@@ -32,7 +32,7 @@ struct Product {
 }
 
 async fn product(dirs: &Dirs) -> Product {
-    let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+    let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
         executable_path: "/bin/sh".into(),
         edition: ShellEdition::Sh,
         source: ShellSource::Fallback,
@@ -73,7 +73,7 @@ async fn product(dirs: &Dirs) -> Product {
     );
     builder.plugin(|names| Ok(Box::new(SkillsCatalogPlugin::new(names)?)));
     let agent = MinimalHost::start_with(&builder, |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(platform))?;
+        root.provide_as::<ExecHost>(Arc::new(platform))?;
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(Arc::new(
             MemorySkillSettings::default(),
         ))))?;

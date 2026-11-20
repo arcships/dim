@@ -2944,7 +2944,7 @@ mod toolhost {
         defaults,
         execution_settings::ExecutionSettingsHost,
         host_platform::{
-            ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+            ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
         },
         workspace_tools::{self, FileToolBoundary, WorkspaceToolsConfig},
     };
@@ -2959,7 +2959,7 @@ mod toolhost {
         std::fs::create_dir_all(root.join("home")).unwrap();
         let root = root.canonicalize().unwrap();
         let workspace = root.join("workspace");
-        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+        let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
             executable_path: "/bin/sh".into(),
             edition: ShellEdition::Sh,
             source: ShellSource::Fallback,
@@ -2988,7 +2988,7 @@ mod toolhost {
             },
         );
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide_as::<HostPlatform>(Arc::new(platform))?;
+            root.provide_as::<ExecHost>(Arc::new(platform))?;
             Ok(())
         })
         .await

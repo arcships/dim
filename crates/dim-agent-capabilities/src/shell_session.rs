@@ -14,7 +14,7 @@ use crate::workspace_tools::background::BackgroundExec;
 use crate::{
     exec_stop::{ExecStop, TaskError},
     host::{HostError, SessionFiles},
-    host_platform::{HostPlatform, PtySize, ShellEdition, kill_job, shell::ShellTask, stop_job},
+    host_platform::{ExecHost, PtySize, ShellEdition, kill_job, shell::ShellTask, stop_job},
 };
 use dim_agent_runtime::{Dispatcher, Names, Timeline};
 use dim_agent_types::{
@@ -298,7 +298,7 @@ struct Settlement {
 /// The persistent shell of one branch.
 struct NativeShell {
     task: Arc<ShellTask>,
-    host: Arc<HostPlatform>,
+    host: Arc<ExecHost>,
     id: String,
 }
 impl std::ops::Deref for NativeShell {
@@ -328,7 +328,7 @@ pub struct ShellSession {
     inner: tokio::sync::Mutex<Inner>,
     config: ShellSessionConfig,
     lifecycle: CancellationToken,
-    host: Arc<HostPlatform>,
+    host: Arc<ExecHost>,
     timeline: Arc<Timeline>,
     #[expect(
         dead_code,
@@ -346,7 +346,7 @@ impl ShellSession {
     /// The branch must mount BackgroundExec to recover exec facts and publish completion notices.
     pub fn new(
         config: ShellSessionConfig,
-        host: Arc<HostPlatform>,
+        host: Arc<ExecHost>,
         timeline: Arc<Timeline>,
         dispatcher: Arc<Dispatcher>,
         owner: Option<Arc<SessionFiles>>,
@@ -1438,7 +1438,7 @@ pub struct ShellSessionPlugin {
     stop: Key<dyn ExecStop>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
-    host: Key<HostPlatform>,
+    host: Key<ExecHost>,
     lifecycle: Key<dim_agent_runtime::BranchLifecycle>,
     session_config: Key<dim_agent_runtime::SessionConfig>,
     identity: Key<dim_agent_runtime::TimelineIdentity>,

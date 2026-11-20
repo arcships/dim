@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
     },
     host::*,
     host_platform::{
-        ExecShellRuntime, HostPlatform, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     methods::{RpcError, SessionMethods},
     model_provider::ModelProviderPlugin,
@@ -546,7 +546,7 @@ impl Env {
         std::fs::create_dir_all(dir.join("work")).unwrap();
         std::fs::create_dir_all(dir.join("home")).unwrap();
         let dir = dir.canonicalize().unwrap();
-        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+        let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
             executable_path: "/bin/sh".into(),
             edition: ShellEdition::Sh,
             source: ShellSource::Fallback,
@@ -659,7 +659,7 @@ impl Env {
             dim_agent_capabilities::hooks::install(&mut builder);
         }
         let agent = MinimalHost::start_with(&builder, |root, _| {
-            root.provide_as::<HostPlatform>(Arc::new(platform))?;
+            root.provide_as::<ExecHost>(Arc::new(platform))?;
             root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(Arc::new(
                 MemorySkillSettings::default(),
             ))))?;

@@ -23,7 +23,7 @@ use dim_agent_capabilities::host::{
     SelectableModelsHost,
 };
 use dim_agent_capabilities::host_platform::{
-    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, HostPlatform, SystemServices,
+    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, ExecHost, SystemServices,
 };
 use dim_agent_capabilities::methods::{Progress, RpcError};
 use dim_agent_types::ModelId;
@@ -2160,7 +2160,7 @@ impl Shared {
             }
             return;
         }
-        let Some(platform) = self.ctx.get::<HostPlatform>() else {
+        let Some(platform) = self.ctx.get::<ExecHost>() else {
             if !slot.cancel_requested() {
                 self.fail(slot, "unavailable", "The host platform is unavailable")
                     .await;
