@@ -18,6 +18,10 @@ use tokio_util::sync::CancellationToken;
 pub struct Store(pub(super) Arc<SessionStore>);
 
 impl Store {
+    pub(crate) fn bind_timeline(&self, builder: &mut dim_agent_runtime::AgentBuilder) {
+        builder.timeline_store(self.0.timeline_store());
+    }
+
     pub fn session_config(
         &self,
         session_id: &str,

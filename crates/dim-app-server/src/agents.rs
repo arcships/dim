@@ -2,7 +2,7 @@ use crate::{
     ProcessActivity, ProcessHold, ServerConfig,
     protocol::{AgentInfo, CreateWorktree, SessionOrigin},
     settings::SettingsService,
-    storage::{PreparedWorktree, SessionStore, SqliteStorage, Store},
+    storage::{PreparedWorktree, SqliteStorage, Store},
     worktrees::{CreatedWorktree, ManagedWorktrees, WorktreeError},
 };
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
@@ -2125,7 +2125,7 @@ impl AgentIndex {
     }
 }
 
-type StoredKeys = (Key<Store>, Key<SessionStore>, Key<SqliteStorage>);
+type StoredKeys = (Key<Store>, Key<SqliteStorage>);
 
 /// Owns every Agent subtree: the process assembly entry.
 pub(crate) struct AgentsPlugin {
@@ -2153,7 +2153,7 @@ impl AgentsPlugin {
             stored: config
                 .database_path
                 .is_some()
-                .then(|| Ok::<_, Error>((names.key()?, names.key()?, names.key()?)))
+                .then(|| Ok::<_, Error>((names.key()?, names.key()?)))
                 .transpose()?,
             settings: config
                 .local_execution()
@@ -2175,9 +2175,8 @@ impl DynPlugin for AgentsPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         let mut injects = Vec::new();
-        if let Some((store, native, storage)) = &self.stored {
+        if let Some((store, storage)) = &self.stored {
             injects.push(store.erase());
-            injects.push(native.erase());
             injects.push(storage.erase());
         }
         if let Some(settings) = &self.settings {
@@ -2192,11 +2191,7 @@ impl DynPlugin for AgentsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let stored = match &self.stored {
-                Some((store, native, storage)) => Some((
-                    ctx.require_at(store)?,
-                    ctx.require_at(native)?,
-                    ctx.require_at(storage)?,
-                )),
+                Some((store, storage)) => Some((ctx.require_at(store)?, ctx.require_at(storage)?)),
                 None => None,
             };
             let settings = match &self.settings {
@@ -2233,8 +2228,8 @@ impl DynPlugin for AgentsPlugin {
             )?;
             let mut builder = self.builder.clone();
             let (records, session_store) = match stored {
-                Some((store, native, storage)) => {
-                    builder.timeline_store(native.timeline_store());
+                Some((store, storage)) => {
+                    store.bind_timeline(&mut builder);
                     (Some(storage), Some(store))
                 }
                 None => (None, None),

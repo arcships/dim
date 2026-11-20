@@ -873,6 +873,7 @@ impl SqliteStorage {
         self: &Arc<Self>,
         session_id: &str,
     ) -> dim_agent_runtime::Result<Vec<PathBuf>> {
+        crate::protocol::check_session_id(session_id)?;
         let session = session_id.to_owned();
         let own = self
             .path

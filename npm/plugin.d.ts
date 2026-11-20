@@ -620,7 +620,7 @@ export type StoredAgentProfile = {
   name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
-export interface SqliteStorage extends Pick<Store, "catalog" | "fork" | "createOwnedSession" | "associateWorktree" | "removeWorktreeDirectory" | "addGrant" | "removeGrant" | "grants" | "setSessionLanguage" | "creationRecord" | "owner" | "hasRecords" | "sessionConfigText" | "worktreeDirectories" | "sessionsUnderWorkspace" | "worktreeUsages">, Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+export interface SqliteStorage extends Pick<Store, "readMetadata" | "setTitle" | "catalog" | "fork" | "createOwnedSession" | "associateWorktree" | "removeWorktreeDirectory" | "addGrant" | "removeGrant" | "grants" | "setSessionLanguage" | "creationRecord" | "owner" | "hasRecords" | "sessionConfigText" | "worktreeDirectories" | "sessionsUnderWorkspace" | "worktreeUsages">, Pick<TimelineStore, "readPage" | "readSegments" | "query" | "trace" | "saveSnapshot" | "latestSnapshot" | "releaseSession" | "rollbackSession" | "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
   commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
   readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
   writeSelection(request: { scope: string; expectedVersion?: number | null; selection: ModelId }): Promise<StoredProviderSelection>;

@@ -2547,6 +2547,16 @@ impl HostDispatch for SqliteDispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::Value::Object(
             [
+                "readMetadata",
+                "setTitle",
+                "readPage",
+                "readSegments",
+                "query",
+                "trace",
+                "saveSnapshot",
+                "latestSnapshot",
+                "releaseSession",
+                "rollbackSession",
                 "batchEnd",
                 "batchEndAt",
                 "createSession",
@@ -2623,6 +2633,16 @@ impl HostDispatch for SqliteDispatch {
             deny_unknown_fields
         )]
         enum Request {
+            ReadMetadata(dim_agent_runtime::TimelineSessionRequest),
+            SetTitle(super::metadata::SetTitleRequest),
+            ReadPage(dim_agent_runtime::TimelinePageRequest),
+            ReadSegments(dim_agent_runtime::TimelineSegmentsRequest),
+            Query(Box<dim_agent_runtime::TimelineQueryRequest>),
+            Trace(dim_agent_runtime::TimelinePositionRequest),
+            SaveSnapshot(dim_agent_runtime::TimelineSaveSnapshotRequest),
+            LatestSnapshot(dim_agent_runtime::TimelineSnapshotRequest),
+            ReleaseSession(dim_agent_runtime::TimelineSessionRequest),
+            RollbackSession(dim_agent_runtime::TimelineSessionRequest),
             BatchEnd(dim_agent_runtime::TimelinePositionRequest),
             BatchEndAt(dim_agent_runtime::TimelinePositionRequest),
             CreateSession(Box<dim_agent_runtime::TimelineCreateRequest>),
@@ -2741,6 +2761,64 @@ impl HostDispatch for SqliteDispatch {
         let db = self.0.clone();
         Ok(BridgeValue::cancellable_future(async move {
             let value = match request {
+                Request::ReadMetadata(p) => {
+                    super::metadata::envelope(db.read_metadata(p.session_id).await)
+                }
+                Request::SetTitle(p) => super::metadata::envelope(
+                    db.set_title(p.session_id, p.expected_revision, p.title)
+                        .await
+                        .map(|revision| serde_json::json!({"revision":revision})),
+                ),
+                Request::ReadPage(p) => {
+                    serde_json::json!({"events":db.page(&dim_agent_runtime::TimelineKey {session_id:p.session_id,branch_id:p.branch_id}, p.after,p.limit,p.through,&mut super::codec::Reader::new(super::codec::CONTENT_BUDGET)).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::ReadSegments(p) => {
+                    serde_json::json!({"segments":db.segments(&p.session_id, p.segments.into_iter().map(|segment| (segment.branch_id,segment.from..=segment.through)).collect(),&mut super::codec::Reader::new(super::codec::CONTENT_BUDGET)).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::Trace(p) => {
+                    serde_json::json!({"trace":db.trace(&dim_agent_runtime::TimelineKey {session_id:p.session_id,branch_id:p.branch_id},p.sequence,&mut super::codec::Reader::new(super::codec::CONTENT_BUDGET)).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::SaveSnapshot(p) => {
+                    db.save_snapshot(
+                        &dim_agent_runtime::TimelineKey {
+                            session_id: p.session_id,
+                            branch_id: p.branch_id,
+                        },
+                        p.snapshot,
+                        &mut super::codec::Reader::new(super::codec::CONTENT_BUDGET),
+                    )
+                    .await
+                    .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({})
+                }
+                Request::LatestSnapshot(p) => {
+                    serde_json::json!({"snapshot":db.latest_snapshot(&dim_agent_runtime::TimelineKey {session_id:p.session_id,branch_id:p.branch_id},p.through,&p.interpreter).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::RollbackSession(p) => {
+                    db.rollback_session(&p.session_id)
+                        .await
+                        .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({})
+                }
+                Request::ReleaseSession(p) => {
+                    let _operation = db.admit().map_err(storage_failure)?;
+                    db.release_session(&p.session_id);
+                    serde_json::json!({})
+                }
+                Request::Query(p) => {
+                    let (result, _) = db
+                        .query(
+                            &p.scope,
+                            &p.query,
+                            p.page.as_ref(),
+                            super::codec::Reader::new(super::codec::CONTENT_BUDGET),
+                            #[cfg(feature = "testing")]
+                            Arc::default(),
+                        )
+                        .await
+                        .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!(result.map_err(dim_agent_runtime::timeline_store_failure)?)
+                }
                 Request::BatchEnd(p) => {
                     db.batch_end(
                         dim_agent_runtime::TimelineKey {
@@ -2865,7 +2943,12 @@ impl HostDispatch for SqliteDispatch {
                     serde_json::json!({})
                 }
                 Request::AssociateWorktree(p) => {
-                    db.associate_worktree(&p.session_id, p.directory(), p.subtree.into())
+                    let paths = super::timeline::worktree_association_paths(
+                        &p.directory(),
+                        std::path::Path::new(&p.subtree),
+                    )
+                    .map_err(storage_failure)?;
+                    db.associate_worktree(&p.session_id, paths)
                         .await
                         .map_err(storage_failure)?;
                     serde_json::json!({})

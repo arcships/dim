@@ -270,7 +270,7 @@ impl SqliteTimelineStore {
                     }
                     Command::Release { session_id, done } => {
                         let Some(store) = weak.upgrade() else { break };
-                        store.forget(&session_id);
+                        store.db.release_session(&session_id);
                         store
                             .admission
                             .lock()
@@ -341,40 +341,13 @@ impl SqliteTimelineStore {
         through: u64,
         request_bodies: RequestBodies,
     ) -> Result<Vec<StoredEvent>> {
-        if after > through {
-            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
-        }
-        if through > self.head(key).await? {
-            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
-        }
-        self.batch_end(key, through).await?;
-        if after > 0 && after != through {
-            self.batch_end(key, after).await?;
-        }
-        let mut end = through.min(after.saturating_add(limit as u64));
-        if end <= after {
-            return Ok(vec![]);
-        }
-        let mut next = after + 1;
-        let mut events = vec![];
         let mut reader = self.reader(request_bodies);
-        while next <= end {
-            let last = end.min(next.saturating_add(255));
-            let page = read_range(&self.db, &mut reader, key, next..=last, false).await?;
-            if page.len() as u64 != last - next + 1 {
-                return Err(error("Timeline read contains a sequence gap"));
-            }
-            if last == end {
-                end = page.last().unwrap().batch_end;
-                if end < last || end > through {
-                    return Err(error("invalid Timeline batch boundary"));
-                }
-            }
-            events.extend(page);
-            next = last + 1;
-        }
+        let result = self
+            .db
+            .page(key, after, limit, through, &mut reader)
+            .await?;
         self.finish(reader);
-        Ok(events)
+        Ok(result)
     }
     /// The records of `segments`, decoded with one reader of `request_bodies`.
     async fn segments(
@@ -383,45 +356,8 @@ impl SqliteTimelineStore {
         segments: Vec<(String, RangeInclusive<u64>)>,
         request_bodies: RequestBodies,
     ) -> Result<Vec<Vec<StoredEvent>>> {
-        let session = session_id.to_owned();
-        let mut result = Vec::with_capacity(segments.len());
         let mut reader = self.reader(request_bodies);
-        for (branch_id, range) in segments {
-            let key = TimelineKey {
-                session_id: session.clone(),
-                branch_id,
-            };
-            let through = self.head(&key).await?;
-            if *range.end() > through {
-                return Err(AgentError::InvalidInput("future Timeline sequence".into()));
-            }
-            let mut records = vec![];
-            let mut next = *range.start();
-            while next <= *range.end() {
-                let end = next.saturating_add(255).min(*range.end());
-                let page = read_range(&self.db, &mut reader, &key, next..=end, false).await?;
-                let expected = if end >= next.max(1) {
-                    end - next.max(1) + 1
-                } else {
-                    0
-                };
-                if page.len() as u64 != expected {
-                    return Err(error("Timeline read contains a sequence gap"));
-                }
-                records.extend(page);
-                next = end + 1;
-            }
-            if records
-                .last()
-                .is_some_and(|record| record.batch_end > *range.end())
-            {
-                return Err(AgentError::InvalidInput(format!(
-                    "sequence {} is inside an atomic batch",
-                    range.end()
-                )));
-            }
-            result.push(records);
-        }
+        let result = self.db.segments(session_id, segments, &mut reader).await?;
         self.finish(reader);
         Ok(result)
     }
@@ -484,18 +420,6 @@ impl SqliteTimelineStore {
             .cloned()
             .unwrap_or_else(|| ROOT_BRANCH_ID.into())
     }
-    fn forget(&self, session: &str) {
-        self.db
-            .defaults
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(session);
-        self.db
-            .timeline_memo
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(session);
-    }
 }
 
 impl From<dim_agent_runtime::TimelineAppend> for TimelineBatch {
@@ -513,6 +437,227 @@ impl From<dim_agent_runtime::TimelineAppend> for TimelineBatch {
 }
 
 impl SqliteStorage {
+    pub(super) async fn page(
+        self: &Arc<Self>,
+        key: &TimelineKey,
+        after: u64,
+        limit: usize,
+        through: u64,
+        reader: &mut Reader,
+    ) -> Result<Vec<StoredEvent>> {
+        if after > through {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
+        }
+        if through > self.head(key.clone()).await? {
+            return Err(AgentError::InvalidInput("future Timeline cursor".into()));
+        }
+        self.batch_end(key.clone(), through).await?;
+        if after > 0 && after != through {
+            self.batch_end(key.clone(), after).await?;
+        }
+        let mut end = through.min(after.saturating_add(limit as u64));
+        if end <= after {
+            return Ok(vec![]);
+        }
+        let mut next = after + 1;
+        let mut events = vec![];
+        while next <= end {
+            let last = end.min(next.saturating_add(255));
+            let page = read_range(self, reader, key, next..=last, false).await?;
+            if page.len() as u64 != last - next + 1 {
+                return Err(error("Timeline read contains a sequence gap"));
+            }
+            if last == end {
+                end = page.last().unwrap().batch_end;
+                if end < last || end > through {
+                    return Err(error("invalid Timeline batch boundary"));
+                }
+            }
+            events.extend(page);
+            next = last + 1;
+        }
+        Ok(events)
+    }
+    pub(super) async fn segments(
+        self: &Arc<Self>,
+        session_id: &str,
+        segments: Vec<(String, RangeInclusive<u64>)>,
+        reader: &mut Reader,
+    ) -> Result<Vec<Vec<StoredEvent>>> {
+        let session = session_id.to_owned();
+        let mut result = Vec::with_capacity(segments.len());
+        for (branch_id, range) in segments {
+            let key = TimelineKey {
+                session_id: session.clone(),
+                branch_id,
+            };
+            let through = self.head(key.clone()).await?;
+            if *range.end() > through {
+                return Err(AgentError::InvalidInput("future Timeline sequence".into()));
+            }
+            let mut records = vec![];
+            let mut next = *range.start();
+            while next <= *range.end() {
+                let end = next.saturating_add(255).min(*range.end());
+                let page = read_range(self, reader, &key, next..=end, false).await?;
+                let expected = if end >= next.max(1) {
+                    end - next.max(1) + 1
+                } else {
+                    0
+                };
+                if page.len() as u64 != expected {
+                    return Err(error("Timeline read contains a sequence gap"));
+                }
+                records.extend(page);
+                next = end + 1;
+            }
+            if records
+                .last()
+                .is_some_and(|record| record.batch_end > *range.end())
+            {
+                return Err(AgentError::InvalidInput(format!(
+                    "sequence {} is inside an atomic batch",
+                    range.end()
+                )));
+            }
+            result.push(records);
+        }
+        Ok(result)
+    }
+    pub(super) fn release_session(&self, session: &str) {
+        self.defaults
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+        self.timeline_memo
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session);
+    }
+    pub(super) async fn rollback_session(self: &Arc<Self>, session_id: &str) -> Result<usize> {
+        let session = session_id.to_owned();
+        let released = self
+            .run_copy(move |connection| drop_session(connection, &session))
+            .await?;
+        self.release_session(session_id);
+        Ok(released)
+    }
+    pub(super) async fn trace(
+        self: &Arc<Self>,
+        key: &TimelineKey,
+        sequence: u64,
+        reader: &mut Reader,
+    ) -> Result<Option<TimelineTrace>> {
+        let record = read_range(self, reader, key, sequence..=sequence, false)
+            .await?
+            .pop();
+        Ok(record.and_then(|record| record.trace))
+    }
+    pub(super) async fn save_snapshot(
+        self: &Arc<Self>,
+        key: &TimelineKey,
+        snapshot: RecoverySnapshot,
+        reader: &mut Reader,
+    ) -> Result<()> {
+        let key = key.clone();
+        let sequence = snapshot.sequence;
+        holds_writing(
+            self,
+            reader,
+            None,
+            move |connection, reader, rows: &mut Option<Rows>| {
+                let rows = match rows {
+                    Some(rows) => rows,
+                    None => rows.insert(Rows::fetch(connection, &key, &(sequence..=sequence))?),
+                };
+                if !rows.advance(connection, &key.session_id, reader)? {
+                    return Ok(false);
+                }
+                let anchor = rows
+                    .records(&(sequence..=sequence), false)?
+                    .pop()
+                    .ok_or_else(|| error("snapshot anchor is missing"))?;
+                if anchor.event.id != snapshot.event_id {
+                    return Err(error("snapshot anchor is not the identified event"));
+                }
+                connection
+                    .execute(
+                        "INSERT OR REPLACE INTO timeline_snapshots VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        params![
+                            key.session_id,
+                            key.branch_id,
+                            sql_sequence(snapshot.sequence)?,
+                            snapshot.interpreter,
+                            snapshot.event_id,
+                            snapshot.state
+                        ],
+                    )
+                    .map_err(error)?;
+                Ok(true)
+            },
+        )
+        .await?;
+        Ok(())
+    }
+    pub(super) async fn latest_snapshot(
+        self: &Arc<Self>,
+        key: &TimelineKey,
+        through: u64,
+        interpreter: &str,
+    ) -> Result<Option<RecoverySnapshot>> {
+        let key = key.clone();
+        let interpreter = interpreter.to_owned();
+        self.run_read(move |connection| {
+                connection.query_row(
+                    "SELECT s.sequence, s.event_id, s.interpreter, s.state FROM timeline_snapshots s JOIN timeline_events e ON e.session_id=s.session_id AND e.branch_id=s.branch_id AND e.sequence=s.sequence AND e.event_id=s.event_id WHERE s.session_id=?1 AND s.branch_id=?2 AND s.sequence<=?3 AND s.interpreter=?4 AND typeof(s.sequence)='integer' AND s.sequence>0 AND typeof(s.event_id)='text' AND typeof(s.state)='text' AND json_valid(e.body) AND json_extract(e.body, '$.record.event.id')=s.event_id AND json_extract(e.body, '$.record.event.sequence')=s.sequence ORDER BY s.sequence DESC LIMIT 1",
+                    params![key.session_id, key.branch_id, sql_sequence(through)?, interpreter],
+                    |row| {
+                        Ok(RecoverySnapshot {
+                            sequence: read_sequence(row, 0)?,
+                            event_id: row.get(1)?,
+                            interpreter: row.get(2)?,
+                            state: row.get(3)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(error)
+            }).await
+    }
+    pub(super) async fn query(
+        self: &Arc<Self>,
+        scope: &dim_agent_runtime::TimelineReadScope,
+        query: &dim_agent_runtime::QuerySpec,
+        page: Option<&dim_agent_runtime::QueryPage>,
+        mut reader: Reader,
+        #[cfg(feature = "testing")] statistics: Arc<
+            Mutex<Option<Vec<super::query::QueryStatementStats>>>,
+        >,
+    ) -> Result<(Result<dim_agent_runtime::QueryResult>, Reader)> {
+        let scope = scope.clone();
+        let query = query.clone();
+        let page = page.cloned();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let _guard = cancel.clone().drop_guard();
+        let operation = cancel.clone();
+        let (result, reader) = self
+            .run_read_cancellable(cancel, move |connection| {
+                let result = super::query::execute(
+                    connection,
+                    &scope,
+                    &query,
+                    page.as_ref(),
+                    &mut reader,
+                    &operation,
+                    #[cfg(feature = "testing")]
+                    &statistics,
+                );
+                Ok((result, reader))
+            })
+            .await?;
+        Ok((result, reader))
+    }
+
     pub(super) async fn batch_end(self: &Arc<Self>, key: TimelineKey, sequence: u64) -> Result<()> {
         if self.batch_end_at(key, sequence).await? > sequence {
             return Err(AgentError::InvalidInput(format!(
@@ -1042,7 +1187,7 @@ impl RoundWriter<'_> {
 impl SqliteTimelineStore {
     #[cfg(test)]
     fn rollback_creation(&self, session_id: &str, fault: Option<fn()>) -> Result<()> {
-        self.forget(session_id);
+        self.db.release_session(session_id);
         let mut guard = self
             .db
             .connection
@@ -1415,6 +1560,7 @@ impl SessionStore {
         directory: WorktreeDirectory,
         subtree: PathBuf,
     ) -> Result<()> {
+        let paths = worktree_association_paths(&directory, &subtree)?;
         let _ownership = self.ownership.lock().await;
         if !tokio::fs::metadata(&directory.root)
             .await
@@ -1426,10 +1572,7 @@ impl SessionStore {
             ));
         }
 
-        self.timeline
-            .db
-            .associate_worktree(session_id, directory, subtree)
-            .await
+        self.timeline.db.associate_worktree(session_id, paths).await
     }
 
     /// Lists recorded directories, including those with no Session association.
@@ -1467,25 +1610,8 @@ impl SessionStore {
         directory: WorktreeDirectory,
         remove: impl FnOnce(PathBuf) -> BoxFuture<'static, Result<()>>,
     ) -> Result<bool> {
-        let repository = stored_worktree_path(&directory.repository)?.to_owned();
-        let root = stored_worktree_path(&directory.root)?.to_owned();
-        let checked = (repository.clone(), root.clone());
         let _ownership = self.ownership.lock().await;
-        let used: bool = self
-            .timeline
-            .db
-            .run_read(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM session_worktrees \
-                         WHERE repository=?1 AND root=?2)",
-                        params![checked.0, checked.1],
-                        |row| row.get(0),
-                    )
-                    .map_err(error)
-            })
-            .await?;
-        if used {
+        if !self.worktree_usages(directory.clone()).await?.is_empty() {
             return Err(AgentError::InvalidInput(
                 "the worktree directory still has Session associations".into(),
             ));
@@ -1497,19 +1623,7 @@ impl SessionStore {
             )));
         }
         remove(directory.root.clone()).await?;
-        let removed = self
-            .timeline
-            .db
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "DELETE FROM worktree_directories WHERE repository=?1 AND root=?2",
-                        params![repository, root],
-                    )
-                    .map_err(error)
-            })
-            .await?;
-        Ok(removed > 0)
+        self.timeline.db.remove_worktree_directory(directory).await
     }
 
     /// Lists the Session associations of a recorded directory. An unknown
@@ -1520,6 +1634,21 @@ impl SessionStore {
     ) -> Result<Vec<WorktreeUsage>> {
         self.timeline.db.worktree_usages(directory).await
     }
+}
+
+pub(super) fn worktree_association_paths(
+    directory: &WorktreeDirectory,
+    subtree: &Path,
+) -> Result<(String, String, String)> {
+    let repository = stored_worktree_path(&directory.repository)?;
+    let root = stored_worktree_path(&directory.root)?;
+    let path = stored_worktree_path(subtree)?;
+    if !subtree.starts_with(&directory.root) {
+        return Err(error(
+            "the inherited subtree must be inside the worktree root",
+        ));
+    }
+    Ok((repository.to_owned(), root.to_owned(), path.to_owned()))
 }
 
 fn stored_worktree_path(path: &Path) -> Result<&str> {
@@ -1571,6 +1700,7 @@ impl DynPlugin for SessionStorePlugin {
                 timeline.close().await.map_err(Into::into)
             })?;
             files.start();
+            #[cfg(feature = "testing")]
             ctx.provide_as::<SessionStore>(store.clone())?;
             let binding = Arc::new(super::Store(store));
             ctx.provide_as::<super::Store>(binding.clone())?;
@@ -2263,12 +2393,7 @@ impl SqliteTimelineStore {
     /// between them. An interruption after the first transaction leaves
     /// unreachable rows of the id; repeating the delete removes them.
     async fn delete_session_rows(&self, session_id: &str) -> Result<()> {
-        let session = session_id.to_owned();
-        let released = self
-            .db
-            .run_copy(move |connection| drop_session(connection, &session))
-            .await?;
-        self.forget(session_id);
+        let released = self.db.rollback_session(session_id).await?;
         self.admission
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2738,30 +2863,16 @@ impl TimelineStore for SqliteTimelineStore {
         page: Option<&'a dim_agent_runtime::QueryPage>,
     ) -> BoxFuture<'a, Result<dim_agent_runtime::QueryResult>> {
         Box::pin(async move {
-            let scope = scope.clone();
-            let query = query.clone();
-            let page = page.cloned();
-            let cancel = tokio_util::sync::CancellationToken::new();
-            let _guard = cancel.clone().drop_guard();
-            let operation = cancel.clone();
-            #[cfg(feature = "testing")]
-            let statistics = self.query_statistics.clone();
-            let mut reader = self.reader(RequestBodies::Rebuild);
             let (result, reader) = self
                 .db
-                .run_read_cancellable(cancel, move |connection| {
-                    let result = super::query::execute(
-                        connection,
-                        &scope,
-                        &query,
-                        page.as_ref(),
-                        &mut reader,
-                        &operation,
-                        #[cfg(feature = "testing")]
-                        &statistics,
-                    );
-                    Ok((result, reader))
-                })
+                .query(
+                    scope,
+                    query,
+                    page,
+                    self.reader(RequestBodies::Rebuild),
+                    #[cfg(feature = "testing")]
+                    self.query_statistics.clone(),
+                )
                 .await?;
             self.finish(reader);
             result
@@ -2894,11 +3005,9 @@ impl TimelineStore for SqliteTimelineStore {
     ) -> BoxFuture<'a, Result<Option<TimelineTrace>>> {
         Box::pin(async move {
             let mut reader = self.reader(RequestBodies::Rebuild);
-            let record = read_range(&self.db, &mut reader, key, sequence..=sequence, false)
-                .await?
-                .pop();
+            let value = self.db.trace(key, sequence, &mut reader).await?;
             self.finish(reader);
-            Ok(record.and_then(|record| record.trace))
+            Ok(value)
         })
     }
     fn save_snapshot<'a>(
@@ -2907,47 +3016,8 @@ impl TimelineStore for SqliteTimelineStore {
         snapshot: RecoverySnapshot,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let key = key.clone();
             let mut reader = self.reader(RequestBodies::Rebuild);
-            let sequence = snapshot.sequence;
-            holds_writing(
-                &self.db,
-                &mut reader,
-                None,
-                move |connection, reader, rows: &mut Option<Rows>| {
-                    let rows = match rows {
-                        Some(rows) => rows,
-                        None => {
-                            rows.insert(Rows::fetch(connection, &key, &(sequence..=sequence))?)
-                        }
-                    };
-                    if !rows.advance(connection, &key.session_id, reader)? {
-                        return Ok(false);
-                    }
-                    let anchor = rows
-                        .records(&(sequence..=sequence), false)?
-                        .pop()
-                        .ok_or_else(|| error("snapshot anchor is missing"))?;
-                    if anchor.event.id != snapshot.event_id {
-                        return Err(error("snapshot anchor is not the identified event"));
-                    }
-                    connection
-                        .execute(
-                            "INSERT OR REPLACE INTO timeline_snapshots VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                            params![
-                                key.session_id,
-                                key.branch_id,
-                                sql_sequence(snapshot.sequence)?,
-                                snapshot.interpreter,
-                                snapshot.event_id,
-                                snapshot.state
-                            ],
-                        )
-                        .map_err(error)?;
-                    Ok(true)
-                },
-            )
-            .await?;
+            self.db.save_snapshot(key, snapshot, &mut reader).await?;
             self.finish(reader);
             Ok(())
         })
@@ -2958,26 +3028,7 @@ impl TimelineStore for SqliteTimelineStore {
         through: u64,
         interpreter: &'a str,
     ) -> BoxFuture<'a, Result<Option<RecoverySnapshot>>> {
-        Box::pin(async move {
-            let key = key.clone();
-            let interpreter = interpreter.to_owned();
-            self.db.run_read(move |connection| {
-                connection.query_row(
-                    "SELECT s.sequence, s.event_id, s.interpreter, s.state FROM timeline_snapshots s JOIN timeline_events e ON e.session_id=s.session_id AND e.branch_id=s.branch_id AND e.sequence=s.sequence AND e.event_id=s.event_id WHERE s.session_id=?1 AND s.branch_id=?2 AND s.sequence<=?3 AND s.interpreter=?4 AND typeof(s.sequence)='integer' AND s.sequence>0 AND typeof(s.event_id)='text' AND typeof(s.state)='text' AND json_valid(e.body) AND json_extract(e.body, '$.record.event.id')=s.event_id AND json_extract(e.body, '$.record.event.sequence')=s.sequence ORDER BY s.sequence DESC LIMIT 1",
-                    params![key.session_id, key.branch_id, sql_sequence(through)?, interpreter],
-                    |row| {
-                        Ok(RecoverySnapshot {
-                            sequence: read_sequence(row, 0)?,
-                            event_id: row.get(1)?,
-                            interpreter: row.get(2)?,
-                            state: row.get(3)?,
-                        })
-                    },
-                )
-                .optional()
-                .map_err(error)
-            }).await
-        })
+        Box::pin(self.db.latest_snapshot(key, through, interpreter))
     }
 }
 
@@ -3837,17 +3888,9 @@ impl SqliteStorage {
     pub(super) async fn associate_worktree(
         self: &Arc<Self>,
         session_id: &str,
-        directory: WorktreeDirectory,
-        subtree: PathBuf,
+        paths: (String, String, String),
     ) -> Result<()> {
-        let repository = stored_worktree_path(&directory.repository)?.to_owned();
-        let root = stored_worktree_path(&directory.root)?.to_owned();
-        let subtree_text = stored_worktree_path(&subtree)?.to_owned();
-        if !subtree.starts_with(&directory.root) {
-            return Err(error(
-                "the inherited subtree must be inside the worktree root",
-            ));
-        }
+        let (repository, root, subtree_text) = paths;
         let session = session_id.to_owned();
         let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
         self.run(move |connection| {

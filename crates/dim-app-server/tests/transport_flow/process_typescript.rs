@@ -1573,7 +1573,14 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
             directory["result"]["branches"],
             serde_json::to_value(raw.branches(session).await.unwrap()).unwrap()
         );
-        raw.rollback_session(session).await.unwrap();
+        let released = client
+            .rpc(
+                "storefixture.release_timeline",
+                json!({"sessionId":session}),
+            )
+            .await;
+        assert_ok(&released);
+        assert!(raw.session_config(session).await.unwrap().is_none());
     }
     raw.create_session(protected.to_str().unwrap(), &config)
         .await

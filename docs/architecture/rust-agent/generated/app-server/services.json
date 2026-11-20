@@ -1621,11 +1621,6 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::storage::timeline::SessionStore",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
             "service": "rutis_loader::loader::Loader",
             "scope": null,
             "status": "Ready"
@@ -1669,12 +1664,6 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::storage::timeline::SessionStore",
-            "scope": null,
-            "provider": 8,
-            "generation": 1
-          },
-          {
             "service": "rutis_loader::loader::Loader",
             "scope": null,
             "provider": 2,
@@ -1715,12 +1704,6 @@
           {
             "service": "dim_app_server::storage::sqlite::SqliteStorage",
             "provider": 6,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_app_server::storage::timeline::SessionStore",
-            "provider": 8,
             "declared": true,
             "external": true
           },
@@ -3622,12 +3605,6 @@
       {
         "service": "dim_app_server::storage::sqlite::SqliteStorage",
         "provider": 6,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_app_server::storage::timeline::SessionStore",
-        "provider": 8,
         "generation": 1,
         "removing": false
       },
