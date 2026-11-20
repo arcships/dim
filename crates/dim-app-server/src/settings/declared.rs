@@ -336,9 +336,8 @@ fn request<T: DeserializeOwned>(args: RpcValue) -> std::result::Result<T, Error>
     serde_json::from_value(request).map_err(|_| invalid())
 }
 
-/// The owner path: `settings` by name for every language (§4.2). Only
-/// `register` uses the caller's identity, to withdraw its sources when the
-/// calling row unloads; each source has one owner (AGENTS.md rule 11).
+/// The owner path: `settings` by name for every language (§4.2). Source registrations
+/// belong to the calling row and expire when it unloads.
 pub struct Settings(Arc<SettingsService>);
 impl Settings {
     /// Registers a source with its existing decoder, defaults and write validation.

@@ -79,6 +79,13 @@ export interface Settings {
   projects(request: Record<string, never>): SettingsResult<{ projects: { root: number; cwd: string }[] }>;
 }
 
+export interface CollaborationModelPolicy {
+  read(request: Record<string, never>): Promise<{
+    revision: string;
+    policy: { mode: "agent" } | { mode: "inherit" } | { mode: "fixed"; model: ModelId };
+  }>;
+}
+
 export type TitleSource = 'auto' | 'manual';
 export interface Title { text: string; source: TitleSource }
 /** `revision` counts committed title writes; 0 means never written. */

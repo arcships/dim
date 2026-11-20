@@ -14,9 +14,9 @@ mod pending;
 pub use approvals::ApprovalDestination;
 
 use crate::agents::{AgentIndex, AgentProfile, SessionRestored, UnloadedSessionDeleted};
-use crate::collaboration_model_policy::ModelPolicy;
+use crate::collaboration_model_policy::{CollaborationModelPolicy, ModelPolicy};
 use crate::protocol::SessionOrigin;
-use crate::settings::{SettingsScope, SettingsService};
+use crate::settings::{Settings, SettingsError};
 use dim_agent_capabilities::{
     context_block,
     host::{
@@ -230,7 +230,7 @@ pub struct Collaboration {
     index: Arc<AgentIndex>,
     directory: Arc<CollaborationDirectory>,
     /// The subagent model policy's source; local execution only.
-    settings: Option<Arc<SettingsService>>,
+    policy_owner: Option<Ctx>,
     tasks: TaskTracker,
     stop: CancellationToken,
     #[cfg(feature = "testing")]
@@ -279,14 +279,15 @@ impl Collaboration {
             .as_ref()
             .and_then(|model| model.metadata.as_ref())
             .is_some_and(|metadata| metadata.startup.is_some());
-        let policy = match &self.settings {
+        let policy = match &self.policy_owner {
             _ if startup => ModelPolicy::Inherit {},
-            Some(settings) => {
-                settings
-                    .read::<ModelPolicy>(SettingsScope::User, &self.stop)
+            Some(ctx) => {
+                ctx.get::<CollaborationModelPolicy>()
+                    .ok_or_else(|| member_create_failed(SettingsError::UnknownSource.to_string()))?
+                    .read(&self.stop)
                     .await
                     .map_err(|error| member_create_failed(error.to_string()))?
-                    .document
+                    .policy
             }
             None => ModelPolicy::Agent {},
         };
@@ -719,7 +720,7 @@ impl Collaboration {
 /// with it, and the Session and branch parts it registers.
 pub(crate) struct CollaborationPlugin {
     /// The subagent model policy's source; local execution only, as Agents.
-    settings: Option<Key<SettingsService>>,
+    settings: Option<Key<Settings>>,
     index: Key<AgentIndex>,
     directory: Key<CollaborationDirectory>,
     parts: Key<dim_agent_runtime::PartRegistry>,
@@ -728,7 +729,7 @@ impl CollaborationPlugin {
     pub fn new(names: &Names<'_>, local_execution: bool) -> rutis::Result<Self> {
         Ok(Self {
             settings: local_execution
-                .then(|| names.key::<SettingsService>())
+                .then(|| names.key::<Settings>())
                 .transpose()?,
             index: names.key()?,
             directory: names.key()?,
@@ -754,14 +755,11 @@ impl DynPlugin for CollaborationPlugin {
             let index = ctx.require_at(&self.index)?;
             let directory = ctx.require_at(&self.directory)?;
             let parts = ctx.require_at(&self.parts)?;
-            let settings = match &self.settings {
-                Some(settings) => Some(ctx.require_at(settings)?),
-                None => None,
-            };
+            let policy_owner = self.settings.as_ref().map(|_| ctx.clone());
             let service = Arc::new(Collaboration {
                 index,
                 directory,
-                settings,
+                policy_owner,
                 tasks: TaskTracker::new(),
                 stop: CancellationToken::new(),
                 #[cfg(feature = "testing")]

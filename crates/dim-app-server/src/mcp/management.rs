@@ -9,7 +9,7 @@ use super::{McpChange, McpError, McpService, McpSource};
 use crate::{
     methods::{ManagementMethods, SelectionScope},
     protocol::{canonical_cwd, optional_non_null},
-    settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
+    settings::{BusinessDocument, Settings, SettingsError, SettingsScope},
 };
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
@@ -553,7 +553,7 @@ pub(crate) fn error(error: McpError) -> RpcError {
 /// canonical path and the string the request named it by. Claude Code records
 /// its local store under either spelling, so both are carried.
 async fn authorized_workspace(
-    settings: &Arc<SettingsService>,
+    settings: &Arc<Settings>,
     cwd: Option<String>,
     stopping: &CancellationToken,
 ) -> Result<Option<(usize, discovery::Workspace)>, RpcError> {
@@ -573,7 +573,7 @@ async fn authorized_workspace(
 }
 
 async fn project(
-    settings: &Arc<SettingsService>,
+    settings: &Arc<Settings>,
     cwd: Option<String>,
     stopping: &CancellationToken,
 ) -> Result<Option<usize>, RpcError> {
@@ -662,7 +662,7 @@ pub(super) fn provide(
     ctx: &Ctx,
     methods: &ManagementMethods,
     directory: Arc<McpService>,
-    settings: Arc<SettingsService>,
+    settings: Arc<Settings>,
     auth: Arc<McpAuth>,
 ) -> Result<(), Error> {
     let context = ctx.clone();

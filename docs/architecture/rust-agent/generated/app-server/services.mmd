@@ -142,7 +142,7 @@ flowchart LR
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p41
   p40 -->|"dim_app_server::agents::AgentIndex"| p41
   p39 -->|"dim_app_server::collaboration::CollaborationDirectory"| p41
-  p18 -->|"dim_app_server::settings::SettingsService"| p41
+  p18 -->|"dim_app_server::settings::declared::Settings"| p41
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p40
   p38 -->|"dim_app_server::agents::AgentDirectory"| p40
   p3 -->|"dim_app_server::control::ProcessActivity"| p40
@@ -185,9 +185,9 @@ flowchart LR
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p24
   p23 -->|"dim_app_server::mcp::publication::Publication"| p24
   p10 -->|"dim_app_server::methods::ManagementMethods"| p24
-  p18 -->|"dim_app_server::settings::SettingsService"| p24
+  p18 -->|"dim_app_server::settings::declared::Settings"| p24
   p1 -->|"dim_agent_capabilities::host::CredentialVariablesHost"| p23
-  p18 -->|"dim_app_server::settings::SettingsService"| p23
+  p18 -->|"dim_app_server::settings::declared::Settings"| p23
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p22
   p18 -->|"dim_app_server::settings::declared::Settings"| p22
   p18 -->|"dim_app_server::settings::declared::Settings"| p21

@@ -136,6 +136,8 @@ contract §3.2.
 | `collaboration.model_policy` | `{}` | `{revision: string, policy: Policy}` | false | `Report` |
 | `collaboration.set_model_policy` | `{expectedRevision: string, policy: Policy}` | `{revision: string}` | true | `Report` |
 
+The process data face `collaborationModelPolicy.read({})` and the local management read return the same `{revision, policy}`. Collaboration reads the owner when selecting a new member’s model.
+
 `Policy` is exactly the tagged source type above. Use the existing local v3
 management authorization; a paired device has no access. Invalid request shape
 or policy is invalid params (`-32602`, `invalid_params`); source CAS conflict is

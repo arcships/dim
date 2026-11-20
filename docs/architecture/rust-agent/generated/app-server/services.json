@@ -1508,7 +1508,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "status": "Ready"
           }
@@ -1533,7 +1533,7 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "provider": 18,
             "generation": 1
@@ -1555,12 +1555,6 @@
           {
             "service": "dim_app_server::collaboration::CollaborationDirectory",
             "provider": 39,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_app_server::settings::SettingsService",
-            "provider": 18,
             "declared": true,
             "external": true
           }
@@ -2427,7 +2421,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "status": "Ready"
           }
@@ -2464,7 +2458,7 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "provider": 18,
             "generation": 1
@@ -2502,7 +2496,7 @@
             "external": true
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "provider": 18,
             "declared": true,
             "external": true
@@ -2522,7 +2516,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "status": "Ready"
           }
@@ -2535,7 +2529,7 @@
             "generation": 0
           },
           {
-            "service": "dim_app_server::settings::SettingsService",
+            "service": "dim_app_server::settings::declared::Settings",
             "scope": null,
             "provider": 18,
             "generation": 1
@@ -2547,12 +2541,6 @@
             "provider": 1,
             "declared": true,
             "external": false
-          },
-          {
-            "service": "dim_app_server::settings::SettingsService",
-            "provider": 18,
-            "declared": true,
-            "external": true
           }
         ]
       },
@@ -3518,6 +3506,12 @@
         "removing": false
       },
       {
+        "service": "dim_app_server::collaboration_model_policy::CollaborationModelPolicy",
+        "provider": 35,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_app_server::connection::ConnectionHub",
         "provider": 43,
         "generation": 1,
@@ -3724,6 +3718,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#collaborationDirectory",
         "provider": 39,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#collaborationModelPolicy",
+        "provider": 35,
         "generation": 1,
         "removing": false
       },

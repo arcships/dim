@@ -15,6 +15,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `basePromptSettingsHost` | process | PromptSettings | data | `base` async |
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
+| `collaborationModelPolicy` | process | CollaborationModelPolicy | data | `read` async |
 | `connectionHub` | process | Connection | internal(control) | — |
 | `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |

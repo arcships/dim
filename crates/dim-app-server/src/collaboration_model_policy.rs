@@ -4,7 +4,7 @@
 use crate::{
     methods::ManagementMethods,
     protocol::Empty,
-    settings::{BusinessDocument, Settings, SettingsError, SettingsScope},
+    settings::{BusinessDocument, RegisteredDocument, Settings, SettingsError, SettingsScope},
 };
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
@@ -73,13 +73,63 @@ struct SetPolicy {
     policy: ModelPolicy,
 }
 #[derive(Serialize)]
-struct PolicyView {
+pub(crate) struct PolicyView {
     revision: String,
-    policy: ModelPolicy,
+    pub(crate) policy: ModelPolicy,
 }
 #[derive(Serialize)]
 struct Revision {
     revision: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct CollaborationModelPolicy(Arc<RegisteredDocument<ModelPolicy>>);
+
+impl CollaborationModelPolicy {
+    pub(crate) async fn read(
+        &self,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> crate::settings::Result<PolicyView> {
+        let snapshot = self.0.read(SettingsScope::User, cancel).await?;
+        Ok(PolicyView {
+            revision: snapshot.revision,
+            policy: snapshot.document,
+        })
+    }
+}
+
+impl rutis_bridge::session::HostDispatch for CollaborationModelPolicy {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(serde_json::json!({"read":"async"}))
+    }
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        use rutis_bridge::session::{Error, Value};
+        if method != "read" {
+            return Err(Error::Value(format!(
+                "unknown collaborationModelPolicy method {method}"
+            )));
+        }
+        let (_request,): (Empty,) = serde_json::from_value(args.json()?)
+            .map_err(|_| Error::Value("expected one empty request".into()))?;
+        let owner = self.clone();
+        Ok(Value::future(async move {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let _guard = cancel.clone().drop_guard();
+            let view = owner.read(&cancel).await.map_err(|error| {
+                rutis_bridge::exports::failure(
+                    "collaborationModelPolicy",
+                    error.code(),
+                    error.to_string(),
+                    None,
+                )
+            })?;
+            rutis_bridge::session::arg(&view)
+        }))
+    }
 }
 
 fn error(error: SettingsError) -> RpcError {
@@ -118,6 +168,12 @@ impl DynPlugin for CollaborationModelPolicyPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
             let settings = settings.register_document::<ModelPolicy>(ctx)?;
+            let owner = Arc::new(CollaborationModelPolicy(settings));
+            ctx.provide_as::<CollaborationModelPolicy>(owner.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("collaborationModelPolicy"),
+                owner.clone(),
+            )?;
             methods.register(
                 ctx,
                 "collaboration",
@@ -140,26 +196,20 @@ impl DynPlugin for CollaborationModelPolicyPlugin {
                         params: value,
                         ..
                     } = call;
-                    let settings = settings.clone();
+                    let owner = owner.clone();
                     Box::pin(async move {
                         match method.as_str() {
                             "collaboration.model_policy" => {
                                 let _: Empty = params(value)?;
-                                let snapshot = settings
-                                    .read(SettingsScope::User, &stopping)
-                                    .await
-                                    .map_err(error)?;
-                                reply(PolicyView {
-                                    revision: snapshot.revision,
-                                    policy: snapshot.document,
-                                })
+                                reply(owner.read(&stopping).await.map_err(error)?)
                             }
                             "collaboration.set_model_policy" => {
                                 let p: SetPolicy = params(value)?;
                                 if let Err(SettingsError::Invalid(reason)) = p.policy.validate() {
                                     return Err(RpcError::invalid(reason));
                                 }
-                                let snapshot = settings
+                                let snapshot = owner
+                                    .0
                                     .update(
                                         SettingsScope::User,
                                         &p.expected_revision,

@@ -2737,6 +2737,8 @@
       "parent": "dim_app_server",
       "file": "crates/dim-app-server/src/collaboration_model_policy.rs",
       "unexpandedMacros": [
+        "format",
+        "serde_json::json",
         "unreachable",
         "vec"
       ]
@@ -24367,6 +24369,7 @@
       "to": "dim_app_server::collaboration_model_policy",
       "references": [
         "mod collaboration_model_policy",
+        "path collaboration_model_policy::CollaborationModelPolicy",
         "path collaboration_model_policy::CollaborationModelPolicyPlugin::new"
       ]
     },
@@ -26407,14 +26410,6 @@
     },
     {
       "from": "dim_app_server::collaboration",
-      "to": "dim_agent_capabilities::settings",
-      "references": [
-        "path SettingsScope::User",
-        "use crate::settings::SettingsScope"
-      ]
-    },
-    {
-      "from": "dim_app_server::collaboration",
       "to": "dim_agent_capabilities::timeline_tree",
       "references": [
         "path TreeCommands",
@@ -26754,10 +26749,11 @@
       "from": "dim_app_server::collaboration",
       "to": "dim_app_server::collaboration_model_policy",
       "references": [
-        "path ModelPolicy",
+        "path CollaborationModelPolicy",
         "path ModelPolicy::Agent",
         "path ModelPolicy::Fixed",
         "path ModelPolicy::Inherit",
+        "use crate::collaboration_model_policy::CollaborationModelPolicy",
         "use crate::collaboration_model_policy::ModelPolicy"
       ]
     },
@@ -26780,8 +26776,16 @@
       "from": "dim_app_server::collaboration",
       "to": "dim_app_server::settings",
       "references": [
-        "path SettingsService",
-        "use crate::settings::SettingsService"
+        "path SettingsError::UnknownSource",
+        "use crate::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_app_server::collaboration",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -27133,6 +27137,7 @@
       "to": "dim_app_server::settings",
       "references": [
         "path BusinessDocument",
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Cancelled",
         "path SettingsError::Closed",
@@ -27140,6 +27145,7 @@
         "path SettingsError::Invalid",
         "path crate::settings::Result",
         "use crate::settings::BusinessDocument",
+        "use crate::settings::RegisteredDocument",
         "use crate::settings::SettingsError"
       ]
     },
@@ -29055,14 +29061,22 @@
       "from": "dim_app_server::mcp",
       "to": "dim_app_server::settings",
       "references": [
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Conflict",
         "path SettingsError::Document",
         "path SettingsError::Invalid",
-        "path SettingsService",
         "use crate::settings::BusinessDocument",
-        "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService"
+        "use crate::settings::RegisteredDocument",
+        "use crate::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_app_server::mcp",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -29244,13 +29258,19 @@
         "path SettingsError",
         "path SettingsError::Invalid",
         "path SettingsError::shape",
-        "path SettingsService",
         "path crate::settings::ProjectAuthorized",
         "path crate::settings::project_authorizations",
         "use crate::settings::BusinessDocument",
         "use crate::settings::Result",
-        "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService"
+        "use crate::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_app_server::mcp::config",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -29584,10 +29604,16 @@
         "path SettingsError::DocumentShape",
         "path SettingsError::Invalid",
         "path SettingsError::Worker",
-        "path SettingsService",
         "use crate::settings::BusinessDocument",
-        "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService"
+        "use crate::settings::SettingsError"
+      ]
+    },
+    {
+      "from": "dim_app_server::mcp::management",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -29681,6 +29707,7 @@
       "to": "dim_app_server::mcp",
       "references": [
         "path McpConnection",
+        "path McpDocuments",
         "path McpError::Closed",
         "path McpError::Disabled",
         "path McpError::Unavailable",
@@ -29694,6 +29721,7 @@
         "path source_revision",
         "path sources_in_precedence",
         "use super::McpConnection",
+        "use super::McpDocuments",
         "use super::McpError",
         "use super::McpSource",
         "use super::Result",
@@ -29714,15 +29742,12 @@
       "from": "dim_app_server::mcp::publication",
       "to": "dim_app_server::mcp::config",
       "references": [
-        "path McpPluginServers",
         "path McpProjectEnablement",
         "path McpProjectEnablement::default",
-        "path McpSecrets",
         "path McpSecrets::default",
         "path McpServerSettings",
         "path McpServerSettings::Remote",
         "path McpServerSettings::Stdio",
-        "path McpSettings",
         "path config",
         "path config::Connection",
         "path config::Origin::Plugin",
@@ -29732,11 +29757,9 @@
         "path config::settings_changes",
         "path config::workspace",
         "use super::config",
-        "use super::config::McpPluginServers",
         "use super::config::McpProjectEnablement",
         "use super::config::McpSecrets",
-        "use super::config::McpServerSettings",
-        "use super::config::McpSettings"
+        "use super::config::McpServerSettings"
       ]
     },
     {
@@ -29766,9 +29789,17 @@
       "from": "dim_app_server::mcp::publication",
       "to": "dim_app_server::settings",
       "references": [
-        "path SettingsService",
+        "path ProjectAuthorized",
         "path crate::settings::SettingsError::Invalid",
-        "use crate::settings::SettingsService"
+        "use crate::settings::ProjectAuthorized"
+      ]
+    },
+    {
+      "from": "dim_app_server::mcp::publication",
+      "to": "dim_app_server::settings::declared",
+      "references": [
+        "path Settings",
+        "use crate::settings::Settings"
       ]
     },
     {
@@ -56804,6 +56835,14 @@
     {
       "module": "dim_app_server::collaboration_model_policy",
       "path": "D::Error"
+    },
+    {
+      "module": "dim_app_server::collaboration_model_policy",
+      "path": "Error::Value"
+    },
+    {
+      "module": "dim_app_server::collaboration_model_policy",
+      "path": "Value::future"
     },
     {
       "module": "dim_app_server::connection",
