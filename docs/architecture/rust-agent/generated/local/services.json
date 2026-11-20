@@ -2057,12 +2057,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::prompt_sources::PromptSourcesBranch@main",
-        "provider": 75,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::skills::session::SkillsBranch@main",
         "provider": 77,
         "generation": 1,

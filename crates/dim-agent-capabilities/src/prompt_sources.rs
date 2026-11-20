@@ -78,7 +78,6 @@ pub fn install_with_clock(builder: &mut AgentBuilder, today: Today, every: Durat
                     configure: names.key()?,
                     prompts: names.state_cell()?,
                     language: names.key()?,
-                    service: names.key()?,
                     every,
                 }))
             }),
@@ -438,17 +437,6 @@ impl SessionLanguage {
     }
 }
 
-/// The Session's reply-language cell, reachable from its branches: the App
-/// Server's Session methods read and change it through `main`'s service.
-pub struct PromptSourcesBranch {
-    language: Arc<SessionLanguage>,
-}
-impl PromptSourcesBranch {
-    pub fn language(&self) -> Arc<SessionLanguage> {
-        self.language.clone()
-    }
-}
-
 struct Sources {
     platform: Arc<HostPlatform>,
     config: Arc<SessionConfig>,
@@ -639,7 +627,6 @@ pub struct PromptSourcesBranchPlugin {
     configure: Key<Prompt>,
     prompts: Key<StateCell<PromptSnapshot>>,
     language: Key<SessionLanguage>,
-    service: Key<PromptSourcesBranch>,
     every: Duration,
 }
 impl DynPlugin for PromptSourcesBranchPlugin {
@@ -663,7 +650,6 @@ impl DynPlugin for PromptSourcesBranchPlugin {
             let prompts = ctx.require_at(&self.prompts)?;
             let language = ctx.require_at(&self.language)?;
             let (every, lifecycle) = (self.every, ctx.cancellation_token());
-            let checked_language = language.clone();
             let initial_opening = branch.phase() != BranchPhase::Active;
             let prompts = prompts.subscribe();
             let tasks = TaskTracker::new();
@@ -703,7 +689,7 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                             Err(error) => tracing::warn!(%error, source = target.source, "prompt source was not checked"),
                         }
                     }
-                    let language_gate = checked_language.gate().await;
+                    let language_gate = language.gate().await;
                     let target = targets([LANGUAGE]).pop().expect("language target");
                     let current = tokio::select! {
                         _ = lifecycle.cancelled() => return,
@@ -752,10 +738,6 @@ impl DynPlugin for PromptSourcesBranchPlugin {
                 tasks.wait().await;
                 Ok(())
             })?;
-            ctx.provide_at(
-                self.service.clone(),
-                Arc::new(PromptSourcesBranch { language }),
-            )?;
             Ok(Effect::Done)
         })
     }

@@ -1483,7 +1483,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
 /// The reasons for the product profile's internal names (#1300).
 pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
-        ("promptSourcesBranch", "hot-path"),
         ("agentIndex", "owner-api"),
         ("branchOpening", "hot-path"),
         ("compactionStrategyHost", "hot-path"),

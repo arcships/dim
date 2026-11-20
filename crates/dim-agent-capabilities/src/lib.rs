@@ -114,7 +114,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<permission::Permission>(catalog, branch);
     register::<approval::Approval>(catalog, branch);
     catalog.register_shared_instance("skillsBranch", BRANCH_GROUP);
-    register::<prompt_sources::PromptSourcesBranch>(catalog, branch);
     register::<workspace_tools::background::BackgroundExec>(catalog, branch);
     register::<shell_session::ShellSession>(catalog, branch);
     register::<dyn exec_stop::ExecStop>(catalog, branch);
@@ -147,7 +146,6 @@ impl PublicService for dyn exec_stop::ExecStop {}
 impl PublicService for workspace_tools::file_reads::FileReads {}
 impl PublicService for timeline_tree::BranchLine {}
 impl PublicService for timeline_tree::TreeCommands {}
-impl PublicService for prompt_sources::PromptSourcesBranch {}
 impl PublicService for wait::Wait {}
 impl PublicService for skills::SkillsBranch {}
 impl PublicService for prompt::Prompt {}
