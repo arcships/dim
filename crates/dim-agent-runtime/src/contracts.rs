@@ -2,7 +2,6 @@ use crate::{Branch, Result};
 use dim_agent_types::{ModelFailureKind, ModelSelection, PromptScope};
 use rutis::host::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::watch;
 
 /// Inputs admitted and not yet consumed by Loop, except one addressed to a
@@ -110,13 +109,6 @@ pub enum ConfigureOutcome {
     Unchanged,
     Adopted,
     Superseded,
-}
-
-pub trait ConfigureControl: Send + Sync + 'static {
-    fn configure(
-        self: Arc<Self>,
-        update: ConfigureUpdate,
-    ) -> BoxFuture<'static, Result<ConfigureOutcome>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

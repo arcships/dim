@@ -498,6 +498,15 @@ impl Session {
             .get(id)
             .ok_or_else(|| AgentError::UnknownBranch(id.into()))
     }
+    fn admit_branch(&self, branch: &str) -> Result<Branch> {
+        if let Some(error) = self.0.owner.faults.failure() {
+            return Err(error);
+        }
+        if self.0.owner.closing.is_cancelled() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        self.published(branch)
+    }
     /// Text input shorthand for [`Self::input`].
     pub async fn submit(
         &self,
@@ -509,13 +518,7 @@ impl Session {
             .await
     }
     pub async fn input(&self, data: InputMessageData, branch: &str) -> Result<Arc<AgentEvent>> {
-        if let Some(error) = self.0.owner.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.input(data).await
+        self.admit_branch(branch)?.input(data).await
     }
     /// [`Self::input`], also saying whether this call wrote the input; see
     /// [`Branch::input_commit`].
@@ -524,13 +527,7 @@ impl Session {
         data: InputMessageData,
         branch: &str,
     ) -> Result<(Arc<AgentEvent>, InputCommit)> {
-        if let Some(error) = self.0.owner.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.input_commit(data).await
+        self.admit_branch(branch)?.input_commit(data).await
     }
     /// Appends a validated batch of input to `branch` as one atomic commit;
     /// see [`Branch::inputs`] for the contract.
@@ -539,30 +536,11 @@ impl Session {
         inputs: Vec<InputMessageData>,
         branch: &str,
     ) -> Result<Vec<Arc<AgentEvent>>> {
-        if let Some(error) = self.0.owner.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.inputs(inputs).await
+        self.admit_branch(branch)?.inputs(inputs).await
     }
     /// See [`Branch::lookup`].
     pub async fn lookup(&self, branch: &str, id: &str) -> Result<Option<Arc<AgentEvent>>> {
         self.published(branch)?.lookup(id).await
-    }
-    pub async fn configure(
-        &self,
-        update: ConfigureUpdate,
-        branch: &str,
-    ) -> Result<ConfigureOutcome> {
-        if let Some(error) = self.0.owner.faults.failure() {
-            return Err(error);
-        }
-        if self.0.owner.closing.is_cancelled() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        self.published(branch)?.configure(update).await
     }
     /// Commits a turn interrupt without waiting for dispatch or settlement.
     /// The returned sequence precedes any input submitted after this call.
@@ -695,6 +673,11 @@ impl Session {
     /// Reads a capability service from the requested branch.
     pub fn service<T: ?Sized + PublicService>(&self, branch: &str) -> Result<Arc<T>> {
         self.published(branch)?.service::<T>()
+    }
+    /// Reads a branch service for a new operation, rejecting a failed Session
+    /// or a closing Session or branch before selecting its owner.
+    pub fn admitted_service<T: ?Sized + PublicService>(&self, branch: &str) -> Result<Arc<T>> {
+        self.admit_branch(branch)?.admitted_service::<T>()
     }
     /// Observes publication progress without exposing Timeline mutation.
     pub fn publication(&self, branch: &str) -> Result<Publication> {

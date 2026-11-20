@@ -68,7 +68,7 @@ owners, rule check and complete-candidate concurrency limit.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:GuideEntries`、`S:InitialPromptConfiguration`、`S:PromptHost` |
-| 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl`、`B:dyn HostDispatch#prompt` |
+| 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn HostDispatch#prompt` |
 | 被注入于 | `PromptSourcesBranch`、`SkillsBranch`、`ToolBinding` |
 <!-- /generated -->
 
@@ -150,3 +150,6 @@ through the request Loop assembles, never through a request of their own.
 | 提供 | `S:GuideEntries`、`S:dyn HostDispatch#guideEntries` |
 | 被注入于 | `BackgroundExec`、`BranchLine`、`ContextPreparation`、`Loop`、`Prompt`、`ShellInput`、`TimelineTree` |
 <!-- /generated -->
+
+Rust callers using the Session or branch `configure` shorthand import
+`dim_agent_capabilities::prompt::SessionPrompt` or `BranchPrompt`, respectively.

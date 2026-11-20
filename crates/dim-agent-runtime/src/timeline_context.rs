@@ -377,16 +377,6 @@ impl TimelineContext {
         self.ctx
             .get_at::<StateCell<S>>(&self.scope.key::<StateCell<S>>())
     }
-    pub(crate) async fn configure(&self, update: ConfigureUpdate) -> Result<ConfigureOutcome> {
-        if self.close.started() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        let control = self
-            .ctx
-            .get_at::<dyn ConfigureControl>(&self.scope.key::<dyn ConfigureControl>())
-            .ok_or_else(|| AgentError::Build("ConfigureControl is not installed".into()))?;
-        control.configure(update).await
-    }
     /// Validates input from outside the branch and appends it. Whether it
     /// starts a turn is Loop's decision when the input is dispatched. An
     /// input whose submission id the branch already holds writes nothing and

@@ -502,10 +502,8 @@ the Session already gives for an operation on it, an unknown branch
 methods are v3 and are listed through `session.methods`: a v1 or v2 client has
 `unknown_method`.
 
-This is Prompt configuration behavior, not runtime infrastructure. Neither
-`ConfigureControl` nor `ConfigureUpdate` changes. Source-name-only loading cannot
-carry selected profile text without mutating a shared source behind another
-request's back; frozen values avoid that staging state and additional locks.
+Prompt adopts the selected profile text supplied to `prompt.configure`. Each
+request owns the values it supplies.
 
 ```text
 /agent ID -> existing sessionMethods dispatch

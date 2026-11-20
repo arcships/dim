@@ -1486,7 +1486,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("agentIndex", "owner-api"),
         ("branchOpening", "hot-path"),
         ("compactionStrategyHost", "hot-path"),
-        ("configureControl", "hot-path"),
         ("connectionHub", "control"),
         ("contextModelHost", "hot-path"),
         ("contextUsage", "hot-path"),

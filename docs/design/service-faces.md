@@ -173,7 +173,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
 | `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
 | `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |

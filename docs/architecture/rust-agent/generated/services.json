@@ -1649,12 +1649,6 @@
         "removing": false
       },
       {
-        "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-        "provider": 46,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#agentLoop@main",
         "provider": 43,
         "generation": 1,

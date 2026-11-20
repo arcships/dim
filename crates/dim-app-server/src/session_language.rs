@@ -3,6 +3,7 @@
 //! in PromptSources' live cell; this part reads both and changes both, then
 //! has Prompt adopt the `dim/language` source.
 use crate::storage::Store;
+use dim_agent_capabilities::prompt::BranchPrompt as _;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
     prompt_sources::{self, SessionLanguage},

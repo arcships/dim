@@ -110,7 +110,6 @@ pub fn catalog() -> ServiceCatalog {
     register::<BranchLifecycle>(&mut catalog, branch);
     register::<BranchOpening>(&mut catalog, branch);
     register::<dyn AgentLoop>(&mut catalog, branch);
-    register::<dyn ConfigureControl>(&mut catalog, branch);
     catalog
 }
 

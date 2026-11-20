@@ -1,4 +1,5 @@
 use super::*;
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_runtime::TimelineQueryScope;
 use dim_agent_runtime::testing::{chain_events, timeline_events};
 use rutis::host::CtxHost;

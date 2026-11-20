@@ -717,12 +717,36 @@ impl Prompt {
     }
 }
 
-impl ConfigureControl for Prompt {
+/// The Rust Session facade for the addressed branch's `prompt.configure` operation.
+pub trait SessionPrompt {
     fn configure(
-        self: Arc<Self>,
+        &self,
         update: ConfigureUpdate,
-    ) -> BoxFuture<'static, Result<ConfigureOutcome>> {
-        Box::pin(async move { self.submit(update, None).await })
+        branch: &str,
+    ) -> impl Future<Output = Result<ConfigureOutcome>> + Send;
+}
+
+impl SessionPrompt for Session {
+    async fn configure(&self, update: ConfigureUpdate, branch: &str) -> Result<ConfigureOutcome> {
+        self.admitted_service::<Prompt>(branch)?
+            .configure(PromptConfigurationRequest::Targets(update))
+            .await
+    }
+}
+
+/// The Rust branch facade for `prompt.configure`.
+pub trait BranchPrompt {
+    fn configure(
+        &self,
+        update: ConfigureUpdate,
+    ) -> impl Future<Output = Result<ConfigureOutcome>> + Send;
+}
+
+impl BranchPrompt for Branch {
+    async fn configure(&self, update: ConfigureUpdate) -> Result<ConfigureOutcome> {
+        self.admitted_service::<Prompt>()?
+            .configure(PromptConfigurationRequest::Targets(update))
+            .await
     }
 }
 
@@ -739,7 +763,6 @@ pub struct PromptPlugin {
     guide: rutis::host::Key<GuideEntries>,
     state: rutis::host::Key<StateCell<PromptSnapshot>>,
     prompt: rutis::host::Key<Prompt>,
-    configure: rutis::host::Key<dyn ConfigureControl>,
 }
 impl PromptPlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -756,7 +779,6 @@ impl PromptPlugin {
             guide: names.key()?,
             state: names.state_cell()?,
             prompt: names.key()?,
-            configure: names.key()?,
         })
     }
 }
@@ -1068,8 +1090,7 @@ impl DynPlugin for PromptPlugin {
             });
 
             ctx.provide_at(self.state.clone(), state)?;
-            ctx.provide_at::<Prompt>(self.prompt.clone(), service.clone())?;
-            ctx.provide_at::<dyn ConfigureControl>(self.configure.clone(), service)?;
+            ctx.provide_at::<Prompt>(self.prompt.clone(), service)?;
             Ok(Effect::Done)
         })
     }
