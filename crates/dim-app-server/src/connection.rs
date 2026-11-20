@@ -1579,7 +1579,7 @@ impl Connection {
                         .get::<crate::provider::ProviderService>()
                         .ok_or_else(RpcError::reloading)?;
                     let admission = provider
-                        .startup_configuration(
+                        .prepare_startup(
                             crate::protocol::ModelSelection {
                                 provider: p.provider_id,
                                 model_id: p.model_id,
@@ -2366,7 +2366,7 @@ impl RpcService {
                     .unwrap_or_default()
             });
             let admission = provider
-                .startup_configuration(
+                .prepare_startup(
                     target,
                     Path::new(&config.cwd),
                     preferences,

@@ -63,6 +63,7 @@ pub(super) struct StartupBindings {
     connections: HashMap<String, Binding>,
     owners: HashMap<String, HashSet<String>>,
     watched: HashMap<String, uuid::Uuid>,
+    admissions: HashMap<String, rutis::Disposer>,
 }
 
 /// Holds an unclaimed binding until Session creation or adoption succeeds.
@@ -80,6 +81,35 @@ impl Drop for StartupSelection {
                 bindings.connections.remove(id);
             }
         }
+    }
+}
+
+impl StartupSelection {
+    pub(super) fn bind(mut self, caller: &rutis::Ctx) -> Result<serde_json::Value, HostError> {
+        let mut reply = serde_json::json!({"model":self.model});
+        if let Some(id) = self.pending.as_ref() {
+            let mut bindings = self.owner.startup.lock().unwrap();
+            if !bindings.owners.contains_key(id) {
+                let owner = Arc::downgrade(&self.owner);
+                let key = id.clone();
+                let cleanup = caller
+                    .effect(move || async move {
+                        if let Some(owner) = owner.upgrade() {
+                            let mut bindings = owner.startup.lock().unwrap();
+                            bindings.admissions.remove(&key);
+                            if !bindings.owners.contains_key(&key) {
+                                bindings.connections.remove(&key);
+                            }
+                        }
+                        Ok(())
+                    })
+                    .map_err(failure)?;
+                bindings.admissions.insert(id.clone(), cleanup);
+                reply["admissionId"] = id.clone().into();
+            }
+        }
+        self.pending.take();
+        Ok(reply)
     }
 }
 
@@ -172,7 +202,7 @@ impl StartupConnectionInput {
 impl ProviderService {
     /// Resolves a startup model and validates its Session-only declarations.
     /// No Provider, preference or credential record is written.
-    pub async fn startup_configuration(
+    pub async fn prepare_startup(
         self: &Arc<Self>,
         target: crate::protocol::ModelSelection,
         cwd: &Path,
@@ -524,6 +554,14 @@ impl ProviderService {
             .filter(|binding| binding.source == *source)
             .map(|binding| binding.connection.clone())
             .ok_or_else(|| failure("Temporary model connection is not bound; resume with the matching DIM_BASE_URL, DIM_API_FORMAT and credentials"))
+    }
+
+    pub(super) async fn release_startup(&self, id: &str) -> Result<(), HostError> {
+        let cleanup = self.startup.lock().unwrap().admissions.remove(id);
+        if let Some(cleanup) = cleanup {
+            cleanup.dispose().await.map_err(failure)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn check_startup(&self, source: &StartupConnectionSource) -> Result<(), HostError> {
