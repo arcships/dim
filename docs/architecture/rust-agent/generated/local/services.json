@@ -391,6 +391,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::skills::session::SessionSkills@session",
             "scope": null,
             "status": "Ready"
@@ -399,14 +404,15 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "scope": null,
             "status": "Ready"
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "scope": null,
-            "status": "Ready"
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "scope": null,
+            "provider": 74,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::skills::session::SessionSkills@session",
             "scope": null,
@@ -418,15 +424,15 @@
             "scope": null,
             "provider": 60,
             "generation": 1
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "scope": null,
-            "provider": 74,
-            "generation": 1
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "provider": 74,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_capabilities::skills::session::SessionSkills@session",
             "provider": 51,
@@ -438,12 +444,6 @@
             "provider": 60,
             "declared": true,
             "external": false
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "provider": 74,
-            "declared": true,
-            "external": true
           }
         ]
       },

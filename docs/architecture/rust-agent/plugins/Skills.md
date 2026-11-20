@@ -279,7 +279,7 @@ The `skills` check is covered by `crates/dim-app-server/tests/transport_flow/ski
 
 Owner: [skills/session.rs](../../../../crates/dim-agent-capabilities/src/skills/session.rs).
 Provides `skillsBranch`, the read-only Session skill list reached through a branch, and
-requests adoption of a changed list through `ConfigureControl`; initial adoption belongs to Prompt.
+requests adoption of a changed list through `prompt.configure`. Prompt also owns initial adoption.
 
 ### Data face
 
@@ -308,7 +308,7 @@ dispatched face is not an entry in the generated `Services` map.
 | --- | --- |
 | `S:SessionSkills` | Private typed key for the current view and change watch within the Skills owner. |
 | `B:BranchLifecycle` | Wait for activation; stop on closing. |
-| `B:dyn ConfigureControl` | Adopt the changed list as prompt configuration. |
+| `B:Prompt` | Adopt the changed list as prompt configuration. |
 
 ### Events and lifetime
 
@@ -328,7 +328,7 @@ Failed adoption is logged; a later view change can retry.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:dyn ConfigureControl`、`S:SessionSkills` |
+| 注入 | `B:BranchLifecycle`、`B:Prompt`、`S:SessionSkills` |
 | 提供 | `B:SkillsBranch`、`B:dyn HostDispatch#skillsBranch` |
 | 被注入于 | — |
 <!-- /generated -->
