@@ -538,14 +538,14 @@ A scope offers `withLock(name, callback, cancelled?)`, `list(prefix)`, `remove(n
 
 Every file is either a text envelope or raw bytes. `read()` and `replace(text)` use the envelope below. `readBytes()` returns the file's bytes whole, so a text file returns its stored envelope; `replaceBytes(bytes)` writes raw bytes with no envelope. A text read of a raw file fails `invalid_data` and leaves it untouched. Both byte operations are whole-buffer and capped at [`MAX_WHOLE_FILE_BYTES`](src/plugin_files.rs) (8 MiB): the runtime channel's frame is 16 MiB and carries bytes base64-encoded, four bytes for every three, so 12 MiB is the raw ceiling before any envelope and 8 MiB leaves the envelope and both sides' copies room while bounding one allocation. A file over the cap fails `invalid_data` before it is read, and a replacement over it fails `invalid_data` without writing. A buffer large enough that its call message would exceed the runtime's 16 MiB frame never reaches the host: the plugin's own runtime refuses that call before sending it, with a `RangeError` coded `bad-value` naming the argument and the limit, and neither the plugin row nor the file store is affected — the same holds for any call argument, a large text `replace` included. For larger files use a pinned reader or a streamed replacement as described below.
 
-A Rust process plugin uses the typed `PluginFileTransactions` service (`names.key::<PluginFileTransactions>()`) instead. `transact(name, change)` runs `change` on the inner text under the file's lock. `change` receives `None` for a missing file and returns the replacement text (`None` keeps the file as it is) together with its own result. The host writes and checks the same `{version: 1, text}` envelope. An envelope that is not version 1 fails with `InvalidData` before `change` runs, and its bytes stay unchanged.
+A Rust process plugin opens the same service with `PluginFiles::open(ctx)`. The scope’s `with_lock(name, change)` runs `change` on the inner text under the file's lock. `change` receives `None` for a missing file and returns the replacement text (`None` keeps the file as it is) together with its own result. The host writes and checks the same `{version: 1, text}` envelope. An envelope that is not version 1 fails with `InvalidData` before `change` runs, and its bytes stay unchanged.
 
-Besides `transact`, the service offers:
+The file scope also provides these operations.
 
 | Method | Value |
 | --- | --- |
 | `read_bytes(name)` | the whole file, envelope included, or `None` when absent; over the cap is `InvalidData` |
-| `open_read(name)` | a `FileReader` pinning the file for offset reads of at most 64 KiB, or `None` when absent |
+| `open_read(name)` | `OpenRead { read_id, size }` for `FsHost::read_at` and `close_read`, or `None` when absent |
 | `write_stream(name, source)` | replaces the file from a reader under its lock; no envelope and no size bound |
 | `list(prefix)` | one level under `prefix`, each a `PluginFileEntry { name, kind }` |
 | `remove(name)` | a file or a directory tree; `Locked` while a lease holds it or a file beneath it |
