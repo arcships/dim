@@ -3,7 +3,7 @@ use crate::connection::{configuration_outcome, port_error};
 use dim_agent_capabilities::{
     host::ModelSelectionRequest,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    prompt::{Prompt, PromptConfigurationRequest},
+    prompt::PromptConfigurationRequest,
     prompt_sources,
     timeline_tree::TimelineTree,
 };
@@ -123,7 +123,7 @@ async fn adopt_profile(
             "Agent configuration updates only support main",
         ));
     }
-    let branch = tree.get(&branch_id)?;
+    let configure = tree.prepare_prompt_write(&branch_id)?;
     let profile = index
         .host(Some(&agent_id))
         .ok_or_else(crate::protocol::agent_unknown)?
@@ -150,10 +150,9 @@ async fn adopt_profile(
         }),
         // A profile without a model keeps the adopted configuration; it is
         // materialized so the configuration can carry the profile's record.
-        None => branch
-            .service::<Prompt>()
+        None => tree
+            .adopted_configuration(&branch_id)
             .map_err(|_| RpcError::reloading())?
-            .adopted_configuration(Default::default())
             .map(|configuration| ModelSelection {
                 provider_id: configuration.provider_id,
                 model_id: configuration.model_id,
@@ -178,13 +177,10 @@ async fn adopt_profile(
         scope: scope.clone(),
     };
     let entry = prompt_sources::session_entry(profile.system_prompt, scope);
-    let prompt = branch.service::<Prompt>()?;
-    let adoption = prompt
-        .as_ref()
-        .configure(PromptConfigurationRequest::Loaded {
-            model,
-            sources: vec![(target, entry)],
-        });
+    let adoption = configure(PromptConfigurationRequest::Loaded {
+        model,
+        sources: vec![(target, entry)],
+    });
     tokio::select! {
         result = adoption => reply(json!({"outcome": configuration_outcome(result?)?})),
         _ = cancel.cancelled() => Err(RpcError::interrupted()),

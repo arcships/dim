@@ -592,6 +592,28 @@ impl TimelineTree {
         })
     }
 
+    /// Binds a configuration write to its branch before the caller prepares
+    /// the model. The Prompt owner is read when the prepared write runs.
+    pub fn prepare_prompt_write(
+        &self,
+        branch_id: &str,
+    ) -> Result<
+        impl FnOnce(
+            crate::prompt::PromptConfigurationRequest,
+        ) -> BoxFuture<'static, Result<dim_agent_runtime::ConfigureOutcome>>
+        + use<>,
+    > {
+        let branch = self.get(branch_id)?;
+        Ok(move |request| {
+            Box::pin(async move {
+                branch
+                    .service::<crate::prompt::Prompt>()?
+                    .configure(request)
+                    .await
+            })
+        })
+    }
+
     /// The native result of the selected branch's `prompt.adoptedConfiguration` operation.
     pub fn adopted_configuration(&self, branch_id: &str) -> Result<Option<ModelConfiguration>> {
         Ok(self
