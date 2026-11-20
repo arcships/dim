@@ -5,6 +5,8 @@
 //! writes them in the Session's own transaction, and a removal runs under the
 //! store's ownership lock so a late association cannot slip in between the
 //! re-check and the record deletion. Git is the fact; a record is a candidate.
+mod face;
+
 use crate::methods::ManagementMethods;
 use crate::storage::{PreparedWorktree, Store, WorktreeDirectory, WorktreeDirectoryRecord};
 use dim_agent_capabilities::methods::{
@@ -29,6 +31,7 @@ const ALLOCATION_ATTEMPTS: usize = 3;
 
 /// The managed worktree root and the operations over it. It owns no Session
 /// or branch state; the records belong to SessionStore and Git to the host.
+#[derive(Clone)]
 pub struct ManagedWorktrees {
     root: PathBuf,
     sessions: Arc<Store>,
@@ -1162,8 +1165,8 @@ fn valid_task_id(task_id: &str) -> bool {
 
 /// The managed-worktree reply of `session.create` and `sessions.launch`: the
 /// task id, the management root, and the directory the Session starts in.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreatedWorktreeReply {
     pub task_id: String,
     pub root: String,
@@ -1222,6 +1225,10 @@ impl DynPlugin for ManagedWorktreesPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let managed = Arc::new(ManagedWorktrees::new(self.root.clone(), sessions));
             ctx.provide_as::<ManagedWorktrees>(managed.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("managedWorktrees"),
+                managed.clone(),
+            )?;
             methods.register(
                 ctx,
                 "worktree",

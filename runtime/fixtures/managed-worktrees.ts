@@ -1,0 +1,27 @@
+import { definePlugin } from '@arcships/rutis'
+import type { ManagedWorktrees, ManagementMethods } from '../../npm/plugin.js'
+import assert from 'node:assert/strict'
+
+export default definePlugin({
+  name: 'ManagedWorktreesFixture',
+  provides: {},
+  inject: ['managedWorktrees', 'managementMethods'],
+  async apply(ctx) {
+    const owner = ctx.use<ManagedWorktrees>('managedWorktrees')
+    await ctx.use<ManagementMethods>('managementMethods').register(
+      'worktreefixture',
+      [{ name: 'worktreefixture.exercise', mutating: true, interruption: 'drain', progress: false }],
+      async (call: { params: { source: string } }) => {
+        const created = await owner.create({ source: call.params.source, branch: 'wire-worktree' })
+        const listed = await owner.list({})
+        const selected = await owner.pruneSelection({ keep: 0, force: false })
+        assert.deepEqual(listed.map(row => row.taskId), [created.taskId])
+        assert.deepEqual(selected.candidates, [])
+        assert.deepEqual(selected.kept.map(row => row.worktree.taskId), [created.taskId])
+        await assert.rejects(() => owner.remove({ taskId: 'invalid', force: false }), { code: 'worktree_invalid' })
+        await owner.discard(created)
+        return { kind: 'value', value: { created, remaining: await owner.list({}) } }
+      },
+    )
+  },
+})

@@ -1434,6 +1434,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<storage::Store>(catalog, None);
     catalog.register_shared("store");
     register::<worktrees::ManagedWorktrees>(catalog, None);
+    catalog.register_shared("managedWorktrees");
     register::<AgentIndex>(catalog, None);
     register::<rutis_loader::Loader>(catalog, None);
     catalog.register_shared(dim_agent_runtime::names::name_of::<
@@ -1503,7 +1504,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.
-        ("managedWorktrees", "hot-path"),
         ("mentionIndex", "host-resource"),
         ("modelHost", "owner-api"),
         ("openAICodexOAuthService", "secret"),

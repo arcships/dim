@@ -30,7 +30,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `localId` | process | root | data | `get` sync |
 | `loops` | process | Scheduler | data | `list` async, `next` async, `start` async, `stop` async |
 | `managedSearch` | process | ManagedProviders | data | `search` async |
-| `managedWorktrees` | process | ManagedWorktrees | internal(hot-path) | — |
+| `managedWorktrees` | process | ManagedWorktrees | data | `create` async, `discard` async, `list` async, `pruneSelection` async, `remove` async |
 | `managementMethods` | process | ManagementMethods | data | `register` async |
 | `mcpService` | process | Mcp | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
 | `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
