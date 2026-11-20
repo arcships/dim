@@ -392,12 +392,16 @@ impl CollaborationSession {
     }
 
     async fn retire_route(&self, branch_id: &str, route: &Route) {
-        let (ctx, dispatcher) = {
+        let (ctx, dispatcher, phase) = {
             let state = self.state.lock().unwrap();
             let Some(branch) = state.branches.get(branch_id) else {
                 return;
             };
-            (branch.ctx.clone(), branch.dispatcher.clone())
+            (
+                branch.ctx.clone(),
+                branch.dispatcher.clone(),
+                branch.phase.clone(),
+            )
         };
         notify(
             &ctx,
@@ -413,17 +417,15 @@ impl CollaborationSession {
             },
         );
         self.deny_member(&route.descriptor).await;
-        if let Ok(branch) = self.tree.get(branch_id)
-            && let Ok(withdraw) = self.tree.withdraw(
-                branch_id,
-                InputWithdrawData {
-                    input_id: route.input_id.clone(),
-                    reason: Some("Member approval ended".into()),
-                    steer: None,
-                },
-            )
-            && let Err(error) = withdraw.await
-            && !branch.is_closing()
+        if let Ok(withdraw) = self.tree.withdraw(
+            branch_id,
+            InputWithdrawData {
+                input_id: route.input_id.clone(),
+                reason: Some("Member approval ended".into()),
+                steer: None,
+            },
+        ) && let Err(error) = withdraw.await
+            && phase.phase() < dim_agent_runtime::BranchPhase::Closing
         {
             dispatcher.fail(error);
         }
