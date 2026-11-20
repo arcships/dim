@@ -51806,6 +51806,7 @@
       "from": "dim_cli::ui::tui::tests",
       "to": "dim_cli::ui::render::screen",
       "references": [
+        "path Frame",
         "path Screen",
         "path Screen::new",
         "path crate::ui::render::screen::Frame",
