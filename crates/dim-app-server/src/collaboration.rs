@@ -24,8 +24,8 @@ use dim_agent_capabilities::{
         ToolExecutionContext,
     },
     methods::RpcError,
+    prompt::Prompt,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
-    prompt_state::PromptSnapshot,
     timeline_tree::TreeCommands,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
 };
@@ -1975,9 +1975,9 @@ impl CollaborationSession {
     fn adopted_model(&self, branch_id: &str) -> Option<ModelSelection> {
         let (_, session) = self.collaboration.index.session(&self.session_id)?;
         let adopted = session
-            .get::<PromptSnapshot>(branch_id)
-            .ok()??
-            .configuration?;
+            .service::<Prompt>(branch_id)
+            .ok()?
+            .adopted_configuration(Default::default())?;
         Some(ModelSelection {
             provider_id: adopted.provider_id,
             model_id: adopted.model_id,
