@@ -55,6 +55,14 @@ test('source areas select their groups',()=>{
   assert.deepEqual(classify(['docs/notes.md','crates/dim-cli/src/notes.rs']),only('rust','windows'));
 });
 
+test('native macOS CI follows its runner, packaging and Mach-O layout sources',()=>{
+  assert.deepEqual(classify(['scripts/test-macos-native.mjs']),only('rust','scripts','web'));
+  for (const name of ['release.test.mjs','stage-release.mjs','pack-release.mjs','native-binary.mjs','store-formats.mjs',
+    'code-layout-darwin.test.mjs','code-layout/macho.py','code-layout/link_capture.rs']) {
+    assert.deepEqual(classify([`scripts/${name}`]),only('scripts','web','macos_scripts'),name);
+  }
+});
+
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
   assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows'));
   assert.deepEqual(classify(['crates/dimcode/tests/cli_flow/models.rs']),only('rust'));

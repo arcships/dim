@@ -359,7 +359,7 @@ PluginManager is not a Capability: it has no Timeline state, writes no Timeline 
 
 ## 9. Requirements raised to mechanism owners
 
-None to rutis: every loader operation used exists in rutis-loader 0.19.3.
+None to rutis: every loader operation used exists in rutis-loader 0.23.0.
 
 **R1. Settings: sources registered at run time (M1).**
 
