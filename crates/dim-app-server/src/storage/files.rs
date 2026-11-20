@@ -14,7 +14,7 @@
 //! row was deleted.
 use super::{SqliteStorage, sqlite::error};
 use dim_agent_capabilities::{
-    file_storage::{FileStorage, FileStorageError, FsHost, FsRemove},
+    file_storage::{FileStorage, FileStorageError, FsHost, FsPermissions, FsRemove},
     host::{SessionFileError, SessionFileErrorCode, SessionFilesService, StoredSessionFile},
     host_platform::HostPlatform,
 };
@@ -44,11 +44,8 @@ const MAX_BYTES: usize = 16 * 1024 * 1024;
 pub(super) struct SessionFiles(Arc<Files>);
 struct Files {
     db: Arc<SqliteStorage>,
-    /// SessionStore's own context: each call reads the node's FileStorage,
-    /// so a FileStorage reload reloads nothing above it.
     ctx: Ctx,
-    /// The FileStorage root of the database directory.
-    root: usize,
+    root: PathBuf,
     /// `<db>.session-files`, the directory below that root.
     directory: OsString,
     /// This generation's writer id.
@@ -249,7 +246,7 @@ impl SessionFiles {
         &self.0.generation
     }
 
-    pub(super) fn new(db: Arc<SqliteStorage>, ctx: Ctx, root: usize, sweep: Arc<Notify>) -> Self {
+    pub(super) fn new(db: Arc<SqliteStorage>, ctx: Ctx, root: PathBuf, sweep: Arc<Notify>) -> Self {
         let mut directory = db
             .path
             .file_name()
@@ -360,7 +357,7 @@ impl SessionFiles {
         let storage = self
             .0
             .ctx
-            .get::<FileStorage>()
+            .get::<FsHost>()
             .ok_or_else(|| error("the Session's resource node storage is unavailable"))?;
         let host = self.0.ctx.get::<HostPlatform>();
         for candidate in candidates {
@@ -376,14 +373,12 @@ impl SessionFiles {
                     .map_err(error)?;
                 continue;
             }
-            let relative = candidate
-                .strip_prefix(storage.root_path(self.0.root).map_err(error)?)
-                .map_err(|_| {
-                    error(format!(
-                        "output directory {} is outside the resource node's roots",
-                        candidate.display()
-                    ))
-                })?;
+            let relative = candidate.strip_prefix(&self.0.root).map_err(|_| {
+                error(format!(
+                    "output directory {} is outside the resource node's roots",
+                    candidate.display()
+                ))
+            })?;
             if !relative.starts_with(super::COMMAND_OUTPUT_DIRECTORY)
                 || relative == Path::new(super::COMMAND_OUTPUT_DIRECTORY)
             {
@@ -392,9 +387,8 @@ impl SessionFiles {
                     candidate.display()
                 )));
             }
-            let path = storage.path(self.0.root, relative).map_err(error)?;
             storage
-                .remove(&path, &self.0.stopping)
+                .remove(FsRemove::Path { path: candidate }, &self.0.stopping)
                 .await
                 .map_err(error)?;
         }
@@ -461,15 +455,8 @@ impl SessionFiles {
             }
         }
 
-        let storage = self
-            .0
-            .ctx
-            .get::<FileStorage>()
-            .ok_or_else(node_unavailable)?;
-        let directory = storage
-            .root_path(self.0.root)
-            .map_err(storage_failure)?
-            .join(&self.0.directory);
+        self.0.ctx.get::<FsHost>().ok_or_else(node_unavailable)?;
+        let directory = self.session_files_directory();
         let directory = match tokio::fs::canonicalize(&directory).await {
             Ok(directory) => directory,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -497,7 +484,7 @@ impl SessionFiles {
         &self,
         session_id: String,
     ) -> Result<Vec<PathBuf>, SessionFileError> {
-        let directory = self.session_files_directory();
+        let directory = self.0.db.path.with_file_name(&self.0.directory);
         let (files, outputs) = self
             .0
             .db
@@ -512,7 +499,7 @@ impl SessionFiles {
     }
 
     fn session_files_directory(&self) -> PathBuf {
-        self.0.db.path.with_file_name(&self.0.directory)
+        self.0.root.join(&self.0.directory)
     }
 }
 
@@ -714,24 +701,11 @@ impl Files {
         if !self.swept.load(Ordering::Acquire) {
             self.sweep.notify_one();
         }
-        let storage = self.ctx.get::<FileStorage>().ok_or_else(node_unavailable)?;
+        let storage = self.ctx.get::<FsHost>().ok_or_else(node_unavailable)?;
         let file_id = uuid::Uuid::new_v4().to_string();
-        let file_directory = Path::new(&self.directory).join(&file_id);
-        let paths = (|| {
-            Ok::<_, FileStorageError>((
-                storage.path(self.root, &self.directory)?,
-                storage.path(self.root, &file_directory)?,
-                storage.path(self.root, file_directory.join(&name))?,
-                storage.root_path(self.root)?,
-            ))
-        })();
-        let (directory, file_path, file, root) = match paths {
-            Ok(paths) => paths,
-            Err(FileStorageError::Closed) => return Err(node_unavailable()),
-            Err(other) => return Err(file_error(SessionFileErrorCode::Invalid, other)),
-        };
-        let permissions = read_only(&self.db.path)
-            .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
+        let directory = self.root.join(&self.directory);
+        let file_path = directory.join(&file_id);
+        let file = file_path.join(&name);
 
         let pending = self
             .db
@@ -749,13 +723,31 @@ impl Files {
                 ImportContent::Bytes(content) => {
                     let bytes = content.len() as u64;
                     storage
-                        .replace(&file, content, Some(permissions), &cancel)
+                        .replace(
+                            &file,
+                            content,
+                            FsPermissions::PrivateReadOnly,
+                            None,
+                            &cancel,
+                        )
                         .await?;
                     Ok(bytes)
                 }
                 ImportContent::Path(source) => {
-                    storage
-                        .import(&file, source, MAX_BYTES as u64, Some(permissions), &cancel)
+                    let owner = self
+                        .ctx
+                        .get::<FileStorage>()
+                        .ok_or(FileStorageError::Closed)?;
+                    let destination = owner.resolve(&file)?;
+                    let permissions = read_only(&self.db.path)?;
+                    owner
+                        .import(
+                            &destination,
+                            source,
+                            MAX_BYTES as u64,
+                            Some(permissions),
+                            &cancel,
+                        )
                         .await
                 }
             }
@@ -781,7 +773,7 @@ impl Files {
             .await;
         match committed {
             Ok(Commit::Owned) => Ok(StoredSessionFile {
-                path: root.join(&file_directory).join(&name),
+                path: file,
                 file_id,
                 bytes,
             }),
@@ -821,7 +813,7 @@ impl Files {
             return false;
         };
         let cancel = &self.stopping;
-        let directory = self.db.path.with_file_name(&self.directory);
+        let directory = self.root.join(&self.directory);
         let rows = |sql: &'static str| {
             self.db.run_read(move |connection| {
                 connection

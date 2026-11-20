@@ -18,7 +18,11 @@ async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_se
         .await
         .unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions = SessionStore::new(db.clone(), root.clone(), 0);
+    let sessions = SessionStore::new(
+        db.clone(),
+        root.clone(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     for session in ["source", "other"] {
         store
@@ -76,7 +80,11 @@ async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_se
     db.close().await.unwrap();
 
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions = SessionStore::new(db.clone(), root.clone(), 0);
+    let sessions = SessionStore::new(
+        db.clone(),
+        root.clone(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     assert_eq!(
         sessions.worktree_usages(worktree.clone()).await.unwrap(),
@@ -124,7 +132,11 @@ async fn failed_worktree_association_changes_neither_directory_nor_usage() {
     };
     std::fs::create_dir_all(&worktree.root).unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions = SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     assert!(matches!(
         sessions.associate_worktree("absent", worktree.clone(), worktree.root.clone()).await,
@@ -239,7 +251,11 @@ async fn worktree_association_cannot_outlive_delete_or_creation_rollback() {
     };
     std::fs::create_dir_all(&worktree.root).unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions = SessionStore::new(db.clone(), root.clone(), 0);
+    let sessions = SessionStore::new(
+        db.clone(),
+        root.clone(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     store
         .create_session("source", &SessionConfig::default())
@@ -334,7 +350,11 @@ async fn a_v32_store_upgrades_without_inventing_worktree_usage() {
     drop(connection);
     let db = SqliteStorage::open(database.0.clone()).unwrap();
     assert_eq!(db.upgraded_from(), Some(32));
-    let sessions = SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     assert!(sessions.worktree_directories().await.unwrap().is_empty());
     let store = SqliteTimelineStore::new(db.clone());
     drop(sessions);
@@ -402,7 +422,11 @@ async fn managed_creation_records_use_and_removal_refuses_an_association() {
         )
         .unwrap();
     drop(connection);
-    let sessions = SessionStore::new(db.clone(), root.clone(), 0);
+    let sessions = SessionStore::new(
+        db.clone(),
+        root.clone(),
+        database.0.parent().unwrap().to_owned(),
+    );
     sessions
         .create_owned_session(
             "managed",

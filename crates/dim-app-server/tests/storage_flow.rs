@@ -5161,7 +5161,13 @@ async fn owned_session_creation_and_plugin_shutdown_keep_one_resource_owner() {
     let catalog = dim_app_server::catalog();
     let build = rutis_loader::resolve::Build::default();
     let names = dim_agent_runtime::Names::copy(&catalog, &build);
-    let session = root.plugin(dim_app_server::storage::SessionStorePlugin::new(&names, 0).unwrap());
+    let session = root.plugin(
+        dim_app_server::storage::SessionStorePlugin::new(
+            &names,
+            database.0.parent().unwrap().to_owned(),
+        )
+        .unwrap(),
+    );
     (&sqlite).await.unwrap();
     (&session).await.unwrap();
     let connection = Connection::open(&database.0).unwrap();
@@ -6713,8 +6719,11 @@ async fn reads_share_bounded_content_across_pages_and_still_check_every_load() {
 async fn directory_history_pages_keep_a_fixed_head() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = dim_app_server::storage::SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store: Arc<dyn TimelineStore> = sessions.timeline_store();
     store
         .create_session("paged", &SessionConfig::default())
@@ -7170,8 +7179,11 @@ async fn native_continuation_survives_sqlite_checkpoint_request_and_child_restor
 async fn a_fork_copies_main_through_the_cut_with_its_content_and_snapshots() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = dim_app_server::storage::SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     let config = SessionConfig {
         interactive: false,
@@ -8398,8 +8410,11 @@ async fn session_grants_upsert_remove_survive_restart_and_are_not_forked() {
     let directory = PathBuf::from("/work/notes");
 
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = dim_app_server::storage::SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     store
         .create_session("s", &SessionConfig::default())
@@ -8441,8 +8456,11 @@ async fn session_grants_upsert_remove_survive_restart_and_are_not_forked() {
     store.close().await.unwrap();
     db.close().await.unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = dim_app_server::storage::SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     assert_eq!(sessions.grants("s").await.unwrap().len(), 2);
     sessions.remove_grant("s", notes.clone()).await.unwrap();
@@ -8472,7 +8490,11 @@ async fn output_ownership_survives_a_fork_and_a_source_delete() {
         .await
         .unwrap();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions = dim_app_server::storage::SessionStore::new(db.clone(), root.clone(), 0);
+    let sessions = dim_app_server::storage::SessionStore::new(
+        db.clone(),
+        root.clone(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     store
         .create_session("source", &SessionConfig::default())
@@ -9392,8 +9414,11 @@ fn stored_default(connection: &Connection, session: &str) -> String {
 async fn a_fork_copies_the_root_and_its_default_branch_is_the_root() {
     let database = Database::new();
     let db = SqliteStorage::open(database.0.clone()).unwrap();
-    let sessions =
-        dim_app_server::storage::SessionStore::new(db.clone(), rutis::Ctx::root().unwrap(), 0);
+    let sessions = dim_app_server::storage::SessionStore::new(
+        db.clone(),
+        rutis::Ctx::root().unwrap(),
+        database.0.parent().unwrap().to_owned(),
+    );
     let store = SqliteTimelineStore::new(db.clone());
     let config = SessionConfig {
         interactive: false,

@@ -642,15 +642,10 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 .ok_or_else(|| ServerError::Configuration("database must name a file".into()))?;
             create_private_directory(&directory)?;
             let directory = std::fs::canonicalize(directory)?;
-            Some(
-                match config.file_roots.iter().position(|root| root == &directory) {
-                    Some(index) => index,
-                    None => {
-                        config.file_roots.push(directory);
-                        config.file_roots.len() - 1
-                    }
-                },
-            )
+            if !config.file_roots.contains(&directory) {
+                config.file_roots.push(directory.clone());
+            }
+            Some(directory)
         }
         None => None,
     };
@@ -783,7 +778,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             builder.catalog(),
             move |names| {
                 Ok(Box::new(storage::SessionStorePlugin::new(
-                    names, files_root,
+                    names,
+                    files_root.clone(),
                 )?))
             },
         )?);

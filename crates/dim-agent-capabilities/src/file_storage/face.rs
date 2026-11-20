@@ -290,8 +290,12 @@ impl FsHost {
             .await
     }
 
-    pub async fn create_directory(&self, path: &str, cancel: &CancellationToken) -> Result<()> {
-        let path = self.0.resolve(Path::new(path))?;
+    pub async fn create_directory(
+        &self,
+        path: impl AsRef<Path>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        let path = self.0.resolve(path.as_ref())?;
         self.0.create_directory(&path, cancel).await
     }
 

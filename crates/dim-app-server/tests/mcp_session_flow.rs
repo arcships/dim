@@ -2590,11 +2590,13 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             let storage = dim_app_server::storage::SqliteStoragePlugin::new(database.clone());
             Ok(Box::new(storage))
         });
-        builder.plugin(|_| {
+        let files_root = home.clone();
+        builder.plugin(move |_| {
             let catalog = dim_app_server::catalog();
             let build = Build::default();
             let names = Names::copy(&catalog, &build);
-            let plugin = dim_app_server::storage::SessionStorePlugin::new(&names, 0)?;
+            use dim_app_server::storage::SessionStorePlugin;
+            let plugin = SessionStorePlugin::new(&names, files_root.clone())?;
             Ok(Box::new(plugin))
         });
         builder
