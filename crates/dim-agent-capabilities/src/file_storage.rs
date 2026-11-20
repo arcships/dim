@@ -1550,6 +1550,7 @@ fn absent_is_removed(result: std::result::Result<(), impl Into<FileStorageError>
 /// Clones share authorized root identities; each apply opens fresh I/O resources.
 #[derive(Clone)]
 pub struct FileStoragePlugin {
+    node_home: Option<PathBuf>,
     writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
 }
@@ -1558,7 +1559,13 @@ impl FileStoragePlugin {
         Self {
             roots: Arc::new(Mutex::new(roots)),
             writes: Arc::default(),
+            node_home: None,
         }
+    }
+
+    pub fn with_node_home(mut self, home: Option<PathBuf>) -> Self {
+        self.node_home = home;
+        self
     }
 }
 impl Plugin for FileStoragePlugin {
@@ -1583,6 +1590,7 @@ impl Plugin for FileStoragePlugin {
             storage.clone(),
             ctx.clone(),
             self.writes.clone(),
+            self.node_home.clone().or_else(std::env::home_dir),
         ));
         ctx.provide_as::<FsHost>(binding.clone())?;
         ctx.provide_at(

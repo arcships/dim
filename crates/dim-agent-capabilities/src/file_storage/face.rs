@@ -97,6 +97,7 @@ impl FsPermissions {
 /// Filesystem operations on the existing storage generation.
 #[derive(Clone)]
 pub struct FsHost {
+    node_home: Option<PathBuf>,
     pub(crate) writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     system_roots: Arc<Vec<PathBuf>>,
     storage: Arc<FileStorage>,
@@ -108,8 +109,10 @@ impl FsHost {
         owner: Arc<FileStorage>,
         ctx: Ctx,
         writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
+        node_home: Option<PathBuf>,
     ) -> Self {
         Self {
+            node_home,
             writes,
             system_roots: Arc::new(crate::host_platform::platform_roots()),
             storage: owner,
@@ -637,10 +640,12 @@ impl HostDispatch for FsHost {
             let _dropped = cancel.clone().drop_guard();
             let reply = match request {
                 Request::Resolve(request) => {
-                    let home = std::env::home_dir()
+                    let home = owner
+                        .node_home
+                        .as_deref()
                         .ok_or_else(|| failure(FileStorageError::Unsupported))?;
                     let resolved = owner
-                        .resolve_workspace_path(request, &home, &owner.system_roots, &cancel)
+                        .resolve_workspace_path(request, home, &owner.system_roots, &cancel)
                         .await
                         .map_err(|error| {
                             rutis_bridge::exports::failure(
@@ -726,10 +731,12 @@ impl HostDispatch for FsHost {
                                 "expected an absolute search root",
                             ))
                         })?;
-                    let home = std::env::home_dir()
+                    let home = owner
+                        .node_home
+                        .as_deref()
                         .ok_or_else(|| failure(FileStorageError::Unsupported))?;
                     let result = owner
-                        .workspace_search(kind, path, &home, None, &input, &cancel)
+                        .workspace_search(kind, path, home, None, &input, &cancel)
                         .await
                         .map_err(|error| {
                             let code = match &error {

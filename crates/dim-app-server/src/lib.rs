@@ -717,7 +717,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     )?];
     let native_home = execution_root.filter(|_| config.database_path.is_some());
     let files =
-        dim_agent_capabilities::file_storage::FileStoragePlugin::new(config.file_roots.clone());
+        dim_agent_capabilities::file_storage::FileStoragePlugin::new(config.file_roots.clone())
+            .with_node_home(config.platform_home.clone());
     rows.push(register_part(
         &mut builtins,
         builder.catalog(),
