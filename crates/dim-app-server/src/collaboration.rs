@@ -227,6 +227,7 @@ impl Plugin for CollaborationDirectoryPlugin {
 /// writes no Timeline; observes Sessions only via `closed()` and Agents'
 /// [`SessionRestored`] and [`UnloadedSessionDeleted`].
 pub struct Collaboration {
+    caller: Ctx,
     index: Arc<AgentIndex>,
     directory: Arc<CollaborationDirectory>,
     /// The subagent model policy's source; local execution only.
@@ -237,10 +238,54 @@ pub struct Collaboration {
     reads: AtomicUsize,
 }
 struct Peer {
-    usage: crate::agents::SessionUse,
+    usage: Arc<MemberUse>,
     agent_id: String,
     session: Session,
 }
+struct MemberUse {
+    id: uuid::Uuid,
+    index: Arc<AgentIndex>,
+}
+
+impl Drop for MemberUse {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.index.retire_use(self.id) {
+            tokio::spawn(async move {
+                let _ = cleanup.dispose().await;
+            });
+        }
+    }
+}
+
+impl MemberUse {
+    fn session(&self) -> dim_agent_runtime::Result<Session> {
+        self.index
+            .pinned_use(self.id)
+            .map(|lease| lease.session.clone())
+            .map_err(|error| AgentError::Closed(error.to_string()))
+    }
+
+    fn state(&self, branch: &str) -> dim_agent_runtime::Result<dim_agent_runtime::BranchStatus> {
+        self.session()?.state(branch)
+    }
+
+    async fn input(
+        &self,
+        message: InputMessageData,
+        branch: &str,
+    ) -> dim_agent_runtime::Result<Arc<AgentEvent>> {
+        self.session()?.input(message, branch).await
+    }
+
+    async fn stop(&self, branch: &str, reason: String) -> dim_agent_runtime::Result<u64> {
+        self.session()?.stop(branch, reason).await
+    }
+
+    async fn idle(&self, branch: &str) -> dim_agent_runtime::Result<u64> {
+        self.session()?.idle(branch).await
+    }
+}
+
 enum NewMember {
     Agent(String),
     Temporary(AgentProfile),
@@ -430,16 +475,7 @@ impl Collaboration {
         });
         self.watch(&leader_host.agent_id, leader);
         self.watch(&host.agent_id, session.clone());
-        let usage = self
-            .index
-            .acquire(session.id())
-            .await
-            .map_err(|_| Refusal::MemberClosed)?;
-        Ok(Peer {
-            agent_id: host.agent_id.clone(),
-            session,
-            usage,
-        })
+        self.lookup(&host.agent_id, session.id()).await
     }
     /// An owned Agent is visible only within its owner's Team, and a public
     /// one to every Team. An unknown Agent is visible to none: absence is a
@@ -612,17 +648,28 @@ impl Collaboration {
         self.lookup(agent_id, session_id).await
     }
     async fn lookup(self: &Arc<Self>, agent_id: &str, session_id: &str) -> Result<Peer, Refusal> {
-        let usage = self
+        let acquired = self
             .index
-            .acquire(session_id)
+            .acquire_use(
+                crate::agents::AcquireUse {
+                    session_id: session_id.into(),
+                    agent_id: agent_id.into(),
+                },
+                &self.caller,
+            )
             .await
-            .map_err(|_| Refusal::MemberClosed)?;
-        if usage.host.agent_id != agent_id {
-            return Err(Refusal::TeamMemberNotFound);
-        }
+            .map_err(|error| match error {
+                crate::agents::SessionsError::Rejected { .. } => Refusal::TeamMemberNotFound,
+                _ => Refusal::MemberClosed,
+            })?;
+        let usage = Arc::new(MemberUse {
+            id: acquired.use_id,
+            index: self.index.clone(),
+        });
+        let session = usage.session().map_err(|_| Refusal::MemberClosed)?;
         Ok(Peer {
-            agent_id: agent_id.into(),
-            session: usage.session.clone(),
+            agent_id: agent_id.to_owned(),
+            session,
             usage,
         })
     }
@@ -770,6 +817,7 @@ impl DynPlugin for CollaborationPlugin {
                 None => None,
             };
             let service = Arc::new(Collaboration {
+                caller: ctx.clone(),
                 index,
                 directory,
                 settings,
@@ -859,7 +907,7 @@ struct BranchRecord {
 }
 /// A delivered or delivering request, until its `result` is written.
 struct Request {
-    _usage: crate::agents::SessionUse,
+    usage: Arc<MemberUse>,
     /// Keeps the leader from an idle release while the request is open
     /// (idle unload R4).
     _hold: SessionHold,
@@ -1343,7 +1391,7 @@ impl CollaborationSession {
                 return Ok(json!({"status": "idle"}));
             };
             request.cancelled_by_client = true;
-            let session = request.session.clone();
+            let session = request.usage.clone();
             let start = if request.carrying_out || request.input_event_id.is_none() {
                 None
             } else {
@@ -1746,7 +1794,7 @@ impl CollaborationSession {
                     && let Some(input) = request.input_event_id.clone()
                 {
                     request.carrying_out = true;
-                    raw_starts.push((member.clone(), request.session.clone(), input));
+                    raw_starts.push((member.clone(), request.usage.clone(), input));
                 }
             }
             let retired = {
@@ -2038,7 +2086,7 @@ impl CollaborationSession {
                     CollaborationMessageMode::Steer => InputMode::Steer,
                 };
                 let input = peer
-                    .session
+                    .usage
                     .input(
                         self.message_input(&sender, data.content.clone(), mode),
                         ROOT_BRANCH_ID,
@@ -2052,7 +2100,7 @@ impl CollaborationSession {
                     .collaboration
                     .member(&self.session_id, &data.agent_id, &data.session_id)
                     .await?;
-                let _ = peer.session.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
+                let _ = peer.usage.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
                 Ok(delivered(&peer, None, Some(cancel)))
             }
             EventKind::CollaborationClose(data) => {
@@ -2061,7 +2109,7 @@ impl CollaborationSession {
                     .member(&self.session_id, &data.agent_id, &data.session_id)
                     .await?;
                 let working = self.in_flight(&data.session_id);
-                let _ = peer.session.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
+                let _ = peer.usage.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
                 if let Some(mut done) = working {
                     let abort = self.with_abort(branch_id);
                     tokio::select! {
@@ -2175,7 +2223,7 @@ impl CollaborationSession {
                 && (state.requests.contains_key(&member)
                     || state.stopping.contains_key(&member)
                     || peer
-                        .session
+                        .usage
                         .state(ROOT_BRANCH_ID)
                         .is_ok_and(|state| state.running))
             {
@@ -2184,7 +2232,7 @@ impl CollaborationSession {
             state.requests.insert(
                 member.clone(),
                 Request {
-                    _usage: peer.usage.clone(),
+                    usage: peer.usage.clone(),
                     _hold: hold,
                     branch: branch_id.to_owned(),
                     op: event.id.clone(),
@@ -2202,7 +2250,7 @@ impl CollaborationSession {
             );
         }
         let input = match peer
-            .session
+            .usage
             .input(
                 self.message_input(&sender, data.prompt.clone(), InputMode::Queue),
                 ROOT_BRANCH_ID,
@@ -2255,7 +2303,7 @@ impl CollaborationSession {
             } else {
                 CANCELLED_BY_CLIENT
             };
-            let session = peer.session.clone();
+            let session = peer.usage.clone();
             let input = input.id.clone();
             let stops = self.clone();
             self.collaboration.tasks.spawn(async move {
@@ -2312,7 +2360,7 @@ impl CollaborationSession {
         else {
             return;
         };
-        let session = request.session.clone();
+        let session = request.usage.clone();
         let member = member.clone();
         let abort = branch.abort.clone();
         let this = self.clone();
@@ -2420,7 +2468,7 @@ impl CollaborationSession {
     /// mark goes, so a later cancel or interrupt starts the stop again.
     async fn carry_out_stop(
         self: &Arc<Self>,
-        session: &Session,
+        session: &Arc<MemberUse>,
         input: &str,
         reason: &str,
         stopping: Stopping,
@@ -2439,11 +2487,12 @@ impl CollaborationSession {
     /// mark across both and clears the request's flag when either fails.
     async fn stop_request_input(
         self: &Arc<Self>,
-        session: &Session,
+        usage: &Arc<MemberUse>,
         input: &str,
         reason: &str,
         stopping: Arc<Stopping>,
     ) -> dim_agent_runtime::Result<()> {
+        let session = &usage.session()?;
         let mut after = 0;
         let mut open = None;
         // Subscribed before the first check, so a consumption or a deletion
@@ -2488,7 +2537,9 @@ impl CollaborationSession {
         let session = session.clone();
         let input = input.to_owned();
         let reason = reason.to_owned();
+        let usage = usage.clone();
         let wait = async move {
+            let _usage = usage;
             // The mark lives until this block ends, and a failure of the loop
             // below clears the request's flag before it goes.
             let result: dim_agent_runtime::Result<()> = async {
@@ -2694,7 +2745,7 @@ impl CollaborationSession {
                 } else {
                     None
                 };
-                let session = request.session.clone();
+                let session = request.usage.clone();
                 let stopping = input
                     .as_ref()
                     .map(|_| Stopping::mark(self, &mut state, &member));
@@ -2712,7 +2763,9 @@ impl CollaborationSession {
                     });
                 }
             } else {
-                let _ = session.interrupt(ROOT_BRANCH_ID, INTERRUPTED.into());
+                if let Ok(session) = session.session() {
+                    let _ = session.interrupt(ROOT_BRANCH_ID, INTERRUPTED.into());
+                }
             }
             self.settle(branch_id, &member, None).await;
         }

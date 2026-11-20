@@ -70,9 +70,16 @@ pub(crate) struct SessionEnded {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct AcquireUse {
-    session_id: String,
-    agent_id: String,
+pub(crate) struct AcquireUse {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AcquiredUse {
+    pub(crate) use_id: uuid::Uuid,
+    pub(crate) generation: String,
 }
 
 #[derive(Deserialize)]
@@ -545,11 +552,11 @@ fn settlement(error: AgentError) -> SessionsError {
 }
 
 impl AgentIndex {
-    async fn acquire_use(
+    pub(crate) async fn acquire_use(
         self: &Arc<Self>,
         request: AcquireUse,
         caller: &Ctx,
-    ) -> Result<serde_json::Value, SessionsError> {
+    ) -> Result<AcquiredUse, SessionsError> {
         let lease = self.acquire(&request.session_id).await?;
         if lease.host.agent_id != request.agent_id {
             return Err(SessionsError::rejected("Session belongs to another Agent"));
@@ -570,10 +577,13 @@ impl AgentIndex {
             })
             .map_err(|_| SessionsError::reloading("the calling row"))?;
         uses.insert(id, (lease, cleanup));
-        Ok(json!({"useId":id,"generation":generation}))
+        Ok(AcquiredUse {
+            use_id: id,
+            generation,
+        })
     }
 
-    fn pinned_use(&self, id: uuid::Uuid) -> Result<super::SessionUse, SessionsError> {
+    pub(crate) fn pinned_use(&self, id: uuid::Uuid) -> Result<super::SessionUse, SessionsError> {
         self.session_uses
             .lock()
             .unwrap()
@@ -599,10 +609,16 @@ impl AgentIndex {
         Ok(lease)
     }
 
+    pub(crate) fn retire_use(&self, id: uuid::Uuid) -> Option<rutis::Disposer> {
+        self.session_uses
+            .lock()
+            .unwrap()
+            .remove(&id)
+            .map(|(_, cleanup)| cleanup)
+    }
+
     async fn release_use(&self, id: uuid::Uuid) -> Result<(), SessionsError> {
-        let entry = self.session_uses.lock().unwrap().remove(&id);
-        if let Some((lease, cleanup)) = entry {
-            drop(lease);
+        if let Some(cleanup) = self.retire_use(id) {
             cleanup
                 .dispose()
                 .await
@@ -1068,7 +1084,7 @@ impl HostDispatch for Sessions {
                             let caller = caller.ok_or_else(|| {
                                 SessionsError::rejected("acquireUse needs the calling row")
                             })?;
-                            index.acquire_use(request(args)?, &caller).await
+                            reply(index.acquire_use(request(args)?, &caller).await?)
                         }
                         "releaseUse" => {
                             let ReleaseUse { use_id } = request(args)?;
