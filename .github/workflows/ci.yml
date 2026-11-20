@@ -306,6 +306,36 @@ jobs:
       - name: Verify downloaded Node runtime
         if: needs.changes.outputs.node == 'true' && github.event_name != 'pull_request'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
+  linux-probe:
+    # Temporary (#1919): shows what a login shell prints on the Linux runners.
+    strategy:
+      matrix:
+        attempt: [1, 2]
+    runs-on: [self-hosted, linux, x64, dim-verify]
+    timeout-minutes: 5
+    steps:
+      - shell: bash
+        run: |
+          set -u
+          echo "runner: $RUNNER_NAME user: $(id -un) uid=$(id -u)"
+          getent passwd "$(id -un)" | cut -d: -f6,7
+          echo "SHELL=${SHELL-} LANG=${LANG-} LC_ALL=${LC_ALL-} LC_CTYPE=${LC_CTYPE-}"
+          ls /etc/profile.d/
+          home="$RUNNER_TEMP/probe-home"
+          mkdir -p "$home"
+          chmod 700 "$home"
+          login_shell="$(getent passwd "$(id -un)" | cut -d: -f7)"
+          vars=(PATH="$PATH" HOME="$home")
+          for name in LANG LC_ALL LC_CTYPE; do
+            if [[ -n "${!name-}" ]]; then vars+=("$name=${!name}"); fi
+          done
+          echo "expected: $home"
+          echo '--- login shell, no sandbox'
+          env -i "${vars[@]}" "$login_shell" -lc 'echo $HOME' 2>&1 | cat -A | head -20 || true
+          echo '--- login shell under bubblewrap'
+          env -i "${vars[@]}" bwrap --unshare-user --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --cap-drop ALL \
+            --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /sbin /sbin --ro-bind /lib /lib --ro-bind /lib64 /lib64 --ro-bind /etc /etc \
+            --bind "$home" "$home" --proc /proc --dev /dev --remount-ro / --chdir "$home" -- "$login_shell" -lc 'echo $HOME' 2>&1 | cat -A | head -20 || true
   acp-registry:
     needs: changes
     if: github.event_name != 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.scripts == 'true')
