@@ -583,6 +583,14 @@ impl TimelineTree {
             .adopted_configuration(Default::default()))
     }
 
+    pub fn pending_approvals(&self, branch_id: &str) -> Result<Vec<ApprovalRequestData>> {
+        let branch = self.get(branch_id)?;
+        if branch.is_closing() {
+            return Err(AgentError::Closed(branch_id.into()));
+        }
+        Ok(branch.service::<crate::approval::Approval>()?.pending())
+    }
+
     pub(crate) async fn call_branch(
         &self,
         request: BranchCall,
@@ -637,11 +645,9 @@ impl TimelineTree {
                 })?;
                 crate::methods::reply(answer)
             }
-            BranchOperation::ApprovalPending => crate::methods::reply(
-                self.get(branch_id)?
-                    .service::<crate::approval::Approval>()?
-                    .pending(),
-            ),
+            BranchOperation::ApprovalPending => {
+                crate::methods::reply(self.pending_approvals(branch_id)?)
+            }
         }
     }
 }

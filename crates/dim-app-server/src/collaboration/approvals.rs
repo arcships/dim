@@ -627,24 +627,20 @@ impl CollaborationSession {
         if p.branch_id.is_empty() || p.request_id.is_empty() {
             return Err(RpcError::invalid("Approval identity must not be empty"));
         }
-        let branch = match self.tree.get(&p.branch_id) {
-            Ok(branch) => branch,
+        let pending = match self.tree.pending_approvals(&p.branch_id) {
+            Ok(requests) => requests,
             Err(
                 AgentError::UnknownBranch(_) | AgentError::BranchEnded(_) | AgentError::Closed(_),
             ) => return Ok(MemberApprovalDetail::Ended),
             Err(error) => return Err(error.into()),
         };
-        if branch.is_closing() {
-            return Ok(MemberApprovalDetail::Ended);
-        }
-        let approval = branch.service::<Approval>()?;
-        let mut id = None;
-        approval.replay(|request| {
-            if request.approval_id == p.request_id && request.call.name == MEMBER_APPROVAL_ALLOW {
-                id = serde_json::from_value::<Answer>(Value::Object(request.call.input.clone()))
-                    .ok()
-                    .map(|answer| answer.approval_id);
+        let id = pending.into_iter().find_map(|request| {
+            if request.approval_id != p.request_id || request.call.name != MEMBER_APPROVAL_ALLOW {
+                return None;
             }
+            serde_json::from_value::<Answer>(Value::Object(request.call.input))
+                .ok()
+                .map(|answer| answer.approval_id)
         });
         let route = id.and_then(|id| self.approval_route(&p.branch_id, &id));
         let Some(route) = route else {
