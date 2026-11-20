@@ -7,7 +7,7 @@ use crate::{
     context_block,
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     host_platform::{
-        ExecShellRuntime, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
+        ExecShellRuntime, HostInfo, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
     prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
@@ -223,22 +223,13 @@ fn xml_tag(name: &str, value: &str) -> String {
 
 /// The runtime environment (TS `renderRuntimeEnvironment`): one tag per
 /// line, values escaped; the date is its own source.
-fn environment(
-    platform: &HostPlatform,
-    shell: &ShellStatus,
-    cwd: &str,
-    policy: &PromptSourcesConfig,
-) -> String {
-    let os = match platform.os {
-        Os::Macos => "darwin",
-        Os::Linux => "linux",
-        Os::Windows => "win32",
-    };
+fn environment(platform: &HostInfo, cwd: &str, policy: &PromptSourcesConfig) -> String {
+    let os = platform.os.node_platform();
     let mut entries = vec![
         xml_tag("cwd", cwd),
         xml_tag("home", &platform.home.to_string_lossy()),
     ];
-    match shell {
+    match &platform.exec_shell {
         ShellStatus::Available(ExecShellRuntime {
             executable_path,
             edition,
@@ -496,8 +487,7 @@ impl LoadPrompt for Sources {
                 }
                 ENVIRONMENT => (
                     Some(environment(
-                        &self.platform,
-                        &self.platform.exec_shell().await,
+                        &self.platform.info().await,
                         &self.config.cwd,
                         &self.policy,
                     )),

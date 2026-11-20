@@ -858,6 +858,15 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::host_platform::face",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::host_platform",
+      "file": "crates/dim-agent-capabilities/src/host_platform/face.rs",
+      "unexpandedMacros": [
+        "serde_json::json"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::host_platform::isolation",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities::host_platform",
@@ -13910,6 +13919,15 @@
     },
     {
       "from": "dim_agent_capabilities::host_platform",
+      "to": "dim_agent_capabilities::host_platform::face",
+      "references": [
+        "mod face",
+        "path face::Dispatch",
+        "use face::HostInfo"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform",
       "to": "dim_agent_capabilities::host_platform::isolation",
       "references": [
         "mod isolation",
@@ -14034,6 +14052,31 @@
       "references": [
         "path native::detect",
         "use super::native"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::face",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path HostPlatform",
+        "path Os",
+        "path SandboxBackend",
+        "path ShellStatus",
+        "use super::HostPlatform",
+        "use super::Os",
+        "use super::SandboxBackend",
+        "use super::ShellStatus"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::face",
+      "to": "dim_agent_capabilities::port_faces",
+      "references": [
+        "path Empty",
+        "path port_faces::request",
+        "path port_faces::unknown_method",
+        "use crate::port_faces",
+        "use crate::port_faces::Empty"
       ]
     },
     {
@@ -15827,8 +15870,6 @@
       "references": [
         "path ExecShellRuntime",
         "path HostPlatform",
-        "path Os::Linux",
-        "path Os::Macos",
         "path Os::Windows",
         "path OutputEncoding::Unknown",
         "path OutputEncoding::Utf8",
@@ -15842,7 +15883,6 @@
         "path ShellEdition::Sh",
         "path ShellEdition::WindowsPowershell",
         "path ShellEdition::Zsh",
-        "path ShellStatus",
         "path ShellStatus::Available",
         "path ShellStatus::Unavailable",
         "use crate::host_platform::ExecShellRuntime",
@@ -15851,6 +15891,14 @@
         "use crate::host_platform::OutputEncoding",
         "use crate::host_platform::ShellEdition",
         "use crate::host_platform::ShellStatus"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::prompt_sources",
+      "to": "dim_agent_capabilities::host_platform::face",
+      "references": [
+        "path HostInfo",
+        "use crate::host_platform::HostInfo"
       ]
     },
     {
@@ -56385,6 +56433,14 @@
     {
       "module": "dim_agent_capabilities::host",
       "path": "T::deserialize"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform",
+      "path": "S::Error"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform",
+      "path": "S::Ok"
     },
     {
       "module": "dim_agent_capabilities::recall",

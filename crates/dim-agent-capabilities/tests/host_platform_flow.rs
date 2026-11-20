@@ -250,6 +250,19 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     std::os::unix::fs::symlink("/bin/bash", &shell).unwrap();
     let selected = platform.exec_shell().await;
     assert!(matches!(selected, ShellStatus::Available(_)));
+    let face = root
+        .get_at(&rutis_bridge::session::host_key("execHost"))
+        .unwrap();
+    let facts =
+        rutis_bridge::session::settle(face.invoke("info", serde_json::json!([{}]).into()).unwrap())
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+    assert_eq!(facts, serde_json::to_value(platform.info().await).unwrap());
+    assert_eq!(facts["execShell"]["state"], "available");
+    assert_eq!(facts["execShell"]["executable"], shell.to_str().unwrap());
+
     std::fs::remove_file(&shell).unwrap();
     let cloned = (*platform).clone();
     for status in futures_util::future::join_all([platform.exec_shell(), cloned.exec_shell()]).await

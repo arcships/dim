@@ -25,6 +25,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 mod confined;
+mod face;
+pub use face::HostInfo;
 mod exec_shell_settings;
 #[cfg(unix)]
 mod isolation;
@@ -62,6 +64,12 @@ pub enum Os {
     Linux,
     Windows,
 }
+impl serde::Serialize for Os {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.node_platform())
+    }
+}
+
 impl Os {
     pub const CURRENT: Os = if cfg!(windows) {
         Os::Windows
@@ -80,7 +88,8 @@ impl Os {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ShellEdition {
     Bash,
     Zsh,
@@ -121,7 +130,8 @@ impl ShellEdition {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ShellSource {
     /// The executable path configured in `exec-shell.json`.
     Explicit,
@@ -132,19 +142,23 @@ pub enum ShellSource {
     /// The Windows automatic order `pwsh -> Windows PowerShell -> cmd`.
     Automatic,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum OutputEncoding {
     Utf8,
     Unknown,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ExecShellRuntime {
+    #[serde(rename = "executable")]
     pub executable_path: PathBuf,
     pub edition: ShellEdition,
     pub source: ShellSource,
     pub output_encoding: OutputEncoding,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
 pub enum ShellStatus {
     Available(ExecShellRuntime),
     Unavailable { code: &'static str, reason: String },
@@ -276,7 +290,8 @@ pub struct ProcessSpecError {
 
 /// Whether a new process can be sandboxed on this host, or why it cannot. The
 /// Process isolation control shows this; preparation reads the same backend.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
 pub enum SandboxBackend {
     Available,
     Unavailable { reason: &'static str },
@@ -1062,7 +1077,13 @@ impl DynPlugin for HostPlatformPlugin {
             let toolchain = ctx.require_at(&self.toolchain)?;
             platform.toolchain = Some(toolchain.clone());
             platform.shell.lock().await.config = config;
-            ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
+            let platform = Arc::new(platform);
+            ctx.provide_at(
+                rutis_bridge::session::host_key("execHost"),
+                Arc::new(face::Dispatch(platform.clone()))
+                    as Arc<dyn rutis_bridge::session::HostDispatch>,
+            )?;
+            ctx.provide_as::<HostPlatform>(platform)?;
             Ok(Effect::Done)
         })
     }

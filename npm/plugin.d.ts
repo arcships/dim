@@ -741,6 +741,25 @@ export interface TimelineStore {
   latestSnapshot(request: { sessionId: string; branchId: string; through: number; interpreter: string }): Promise<{ snapshot: TimelineRecoverySnapshot | null }>;
 }
 
+/** Host facts of the node that executes commands. */
+export interface ExecHost {
+  info(request: Record<string, never>): Promise<{
+    os: 'darwin' | 'linux' | 'win32';
+    home: string;
+    timezone?: string;
+    execRoot: string;
+    platformRoots: string[];
+    backend: { state: 'available' } | { state: 'unavailable'; reason: string };
+    execShell: {
+      state: 'available';
+      executable: string;
+      edition: 'bash' | 'zsh' | 'sh' | 'dash' | 'ksh' | 'git-bash' | 'pwsh' | 'windows-powershell' | 'cmd';
+      source: 'explicit' | 'login' | 'fallback' | 'automatic';
+      outputEncoding: 'utf8' | 'unknown';
+    } | { state: 'unavailable'; code: string; reason: string };
+  }>;
+}
+
 export type FsEntryName = string | { Unix: number[] } | { Windows: number[] };
 /** Directory operations and pinned reads on the filesystem owner; see resource-faces §4.1. */
 export interface FsHost {
