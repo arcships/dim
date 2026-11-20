@@ -17,13 +17,14 @@ exposes loop state without itself executing model or tool effects.
 | `B:Dispatcher` | Hand off restored state to live step outcomes, inputs and interrupts. |
 | `B:Timeline` | Commit turn/step transitions. |
 | `B:TimelineIdentity` | This branch's id selects the guide entries in force. |
-| `S:GuideEntries` | Compose the System it places on a host-prepared request. |
+| `S:GuideEntries` | Compose the System it places on a host-prepared request, and carry the reminder's entry. |
+| `S:SessionConfig` | `interactive`: only such a Session registers the entry and gets the reminder. |
 
 ## Events and lifetime
 
 Consumes `input/applied`, `input/consumed`, the `input/message` and
 `input/deleted` of handover inputs, `stop/interrupt`, turn boundaries,
-`step/model-start`, tool-use start/use, model-output-end,
+`step/model-start`, `step/text`, tool-use start/use, model-output-end,
 tool-start/completed/result, `context/compact` and `context/compaction`.
 Produces turn start/end, input consumption, model-start, `context/prepare`,
 tool-call and recovery terminal facts. `AgentLoop::compact` writes
@@ -47,6 +48,26 @@ not become a second input-adoption path.
 that opens and closes turns it checks that the named turn is the open one and
 not already ending, commits the `stop/interrupt` only then, and writes nothing
 for any other id.
+
+## The progress reminder
+
+After a silent stretch of tool calls, the Loop asks the model to tell the user
+what it is doing. The check runs when the Loop starts a request in an open
+turn: at least one top-level `step/tool-use` since the later of the turn's
+start, its last non-empty `step/text` and its last reminder, and that anchor at
+least `LoopConfig::reminder_after` old (60 seconds by default). A due reminder
+is written in the same atomic batch as the request's `input/consumed` events
+and `step/model-start`, after every pending input, so the request consumes
+`<dim-progress-reminder seconds="N">` at once as its last model message. The
+reminder therefore never waits for `input/applied`, never drives a turn and
+cannot outlive the turn it was written for. Writing the reminder starts a new
+stretch, so the next one needs another tool call and another full threshold;
+text also resets the stretch. A non-interactive Session registers neither the
+reminder nor its guide entry.
+
+A restored open turn ends Failed and starts no request, so reload never decides
+the reminder again for a request that already started; the next turn starts a
+stretch at its own `turn/start`.
 
 ## Failure handling boundaries
 
@@ -139,12 +160,16 @@ rules, not a replay of an executed operation.
 cover the failed-step settlements this page states, the continuation for calls
 that were never executed, the retry chain it shares, turn progression,
 interruption, pending-input restore and the manual compaction step.
+[progress_reminder_flow.rs](../../../../crates/dim-agent-capabilities/tests/progress_reminder_flow.rs)
+covers the reminder: the silent stretch, text and interrupt resets, one reminder
+per stretch, a request in flight at the threshold, a non-interactive Session and
+a reload.
 
 <!-- generated:plugin Loop — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost` |
+| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost`、`S:SessionConfig` |
 | 提供 | `B:AgentLoop`、`B:StateCell<LoopSnapshot>`、`B:dyn LoopState` |
 | 被注入于 | — |
 <!-- /generated -->

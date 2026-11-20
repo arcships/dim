@@ -144,7 +144,6 @@ The parts that inject `dispatcher` or `timeline` ([plugin contract §6](../../..
 | Loop | branch | `dispatcher`, `timeline` |
 | ModelProvider | branch | `dispatcher`, `timeline` |
 | Permission | branch | `dispatcher`, `timeline` |
-| ProgressReminder | branch | `dispatcher`, `timeline` |
 | Prompt | branch | `dispatcher`, `timeline` |
 | SessionBroadcast | branch | `dispatcher` |
 | SettingsSnapshotBranch | branch | `timeline` |

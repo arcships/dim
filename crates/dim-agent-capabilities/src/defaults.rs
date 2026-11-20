@@ -1,6 +1,6 @@
 use crate::{
     adapters::*,
-    agent_loop::LoopPlugin,
+    agent_loop::{LoopConfig, LoopPlugin},
     approval::ApprovalPlugin,
     context_methods::ContextMethodsPlugin,
     context_preparation::ContextPreparationPlugin,
@@ -9,7 +9,6 @@ use crate::{
     input_queue::InputQueuePlugin,
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules, PermissionPlugin},
-    progress_reminder::{ProgressReminderConfig, ProgressReminderPlugin},
     prompt::{InitialPromptConfiguration, PromptPlugin},
     session_broadcast::{SessionBroadcastEndPlugin, SessionBroadcastPlugin},
     summary_strategy::{ProductSummaryStrategyConfig, ProductSummaryStrategyPlugin},
@@ -27,19 +26,16 @@ pub fn install(builder: &mut AgentBuilder) {
     install_with_prompt(builder, Arc::new(EmptyPromptHost), None);
 }
 
-/// [`install`] with the progress reminder's silent threshold, for flows that
-/// test it.
-pub fn install_with_progress_reminder(
-    builder: &mut AgentBuilder,
-    reminder: ProgressReminderConfig,
-) {
+/// [`install`] with the Loop's factory configuration, for flows that test
+/// the progress reminder.
+pub fn install_with_loop_config(builder: &mut AgentBuilder, loop_config: LoopConfig) {
     install_profile(
         builder,
         Arc::new(EmptyPromptHost),
         None,
         ModelProviderPlugin::new,
         BranchToolConfig::default(),
-        reminder,
+        loop_config,
     );
 }
 
@@ -53,7 +49,7 @@ pub fn install_with_branch_config(builder: &mut AgentBuilder, branch_text: Branc
         None,
         ModelProviderPlugin::new,
         branch_text,
-        ProgressReminderConfig::default(),
+        LoopConfig::default(),
     );
 }
 
@@ -68,7 +64,7 @@ pub fn install_with_prompt(
         initial,
         ModelProviderPlugin::new,
         BranchToolConfig::default(),
-        ProgressReminderConfig::default(),
+        LoopConfig::default(),
     );
 }
 
@@ -80,7 +76,7 @@ pub fn install_with_process_model(builder: &mut AgentBuilder) {
         None,
         ModelProviderPlugin::process,
         BranchToolConfig::default(),
-        ProgressReminderConfig::default(),
+        LoopConfig::default(),
     );
 }
 
@@ -90,13 +86,13 @@ fn install_profile(
     initial: Option<dim_agent_runtime::ConfigureUpdate>,
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
     branch_text: BranchToolConfig,
-    reminder: ProgressReminderConfig,
+    loop_config: LoopConfig,
 ) {
     builder
         .session_data_value(Arc::new(PromptHost(host)))
         .session_value(Arc::new(InitialPromptConfiguration::fixed(initial)))
         .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))));
-    install_with_prompt_capability_and_branch(builder, model, true, branch_text, reminder);
+    install_with_prompt_capability_and_branch(builder, model, true, branch_text, loop_config);
 }
 
 /// Installs the same capabilities without binding `PromptHost` or
@@ -111,7 +107,7 @@ pub fn install_with_prompt_capability(
         model,
         true,
         BranchToolConfig::default(),
-        ProgressReminderConfig::default(),
+        LoopConfig::default(),
     );
 }
 
@@ -126,7 +122,7 @@ pub fn install_with_prompt_capability_no_branch(
         model,
         false,
         BranchToolConfig::default(),
-        ProgressReminderConfig::default(),
+        LoopConfig::default(),
     );
 }
 
@@ -135,7 +131,7 @@ fn install_with_prompt_capability_and_branch(
     model: fn(&Names<'_>) -> Result<ModelProviderPlugin, Error>,
     branch_tool: bool,
     branch_text: BranchToolConfig,
-    reminder: ProgressReminderConfig,
+    loop_config: LoopConfig,
 ) {
     crate::register_names(builder);
     builder
@@ -204,7 +200,9 @@ fn install_with_prompt_capability_and_branch(
                         names,
                     )?))
                 })
-                .branch("Loop", |names| Ok(Box::new(LoopPlugin::new(names)?))),
+                .branch("Loop", move |names| {
+                    Ok(Box::new(LoopPlugin::with_config(names, loop_config)?))
+                }),
         )
         .require_feature(
             Feature::new("ModelProvider")
@@ -255,14 +253,6 @@ fn install_with_prompt_capability_and_branch(
                 }),
         );
     }
-    builder.require_feature(Feature::new("ProgressReminder").branch(
-        "ProgressReminder",
-        move |names| {
-            Ok(Box::new(ProgressReminderPlugin::with_config(
-                names, reminder,
-            )?))
-        },
-    ));
 }
 
 /// Product profile of the minimal execution assembly: only `execute` as the
@@ -310,7 +300,7 @@ pub fn install_local_execution(
         model,
         true,
         branch_text,
-        ProgressReminderConfig::default(),
+        LoopConfig::default(),
     );
     crate::workspace_tools::install(builder, workspace);
     crate::wait::install(builder);

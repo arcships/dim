@@ -420,6 +420,15 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::agent_loop::reminder",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::agent_loop",
+      "file": "crates/dim-agent-capabilities/src/agent_loop/reminder.rs",
+      "unexpandedMacros": [
+        "vec"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::approval",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities",
@@ -1062,29 +1071,6 @@
       "file": "crates/dim-agent-capabilities/src/port_faces.rs",
       "unexpandedMacros": [
         "assert"
-      ]
-    },
-    {
-      "id": "dim_agent_capabilities::progress_reminder",
-      "crate": "dim_agent_capabilities",
-      "parent": "dim_agent_capabilities",
-      "file": "crates/dim-agent-capabilities/src/progress_reminder.rs",
-      "unexpandedMacros": [
-        "format",
-        "tokio::select",
-        "unreachable",
-        "vec"
-      ]
-    },
-    {
-      "id": "dim_agent_capabilities::progress_reminder::tests",
-      "crate": "dim_agent_capabilities",
-      "parent": "dim_agent_capabilities::progress_reminder",
-      "file": "crates/dim-agent-capabilities/src/progress_reminder.rs",
-      "unexpandedMacros": [
-        "assert",
-        "assert_eq",
-        "vec"
       ]
     },
     {
@@ -9832,13 +9818,6 @@
     },
     {
       "from": "dim_agent_capabilities",
-      "to": "dim_agent_capabilities::progress_reminder",
-      "references": [
-        "mod progress_reminder"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities",
       "to": "dim_agent_capabilities::prompt",
       "references": [
         "mod prompt",
@@ -10215,6 +10194,21 @@
     },
     {
       "from": "dim_agent_capabilities::agent_loop",
+      "to": "dim_agent_capabilities::agent_loop::reminder",
+      "references": [
+        "mod reminder",
+        "path Stretch",
+        "path Stretch::default",
+        "path Stretch::started",
+        "path reminder",
+        "path reminder::ENTRY",
+        "path reminder::input",
+        "use reminder::REMINDER",
+        "use reminder::Stretch"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::agent_loop",
       "to": "dim_agent_capabilities::context_model",
       "references": [
         "path crate::context_model::adopted_config"
@@ -10273,7 +10267,13 @@
       "from": "dim_agent_capabilities::agent_loop",
       "to": "dim_agent_capabilities::prompt_guide",
       "references": [
-        "path crate::prompt_guide::GuideEntries"
+        "path GuideEntries",
+        "path GuideEntry",
+        "path GuideScope::Branch",
+        "path crate::prompt_guide::GuideEntries",
+        "use crate::prompt_guide::GuideEntries",
+        "use crate::prompt_guide::GuideEntry",
+        "use crate::prompt_guide::GuideScope"
       ]
     },
     {
@@ -10303,7 +10303,9 @@
       "from": "dim_agent_capabilities::agent_loop",
       "to": "dim_agent_runtime::config",
       "references": [
+        "path SessionConfig",
         "path TimelineIdentity",
+        "use dim_agent_runtime::SessionConfig",
         "use dim_agent_runtime::TimelineIdentity"
       ]
     },
@@ -10443,14 +10445,17 @@
         "path ContextCompactionResult::Skipped",
         "path ContextPrepareData",
         "path EventDraft",
+        "path EventDraft::new",
         "path EventKind::ContextCompact",
         "path EventKind::ContextCompaction",
         "path EventKind::ContextPrepare",
         "path EventKind::InputApplied",
         "path EventKind::InputConsumed",
+        "path EventKind::InputMessage",
         "path EventKind::ModelOutputEnd",
         "path EventKind::ModelStart",
         "path EventKind::StopInterrupt",
+        "path EventKind::Text",
         "path EventKind::ToolCall",
         "path EventKind::ToolCompleted",
         "path EventKind::ToolResult",
@@ -10619,6 +10624,34 @@
       "references": [
         "path dim_agent_types::TurnEndData",
         "path dim_agent_types::TurnStartData"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::agent_loop::reminder",
+      "to": "dim_agent_capabilities::context_block",
+      "references": [
+        "path context_block::element",
+        "path context_block::raw",
+        "use crate::context_block"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::agent_loop::reminder",
+      "to": "dim_agent_runtime::core::timeline",
+      "references": [
+        "path unix_millis",
+        "use dim_agent_runtime::core::unix_millis"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::agent_loop::reminder",
+      "to": "dim_agent_types::events",
+      "references": [
+        "path InputMessageData",
+        "path InputMessageData::default",
+        "path InputMode::Append",
+        "use dim_agent_types::InputMessageData",
+        "use dim_agent_types::InputMode"
       ]
     },
     {
@@ -12025,7 +12058,10 @@
       "from": "dim_agent_capabilities::defaults",
       "to": "dim_agent_capabilities::agent_loop",
       "references": [
-        "path LoopPlugin::new",
+        "path LoopConfig",
+        "path LoopConfig::default",
+        "path LoopPlugin::with_config",
+        "use crate::agent_loop::LoopConfig",
         "use crate::agent_loop::LoopPlugin"
       ]
     },
@@ -12130,17 +12166,6 @@
         "use crate::permission::CommandRules",
         "use crate::permission::NoCommandRules",
         "use crate::permission::PermissionPlugin"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::defaults",
-      "to": "dim_agent_capabilities::progress_reminder",
-      "references": [
-        "path ProgressReminderConfig",
-        "path ProgressReminderConfig::default",
-        "path ProgressReminderPlugin::with_config",
-        "use crate::progress_reminder::ProgressReminderConfig",
-        "use crate::progress_reminder::ProgressReminderPlugin"
       ]
     },
     {
@@ -15319,225 +15344,6 @@
       "to": "dim_agent_capabilities::port_faces",
       "references": [
         "path Empty"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_capabilities::context_block",
-      "references": [
-        "path context_block::element",
-        "path context_block::raw",
-        "use crate::context_block"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_capabilities::progress_reminder::tests",
-      "references": [
-        "mod tests"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_capabilities::prompt_guide",
-      "references": [
-        "path GuideEntries",
-        "path GuideEntry",
-        "path GuideScope::Branch",
-        "use crate::prompt_guide::GuideEntries",
-        "use crate::prompt_guide::GuideEntry",
-        "use crate::prompt_guide::GuideScope"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_capabilities::timeline_tree",
-      "references": [
-        "path TreeCommands",
-        "use crate::timeline_tree::TreeCommands"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::config",
-      "references": [
-        "path BranchLifecycle",
-        "path SessionConfig",
-        "path SessionLifecycle",
-        "path TimelineIdentity",
-        "use dim_agent_runtime::BranchLifecycle",
-        "use dim_agent_runtime::SessionConfig",
-        "use dim_agent_runtime::SessionLifecycle",
-        "use dim_agent_runtime::TimelineIdentity"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::core::dispatcher",
-      "references": [
-        "path Dispatcher",
-        "use dim_agent_runtime::Dispatcher"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::core::timeline",
-      "references": [
-        "path Timeline",
-        "path unix_millis",
-        "use dim_agent_runtime::Timeline",
-        "use dim_agent_runtime::core::unix_millis"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::error",
-      "references": [
-        "path Result",
-        "use dim_agent_runtime::Result"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::names",
-      "references": [
-        "path Names",
-        "use dim_agent_runtime::Names"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::timeline_query",
-      "references": [
-        "path TimelineQueryScope::Branch",
-        "use dim_agent_runtime::TimelineQueryScope"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_runtime::timeline_query::properties",
-      "references": [
-        "path QueryFilter::And",
-        "path QueryOperand",
-        "path QueryOperand::Field",
-        "path QueryOutput::Exists",
-        "path QueryOutput::Rows",
-        "path QueryPage",
-        "path QueryPick::Last",
-        "path QuerySelect::Exists",
-        "path QuerySelect::Fields",
-        "path QuerySpec",
-        "path QueryValue",
-        "path QueryValue::Value",
-        "path TimelineQuery",
-        "use dim_agent_runtime::QueryFilter",
-        "use dim_agent_runtime::QueryOperand",
-        "use dim_agent_runtime::QueryOutput",
-        "use dim_agent_runtime::QueryPage",
-        "use dim_agent_runtime::QueryPick",
-        "use dim_agent_runtime::QuerySelect",
-        "use dim_agent_runtime::QuerySpec",
-        "use dim_agent_runtime::QueryValue",
-        "use dim_agent_runtime::TimelineQuery"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_types::checkpoint",
-      "references": [
-        "path TimelinePosition",
-        "use dim_agent_types::TimelinePosition"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder",
-      "to": "dim_agent_types::events",
-      "references": [
-        "path AgentEvent",
-        "path EventKind::Text",
-        "path EventKind::ToolUse",
-        "path EventKind::TurnEnd",
-        "path EventKind::TurnStart",
-        "path InputMessageData",
-        "path InputMessageData::default",
-        "path InputMode::Append",
-        "use dim_agent_types::AgentEvent",
-        "use dim_agent_types::EventKind",
-        "use dim_agent_types::InputMessageData",
-        "use dim_agent_types::InputMode"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_capabilities::context_block",
-      "references": [
-        "path context_block::element",
-        "path context_block::raw"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_capabilities::progress_reminder",
-      "references": [
-        "path REMINDER",
-        "path rebuilt"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_runtime::config",
-      "references": [
-        "path SessionConfig::default"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_runtime::core::timeline",
-      "references": [
-        "path Timeline",
-        "path Timeline::new",
-        "path unix_millis"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_runtime::memory_timeline_store",
-      "references": [
-        "path MemoryTimelineStore::default",
-        "use dim_agent_runtime::MemoryTimelineStore"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_runtime::timeline_store",
-      "references": [
-        "path TimelineKey",
-        "use dim_agent_runtime::TimelineKey",
-        "use dim_agent_runtime::TimelineStore"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_types::events",
-      "references": [
-        "path EventKind::InputMessage",
-        "path EventKind::ToolUse",
-        "path EventKind::TurnStart",
-        "path InputMessageData",
-        "path InputMessageData::default",
-        "path InputMode::Append",
-        "path ToolUseData",
-        "path TurnStartData",
-        "use dim_agent_types::ToolUseData",
-        "use dim_agent_types::TurnStartData"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::progress_reminder::tests",
-      "to": "dim_agent_types::tool",
-      "references": [
-        "path ToolCall",
-        "use dim_agent_types::ToolCall"
       ]
     },
     {

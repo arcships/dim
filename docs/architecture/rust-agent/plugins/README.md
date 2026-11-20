@@ -42,7 +42,6 @@ dependency is not necessarily a plugin with the same name.
 | [BranchTool](BranchTool.md) | — | BranchTool, BranchLine | — |
 | [ContextPreparation](ContextPreparation.md) | — | — | ContextPreparation, [ContextUsage](ContextUsage.md) |
 | [Prompt](Prompt.md) | — | — | Prompt |
-| [ProgressReminder](ProgressReminder.md) | — | — | ProgressReminder |
 | [Loop](Loop.md) | — | [LoopMethods](LoopMethods.md) | Loop |
 | [ModelProvider](ModelProvider.md) | — | — | ModelProvider |
 | [HostPlatform](HostPlatform.md) | HostPlatform | — | — |

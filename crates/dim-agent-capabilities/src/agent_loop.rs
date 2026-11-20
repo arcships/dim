@@ -1,4 +1,6 @@
 pub mod read;
+mod reminder;
+pub use reminder::REMINDER;
 
 use crate::{
     context_policy::{CompactionStep, ContextPolicy, configured_request},
@@ -6,17 +8,19 @@ use crate::{
     host::{
         CompactionStrategyHost, ContextModelHost, HostError, PrepareModelHost, ToolExecutionContext,
     },
+    prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     steer::REPLACED_BY_STEER,
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
     AgentError, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot, LoopState, Names,
     QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
-    QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineIdentity, TimelineQuery,
-    TimelineQueryScope,
+    QuerySpec, QueryValue, Result, SessionConfig, StateCell, Timeline, TimelineIdentity,
+    TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::*;
 use futures_util::FutureExt;
+use reminder::Stretch;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use std::collections::{HashMap, HashSet};
@@ -26,6 +30,8 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU64, Ordering},
 };
+use std::time::Duration;
+use tokio::time::Instant;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(PartialEq)]
@@ -54,6 +60,8 @@ struct Request {
 }
 struct Turn {
     id: String,
+    /// The turn's silent stretch, folded from its text and tool facts.
+    stretch: Stretch,
     /// `turn/start` was dispatched; before that the turn only guards
     /// against a second start and is not published as running.
     open: bool,
@@ -123,6 +131,22 @@ impl CompactionSlot {
 /// The reason a `context/compact` consumed while another command is
 /// outstanding is skipped.
 pub const ALREADY_IN_PROGRESS: &str = "a compaction is already in progress";
+
+/// How long an interactive line may work without reply text before the Loop
+/// adds the progress reminder to the next request it starts.
+#[derive(Clone, Copy, Debug)]
+pub struct LoopConfig {
+    /// A silent stretch that reaches this length earns one reminder. The
+    /// product keeps the default; tests set it.
+    pub reminder_after: Duration,
+}
+impl Default for LoopConfig {
+    fn default() -> Self {
+        Self {
+            reminder_after: Duration::from_secs(60),
+        }
+    }
+}
 pub struct AgentLoop {
     turn: Mutex<Option<Turn>>,
     /// Locked after `turn`.
@@ -151,6 +175,9 @@ pub struct AgentLoop {
     session_id: String,
     /// Compaction is bound: budget recovery and manual steps run.
     policy: Option<ContextPolicy>,
+    /// An interactive line adds the progress reminder after this silence;
+    /// `None` for a non-interactive Session.
+    reminder_after: Option<Duration>,
     tasks: TaskTracker,
     lifecycle: CancellationToken,
     dispatcher: Arc<Dispatcher>,
@@ -234,6 +261,7 @@ impl AgentLoop {
         let id = uuid::Uuid::new_v4().to_string();
         *slot = Some(Turn {
             id: id.clone(),
+            stretch: Stretch::default(),
             open: false,
             request: None,
             ending: false,
@@ -476,6 +504,8 @@ impl AgentLoop {
         Ok(())
     }
     /// Writes the inputs the next request consumes, then its `step/model-start`.
+    /// A due progress reminder is written in the same batch as an ordinary
+    /// input, after every pending input, and consumed at once.
     fn start_request(
         &self,
         turn: &mut Turn,
@@ -495,16 +525,30 @@ impl AgentLoop {
                     .collect()
             }
         };
+        let reminder = match source {
+            Some(_) => None,
+            None => self
+                .reminder_after
+                .and_then(|after| turn.stretch.reminder(Instant::now(), after)),
+        };
         let id = uuid::Uuid::new_v4().to_string();
-        let mut events: Vec<EventDraft> = chosen
-            .iter()
-            .map(|input_id| {
-                EventKind::InputConsumed(InputConsumedData {
-                    input_id: input_id.clone(),
-                })
-                .into()
+        let mut events: Vec<EventDraft> = Vec::new();
+        let mut consumed = Vec::new();
+        if let Some(seconds) = reminder {
+            let input_id = uuid::Uuid::new_v4().to_string();
+            events.push(
+                EventDraft::new(EventKind::InputMessage(reminder::input(seconds)))
+                    .with_id(input_id.clone()),
+            );
+            consumed.push(input_id);
+        }
+        consumed.extend(chosen);
+        events.extend(consumed.iter().map(|input_id| {
+            EventKind::InputConsumed(InputConsumedData {
+                input_id: input_id.clone(),
             })
-            .collect();
+            .into()
+        }));
         events.push(
             EventKind::ModelStart(ModelStartData {
                 turn_id: turn.id.clone(),
@@ -512,10 +556,8 @@ impl AgentLoop {
             })
             .into(),
         );
-        self.claimed.lock().unwrap().extend(chosen);
-        for event in events {
-            self.timeline.append(event)?;
-        }
+        self.claimed.lock().unwrap().extend(consumed);
+        self.timeline.append_batch_registered(events, |_| Ok(()))?;
         turn.request = Some(Request {
             id,
             stage: Stage::Preparing,
@@ -935,6 +977,7 @@ impl AgentLoop {
             if kind == "turn/start" {
                 restored = Some(Turn {
                     id,
+                    stretch: Stretch::default(),
                     open: true,
                     request: None,
                     ending: false,
@@ -1370,6 +1413,9 @@ impl AgentLoop {
         match &event.kind {
             EventKind::InputApplied(data) => {
                 let input = Applied::new(&event, data);
+                if self.claimed.lock().unwrap().remove(&input.id) {
+                    return Ok(());
+                }
                 let drives = input.mode != InputMode::Append;
                 self.pending.lock().unwrap().push(input);
                 match slot.as_mut() {
@@ -1380,11 +1426,20 @@ impl AgentLoop {
                 return Ok(());
             }
             EventKind::InputConsumed(data) => {
-                self.pending
-                    .lock()
-                    .unwrap()
-                    .retain(|input| input.id != data.input_id);
-                self.claimed.lock().unwrap().remove(&data.input_id);
+                let mut claimed = self.claimed.lock().unwrap();
+                let mut pending = self.pending.lock().unwrap();
+                if let Some(index) = pending.iter().position(|input| input.id == data.input_id) {
+                    pending.remove(index);
+                    claimed.remove(&data.input_id);
+                }
+                return Ok(());
+            }
+            EventKind::Text(data) => {
+                if !data.delta.is_empty()
+                    && let Some(turn) = slot.as_mut().filter(|turn| turn.id == data.turn_id)
+                {
+                    turn.stretch.text(event.create_at);
+                }
                 return Ok(());
             }
             EventKind::StopInterrupt(data) => {
@@ -1443,6 +1498,7 @@ impl AgentLoop {
                     })
                     .ok_or_else(|| AgentError::fault("Loop", "invalid turn/start"))?;
                 turn.open = true;
+                turn.stretch = Stretch::started(event.create_at);
                 let result = self.next_model(turn, None, None, event.sequence);
                 self.publish(&slot);
                 return result;
@@ -1547,6 +1603,11 @@ impl AgentLoop {
             // (ADR agent-029); Loop writes some of them with its turn end.
             EventKind::ToolResult(data) if data.call_event_id.is_none() => return Ok(()),
             _ => {}
+        }
+        if matches!(&event.kind, EventKind::ToolUse(_))
+            && let Some(turn) = slot.as_mut()
+        {
+            turn.stretch.tool_call();
         }
         let turn = slot
             .as_mut()
@@ -1791,11 +1852,17 @@ pub struct LoopPlugin {
     preparation: Key<crate::context_preparation::ContextPreparation>,
     context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
-    guide: Key<crate::prompt_guide::GuideEntries>,
+    guide: Key<GuideEntries>,
     identity: Key<TimelineIdentity>,
+    config: Key<SessionConfig>,
+    loop_config: LoopConfig,
 }
 impl LoopPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        Self::with_config(names, LoopConfig::default())
+    }
+    /// The plugin with a line's factory configuration.
+    pub fn with_config(names: &Names<'_>, loop_config: LoopConfig) -> rutis::Result<Self> {
         Ok(Self {
             state: names.state_cell()?,
             service: names.key()?,
@@ -1810,6 +1877,8 @@ impl LoopPlugin {
             strategy: names.key()?,
             guide: names.key()?,
             identity: names.key()?,
+            config: names.key()?,
+            loop_config,
         })
     }
 }
@@ -1829,10 +1898,16 @@ impl DynPlugin for LoopPlugin {
             self.strategy.erase(),
             self.guide.erase(),
             self.identity.erase(),
+            self.config.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let session = ctx.require_at(&self.config)?;
+            let reminder_after = session
+                .get()
+                .interactive
+                .then_some(self.loop_config.reminder_after);
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let prepare = ctx.require_at(&self.prepare)?;
@@ -1842,6 +1917,17 @@ impl DynPlugin for LoopPlugin {
             let strategy = ctx.require_at(&self.strategy)?;
             let guide = ctx.require_at(&self.guide)?;
             let identity = ctx.require_at(&self.identity)?;
+            if reminder_after.is_some() {
+                guide.register(
+                    ctx,
+                    GuideScope::Branch(identity.branch_id.clone()),
+                    GuideEntry {
+                        markers: vec![reminder::REMINDER.into()],
+                        order: 60,
+                        text: reminder::ENTRY.into(),
+                    },
+                )?;
+            }
             let policy = ContextPolicy::bind(&timeline, &context, &strategy, &history)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
             let service = Arc::new(AgentLoop {
@@ -1860,6 +1946,7 @@ impl DynPlugin for LoopPlugin {
                 branch: identity.branch_id.clone(),
                 session_id: identity.session_id.clone(),
                 policy,
+                reminder_after,
                 tasks: TaskTracker::new(),
                 lifecycle: ctx.cancellation_token(),
                 dispatcher: dispatcher.clone(),
@@ -1884,6 +1971,7 @@ impl DynPlugin for LoopPlugin {
                         "turn/start",
                         "turn/end",
                         "step/model-start",
+                        "step/text",
                         "step/tool-use-start",
                         "step/tool-use",
                         "step/model-output-end",
