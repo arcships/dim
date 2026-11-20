@@ -465,6 +465,7 @@ impl HostDispatch for Store {
         }
         let request: Request = serde_json::from_value(json!({"method":method,"request":request}))
             .map_err(|error| Error::Value(error.to_string()))?;
+        let association = matches!(&request, Request::AssociateWorktree(_));
         let owner = self.clone();
         Ok(Value::future(async move {
             let result: dim_agent_runtime::Result<serde_json::Value> = async {
@@ -522,7 +523,13 @@ impl HostDispatch for Store {
                 })
             }
             .await;
-            result.map(Value::from).map_err(failure)
+            result.map(Value::from).map_err(|error| {
+                if association {
+                    rutis_bridge::exports::failure("StoreError", "failed", error.to_string(), None)
+                } else {
+                    failure(error)
+                }
+            })
         }))
     }
 }

@@ -1766,7 +1766,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     assert_eq!(store.worktree_directories().await.unwrap().len(), 1);
 
     let ready = home.join("removal-ready");
-    let removal = client.send("storefixture.remove", json!({"directory":{"repository":directory.repository,"root":directory.root},"ready":ready})).await;
+    let removal = client.send("storefixture.remove", json!({"sessionId":"round-a","directory":{"repository":directory.repository,"root":directory.root},"ready":ready})).await;
     tokio::time::timeout(Duration::from_secs(10), async {
         while !ready.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;

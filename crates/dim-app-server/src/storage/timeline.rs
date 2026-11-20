@@ -1311,10 +1311,6 @@ pub struct SessionStore {
     files: files::SessionFiles,
     /// Title metadata (S5b): its one writer.
     pub(super) titles: Titles,
-    /// Serializes output ownership across Sessions: a delete's shared-owner
-    /// check, removal and row deletion, and a fork's copy of the output rows,
-    /// so a fork either copies before the removal or sees no rows (ADR 013 D4).
-    ownership: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// A Session's verified subtree in one recorded worktree. The association
@@ -1357,7 +1353,6 @@ impl SessionStore {
             binding,
             files,
             titles,
-            ownership: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
     pub fn timeline_store(&self) -> Arc<TimelineStoreBinding> {
@@ -1468,7 +1463,7 @@ impl SessionStore {
     /// this database had rows of the id.
     pub async fn delete_session(&self, id: &str) -> Result<bool> {
         crate::protocol::check_session_id(id)?;
-        let _ownership = self.ownership.lock().await;
+        let _ownership = self.timeline.db.ownership.lock().await;
         let stored = self.has_records(id).await?;
         if stored {
             self.files.remove_output(id).await?;
@@ -1502,7 +1497,7 @@ impl SessionStore {
     ) -> Result<()> {
         crate::protocol::check_session_id(source)?;
         crate::protocol::check_session_id(fork)?;
-        let _ownership = self.ownership.lock().await;
+        let _ownership = self.timeline.db.ownership.lock().await;
         self.timeline.fork_session(source, fork, at, config).await
     }
     /// The source record's configuration text, for a caller that copies it
@@ -1525,7 +1520,7 @@ impl SessionStore {
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
         crate::protocol::check_session_id(session_id)?;
-        let _ownership = self.ownership.lock().await;
+        let _ownership = self.timeline.db.ownership.lock().await;
         if !tokio::fs::metadata(&config.cwd)
             .await
             .map(|metadata| metadata.is_dir())
@@ -1560,19 +1555,10 @@ impl SessionStore {
         directory: WorktreeDirectory,
         subtree: PathBuf,
     ) -> Result<()> {
-        let paths = worktree_association_paths(&directory, &subtree)?;
-        let _ownership = self.ownership.lock().await;
-        if !tokio::fs::metadata(&directory.root)
+        self.timeline
+            .db
+            .associate_worktree(session_id, directory, subtree)
             .await
-            .map(|metadata| metadata.is_dir())
-            .unwrap_or(false)
-        {
-            return Err(AgentError::InvalidInput(
-                "the worktree root no longer exists".into(),
-            ));
-        }
-
-        self.timeline.db.associate_worktree(session_id, paths).await
     }
 
     /// Lists recorded directories, including those with no Session association.
@@ -1594,7 +1580,7 @@ impl SessionStore {
     /// re-checks under the same ownership lock before its Git removal.
     /// Returns whether this database had the record.
     pub async fn remove_worktree_directory(&self, directory: WorktreeDirectory) -> Result<bool> {
-        let _ownership = self.ownership.lock().await;
+        let _ownership = self.timeline.db.ownership.lock().await;
         self.timeline.db.remove_worktree_directory(directory).await
     }
 
@@ -1610,7 +1596,7 @@ impl SessionStore {
         directory: WorktreeDirectory,
         remove: impl FnOnce(PathBuf) -> BoxFuture<'static, Result<()>>,
     ) -> Result<bool> {
-        let _ownership = self.ownership.lock().await;
+        let _ownership = self.timeline.db.ownership.lock().await;
         if !self.worktree_usages(directory.clone()).await?.is_empty() {
             return Err(AgentError::InvalidInput(
                 "the worktree directory still has Session associations".into(),
@@ -2435,33 +2421,14 @@ fn copy_fork(
     arrays: &BTreeMap<String, u64>,
     config: &str,
 ) -> Result<()> {
-    let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
-    if copied.is_err()
-        && let Err(cleanup) = drop_session(connection, fork)
-    {
-        tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept");
-    }
-    copied
-}
-
-fn copy_fork_rows(
-    connection: &mut Connection,
-    source: &str,
-    fork: &str,
-    at: u64,
-    content: &[String],
-    arrays: &BTreeMap<String, u64>,
-    config: &str,
-) -> Result<()> {
     let cut = sql_sequence(at)?;
     // Intermediate chunks need no sync of their own: the final transaction
     // runs with `synchronous=FULL` and its fsync covers every earlier frame.
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(error)?;
-    let mut branches = Vec::new();
     chunk(connection, |tx| {
-        branches = tx
+        let branches = tx
             .prepare("SELECT branch_id, info FROM timeline_branches WHERE session_id=?1")
             .map_err(error)?
             .query_map([source], |row| {
@@ -2470,6 +2437,19 @@ fn copy_fork_rows(
             .map_err(error)?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(error)?;
+        if !branches.iter().any(|(id, _)| id == ROOT_BRANCH_ID) {
+            return Err(AgentError::Closed(source.to_owned()));
+        }
+        if tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1)",
+                [fork],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(error)?
+        {
+            return Err(error(format!("Session {fork} already exists")));
+        }
         for (id, info) in &branches {
             let parsed: BranchRecord = serde_json::from_str(info).map_err(error)?;
             let head = if id == ROOT_BRANCH_ID {
@@ -2490,6 +2470,24 @@ fn copy_fork_rows(
         }
         Ok(())
     })?;
+    let copied = copy_fork_rows(connection, source, fork, at, content, arrays, config);
+    if copied.is_err()
+        && let Err(cleanup) = drop_session(connection, fork)
+    {
+        tracing::error!(session_id = fork, error = %cleanup, "Incomplete fork rows were kept");
+    }
+    copied
+}
+
+fn copy_fork_rows(
+    connection: &mut Connection,
+    source: &str,
+    fork: &str,
+    at: u64,
+    content: &[String],
+    arrays: &BTreeMap<String, u64>,
+    config: &str,
+) -> Result<()> {
     for (array, length) in arrays {
         let mut after = 0;
         while after < *length {
@@ -3888,9 +3886,19 @@ impl SqliteStorage {
     pub(super) async fn associate_worktree(
         self: &Arc<Self>,
         session_id: &str,
-        paths: (String, String, String),
+        directory: WorktreeDirectory,
+        subtree: PathBuf,
     ) -> Result<()> {
-        let (repository, root, subtree_text) = paths;
+        let (repository, root, subtree_text) = worktree_association_paths(&directory, &subtree)?;
+        let _ownership = self.ownership.lock().await;
+        if !tokio::fs::metadata(&directory.root)
+            .await
+            .is_ok_and(|metadata| metadata.is_dir())
+        {
+            return Err(AgentError::InvalidInput(
+                "the worktree root no longer exists".into(),
+            ));
+        }
         let session = session_id.to_owned();
         let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
         self.run(move |connection| {

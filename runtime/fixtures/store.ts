@@ -162,14 +162,19 @@ export default definePlugin({
           }
         }
         if (call.method === 'storefixture.remove') {
+          let lateAssociation: Promise<unknown> | undefined
           const removed = await store.removeWorktree(params.directory, async path => {
             assert.deepEqual(await store.worktreeUsages(params.directory), { usages: [] })
+            lateAssociation = sqlite.associateWorktree({ ...params.directory, sessionId: params.sessionId, subtree: path })
+              .then(() => null, (error: unknown) => error)
             const gate = new Promise<void>(resolve => { release = resolve })
             await writeFile(`${params.ready}.pending`, path)
             await rename(`${params.ready}.pending`, params.ready)
             await gate
             await rm(path, { recursive: true })
           })
+          const error = await lateAssociation
+          assert.ok(error instanceof Error && error.message.includes('the worktree root no longer exists'))
           return { kind: 'value', value: removed }
         }
         const { sessionId, forkId, grant } = params
@@ -187,7 +192,7 @@ export default definePlugin({
         assert.deepEqual(await store.associateWorktree(association), {})
         assert.deepEqual(await sqlite.associateWorktree(association), {})
         await assert.rejects(() => store.associateWorktree({ ...association, sessionId: 'missing' }),
-          (error: unknown) => error instanceof Error && 'code' in error && error.code === 'closed')
+          (error: unknown) => error instanceof Error && 'code' in error && error.code === 'failed' && error.message.includes('missing'))
         assert.deepEqual(await sqlite.worktreeUsages({ repository: directory.repository, root: directory.root }),
           await store.worktreeUsages({ repository: directory.repository, root: directory.root }))
         assert.deepEqual(await store.sessionsUnderWorkspace({ root: directory.root }), { sessionIds: [sessionId] })

@@ -1214,6 +1214,7 @@ fn slow_upgrade_report() {
 /// The process connection and maintenance admission. Business modules never
 /// open a second connection to this database.
 pub struct SqliteStorage {
+    pub(super) ownership: tokio::sync::Mutex<()>,
     pub(super) defaults: Mutex<std::collections::BTreeMap<String, String>>,
     pub(super) timeline_memo: Mutex<super::timeline::Memo>,
     pub(super) connection: Mutex<Option<Connection>>,
@@ -1818,6 +1819,7 @@ impl SqliteStorage {
         let _ = std::fs::remove_file(startup_note_path(&path));
         let readers = Readers::demand();
         Ok(Arc::new(Self {
+            ownership: Default::default(),
             defaults: Mutex::default(),
             timeline_memo: Mutex::default(),
             connection: Mutex::new(Some(connection)),
@@ -1869,6 +1871,7 @@ impl SqliteStorage {
         }
         Ok((
             Arc::new(Self {
+                ownership: Default::default(),
                 defaults: Mutex::default(),
                 timeline_memo: Mutex::default(),
                 connection: Mutex::new(Some(connection)),
@@ -2845,6 +2848,7 @@ impl HostDispatch for SqliteDispatch {
                     serde_json::json!({"sequence":sequence})
                 }
                 Request::CreateSession(p) => {
+                    let _ownership = db.ownership.lock().await;
                     db.create_session(p.session_id, p.config)
                         .await
                         .map_err(dim_agent_runtime::timeline_store_failure)?;
@@ -2923,12 +2927,14 @@ impl HostDispatch for SqliteDispatch {
                     )
                 }
                 Request::Fork(p) => {
+                    let _ownership = db.ownership.lock().await;
                     db.fork_session(&p.source_session_id, &p.session_id, p.at, &p.config_text)
                         .await
                         .map_err(storage_failure)?;
                     serde_json::json!({})
                 }
                 Request::CreateOwnedSession(p) => {
+                    let _ownership = db.ownership.lock().await;
                     db.create_owned_session(
                         &p.session_id,
                         &p.config,
@@ -2943,17 +2949,13 @@ impl HostDispatch for SqliteDispatch {
                     serde_json::json!({})
                 }
                 Request::AssociateWorktree(p) => {
-                    let paths = super::timeline::worktree_association_paths(
-                        &p.directory(),
-                        std::path::Path::new(&p.subtree),
-                    )
-                    .map_err(storage_failure)?;
-                    db.associate_worktree(&p.session_id, paths)
+                    db.associate_worktree(&p.session_id, p.directory(), p.subtree.into())
                         .await
                         .map_err(storage_failure)?;
                     serde_json::json!({})
                 }
                 Request::RemoveWorktreeDirectory(p) => {
+                    let _ownership = db.ownership.lock().await;
                     let removed = db
                         .remove_worktree_directory(super::WorktreeDirectory {
                             repository: p.repository.into(),
