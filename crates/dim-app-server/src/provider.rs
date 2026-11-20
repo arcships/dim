@@ -3,6 +3,7 @@
 mod auxiliary;
 mod drivers;
 mod editing;
+mod face;
 mod legacy;
 pub(crate) mod management;
 mod models;
@@ -3011,6 +3012,17 @@ impl ProviderService {
     }
 }
 
+#[cfg(feature = "testing")]
+impl ProviderService {
+    pub async fn resolve_for_test(
+        self: &Arc<Self>,
+        request: Arc<ModelRequest>,
+        cancel: CancellationToken,
+    ) -> Result<ResolvedModelConnection, HostError> {
+        ResolveModelConnection::resolve(&ProductResolver(self.clone()), request, cancel).await
+    }
+}
+
 struct ProductResolver(Arc<ProviderService>);
 impl ResolveModelConnection for ProductResolver {
     fn resolve(
@@ -3293,7 +3305,7 @@ pub struct ProviderPlugin {
     grok: Key<GrokOAuthService>,
     /// ProviderSecretHost only when a plugin supplies it.
     secret_host: Option<Key<ProviderSecretHost>>,
-    host: Key<ModelHost>,
+    host: Key<ModelDriverHost>,
     methods: Key<crate::methods::ManagementMethods>,
 }
 impl ProviderPlugin {
@@ -3316,7 +3328,7 @@ impl ProviderPlugin {
             codex: names.key()?,
             grok: names.key()?,
             secret_host: secret_host.then(|| names.key()).transpose()?,
-            host: names.key()?,
+            host: Key::of(),
             methods: names.key()?,
         })
     }
@@ -3399,30 +3411,32 @@ impl DynPlugin for ProviderPlugin {
                 rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
             })?;
             let resolver = Arc::new(ProductResolver(service.clone()));
-            ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
+            dim_agent_capabilities::host::ModelHost::new(host.clone(), Some(resolver.clone()))
+                .provide(ctx)?;
             let selection = resolver.clone();
-            dim_agent_capabilities::host::provide_model_selection(
-                ctx,
-                &ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
-                    selection.resolve(explicit, cwd, cancel)
-                })),
-            )?;
+            let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
+                selection.resolve(explicit, cwd, cancel)
+            }));
             ctx.provide(ModalityConnectionHost(resolver.clone()))?;
             let selectable = resolver.clone();
             let modalities = resolver;
-            dim_agent_capabilities::host::provide_selectable_models(
-                ctx,
-                &SelectableModelsHost::new(
-                    Arc::new(move |cancel| selectable.selectable(cancel)),
-                    Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
-                ),
-            )?;
+            let selectable_host = SelectableModelsHost::new(
+                Arc::new(move |cancel| selectable.selectable(cancel)),
+                Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
+            );
             let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
                 owner: service.clone(),
                 host,
             });
-            dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary)?;
+
             management::provide(ctx, &methods, service.clone())?;
+            dim_agent_capabilities::host::ProviderService::provide(
+                ctx,
+                selection_host,
+                selectable_host,
+                auxiliary.clone(),
+                Some(auxiliary),
+            )?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)
         })

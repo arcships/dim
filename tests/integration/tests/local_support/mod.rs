@@ -507,7 +507,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     }
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(model.clone())))
+        .process_data_value(Arc::new(ModelHost::local(model.clone())))
         .session_value(Arc::new(ToolHost(Arc::new(GateTools(gate.clone())))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))

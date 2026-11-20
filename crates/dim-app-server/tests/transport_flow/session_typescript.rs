@@ -1253,7 +1253,10 @@ fn setup_recording() -> (
     defaults::install(&mut builder);
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(CheckedModel { names, tools }))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(CheckedModel {
+            names,
+            tools,
+        }))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
@@ -3167,7 +3170,7 @@ async fn node_session_command_rules_share_the_native_owner_and_survive_another_s
             dim_agent_capabilities::prompt::InitialPromptConfiguration::fixed(None),
         ))
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))

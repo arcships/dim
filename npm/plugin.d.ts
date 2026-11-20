@@ -86,6 +86,67 @@ export interface SessionMetadata {
 }
 
 export interface ModelId { providerId: string; modelId: string }
+export interface ModelRequest extends ModelId {
+  capabilitySnapshot?: import('./branch-services.js').ModelCapabilitySnapshot;
+  messages: Message[];
+  tools?: ToolDefinition[];
+  system?: string | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[];
+  config?: ModelConfig;
+  metadata?: import('./branch-services.js').RequestMetadata;
+}
+export type ModelInvocationMode = { kind: 'once' } | {
+  kind: 'recovering'; failureChain?: { from_request_id: string; attempts: number; waited_ms: number };
+};
+export type ModelChunk =
+  { kind: 'messageStart'; data: { messageId: string } } |
+  { kind: 'thinking' | 'text'; data: string } |
+  { kind: 'thinkingEnd'; data: { thinking: string } } |
+  { kind: 'textEnd' } |
+  { kind: 'toolStart'; data: { id: string; name: string } } |
+  { kind: 'toolArguments'; data: { id: string; name: string; delta: string } } |
+  { kind: 'toolUse'; data: { id: string; name: string; input: JsonObject } } |
+  { kind: 'content'; data: MessagePart[] } |
+  { kind: 'messageStop'; data: { messageId: string; reason: 'end_turn' | 'tool_use' | 'stop_sequence' | 'max_tokens' } } |
+  { kind: 'usage'; data: NonNullable<AuxiliaryReply['usage']> };
+export type ModelInvocationError = { code: 'cancelled'; details: string } | {
+  code: 'failed'; details: {
+    message: string; kind: { kind: 'other' | 'invalidRequest' | 'unsupported' | 'transport' | 'ownerClosed' } |
+      { kind: 'http'; status: number | null; code: string | null };
+    budget?: JsonObject | null; model?: JsonObject | null;
+    presentation?: import('./client-protocol.js').ProviderPresentation | null;
+  };
+};
+export type ModelStreamItem = { kind: 'chunk'; chunk: ModelChunk } | { kind: 'end' } |
+  { kind: 'failed'; error: ModelInvocationError };
+export interface ModelHost {
+  invoke<T extends JsonValue>(request: ModelRequest, mode: ModelInvocationMode,
+    consume: (next: () => Promise<ModelStreamItem>, cancelled: () => Promise<void>) => Promise<
+      { kind: 'returned'; value: T; replaySafe: boolean } | { kind: 'failed'; error: ModelInvocationError; replaySafe: boolean }>,
+    cancelled: () => Promise<void>, hooks?: {
+      prepare?: (protocol: import('./branch-services.js').ModelProtocol | null) => Promise<ModelConfig | null>;
+      beforeAttempt?: () => Promise<'admitted' | { rejected: string }>;
+      waiting?: (retry: { attempt: number; maxAttempts: number; retryAtMs: number; kind: string; reason: string | null } | null) => Promise<void>;
+    }): Promise<T>;
+}
+
+export interface ProviderService {
+  /** Resolving or rejecting cancelled cancels and joins the original model call. */
+  complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
+  resolve(request: { explicit?: ModelId; cwd?: string }): Promise<import('./branch-services.js').ModelSelection>;
+  selectableModels(request: {}): Promise<{ models: import('./branch-services.js').ModelCapabilitySnapshot[] }>;
+  selectableForModality(request: {}): Promise<{ models: { target: ModelId; operations: string[] }[] }>;
+}
+
+export interface ManagedProviderService extends ProviderService {
+  configuration(request: {
+    explicit?: ModelId; cwd?: string; preferences: { reasoningEffort?: string; serviceTier?: string };
+  }): Promise<import('./branch-services.js').ModelSelection>;
+  applyPreferences(request: {
+    current: import('./branch-services.js').ModelSelection & { tools?: ToolDefinition[]; toolSources?: { key: string; version: string }[] };
+    update: { reasoningEffort?: string | { action: 'clear' }; serviceTier?: string | { action: 'clear' } };
+  }): Promise<import('./branch-services.js').ModelSelection>;
+}
+
 export interface AuxiliaryRequest {
   system?: string | null;
   /** Serialized dim-agent-types Message values, validated by Provider. */
@@ -108,11 +169,6 @@ export interface AuxiliaryReply {
 }
 export interface AuxiliaryError extends Error {
   code: 'invalid_request' | 'model_unavailable' | 'failed' | 'cancelled';
-}
-/** Provider-owned process service; credentials and request lifetime stay with Provider. */
-export interface AuxiliaryModel {
-  /** Resolving or rejecting cancelled cancels and joins the original model call. */
-  complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
 }
 
 export type ModalityTargetReply =

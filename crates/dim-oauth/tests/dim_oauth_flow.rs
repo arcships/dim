@@ -8,9 +8,9 @@ mod oauth;
 use dim_agent_capabilities::{
     file_storage::{FileStorage, FileStoragePlugin},
     host::{
-        HostError, HostFuture, ModalityConnectionHost, ModalityTarget, ModelConnection,
-        ModelDriver, ModelHost, ModelProtocol, ModelStream, ProviderConnectionResolver,
-        SelectableModelsHost,
+        HostError, HostFuture, InvocationMode, ModalityConnectionHost, ModalityTarget,
+        ModelConnection, ModelDriver, ModelDriverHost, ModelHost, ModelProtocol, ModelStream,
+        ProviderService as ModelProviderService,
     },
 };
 use dim_agent_runtime::Names;
@@ -1235,7 +1235,7 @@ impl DynPlugin for ModelHostFixture {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            ctx.provide(ModelHost(Arc::new(UnusedModel)))?;
+            ctx.provide(ModelDriverHost(Arc::new(UnusedModel)))?;
             Ok(Effect::Done)
         })
     }
@@ -1419,7 +1419,7 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
         .await
         .unwrap();
     let operations = root
-        .get::<SelectableModelsHost>()
+        .get::<ModelProviderService>()
         .unwrap()
         .selectable_for_modality(cancel())
         .await
@@ -1467,10 +1467,15 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
         )
     });
     let refused = root
-        .get::<ProviderConnectionResolver>()
+        .get::<ModelHost>()
         .unwrap()
-        .0
-        .resolve(request, cancel())
+        .invoke(
+            request,
+            InvocationMode::Once,
+            &cancel(),
+            &mut (),
+            |_, _, _, _| Box::pin(async { Ok(()) }),
+        )
         .await
         .err()
         .unwrap();
@@ -1515,7 +1520,7 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     drop(database);
 
     let listed = root
-        .get::<SelectableModelsHost>()
+        .get::<ModelProviderService>()
         .unwrap()
         .selectable_for_modality(cancel())
         .await

@@ -694,7 +694,7 @@ owner 实现是 `ProviderService::selectable_models` 与
 `Keyed<SelectableModelsHost>` 并以它作为加载门槛（Modality）；必须在没有该读取时也能加载的消费方
 在提供时按名读取、不设门槛（Collaboration 的 `models` 动作），并在加载时取得快照，因此提供方
 重载不会重载它。消费方不直接读取 `ProviderService`。非 Rust 消费方按名调用
-`selectableModelsHost`，方法即 §3.6 列出的那些；该面委托同一次 owner 读取，两种语言的
+`providerService`，方法即 §3.6 列出的那些；该面委托同一次 owner 读取，两种语言的
 消费方得到执行会选的同一批模型。
 
 **连接合同。** Provider 为可信进程内适配器解析一次非对话连接。这是

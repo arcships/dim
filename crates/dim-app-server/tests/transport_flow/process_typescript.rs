@@ -1232,7 +1232,7 @@ async fn node_workflow_files_enforces_project_and_original_row_package_authority
 async fn node_reads_the_five_host_ports_through_the_product_owners() {
     use dim_agent_capabilities::{
         execution_settings::ExecutionSettingsHost,
-        host::{ModelSelectionHost, ModelSelectionRequest, SelectableModelsHost},
+        host::{ModelSelectionRequest, ProviderService},
         prompt_suggestion::PromptSuggestionSettingsHost,
         toolchain::ToolchainSourceHost,
     };
@@ -1252,15 +1252,30 @@ async fn node_reads_the_five_host_ports_through_the_product_owners() {
     };
     let mut reply = files_available(&mut client, "hostports.read", json!({"model":model})).await;
     let cancel = CancellationToken::new();
-    let models = server.service::<SelectableModelsHost>().unwrap();
+    let models = server.service::<ProviderService>().unwrap();
+    let adopted: dim_agent_types::ModelSelection =
+        serde_json::from_value(reply.as_object_mut().unwrap().remove("adopted").unwrap()).unwrap();
+    let provider = server
+        .service::<dim_app_server::provider::ProviderService>()
+        .unwrap();
+    let configured = provider
+        .configuration(Some(model.clone()), None, Default::default(), &cancel)
+        .await
+        .unwrap();
+    let current = serde_json::from_value(serde_json::to_value(configured).unwrap()).unwrap();
+    assert_eq!(
+        adopted,
+        provider
+            .apply_preferences(&current, &Default::default(), &cancel)
+            .await
+            .unwrap()
+    );
     let selection: dim_agent_types::ModelSelection =
         serde_json::from_value(reply.as_object_mut().unwrap().remove("selection").unwrap())
             .unwrap();
     assert_eq!(
         selection,
-        server
-            .service::<ModelSelectionHost>()
-            .unwrap()
+        models
             .resolve(
                 ModelSelectionRequest::at(Some(model), None).unwrap(),
                 cancel.clone()

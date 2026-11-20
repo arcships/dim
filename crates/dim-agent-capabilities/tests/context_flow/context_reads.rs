@@ -85,7 +85,7 @@ impl ModelReload {
     /// hosts reloads ContextPreparation, and so ModelProvider, and Loop.
     fn install(&self, builder: &mut AgentBuilder, model: Arc<CancelThenEcho>) {
         let views = self.0.clone();
-        builder.process_value(Arc::new(ModelHost(model.clone())));
+        builder.process_data_value(Arc::new(ModelHost::local(model.clone())));
         builder.require_feature(Feature::new("test.context-hosts-owner").session(
             "test.context-hosts-owner",
             move |names| {
@@ -1119,7 +1119,7 @@ impl ResolveContextModel for CompleteRequestOnly {
 fn builder_with_usage_resolver(resolver: Arc<dyn ResolveContextModel>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -2453,7 +2453,7 @@ async fn a_request_written_after_an_interrupt_loop_has_not_handled_does_not_run(
     let gate = Arc::new(InterruptGate::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -2620,7 +2620,9 @@ async fn progress_keeps_committed_output_until_it_is_published() {
         builder
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
             .session_value(Arc::new(HistoryRenderer::default()))
-            .process_value(Arc::new(ModelHost(Arc::new(HeldTextModel(end.clone())))))
+            .process_data_value(Arc::new(ModelHost::local(Arc::new(HeldTextModel(
+                end.clone(),
+            )))))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(None)))
             .session_value(Arc::new(CompactionStrategyHost(None)))

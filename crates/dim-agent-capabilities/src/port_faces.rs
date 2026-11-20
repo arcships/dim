@@ -15,10 +15,7 @@ use tokio_util::sync::CancellationToken;
 pub struct Empty {}
 
 /// The one request object `args` carries, decoded as `T`.
-pub(crate) fn request<T: DeserializeOwned>(
-    port: &str,
-    args: BridgeValue,
-) -> Result<T, BridgeError> {
+pub fn request<T: DeserializeOwned>(port: &str, args: BridgeValue) -> Result<T, BridgeError> {
     let args = match args {
         BridgeValue::Undefined => Vec::new(),
         args => args
@@ -46,7 +43,7 @@ pub(crate) fn request<T: DeserializeOwned>(
 
 /// Encodes a typed operation's reply for a caller across the bridge.
 /// Abandoning the wait drops the operation and its cancellation guard.
-pub(crate) fn serving<T, E>(
+pub fn serving<T, E>(
     port: &'static str,
     call: impl Future<Output = Result<T, E>> + Send + 'static,
 ) -> Reply

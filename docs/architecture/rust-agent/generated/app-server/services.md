@@ -105,8 +105,7 @@ flowchart LR
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p70
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p69
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p68
-  p17 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p68
-  p17 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p68
+  p17 -->|"dim_agent_capabilities::host::ProviderService"| p68
   p10 -->|"dim_app_server::methods::ManagementMethods"| p68
   p14 -->|"dim_app_server::plugin_files::PluginFiles"| p68
   p18 -->|"dim_app_server::settings::SettingsService"| p68

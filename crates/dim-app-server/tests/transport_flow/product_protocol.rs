@@ -2745,7 +2745,7 @@ async fn model_progress_follows_a_reloaded_provider() {
     let owners = views.clone();
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
