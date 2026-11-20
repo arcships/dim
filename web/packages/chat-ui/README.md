@@ -56,6 +56,8 @@ Each application provides the adapter:
 
 The package never opens a socket or reads an application store.
 
+Copy buttons write through `host.commands.copy(text)` when a host is provided, so the host decides how to reach the clipboard (for example outside a secure context). Without a host they fall back to `navigator.clipboard.writeText`. A rejected copy shows the same failure feedback as a clipboard error.
+
 ### Non-desktop adapter checklist
 
 `tests/non-desktop-host.test.ts` is the executable recipe for a second host. A web adapter should provide:
