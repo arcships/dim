@@ -1,4 +1,4 @@
-//! A native process plugin outside App Server reads `sessionPermissions` by
+//! A native process plugin outside App Server reads `sessions` by
 //! its service name, the way the TypeScript Scheduler does.
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
@@ -28,7 +28,7 @@ impl DynPlugin for Probe {
                 for _ in 0..200 {
                     match rutis_bridge::session::call_service::<Value>(
                         &ctx,
-                        "sessionPermissions",
+                        "sessions",
                         "permissionDefaults",
                         (json!({}),),
                     )

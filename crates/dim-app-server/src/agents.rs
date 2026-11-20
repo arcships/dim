@@ -39,7 +39,9 @@ mod fork;
 pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 
 mod sessions;
-pub use sessions::{SessionPermissions, SessionRef, SessionsError};
+pub(crate) use sessions::SessionEnd;
+pub(crate) use sessions::{AcquireUse, DirectoryUse};
+pub use sessions::{SessionRef, Sessions, SessionsError};
 
 pub(crate) enum CreateSessionError {
     Agent(AgentError),
@@ -108,7 +110,15 @@ pub struct AgentHost {
 pub(crate) struct SessionRestored {
     pub agent_id: String,
     pub session_id: String,
+    pub generation: String,
 }
+
+impl SessionRestored {
+    pub(crate) fn session(&self, index: &AgentIndex) -> Option<Session> {
+        index.session_generation(&self.session_id, &self.generation)
+    }
+}
+
 impl Event for SessionRestored {
     const NAME: &'static str = "agent/session-restored";
     type Value = ();
@@ -365,11 +375,9 @@ impl Plugin for AgentDirectoryPlugin {
             default_agent_id: OnceLock::new(),
             server_instance_id: uuid::Uuid::new_v4().to_string(),
         }))?;
-        ctx.provide_at::<dyn HostDispatch>(
-            host_key("sessions"),
-            Arc::new(sessions::SessionsService(ctx.clone())),
-        )?;
-        ctx.provide_as::<SessionPermissions>(Arc::new(SessionPermissions(ctx.clone())))?;
+        let sessions = Arc::new(Sessions(ctx.clone()));
+        ctx.provide_as::<Sessions>(sessions.clone())?;
+        ctx.provide_at::<dyn HostDispatch>(host_key("sessions"), sessions)?;
         Ok(())
     }
 }
@@ -378,6 +386,7 @@ impl Plugin for AgentDirectoryPlugin {
 /// lookups, Session admission and creating and closing Agents through the
 /// loader. A reload of it is a reload of the directory logic only.
 pub struct AgentIndex {
+    session_uses: Mutex<HashMap<uuid::Uuid, (SessionUse, rutis::Disposer)>>,
     directory: Arc<AgentDirectory>,
     activity: Arc<ProcessActivity>,
     builder: AgentBuilder,
@@ -587,6 +596,11 @@ impl AgentIndex {
             .get(id)
             .cloned()
     }
+    fn session_generation(&self, id: &str, generation: &str) -> Option<Session> {
+        let (_, session) = self.session(id)?;
+        (session.instance().ok()?.to_string() == generation).then_some(session)
+    }
+
     /// Session ids are UUIDs, unique across every Agent of the process.
     pub fn session(&self, session_id: &str) -> Option<(Arc<AgentHost>, Session)> {
         let inner = self.directory.inner.lock().expect("agent index");
@@ -947,6 +961,7 @@ impl AgentIndex {
                         .await?;
                     ctx.parallel(SessionRestored {
                         agent_id: host.agent_id.clone(),
+                        generation: session.instance()?.to_string(),
                         session_id: id,
                     })
                     .await?;
@@ -1895,6 +1910,7 @@ impl AgentIndex {
             .expect("AgentsPlugin apply sets its context")
             .parallel(SessionRestored {
                 agent_id: usage.host.agent_id.clone(),
+                generation: fork.instance()?.to_string(),
                 session_id: id,
             })
             .await?;
@@ -2259,6 +2275,7 @@ impl DynPlugin for AgentsPlugin {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let _ = directory.default_agent_id.set(default_id);
             let index = AgentIndex {
+                session_uses: Mutex::default(),
                 directory,
                 activity: ctx.require_at(&self.activity)?,
                 builder,
@@ -2279,6 +2296,10 @@ impl DynPlugin for AgentsPlugin {
             let cleanup = index.clone();
             ctx.effect(move || async move {
                 cleanup.stopping.cancel();
+                let uses = std::mem::take(&mut *cleanup.session_uses.lock().unwrap());
+                for (_, (_, cleanup)) in uses {
+                    let _ = cleanup.dispose().await;
+                }
                 Ok(())
             })?;
             if self.config.session_execution {
@@ -2368,7 +2389,7 @@ impl Plugin for AgentScopePlugin {
     async fn apply(&self, ctx: &Ctx, (directory, loader): Self::Deps) -> rutis::Result {
         let spec = &self.0;
         let slot = Arc::new(Mutex::new(None));
-        let sessions = ctx.plugin(Sessions(slot.clone()));
+        let sessions = ctx.plugin(SessionListeners(slot.clone()));
         (&sessions).await.map_err(|error| {
             rutis::Error::from(ErrorKind::PluginFailed(
                 format!("Session host failed: {error}").into(),
@@ -2405,8 +2426,8 @@ impl Plugin for AgentScopePlugin {
 /// Host of the listeners on one Agent's Sessions. A child of the Agent
 /// plugin registered before its settlement, it unloads after the Sessions
 /// closed.
-struct Sessions(Arc<Mutex<Option<Ctx>>>);
-impl Plugin for Sessions {
+struct SessionListeners(Arc<Mutex<Option<Ctx>>>);
+impl Plugin for SessionListeners {
     type Deps = ();
     fn name(&self) -> &str {
         "Sessions"

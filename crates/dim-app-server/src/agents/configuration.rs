@@ -1,4 +1,4 @@
-use super::{AgentIndex, SESSION_NAMESPACE};
+use super::{SESSION_NAMESPACE, Sessions};
 use crate::connection::{configuration_outcome, port_error};
 use dim_agent_capabilities::{
     host::ModelSelectionRequest,
@@ -19,14 +19,14 @@ use tokio_util::sync::CancellationToken;
 /// Agents' Session entry adopts profile configuration on the addressed branch
 /// and reads back the profile the branch's configuration was adopted from.
 pub(crate) struct AgentsSessionPlugin {
-    index: Key<AgentIndex>,
+    sessions: Key<Sessions>,
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
 }
 impl AgentsSessionPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            index: names.key()?,
+            sessions: Key::of(),
             tree: names.key()?,
             methods: names.key()?,
         })
@@ -37,11 +37,15 @@ impl DynPlugin for AgentsSessionPlugin {
         "AgentsSession"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.index.erase(), self.tree.erase(), self.methods.erase()]
+        vec![
+            self.sessions.erase(),
+            self.tree.erase(),
+            self.methods.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let index = ctx.require_at(&self.index)?;
+            let sessions = ctx.require_at(&self.sessions)?;
             let tree = ctx.require_at(&self.tree)?;
             let methods = ctx.require_at(&self.methods)?;
             methods.register(
@@ -57,12 +61,12 @@ impl DynPlugin for AgentsSessionPlugin {
                         params: value,
                         ..
                     } = call;
-                    let index = index.clone();
+                    let sessions = sessions.clone();
                     let tree = tree.clone();
                     Box::pin(async move {
                         match method.as_str() {
                             "session.agent.get" => configured_agent(&tree, value),
-                            _ => adopt_profile(index, tree, value, cancel).await,
+                            _ => adopt_profile(sessions, tree, value, cancel).await,
                         }
                     })
                 }),
@@ -104,7 +108,7 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
 /// model on `main`. The configuration it publishes records the profile, so
 /// the record is the adopted configuration's own metadata.
 async fn adopt_profile(
-    index: Arc<AgentIndex>,
+    sessions: Arc<Sessions>,
     tree: Arc<TreeCommands>,
     value: Value,
     cancel: CancellationToken,
@@ -128,6 +132,10 @@ async fn adopt_profile(
         ));
     }
     let branch = tree.get(&branch_id)?;
+    let index = sessions
+        .0
+        .get::<super::AgentIndex>()
+        .ok_or_else(RpcError::reloading)?;
     let profile = index
         .host(Some(&agent_id))
         .ok_or_else(crate::protocol::agent_unknown)?

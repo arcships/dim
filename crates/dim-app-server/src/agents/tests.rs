@@ -215,6 +215,7 @@ async fn stored() -> Stored {
     let session = launch(&index, None, &directory).await;
     index
         .input(InputWrite {
+            use_id: None,
             session_id: session.clone(),
             branch_id: "main".into(),
             mode: InputMode::Append,

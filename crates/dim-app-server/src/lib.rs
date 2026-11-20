@@ -48,7 +48,7 @@ mod workspace_files;
 mod worktrees;
 
 use agents::{AgentIndex, AgentsPlugin};
-pub use agents::{SessionDeleted, SessionPermissions, SessionRef, SessionsError};
+pub use agents::{SessionDeleted, SessionRef, Sessions, SessionsError};
 use collaboration::CollaborationPlugin;
 use connection::{ConnectionHub, ConnectionPlugin, RpcPlugin};
 #[cfg(feature = "testing")]
@@ -1433,7 +1433,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<storage::Store>(catalog, None);
     catalog.register_shared("store");
     register::<worktrees::ManagedWorktrees>(catalog, None);
-    register::<AgentIndex>(catalog, None);
     register::<rutis_loader::Loader>(catalog, None);
     catalog.register_shared(dim_agent_runtime::names::name_of::<
         collaboration::CollaborationDirectory,
@@ -1448,8 +1447,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<storage::SessionMetadataService>(catalog, None);
     register::<managed_provider::ManagedSearch>(catalog, None);
     register::<dyn managed_provider::ManagedProvider>(catalog, None);
-    register::<codex_oauth::OpenAICodexOAuthService>(catalog, None);
-    register::<grok_oauth::GrokOAuthService>(catalog, None);
     register::<provider::ProviderSecretHost>(catalog, None);
     catalog.register_shared("mcpService");
     register::<hooks_settings::HooksService>(catalog, None);
@@ -1480,7 +1477,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
 pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
         ("promptSourcesBranch", "hot-path"),
-        ("agentIndex", "owner-api"),
         ("agentLoop", "hot-path"),
         ("branchOpening", "hot-path"),
         ("compactionStrategyHost", "hot-path"),
@@ -1493,7 +1489,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),
         ("fileStorage", "object"),
-        ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
         ("hostPlatform", "object"),
         ("loader", "owner-api"),
@@ -1501,7 +1496,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         // Session creation calls it directly; no leaf needs the service.
         ("managedWorktrees", "hot-path"),
         ("mentionIndex", "host-resource"),
-        ("openAICodexOAuthService", "secret"),
         ("prepareContextHost", "hot-path"),
         ("prepareModelHost", "hot-path"),
         ("prompt", "hot-path"),

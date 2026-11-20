@@ -95,7 +95,6 @@ process (root)                 process parts: storage, catalogs, connections, Ag
 | 名称 | 作用域 | 提供者 | 今天是否跨语言 | 说明 |
 | --- | --- | --- | --- | --- |
 | `sessions` | 进程 | Agents | 是 | 启动或驱动另一个 Session |
-| `sessionPermissions` | 进程 | Agents | 是 | 标记了 `#[rutis::service]` |
 | `sessionMetadata` | 进程 | SessionStore | 是 | SessionTitle 是标题的唯一写入方 |
 | `settings` | 进程 | Settings | 是 | 业务配置 |
 | `auxiliaryModel` | 进程 | 该配置中模型选择的所有者 | 是 | 辅助模型请求 |

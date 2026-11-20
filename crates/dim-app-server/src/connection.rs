@@ -505,7 +505,7 @@ impl Connection {
             return Err(integration_pending());
         }
         self.authorize(rpc, &session_id)?;
-        let usage = rpc.index.acquire(&session_id).await?;
+        let usage = rpc.sessions.admit(&session_id).await?;
         let provider = crate::methods::session_provider(&rpc.loader, &usage.session, &method)?;
         if rpc.stopping.is_cancelled() {
             return Err(RpcError::reloading());
@@ -1579,7 +1579,7 @@ impl Connection {
                         .get::<crate::provider::ProviderService>()
                         .ok_or_else(RpcError::reloading)?;
                     let admission = provider
-                        .startup_configuration(
+                        .prepare_startup(
                             crate::protocol::ModelSelection {
                                 provider: p.provider_id,
                                 model_id: p.model_id,
@@ -1681,7 +1681,7 @@ impl Connection {
                     rpc.ctx
                         .get::<crate::provider::ProviderService>()
                         .ok_or_else(RpcError::reloading)?
-                        .retain_startup(session, &model)
+                        .retain_startup(session.id(), &session.instance()?.to_string(), &model)
                         .map_err(provider_error)?;
                 }
                 Reply::ModelUpdate(ModelUpdateResult { model: id, outcome })
@@ -1722,7 +1722,7 @@ impl Connection {
         }
         let source = if let Some(id) = &params.model_from_session {
             self.authorize(rpc, id)?;
-            Some(rpc.index.acquire(id).await?)
+            Some(rpc.sessions.admit(id).await?)
         } else {
             None
         };
@@ -1787,7 +1787,7 @@ impl Connection {
                 rpc.ctx
                     .get::<crate::provider::ProviderService>()
                     .ok_or_else(RpcError::reloading)?
-                    .startup_connection(connection)
+                    .check_startup(connection)
                     .map_err(provider_error)?;
             }
         } else {
@@ -1855,7 +1855,11 @@ impl Connection {
                 .ok_or_else(RpcError::reloading)
                 .and_then(|provider| {
                     provider
-                        .retain_startup(&session, &session.config().model)
+                        .retain_startup(
+                            session.id(),
+                            &session.instance()?.to_string(),
+                            &session.config().model,
+                        )
                         .map_err(provider_error)
                 });
             if let Err(error) = retained {
@@ -2269,6 +2273,7 @@ impl DynPlugin for ConnectionPlugin {
 
 /// Typed services behind protocol handlers; accepted commands belong to it.
 pub(crate) struct RpcService {
+    sessions: Arc<crate::agents::Sessions>,
     pub index: Arc<AgentIndex>,
     /// The process root, for per-call lookups of services Rpc does not depend
     /// on: management method providers and, in the product profile, Provider.
@@ -2362,7 +2367,7 @@ impl RpcService {
                     .unwrap_or_default()
             });
             let admission = provider
-                .startup_configuration(
+                .prepare_startup(
                     target,
                     Path::new(&config.cwd),
                     preferences,
@@ -2455,6 +2460,7 @@ pub(crate) struct RpcPlugin {
     config: Arc<ServerConfig>,
     root: Ctx,
     index: Key<AgentIndex>,
+    sessions: Key<crate::agents::Sessions>,
     collaboration: Key<crate::collaboration::Collaboration>,
     hub: Key<ConnectionHub>,
     control: Key<ServerControl>,
@@ -2467,7 +2473,8 @@ impl RpcPlugin {
         Ok(Self {
             config,
             root,
-            index: names.key()?,
+            index: Key::of(),
+            sessions: Key::of(),
             collaboration: names.key()?,
             hub: names.key()?,
             control: names.key()?,
@@ -2484,6 +2491,7 @@ impl DynPlugin for RpcPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.index.erase(),
+            self.sessions.erase(),
             self.collaboration.erase(),
             self.hub.erase(),
             self.control.erase(),
@@ -2501,6 +2509,7 @@ impl DynPlugin for RpcPlugin {
             let management = ctx.require_at(&self.management)?;
             let callers = ctx.require_at(&self.callers)?;
             let service = Arc::new(RpcService {
+                sessions: ctx.require_at(&self.sessions)?,
                 index,
                 ctx: self.root.clone(),
                 management,

@@ -977,51 +977,6 @@ export interface PartRegistry {
   registerDefinition(scope: PartScope, name: string, definition: import('@arcships/rutis').Plugin | ((ctx: any, config: any) => unknown) | { apply(ctx: any, config: any): unknown }): Promise<void>
 }
 
-/** A branch of a Session. */
-export type SessionRef = {
-  sessionId: string
-  branchId: string
-}
-
-/**
- * The dispatched policy; `version` is the local sequence of the last
- * `permission/changed` of this branch, 0 when there is none.
- */
-export type PermissionState = {
-  version: number | bigint
-  policy: import('./plugin.js').PermissionPolicy
-}
-
-/** A Session service failure; generated exports throw this serde value. */
-export type SessionsError =
-  | { code: "rejected"; message: string }
-  | { code: "agent_unknown"; message: string }
-  | { code: "session_closed"; message: string }
-  | { code: "branch_missing"; message: string }
-  | { code: "branch_ended"; message: string }
-  | { code: "reloading"; message: string }
-  | { code: "future_sequence"; message: string }
-  | { code: "ambiguous"; message: string }
-  | { code: "publication_unknown"; message: string }
-  | { code: "failed"; message: string }
-
-export type Empty = {
-}
-
-/** Read-only policy access through the stable Agents directory. */
-export interface SessionPermissions {
-  /**
-   * Reads the branch's dispatched policy while holding its Session lease.
-   * @throws {SessionsErrorThrown}
-   */
-  permission(request: SessionRef): Promise<PermissionState>
-  /**
-   * Reads the current host bound without creating or choosing a Session.
-   * @throws {SessionsErrorThrown}
-   */
-  permissionDefaults(request: Empty): Promise<import('./plugin.js').PermissionPolicy>
-}
-
 /**
  * The `get` reply: each description text the assembly configured, or `null`
  * for the built-in one.
@@ -1322,9 +1277,6 @@ export type ReservedMethodsErrorThrown = RustError<"ReservedMethodsError", "rese
 /** What a method returning `Err(ResourceError)` throws. */
 export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceError>
 
-/** What a method returning `Err(SessionsError)` throws. */
-export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
-
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
 
@@ -1366,7 +1318,6 @@ export interface Services {
   dispatcher: Dispatcher
   timeline: Timeline
   partRegistry: PartRegistry
-  sessionPermissions: SessionPermissions
   collaborationConfig: CollaborationConfig
   collaborationDirectory: CollaborationDirectory
   processActivity: ProcessActivity

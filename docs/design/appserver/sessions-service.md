@@ -10,13 +10,14 @@ merged in [#94](https://github.com/arcships/dim/pull/94)). Contract:
 process scope, inside the existing Agents plugin. Consumers: [Scheduler](../plugins/Scheduler.md) (P6) and
 [Workflow](../plugins/Workflow.md) (P7), both TypeScript.
 
-The [target process binding](../contracts/process-owner-operations.md) places `permission` and `permissionDefaults` directly on `sessions`. Consumers change their injection from `sessionPermissions` to `sessions` and retain the values and typed errors of both reads. Retire the old name with its consumers.
+The stable directory serves `sessions.permission({sessionId, branchId})` and
+`sessions.permissionDefaults({})`. The first holds a Session lease and returns the branch's
+dispatched `PermissionState`. The second returns the current host bound. Both reads throw
+`SessionsError` on failure. `sessions.startupSources({sessionId,generation})` returns the adopted startup connection references from the loaded branches of that Session instance. A missing or replaced instance returns `session_closed`. The other directory operations use the reply envelope in §4.
 
-Before that migration, Agents provides the generated read-only `sessionPermissions` service from
-its stable directory: `permission({sessionId, branchId})` returns live
-`PermissionState`, and `permissionDefaults({})` returns the current host bound.
-Those calls return values or throw generated `RustError`, while `sessions`
-retains its existing envelope. See [native access §2](../p6-p7-bindings.md#2-read-only-permission-access).
+`sessions.observeCurrent({sessionId,generation?}, onEnd)` returns the matching loaded instance as `{agentId,generation}`, or null. Its callback receives `{sessionId,agentId,generation,reason}` once on unload or close. An observer ends when its calling row unloads and does not keep the Session loaded.
+
+`acquireUse({sessionId,agentId})` returns `{useId,generation}`. The directory holds the loaded instance until `releaseUse({useId})` or caller unload. Input, pending, withdraw, stop and idle accept an optional `useId`; passing it pins that call to the admitted Session. `state({useId,branchId})` returns its branch status.
 
 Input ownership in §5, §6.2 and §8.3–8.4 follows the accepted
 [native access contract](../p6-p7-bindings.md#4-native-report-settlement): admitted

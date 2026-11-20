@@ -1,5 +1,4 @@
 use super::*;
-use dim_agent_runtime::Session;
 use dim_agent_types::{ModelConfiguration, StartupAuth, StartupConnectionSource};
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -64,6 +63,7 @@ pub(super) struct StartupBindings {
     connections: HashMap<String, Binding>,
     owners: HashMap<String, HashSet<String>>,
     watched: HashMap<String, uuid::Uuid>,
+    admissions: HashMap<String, rutis::Disposer>,
 }
 
 /// Holds an unclaimed binding until Session creation or adoption succeeds.
@@ -81,6 +81,35 @@ impl Drop for StartupSelection {
                 bindings.connections.remove(id);
             }
         }
+    }
+}
+
+impl StartupSelection {
+    pub(super) fn bind(mut self, caller: &rutis::Ctx) -> Result<serde_json::Value, HostError> {
+        let mut reply = serde_json::json!({"model":self.model});
+        if let Some(id) = self.pending.as_ref() {
+            let mut bindings = self.owner.startup.lock().unwrap();
+            if !bindings.owners.contains_key(id) {
+                let owner = Arc::downgrade(&self.owner);
+                let key = id.clone();
+                let cleanup = caller
+                    .effect(move || async move {
+                        if let Some(owner) = owner.upgrade() {
+                            let mut bindings = owner.startup.lock().unwrap();
+                            bindings.admissions.remove(&key);
+                            if !bindings.owners.contains_key(&key) {
+                                bindings.connections.remove(&key);
+                            }
+                        }
+                        Ok(())
+                    })
+                    .map_err(failure)?;
+                bindings.admissions.insert(id.clone(), cleanup);
+                reply["admissionId"] = id.clone().into();
+            }
+        }
+        self.pending.take();
+        Ok(reply)
     }
 }
 
@@ -173,7 +202,7 @@ impl StartupConnectionInput {
 impl ProviderService {
     /// Resolves a startup model and validates its Session-only declarations.
     /// No Provider, preference or credential record is written.
-    pub async fn startup_configuration(
+    pub async fn prepare_startup(
         self: &Arc<Self>,
         target: crate::protocol::ModelSelection,
         cwd: &Path,
@@ -521,15 +550,25 @@ impl ProviderService {
         &self,
         source: &StartupConnectionSource,
     ) -> Result<HttpModelConnection, HostError> {
-        self.startup.lock().unwrap().connections.get(&source.id)
-            .filter(|binding| binding.source == *source)
-            .map(|binding| binding.connection.clone())
-            .ok_or_else(|| failure("Temporary model connection is not bound; resume with the matching DIM_BASE_URL, DIM_API_FORMAT and credentials"))
+        self.startup.lock().unwrap().connection(source).cloned()
+    }
+
+    pub(super) async fn release_startup(&self, id: &str) -> Result<(), HostError> {
+        let cleanup = self.startup.lock().unwrap().admissions.remove(id);
+        if let Some(cleanup) = cleanup {
+            cleanup.dispose().await.map_err(failure)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_startup(&self, source: &StartupConnectionSource) -> Result<(), HostError> {
+        self.startup.lock().unwrap().connection(source).map(|_| ())
     }
 
     pub(crate) fn retain_startup(
         self: &Arc<Self>,
-        session: &Session,
+        session_id: &str,
+        generation: &str,
         model: &ModelSelection,
     ) -> Result<(), HostError> {
         let Some(source) = model
@@ -540,97 +579,104 @@ impl ProviderService {
         else {
             return Ok(());
         };
-        let connection = self.startup_connection(source)?;
-        {
-            let mut bindings = self.startup.lock().unwrap();
+        let sessions = self
+            .sessions
+            .as_ref()
+            .ok_or_else(|| failure("Session directory unavailable"))?;
+        let mut bindings = self.startup.lock().unwrap();
+        let connection = bindings.connection(source)?.clone();
+        let watch = uuid::Uuid::new_v4();
+        let stop = self.stop.child_token();
+        let owner = self.clone();
+        let observed = sessions
+            .observe_current(
+                session_id,
+                Some(generation),
+                stop.clone(),
+                move |ended| async move {
+                    owner
+                        .startup
+                        .lock()
+                        .unwrap()
+                        .end_watch(&ended.session_id, watch, ended.reason);
+                },
+            )
+            .map_err(failure)?;
+        if observed.is_none() {
+            return Err(failure("Session generation is no longer current"));
+        }
+        let sources = sessions
+            .startup_sources(session_id, generation)
+            .map_err(|error| {
+                stop.cancel();
+                failure(error)
+            })?;
+        for adopted in std::iter::once(source.clone()).chain(
+            sources
+                .into_iter()
+                .filter(|item| same_destination(item, source)),
+        ) {
             bindings
                 .connections
-                .entry(source.id.clone())
+                .entry(adopted.id.clone())
                 .or_insert_with(|| Binding {
-                    source: source.clone(),
+                    source: adopted.clone(),
                     connection: connection.clone(),
                 });
             bindings
                 .owners
-                .entry(source.id.clone())
+                .entry(adopted.id)
                 .or_default()
-                .insert(session.id().to_owned());
-            for branch in session.branches() {
-                if let Ok(Some(state)) =
-                    session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
-                    && let Some(previous) = state
-                        .configuration
-                        .as_ref()
-                        .and_then(|model| model.metadata.as_ref())
-                        .and_then(|metadata| metadata.startup.as_ref())
-                        .and_then(|startup| startup.connection.as_ref())
-                    && same_destination(previous, source)
-                {
-                    bindings
-                        .connections
-                        .entry(previous.id.clone())
-                        .or_insert_with(|| Binding {
-                            source: previous.clone(),
-                            connection: connection.clone(),
-                        });
-                    bindings
-                        .owners
-                        .entry(previous.id.clone())
-                        .or_default()
-                        .insert(session.id().to_owned());
-                }
-            }
+                .insert(session_id.to_owned());
         }
-        self.watch_startup(session.clone());
+        bindings.watched.insert(session_id.to_owned(), watch);
         Ok(())
     }
 
-    pub(super) fn restore_startup(self: &Arc<Self>, session: Session) {
+    pub(super) fn restore_startup(
+        self: &Arc<Self>,
+        sessions: &crate::agents::Sessions,
+        event: &crate::agents::SessionRestored,
+    ) {
         let mut bindings = self.startup.lock().unwrap();
-        for branch in session.branches() {
-            if let Ok(Some(state)) =
-                session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
-                && let Some(source) = state
-                    .configuration
-                    .as_ref()
-                    .and_then(|model| model.metadata.as_ref())
-                    .and_then(|metadata| metadata.startup.as_ref())
-                    .and_then(|startup| startup.connection.as_ref())
-            {
-                bindings
-                    .owners
-                    .entry(source.id.clone())
-                    .or_default()
-                    .insert(session.id().to_owned());
-            }
-        }
-        drop(bindings);
-        self.watch_startup(session);
-    }
-
-    pub(super) fn watch_startup(self: &Arc<Self>, session: Session) {
-        let id = session.id().to_owned();
-        let generation = uuid::Uuid::new_v4();
-        {
-            let mut bindings = self.startup.lock().unwrap();
-            if !bindings.owners.values().any(|owners| owners.contains(&id)) {
-                return;
-            }
-            bindings.watched.insert(id.clone(), generation);
-        }
+        let watch = uuid::Uuid::new_v4();
         let owner = self.clone();
-        self.tasks.spawn(async move {
-            tokio::select! {
-                _ = owner.stop.cancelled() => {}
-                _ = session.closed() => {
-                    let mut bindings = owner.startup.lock().unwrap();
-                    if bindings.watched.get(&id) == Some(&generation) {
-                        bindings.watched.remove(&id);
-                        if !session.is_unloading() { bindings.forget(&id); }
-                    }
-                }
-            }
-        });
+        let stop = self.stop.child_token();
+        let observed = sessions.observe_current(
+            &event.session_id,
+            Some(&event.generation),
+            stop.clone(),
+            move |ended| async move {
+                owner
+                    .startup
+                    .lock()
+                    .unwrap()
+                    .end_watch(&ended.session_id, watch, ended.reason);
+            },
+        );
+        if !matches!(observed, Ok(Some(_))) {
+            return;
+        }
+        let Ok(sources) = sessions.startup_sources(&event.session_id, &event.generation) else {
+            stop.cancel();
+            return;
+        };
+        for source in sources {
+            bindings
+                .owners
+                .entry(source.id)
+                .or_default()
+                .insert(event.session_id.clone());
+        }
+        if bindings
+            .owners
+            .values()
+            .any(|owners| owners.contains(&event.session_id))
+        {
+            bindings.watched.insert(event.session_id.clone(), watch);
+        } else {
+            stop.cancel();
+        }
     }
 
     pub(super) fn forget_startup(&self, session_id: &str) {
@@ -641,6 +687,25 @@ impl ProviderService {
 }
 
 impl StartupBindings {
+    fn connection(
+        &self,
+        source: &StartupConnectionSource,
+    ) -> Result<&HttpModelConnection, HostError> {
+        self.connections.get(&source.id)
+            .filter(|binding| binding.source == *source)
+            .map(|binding| &binding.connection)
+            .ok_or_else(|| failure("Temporary model connection is not bound; resume with the matching DIM_BASE_URL, DIM_API_FORMAT and credentials"))
+    }
+
+    fn end_watch(&mut self, id: &str, watch: uuid::Uuid, reason: crate::agents::SessionEnd) {
+        if self.watched.get(id) == Some(&watch) {
+            self.watched.remove(id);
+            if reason == crate::agents::SessionEnd::Closed {
+                self.forget(id);
+            }
+        }
+    }
+
     fn forget(&mut self, session_id: &str) {
         self.owners.retain(|id, owners| {
             owners.remove(session_id);

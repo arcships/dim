@@ -10,14 +10,18 @@ use dim_agent_capabilities::{
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
 };
-use dim_agent_runtime::{AgentError, Publication};
+use dim_agent_runtime::{AgentError, Publication, Session};
 use dim_agent_types::{
     AgentEvent, ContentBlock, InputBlock, InputMessageData, InputMode, InputWithdrawData, ModelId,
-    ModelSelection, PermissionPolicy, UserInput,
+    ModelSelection, PermissionPolicy, StartupConnectionSource, UserInput,
+};
+use futures_util::{
+    FutureExt,
+    future::{BoxFuture, Shared},
 };
 use rutis::Ctx;
 use rutis::host::CtxHost;
-use rutis_bridge::session::{HostDispatch, Reply, Value, caller_row};
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value, caller_row, settle};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{future::Future, sync::Arc, sync::atomic::Ordering};
@@ -31,10 +35,228 @@ pub struct SessionRef {
     pub branch_id: String,
 }
 
-/// Read-only policy access through the stable Agents directory.
-pub struct SessionPermissions(pub(crate) Ctx);
-#[rutis::service]
-impl SessionPermissions {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionGeneration {
+    session_id: String,
+    generation: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ObserveCurrent {
+    session_id: String,
+    generation: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SessionEnd {
+    Unloaded,
+    Closed,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObservedSession {
+    agent_id: String,
+    generation: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionEnded {
+    pub(crate) session_id: String,
+    #[serde(flatten)]
+    observed: ObservedSession,
+    pub(crate) reason: SessionEnd,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct AcquireUse {
+    pub(crate) session_id: String,
+    pub(crate) agent_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AcquiredUse {
+    pub(crate) use_id: uuid::Uuid,
+    pub(crate) generation: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReleaseUse {
+    use_id: uuid::Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UseState {
+    use_id: uuid::Uuid,
+    branch_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IdleRequest {
+    session_id: String,
+    branch_id: String,
+    use_id: Option<uuid::Uuid>,
+}
+
+pub(crate) type GenerationEnd = Shared<BoxFuture<'static, SessionEnd>>;
+
+/// The process Session directory.
+pub struct Sessions(pub(crate) Ctx);
+impl Sessions {
+    pub(crate) async fn admit(
+        &self,
+        session_id: &str,
+    ) -> dim_agent_runtime::Result<super::SessionUse> {
+        let index = self
+            .0
+            .get::<AgentIndex>()
+            .ok_or_else(|| AgentError::Reloading("the Agents index".into()))?;
+        index.acquire(session_id).await
+    }
+
+    pub(crate) fn generation_end(session: Session) -> GenerationEnd {
+        async move {
+            let _ = session.closed().await;
+            if session.is_unloading() {
+                SessionEnd::Unloaded
+            } else {
+                SessionEnd::Closed
+            }
+        }
+        .boxed()
+        .shared()
+    }
+
+    fn observe_wire(&self, args: Value) -> Reply {
+        let [request, callback] = args.list()?.try_into().map_err(|_| {
+            BridgeError::value("observeCurrent expects a request and an onEnd callback")
+        })?;
+        let request: ObserveCurrent = serde_json::from_value(request.json()?)
+            .map_err(|error| BridgeError::value(error.to_string()))?;
+        let callback = callback.reference()?;
+        if !callback.is_function() {
+            return Err(BridgeError::value("onEnd must be a function"));
+        }
+        let caller = caller_row()
+            .ok_or_else(|| BridgeError::value("observeCurrent needs the calling row"))?;
+        let cancelled = caller.ctx().cancellation_token();
+        let directory = Sessions(self.0.clone());
+        Ok(Value::future(async move {
+            let observed = directory
+                .observe_current(
+                    &request.session_id,
+                    request.generation.as_deref(),
+                    cancelled,
+                    move |ended| async move {
+                        let args = Value::List(vec![json!(ended).into()]);
+                        let notify = async { settle(callback.call_async(args).await?).await };
+                        if let Err(error) = notify.await {
+                            tracing::warn!(%error, "Session end listener failed");
+                        }
+                    },
+                )
+                .map_err(sessions_failure)?;
+            Ok(json!(observed).into())
+        }))
+    }
+
+    pub(crate) fn observe_current<F: Future<Output = ()> + Send>(
+        &self,
+        id: &str,
+        generation: Option<&str>,
+        cancelled: CancellationToken,
+        on_end: impl FnOnce(SessionEnded) -> F + Send + 'static,
+    ) -> Result<Option<ObservedSession>, SessionsError> {
+        let Some((observed, ended)) = self.observe_generation(id, generation)? else {
+            return Ok(None);
+        };
+        let session_id = id.to_owned();
+        let reply = observed.clone();
+        tokio::spawn(async move {
+            let notify = async {
+                let reason = ended.await;
+                on_end(SessionEnded {
+                    session_id,
+                    observed,
+                    reason,
+                })
+                .await;
+            };
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => {}
+                () = notify => {}
+            }
+        });
+        Ok(Some(reply))
+    }
+
+    pub(crate) fn observe_generation(
+        &self,
+        id: &str,
+        generation: Option<&str>,
+    ) -> Result<Option<(ObservedSession, GenerationEnd)>, SessionsError> {
+        let index = self
+            .0
+            .get::<AgentIndex>()
+            .ok_or_else(|| SessionsError::reloading("the Agents index"))?;
+        let Some((host, session)) = index.session(id) else {
+            return Ok(None);
+        };
+        let Ok(instance) = session.instance() else {
+            return Ok(None);
+        };
+        let instance = instance.to_string();
+        if generation.is_some_and(|expected| expected != instance) {
+            return Ok(None);
+        }
+        let observed = ObservedSession {
+            agent_id: host.agent_id.clone(),
+            generation: instance,
+        };
+        Ok(Some((observed, Self::generation_end(session))))
+    }
+
+    pub(crate) fn adopted_sources(session: &Session) -> Vec<StartupConnectionSource> {
+        session
+            .branches()
+            .into_iter()
+            .filter_map(|branch| {
+                session
+                    .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
+                    .ok()??
+                    .configuration?
+                    .metadata?
+                    .startup?
+                    .connection
+            })
+            .collect()
+    }
+
+    pub(crate) fn startup_sources(
+        &self,
+        session_id: &str,
+        generation: &str,
+    ) -> Result<Vec<StartupConnectionSource>, SessionsError> {
+        let index = self
+            .0
+            .get::<AgentIndex>()
+            .ok_or_else(|| SessionsError::reloading("the Agents index"))?;
+        let session = index
+            .session_generation(session_id, generation)
+            .ok_or_else(|| AgentError::Closed(session_id.to_owned()))?;
+        Ok(Self::adopted_sources(&session))
+    }
+
     /// Reads the branch's dispatched policy while holding its Session lease.
     pub async fn permission(
         &self,
@@ -132,6 +354,7 @@ pub struct LaunchReply {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputWrite {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     pub mode: InputMode,
@@ -233,6 +456,7 @@ pub struct HistoryPage {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingRequest {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     /// The `inputId` an earlier write or lookup named.
@@ -248,6 +472,7 @@ pub struct PendingReply {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WithdrawRequest {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     /// The `inputId` the caller received when it wrote the input.
@@ -260,6 +485,7 @@ pub struct WithdrawRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StopRequest {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     /// Default: "Stopped by automation".
@@ -358,7 +584,166 @@ fn settlement(error: AgentError) -> SessionsError {
     }
 }
 
+impl AcquiredUse {
+    pub(crate) fn bind(self, index: Arc<AgentIndex>) -> DirectoryUse {
+        DirectoryUse {
+            id: self.use_id,
+            index,
+        }
+    }
+}
+
+impl super::SessionUse {
+    async fn withdraw(
+        &self,
+        branch: &str,
+        request: InputWithdrawData,
+    ) -> dim_agent_runtime::Result<Withdrawal> {
+        self.session
+            .service::<InputQueue>(branch)?
+            .withdraw(request)
+            .await
+    }
+}
+
+pub(crate) struct DirectoryUse {
+    id: uuid::Uuid,
+    index: Arc<AgentIndex>,
+}
+
+impl Drop for DirectoryUse {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.index.retire_use(self.id) {
+            tokio::spawn(async move {
+                let _ = cleanup.dispose().await;
+            });
+        }
+    }
+}
+
+impl DirectoryUse {
+    fn lease(&self) -> dim_agent_runtime::Result<super::SessionUse> {
+        self.index
+            .pinned_use(self.id)
+            .map_err(|error| AgentError::Closed(error.to_string()))
+    }
+
+    pub(crate) fn session(&self) -> dim_agent_runtime::Result<Session> {
+        Ok(self.lease()?.session.clone())
+    }
+
+    pub(crate) async fn withdraw(
+        &self,
+        branch: &str,
+        request: InputWithdrawData,
+    ) -> dim_agent_runtime::Result<Withdrawal> {
+        self.lease()?.withdraw(branch, request).await
+    }
+
+    pub(crate) fn state(
+        &self,
+        branch: &str,
+    ) -> dim_agent_runtime::Result<dim_agent_runtime::BranchStatus> {
+        self.lease()?.session.state(branch)
+    }
+
+    pub(crate) async fn input(
+        &self,
+        message: InputMessageData,
+        branch: &str,
+    ) -> dim_agent_runtime::Result<Arc<AgentEvent>> {
+        self.lease()?.session.input(message, branch).await
+    }
+
+    pub(crate) async fn stop(
+        &self,
+        branch: &str,
+        reason: String,
+    ) -> dim_agent_runtime::Result<u64> {
+        self.lease()?.session.stop(branch, reason).await
+    }
+
+    pub(crate) async fn idle(&self, branch: &str) -> dim_agent_runtime::Result<u64> {
+        self.lease()?.session.idle(branch).await
+    }
+}
+
 impl AgentIndex {
+    pub(crate) async fn acquire_use(
+        self: &Arc<Self>,
+        request: AcquireUse,
+        caller: &Ctx,
+    ) -> Result<AcquiredUse, SessionsError> {
+        let lease = self.acquire(&request.session_id).await?;
+        if lease.host.agent_id != request.agent_id {
+            return Err(SessionsError::rejected("Session belongs to another Agent"));
+        }
+        let generation = lease.session.instance()?.to_string();
+        let id = uuid::Uuid::new_v4();
+        let owner = Arc::downgrade(self);
+        let mut uses = self.session_uses.lock().unwrap();
+        if self.stopping.is_cancelled() {
+            return Err(SessionsError::reloading("the Agents index"));
+        }
+        let cleanup = caller
+            .effect(move || async move {
+                if let Some(owner) = owner.upgrade() {
+                    owner.session_uses.lock().unwrap().remove(&id);
+                }
+                Ok(())
+            })
+            .map_err(|_| SessionsError::reloading("the calling row"))?;
+        uses.insert(id, (lease, cleanup));
+        Ok(AcquiredUse {
+            use_id: id,
+            generation,
+        })
+    }
+
+    pub(crate) fn pinned_use(&self, id: uuid::Uuid) -> Result<super::SessionUse, SessionsError> {
+        self.session_uses
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|(lease, _)| lease.clone())
+            .ok_or_else(|| SessionsError::rejected("unknown Session use"))
+    }
+
+    async fn use_session(
+        &self,
+        session_id: &str,
+        id: Option<uuid::Uuid>,
+    ) -> Result<super::SessionUse, SessionsError> {
+        let Some(id) = id else {
+            return Ok(self.acquire(session_id).await?);
+        };
+        let lease = self.pinned_use(id)?;
+        if lease.session.id() != session_id {
+            return Err(SessionsError::rejected(
+                "Session use belongs to another Session",
+            ));
+        }
+        Ok(lease)
+    }
+
+    pub(crate) fn retire_use(&self, id: uuid::Uuid) -> Option<rutis::Disposer> {
+        self.session_uses
+            .lock()
+            .unwrap()
+            .remove(&id)
+            .map(|(_, cleanup)| cleanup)
+    }
+
+    async fn release_use(&self, id: uuid::Uuid) -> Result<(), SessionsError> {
+        if let Some(cleanup) = self.retire_use(id) {
+            cleanup
+                .dispose()
+                .await
+                .map_err(|_| SessionsError::reloading("the calling row"))?;
+        }
+        Ok(())
+    }
+
     /// Ends a call with `reloading` when this index generation unloads; the
     /// `sessions` service and its callers stay (§8.3).
     async fn until_unloaded<T>(
@@ -517,7 +902,7 @@ impl AgentIndex {
                 if write.submission_id.is_empty() {
                     return Err(SessionsError::rejected("submissionId must not be empty"));
                 }
-                let lease = self.acquire(&write.session_id).await?;
+                let lease = self.use_session(&write.session_id, write.use_id).await?;
                 let publication = lease.session.publication(&write.branch_id)?;
                 let blocks = write
                     .raw_blocks
@@ -679,7 +1064,9 @@ impl AgentIndex {
             if request.input_id.is_empty() {
                 return Err(SessionsError::rejected("inputId must not be empty"));
             }
-            let lease = self.acquire(&request.session_id).await?;
+            let lease = self
+                .use_session(&request.session_id, request.use_id)
+                .await?;
             let publication = lease.session.publication(&request.branch_id)?;
             let through = publication.sequence();
             let mut dispatch = lease.session.dispatch_watch(&request.branch_id)?;
@@ -716,16 +1103,19 @@ impl AgentIndex {
     /// replies once `input/deleted` is published.
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError> {
         self.until_unloaded(async {
-            let lease = self.acquire(&request.session_id).await?;
+            let lease = self
+                .use_session(&request.session_id, request.use_id)
+                .await?;
             let publication = lease.session.publication(&request.branch_id)?;
             let answer = lease
-                .session
-                .service::<InputQueue>(&request.branch_id)?
-                .withdraw(InputWithdrawData {
-                    input_id: request.input_id,
-                    reason: request.reason,
-                    steer: None,
-                })
+                .withdraw(
+                    &request.branch_id,
+                    InputWithdrawData {
+                        input_id: request.input_id,
+                        reason: request.reason,
+                        steer: None,
+                    },
+                )
                 .await?;
             if let Withdrawal::Deleted { sequence } = answer {
                 published(&publication, sequence).await?;
@@ -739,7 +1129,9 @@ impl AgentIndex {
     /// the dispatched sequence.
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError> {
         self.until_unloaded(async {
-            let lease = self.acquire(&request.session_id).await?;
+            let lease = self
+                .use_session(&request.session_id, request.use_id)
+                .await?;
             lease
                 .session
                 .stop(
@@ -758,9 +1150,9 @@ impl AgentIndex {
     /// returns its dispatched sequence. A pending approval or question keeps
     /// the turn open, so the wait lasts until it is answered or `stop` ends
     /// the turn; there is no timeout.
-    pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError> {
+    async fn idle(&self, at: IdleRequest) -> Result<u64, SessionsError> {
         self.until_unloaded(async {
-            let lease = self.acquire(&at.session_id).await?;
+            let lease = self.use_session(&at.session_id, at.use_id).await?;
             let session = &lease.session;
             #[cfg(feature = "testing")]
             self.idle_admitted.notify_one();
@@ -787,16 +1179,76 @@ impl AgentIndex {
 /// `sessions` by name for every language: each call decodes one request
 /// object, calls the current index and replies with one envelope,
 /// `{ok: true, value}` or `{ok: false, error: {code, message, retryable}}`.
-pub(crate) struct SessionsService(pub(crate) Ctx);
-impl HostDispatch for SessionsService {
+impl HostDispatch for Sessions {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async",
+            "delete": "async", "permission": "async", "permissionDefaults": "async", "startupSources": "async", "observeCurrent": "async", "acquireUse": "async", "releaseUse": "async", "state": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if matches!(method, "acquireUse" | "releaseUse" | "state") {
+            let caller = caller_row().map(|row| row.ctx().clone());
+            let index = self.0.get::<AgentIndex>();
+            let method = method.to_owned();
+            return Ok(Value::future(async move {
+                let args = args.json()?;
+                let operation = async {
+                    let index =
+                        index.ok_or_else(|| SessionsError::reloading("the Agents index"))?;
+                    match method.as_str() {
+                        "acquireUse" => {
+                            let caller = caller.ok_or_else(|| {
+                                SessionsError::rejected("acquireUse needs the calling row")
+                            })?;
+                            reply(index.acquire_use(request(args)?, &caller).await?)
+                        }
+                        "releaseUse" => {
+                            let ReleaseUse { use_id } = request(args)?;
+                            index.release_use(use_id).await?;
+                            reply(())
+                        }
+                        _ => {
+                            let UseState { use_id, branch_id } = request(args)?;
+                            reply(index.pinned_use(use_id)?.session.state(&branch_id)?)
+                        }
+                    }
+                };
+                operation.await.map(Value::from).map_err(sessions_failure)
+            }));
+        }
+        if method == "observeCurrent" {
+            return self.observe_wire(args);
+        }
+        if matches!(
+            method,
+            "permission" | "permissionDefaults" | "startupSources"
+        ) {
+            let directory = Sessions(self.0.clone());
+            let method = method.to_owned();
+            return Ok(Value::future(async move {
+                let args = args.json()?;
+                let result = if method == "startupSources" {
+                    request(args)
+                        .and_then(|request: SessionGeneration| {
+                            directory.startup_sources(&request.session_id, &request.generation)
+                        })
+                        .and_then(reply)
+                } else if method == "permissionDefaults" {
+                    match request(args) {
+                        Ok(request) => directory.permission_defaults(request).await.and_then(reply),
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    match request(args) {
+                        Ok(request) => directory.permission(request).await.and_then(reply),
+                        Err(error) => Err(error),
+                    }
+                };
+                result.map(Value::from).map_err(sessions_failure)
+            }));
+        }
         let row = (method == "input")
             .then(caller_row)
             .flatten()
@@ -813,6 +1265,16 @@ impl HostDispatch for SessionsService {
         };
         Ok(Value::future(async move { Ok(envelope(operation.await)) }))
     }
+}
+
+fn sessions_failure(error: SessionsError) -> BridgeError {
+    let data = json!(error);
+    rutis_bridge::exports::failure(
+        "SessionsError",
+        data["code"].as_str().expect("SessionsError code"),
+        error.to_string(),
+        Some(data.clone()),
+    )
 }
 
 fn envelope(result: Result<serde_json::Value, SessionsError>) -> Value {

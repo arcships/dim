@@ -1408,6 +1408,7 @@ fn reseed_candidate(
 }
 
 pub struct ProviderService {
+    sessions: Option<Arc<crate::agents::Sessions>>,
     db: Arc<SqliteStorage>,
     oauth: Arc<ManagedProviders>,
     codex: Arc<OpenAICodexOAuthService>,
@@ -1741,22 +1742,14 @@ impl ProviderService {
 
     async fn managed_credential(
         self: &Arc<Self>,
-        authority: CredentialAuthority,
+        account: Arc<managed_oauth::Service>,
         rejected: Option<managed_oauth::CredentialLease>,
         cancel: &CancellationToken,
     ) -> Result<managed_oauth::CredentialLease, HostError> {
         let owner = self.clone();
         self.owned(cancel, move |cancel| {
             Box::pin(async move {
-                let lease = match authority {
-                    CredentialAuthority::OpenaiCodex => {
-                        owner.codex.credential(rejected.as_ref(), &cancel).await
-                    }
-                    CredentialAuthority::Grok => {
-                        owner.grok.credential(rejected.as_ref(), &cancel).await
-                    }
-                    CredentialAuthority::Static => unreachable!(),
-                };
+                let lease = account.credential(rejected.as_ref(), &cancel).await;
                 owner.check(&cancel)?;
                 lease.map_err(failure)
             })
@@ -2847,12 +2840,18 @@ impl ProviderService {
                 ));
             }
             if record.credential_authority != CredentialAuthority::Static {
+                let account = match record.credential_authority {
+                    CredentialAuthority::OpenaiCodex => self.codex.account(),
+                    CredentialAuthority::Grok => self.grok.account(),
+                    CredentialAuthority::Static => unreachable!(),
+                };
                 let lease = self
-                    .managed_credential(record.credential_authority, None, cancel)
+                    .managed_credential(account.clone(), None, cancel)
                     .await?;
                 let recovered = managed_connection(
                     self.clone(),
                     record.credential_authority,
+                    account.clone(),
                     lease,
                     record.network,
                 );
@@ -3136,6 +3135,7 @@ impl ResolveModalityConnection for ProductResolver {
 struct ManagedRecovery {
     owner: Arc<ProviderService>,
     authority: CredentialAuthority,
+    account: Arc<managed_oauth::Service>,
     lease: managed_oauth::CredentialLease,
     network: ModelNetwork,
 }
@@ -3143,6 +3143,7 @@ struct ManagedRecovery {
 fn managed_connection(
     owner: Arc<ProviderService>,
     authority: CredentialAuthority,
+    account: Arc<managed_oauth::Service>,
     lease: managed_oauth::CredentialLease,
     network: ModelNetwork,
 ) -> RecoveredModelConnection {
@@ -3177,6 +3178,7 @@ fn managed_connection(
         recovery: Arc::new(ManagedRecovery {
             owner,
             authority,
+            account,
             lease,
             network,
         }),
@@ -3191,11 +3193,12 @@ impl RecoverModelConnection for ManagedRecovery {
         Box::pin(async move {
             let lease = self
                 .owner
-                .managed_credential(self.authority, Some(self.lease.clone()), &cancel)
+                .managed_credential(self.account.clone(), Some(self.lease.clone()), &cancel)
                 .await?;
             Ok(managed_connection(
                 self.owner.clone(),
                 self.authority,
+                self.account.clone(),
                 lease,
                 self.network.clone(),
             ))
@@ -3203,21 +3206,13 @@ impl RecoverModelConnection for ManagedRecovery {
     }
     fn finish_rejected(&self, cancel: CancellationToken) -> HostFuture<'_, ()> {
         let owner = self.owner.clone();
-        let authority = self.authority;
+        let account = self.account.clone();
         let lease = self.lease.clone();
         Box::pin(async move {
             self.owner
                 .owned(&cancel, move |cancel| {
                     Box::pin(async move {
-                        let result = match authority {
-                            CredentialAuthority::OpenaiCodex => {
-                                owner.codex.finish_rejected(&lease, &cancel).await
-                            }
-                            CredentialAuthority::Grok => {
-                                owner.grok.finish_rejected(&lease, &cancel).await
-                            }
-                            CredentialAuthority::Static => unreachable!(),
-                        };
+                        let result = account.finish_rejected(&lease, &cancel).await;
                         owner.check(&cancel)?;
                         result.map_err(failure)
                     })
@@ -3298,7 +3293,7 @@ fn oauth_rejection(error: &HostError, phase: CredentialRecoveryPhase) -> Credent
 
 pub struct ProviderPlugin {
     db: Key<SqliteStorage>,
-    index: Option<Key<crate::agents::AgentIndex>>,
+    sessions: Option<Key<crate::agents::Sessions>>,
     oauth: Key<ManagedProviders>,
     codex: Key<OpenAICodexOAuthService>,
     grok: Key<GrokOAuthService>,
@@ -3322,10 +3317,10 @@ impl ProviderPlugin {
     fn keyed(names: &Names<'_>, secret_host: bool, lifecycle: bool) -> rutis::Result<Self> {
         Ok(Self {
             db: names.key()?,
-            index: lifecycle.then(|| names.key()).transpose()?,
+            sessions: lifecycle.then(Key::of),
             oauth: crate::managed_provider::owner_key(),
-            codex: names.key()?,
-            grok: names.key()?,
+            codex: Key::of(),
+            grok: Key::of(),
             secret_host: secret_host.then(|| names.key()).transpose()?,
             host: Key::of(),
             methods: names.key()?,
@@ -3345,15 +3340,15 @@ impl DynPlugin for ProviderPlugin {
             self.host.erase(),
             self.methods.erase(),
         ];
-        keys.extend(self.index.as_ref().map(Key::erase));
+        keys.extend(self.sessions.as_ref().map(Key::erase));
         keys.extend(self.secret_host.as_ref().map(Key::erase));
         keys
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
-            let index = self
-                .index
+            let sessions = self
+                .sessions
                 .as_ref()
                 .map(|key| ctx.require_at(key))
                 .transpose()?;
@@ -3368,6 +3363,7 @@ impl DynPlugin for ProviderPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let service =
                 Arc::new(ProviderService {
+                    sessions: sessions.clone(),
                     db,
                     oauth,
                     codex,
@@ -3393,12 +3389,10 @@ impl DynPlugin for ProviderPlugin {
                 *owner.startup.lock().unwrap() = startup::StartupBindings::default();
                 Ok(())
             })?;
-            if let Some(index) = index {
+            if let Some(sessions) = sessions {
                 let restored = service.clone();
                 ctx.on::<crate::agents::SessionRestored>(move |event, _| {
-                    if let Some((_, session)) = index.session(&event.session_id) {
-                        restored.restore_startup(session);
-                    }
+                    restored.restore_startup(&sessions, &event);
                     async { Ok(None) }
                 })?;
             }
