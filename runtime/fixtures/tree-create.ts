@@ -2,9 +2,7 @@ import { definePlugin } from '@arcships/rutis'
 import { partRow } from './part-row.ts'
 import provides from './tree-create.json' with { type: 'json' }
 import assert from 'node:assert/strict'
-import type { SessionMethods, TimelineTree } from '../../npm/plugin.js'
-
-type MethodCall = { method: string; params: { sessionId: string; at: number; cancel: boolean } }
+import type { SessionMethodReply, SessionMethods, TimelineTree } from '../../npm/plugin.js'
 
 export const part = definePlugin({
   name: 'TreeCreateFixture',
@@ -15,12 +13,25 @@ export const part = definePlugin({
     await ctx.use<SessionMethods>('sessionMethods').register(
       'session.treeprobe',
       [{ name: 'session.treeprobe.create', mutating: true, interruption: 'report', progress: false }],
-      async (call: MethodCall) => {
-        const { at, cancel } = call.params
+      async ({ params }): Promise<SessionMethodReply> => {
+        const { at, cancel } = params
+        assert.ok(typeof at === 'number' || typeof at === 'bigint')
+        assert.equal(typeof cancel, 'boolean')
         const options = { prompt: 'probe child', source: { kind: 'host' as const, operation_id: crypto.randomUUID() } }
         const cancelled = () => (cancel ? Promise.resolve() : new Promise<void>(() => {}))
         try {
           const id = await tree.create('main', at, options, cancelled)
+          assert.deepEqual(await tree.call({ branchId: id, operation: { kind: 'approval.pending' } }, cancelled), [])
+          assert.deepEqual(await tree.call({
+            branchId: id, operation: { kind: 'inputQueue.withdraw', command: { input_id: 'absent' } },
+          }, cancelled), { status: 'notHeld' })
+          await assert.rejects(tree.call({
+            branchId: id, operation: { kind: 'approval.decide', requestId: 'absent', decision: 'deny' },
+          }, cancelled), { code: 'Unknown' })
+          await assert.rejects(
+            tree.call({ branchId: 'missing', operation: { kind: 'approval.pending' } }, cancelled),
+            { code: 'session_invalid_input' },
+          )
           const entry = await tree.directory({id})
           assert.ok(!Array.isArray(entry) && entry.info.id === id && entry.state === 'open')
           const directory = await tree.directory({})

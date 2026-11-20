@@ -92,7 +92,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `skillsConfig` | session | SessionScope | data | `get` async |
 | `submitChecks` | session | InputMethods | internal(hot-path) | — |
 | `timelineStore` | session | SessionScope | data | `append` sync, `batchEnd` async, `batchEndAt` async, `branches` async, `closeCommits` async, `commits` async, `createSession` async, `head` async, `latestSnapshot` async, `query` async, `readPage` async, `readSegments` async, `releaseSession` async, `rollbackSession` async, `saveSnapshot` async, `sessionConfig` async, `trace` async |
-| `timelineTree` | session | TimelineTree | data | `batchEnd` async, `create` async, `defaultBranch` async, `directory` async, `display` async, `end` async, `info` async, `input` async, `inputs` async, `list` async, `page` async, `pageEnd` async, `query` async, `setDefaultBranch` async |
+| `timelineTree` | session | TimelineTree | data | `batchEnd` async, `call` async, `create` async, `defaultBranch` async, `directory` async, `display` async, `end` async, `info` async, `input` async, `inputs` async, `list` async, `page` async, `pageEnd` async, `query` async, `setDefaultBranch` async |
 | `toolHost` | session | WorkspaceTools | data | `execute` async |
 | `toolRegistry` | session | ToolRegistry | data | `register` async |
 | `toolSourcesView` | session | ToolRegistry | data | `get` sync, `observe` async |

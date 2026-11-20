@@ -192,6 +192,31 @@ pub enum DirectoryReply {
     All(Vec<BranchDirectoryEntry>),
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BranchCall {
+    pub branch_id: String,
+    pub operation: BranchOperation,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum BranchOperation {
+    #[serde(rename = "contextUsage.read")]
+    ContextUsage,
+    #[serde(rename = "compactAndWait")]
+    CompactAndWait,
+    #[serde(rename = "approval.pending")]
+    ApprovalPending,
+    #[serde(rename = "approval.decide", rename_all = "camelCase")]
+    ApprovalDecide {
+        request_id: String,
+        decision: ApprovalDecision,
+    },
+    #[serde(rename = "inputQueue.withdraw")]
+    Withdraw { command: InputWithdrawData },
+}
+
 /// A line whose `branch/end` is committed and whose close has not completed.
 struct PendingEnd {
     /// The sequence of `branch/end` on the line: the result's `endEvent`.
@@ -288,6 +313,38 @@ pub struct TimelineTree {
 }
 #[service]
 impl TimelineTree {
+    pub async fn call(
+        &self,
+        request: BranchCall,
+        cancelled: Arc<
+            dyn Fn() -> BoxFuture<'static, std::result::Result<(), Error>> + Send + Sync,
+        >,
+    ) -> std::result::Result<serde_json::Value, rutis_bridge::session::Error> {
+        let cancel = CancellationToken::new();
+        let _guard = cancel.clone().drop_guard();
+        let called = self.call_branch(request, cancel.clone());
+        tokio::pin!(called);
+        tokio::select! {
+            result = &mut called => result,
+            _ = cancelled() => {
+                cancel.cancel();
+                called.await
+            }
+        }
+        .map_err(|error| {
+            let code = error
+                .data
+                .as_ref()
+                .map_or("rpc_error", |data| data.app_error.as_str());
+            rutis_bridge::exports::failure(
+                "RpcError",
+                code,
+                error.message.clone(),
+                Some(serde_json::json!(error)),
+            )
+        })
+    }
+
     pub fn directory(
         &self,
         request: DirectoryRequest,
@@ -511,6 +568,51 @@ impl TimelineTree {
         Ok(created?.id().to_owned())
     }
 }
+impl TimelineTree {
+    pub(crate) async fn call_branch(
+        &self,
+        request: BranchCall,
+        cancel: CancellationToken,
+    ) -> std::result::Result<serde_json::Value, crate::methods::RpcError> {
+        let branch = self.get(&request.branch_id)?;
+        match request.operation {
+            BranchOperation::ContextUsage => crate::context_methods::usage(&branch, cancel).await,
+            BranchOperation::CompactAndWait => {
+                crate::context_methods::compact(&branch, &cancel).await
+            }
+            BranchOperation::ApprovalDecide {
+                request_id,
+                decision,
+            } => {
+                branch
+                    .service::<crate::approval::Approval>()?
+                    .decide(request_id, decision)
+                    .await
+                    .map_err(|error| {
+                        use crate::approval::ApprovalRespondError;
+                        let code = match error {
+                            ApprovalRespondError::Unknown => "Unknown",
+                            ApprovalRespondError::Cancelled => "Cancelled",
+                            ApprovalRespondError::Closed => "Closed",
+                        };
+                        crate::methods::RpcError::service(code, error.to_string())
+                    })?;
+                Ok(serde_json::Value::Null)
+            }
+            BranchOperation::Withdraw { command } => {
+                let queue = branch.service::<crate::input_queue::InputQueue>()?;
+                let answer = queue.withdraw(command).await.map_err(|error| {
+                    crate::methods::RpcError::service(error.variant(), error.to_string())
+                })?;
+                crate::methods::reply(answer)
+            }
+            BranchOperation::ApprovalPending => {
+                crate::methods::reply(branch.service::<crate::approval::Approval>()?.pending())
+            }
+        }
+    }
+}
+
 /// One page of an open line's own facts after `after`, at most `limit`, never
 /// past `through`, ending on an atomic batch: a page that reaches its limit
 /// inside one runs to that batch's end, so an open and an ended line's pages

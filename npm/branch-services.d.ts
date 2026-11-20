@@ -484,6 +484,18 @@ export interface SkillsConfig {
   get(): Promise<SkillsConfigReply>
 }
 
+export type BranchOperation =
+  | { kind: "contextUsage.read" }
+  | { kind: "compactAndWait" }
+  | { kind: "approval.pending" }
+  | { kind: "approval.decide"; requestId: string; decision: ApprovalDecision }
+  | { kind: "inputQueue.withdraw"; command: InputWithdrawData }
+
+export type BranchCall = {
+  branchId: string
+  operation: BranchOperation
+}
+
 export type DirectoryRequest = {
   id?: string | null
 }
@@ -648,6 +660,7 @@ export type BranchOptions = {
 }
 
 export interface TimelineTree {
+  call(request: BranchCall, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').BridgeJsonValue>
   /** @throws {AgentErrorThrown} */
   directory(request: DirectoryRequest): Promise<DirectoryReply>
   /** @throws {AgentErrorThrown} */

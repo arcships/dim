@@ -35,7 +35,10 @@
 Within a branch, inject its owner face directly. For Session callers the existing
 `timelineTree` face gains `call({branchId,operation}, cancelled) → operation reply`.
 TimelineTree resolves the admitted live branch once using its existing branch lookup and
-dispatches on that branch instance. The operation is a tagged union of the calls below;
+dispatches on that branch instance. The operation is tagged by `kind`. The Context calls and `approval.pending` take only
+this tag. `approval.decide` takes `requestId` and `decision`; `inputQueue.withdraw`
+takes `command` in the InputQueue owner's existing event shape.
+
 Direct variants use the owner method's arguments, reply and error. The compact RPC variant below returns the existing settled client result. The Session caller gets data.
 Ended and unknown branches retain their original errors. Calls admitted before close stay
 with that generation. Tree history, directory and batch input continue to use the tree's

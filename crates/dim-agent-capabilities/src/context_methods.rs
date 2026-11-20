@@ -4,7 +4,7 @@ use crate::{
     agent_loop::AgentLoop,
     context_preparation::{ContextOpError, ContextPreparation},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
-    timeline_tree::TimelineTree,
+    timeline_tree::{BranchCall, BranchOperation, TimelineTree},
 };
 use dim_agent_runtime::{
     Branch, Names, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect, QuerySpec,
@@ -63,11 +63,19 @@ impl DynPlugin for ContextMethodsPlugin {
                             branch_id: String,
                         }
                         let Params { branch_id } = params(value)?;
-                        let branch = tree.get(&branch_id)?;
-                        match method.as_str() {
-                            "session.context.compact" => compact(&branch, &cancel).await,
-                            _ => usage(&branch, cancel).await,
-                        }
+                        let operation = if method == "session.context.compact" {
+                            BranchOperation::CompactAndWait
+                        } else {
+                            BranchOperation::ContextUsage
+                        };
+                        tree.call_branch(
+                            BranchCall {
+                                branch_id,
+                                operation,
+                            },
+                            cancel,
+                        )
+                        .await
                     })
                 }),
             )?;
@@ -77,7 +85,10 @@ impl DynPlugin for ContextMethodsPlugin {
 }
 /// Writes `context/compact`, or joins the outstanding command, and waits for
 /// the result that carries that command.
-async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, RpcError> {
+pub(crate) async fn compact(
+    branch: &Branch,
+    cancel: &CancellationToken,
+) -> Result<Value, RpcError> {
     let command = branch.service::<AgentLoop>()?.compact()?;
     let publication = branch.publication();
     let mut watch = publication.watch();
@@ -190,7 +201,7 @@ async fn compact(branch: &Branch, cancel: &CancellationToken) -> Result<Value, R
     }
 }
 
-async fn usage(branch: &Branch, cancel: CancellationToken) -> Result<Value, RpcError> {
+pub(crate) async fn usage(branch: &Branch, cancel: CancellationToken) -> Result<Value, RpcError> {
     match branch.service::<ContextPreparation>()?.usage(cancel).await {
         Ok(usage) => reply(usage),
         Err(ContextOpError::NotReady) => Err(RpcError::app(
