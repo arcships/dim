@@ -39,6 +39,7 @@ afterEach(() => {
   while (mounted.length > 0) mounted.pop()!.unmount()
   document.body.replaceChildren()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 
@@ -100,6 +101,28 @@ describe("WebChatTimeline", () => {
     expect(line?.textContent).toContain("parser race")
     line!.click()
     expect(openLine).toHaveBeenCalledWith("b-7c0ffee1")
+  })
+
+  it("copies the assistant answer through the Web clipboard fallback on an insecure origin", async () => {
+    const projection = new Projection()
+    for (const item of recorded.slice(0, 7)) projection.apply(item)
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } })
+    vi.stubGlobal("isSecureContext", false)
+    const copied: string[] = []
+    const execCommand = vi.fn((command: string) => {
+      copied.push(`${command}:${document.querySelector("textarea")?.value}`)
+      return true
+    })
+    Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand })
+
+    const root = mount(projection.rows, vi.fn())
+    await settle()
+    root.querySelector<HTMLButtonElement>("[data-testid='timeline-assistant-copy']")!.click()
+    await settle()
+
+    expect(copied).toEqual(["copy:The entry point only defines main."])
+    expect(writeText).not.toHaveBeenCalled()
   })
 
   it("keeps a provider failure and a different turn failure both visible, each with its details", async () => {
