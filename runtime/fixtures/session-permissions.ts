@@ -1,14 +1,13 @@
 import { definePlugin } from '@arcships/rutis'
-import type { ManagementMethods, MethodReply, SessionPermissions, SessionsErrorThrown, SessionRef, Sessions } from '../../npm/plugin.js'
+import type { ManagementMethods, MethodReply, SessionsErrorThrown, SessionRef, Sessions } from '../../npm/plugin.js'
 
 let generation = 0
 export default definePlugin({
   name: 'SessionPermissionsFixture',
-  inject: ['sessionPermissions', 'sessions', 'managementMethods'],
+  inject: ['sessions', 'managementMethods'],
   provides: {},
   async apply(ctx) {
     const applied = ++generation
-    const permissions = ctx.use<SessionPermissions>('sessionPermissions')
     const sessions = ctx.use<Sessions>('sessions')
     await ctx.use<ManagementMethods>('managementMethods').register(
       'permissions',
@@ -20,10 +19,10 @@ export default definePlugin({
           const at = call.params as unknown as SessionRef
           if (call.method === 'permissions.legacy') return { kind: 'value', value: JSON.stringify(await sessions.idle(at)) }
           if (call.method === 'permissions.defaults') {
-            const policy = await permissions.permissionDefaults({})
+            const policy = await sessions.permissionDefaults({})
             return { kind: 'value', value: { generation: applied, policy: JSON.stringify(policy) } }
           }
-          const state = await permissions.permission(at)
+          const state = await sessions.permission(at)
           return { kind: 'value', value: { generation: applied, version: state.version.toString(), policy: JSON.stringify(state.policy) } }
         } catch (error) {
           const failure = error as SessionsErrorThrown

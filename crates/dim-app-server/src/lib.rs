@@ -48,7 +48,7 @@ mod workspace_files;
 mod worktrees;
 
 use agents::{AgentIndex, AgentsPlugin};
-pub use agents::{SessionDeleted, SessionPermissions, SessionRef, SessionsError};
+pub use agents::{SessionDeleted, SessionRef, Sessions, SessionsError};
 use collaboration::CollaborationPlugin;
 use connection::{ConnectionHub, ConnectionPlugin, RpcPlugin};
 #[cfg(feature = "testing")]

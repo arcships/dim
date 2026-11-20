@@ -52,9 +52,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionClientsHost` | process | Connection | data | `presences` async |
 | `sessionFiles` | process | SessionStore | data | `import` async, `owned_paths` async, `owns` async, `put` async, `read` async, `register` async |
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
-| `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
-| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
+| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `permission` async, `permissionDefaults` async, `stop` async, `withdraw` async |
 | `settings` | process | Settings | data | `declaredBy` sync, `projects` sync, `read` async, `register` async, `update` async |
 | `settingsService` | process | Settings | internal(owner-api) | — |
 | `skillsCatalog` | process | SkillsCatalog | data | `issues` async, `plugins` async, `register` async, `withdraw` async |

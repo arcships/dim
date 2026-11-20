@@ -31,10 +31,9 @@ pub struct SessionRef {
     pub branch_id: String,
 }
 
-/// Read-only policy access through the stable Agents directory.
-pub struct SessionPermissions(pub(crate) Ctx);
-#[rutis::service]
-impl SessionPermissions {
+/// The process Session directory.
+pub struct Sessions(pub(crate) Ctx);
+impl Sessions {
     /// Reads the branch's dispatched policy while holding its Session lease.
     pub async fn permission(
         &self,
@@ -787,16 +786,42 @@ impl AgentIndex {
 /// `sessions` by name for every language: each call decodes one request
 /// object, calls the current index and replies with one envelope,
 /// `{ok: true, value}` or `{ok: false, error: {code, message, retryable}}`.
-pub(crate) struct SessionsService(pub(crate) Ctx);
-impl HostDispatch for SessionsService {
+impl HostDispatch for Sessions {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async",
+            "delete": "async", "permission": "async", "permissionDefaults": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if matches!(method, "permission" | "permissionDefaults") {
+            let directory = Sessions(self.0.clone());
+            let defaults = method == "permissionDefaults";
+            return Ok(Value::future(async move {
+                let args = args.json()?;
+                let result = if defaults {
+                    match request(args) {
+                        Ok(request) => directory.permission_defaults(request).await.and_then(reply),
+                        Err(error) => Err(error),
+                    }
+                } else {
+                    match request(args) {
+                        Ok(request) => directory.permission(request).await.and_then(reply),
+                        Err(error) => Err(error),
+                    }
+                };
+                result.map(Value::from).map_err(|error| {
+                    let data = json!(error);
+                    rutis_bridge::exports::failure(
+                        "SessionsError",
+                        data["code"].as_str().expect("SessionsError code"),
+                        error.to_string(),
+                        Some(data.clone()),
+                    )
+                })
+            }));
+        }
         let row = (method == "input")
             .then(caller_row)
             .flatten()

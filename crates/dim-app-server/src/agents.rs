@@ -39,7 +39,7 @@ mod fork;
 pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 
 mod sessions;
-pub use sessions::{SessionPermissions, SessionRef, SessionsError};
+pub use sessions::{SessionRef, Sessions, SessionsError};
 
 pub(crate) enum CreateSessionError {
     Agent(AgentError),
@@ -365,11 +365,9 @@ impl Plugin for AgentDirectoryPlugin {
             default_agent_id: OnceLock::new(),
             server_instance_id: uuid::Uuid::new_v4().to_string(),
         }))?;
-        ctx.provide_at::<dyn HostDispatch>(
-            host_key("sessions"),
-            Arc::new(sessions::SessionsService(ctx.clone())),
-        )?;
-        ctx.provide_as::<SessionPermissions>(Arc::new(SessionPermissions(ctx.clone())))?;
+        let sessions = Arc::new(Sessions(ctx.clone()));
+        ctx.provide_as::<Sessions>(sessions.clone())?;
+        ctx.provide_at::<dyn HostDispatch>(host_key("sessions"), sessions)?;
         Ok(())
     }
 }
@@ -2368,7 +2366,7 @@ impl Plugin for AgentScopePlugin {
     async fn apply(&self, ctx: &Ctx, (directory, loader): Self::Deps) -> rutis::Result {
         let spec = &self.0;
         let slot = Arc::new(Mutex::new(None));
-        let sessions = ctx.plugin(Sessions(slot.clone()));
+        let sessions = ctx.plugin(SessionListeners(slot.clone()));
         (&sessions).await.map_err(|error| {
             rutis::Error::from(ErrorKind::PluginFailed(
                 format!("Session host failed: {error}").into(),
@@ -2405,8 +2403,8 @@ impl Plugin for AgentScopePlugin {
 /// Host of the listeners on one Agent's Sessions. A child of the Agent
 /// plugin registered before its settlement, it unloads after the Sessions
 /// closed.
-struct Sessions(Arc<Mutex<Option<Ctx>>>);
-impl Plugin for Sessions {
+struct SessionListeners(Arc<Mutex<Option<Ctx>>>);
+impl Plugin for SessionListeners {
     type Deps = ();
     fn name(&self) -> &str {
         "Sessions"

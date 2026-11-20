@@ -260,7 +260,7 @@ export type BranchEvent = Omit<AgentEvent, 'sequence' | 'data'> & {
  * `ctx.use<Services['name']>('name')`. */
 export type {
   AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
-  TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
+  TimelineIdentity, TreeCommands,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
@@ -273,12 +273,16 @@ export interface PendingRequest extends SessionRef { inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
 export interface StopRequest extends SessionRef { reason?: string | null }
 export interface SequenceReply { sequence: number }
-export type SessionsErrorCode = import('./branch-services.js').SessionsErrorThrown['code'];
+export interface PermissionState { version: number | bigint; policy: PermissionPolicy }
+export type SessionsErrorCode = 'rejected' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed';
+export type SessionsErrorThrown = import('./branch-services.js').RustError<'SessionsError', SessionsErrorCode, { code: SessionsErrorCode; message: string }>;
 export interface SessionsError { code: SessionsErrorCode; message: string; retryable: boolean }
 export type SessionsResult<T> = { ok: true; value: T } | { ok: false; error: SessionsError };
 
 /** Process service `sessions`; these methods are not terminal RPC methods. */
 export interface Sessions {
+  permission(request: SessionRef): Promise<PermissionState>;
+  permissionDefaults(request: {}): Promise<PermissionPolicy>;
   launch(request: LaunchRequest): Promise<SessionsResult<LaunchReply>>;
   input(request: InputWrite): Promise<SessionsResult<InputReceipt>>;
   lookup(request: LookupRequest): Promise<SessionsResult<LookupReply>>;

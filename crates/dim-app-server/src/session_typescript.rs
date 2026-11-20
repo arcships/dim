@@ -740,7 +740,7 @@ mod tests {
             assert!(builder.catalog().is_shared(&name), "{name}");
         }
         for name in [
-            name_of::<crate::agents::SessionPermissions>(),
+            name_of::<crate::agents::Sessions>(),
             name_of::<crate::settings::WorkflowFiles>(),
         ] {
             assert!(builder.catalog().is_shared(&name), "{name}");

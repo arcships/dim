@@ -3511,7 +3511,7 @@
         "removing": false
       },
       {
-        "service": "dim_app_server::agents::sessions::SessionPermissions",
+        "service": "dim_app_server::agents::sessions::Sessions",
         "provider": 38,
         "generation": 1,
         "removing": false
@@ -3891,12 +3891,6 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#sessionMetadata",
         "provider": 8,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#sessionPermissions",
-        "provider": 38,
         "generation": 1,
         "removing": false
       },
