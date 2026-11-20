@@ -11,8 +11,9 @@ export default definePlugin({
     await ctx.use<ManagementMethods>('managementMethods').register(
       'worktreefixture',
       [{ name: 'worktreefixture.exercise', mutating: true, interruption: 'drain', progress: false }],
-      async (call: { params: { source: string } }) => {
-        const created = await owner.create({ source: call.params.source, branch: 'wire-worktree' })
+      async ({ params }) => {
+        assert.ok(params && typeof params === 'object' && 'source' in params && typeof params.source === 'string')
+        const created = await owner.create({ source: params.source, branch: 'wire-worktree' })
         const listed = await owner.list({})
         const selected = await owner.pruneSelection({ keep: 0, force: false })
         assert.deepEqual(listed.map(row => row.taskId), [created.taskId])
