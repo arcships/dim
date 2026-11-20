@@ -25,6 +25,12 @@ const FORMAT_VERSION: u32 = 1;
 /// room, and bounds one allocation. Streaming operations have no such limit.
 pub const MAX_WHOLE_FILE_BYTES: usize = 8 * 1024 * 1024;
 
+/// The serialized text record may use this much of the runtime's 16 MiB frame;
+/// the rest is the call envelope. rutis 0.23 chunks a frame over the transport
+/// limit, so the plugin runtime no longer refuses this call before it arrives:
+/// this boundary keeps the published refusal and leaves the file unchanged.
+const TEXT_REPLACE_FRAME_BYTES: usize = crate::outbound::MAX_FRAME_BYTES - 64 * 1024;
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct StoredFile {
@@ -445,18 +451,23 @@ fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTra
                                         Err(error) => Err(error),
                                     }
                                 }
-                                ("replace", LeaseArgument::Text(text)) => lease
-                                    .replace(
-                                        serde_json::to_vec(&StoredFile {
-                                            version: FORMAT_VERSION,
-                                            text,
-                                        })
-                                        .expect("text records contain only serializable fields"),
-                                        private_permissions(),
-                                        &cancel,
-                                    )
-                                    .await
-                                    .map(|_| json!(null).into()),
+                                ("replace", LeaseArgument::Text(text)) => {
+                                    let bytes = serde_json::to_vec(&StoredFile {
+                                        version: FORMAT_VERSION,
+                                        text,
+                                    })
+                                    .expect("text records contain only serializable fields");
+                                    if bytes.len() > TEXT_REPLACE_FRAME_BYTES {
+                                        return Err(Error::value(format!(
+                                            "text replace is {} bytes, over the plugin runtime's 16 MiB frame",
+                                            bytes.len()
+                                        )));
+                                    }
+                                    lease
+                                        .replace(bytes, private_permissions(), &cancel)
+                                        .await
+                                        .map(|_| json!(null).into())
+                                }
                                 ("replaceBytes", LeaseArgument::Bytes(bytes))
                                     if bytes.len() <= MAX_WHOLE_FILE_BYTES =>
                                 {

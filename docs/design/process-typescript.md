@@ -459,10 +459,10 @@ untouched, and a binary read of a text file returns its envelope bytes. The byte
 operations are whole-buffer and capped at 8 MiB, below the 12 MiB raw ceiling
 the base64-encoded runtime frame implies.
 A buffer large enough that its call message would exceed the runtime's 16 MiB
-frame is refused by the plugin's own runtime before it is sent, failing only
-that call with a `RangeError` coded `bad-value` while the row and the file
-store stay up, and the same holds for any call argument, a large text
-`replace` included.
+frame is refused before the file changes, failing only that call with `bad-value`
+while the row and the file store stay up. Since rutis 0.23 chunks a larger frame,
+the `pluginFiles` boundary now makes this refusal for a text `replace`; a rejected
+write leaves the previous contents intact.
 `scope.directory(name)` creates missing parents and returns the node-local work path.
 `scope.openRead(name)` returns a pinned reader ID and size, or null for a missing file.
 Use `fsHost.readAt` to read. The reader remains valid across `scope.close()` until
