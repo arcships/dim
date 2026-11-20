@@ -302,6 +302,30 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     assert_eq!(reply["stderr"], "dGU=");
     assert_eq!(reply["stdoutTruncated"], false);
     assert_eq!(reply["stderrTruncated"], true);
+    let invoke = async |method: &str, request: serde_json::Value| {
+        let value = face.invoke(method, serde_json::json!([request]).into())?;
+        rutis_bridge::session::settle(value).await?.json()
+    };
+    let start = serde_json::json!({"taskId":"short-command", "command":"printf retained", "cwd":home,
+        "workspace":home, "roots":[], "outputDir":home.join("command-output/session")});
+    let output = invoke("start", start.clone()).await.unwrap();
+    let task = serde_json::json!({"taskId":"short-command"});
+    let terminal = invoke("wait", task.clone()).await.unwrap();
+    assert_eq!(terminal["status"], "exited");
+    assert_eq!(terminal["preview"], "retained");
+    assert_eq!(terminal["outputBytes"], 8);
+    assert_eq!(terminal["outputPath"], output["outputPath"]);
+    assert!(!std::path::Path::new(output["outputPath"].as_str().unwrap()).exists());
+    assert!(invoke("start", start).await.is_err());
+    assert_eq!(invoke("retainOutput", task.clone()).await.unwrap(), output);
+    assert_eq!(
+        std::fs::read(output["outputPath"].as_str().unwrap()).unwrap(),
+        b"retained"
+    );
+    invoke("kill", task.clone()).await.unwrap();
+    assert_eq!(invoke("wait", task.clone()).await.unwrap(), terminal);
+    invoke("settle", task.clone()).await.unwrap();
+    assert!(invoke("wait", task).await.is_err());
     let output_root = platform.exec_root();
     let branch_output = output_root.join("session/branch");
     std::fs::create_dir_all(&branch_output).unwrap();

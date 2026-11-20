@@ -114,6 +114,28 @@ struct TaskRequest {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartCommand {
+    task_id: String,
+    command: String,
+    cwd: PathBuf,
+    workspace: PathBuf,
+    roots: Vec<PathBuf>,
+    output_dir: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct WaitCommand {
+    task_id: String,
+    timeout_ms: Option<u64>,
+}
+
+fn exec_error(code: &str, message: impl Into<String>) -> rutis_bridge::session::Error {
+    rutis_bridge::exports::failure("ExecHostError", code, message.into(), None)
+}
+
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RemoveOutputDirectory {
     path: PathBuf,
@@ -248,12 +270,100 @@ impl Dispatch {
 impl HostDispatch for Dispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
+            "start":"async", "wait":"async", "kill":"async", "settle":"async",
             "info":"async", "confined":"async", "configured":"async",
             "removeOutputDirectory":"async", "retainOutput":"async", "tail":"async"
         }))
     }
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if method == "start" {
+            let request: StartCommand = port_faces::request("execHost", args)?;
+            let owner = self.owner.clone();
+            return Ok(Value::cancellable_future(async move {
+                let StartCommand {
+                    task_id,
+                    command,
+                    cwd,
+                    workspace,
+                    mut roots,
+                    output_dir,
+                } = request;
+                if task_id.is_empty()
+                    || task_id.contains(['/', '\\', '\0', ':'])
+                    || matches!(task_id.as_str(), "." | "..")
+                {
+                    return Err(exec_error(
+                        "invalid",
+                        "taskId must be a single filename component",
+                    ));
+                }
+                if !cwd.is_absolute()
+                    || !workspace.is_absolute()
+                    || !output_dir.is_absolute()
+                    || roots.iter().any(|root| !root.is_absolute())
+                {
+                    return Err(exec_error("invalid", "execution paths must be absolute"));
+                }
+                if !tokio::fs::metadata(&cwd)
+                    .await
+                    .is_ok_and(|metadata| metadata.is_dir())
+                {
+                    return Err(exec_error("cwd_not_found", "Working directory not found"));
+                }
+                if !roots.contains(&workspace) {
+                    roots.push(workspace);
+                }
+                let (spec, _) = owner
+                    .build_process_spec(&command, &cwd)
+                    .await
+                    .map_err(|e| exec_error(e.code, e.reason))?;
+                let process = owner
+                    .start_command(&task_id, spec, &roots, &output_dir, None)
+                    .await
+                    .map_err(|e| exec_error(e.code, e.reason))?;
+                rutis_bridge::session::arg(
+                    &serde_json::json!({"outputPath": process.retain_task()}),
+                )
+            }));
+        }
+        if method == "wait" {
+            let WaitCommand {
+                task_id,
+                timeout_ms,
+            } = port_faces::request("execHost", args)?;
+            let task = self
+                .owner
+                .command(&task_id)
+                .map_err(|e| exec_error("task_unknown", e.to_string()))?;
+            return Ok(Value::cancellable_future(async move {
+                rutis_bridge::session::arg(&task.wait(timeout_ms).await)
+            }));
+        }
+        if matches!(method, "kill" | "settle") {
+            let TaskRequest { task_id } = port_faces::request("execHost", args)?;
+            let owner = self.owner.clone();
+            let task = owner
+                .command(&task_id)
+                .map_err(|e| exec_error("task_unknown", e.to_string()))?;
+            let kill = method == "kill";
+            return Ok(Value::future(async move {
+                if kill {
+                    task.terminate()
+                        .await
+                        .map_err(|e| exec_error("failed", e.to_string()))?;
+                } else {
+                    if !task.ended() {
+                        return Err(exec_error(
+                            "task_running",
+                            "Cannot settle a running command",
+                        ));
+                    }
+                    owner.settle_command(&task_id, &task);
+                }
+                rutis_bridge::session::arg(&Empty {})
+            }));
+        }
         if matches!(method, "retainOutput" | "tail") {
             let TaskRequest { task_id } = port_faces::request("execHost", args)?;
             let owner = self.owner.clone();

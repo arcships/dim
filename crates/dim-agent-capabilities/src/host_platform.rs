@@ -245,11 +245,13 @@ pub struct HostPlatform {
     /// The fixed system roots, captured when the platform mounts. The sandbox
     /// and file-access facts read this one list.
     pub platform_roots: Vec<PathBuf>,
-    pub(crate) captures: Arc<
+    pub(crate) commands: Arc<
         std::sync::Mutex<
-            std::collections::HashMap<String, Arc<crate::workspace_tools::exec::Output>>,
+            std::collections::HashMap<String, Arc<crate::workspace_tools::exec::CommandTask>>,
         >,
     >,
+    pub(crate) command_shutdown: CancellationToken,
+    pub(crate) command_workers: tokio_util::task::TaskTracker,
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
     pub(crate) execution: Option<Arc<ExecutionSettingsHost>>,
@@ -306,6 +308,7 @@ pub enum SandboxBackend {
 
 /// What a consumer keeps for a process that
 /// [`HostPlatform::prepare_isolated_process`] sandboxed.
+#[derive(Clone, Copy)]
 pub(crate) struct Isolation;
 
 impl Isolation {
@@ -374,7 +377,9 @@ impl HostPlatform {
             timezone: iana_time_zone::get_timezone().ok(),
             env,
             platform_roots: platform_roots(),
-            captures: Arc::default(),
+            commands: Arc::default(),
+            command_shutdown: CancellationToken::new(),
+            command_workers: tokio_util::task::TaskTracker::new(),
             shell: Arc::new(Mutex::new(ResolvedShell {
                 config: Ok(None),
                 status: shell,
@@ -1092,9 +1097,17 @@ impl DynPlugin for HostPlatformPlugin {
                 stopping: ctx.cancellation_token(),
                 calls: calls.clone(),
             };
+            let owner = platform.clone();
             ctx.effect(move || async move {
+                {
+                    let _admission = owner.commands.lock().unwrap();
+                    owner.command_shutdown.cancel();
+                }
                 calls.close();
                 calls.wait().await;
+                owner.command_workers.close();
+                owner.command_workers.wait().await;
+                owner.commands.lock().unwrap().clear();
                 Ok(())
             })?;
             ctx.provide_at(

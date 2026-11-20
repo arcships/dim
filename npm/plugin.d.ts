@@ -743,6 +743,14 @@ export interface TimelineStore {
 
 /** Host facts of the node that executes commands. */
 export interface ExecHost {
+  start(request: {taskId: string; command: string; cwd: string; workspace: string; roots: string[]; outputDir: string}): Promise<{outputPath: string}>;
+  wait(request: {taskId: string; timeoutMs?: number}): Promise<{
+    status: 'exited' | 'signaled' | 'timed_out' | 'cancelled' | 'failed';
+    exitCode?: number; signal?: string; durationMs: number; outputPath: string;
+    outputBytes: number; outputTruncated: boolean; preview: string; previewTruncated: boolean; failureNote?: string;
+  }>;
+  kill(request: {taskId: string}): Promise<Record<string, never>>;
+  settle(request: {taskId: string}): Promise<Record<string, never>>;
   retainOutput(request: {taskId: string}): Promise<{outputPath: string}>;
   tail(request: {taskId: string}): Promise<{text: string; totalBytes: number; truncated: boolean}>;
   configured(request: {
