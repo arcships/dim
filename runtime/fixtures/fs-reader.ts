@@ -21,7 +21,9 @@ export default definePlugin({
           const { path } = call.params
           const created = await files.write({ path, content: 'before' })
           assert.ok(created.binding)
-          const edited = await files.edit({ path, oldText: 'before', newText: 'after', binding: created.binding })
+          const read = await files.read({ path, offset: 1, limit: 1 })
+          assert.deepEqual(read.binding, created.binding)
+          const edited = await files.edit({ path, oldText: 'before', newText: 'after', binding: read.binding })
           assert.ok(edited.binding)
           const stale = await files.write({ path, content: 'stale', binding: created.binding })
           return { kind: 'value', value: { revision: edited.binding.rawRevision, stale: stale.result.structuredContent?.code } }

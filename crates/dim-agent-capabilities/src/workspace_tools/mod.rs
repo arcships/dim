@@ -387,17 +387,19 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 .as_ref()
                 .map_or(platform.home.clone(), |boundary| boundary.home.clone());
             let mentions = ctx.require_at(&self.mentions)?;
+            let mut files = FileTools::with_coordinator(
+                cwd.clone(),
+                home,
+                output_dir.clone(),
+                mentions.writes.clone(),
+                self.config.boundary.clone(),
+            );
+            files.fs = Some(mentions.clone());
             let tools = Arc::new(WorkspaceTools {
                 fs_host: mentions.clone(),
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
-                files: FileTools::with_coordinator(
-                    cwd.clone(),
-                    home,
-                    output_dir.clone(),
-                    mentions.writes.clone(),
-                    self.config.boundary.clone(),
-                ),
+                files,
                 output_dir,
                 owner: ctx.get::<SessionFiles>(),
                 session_id: identity.session_id.clone(),

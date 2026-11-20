@@ -507,6 +507,7 @@ impl FileStorage {
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
 enum Request {
     Resolve(crate::file_access::ResolvePath),
+    Read(dim_agent_types::JsonObject),
     Write(WorkspaceWrite),
     Edit(dim_agent_types::JsonObject),
     Glob(dim_agent_types::JsonObject),
@@ -584,7 +585,7 @@ struct Close {
 impl HostDispatch for FsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"resolve":"async","write":"async","edit":"async","glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
+            serde_json::json!({"resolve":"async","read":"async","write":"async","edit":"async","glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
         )
     }
 
@@ -621,6 +622,38 @@ impl HostDispatch for FsHost {
                             )
                         })?;
                     serde_json::json!(resolved)
+                }
+                Request::Read(input) => {
+                    let path = input
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(Path::new)
+                        .filter(|path| path.is_absolute())
+                        .ok_or_else(|| {
+                            failure(FileStorageError::InvalidPath(
+                                "expected an absolute file path",
+                            ))
+                        })?;
+                    let (result, binding) = owner
+                        .workspace_read(&input, path, path, None, &cancel)
+                        .await
+                        .map_err(|error| {
+                            let code = match &error {
+                                crate::host::HostError::Cancelled(_) => "cancelled",
+                                _ => "io",
+                            };
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    let mut reply = serde_json::json!({"result":result});
+                    if let Some((_, binding)) = binding {
+                        reply["binding"] = serde_json::json!(binding);
+                    }
+                    reply
                 }
                 request @ (Request::Write(_) | Request::Edit(_)) => {
                     let mutation = match request {

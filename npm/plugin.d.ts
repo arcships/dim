@@ -752,10 +752,11 @@ export type TextFileBinding = {
   eol: 'none' | 'lf' | 'crlf' | 'mixed';
 };
 type FsReplacement = {oldText: string; newText: string; replaceAll?: boolean};
-type FsMutationReply = {result: ToolResult; binding?: TextFileBinding};
+type FsTextResult = {result: ToolResult; binding?: TextFileBinding};
 export interface FsHost {
-  write(request: {path: string; content: string; binding?: TextFileBinding}): Promise<FsMutationReply>;
-  edit(request: {path: string; binding?: TextFileBinding} & (FsReplacement | {edits: FsReplacement[]})): Promise<FsMutationReply>;
+  read(request: {path: string; offset?: number; limit?: number; encoding?: string}): Promise<FsTextResult>;
+  write(request: {path: string; content: string; binding?: TextFileBinding}): Promise<FsTextResult>;
+  edit(request: {path: string; binding?: TextFileBinding} & (FsReplacement | {edits: FsReplacement[]})): Promise<FsTextResult>;
   resolve(request: {path: string; cwd: string; workspace: string; roots?: FsConfirmedRoot[]; recognize?: boolean}): Promise<{
     path: string; workspace: boolean; system: boolean; roots: {root: string; contains: boolean; valid: boolean}[];
     worktree?: FsConfirmedRoot & {repository: string}; discoveryError?: string;

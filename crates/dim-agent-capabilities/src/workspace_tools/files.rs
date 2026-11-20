@@ -137,6 +137,7 @@ impl crate::file_storage::FsHost {
 /// branch and are passed per call. Product Sessions share a process-owned
 /// coordinator; standalone callers may use an isolated coordinator.
 pub struct FileTools {
+    pub(super) fs: Option<Arc<crate::file_storage::FsHost>>,
     cwd: PathBuf,
     home: PathBuf,
     /// Session output directory; large `read` results are written here.
@@ -193,6 +194,7 @@ impl FileTools {
         boundary: Option<FileToolBoundary>,
     ) -> Self {
         Self {
+            fs: None,
             cwd,
             home,
             output_dir,
