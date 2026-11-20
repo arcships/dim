@@ -241,6 +241,13 @@ where applicable, and elapsed time. Truncate the title and then the Agent name
 to fit a narrow terminal, preserving the elapsed time when it fits. Running
 rows use an activity mark; terminal rows retain their actual outcome mark for
 five seconds and then disappear. With no visible task there is no task strip.
+The strip stays drawn while a tasks prompt is open (the `/tasks` list, a command
+or workflow detail, or a detail opened from a row or card), in both modes, so
+the other tasks and their elapsed times stay in view. Every other prompt
+(approval, question, pickers, settings) hides the strip while it is open. The
+fullscreen member conversation replaces the transcript and composer, as the
+[member conversation contract](member-conversation.md) describes, and draws no
+strip.
 
 Render every visible task as its own row, without a fixed row cap or a
 hidden-task count replacing task rows. The existing terminal viewport still
@@ -250,14 +257,20 @@ shows, subject to the earlier shell/queue actions in
 [CLI run keys](cli-commands.md#run-keys-and-queue).
 
 In fullscreen mode, clicking a task row opens that task's existing detail
-directly; Esc returns to the composer with its draft preserved. Command rows
+directly; Esc returns to the composer with its draft preserved, and the
+detail box's hint reads `Esc close`. A detail opened from the `/tasks` list
+keeps `Esc back`, which returns to the list. Command rows
 open command output, and member rows use the existing
 [member conversation contract](member-conversation.md). A click requires press
 and release on the same cell with the same task identity still at that row.
 Dragging, resizing or replacing the task at that row cancels the click;
 resize cancellation is immediate even while transcript reflow is debounced.
 Elapsed-time updates do not cancel a click. Rows clipped out of the viewport
-are not clickable, and an open prompt or overlay blocks task-row clicks.
+are not clickable. An open prompt or overlay blocks task-row clicks, except
+a tasks prompt: there a row click replaces the open list or detail with the
+clicked task's detail, and the live-output watch moves to that task. The
+fullscreen tasks box is sized to leave the strip visible below it; on a
+terminal too short for both, rows the box covers are not clickable.
 Scrollback mode retains its keyboard-only entry points.
 
 ```text
@@ -272,6 +285,22 @@ Scrollback mode retains its keyboard-only entry points.
   ╰────────────────────────────────────────────────────────────╯
 
   Fullscreen: task row --click--> task detail --Esc--> kept draft
+                                   |   ^
+                                   +---+ click another task row
+```
+
+```text
+Fullscreen, a detail opened from a row
+        ╭─ Ticker A ───────────────────────────────────────╮
+        │ Tail preview - last 2,000 lines / 50 KiB         │
+        │ for i in $(seq 1 60); do echo tick-a-$i; ...     │
+        │ tick-a-7                                         │
+        ╰───────────────────── x stop command · Esc close ─╯
+  ◐ Ticker A                                             7s   <- still drawn
+  ◐ Ticker B                                             7s   <- click: switch the detail
+  ╭────────────────────────────────────────────────────────────╮
+  │ keep this draft                                            │
+  ╰─ 2 in background · /tasks ─────────────────────────────────╯
 ```
 
 ```text
