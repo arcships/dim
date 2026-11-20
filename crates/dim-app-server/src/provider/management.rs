@@ -414,7 +414,7 @@ pub(super) fn provide(
     Ok(())
 }
 
-fn error(error: impl Into<super::ProviderError>) -> RpcError {
+pub(crate) fn error(error: impl Into<super::ProviderError>) -> RpcError {
     use super::ProviderError;
     let error = error.into();
     let kind = match &error {

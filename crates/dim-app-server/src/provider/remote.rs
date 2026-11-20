@@ -194,30 +194,11 @@ impl ProviderService {
                 validate_static_record(&provider_id, &mut record)?;
                 owner.check(&cancel)?;
                 let bundled = owner.bundled.clone();
-                owner
+                let record = owner
                     .db
-                    .run(move |db| {
-                        Ok((|| -> Result<_, ProviderError> {
-                            let tx = db.transaction()?;
-                            let current = read_stored_static(&tx, &provider_id)?
-                                .map(serde_json::to_value)
-                                .transpose()?;
-                            if current.as_ref() != Some(&expected) {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version or admitted configuration changed".into(),
-                                ));
-                            }
-                            persistence::write(
-                                &tx,
-                                &provider_id,
-                                record.version,
-                                &serde_json::to_string(&record)?,
-                            )?;
-                            tx.commit()?;
-                            Ok(static_catalog(&bundled, &provider_id, &record, true))
-                        })())
-                    })
-                    .await?
+                    .replace_record(provider_id.clone(), expected, record)
+                    .await?;
+                Ok(static_catalog(&bundled, &provider_id, &record, true))
             })
         })
         .await

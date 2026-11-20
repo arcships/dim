@@ -30,6 +30,7 @@ pub use legacy::{
     legacy_omitted_fields, read_legacy_source,
 };
 pub use models::PreferencesPatch;
+pub(crate) use models::{ModelAccount, validate_model_edit};
 use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
 pub use startup::{StartupInput, StartupSelection};
@@ -399,6 +400,72 @@ impl SqliteStorage {
             persistence::ordered_models(&tx, &bundled, &provider, after.as_ref(), limit)
         })
         .await
+    }
+    pub(crate) async fn refresh_managed(
+        self: &Arc<Self>,
+        provider_id: String,
+        expected_version: Option<u32>,
+        catalog: crate::managed_provider::ManagedCatalog,
+    ) -> Result<ProviderRecord, ProviderError> {
+        self.run(move |connection| {
+            Ok((|| -> Result<_, ProviderError> {
+                let tx = connection.transaction()?;
+                let old = read_catalog(&tx, &provider_id)?;
+                if old.as_ref().map(|record| record.version) != expected_version {
+                    return Err(ProviderError::Conflict("Provider version changed".into()));
+                }
+                let version = old
+                    .as_ref()
+                    .map_or(0, |record| record.version)
+                    .checked_add(1)
+                    .ok_or(ProviderError::Failed)?;
+                let old = old.filter(|record| same_account(&record.account, &catalog.account));
+                let (
+                    disabled_model_ids,
+                    model_config_overrides,
+                    model_preferences,
+                    glued_prefix,
+                    model_aliases,
+                ) = old.map_or_else(
+                    || {
+                        (
+                            Vec::new(),
+                            Vec::new(),
+                            BTreeMap::new(),
+                            None,
+                            BTreeMap::new(),
+                        )
+                    },
+                    |record| {
+                        (
+                            record.disabled_model_ids,
+                            record.model_config_overrides,
+                            record.model_preferences,
+                            // A refresh rewrites the account's
+                            // listings, not the user's own
+                            // statements about their ids.
+                            record.glued_prefix,
+                            record.model_aliases,
+                        )
+                    },
+                );
+                let record = ProviderRecord {
+                    kind: ManagedRecordKind::Managed,
+                    account: catalog.account,
+                    models: catalog.models,
+                    disabled_model_ids,
+                    model_config_overrides,
+                    model_preferences,
+                    glued_prefix,
+                    model_aliases,
+                    version,
+                };
+                save_catalog(&tx, &provider_id, &record)?;
+                tx.commit()?;
+                Ok(record)
+            })())
+        })
+        .await?
     }
     pub(crate) async fn list_providers(
         self: &Arc<Self>,
@@ -972,7 +1039,7 @@ pub fn parse_static(
     Ok(record)
 }
 
-fn validate_static_record(
+pub(crate) fn validate_static_record(
     provider_id: &str,
     record: &mut StaticProviderRecord,
 ) -> Result<(), HostError> {
@@ -1559,7 +1626,7 @@ fn failure(error: impl std::fmt::Display) -> HostError {
 fn storage(error: impl std::fmt::Display) -> AgentError {
     AgentError::Storage(error.to_string())
 }
-fn same_account(a: &AccountSnapshot, b: &AccountSnapshot) -> bool {
+pub(crate) fn same_account(a: &AccountSnapshot, b: &AccountSnapshot) -> bool {
     a.credential_epoch == b.credential_epoch && a.generation == b.generation
 }
 fn read_model_record(
@@ -2155,50 +2222,8 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.run(move |connection| {
-                    Ok((|| -> Result<_, ProviderError> {
-                        let tx = connection.transaction()?;
-                        let mut record = persistence::static_read(
-                            &tx,
-                            &provider_id,
-                            persistence::Models::Header,
-                        )?
-                        .ok_or(ProviderError::NotFound)?;
-                        if record.version != expected_version {
-                            return Err(ProviderError::Conflict("Provider version changed".into()));
-                        }
-                        if record.kind == StaticRecordKind::Builtin {
-                            record.enabled = false;
-                            record.version =
-                                record.version.checked_add(1).ok_or(ProviderError::Failed)?;
-                            let first_configuration = persistence::write_header(
-                                &tx,
-                                &provider_id,
-                                record.version,
-                                &serde_json::to_string(&record)?,
-                            )?;
-                            if first_configuration {
-                                persistence::admit_base(&tx, &provider_id, &record, &bundled)?;
-                            }
-                        } else {
-                            tx.execute(
-                                "DELETE FROM provider_selections WHERE provider_id=?1",
-                                [&provider_id],
-                            )?;
-                            tx.execute(
-                                "DELETE FROM provider_bundle WHERE provider_id=?1",
-                                [&provider_id],
-                            )?;
-                            tx.execute(
-                                "DELETE FROM providers WHERE provider_id=?1",
-                                [&provider_id],
-                            )?;
-                        }
-                        tx.commit()?;
-                        Ok(())
-                    })())
-                })
-                .await?
+                db.delete_record(provider_id, expected_version, bundled)
+                    .await
             })
         })
         .await
@@ -2310,68 +2335,9 @@ impl ProviderService {
         let result = self
             .owned(cancel, move |_| {
                 Box::pin(async move {
-                    db.run(move |connection| {
-                        Ok((|| -> Result<_, ProviderError> {
-                            let tx = connection.transaction()?;
-                            let old = read_catalog(&tx, &provider_id)?;
-                            if old.as_ref().map(|record| record.version) != expected_version {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version changed".into(),
-                                ));
-                            }
-                            let version = old
-                                .as_ref()
-                                .map_or(0, |record| record.version)
-                                .checked_add(1)
-                                .ok_or(ProviderError::Failed)?;
-                            let old = old
-                                .filter(|record| same_account(&record.account, &catalog.account));
-                            let (
-                                disabled_model_ids,
-                                model_config_overrides,
-                                model_preferences,
-                                glued_prefix,
-                                model_aliases,
-                            ) = old.map_or_else(
-                                || {
-                                    (
-                                        Vec::new(),
-                                        Vec::new(),
-                                        BTreeMap::new(),
-                                        None,
-                                        BTreeMap::new(),
-                                    )
-                                },
-                                |record| {
-                                    (
-                                        record.disabled_model_ids,
-                                        record.model_config_overrides,
-                                        record.model_preferences,
-                                        // A refresh rewrites the account's
-                                        // listings, not the user's own
-                                        // statements about their ids.
-                                        record.glued_prefix,
-                                        record.model_aliases,
-                                    )
-                                },
-                            );
-                            let record = ProviderRecord {
-                                kind: ManagedRecordKind::Managed,
-                                account: catalog.account,
-                                models: catalog.models,
-                                disabled_model_ids,
-                                model_config_overrides,
-                                model_preferences,
-                                glued_prefix,
-                                model_aliases,
-                                version,
-                            };
-                            save_catalog(&tx, &provider_id, &record)?;
-                            tx.commit()?;
-                            Ok(record.catalog(&bundled))
-                        })())
-                    })
-                    .await?
+                    db.refresh_managed(provider_id, expected_version, catalog)
+                        .await
+                        .map(|record| record.catalog(&bundled))
                 })
             })
             .await?;

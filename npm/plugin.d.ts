@@ -666,6 +666,22 @@ export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "se
     next: StoredModelId | null;
     empty: { providerId: string; providerName: string; reason: { kind: 'no_models'; listable: boolean } | { kind: 'unreadable' } }[];
   }>;
+  commitEdit(request: { providerId: string; edit:
+    | { kind: 'create'; record: PersistedProviderRecord & {kind:'builtin'|'custom'} }
+    | { kind: 'replaceConnection' | 'refreshStatic'; expected: PersistedProviderRecord; record: PersistedProviderRecord & {kind:'builtin'|'custom'} }
+    | { kind: 'patchHeader'; expectedVersion: number; patch: JsonObject; reply: 'full' | 'summary' }
+    | { kind: 'preferences'; expectedVersion: number; modelId: string; patch: JsonObject; account?: ProviderPageAccounts['accounts'][string] }
+    | { kind: 'createModel'; expectedVersion: number; model: JsonObject }
+    | { kind: 'deleteModel'; expectedVersion: number; modelId: string }
+    | { kind: 'refreshManaged'; expectedVersion: number | null; catalog: { account: ProviderPageAccounts['accounts'][string]; models: JsonObject[] }; current: ProviderPageAccounts['accounts'][string] }
+  }): Promise<PersistedProviderRecord>;
+  commitEdit(request: { providerId: string; edit: { kind: 'delete'; expectedVersion: number } }): Promise<{}>;
+  commitEdit(request: { providerId: string; edit: { kind: 'enableModel'; expectedVersion: number; modelId: string; enabled: boolean; state: { available: boolean; account?: ProviderPageAccounts['accounts'][string] } } }): Promise<number>;
+  commitEdit(request: { providerId: string; edit: { kind: 'editModel'; expectedVersion: number; modelId: string; edit: JsonObject | null; state: { available: boolean; account?: ProviderPageAccounts['accounts'][string] } } | { kind: 'enableModels'; expectedVersion: number; modelIds: string[]; state: { available: boolean; account?: ProviderPageAccounts['accounts'][string] } } }): Promise<import('./client-protocol.js').ProviderCatalog>;
+  managementPage(request: { page: { providerId?: string; after?: string; limit?: number; accountsOnly?: boolean; query?: string }; accounts: Record<string,string> }): Promise<{
+    records: [string, { Ok: PersistedProviderRecord } | { Err: { code: number; message: string; data: JsonObject } } | null][];
+    next: string | null;
+  }>;
   activateSource(request: { revision: string; baseFacts: number[] }): Promise<{}>;
   listProviders(request: {}): Promise<{ providers: import('./client-protocol.js').ProviderSummary[]; errors: { providerId: string; message: string }[] }>;
   importLegacy(request: { batch: { schema: string; providers: LegacyProviderRow[]; selections: LegacyProviderRow[] } }): Promise<{ items: { kind: 'provider' | 'selection'; id: string; status: 'imported' | 'already_imported' | 'rejected'; reason: string | null; omitted?: string[] }[] }>;

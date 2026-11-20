@@ -46,6 +46,20 @@ export default definePlugin({
           assert.ok(summary?.credentialConfigured)
           assert.ok(!JSON.stringify(summary).includes('fixture-inline'))
           assert.deepEqual(await sqlite.importLegacy({ batch: { schema: 'fixture', providers: [], selections: [] } }), { items: [] })
+          assert.ok(full.kind === 'custom')
+          const duplicate = await sqlite.readRecord({ providerId, projection: { kind: 'all' } })
+          assert.deepEqual(duplicate, full)
+          const copyId = '018ec73f-0000-7000-8000-000000000090'
+          const original = await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'create', record: full } })
+          assert.deepEqual(original, full)
+          await assert.rejects(() => sqlite.commitEdit({ providerId: copyId, edit: { kind: 'create', record: full } }),
+            (error: any) => error.code === 'provider_conflict')
+          const changed = { ...full, displayName: 'Changed', version: full.version + 1 }
+          assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'replaceConnection', expected: full, record: changed } }), changed)
+          await assert.rejects(() => sqlite.commitEdit({ providerId: copyId, edit: { kind: 'refreshStatic', expected: full, record: changed } }),
+            (error: any) => error.code === 'provider_conflict')
+          assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'delete', expectedVersion: changed.version } }), {})
+          assert.equal(await sqlite.readRecord({ providerId: copyId, projection: { kind: 'header' } }), null)
           return { kind: 'value', value: { version: header.version } }
         }
         if (call.method === 'storefixture.timeline_directory') {

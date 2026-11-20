@@ -413,35 +413,7 @@ impl ProviderService {
         let db = self.db.clone();
         let record = self
             .owned(cancel, move |_| {
-                Box::pin(async move {
-                    db.run(move |connection| {
-                        Ok((|| -> Result<_, ProviderError> {
-                            let tx = connection.transaction()?;
-                            if tx
-                                .query_row(
-                                    "SELECT 1 FROM providers WHERE provider_id=?1",
-                                    [&id],
-                                    |_| Ok(()),
-                                )
-                                .optional()?
-                                .is_some()
-                            {
-                                return Err(ProviderError::Conflict(
-                                    "Provider ID already exists".into(),
-                                ));
-                            }
-                            persistence::write(
-                                &tx,
-                                &id,
-                                record.version,
-                                &serde_json::to_string(&record)?,
-                            )?;
-                            tx.commit()?;
-                            Ok(record)
-                        })())
-                    })
-                    .await?
-                })
+                Box::pin(async move { db.create_record(id, record).await })
             })
             .await?;
         self.static_management(provider_id, record, cancel).await
@@ -493,11 +465,11 @@ impl ProviderService {
         let header = self
             .owned(cancel, move |_| {
                 Box::pin(async move {
-                    db.run_read(move |c| {
-                        persistence::static_read(c, &id, persistence::Models::Header)
-                    })
-                    .await
-                    .map_err(ProviderError::from)
+                    db.read_record(id, persistence::Models::Header)
+                        .await?
+                        .map(PersistedProviderRecord::into_static)
+                        .transpose()
+                        .map_err(ProviderError::from)
                 })
             })
             .await?
@@ -529,53 +501,8 @@ impl ProviderService {
             let record = self
                 .owned(cancel, move |cancel| {
                     Box::pin(async move {
-                        db.run(move |connection| {
-                            Ok((|| -> Result<_, ProviderError> {
-                                let tx = connection.transaction()?;
-                                let mut record = persistence::static_read(
-                                    &tx,
-                                    &id,
-                                    persistence::Models::Header,
-                                )?
-                                .ok_or(ProviderError::NotFound)?;
-                                if record.version != expected_version {
-                                    return Err(ProviderError::Conflict(
-                                        "Provider version changed; reread before retrying".into(),
-                                    ));
-                                }
-                                patch.apply(&mut record)?;
-                                if record.enabled
-                                    && record.credential_authority == CredentialAuthority::Static
-                                    && record.auth != StaticAuth::Anonymous
-                                    && record.credential.is_none()
-                                {
-                                    return Err(ProviderError::AuthRequired);
-                                }
-                                record.version =
-                                    record.version.checked_add(1).ok_or(ProviderError::Failed)?;
-                                validate_static_record(&id, &mut record)
-                                    .map_err(|e| ProviderError::InvalidConfig(e.to_string()))?;
-                                if cancel.is_cancelled() {
-                                    return Err(ProviderError::Cancelled);
-                                }
-                                let first_configuration = persistence::write_header(
-                                    &tx,
-                                    &id,
-                                    record.version,
-                                    &serde_json::to_string(&record)?,
-                                )?;
-                                if first_configuration {
-                                    persistence::admit_base(&tx, &id, &record, &bundled)?;
-                                }
-                                if reply == UpdateReplyKind::Full {
-                                    record = read_stored_static(&tx, &id)?
-                                        .ok_or(ProviderError::NotFound)?;
-                                }
-                                tx.commit()?;
-                                Ok(record)
-                            })())
-                        })
-                        .await?
+                        db.patch_header(id, expected_version, patch, reply, bundled, cancel)
+                            .await
                     })
                 })
                 .await?;
@@ -681,32 +608,169 @@ impl ProviderService {
                     .ok_or_else(|| failure("Provider version overflow"))?;
                 validate_static_record(&provider_id, &mut admitted)?;
                 owner.check(&cancel)?;
-                owner
+                let record = owner
                     .db
-                    .run(move |db| {
-                        Ok((|| -> Result<_, ProviderError> {
-                            let tx = db.transaction()?;
-                            let current = read_stored_static(&tx, &provider_id)?
-                                .map(serde_json::to_value)
-                                .transpose()?;
-                            if current.as_ref() != Some(&expected) {
-                                return Err(ProviderError::Conflict(
-                                    "Provider version or admitted configuration changed".into(),
-                                ));
-                            }
-                            persistence::write(
-                                &tx,
-                                &provider_id,
-                                admitted.version,
-                                &serde_json::to_string(&admitted)?,
-                            )?;
-                            tx.commit()?;
-                            Ok((admitted, Some(models_listed)))
-                        })())
-                    })
-                    .await?
+                    .replace_record(provider_id, expected, admitted)
+                    .await?;
+                Ok((record, Some(models_listed)))
             })
         })
         .await
+    }
+}
+
+impl SqliteStorage {
+    pub(crate) async fn patch_header(
+        self: &Arc<Self>,
+        id: String,
+        expected_version: u32,
+        patch: ProviderPatch,
+        reply: UpdateReplyKind,
+        bundled: Arc<BundledCatalog>,
+        cancel: CancellationToken,
+    ) -> Result<StaticProviderRecord, ProviderError> {
+        self.run(move |connection| {
+            Ok((|| -> Result<_, ProviderError> {
+                let tx = connection.transaction()?;
+                let mut record = persistence::static_read(&tx, &id, persistence::Models::Header)?
+                    .ok_or(ProviderError::NotFound)?;
+                if record.version != expected_version {
+                    return Err(ProviderError::Conflict(
+                        "Provider version changed; reread before retrying".into(),
+                    ));
+                }
+                patch.apply(&mut record)?;
+                if record.enabled
+                    && record.credential_authority == CredentialAuthority::Static
+                    && record.auth != StaticAuth::Anonymous
+                    && record.credential.is_none()
+                {
+                    return Err(ProviderError::AuthRequired);
+                }
+                record.version = record.version.checked_add(1).ok_or(ProviderError::Failed)?;
+                validate_static_record(&id, &mut record)
+                    .map_err(|e| ProviderError::InvalidConfig(e.to_string()))?;
+                if cancel.is_cancelled() {
+                    return Err(ProviderError::Cancelled);
+                }
+                let first_configuration = persistence::write_header(
+                    &tx,
+                    &id,
+                    record.version,
+                    &serde_json::to_string(&record)?,
+                )?;
+                if first_configuration {
+                    persistence::admit_base(&tx, &id, &record, &bundled)?;
+                }
+                if reply == UpdateReplyKind::Full {
+                    record = read_stored_static(&tx, &id)?.ok_or(ProviderError::NotFound)?;
+                }
+                tx.commit()?;
+                Ok(record)
+            })())
+        })
+        .await?
+    }
+
+    pub(crate) async fn create_record(
+        self: &Arc<Self>,
+        id: String,
+        record: StaticProviderRecord,
+    ) -> Result<StaticProviderRecord, ProviderError> {
+        self.run(move |connection| {
+            Ok((|| -> Result<_, ProviderError> {
+                let tx = connection.transaction()?;
+                if tx
+                    .query_row(
+                        "SELECT 1 FROM providers WHERE provider_id=?1",
+                        [&id],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some()
+                {
+                    return Err(ProviderError::Conflict("Provider ID already exists".into()));
+                }
+                persistence::write(&tx, &id, record.version, &serde_json::to_string(&record)?)?;
+                tx.commit()?;
+                Ok(record)
+            })())
+        })
+        .await?
+    }
+
+    pub(crate) async fn replace_record(
+        self: &Arc<Self>,
+        provider_id: String,
+        expected: Value,
+        admitted: StaticProviderRecord,
+    ) -> Result<StaticProviderRecord, ProviderError> {
+        self.run(move |db| {
+            Ok((|| -> Result<_, ProviderError> {
+                let tx = db.transaction()?;
+                let current = read_stored_static(&tx, &provider_id)?
+                    .map(serde_json::to_value)
+                    .transpose()?;
+                if current.as_ref() != Some(&expected) {
+                    return Err(ProviderError::Conflict(
+                        "Provider version or admitted configuration changed".into(),
+                    ));
+                }
+                persistence::write(
+                    &tx,
+                    &provider_id,
+                    admitted.version,
+                    &serde_json::to_string(&admitted)?,
+                )?;
+                tx.commit()?;
+                Ok(admitted)
+            })())
+        })
+        .await?
+    }
+
+    pub(crate) async fn delete_record(
+        self: &Arc<Self>,
+        provider_id: String,
+        expected_version: u32,
+        bundled: Arc<BundledCatalog>,
+    ) -> Result<(), ProviderError> {
+        self.run(move |connection| {
+            Ok((|| -> Result<_, ProviderError> {
+                let tx = connection.transaction()?;
+                let mut record =
+                    persistence::static_read(&tx, &provider_id, persistence::Models::Header)?
+                        .ok_or(ProviderError::NotFound)?;
+                if record.version != expected_version {
+                    return Err(ProviderError::Conflict("Provider version changed".into()));
+                }
+                if record.kind == StaticRecordKind::Builtin {
+                    record.enabled = false;
+                    record.version = record.version.checked_add(1).ok_or(ProviderError::Failed)?;
+                    let first_configuration = persistence::write_header(
+                        &tx,
+                        &provider_id,
+                        record.version,
+                        &serde_json::to_string(&record)?,
+                    )?;
+                    if first_configuration {
+                        persistence::admit_base(&tx, &provider_id, &record, &bundled)?;
+                    }
+                } else {
+                    tx.execute(
+                        "DELETE FROM provider_selections WHERE provider_id=?1",
+                        [&provider_id],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM provider_bundle WHERE provider_id=?1",
+                        [&provider_id],
+                    )?;
+                    tx.execute("DELETE FROM providers WHERE provider_id=?1", [&provider_id])?;
+                }
+                tx.commit()?;
+                Ok(())
+            })())
+        })
+        .await?
     }
 }

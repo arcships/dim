@@ -2546,7 +2546,7 @@ struct SqliteDispatch(Arc<SqliteStorage>);
 impl HostDispatch for SqliteDispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"queryModels":"async","findCandidates":"async","importLegacy":"async","listProviders":"async","readRecord":"async","activateSource":"async","batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
+            serde_json::json!({"managementPage":"async","commitEdit":"async","queryModels":"async","findCandidates":"async","importLegacy":"async","listProviders":"async","readRecord":"async","activateSource":"async","batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
         )
     }
 
@@ -2566,6 +2566,15 @@ impl HostDispatch for SqliteDispatch {
             deny_unknown_fields
         )]
         enum Request {
+            #[serde(rename_all = "camelCase")]
+            CommitEdit {
+                provider_id: String,
+                edit: Box<ProviderEdit>,
+            },
+            ManagementPage {
+                page: crate::provider::ManagementPageRequest,
+                accounts: BTreeMap<String, String>,
+            },
             QueryModels {
                 page: crate::provider::ModelQuery,
                 accounts: crate::provider::ModelQueryAccounts,
@@ -2697,6 +2706,70 @@ impl HostDispatch for SqliteDispatch {
                 limit: usize,
             },
         }
+        #[derive(Deserialize)]
+        #[serde(
+            tag = "kind",
+            rename_all = "camelCase",
+            rename_all_fields = "camelCase",
+            deny_unknown_fields
+        )]
+        enum ProviderEdit {
+            RefreshManaged {
+                expected_version: Option<u32>,
+                catalog: crate::managed_provider::ManagedCatalog,
+                current: crate::managed_provider::AccountSnapshot,
+            },
+            EnableModel {
+                expected_version: u32,
+                model_id: String,
+                enabled: bool,
+                state: crate::provider::ModelAccount,
+            },
+            EnableModels {
+                expected_version: u32,
+                model_ids: Vec<String>,
+                state: crate::provider::ModelAccount,
+            },
+            EditModel {
+                expected_version: u32,
+                model_id: String,
+                edit: Option<crate::model_catalog::ModelEdit>,
+                state: crate::provider::ModelAccount,
+            },
+            Preferences {
+                expected_version: u32,
+                model_id: String,
+                patch: crate::provider::PreferencesPatch,
+                account: Option<crate::managed_provider::AccountSnapshot>,
+            },
+            PatchHeader {
+                expected_version: u32,
+                patch: crate::provider::ProviderPatch,
+                reply: crate::provider::UpdateReplyKind,
+            },
+            CreateModel {
+                expected_version: u32,
+                model: Box<crate::model_catalog::ModelEntry>,
+            },
+            DeleteModel {
+                expected_version: u32,
+                model_id: String,
+            },
+            Create {
+                record: crate::provider::StaticProviderRecord,
+            },
+            Delete {
+                expected_version: u32,
+            },
+            ReplaceConnection {
+                expected: serde_json::Value,
+                record: crate::provider::StaticProviderRecord,
+            },
+            RefreshStatic {
+                expected: serde_json::Value,
+                record: crate::provider::StaticProviderRecord,
+            },
+        }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
                 .map_err(|error| BridgeError::Value(error.to_string()))?;
@@ -2794,6 +2867,197 @@ impl HostDispatch for SqliteDispatch {
                         .await
                         .map_err(storage_failure)?
                 ),
+                Request::CommitEdit { provider_id, edit } => {
+                    let reply = match *edit {
+                        ProviderEdit::EnableModel {
+                            expected_version,
+                            model_id,
+                            enabled,
+                            state,
+                        } => {
+                            let bundled = crate::model_catalog::BundledCatalog::load()
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            db.enable_model(
+                                provider_id,
+                                expected_version,
+                                model_id,
+                                enabled,
+                                state,
+                                Arc::new(bundled),
+                            )
+                            .await
+                            .map(|v| serde_json::json!(v))
+                        }
+                        ProviderEdit::EnableModels {
+                            expected_version,
+                            model_ids,
+                            state,
+                        } => {
+                            let bundled = crate::model_catalog::BundledCatalog::load()
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            db.enable_models(
+                                provider_id,
+                                expected_version,
+                                model_ids,
+                                state,
+                                Arc::new(bundled),
+                            )
+                            .await
+                            .map(|v| serde_json::json!(v))
+                        }
+                        ProviderEdit::EditModel {
+                            expected_version,
+                            model_id,
+                            edit,
+                            state,
+                        } => {
+                            crate::provider::validate_model_edit(edit.as_ref())
+                                .map_err(provider_failure)?;
+                            let bundled = crate::model_catalog::BundledCatalog::load()
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            db.edit_model(
+                                provider_id,
+                                expected_version,
+                                model_id,
+                                edit,
+                                state,
+                                Arc::new(bundled),
+                            )
+                            .await
+                            .map(|r| serde_json::json!(r))
+                        }
+                        ProviderEdit::Preferences {
+                            expected_version,
+                            model_id,
+                            patch,
+                            account,
+                        } => {
+                            let bundled = crate::model_catalog::BundledCatalog::load()
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            match account {
+                                Some(current) => db
+                                    .managed_preferences(
+                                        provider_id,
+                                        expected_version,
+                                        model_id,
+                                        patch,
+                                        current,
+                                        Arc::new(bundled),
+                                    )
+                                    .await
+                                    .map(|r| serde_json::json!(r)),
+                                None => db
+                                    .static_preferences(
+                                        provider_id,
+                                        expected_version,
+                                        model_id,
+                                        patch,
+                                        Arc::new(bundled),
+                                    )
+                                    .await
+                                    .map(|r| serde_json::json!(r)),
+                            }
+                        }
+                        ProviderEdit::RefreshManaged {
+                            expected_version,
+                            catalog,
+                            current,
+                        } => {
+                            if !crate::provider::same_account(&current, &catalog.account) {
+                                return Err(provider_failure(
+                                    crate::provider::ProviderError::AccountChanged,
+                                ));
+                            }
+                            db.refresh_managed(provider_id, expected_version, catalog)
+                                .await
+                                .map(|r| serde_json::json!(r))
+                        }
+                        ProviderEdit::PatchHeader {
+                            expected_version,
+                            patch,
+                            reply,
+                        } => {
+                            let bundled = crate::model_catalog::BundledCatalog::load()
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            let cancel = CancellationToken::new();
+                            let _guard = cancel.clone().drop_guard();
+                            db.patch_header(
+                                provider_id,
+                                expected_version,
+                                patch,
+                                reply,
+                                Arc::new(bundled),
+                                cancel,
+                            )
+                            .await
+                            .map(|r| serde_json::json!(r))
+                        }
+                        ProviderEdit::CreateModel {
+                            expected_version,
+                            model,
+                        } => db
+                            .create_model_record(provider_id, expected_version, *model)
+                            .await
+                            .map(|r| serde_json::json!(r)),
+                        ProviderEdit::DeleteModel {
+                            expected_version,
+                            model_id,
+                        } => db
+                            .delete_model_record(provider_id, expected_version, model_id)
+                            .await
+                            .map(|r| serde_json::json!(r)),
+                        ProviderEdit::Create { mut record } => {
+                            crate::provider::validate_static_record(&provider_id, &mut record)
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            db.create_record(provider_id, record)
+                                .await
+                                .map(|r| serde_json::json!(r))
+                        }
+                        ProviderEdit::ReplaceConnection {
+                            expected,
+                            mut record,
+                        }
+                        | ProviderEdit::RefreshStatic {
+                            expected,
+                            mut record,
+                        } => {
+                            crate::provider::validate_static_record(&provider_id, &mut record)
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            db.replace_record(provider_id, expected, record)
+                                .await
+                                .map(|r| serde_json::json!(r))
+                        }
+                        ProviderEdit::Delete { expected_version } => {
+                            let bundled = crate::model_catalog::BundledCatalog::load()
+                                .map_err(|e| BridgeError::Value(e.to_string()))?;
+                            db.delete_record(provider_id, expected_version, Arc::new(bundled))
+                                .await
+                                .map(|()| serde_json::json!({}))
+                        }
+                    };
+                    reply.map_err(provider_failure)?
+                }
+                Request::ManagementPage { page, accounts } => {
+                    let limit = page.page_limit().map_err(provider_failure)?;
+                    let bundled = crate::model_catalog::BundledCatalog::load()
+                        .map_err(|e| BridgeError::Value(e.to_string()))?;
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    let (records, next) = db
+                        .management_page(page, limit, accounts, Arc::new(bundled), cancel)
+                        .await
+                        .map_err(storage_failure)?;
+                    let records: Vec<_> = records
+                        .into_iter()
+                        .map(|(id, row)| {
+                            (
+                                id,
+                                row.map(|r| r.map_err(crate::provider::management::error)),
+                            )
+                        })
+                        .collect();
+                    serde_json::json!({"records":records,"next":next})
+                }
                 Request::FindCandidates(request) => {
                     let bundled = Arc::new(
                         crate::model_catalog::BundledCatalog::load()
@@ -3011,6 +3275,19 @@ impl HostDispatch for SqliteDispatch {
             Ok(value.into())
         }))
     }
+}
+
+fn provider_failure(error: crate::provider::ProviderError) -> BridgeError {
+    let error = crate::provider::management::error(error);
+    let data = error
+        .data
+        .expect("Provider errors carry an application code");
+    rutis_bridge::exports::failure(
+        "ProviderError",
+        &data.app_error,
+        error.message,
+        Some(serde_json::json!(data.details)),
+    )
 }
 
 fn storage_failure(error: AgentError) -> BridgeError {
