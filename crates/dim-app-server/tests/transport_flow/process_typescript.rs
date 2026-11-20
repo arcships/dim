@@ -2270,6 +2270,22 @@ async fn node_fs_readers_share_pinned_files_and_release_with_the_caller() {
             .await,
     );
     std::fs::write(directory.join("contents"), b"payload").unwrap();
+    let glob = client
+        .rpc(
+            "fsreader.glob",
+            json!({"path":directory, "pattern":"contents"}),
+        )
+        .await;
+    assert_ok(&glob);
+    assert_eq!(glob["result"]["files"][0]["path"], "contents", "{glob}");
+    let grep = client
+        .rpc(
+            "fsreader.grep",
+            json!({"path":directory,"pattern":"payload","literal":true}),
+        )
+        .await;
+    assert_ok(&grep);
+    assert_eq!(grep["result"]["matches"][0]["file"], "contents", "{grep}");
     let link = directory.join("link");
     std::os::unix::fs::symlink(directory.join("contents"), &link).unwrap();
     for (path, expected) in [
