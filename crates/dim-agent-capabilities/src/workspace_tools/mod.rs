@@ -296,7 +296,7 @@ impl ToolDriver for WorkspaceTools {
                         recognize: false,
                     },
                     self.files.home(),
-                    &self.platform.platform_roots,
+                    self.platform.facts().platform_roots,
                     &cancel,
                 );
                 let path = tokio::select! {

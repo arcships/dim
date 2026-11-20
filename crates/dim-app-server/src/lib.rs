@@ -756,6 +756,9 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             },
         )?);
     }
+    let command_files = session_files_root
+        .as_ref()
+        .map(|root| root.join(crate::storage::COMMAND_OUTPUT_DIRECTORY));
     if let (Some(path), Some(files_root)) = (&config.database_path, session_files_root) {
         let path = path.clone();
         let assembly_progress = assembly_progress.clone();
@@ -928,7 +931,6 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     }
     if let Some(home_root) = execution_root {
         let platform_home = config.platform_home.clone();
-        let command_files = session_files_root.map(|root| config.file_roots[root].join(crate::storage::COMMAND_OUTPUT_DIRECTORY));
         let exec_shell_file = config.file_roots[home_root].join("exec-shell.json");
         let mcp_home = config.file_roots[home_root].clone();
         mcp::install(&mut builder);

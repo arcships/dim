@@ -455,13 +455,12 @@ impl HostDispatch for Dispatch {
                         .map_err(|e| exec_error("output_unavailable", e.to_string()))?
                 } else {
                     let path = path.expect("file request");
-                    let (_, directory) =
-                        owner.command_files.as_ref().ok_or_else(|| {
-                            exec_error(
-                                "output_unavailable",
-                                "Command output storage is unavailable",
-                            )
-                        })?;
+                    let (_, directory) = owner.command_files.as_ref().ok_or_else(|| {
+                        exec_error(
+                            "output_unavailable",
+                            "Command output storage is unavailable",
+                        )
+                    })?;
                     if !path.starts_with(directory) {
                         return Err(exec_error(
                             "invalid",

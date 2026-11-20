@@ -389,7 +389,11 @@ impl FsHost {
         self.storage.remove(&path, cancel).await
     }
 
-    pub(crate) async fn pin_read(&self, path: &Path, cancel: &CancellationToken) -> Result<super::FileReader> {
+    pub(crate) async fn pin_read(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<super::FileReader> {
         let path = self.storage.resolve(path)?;
         self.storage.open_read(&path, cancel).await
     }
