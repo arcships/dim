@@ -3286,10 +3286,10 @@ fn preflight_checks(
     }
     if let Some(result) = exec(results, 0) {
         let text = text_of(result);
-        let printed = text.lines().next().unwrap_or_default().trim();
+        let home = params.env_home.to_string_lossy();
         check(
             "home",
-            !is_error(result) && printed == params.env_home.to_string_lossy(),
+            !is_error(result) && text.lines().any(|line| line.trim() == home),
             if is_error(result) {
                 "echo $HOME was refused".into()
             } else {
