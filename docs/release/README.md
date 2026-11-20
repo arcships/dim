@@ -44,7 +44,7 @@ For the next alpha, inspect registry versions across `dimcode-alpha`, `dimcode-w
 
 The release PR has one or two commits, in this order:
 
-1. The bundled-catalog sync, when `node scripts/update-provider-catalog.ts --sync` produced a diff. The App Server embeds a checked-in provider catalog and nothing refreshes it during a build.
+1. The bundled-catalog sync commit when the [release skill's catalog sync checks](../../.agents/skills/dim-release/SKILL.md#verify-the-bundled-catalog-sync) accept a diff. The App Server embeds the catalog from the release commit.
 2. The version commit, which synchronizes:
 
 | File | Fields |
