@@ -108,11 +108,27 @@ export type ModelChunk =
   { kind: 'content'; data: MessagePart[] } |
   { kind: 'messageStop'; data: { messageId: string; reason: 'end_turn' | 'tool_use' | 'stop_sequence' | 'max_tokens' } } |
   { kind: 'usage'; data: NonNullable<AuxiliaryReply['usage']> };
+export type ModelFailureKind =
+  | 'network' | 'rate_limited' | 'server_error' | 'malformed_response' | 'auth_rejected'
+  | 'quota_exhausted' | 'not_found' | 'context_too_long' | 'content_filtered'
+  | 'invalid_request' | 'output_limit' | 'unknown';
+
+type ModelDuration = { secs: number; nanos: number };
+export type ModelFailureFacts = {
+  kind: ModelFailureKind; reason: string | null; status: number | null;
+  providerCode: string | null; requestId: string | null; cause: string[];
+  retryAfter: ModelDuration | null; attempts: number; waited: ModelDuration;
+  retryAfterStop: ModelDuration | null; retryForbidden: boolean;
+};
 export type ModelInvocationError = { code: 'cancelled'; details: string } | {
   code: 'failed'; details: {
     message: string; kind: { kind: 'other' | 'invalidRequest' | 'unsupported' | 'transport' | 'ownerClosed' } |
       { kind: 'http'; status: number | null; code: string | null };
-    budget?: JsonObject | null; model?: JsonObject | null;
+    budget?: {
+      inputTokens: number; contextWindow: number; requestedMaxTokens: number;
+      allowedMaxTokens: number; ratio: number;
+    } | null;
+    model?: ModelFailureFacts | null;
     presentation?: import('./client-protocol.js').ProviderPresentation | null;
   };
 };
@@ -125,7 +141,7 @@ export interface ModelHost {
     cancelled: () => Promise<void>, hooks?: {
       prepare?: (protocol: import('./branch-services.js').ModelProtocol | null) => Promise<ModelConfig | null>;
       beforeAttempt?: () => Promise<'admitted' | { rejected: string }>;
-      waiting?: (retry: { attempt: number; maxAttempts: number; retryAtMs: number; kind: string; reason: string | null } | null) => Promise<void>;
+      waiting?: (retry: { attempt: number; maxAttempts: number; retryAtMs: number; kind: ModelFailureKind; reason: string | null } | null) => Promise<void>;
     }): Promise<T>;
 }
 
