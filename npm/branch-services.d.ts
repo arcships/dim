@@ -1268,43 +1268,21 @@ export type UiExtensionPlugin = {
   plugin: string
 }
 
-export type Title = {
-  default: string
-  translations?: Record<string, string>
+export type UiPackage = {
+  directory: string
+  manifest: JsonValue
 }
-
-export type MethodScope = "session" | "branch"
-
-export type Method = {
-  name: string
-  scope: MethodScope
-}
-
-export type Panel = {
-  id: string
-  title: Title
-  icon?: string | null
-  entry: string
-  placement: string
-  requires: string[]
-  methods: Method[]
-}
-
-export type Package =
-  | { kind: "supported"; root: string; panels: Panel[] }
-  | { kind: "unsupported"; version: number | bigint }
-  | { kind: "rejected"; message: string }
 
 export type UiExtensionRegistration = {
   plugin: string
   name: string
-  package?: Package | null
+  package?: UiPackage | null
 }
 
 export interface UiExtensions {
   plugins(request: Empty): Promise<string[]>
   refusal(request: UiExtensionPlugin): Promise<string | null>
-  /** @throws {StringThrown} */
+  /** @throws {ResourceErrorThrown} */
   register(request: UiExtensionRegistration): Promise<void>
   withdraw(request: UiExtensionPlugin): Promise<void>
 }

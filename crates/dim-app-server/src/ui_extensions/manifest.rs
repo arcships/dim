@@ -45,7 +45,6 @@ pub struct Panel {
 pub enum Package {
     Supported { root: PathBuf, panels: Vec<Panel> },
     Unsupported { version: u64 },
-    Rejected { message: String },
 }
 
 #[derive(Deserialize)]

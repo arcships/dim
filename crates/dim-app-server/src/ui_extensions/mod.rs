@@ -70,7 +70,7 @@ struct Catalog {
 
 pub(crate) struct Configuration {
     cache: PathBuf,
-    sources: Mutex<BTreeMap<String, (String, Package)>>,
+    sources: Mutex<BTreeMap<String, (String, UiPackage)>>,
     revision: AtomicU64,
 }
 impl Configuration {
@@ -106,7 +106,14 @@ pub struct UiExtensionPlugin {
 pub struct UiExtensionRegistration {
     pub plugin: String,
     pub name: String,
-    pub package: Option<Package>,
+    pub package: Option<UiPackage>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiPackage {
+    pub directory: PathBuf,
+    pub manifest: serde_json::Value,
 }
 
 #[rutis::service(name = "uiExtensions")]
@@ -128,7 +135,7 @@ impl UiExtensions {
             .get(&request.plugin)
             .map(|error| error.message.clone())
     }
-    pub async fn register(&self, request: UiExtensionRegistration) -> Result<(), String> {
+    pub async fn register(&self, request: UiExtensionRegistration) -> Result<(), ResourceError> {
         let UiExtensionRegistration {
             plugin,
             name,
@@ -139,16 +146,21 @@ impl UiExtensions {
             return Ok(());
         };
         let _update = self.updating.lock().await;
-        let _operation = self.reads.enter().map_err(|error| error.message)?;
+        let _operation = self.reads.enter()?;
         self.configuration
             .sources
             .lock()
             .unwrap()
             .insert(plugin.clone(), (name.clone(), package.clone()));
-        let prepared = match &package {
-            Package::Supported { root, panels } => self.prepare(&name, root, panels).await,
-            Package::Unsupported { version } => Err(format!("Unsupported UI version {version}")),
-            Package::Rejected { message } => Err(message.clone()),
+        let prepared = match Package::read(&package.directory, package.manifest) {
+            Ok(Package::Supported { root, panels }) => self
+                .prepare(&name, &root, &panels)
+                .await
+                .map_err(file_error),
+            Ok(Package::Unsupported { version }) => Err(ResourceError::invalid(&format!(
+                "Unsupported UI version {version}"
+            ))),
+            Err(message) => Err(ResourceError::invalid(&message)),
         };
         let old = {
             let mut catalog = self.catalog.lock().unwrap();
@@ -163,7 +175,7 @@ impl UiExtensions {
                         plugin,
                         Unavailable {
                             plugin_name: name,
-                            message: message.clone(),
+                            message: message.message.clone(),
                         },
                     );
                 }

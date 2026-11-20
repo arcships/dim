@@ -860,7 +860,12 @@ impl Owners {
                         .register(UiExtensionRegistration {
                             plugin: plugin.into(),
                             name: manifest.name.clone(),
-                            package: manifest.ui.clone(),
+                            package: manifest.ui.clone().map(|manifest| {
+                                crate::ui_extensions::UiPackage {
+                                    directory: dir.to_path_buf(),
+                                    manifest,
+                                }
+                            }),
                         })
                         .await
                     {
