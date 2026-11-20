@@ -121,7 +121,7 @@ pub struct SettingsMethodsPlugin {
 impl SettingsMethodsPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            service: names.key()?,
+            service: Key::of(),
             methods: names.key()?,
         })
     }

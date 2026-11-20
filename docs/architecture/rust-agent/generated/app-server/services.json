@@ -3596,6 +3596,12 @@
         "removing": false
       },
       {
+        "service": "dim_app_server::settings::RegisteredDocument<dim_app_server::permission_rules::PermissionSettings>",
+        "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dim_app_server::settings::SettingsService",
         "provider": 18,
         "generation": 1,

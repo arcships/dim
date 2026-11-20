@@ -6,7 +6,7 @@ use super::*;
 use dim_agent_runtime::Names;
 use dim_app_server::{
     session_typescript::SessionTypeScriptConfig,
-    settings::{SettingsChanged, SettingsService, SourceDeclaration, settings_changes},
+    settings::{Settings, SettingsChanged, SourceDeclaration, settings_changes},
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
@@ -100,7 +100,7 @@ fn configured_models() -> Arc<dim_agent_aimux::AimuxModels> {
 
 /// Registers a declared source with project scope, the way a C4 owner row does
 /// (§3.1): `settings.read`/`settings.update` need one to take `{project: root}`.
-struct ProjectSource(Key<SettingsService>);
+struct ProjectSource(Key<Settings>);
 impl ProjectSource {
     fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self(names.key()?))
@@ -115,7 +115,7 @@ impl DynPlugin for ProjectSource {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            ctx.require_at(&self.0)?.register_declared(
+            ctx.require_at(&self.0)?.register(
                 ctx,
                 SourceDeclaration {
                     source: "example".into(),

@@ -48,11 +48,9 @@ fn owner(
     name: &'static str,
     register: impl Fn(&SettingsService, &Ctx) -> rutis::Result<()> + Send + Sync + 'static,
 ) -> Owner {
-    let catalog = dim_app_server::catalog();
-    let build = Build::default();
     Owner {
         name,
-        settings: Names::copy(&catalog, &build).key().unwrap(),
+        settings: Key::of(),
         register: Arc::new(register),
     }
 }
@@ -81,14 +79,6 @@ type Captured = tokio::sync::watch::Sender<
 struct ProcessSettings {
     capture: Captured,
     settings: Key<SettingsService>,
-}
-impl ProcessSettings {
-    fn new(names: &Names<'_>, capture: Captured) -> rutis::Result<Self> {
-        Ok(Self {
-            capture,
-            settings: names.key()?,
-        })
-    }
 }
 impl DynPlugin for ProcessSettings {
     fn name(&self) -> &str {
@@ -181,11 +171,15 @@ async fn server_reload_preserves_project_root_identity_and_settings() {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
-        builder.require_feature(
-            Feature::new("test.process-settings").session("test.process-settings", move |names| {
-                Ok(Box::new(ProcessSettings::new(names, capture.clone())?))
-            }),
-        );
+        builder.require_feature(Feature::new("test.process-settings").session(
+            "test.process-settings",
+            move |_| {
+                Ok(Box::new(ProcessSettings {
+                    capture: capture.clone(),
+                    settings: Key::of(),
+                }))
+            },
+        ));
         let server = serve(
             builder,
             ServerConfig {
@@ -800,8 +794,12 @@ async fn sources_appear_while_registered_and_names_are_exclusive() {
         owner_call(&dispatch, "read", read.clone()).await["error"]["code"],
         "unknown_source"
     );
-    let source = root.plugin(owner("test.owner", |settings, ctx| {
-        settings.register::<Document>(ctx)?;
+    let first = Arc::new(std::sync::OnceLock::new());
+    let registered = first.clone();
+    let public = root.get::<Settings>().unwrap();
+    let source = root.plugin(owner("test.owner", move |settings, ctx| {
+        let doc = public.register_document::<Document>(ctx)?;
+        assert!(registered.set(doc).is_ok());
         settings.register_declared(ctx, declaration("declared"))
     }));
     wait_active(
@@ -885,7 +883,23 @@ async fn sources_appear_while_registered_and_names_are_exclusive() {
         "unknown_source"
     );
     assert!(home.join("example.json").exists());
-    settings.register::<Document>(&root).unwrap();
+    let next = root
+        .get::<Settings>()
+        .unwrap()
+        .register_document::<Document>(&root)
+        .unwrap();
+    assert!(matches!(
+        first
+            .get()
+            .unwrap()
+            .read(SettingsScope::User, &cancel)
+            .await,
+        Err(SettingsError::UnknownSource)
+    ));
+    assert_eq!(
+        next.read(SettingsScope::User, &cancel).await.unwrap(),
+        saved
+    );
     assert_eq!(
         settings
             .read::<Document>(SettingsScope::User, &cancel)

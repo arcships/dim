@@ -3,7 +3,7 @@
 use crate::{
     methods::ManagementMethods,
     protocol::Empty,
-    settings::{BusinessDocument, Settings, SettingsError, SettingsScope, SettingsService},
+    settings::{BusinessDocument, RegisteredDocument, Settings, SettingsError, SettingsScope},
 };
 use dim_agent_capabilities::{
     host::{HostError, HostFuture},
@@ -55,15 +55,15 @@ pub fn install(builder: &mut AgentBuilder) {
 }
 
 /// Reads the user source on each call; nothing is cached.
-struct SettingsRules(Arc<SettingsService>);
+struct SettingsRules(Ctx);
 impl ReadCommandRules for SettingsRules {
     fn rules(&self, cancel: CancellationToken) -> HostFuture<'_, Vec<CommandRule>> {
         Box::pin(async move {
-            match self
+            let document = self
                 .0
-                .read::<PermissionSettings>(SettingsScope::User, &cancel)
-                .await
-            {
+                .get::<RegisteredDocument<PermissionSettings>>()
+                .ok_or_else(|| HostError::failed(SettingsError::UnknownSource.to_string()))?;
+            match document.read(SettingsScope::User, &cancel).await {
                 Ok(snapshot) => Ok(snapshot.document.command_rules),
                 Err(SettingsError::Cancelled) => {
                     Err(HostError::Cancelled("command rules read cancelled".into()))
@@ -77,7 +77,7 @@ impl ReadCommandRules for SettingsRules {
 struct CommandRulesPlugin {
     host: Key<CommandRules>,
     face: Key<dyn rutis_bridge::session::HostDispatch>,
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
 }
 impl CommandRulesPlugin {
     fn new(names: &Names<'_>) -> Result<Self, Error> {
@@ -97,8 +97,7 @@ impl DynPlugin for CommandRulesPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let settings = ctx.require_at(&self.settings)?;
-            let rules = Arc::new(CommandRules(Arc::new(SettingsRules(settings))));
+            let rules = Arc::new(CommandRules(Arc::new(SettingsRules(ctx.clone()))));
             ctx.provide_at(self.host.clone(), rules.clone())?;
             ctx.provide_at(
                 self.face.clone(),
@@ -161,6 +160,7 @@ impl DynPlugin for PermissionRulesPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
             let settings = settings.register_document::<PermissionSettings>(ctx)?;
+            ctx.provide_as::<RegisteredDocument<PermissionSettings>>(settings.clone())?;
             methods.register(
                 ctx,
                 "permission",

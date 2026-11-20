@@ -24643,8 +24643,7 @@
         "mod settings",
         "path settings",
         "path settings::SettingsPlugin::native",
-        "path settings::SettingsPlugin::new",
-        "path settings::SettingsService"
+        "path settings::SettingsPlugin::new"
       ]
     },
     {
@@ -29755,7 +29754,6 @@
         "path config::Origin::Workspace",
         "path config::connected",
         "path config::settings_changes",
-        "path config::workspace",
         "use super::config",
         "use super::config::McpProjectEnablement",
         "use super::config::McpSecrets",
@@ -30781,16 +30779,17 @@
       "to": "dim_app_server::settings",
       "references": [
         "path BusinessDocument",
+        "path RegisteredDocument",
         "path SettingsError",
         "path SettingsError::Cancelled",
         "path SettingsError::Closed",
         "path SettingsError::Conflict",
         "path SettingsError::Invalid",
-        "path SettingsService",
+        "path SettingsError::UnknownSource",
         "path crate::settings::Result",
         "use crate::settings::BusinessDocument",
-        "use crate::settings::SettingsError",
-        "use crate::settings::SettingsService"
+        "use crate::settings::RegisteredDocument",
+        "use crate::settings::SettingsError"
       ]
     },
     {
