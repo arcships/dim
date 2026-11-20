@@ -58,8 +58,13 @@ structural invariants**:
 
 - **In scope for automated checks (L1, zero business compilation)**: lifecycle/immutability form
   (such as accepted-ADR freeze checks), link and template structure, and deterministic
-  code-to-document structural projections (such as dependency graphs or service declarations) that
-  do not parse natural-language prose.
+  code-to-document structural projections (such as public service catalogs or crate-level overviews)
+  that do not parse natural-language prose.
+- **Keep generated snapshots minimal**: commit and freshness-check a generated file only when
+  downstream code consumes it (e.g. cross-language type declarations) or when it is a concise,
+  actively referenced public summary. Fine-grained internal dependency graphs computed for boundary
+  checks are verified live in memory and generated on demand rather than committed to Git as
+  conflict-prone snapshots.
 - **Out of scope for automated checks**: semantic correctness of prose, design quality, and
   judgement calls such as whether an edit alters a modelled invariant. Avoid brittle cross-language
   text scanners that try to infer semantics from raw literals and rely on growing manual
