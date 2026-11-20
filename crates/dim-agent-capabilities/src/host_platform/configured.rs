@@ -1,4 +1,4 @@
-use super::{HostPlatform, ProcessSpecError};
+use super::{ExecHost, ProcessSpecError};
 use std::{
     collections::BTreeMap, ffi::OsString, path::PathBuf, process::ExitStatus, time::Duration,
 };
@@ -55,7 +55,7 @@ impl std::fmt::Display for ConfiguredError {
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     pub async fn configured(
         &self,
         request: ConfiguredCommand,

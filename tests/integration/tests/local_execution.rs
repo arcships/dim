@@ -15,7 +15,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecShellRuntime, HostPlatform,
+        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecShellRuntime, ExecHost,
         HostPlatformConfig, HostPlatformPlugin, OutputEncoding, ShellEdition, ShellSource,
         ShellStatus, resolve_shell,
     },
@@ -135,19 +135,19 @@ impl ModelDriver for Script {
 }
 
 /// Provides the process HostPlatform the design lets tests construct.
-struct PlatformPlugin(Arc<HostPlatform>);
+struct PlatformPlugin(Arc<ExecHost>);
 impl Plugin for PlatformPlugin {
     type Deps = ();
     fn name(&self) -> &str {
         "TestHostPlatform"
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide_as::<HostPlatform>(self.0.clone())?;
+        ctx.provide_as::<ExecHost>(self.0.clone())?;
         Ok(())
     }
 }
 /// `platform` provided by [`PlatformPlugin`], a row of the harness's host.
-fn test_platform(platform: HostPlatform) -> impl FnOnce(&mut AgentBuilder) {
+fn test_platform(platform: ExecHost) -> impl FnOnce(&mut AgentBuilder) {
     let platform = Arc::new(platform);
     move |builder| {
         builder.plugin(move |_| Ok(Box::new(PlatformPlugin(platform.clone()))));
@@ -304,11 +304,11 @@ fn scratch(name: &str) -> PathBuf {
     std::fs::canonicalize(path).unwrap()
 }
 
-async fn platform(extra: &[(&str, &str)]) -> HostPlatform {
+async fn platform(extra: &[(&str, &str)]) -> ExecHost {
     let mut env: Vec<_> = std::env::vars_os().collect();
     env.retain(|(key, _)| key != "SHELL");
     env.push(("SHELL".into(), "/bin/bash".into()));
-    let mut platform = HostPlatform::current(resolve_shell(Ok(None), &env).await)
+    let mut platform = ExecHost::current(resolve_shell(Ok(None), &env).await)
         .unwrap()
         .with_execution_settings(ExecutionSettingsHost::fixed(ExecutionSettings::default()));
     platform.env.extend(
@@ -320,15 +320,15 @@ async fn platform(extra: &[(&str, &str)]) -> HostPlatform {
 }
 
 impl Harness {
-    async fn new(platform: HostPlatform, hook: Hook) -> Self {
+    async fn new(platform: ExecHost, hook: Hook) -> Self {
         Self::with_context(platform, hook, false).await
     }
     /// The same assembly with a context model and a strategy bound, so a flow
     /// test can compact (`local_support/compaction.rs`).
-    async fn new_compacting(platform: HostPlatform, hook: Hook) -> Self {
+    async fn new_compacting(platform: ExecHost, hook: Hook) -> Self {
         Self::with_context(platform, hook, true).await
     }
-    async fn with_context(mut platform: HostPlatform, hook: Hook, compacting: bool) -> Self {
+    async fn with_context(mut platform: ExecHost, hook: Hook, compacting: bool) -> Self {
         let cwd = scratch("cwd");
         platform.home = cwd.clone();
         platform.env.retain(|(name, _)| name != "HOME");
@@ -593,7 +593,7 @@ async fn exec_and_external_shell_callers_use_live_shell_preferences() {
         scratch("cwd"),
     )
     .await;
-    let platform = harness.root.get::<HostPlatform>().unwrap();
+    let platform = harness.root.get::<ExecHost>().unwrap();
     let session = harness.session().await;
 
     let refusal = platform
@@ -634,7 +634,7 @@ async fn exec_and_external_shell_callers_use_live_shell_preferences() {
         assert!(text(results(&events).last().unwrap()).contains(executable));
         assert!(Arc::ptr_eq(
             &platform,
-            &harness.root.get::<HostPlatform>().unwrap()
+            &harness.root.get::<ExecHost>().unwrap()
         ));
     }
 
@@ -806,7 +806,7 @@ fn exit_drains_output_even_when_offload_is_slow() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_unavailable_shell_or_a_missing_execution_port_refuses_the_payload() {
-    let unavailable = HostPlatform::current(ShellStatus::Unavailable {
+    let unavailable = ExecHost::current(ShellStatus::Unavailable {
         code: EXEC_SHELL_UNAVAILABLE,
         reason: "Selected command shell is unavailable: /opt/zsh".into(),
     })
@@ -832,7 +832,7 @@ async fn an_unavailable_shell_or_a_missing_execution_port_refuses_the_payload() 
     session.close().await.unwrap();
     harness.shutdown().await;
 
-    let without_port = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+    let without_port = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
         executable_path: "/bin/sh".into(),
         edition: ShellEdition::Sh,
         source: ShellSource::Fallback,

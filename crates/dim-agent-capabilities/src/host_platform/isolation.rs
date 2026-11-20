@@ -1,6 +1,6 @@
 //! The process boundary the sandbox switch applies, before ordinary spawn/PTY.
 use super::{
-    ENVIRONMENT, HostPlatform, Isolation, ProcessSpec, ProcessSpecError, SystemServices,
+    ENVIRONMENT, ExecHost, Isolation, ProcessSpec, ProcessSpecError, SystemServices,
     TemporaryDirectory,
 };
 use std::path::Path;
@@ -85,7 +85,7 @@ pub(super) fn validate_overlap(
     Ok(())
 }
 
-impl HostPlatform {
+impl ExecHost {
     pub(crate) async fn prepare_isolated_process(
         &self,
         mut spec: ProcessSpec,
@@ -158,7 +158,7 @@ impl HostPlatform {
 /// confined command needs to run it. They are never the reported home, its
 /// `runtimes` directory, or writable; a `system` interpreter contributes none,
 /// because the user's own `PATH` already reaches it.
-fn toolchain_roots(platform: &HostPlatform) -> Vec<PathBuf> {
+fn toolchain_roots(platform: &ExecHost) -> Vec<PathBuf> {
     let runtimes = platform.home.join("runtimes");
     let mut roots: Vec<PathBuf> = Vec::new();
     for toolchain in platform.installed_toolchains() {
@@ -178,7 +178,7 @@ fn toolchain_roots(platform: &HostPlatform) -> Vec<PathBuf> {
 /// sandbox switch grants them to agent commands, and a host-owned confined
 /// helper reads them without the switch.
 pub(super) async fn baseline_read_paths(
-    platform: &HostPlatform,
+    platform: &ExecHost,
     #[cfg_attr(
         not(target_os = "macos"),
         expect(
@@ -271,7 +271,7 @@ async fn temporary_directory() -> std::io::Result<TemporaryDirectory> {
 
 #[cfg(target_os = "macos")]
 pub(super) fn prepare(
-    _host: &HostPlatform,
+    _host: &ExecHost,
     mut spec: ProcessSpec,
     read_only: &[(PathBuf, PathBuf)],
     read_only_files: &[(PathBuf, PathBuf)],
@@ -378,7 +378,7 @@ pub(super) fn prepare(
 
 #[cfg(not(target_os = "macos"))]
 pub(super) fn prepare(
-    host: &HostPlatform,
+    host: &ExecHost,
     mut spec: ProcessSpec,
     read_only: &[(PathBuf, PathBuf)],
     read_only_files: &[(PathBuf, PathBuf)],
@@ -519,7 +519,7 @@ async fn bubblewrap_unshares_the_network_only_when_the_switch_is_off() {
     let bwrap = base.join("bwrap");
     std::fs::write(&bwrap, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&bwrap, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let mut host = HostPlatform::current(super::ShellStatus::Unavailable {
+    let mut host = ExecHost::current(super::ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })
@@ -551,7 +551,7 @@ async fn bubblewrap_unshares_the_network_only_when_the_switch_is_off() {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn seatbelt_allows_network_only_when_the_switch_is_on() {
-    let host = HostPlatform::current(super::ShellStatus::Unavailable {
+    let host = ExecHost::current(super::ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })
@@ -589,7 +589,7 @@ fn profile_text(spec: &ProcessSpec) -> String {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn seatbelt_grants_on_device_recognition_services_only_when_asked() {
-    let host = HostPlatform::current(super::ShellStatus::Unavailable {
+    let host = ExecHost::current(super::ShellStatus::Unavailable {
         code: "test",
         reason: String::new(),
     })

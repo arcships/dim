@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        ExecShellRuntime, HostPlatform, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        ExecShellRuntime, ExecHost, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
@@ -95,8 +95,8 @@ pub fn skill_file(name: &str, description: &str, body: &str) -> String {
     format!("---\nname: {name}\ndescription: {description}\n---\n{body}\n")
 }
 
-pub fn platform(home: &Path) -> HostPlatform {
-    let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+pub fn platform(home: &Path) -> ExecHost {
+    let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
         executable_path: "/bin/zsh".into(),
         edition: ShellEdition::Zsh,
         source: ShellSource::Login,
@@ -567,7 +567,7 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
     let clients = options.clients.clone();
     let execution = options.execution.clone();
     let agent = MinimalHost::start_with(&builder, move |root, _| {
-        root.provide_as::<HostPlatform>(Arc::new(host))?;
+        root.provide_as::<ExecHost>(Arc::new(host))?;
         root.provide_as::<SkillSettingsHost>(Arc::new(SkillSettingsHost(settings)))?;
         if let Some(clients) = clients {
             root.provide_as::<SessionClientsHost>(Arc::new(SessionClientsHost::new(clients)))?;

@@ -1427,7 +1427,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         ..Default::default()
     };
     let protected = server
-        .service::<dim_agent_capabilities::host_platform::HostPlatform>()
+        .service::<dim_agent_capabilities::host_platform::ExecHost>()
         .unwrap()
         .exec_root()
         .join("store-face-protected");
@@ -1606,7 +1606,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     assert_ok(&created);
     assert!(store.has_records("wire-source").await.unwrap());
     let output = server
-        .service::<dim_agent_capabilities::host_platform::HostPlatform>()
+        .service::<dim_agent_capabilities::host_platform::ExecHost>()
         .unwrap()
         .exec_root()
         .join("fixture-owned-output")

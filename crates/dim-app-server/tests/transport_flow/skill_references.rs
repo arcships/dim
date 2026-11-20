@@ -19,7 +19,7 @@ use std::sync::Mutex;
 /// Mounts the Skills catalog in the test host, which has no home plugins,
 /// and keeps it so a test can change enablement.
 struct CatalogHost {
-    platform: Arc<dim_agent_capabilities::host_platform::HostPlatform>,
+    platform: Arc<dim_agent_capabilities::host_platform::ExecHost>,
     settings: Arc<dyn SkillSettings>,
     parts: Key<PartRegistry>,
     catalog: Arc<Mutex<Option<Arc<SkillsCatalog>>>>,
@@ -34,7 +34,7 @@ impl DynPlugin for CatalogHost {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let parts = ctx.require_at(&self.parts)?;
-            ctx.provide_as::<dim_agent_capabilities::host_platform::HostPlatform>(
+            ctx.provide_as::<dim_agent_capabilities::host_platform::ExecHost>(
                 self.platform.clone(),
             )?;
             let catalog = skills::SkillsCatalogPlugin::mount(
@@ -156,7 +156,7 @@ fn build(
     dim_app_server::collaboration::install(&mut builder);
     dim_agent_capabilities::prompt_sources::install(&mut builder);
     skills::install(&mut builder);
-    let mut platform = dim_agent_capabilities::host_platform::HostPlatform::current(
+    let mut platform = dim_agent_capabilities::host_platform::ExecHost::current(
         dim_agent_capabilities::host_platform::ShellStatus::Unavailable {
             code: "SKILL_REFERENCES",
             reason: "The flow runs no command".into(),

@@ -7,7 +7,7 @@ use crate::{
     context_block,
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     host_platform::{
-        ExecShellRuntime, HostInfo, HostPlatform, Os, OutputEncoding, ShellEdition, ShellStatus,
+        ExecShellRuntime, HostInfo, ExecHost, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
     prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
@@ -442,7 +442,7 @@ impl PromptSourcesBranch {
 
 struct Sources {
     home: PathBuf,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     config: Arc<SessionConfig>,
     today: Today,
     stopped: CancellationToken,
@@ -529,7 +529,7 @@ impl LoadPrompt for Sources {
 
 /// Session part: registers each of its sources with the prompt registry.
 pub struct PromptSourcesPlugin {
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     config: Key<SessionConfig>,
     registry: Key<PromptRegistry>,
     language: Key<SessionLanguage>,

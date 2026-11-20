@@ -5,7 +5,7 @@
 
 use crate::{
     host::{ToolDriver, ToolExecutionContext, ToolHost},
-    host_platform::{HostFacts, HostPlatform, ISOLATION_SUMMARY},
+    host_platform::{HostFacts, ExecHost, ISOLATION_SUMMARY},
     shell_session::{CallContext, ShellSession},
     timeline_tree::TreeCommands,
 };
@@ -107,7 +107,7 @@ pub fn install(builder: &mut AgentBuilder) {
 /// The plugin.
 pub struct ShellToolsPlugin {
     host: Key<ToolHost>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     tree: Key<TreeCommands>,
 }
 

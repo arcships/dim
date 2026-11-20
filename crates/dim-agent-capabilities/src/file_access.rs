@@ -1,7 +1,7 @@
 //! Session file facts and on-demand worktree membership.
 use crate::{
     host::{HostError, HostFuture, SessionFiles},
-    host_platform::{HostPlatform, ProcessSpec},
+    host_platform::{ExecHost, ProcessSpec},
     session_grants::SessionGrantsHost,
     workspace_tools::files::canonical_prefix,
 };
@@ -213,7 +213,7 @@ impl ReadFileAccessFacts for Facts {
 
 struct FileAccessFactsPlugin {
     config: Key<SessionConfig>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     files: Key<SessionFiles>,
     grants: Key<SessionGrantsHost>,
     identity: Key<SessionIdentity>,
@@ -307,7 +307,7 @@ struct State {
 
 struct Worktrees {
     ctx: Ctx,
-    platform: Arc<HostPlatform>,
+    platform: Arc<ExecHost>,
     lifecycle: Arc<SessionLifecycle>,
     session: String,
     workspace: PathBuf,
@@ -319,7 +319,7 @@ struct Worktrees {
 impl Worktrees {
     fn new(
         ctx: Ctx,
-        platform: Arc<HostPlatform>,
+        platform: Arc<ExecHost>,
         lifecycle: Arc<SessionLifecycle>,
         session: String,
         workspace: PathBuf,

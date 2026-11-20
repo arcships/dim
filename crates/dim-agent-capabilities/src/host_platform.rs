@@ -239,7 +239,7 @@ pub(crate) enum ExecutionTask {
 }
 
 #[derive(Clone)]
-pub struct HostPlatform {
+pub struct ExecHost {
     pub home: PathBuf,
     pub os: Os,
     /// Node's `process.arch` name (`arm64`, `x64`), as the TS texts use it.
@@ -269,7 +269,7 @@ struct ResolvedShell {
     status: ShellStatus,
 }
 
-impl std::fmt::Debug for HostPlatform {
+impl std::fmt::Debug for ExecHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HostPlatform")
             .field("home", &self.home)
@@ -364,7 +364,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     /// Facts of the current process with an already resolved shell.
     pub fn current(shell: ShellStatus) -> io::Result<Self> {
         let env: Vec<_> = std::env::vars_os().collect();
@@ -532,7 +532,7 @@ const RUNTIME_BIN_ENV_KEYS: [&str; 5] = [
 ];
 const PLUGIN_BIN_DIRS_ENV: &str = "DIMCODE_PLUGIN_BIN_DIRS";
 
-impl HostPlatform {
+impl ExecHost {
     /// The downloaded runtimes installed under the plan in effect, node first;
     /// empty without the port. An entry whose bin directory is not inside its
     /// archive directory is skipped: the sandbox grant is the root, so the two
@@ -660,7 +660,7 @@ fn windows_network_share(path: &Path) -> bool {
 }
 
 /// TS `buildEnv`: the service start environment with forced overrides.
-fn build_env(platform: &HostPlatform) -> Vec<(OsString, OsString)> {
+fn build_env(platform: &ExecHost) -> Vec<(OsString, OsString)> {
     let mut env: Vec<(OsString, OsString)> = platform.env.clone();
     if platform.os == Os::Windows
         && let Some(entry) = env.iter_mut().find(|(key, _)| {
@@ -805,7 +805,7 @@ fn append_toolchain_path(env: &mut Vec<(OsString, OsString)>, directories: &[Pat
 async fn prepend_runtime_path(
     command: &str,
     env: &[(OsString, OsString)],
-    platform: &HostPlatform,
+    platform: &ExecHost,
     shell: &Path,
     edition: ShellEdition,
     cwd: &Path,
@@ -837,7 +837,7 @@ async fn prepend_runtime_path(
 
 async fn map_git_bash_entries(
     entries: &[String],
-    platform: &HostPlatform,
+    platform: &ExecHost,
     shell: &Path,
     env: &[(OsString, OsString)],
     cwd: &Path,
@@ -907,7 +907,7 @@ fn git_bash_cygpath(bash: &Path) -> Option<PathBuf> {
 }
 
 /// Runs a product helper and returns its stdout.
-async fn capture(platform: &HostPlatform, spec: ProcessSpec) -> Result<String, String> {
+async fn capture(platform: &ExecHost, spec: ProcessSpec) -> Result<String, String> {
     let mut tree = platform.spawn(spec).map_err(|error| error.to_string())?;
     let mut stdout = tree.stdout();
     drop(tree.stderr());
@@ -1086,7 +1086,7 @@ impl DynPlugin for HostPlatformPlugin {
             };
             let env: Vec<_> = std::env::vars_os().collect();
             let shell = resolve_shell(config.clone(), &env).await;
-            let mut platform = HostPlatform::current(shell)
+            let mut platform = ExecHost::current(shell)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
             if let Some(home) = &self.config.home {
                 platform.home = home.clone();
@@ -1127,7 +1127,7 @@ impl DynPlugin for HostPlatformPlugin {
                 rutis_bridge::session::host_key("execHost"),
                 Arc::new(dispatch) as Arc<dyn rutis_bridge::session::HostDispatch>,
             )?;
-            ctx.provide_as::<HostPlatform>(platform)?;
+            ctx.provide_as::<ExecHost>(platform)?;
             Ok(Effect::Done)
         })
     }
@@ -2245,7 +2245,7 @@ async fn wait_job_exit(pid: u32) -> io::Result<()> {
     }
 }
 
-impl HostPlatform {
+impl ExecHost {
     /// Resolves the persistent shell: bash, zsh, pwsh, or Windows PowerShell.
     /// Other shells fall back per the platform rules.
     pub async fn persistent_shell(&self) -> ShellStatus {
@@ -2447,8 +2447,8 @@ mod tests {
     fn host_with(
         env: &[(&str, &str)],
         toolchains: Option<Vec<InstalledToolchain>>,
-    ) -> HostPlatform {
-        let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    ) -> ExecHost {
+        let mut platform = ExecHost::current(ShellStatus::Unavailable {
             code: "test",
             reason: String::new(),
         })
@@ -2548,7 +2548,7 @@ mod tests {
             source: ShellSource::Login,
             output_encoding: OutputEncoding::Utf8,
         });
-        let platform = HostPlatform::current(shell.clone()).unwrap();
+        let platform = ExecHost::current(shell.clone()).unwrap();
         let (spec, _) = platform
             .build_process_spec("true", Path::new("/"))
             .await
@@ -2559,7 +2559,7 @@ mod tests {
             "without the port the command is unchanged"
         );
 
-        let mut installed = HostPlatform::current(shell).unwrap();
+        let mut installed = ExecHost::current(shell).unwrap();
         installed.env = vec![];
         let installed =
             installed.with_toolchain_source(ToolchainSourceHost::fixed(vec![toolchain(
@@ -2595,7 +2595,7 @@ mod tests {
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
         let workspace = base.join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
-        let mut platform = HostPlatform::current(ShellStatus::Available(ExecShellRuntime {
+        let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {
             executable_path: "/bin/sh".into(),
             edition: ShellEdition::Sh,
             source: ShellSource::Login,

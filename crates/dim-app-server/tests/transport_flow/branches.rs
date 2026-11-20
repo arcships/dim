@@ -628,9 +628,9 @@ async fn launch_prompt_sources(
     (server, agent, home)
 }
 
-fn prompt_platform(home: &std::path::Path) -> dim_agent_capabilities::host_platform::HostPlatform {
-    use dim_agent_capabilities::host_platform::{HostPlatform, Os, ShellStatus};
-    let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+fn prompt_platform(home: &std::path::Path) -> dim_agent_capabilities::host_platform::ExecHost {
+    use dim_agent_capabilities::host_platform::{ExecHost, Os, ShellStatus};
+    let mut platform = ExecHost::current(ShellStatus::Unavailable {
         code: "PROMPT_BRANCH",
         reason: "the flow runs no command".into(),
     })
@@ -643,7 +643,7 @@ fn prompt_platform(home: &std::path::Path) -> dim_agent_capabilities::host_platf
     platform
 }
 
-struct PromptPlatform(Arc<dim_agent_capabilities::host_platform::HostPlatform>);
+struct PromptPlatform(Arc<dim_agent_capabilities::host_platform::ExecHost>);
 impl rutis::host::DynPlugin for PromptPlatform {
     fn name(&self) -> &str {
         "PromptBranchPlatform"
@@ -656,7 +656,7 @@ impl rutis::host::DynPlugin for PromptPlatform {
         ctx: &'a rutis::Ctx,
     ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
         Box::pin(async move {
-            ctx.provide_as::<dim_agent_capabilities::host_platform::HostPlatform>(self.0.clone())?;
+            ctx.provide_as::<dim_agent_capabilities::host_platform::ExecHost>(self.0.clone())?;
             Ok(rutis::host::Effect::Done)
         })
     }

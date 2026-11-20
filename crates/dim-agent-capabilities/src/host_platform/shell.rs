@@ -1,5 +1,5 @@
 use super::{
-    ExecShellRuntime, HostPlatform, ProcessSpec, ProcessSpecError, PtyProcessTree, PtySize,
+    ExecShellRuntime, ExecHost, ProcessSpec, ProcessSpecError, PtyProcessTree, PtySize,
     ShellEdition, ShellStatus,
 };
 use crate::workspace_tools::{
@@ -42,7 +42,7 @@ pub(crate) struct ShellExit {
     duration: u64,
 }
 
-impl HostPlatform {
+impl ExecHost {
     pub(crate) async fn start_shell(
         &self,
         id: &str,

@@ -14,7 +14,7 @@
 use crate::{
     file_access::FileAccessFacts,
     host::{CancelledFn, HostError, HostFuture, call_until_cancelled},
-    host_platform::HostPlatform,
+    host_platform::ExecHost,
     workspace_tools::files::{Access, canonical_prefix, resolve_path},
 };
 use dim_agent_runtime::{
@@ -204,7 +204,7 @@ pub struct Permission {
     /// looked up at decision time, never while the part loads.
     ctx: Ctx,
     facts: Key<FileAccessFacts>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     session_id: String,
     cwd: PathBuf,
     inner: Mutex<Inner>,
@@ -839,7 +839,7 @@ pub struct PermissionPlugin {
     rules: Key<CommandRules>,
     facts: Key<FileAccessFacts>,
     identity: Key<SessionIdentity>,
-    platform: Key<HostPlatform>,
+    platform: Key<ExecHost>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
 }

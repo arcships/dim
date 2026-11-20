@@ -10,7 +10,7 @@ use super::{
 use crate::{
     host::{HostError, ToolExecutionContext},
     host_platform::{
-        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, HostPlatform, ISOLATION_SUMMARY,
+        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecHost, ISOLATION_SUMMARY,
         Isolation, Os, ProcessSpec, ProcessSpecError, ProcessTree, ShellEdition, ShellKind,
         signal_name,
     },
@@ -1965,7 +1965,7 @@ pub enum CaptureError {
     Unavailable(String),
 }
 
-impl HostPlatform {
+impl ExecHost {
     pub(crate) async fn start_command(
         self: &Arc<Self>,
         task_id: &str,
@@ -2361,7 +2361,7 @@ impl CommandTask {
 }
 
 pub struct ExecProcess {
-    host: Arc<HostPlatform>,
+    host: Arc<ExecHost>,
     task_id: String,
     pub(super) output: Arc<Output>,
     task: Arc<CommandTask>,

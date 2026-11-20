@@ -1502,7 +1502,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
-        ("hostPlatform", "object"),
         ("loader", "owner-api"),
         ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.

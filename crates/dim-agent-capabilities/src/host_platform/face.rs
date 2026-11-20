@@ -1,5 +1,5 @@
 use super::{
-    ConfinedError, ConfinedSpec, Confinement, HostPlatform, Os, SandboxBackend, ShellStatus,
+    ConfinedError, ConfinedSpec, Confinement, ExecHost, Os, SandboxBackend, ShellStatus,
     SystemServices,
 };
 use crate::port_faces::{self, Empty};
@@ -30,7 +30,7 @@ pub struct HostInfo<'a> {
     pub exec_shell: ShellStatus,
 }
 
-impl HostPlatform {
+impl ExecHost {
     pub(crate) async fn registered_output_page(
         &self,
         path: &std::path::Path,
@@ -148,7 +148,7 @@ struct OutputLimits {
 }
 
 async fn confined(
-    owner: Arc<HostPlatform>,
+    owner: Arc<ExecHost>,
     request: ConfinedRequest,
     cancel: CancellationToken,
 ) -> Reply {
@@ -280,7 +280,7 @@ struct ConfiguredRequest {
 }
 
 async fn configured(
-    owner: Arc<HostPlatform>,
+    owner: Arc<ExecHost>,
     request: ConfiguredRequest,
     cancel: CancellationToken,
 ) -> Reply {
@@ -354,7 +354,7 @@ async fn configured(
 }
 
 pub(super) struct Dispatch {
-    pub(super) owner: Arc<HostPlatform>,
+    pub(super) owner: Arc<ExecHost>,
     pub(super) stopping: CancellationToken,
     pub(super) calls: TaskTracker,
 }
@@ -362,7 +362,7 @@ pub(super) struct Dispatch {
 impl Dispatch {
     fn process<F>(
         &self,
-        run: impl FnOnce(Arc<HostPlatform>, CancellationToken) -> F + Send + 'static,
+        run: impl FnOnce(Arc<ExecHost>, CancellationToken) -> F + Send + 'static,
     ) -> Reply
     where
         F: Future<Output = Reply> + Send + 'static,

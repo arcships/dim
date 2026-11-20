@@ -76,8 +76,8 @@ impl Probes {
         std::fs::write(&file, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}/calls'\nif test -f '{}/pause'; then\n  : > '{}/entered'\n  while test -f '{}/pause'; do /bin/sleep 0.01; done\nfi\nexec /usr/bin/git \"$@\"\n", self.root.display(), self.root.display(), self.root.display(), self.root.display())).unwrap();
         std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
-    fn platform(&self) -> HostPlatform {
-        let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+    fn platform(&self) -> ExecHost {
+        let mut platform = ExecHost::current(ShellStatus::Unavailable {
             code: "WORKTREE_TEST",
             reason: "No model shell is used".into(),
         })

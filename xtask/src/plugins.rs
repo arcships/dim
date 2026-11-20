@@ -17,7 +17,7 @@ use dim_agent_capabilities::{
         SessionFileError, SessionFileErrorCode, SessionFiles, SessionFilesService,
         StoredSessionFile,
     },
-    host_platform::{HostPlatform, ShellStatus},
+    host_platform::{ExecHost, ShellStatus},
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
     skill_settings::SkillSettingsHost,
@@ -80,7 +80,7 @@ impl DynPlugin for GraphPlatform {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let execution = ctx.require_at(&self.execution)?;
-            let mut platform = HostPlatform::current(ShellStatus::Unavailable {
+            let mut platform = ExecHost::current(ShellStatus::Unavailable {
                 code: "GRAPH_ONLY",
                 reason: "Graph generation does not execute commands".into(),
             })
@@ -89,7 +89,7 @@ impl DynPlugin for GraphPlatform {
             let toolchain = ctx.require_at(&self.toolchain)?;
             platform = platform.with_toolchain_source((*toolchain).clone());
             platform.home = self.home.clone();
-            ctx.provide_as::<HostPlatform>(Arc::new(platform))?;
+            ctx.provide_as::<ExecHost>(Arc::new(platform))?;
             Ok(Effect::Done)
         })
     }
