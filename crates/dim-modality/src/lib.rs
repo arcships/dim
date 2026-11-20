@@ -714,60 +714,10 @@ impl Evaluation {
             reason: None,
         }
     }
-    /// Options for one operation: Provider's candidates narrowed by the
-    /// adapter when it serves the category, a selectable vision model for
-    /// understanding, the models Provider declares for a realtime operation,
-    /// and otherwise the models Provider declares for the operation id
-    /// (Modality §9.2), in each read's order. The candidates of an
-    /// adapter-served category are the deduplicated union of the two Provider
-    /// reads, selectable first, so a declared media model execution rejects is
-    /// still offered when the adapter serves it. A realtime session's adapter
-    /// is handed the transport its entry declares, so the entry is the
-    /// per-model answer and narrows nothing (A.3, D2). The persisted default
-    /// follows when it is no longer an option.
+    /// Options for one operation, followed by the persisted default when it is
+    /// no longer one of them.
     fn options(&self, category: &str, row: &OperationRow) -> Vec<OptionSnapshot> {
-        let mut options: Vec<OptionSnapshot> = if host_target(category, row.operation).is_some() {
-            // A host target this platform or build cannot run is absent, never
-            // an unavailable option; a plugin target another contract supplies
-            // is listed with its reason (A.2.1, decision 4).
-            self.host_options()
-        } else if is_understand(category, row.operation) {
-            self.selectable
-                .iter()
-                .filter(|model| model.capabilities.vision)
-                .map(|model| Self::option(&model.target))
-                .collect()
-        } else if is_realtime(category) {
-            self.declared
-                .iter()
-                .filter(|model| declares(&model.operations, category, row.operation))
-                .map(|model| Self::option(&model.target))
-                .collect()
-        } else if self.adapter_serves(category) {
-            let mut served: Vec<OptionSnapshot> = Vec::new();
-            for model in self
-                .selectable
-                .iter()
-                .map(|model| &model.target)
-                .chain(self.declared.iter().map(|model| &model.target))
-            {
-                let (provider_id, model_id) = (model.provider_id.as_str(), model.model_id.as_str());
-                if !served
-                    .iter()
-                    .any(|option| option.model() == (provider_id, model_id))
-                    && self.serves(model, category, row.operation)
-                {
-                    served.push(Self::option(model));
-                }
-            }
-            served
-        } else {
-            self.declared
-                .iter()
-                .filter(|model| declares(&model.operations, category, row.operation))
-                .map(|model| Self::option(&model.target))
-                .collect()
-        };
+        let mut options = self.candidates_for(category, row);
         if let Some(key) = row.key
             && let Some(default) = self.defaults.get(key)
             && !options.iter().any(|option| {
@@ -787,6 +737,68 @@ impl Evaluation {
             });
         }
         options
+    }
+    /// The models one operation offers: the host targets, a selectable vision
+    /// model for understanding, and otherwise the models Provider declares
+    /// for the operation id (Modality §9.2), in Provider's order. A realtime
+    /// session's adapter is handed the transport its entry declares, so the
+    /// entry is the per-model answer (A.3, D2). Any other declared model is
+    /// available only when an available adapter serves the operation for it;
+    /// one no adapter serves stays listed with its reason, so an option and
+    /// the operation never disagree.
+    fn candidates_for(&self, category: &str, row: &OperationRow) -> Vec<OptionSnapshot> {
+        if host_target(category, row.operation).is_some() {
+            // A host target this platform or build cannot run is absent, never
+            // an unavailable option; a plugin target another contract supplies
+            // is listed with its reason (A.2.1, decision 4).
+            self.host_options()
+        } else if is_understand(category, row.operation) {
+            self.selectable
+                .iter()
+                .filter(|model| model.capabilities.vision)
+                .map(|model| Self::option(&model.target))
+                .collect()
+        } else {
+            self.declared
+                .iter()
+                .filter(|model| declares(&model.operations, category, row.operation))
+                .map(|model| {
+                    if is_realtime(category) || self.serves(&model.target, category, row.operation)
+                    {
+                        Self::option(&model.target)
+                    } else {
+                        OptionSnapshot {
+                            available: false,
+                            reason: Some(self.unserved_reason(&model.target, category)),
+                            ..Self::option(&model.target)
+                        }
+                    }
+                })
+                .collect()
+        }
+    }
+    /// Why no adapter runs a declared model's operation, in the operation's
+    /// own vocabulary.
+    fn unserved_reason(&self, model: &ModelId, category: &str) -> Reason {
+        match self.adapter(&model.provider_id) {
+            Some(adapter) if !adapter.0.available() => {
+                reason("runtime", "The adapter is unavailable")
+            }
+            _ if category != "image" && !self.adapter_serves(category) => {
+                reason("build", "Not in this build")
+            }
+            _ => reason("adapter", "No available adapter serves the model"),
+        }
+    }
+    /// Whether `configure` may persist `model` for one operation: an option
+    /// the operation offers, served or not, so a default can be saved before
+    /// a runtime lands. A host target must also run here (A.2.1).
+    pub(crate) fn configurable(&self, category: &str, row: &OperationRow, model: &ModelId) -> bool {
+        let host = host_target(category, row.operation).is_some();
+        self.candidates_for(category, row).iter().any(|option| {
+            option.model() == (model.provider_id.as_str(), model.model_id.as_str())
+                && (option.available || !host)
+        })
     }
     /// Why `model` is not an available option of the operation, naming it as
     /// the client configured it: `name` is the operation id, or the category
@@ -829,17 +841,16 @@ impl Evaluation {
         if !self.known(model) {
             return reason("provider", "Model is no longer selectable");
         }
-        if self.adapter_serves(category) {
-            reason(
-                "adapter",
-                "No available adapter serves the configured model",
-            )
-        } else {
-            reason(
-                "configuration",
-                format!("The model does not declare {name}"),
-            )
+        if self
+            .declared_for(&model.provider_id, &model.model_id)
+            .is_some_and(|declared| declares(&declared.operations, category, operation))
+        {
+            return self.unserved_reason(model, category);
         }
+        reason(
+            "configuration",
+            format!("The model does not declare {name}"),
+        )
     }
     pub(crate) fn operation(&self, category: &str, row: &OperationRow) -> OperationSnapshot {
         let options = self.options(category, row);
@@ -930,8 +941,9 @@ impl Evaluation {
                     .as_ref()
                     .filter(|global| {
                         options.iter().any(|option| {
-                            option.model()
-                                == (global.provider_id.as_str(), global.model_id.as_str())
+                            option.available
+                                && option.model()
+                                    == (global.provider_id.as_str(), global.model_id.as_str())
                         })
                     })
                     .cloned()
@@ -1350,27 +1362,19 @@ impl DynPlugin for ModalityPlugin {
                                 )
                                 .await?;
                                 if let Some(model) = model {
-                                    let options: Vec<OptionSnapshot> = if configured.category_wide {
-                                        configured
-                                            .category
-                                            .rows
-                                            .iter()
-                                            .flat_map(|row| {
-                                                evaluation.options(configured.category.name, row)
-                                            })
-                                            .collect()
+                                    // A category-wide save is valid when any
+                                    // of the category's rows offers the model.
+                                    let rows: &[OperationRow] = if configured.category_wide {
+                                        configured.category.rows
                                     } else {
-                                        evaluation.options(configured.category.name, configured.row)
+                                        std::slice::from_ref(configured.row)
                                     };
-                                    // A category-wide save flattens every row,
-                                    // and each row appends the persisted
-                                    // default when it is not an option, marked
-                                    // unavailable. The model is valid when any
-                                    // row offers it as available.
-                                    let selected = options.iter().any(|option| {
-                                        option.model()
-                                            == (model.provider_id.as_str(), model.model_id.as_str())
-                                            && option.available
+                                    let selected = rows.iter().any(|row| {
+                                        evaluation.configurable(
+                                            configured.category.name,
+                                            row,
+                                            model,
+                                        )
                                     });
                                     if !selected {
                                         return Err(selection_refusal(

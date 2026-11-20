@@ -2195,7 +2195,33 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         "modality",
         1000,
     );
-    mine.models = vec![media(), both, model("modality-text", 1000)];
+    let undeclared = |id: &str, raw: Value| -> ModelEntry {
+        serde_json::from_value(json!({
+            "modelId": id, "displayName": id, "status": "active",
+            "capabilities":{"modalities":["image"],"toolCalling":false,"streaming":true,
+                "structuredOutput":false,"vision":false,"audio":false,"reasoning":false},
+            "metadata":{"raw": raw}
+        }))
+        .unwrap()
+    };
+    mine.models = vec![
+        media(),
+        both,
+        model("modality-text", 1000),
+        undeclared("arcship-image", json!({})),
+        undeclared(
+            "modality-inferred",
+            json!({"type":"image","modalities":{"input":["text","image"],"output":["image"]}}),
+        ),
+        undeclared(
+            "modality-none",
+            json!({"type":"image-generation","modalityCapabilities":[]}),
+        ),
+        undeclared(
+            "modality-off",
+            json!({"type":"image-generation","imageGeneration":false}),
+        ),
+    ];
     let created = provider.create(mine, &cancel).await.unwrap();
     let mut off = input(
         OFF,
@@ -2254,8 +2280,18 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
                 "modality-both".to_owned(),
                 vec!["image.generate".to_owned()]
             ),
+            (
+                "arcship-image".to_owned(),
+                vec!["image.generate".to_owned(), "image.edit".to_owned()]
+            ),
+            (
+                "modality-inferred".to_owned(),
+                vec!["image.generate".to_owned(), "image.edit".to_owned()]
+            ),
         ],
-        "a model that declares no operation is omitted"
+        "a model that declares no operation is omitted; a known or image-output model \
+         without a declaration is recognized, and an explicit empty list or \
+         `imageGeneration: false` recognizes nothing"
     );
     assert!(
         !modality
@@ -2390,7 +2426,7 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         .collect();
     assert_eq!(
         listed,
-        ["modality-media"],
+        ["modality-media", "arcship-image", "modality-inferred"],
         "a disabled model leaves the modality options"
     );
     let cancelled = CancellationToken::new();

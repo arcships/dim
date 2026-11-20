@@ -616,9 +616,15 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 **第二个操作：`selectableForModality`。** 同一端口还提供一次面向非对话用途的进程读取
 （Modality §9.2）：操作 `selectableForModality`，异步，请求 `{}`，回复
 `{models: ModalityModelSnapshot[]}`，元素为
-`{target: {providerId, modelId}, operations: string[]}`。`operations` 是该模型目录条目在
-`metadata.raw.modalityCapabilities` 中声明的 `<category>.<operation>` id，按条目中的顺序；
-未声明任何操作的模型被省略。本次读取应用与 `selectableModels` 相同的 provider、账号、模型、
+`{target: {providerId, modelId}, operations: string[]}`。`operations` 是该模型目录条目声明的
+`<category>.<operation>` id，按条目中的顺序；未声明任何操作的模型被省略。条目在
+`metadata.raw.modalityCapabilities` 中声明操作，显式列表（包括空列表）就是全部答案。没有列表的
+条目会被识别为图像模型，因为中转与账号目录列出这类模型时不带媒体元数据：其 id 是已知图像模型之一
+（`arcship-image`、`gpt-image-2` 系列、`grok-imagine-image` 系列）或包含 `seedream`；或其 `type`
+为 `image`/`image-generation` 且输出包含图像或未说明；或 `imageGeneration` 为 true；或其唯一输出是
+`image`。这样的模型声明 `image.generate`，当它也读取图像或是已知模型时还声明 `image.edit`；`type`
+为 `image-edit` 时只声明 `image.edit`，`imageGeneration: false` 不识别任何操作。下面的连接规则读取
+同一份声明。本次读取应用与 `selectableModels` 相同的 provider、账号、模型、
 路由、凭据与状态规则，但去掉其 text modality、chat 类型与已声明文本上限三项要求：没有
 `text` modality 的模型、非 chat 模型与 `limits_undeclared` 的模型只要声明了 modality 操作
 仍是候选；不可用状态、停用的 Provider 或模型、缺少路由、已登出的账号与缺少静态凭据仍会排除
@@ -708,7 +714,7 @@ owner 实现是 `ProviderService::selectable_models` 与
 跨语言操作契约由 [#1613](https://github.com/arcships/dim/issues/1613) 跟踪。
 
 **规则。** 它应用 `selectableForModality` 读取的同一组规则——provider、账号、模型、路由、
-凭据与状态——并要求模型目录条目在其 `metadata.raw.modalityCapabilities` 中声明 `operation`。
+凭据与状态——并要求模型目录条目声明 `operation`，按上面读取的推导方式。
 任何一条不满足的模型都在任何网络调用之前被拒绝：可用性类失败带执行对该模型报告的原因，
 未声明的操作作为指明它的 invalid request 拒绝。读取与连接不会给出不同结论，因为二者共用
 目录与其选择判定。托管账号的凭据租约读取同一条规则：只拒绝排除所有用途的原因，因此目录标记为

@@ -1023,9 +1023,19 @@ process read, for non-conversational uses (Modality §9.2): operation
 `selectableForModality`, asynchronous, request `{}`, reply
 `{models: ModalityModelSnapshot[]}` with each element
 `{target: {providerId, modelId}, operations: string[]}`. `operations` holds the
-`<category>.<operation>` ids the model's catalog entry declares in
-`metadata.raw.modalityCapabilities`, in that entry's order; a model that
-declares none is omitted. The read applies the same provider, account, model,
+`<category>.<operation>` ids the model's catalog entry declares, in that entry's
+order; a model that declares none is omitted. An entry declares its operations
+in `metadata.raw.modalityCapabilities`, and an explicit list, an empty one
+included, is the whole answer. An entry with no list is recognized as an image
+model, because relay and account catalogs list such models without media
+metadata: its id is one of the known image models (`arcship-image`, the
+`gpt-image-2` family, the `grok-imagine-image` family) or names `seedream`, or
+its `type` is `image`/`image-generation` with image or no stated output, or
+`imageGeneration` is true, or its only output is `image`. Such a model declares
+`image.generate`, and `image.edit` too when it also reads images or is a known
+model; a `type` of `image-edit` declares `image.edit` alone, and
+`imageGeneration: false` recognizes nothing. The connection rule below reads
+the same declaration. The read applies the same provider, account, model,
 route, credential and status rules as `selectableModels`, without its
 text-modality, chat-kind and declared-text-limit requirements: a model without
 a `text` modality, a non-chat model and a model with `limits_undeclared`
@@ -1159,8 +1169,8 @@ adapters. A cross-language operation contract is tracked in [#1613](https://gith
 
 **Rules.** It applies exactly the rules of the `selectableForModality` read —
 provider, account, model, route, credential and status — and additionally
-requires the model's catalog entry to declare `operation` in its
-`metadata.raw.modalityCapabilities`. A model that fails any of these is refused
+requires the model's catalog entry to declare `operation`, as the read above
+derives it. A model that fails any of these is refused
 before any network call: the availability cases with the reason execution reports
 for that model, and an undeclared operation as an invalid request that names it.
 The read and the connection cannot disagree, because they share the catalog and
