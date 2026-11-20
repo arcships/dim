@@ -392,6 +392,25 @@ async fn a_text_replace_over_the_frame_limit_leaves_the_file_unchanged() {
                             .unwrap(),
                         json!({"ok":true,"value":null})
                     );
+                    let near = "y".repeat(16 * 1024 * 1024 - 40 * 1024);
+                    assert_eq!(
+                        call(&file, "replace", vec![json!(near.clone()).into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    assert_eq!(
+                        call(&file, "read", vec![]).await.json().unwrap(),
+                        json!({"ok":true,"value":near})
+                    );
+                    assert_eq!(
+                        call(&file, "replace", vec![json!("original").into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
                     let text = "x".repeat(16 * 1024 * 1024);
                     let pending = member(&file, "replace")
                         .reference()

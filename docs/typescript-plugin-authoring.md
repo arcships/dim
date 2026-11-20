@@ -328,10 +328,11 @@ a present file returns its size and a pinned reader ID for `fsHost.readAt` and
 `fsHost.closeRead`. The opening row's unload closes outstanding readers.
 `scope.writeStream(name, next)` pulls chunks until null and preserves the old file
 on failure or cancellation. `scope.directory(name)` creates the work directory
-and returns its node-local path. A buffer large enough that its call message would exceed the runtime's
-16 MiB frame fails that call before it is sent, as a `RangeError` coded
-`bad-value`; the row and the file store are unaffected, and the same holds for
-any call argument, a large text `replace` included.
+and returns its node-local path. A text `replace` whose serialized record would
+exceed the runtime's 16 MiB frame fails that call with a `BindingError` coded
+`bad-value`; the file is unchanged. rutis 0.23 chunks a larger call frame up to
+the deployment's `max_transfer`, so the runtime no longer refuses a call at the
+16 MiB boundary; limits that a Dim face does not enforce are not guaranteed.
 
 Native storage locking and durability do not make remote side effects atomic.
 After an uncertain external outcome, use that system's reconciliation contract

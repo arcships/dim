@@ -19,17 +19,16 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const FORMAT_VERSION: u32 = 1;
 
-/// The largest file a whole-buffer operation accepts. Bytes cross the plugin
-/// runtime's channel base64-encoded in a 16 MiB frame, which costs four bytes
-/// for every three; 8 MiB leaves the frame envelope and both sides' copies
-/// room, and bounds one allocation. Streaming operations have no such limit.
+/// The largest file a whole-buffer operation accepts. 8 MiB bounds one
+/// allocation and leaves room for both sides' copies; streaming operations
+/// have no such limit.
 pub const MAX_WHOLE_FILE_BYTES: usize = 8 * 1024 * 1024;
 
-/// The serialized text record may use this much of the runtime's 16 MiB frame;
-/// the rest is the call envelope. rutis 0.23 chunks a frame over the transport
-/// limit, so the plugin runtime no longer refuses this call before it arrives:
-/// this boundary keeps the published refusal and leaves the file unchanged.
-const TEXT_REPLACE_FRAME_BYTES: usize = crate::outbound::MAX_FRAME_BYTES - 64 * 1024;
+/// The serialized text record must fit the runtime's 16 MiB frame. rutis 0.23
+/// chunks a frame over the transport limit, so the plugin runtime no longer
+/// refuses this call before it arrives: this boundary keeps the admission limit
+/// and leaves the file unchanged.
+const TEXT_REPLACE_FRAME_BYTES: usize = crate::outbound::MAX_FRAME_BYTES;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]

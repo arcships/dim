@@ -456,13 +456,13 @@ while a lease holds it or a file beneath it. Text and binary are separate operat
 `read` and `replace` use the v1 text envelope, `readBytes` and `replaceBytes`
 carry raw bytes. A text read of a raw file fails `invalid_data` and leaves it
 untouched, and a binary read of a text file returns its envelope bytes. The byte
-operations are whole-buffer and capped at 8 MiB, below the 12 MiB raw ceiling
-the base64-encoded runtime frame implies.
-A buffer large enough that its call message would exceed the runtime's 16 MiB
-frame is refused before the file changes, failing only that call with `bad-value`
-while the row and the file store stay up. Since rutis 0.23 chunks a larger frame,
-the `pluginFiles` boundary now makes this refusal for a text `replace`; a rejected
-write leaves the previous contents intact.
+operations are whole-buffer and capped at 8 MiB, which bounds one allocation.
+A text `replace` is admitted when its serialized record fits the runtime's 16 MiB
+frame; a larger one fails that call with a `BindingError` coded `bad-value`
+before the file changes, while the row and the file store stay up. Since rutis
+0.23 chunks a larger frame, the `pluginFiles` boundary makes this refusal itself;
+a rejected write leaves the previous contents intact. A call argument that no Dim
+face limits is no longer refused by the runtime at the 16 MiB boundary.
 `scope.directory(name)` creates missing parents and returns the node-local work path.
 `scope.openRead(name)` returns a pinned reader ID and size, or null for a missing file.
 Use `fsHost.readAt` to read. The reader remains valid across `scope.close()` until
