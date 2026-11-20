@@ -81,7 +81,7 @@ pub(crate) fn invalid(port: &str, message: impl std::fmt::Display) -> BridgeErro
 
 /// A method the port does not serve.
 pub(crate) fn unknown_method(port: &str, method: &str) -> BridgeError {
-    BridgeError::Value(format!("{port} has no method {method}"))
+    BridgeError::value(format!("{port} has no method {method}"))
 }
 
 /// Runs an owner read in the caller's task. Cancelling or dropping the call

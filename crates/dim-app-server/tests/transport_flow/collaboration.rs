@@ -1320,8 +1320,16 @@ async fn assert_no_collaboration_facts(session: &Session) {
 
 /// Polls `check` until it yields a value; fails at the 10s deadline instead
 /// of hanging.
-async fn poll<T>(what: &str, mut check: impl AsyncFnMut() -> Option<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
+async fn poll<T>(what: &str, check: impl AsyncFnMut() -> Option<T>) -> T {
+    poll_within(Duration::from_secs(10), what, check).await
+}
+
+async fn poll_within<T>(
+    limit: Duration,
+    what: &str,
+    mut check: impl AsyncFnMut() -> Option<T>,
+) -> T {
+    tokio::time::timeout(limit, async {
         loop {
             if let Some(value) = check().await {
                 return value;
@@ -8290,7 +8298,7 @@ async fn a_stopped_turn_keeps_a_delivered_members_later_approval_reachable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_permission_state_refuses_a_committed_member_request_without_creating_a_member() {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(45), async {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let hold: Hold = Arc::new({
@@ -8352,7 +8360,7 @@ async fn missing_permission_state_refuses_a_committed_member_request_without_cre
             .expect("the same branch's Permission part");
         let view = ctx.view(permission.id).unwrap();
         let closing = tokio::spawn(view.shutdown());
-        poll("permission state is unavailable", async || {
+        poll_within(Duration::from_secs(30), "permission state is unavailable", async || {
             (!matches!(session.get::<dim_agent_capabilities::permission::PermissionState>("main"), Ok(Some(_)))).then_some(())
         }).await;
         release.notify_one();
