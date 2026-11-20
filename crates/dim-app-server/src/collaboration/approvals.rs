@@ -1,6 +1,6 @@
 use super::*;
 use dim_agent_capabilities::{
-    approval::{Approval, ApprovalRespondError},
+    approval::ApprovalRespondError,
     input_queue::InputQueue,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
     session_broadcast::{SessionNotice, notify},
@@ -149,19 +149,30 @@ struct DetailParams {
 }
 
 impl CollaborationSession {
-    fn member_approval(&self, session_id: &str, branch_id: &str) -> Option<Arc<Approval>> {
-        let (_, member) = self.collaboration.index.session(session_id)?;
-        member.service::<Approval>(branch_id).ok()
+    async fn decide_member(
+        &self,
+        descriptor: &MemberApprovalDescriptor,
+        decision: ApprovalDecision,
+    ) -> Result<(), ApprovalRespondError> {
+        let (_, member) = self
+            .collaboration
+            .index
+            .session(&descriptor.member.session_id)
+            .ok_or(ApprovalRespondError::Unknown)?;
+        let tree = member
+            .session_service::<TimelineTree>()
+            .map_err(|_| ApprovalRespondError::Unknown)?;
+        tree.decide_approval(
+            &descriptor.member.branch_id,
+            descriptor.request_id.clone(),
+            decision,
+        )
+        .map_err(|_| ApprovalRespondError::Unknown)?
+        .await
     }
 
     async fn deny_member(&self, descriptor: &MemberApprovalDescriptor) {
-        if let Some(approval) =
-            self.member_approval(&descriptor.member.session_id, &descriptor.member.branch_id)
-        {
-            let _ = approval
-                .respond(&descriptor.request_id, ApprovalDecision::Deny)
-                .await;
-        }
+        let _ = self.decide_member(descriptor, ApprovalDecision::Deny).await;
     }
 
     /// Returns the current live delegation destination, or `None` when it is absent or closing.
@@ -334,12 +345,12 @@ impl CollaborationSession {
         let branch_id = branch_id.to_owned();
         let approval_id = approval_id.to_owned();
         tasks.spawn(async move {
-            if let Ok(approval) = owner
-                .tree
-                .get(&branch_id)
-                .and_then(|branch| branch.service::<Approval>())
+            if let Ok(decision) =
+                owner
+                    .tree
+                    .decide_approval(&branch_id, approval_id, ApprovalDecision::Deny)
             {
-                let _ = approval.respond(&approval_id, ApprovalDecision::Deny).await;
+                let _ = decision.await;
             }
         });
     }
@@ -694,17 +705,10 @@ impl ToolHandler for DecisionTool {
             } else {
                 ApprovalDecision::Deny
             };
-            let result = match self.session.member_approval(
-                &route.descriptor.member.session_id,
-                &route.descriptor.member.branch_id,
-            ) {
-                Some(approval) => {
-                    approval
-                        .respond(&route.descriptor.request_id, decision)
-                        .await
-                }
-                None => Err(ApprovalRespondError::Unknown),
-            };
+            let result = self
+                .session
+                .decide_member(&route.descriptor, decision)
+                .await;
             let code = match result {
                 Ok(()) => "answered",
                 Err(ApprovalRespondError::Unknown | ApprovalRespondError::Cancelled) => {

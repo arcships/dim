@@ -632,6 +632,23 @@ impl TimelineTree {
         Ok(branch.service::<crate::approval::Approval>()?.pending())
     }
 
+    pub fn decide_approval(
+        &self,
+        branch_id: &str,
+        request_id: String,
+        decision: ApprovalDecision,
+    ) -> Result<
+        impl Future<Output = std::result::Result<(), crate::approval::ApprovalRespondError>>
+        + Send
+        + 'static
+        + use<>,
+    > {
+        let approval = self
+            .get(branch_id)?
+            .service::<crate::approval::Approval>()?;
+        Ok(async move { approval.decide(request_id, decision).await })
+    }
+
     pub async fn withdraw(
         &self,
         branch_id: &str,
@@ -672,9 +689,7 @@ impl TimelineTree {
                 request_id,
                 decision,
             } => {
-                self.get(branch_id)?
-                    .service::<crate::approval::Approval>()?
-                    .decide(request_id, decision)
+                self.decide_approval(branch_id, request_id, decision)?
                     .await
                     .map_err(|error| {
                         use crate::approval::ApprovalRespondError;
