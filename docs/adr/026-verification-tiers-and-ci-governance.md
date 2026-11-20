@@ -1,4 +1,4 @@
-# 025: Verification tiers, test coverage and CI governance
+# 026: Verification tiers, test coverage and CI governance
 
 Decision status: Proposed.
 
@@ -26,10 +26,12 @@ Every verification asset has an explicit operational state that governs its life
 1. **Active gate**: runs automatically on pull requests under explicit wall-clock budgets, guarding
    high-frequency contracts and the affected dependency closure.
 2. **Retained (on-demand & sweep)**: stays in the repository without gating ordinary pull requests.
-   Runs on scheduled full sweeps, before release, when diagnosing or reproducing a failure, or when
-   a design/protocol review calls for it. Retained Rust tests remain compiled (for example,
-   consolidated with `#[ignore]`) so they do not bitrot; external-toolchain checks (TLC/Java,
-   local tmux E2E, standalone profiling scripts) stay out of everyday build toolchains.
+   Runs when the asset's own source files change (for example, formal model edits), on scheduled
+   full sweeps, before release, when diagnosing or reproducing a failure, or when a design/protocol
+   review calls for it — with the tier table's "Default state & trigger" column authoritative for
+   each tier. Retained Rust tests remain compiled (for example, consolidated with `#[ignore]`) so
+   they do not bitrot; external-toolchain checks (TLC/Java, local tmux E2E, standalone profiling
+   scripts) stay out of everyday build toolchains.
 3. **Dev / exploratory**: temporary probes or fine-grained local tests created while developing or
    debugging. Ablated before merge: enduring contract coverage moves into the active gate (D3),
    reusable diagnostic reproducers move into Retained, and throwaway scaffolding is removed.
@@ -39,9 +41,9 @@ Verification tiers (L0–L4) map each class of asset to its default operational 
 | Tier | Question answered | Scope | Default state & trigger |
 | --- | --- | --- | --- |
 | **L0 — Design & formal** | Do abstract state-machine, protocol and handover invariants hold? | Formal models (e.g. TLA+ specifications and `.cfg` properties) | **Retained**: (a) triggered on formal model file changes (with tool cost disclosed under D4 if wired into CI), and (b) enforced via PR checklist/review whenever an implementation change alters a modelled handover, recovery or ordering guarantee. Not run on ordinary implementation PRs. |
-| **L1 — Static form & contract** | Are formatting, dependency boundaries, ADR immutability, public schemas/wire types and license/advisory policies intact? | Formatters, linters, pure static form/structure checks (including ADR freeze checks on every PR / ADR edit), frontend typecheck/lint, wire/schema contracts, dependency advisory/license scans | **Active gate**: fast fail-first on every PR, scoped to the changed surface (dependency scans only on manifest, lockfile or policy changes). |
-| **L2 — Business flows** | Do modified modules and their transitive consumers preserve behavioral contracts? | Unit and in-process or loopback flow tests | **Active gate** on the primary high-throughput platform for the **reverse-dependency closure** of changed crates (expanding to the full workspace when foundational crates or workspace-wide configuration change). Heavy historical, soak or low-frequency flows belong in **Retained**. |
-| **L3 — Real environment & cross-platform** | Do real OS primitives, process/plugin wiring, terminal interaction and external protocol boundaries work? | OS-native boundary slices, real daemon + plugin runtime flows, interactive terminal E2E suites, external registry acceptance | **Split**: narrow OS-native boundary slices run in the **Active gate** only on PRs touching platform/client code; full cross-platform runs, external-registry acceptance and interactive terminal E2E are **Retained** (asynchronous `main`/scheduled sweeps, pre-release or local on-demand). |
+| **L1 — Static form & contract** | Are formatting, dependency boundaries, ADR immutability, public schemas/wire types and license/advisory policies intact? | Formatters, linters, pure static form/structure checks (including ADR freeze checks on every PR / ADR edit), frontend typecheck/lint, source-derived wire/schema contracts, dependency advisory/license scans | **Active gate**: fast fail-first on every PR, scoped to the changed surface (dependency scans only on manifest, lockfile or policy changes). |
+| **L2 — Business flows** | Do modified modules and their transitive consumers preserve behavioral contracts? | Unit and in-process or loopback flow tests (plus runtime-assembled structural checks that require compiling the workspace) | **Active gate** on the primary high-throughput platform for the **reverse-dependency closure** of changed crates (expanding to the full workspace when foundational crates or workspace-wide configuration change). Heavy historical, soak or low-frequency flows belong in **Retained**. |
+| **L3 — Real environment & cross-platform** | Do real OS primitives, process/plugin wiring, terminal interaction and external protocol boundaries work? | OS-native boundary slices, real daemon + plugin runtime flows, interactive terminal E2E suites, external registry acceptance | **Split**: narrow OS-native boundary slices run in the **Active gate** only on PRs touching platform/client code; full cross-platform runs and external-registry acceptance are **Retained** (asynchronous `main`/scheduled sweeps, pre-release or on-demand); interactive terminal E2E is **Retained (local-only)** — run locally on demand or before release, **never** invoked by a CI workflow. |
 | **L4 — Quality, performance & release** | Have model quality, resource budgets, executable layout or distribution artifacts regressed? | Evaluation harnesses, memory/startup measurements, native code-layout builds, multi-platform release builds and registry/image acceptance | **Execution is always Retained** (scheduled, manual or release train only — never gates ordinary feature PRs). Changes to an L4 harness itself run the harness's own L1/L2 checks in the **Active gate** on that PR. |
 
 Formal models (L0) verify that an abstract state machine satisfies safety and conditional liveness
@@ -56,20 +58,25 @@ Documentation exists to guide contributors and state semantic contracts. Automat
 documentation and source conventions enforce only **deterministic, low-false-positive form and
 structural invariants**:
 
-- **In scope for automated checks (L1, zero business compilation)**: lifecycle/immutability form
-  (such as accepted-ADR freeze checks), link and template structure, and deterministic
-  code-to-document structural projections (such as public service catalogs or crate-level overviews)
-  that do not parse natural-language prose.
+- **Pure static form checks (L1, zero business compilation)**: lifecycle/immutability form (such as
+  accepted-ADR freeze checks), link and template structure, and manifest- or AST-derived structural
+  checks (such as crate/module dependency boundaries and source-parsed type declarations) that do
+  not compile business runtime crates and do not parse natural-language prose.
+- **Runtime-assembled structural projections (workspace-coupled, alongside L2)**: deterministic
+  code-to-document projections that inherently require compiling and assembling the runtime (such
+  as a live public service catalog) run on the workspace-coupled build/verify path rather than
+  blocking pure-static docs, frontend or script PRs.
 - **Keep generated snapshots minimal**: commit and freshness-check a generated file only when
   downstream code consumes it (e.g. cross-language type declarations) or when it is a concise,
   actively referenced public summary. Fine-grained internal dependency graphs computed for boundary
   checks are verified live in memory and generated on demand rather than committed to Git as
   conflict-prone snapshots.
 - **Out of scope for automated checks**: semantic correctness of prose, design quality, and
-  judgement calls such as whether an edit alters a modelled invariant. Avoid brittle cross-language
-  text scanners that try to infer semantics from raw literals and rely on growing manual
-  allowlists; enforce invariants through types, boundaries, review checklists, L0 models and L2
-  behavioral tests instead.
+  judgement calls such as whether an edit alters a modelled invariant. Avoid introducing new brittle
+  cross-language text scanners that try to infer semantics from raw literals and rely on growing
+  manual allowlists (existing allowlist-backed scanners are kept only until replaced by types,
+  boundaries or behavioral tests rather than imitated); enforce invariants through types,
+  boundaries, review checklists, L0 models and L2 behavioral tests instead.
 
 ### D3. Test coverage follows lowest flow/contract layer, single owner, release-safe injection and build hygiene
 
@@ -133,8 +140,10 @@ layer.
 
 - Every new test, static check or formal model declares its operational state (Active / Retained /
   Dev), tier (L0–L4) and owner before wiring into CI.
-- Once accepted, `AGENTS.md` (`## Testing`) can consolidate its testing rules onto this ADR so the
-  rule is stated once; until accepted, `AGENTS.md` keeps the current operational commands unchanged.
+- Until this ADR is accepted and its follow-up tooling changes land, `AGENTS.md` and
+  `docs/architecture/` remain the authoritative reference for today's commands and committed
+  snapshots; once aligned, `AGENTS.md` (`## Testing`) can consolidate its testing rules onto this
+  ADR so the rule is stated once.
 - Pure static form checks are decoupled from workspace-coupled tooling so docs, frontend and script
   PRs stay fast.
 - Test-only build flags move to release-unreachable runtime/harness injection, eliminating
