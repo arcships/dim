@@ -93,7 +93,13 @@ impl HostPlatform {
                 )
             } => {
                 return match status {
-                    Ok(status) => Ok(ConfiguredEnd::Exited {status, stdout:out.0, stderr:err.0, stdout_truncated:out.1, stderr_truncated:err.1}),
+                    Ok(status) => Ok(ConfiguredEnd::Exited {
+                        status,
+                        stdout: out.0,
+                        stderr: err.0,
+                        stdout_truncated: out.1,
+                        stderr_truncated: err.1,
+                    }),
                     Err(error) => Err(ConfiguredError::Wait(error, err.0))
                 }
             }
