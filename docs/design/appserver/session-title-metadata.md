@@ -87,11 +87,11 @@ protocol version.
 
 | Method | Mode | Request | Reply value | Errors |
 | --- | --- | --- | --- | --- |
-| `read` | async | `{sessionId}` | `{revision, title: {text, source} \| null}` | `not_found`, `storage` |
+| `readMetadata` | async | `{sessionId}` | `{revision, title: {text, source} \| null}` | `not_found`, `storage` |
 | `setTitle` | async | `{sessionId, expectedRevision, title: {text, source: "auto" \| "manual"} \| null}` | `{revision}`: the committed revision | `conflict`, `not_found`, `storage` |
 
 - Replies use one envelope, `{ok: true, value}` or `{ok: false, error: {code, message}}`, as `settings` does.
-- Neither method loads the Session. `read` reads committed state and does not wait for the title writer (§5).
+- Neither method loads the Session. `readMetadata` reads committed state and does not wait for the title writer (§5).
 - `title` is required in `setTitle`; `null` clears. A request without `title` is rejected rather than read as a
   clear, so a caller's omission never erases a user's title.
 - A malformed call (unknown method, not exactly one request object, an unknown field, a wrong type or a missing
@@ -106,7 +106,7 @@ protocol version.
 ### 4.2 Rust
 
 Rust consumers inject `Store`, the typed binding of `store`, and call
-`read` and `set_title`. The binding is the existing dispatcher, published at both its typed key
+`read_metadata` and `set_title`. The binding is the existing dispatcher, published at both its typed key
 and `host_key("store")`; both routes delegate directly to the same SessionStore owner.
 The existing `SessionMetadata` reply type is unchanged.
 
@@ -150,7 +150,7 @@ This settles the boundary that SessionTitle §0 left to S5b.
 | Before the call | The caller's own work. Cancelling it before the call writes nothing |
 | The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `storage` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
 | After the call | SessionStore settles the write itself: it commits and announces, or fails and writes nothing. Dropping the call, unloading the calling row or losing the reply neither cancels nor undoes it. `setTitle` has no cancel action |
-| Lost reply | The caller reads with `read`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
+| Lost reply | The caller reads with `readMetadata`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
 | SessionStore unload | Its disposer first stops admission: from then on a call fails `storage` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
 
 Rejected: a cancel action that works until the transaction starts. It would only move the uncertainty, since a caller
@@ -209,8 +209,8 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | Event | Title |
 | --- | --- |
 | Session created | None, revision 0; no row is written |
-| Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `read` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
-| `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `read` and `setTitle` fail `not_found` |
+| Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `readMetadata` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
+| `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `readMetadata` and `setTitle` fail `not_found` |
 | Creation rollback | The same transaction as a delete; it removes a row that a racing write committed |
 | `session.fork` (S5c) | Not copied ([SessionTitle A7](../plugins/SessionTitle.md#appendix-e-assumptions)): the fork starts untitled at revision 0 |
 | SessionStore or SqliteStorage reload | Settles as in §6. Consumers of `store` reload with SessionStore ([ADR 002](../../adr/002-plugin-scope.md) D3), which SessionTitle §1 accepts. SessionStore reloads only with SqliteStorage, which has no dependencies |
@@ -258,7 +258,7 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
   `settings_documents` belongs to Settings. Columns added to `agent_sessions` change its stored SQL, so they need a
   new version as well, and they would mix a mutable value into the creation record.
 - **Why one row per Session.** Only the current title and revision are read. No decision uses earlier titles.
-- **Index.** The primary key serves `read`, `setTitle`, the list join and the delete. No other index.
+- **Index.** The primary key serves `readMetadata`, `setTitle`, the list join and the delete. No other index.
 
 | Store found | Action at startup, in the existing admission transaction (`IMMEDIATE`, before writable PRAGMAs) |
 | --- | --- |
@@ -279,7 +279,7 @@ after the upgrade commits (S5a's log line, with the version the store came from)
 | --- | --- |
 | Identity | `dyn HostDispatch` at `host_key("store")`, provided by SessionStore; `register_shared("store")` in App Server's service catalog, beside `sessions` and `settings` |
 | Use | A C4 Session part declares `inject: ['store']` and calls `ctx.use('store')`, the path `settings` takes from a Session part ([settings-owner fixture](../../../runtime/fixtures/settings-owner.ts)). Types are in [npm/plugin.d.ts](../../../npm/plugin.d.ts) |
-| Modes | `read` and `setTitle` are both `async` |
+| Modes | `readMetadata` and `setTitle` are both `async` |
 | Writer | The service carries no caller identity, as for `settings` (AGENTS.md rule 11). SessionTitle is the title's one writer by design ([SessionTitle §2](../plugins/SessionTitle.md#2-data-and-state)); other packages only read |
 | Reload | A consuming row reloads with SessionStore. SessionStore reloads only with SqliteStorage, so no directory part that never reloads is needed, unlike `sessions`, whose index reloads with Settings ([sessions D1](sessions-service.md#3-decisions)) |
 | Missing provider | A daemon without a native store has no SessionStore, so a row that injects `store` stays Pending under the existing rules; native Sessions continue |
@@ -326,12 +326,12 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
 
 ## 16. Acceptance (flow tests)
 
-1. `setTitle` commits and returns the next revision; `read` returns it. Two v3 clients attached over IPC and
+1. `setTitle` commits and returns the next revision; `readMetadata` returns it. Two v3 clients attached over IPC and
    WebSocket each receive exactly one `session.notice` per commit, in commit order, with `data` equal to the list's
    title fields. A conflict and an unknown Session announce nothing.
 2. Concurrent writers: every commit is announced once, in increasing `titleRevision` order.
 3. A clear (`null`) commits a revision with no title and announces nulls.
-4. `read` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
+4. `readMetadata` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
 5. A failed transaction (a disposable store with a failing trigger): `storage`, no notice, state unchanged; the next
    write at the same revision commits.
 6. A `setTitle` call whose caller awaits the reply and then drops it, while the write is held before its transaction,
@@ -368,7 +368,7 @@ fixture](../../../runtime/fixtures/session-metadata.ts); items 6 and 12 hold the
 | D5 | Notice `data` is `{title, titleSource, titleRevision}` | A.2's `{sessionId, title, titleSource, revision}` | The channel already names the Session (C6 D4); one field set for list entries and notices lets clients merge without mapping |
 | D6 | `titleRevision` in v3 list entries | `title` and `titleSource` only | Without it a client cannot order a list reply against a notice (§8) |
 | D7 | List fields for protocol v3 only | All protocol versions | v1 and v2 are frozen and receive no title notices |
-| D8 | Service `store` with `read` and `setTitle`; the Rust binding uses `read` and `set_title` | A.2's method name `metadata` | `store.metadata` repeats itself; `read` matches `settings.read` |
+| D8 | Service `store` with `readMetadata` and `setTitle`; the Rust binding uses `read_metadata` and `set_title` | A.2's method name `metadata` | The name distinguishes the metadata read from other store operations. |
 | D9 | Errors `conflict`, `not_found`, `storage` as data; malformed calls are bridge errors | A `rejected` code as in `sessions` | The three codes are the write's outcomes; a malformed call is a programming error, as in `settings` |
 | D10 | `not_found` for a Session the store does not hold | `session_closed` | Maintainer decision; it is SessionStore's vocabulary, and SessionTitle maps it to `session_not_found` |
 | D11 | SessionStore stores text as given | Validating length and characters | SessionTitle owns the title rules and validates them; checking again would duplicate the contract |

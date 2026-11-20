@@ -136,7 +136,7 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `ServerControlPlugin` | 就绪门闩、正常/强制关闭意图、监听器故障 | `ServerControl` | — |
 | `FileStoragePlugin` | 文件操作准入、锁租约、在途 I/O 和原子替换清理 | `FileStorage` | — |
 | `SqliteStoragePlugin` | 共享数据库连接、事务、原生 schema 门禁、文件维护锁与关停 | `SqliteStorage` | —；启动参数固定数据库路径 |
-| `SessionStorePlugin` | 原生会话目录、Timeline 落盘/恢复及写入任务 | `store` 数据接口、`sessionFiles`、`sessionMetadata`、`worktreeAssociations`，以及原生 `SessionStore` / `TimelineStore` 绑定 | `SqliteStorage` |
+| `SessionStorePlugin` | Session 仓储和 Timeline 持久化 | `store`、`sessionFiles`，以及 Session 的 `timelineStore` 绑定 | `SqliteStorage` |
 | `SettingsPlugin` | Generic BusinessDocument sources and per-source CAS; no domain interpretation, approvals, connections or discovery | `SettingsService` | `FileStorage`, `When<SqliteStorage>` |
 | `OpenAICodexOAuthPlugin` / `GrokOAuthPlugin` | 各自账号字段、登录、刷新与终态 | `OpenAICodexOAuthService` / `GrokOAuthService` | `FileStorage` |
 | `ManagedProvidersPlugin` | managed provider 的当前绑定代次与在途操作；无绑定时请求明确失败；每个 server 装配 | `managedSearch`；有 product home 时注册 `account` | 有 product home 时依赖 `ManagementMethods`；owner 保留在私有 key |
@@ -149,7 +149,7 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `SkillsCatalogPlugin` | Skill discovery/catalog and business settings; privately supplies the reusable catalog's SkillSettingsHost | `skillsCatalog` (`SkillsCatalogBinding`), private typed owner key, Skills management contribution | `HostPlatform`, `SettingsService` |
 | `AgentDirectoryPlugin` | `AgentDirectory`：Agent 表与实例、Session 协议版本与占用、不可用记录、默认 agentId、serverInstanceId；不可重启 | 私有 typed key `AgentDirectory`；公共 `sessions` | — |
 | `rutis-loader` | 进程装配的配置行与 `agent` / `session` / `branch` instanced 分组的实例 | `Loader` | — |
-| `AgentsPlugin` | `AgentIndex`：目录逻辑、Session 准入、经 loader 创建与关闭 Agent、默认及恢复 Agent 装载入口；进程 builder | `AgentIndex` | `AgentDirectory`、`Loader`；`--database` 另注入 `SqliteStorage`、`store`、`sessionMetadata`（`SessionMetadataService`），并从原生 `SessionStore` 装配 TimelineStore，产品 profile 另注入 `SettingsService`；受保护 profile 每次调用时读取 `ModelSelectionHost`，不依赖其提供方（方法合同 §3.2） |
+| `AgentsPlugin` | `AgentIndex`：目录逻辑、Session 准入、经 loader 创建与关闭 Agent、默认及恢复 Agent 装载入口；进程 builder | `AgentIndex` | `AgentDirectory`、`Loader`；`--database` 另注入 `SqliteStorage`、`store`，通过 `store` 装配 TimelineStore，产品 profile 另注入 `SettingsService`；受保护 profile 每次调用时读取 `ModelSelectionHost`，不依赖其提供方（方法合同 §3.2） |
 | `AgentScope`（`agent` 实例中的行） | 一个 `Agent`（Session 建在同一 Agent 实例里）与承载监听的子插件 `Sessions`；`AgentHost`（agent、agentId、default、profile、承载监听的 ctx）；apply 登记进目录 | 经 `AgentDirectory` 登记 | `AgentDirectory`、`Loader`；`TimelineStore` 由已配置的 AgentBuilder 传入 |
 | `CollaborationDirectoryPlugin` | Team 关系与临时 Agent 归属的目录 | `CollaborationDirectory` | — |
 | `CollaborationPlugin` | 成员关系、临时 Agent 归属、参与 Session 的关闭观察任务 | `Collaboration` | `AgentIndex`、`CollaborationDirectory` |
