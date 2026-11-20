@@ -26,11 +26,28 @@ const SPENT_FAILURE_CHAIN: &str = "the failure chain's retry budget is spent";
 
 /// Reports the wait a retry is about to sleep through. A consumer without a
 /// display implements it for its state as a no-op; `()` already does.
-pub trait RetryObserver {
+pub trait RetryObserver: Send {
+    fn prepare(
+        &mut self,
+        request: Arc<ModelRequest>,
+        _protocol: Option<ModelProtocol>,
+    ) -> impl Future<Output = Result<Arc<ModelRequest>, HostError>> + Send {
+        std::future::ready(Ok(request))
+    }
+
+    fn before_attempt(&mut self) -> impl Future<Output = Result<(), HostError>> + Send {
+        std::future::ready(Ok(()))
+    }
+
     /// The attempt `retry.attempt` starts at `retry.retry_at_ms` after the
     /// failure `retry.kind` with `retry.reason`; `None` clears the retry when
     /// the attempt starts or the wait is cancelled.
-    fn waiting(&mut self, _retry: Option<RetryWaiting<'_>>) {}
+    fn waiting(
+        &mut self,
+        _retry: Option<RetryWaiting<'_>>,
+    ) -> impl Future<Output = Result<(), HostError>> + Send {
+        std::future::ready(Ok(()))
+    }
 }
 
 /// One retry about to sleep, as the progress display shows it.
@@ -77,6 +94,12 @@ pub async fn invoke<S: Send + RetryObserver, T>(
         failure_policy: policy,
         mut recovery,
     } = resolved;
+    let protocol = match &connection {
+        ModelConnection::Local => None,
+        ModelConnection::Http(http) => Some(http.protocol),
+        ModelConnection::Bedrock(_) => Some(ModelProtocol::Bedrock),
+    };
+    let request = state.prepare(request.clone(), protocol).await?;
     let mut recovery_state = RecoveryState::default();
     if let Some(chain) = chain {
         recovery_state.attempts = chain.attempts;
@@ -92,11 +115,15 @@ pub async fn invoke<S: Send + RetryObserver, T>(
             recovery_state.attempts += 1;
             let attempt = cancel.child_token();
             let mut replay_safe = true;
-            let result = match host
-                .0
-                .invoke(request.clone(), connection.clone(), attempt.clone())
-                .await
-            {
+            let stream = match state.before_attempt().await {
+                Ok(()) => {
+                    host.0
+                        .invoke(request.clone(), connection.clone(), attempt.clone())
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            let result = match stream {
                 Ok(stream) => consume(stream, state, attempt.clone(), &mut replay_safe).await,
                 Err(error) => Err(error),
             };
@@ -141,25 +168,27 @@ pub async fn invoke<S: Send + RetryObserver, T>(
             };
             if !delay.is_zero() {
                 let (kind, reason) = failure.unwrap_or((ModelFailureKind::Unknown, None));
-                state.waiting(Some(RetryWaiting {
-                    attempt: recovery_state.attempts + 1,
-                    max_attempts: MAX_ATTEMPTS,
-                    retry_at_ms: unix_millis_now()
-                        .saturating_add(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
-                    kind,
-                    reason: reason.as_deref(),
-                }));
+                state
+                    .waiting(Some(RetryWaiting {
+                        attempt: recovery_state.attempts + 1,
+                        max_attempts: MAX_ATTEMPTS,
+                        retry_at_ms: unix_millis_now()
+                            .saturating_add(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX)),
+                        kind,
+                        reason: reason.as_deref(),
+                    }))
+                    .await?;
                 let waiting = tokio::time::Instant::now();
                 tokio::select! {
                     biased;
                     _ = cancel.cancelled() => {
-                        state.waiting(None);
+                        state.waiting(None).await?;
                         return Err(HostError::Cancelled("Model request cancelled".into()));
                     }
                     _ = tokio::time::sleep(delay) => {}
                 }
                 recovery_state.waited += waiting.elapsed();
-                state.waiting(None);
+                state.waiting(None).await?;
             }
             if let FailureAction::RecoverCredentials(_) = action {
                 check_cancel(cancel)?;
