@@ -1,6 +1,6 @@
 # SessionStore 标题元数据
 
-目标绑定为 `store.readMetadata` 和 `store.setTitle`。SessionTitle 与重命名调用方一起切换到 `store`，随后移除 `sessionMetadata`。下文的旧绑定名描述迁移前的实现。
+目标绑定为 `store.readMetadata` 和 `store.setTitle`。SessionTitle 与重命名调用方一起切换到 `store`，随后移除 `store`。下文的旧绑定名描述迁移前的实现。
 
 状态：已在路线图 S5b 实现（[#60](https://github.com/arcships/dim/issues/60)，[#96](https://github.com/arcships/dim/pull/96)），在 C6（[#49](https://github.com/arcships/dim/issues/49)，[#85](https://github.com/arcships/dim/pull/85)）之后；实现与本设计一致。评审细化了写入何时被接纳、卸载如何了结它（§6、D14）。需求：[SessionTitle](../plugins/SessionTitle.md) §2、§4 与 [A.2](../plugins/SessionTitle.md#a2-依赖的形状由所有者定义)。总览：[附录 B.2](../overview.md#b2-app-server-进程插件) 的 SessionStore 与 Rpc 行。范围：[ADR 002](../../adr/002-plugin-scope.md) 进程作用域，在既有 SessionStore 插件内，外加三个 Rpc 列表字段。使用方：SessionTitle。
 
@@ -12,7 +12,7 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
 - **写入。** `setTitle {sessionId, expectedRevision, title | null}` 提交修订号 `expectedRevision + 1`，或者失败为 `conflict`、`not_found`、`storage`。调用即交接：除非 SessionStore 正在关闭，它在收到调用时接纳写入，并由自己了结；放弃调用只会丢掉回复。
 - **通知。** 每次提交后发出 `{source: "SessionStore", kind: "title", data: {title, titleSource, titleRevision}}`，按提交顺序。
 - **列表。** 协议 v3 的 `session.summaries` 条目带 `title`、`titleSource`、`titleRevision`。
-- **绑定。** 进程服务 `sessionMetadata`（`read`、`setTitle`）由 SessionStore 提供，经既有服务目录到达 TypeScript，与 `sessions`、`settings` 相同。
+- **绑定。** 进程服务 `store`（`read`、`setTitle`）由 SessionStore 提供，经既有服务目录到达 TypeScript，与 `sessions`、`settings` 相同。
 - **生命周期。** 删除在 S5c 的删除事务里移除标题；分叉不复制标题（SessionTitle A7）；重启后标题保留。读写标题从不装载 Session。
 - **格式。** 原生存储 v16：新增一张表，从 v15 原地升级；v13 经由 v15 的那一步升级。
 
@@ -24,7 +24,7 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
  Session 作用域                          进程作用域（控制节点）
  ----------------------------           --------------------------------------------------------------
  SessionTitle（Session 部分）           SessionStore（既有插件）
-   inject 'sessionMetadata'               sessionMetadata（HostDispatch）
+   inject 'store'               store（HostDispatch）
      read -------------------------->       read     -> metadata()   ------------------+
      setTitle ---------------------->       setTitle -> set_title()                    |
                                                           |                            v
@@ -40,10 +40,10 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
 
 | 部件 | 作用域 | 修改 |
 | --- | --- | --- |
-| SessionStore（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs)、[metadata.rs](../../../../crates/dim-app-server/src/storage/metadata.rs)） | 进程 | `metadata` 与 `set_title`、标题写入者、`sessionMetadata` 服务；删除和创建回滚移除标题行；目录查询读取它 |
+| SessionStore（[timeline.rs](../../../../crates/dim-app-server/src/storage/timeline.rs)、[metadata.rs](../../../../crates/dim-app-server/src/storage/metadata.rs)） | 进程 | `metadata` 与 `set_title`、标题写入者、`store` 服务；删除和创建回滚移除标题行；目录查询读取它 |
 | SqliteStorage（[sqlite.rs](../../../../crates/dim-app-server/src/storage/sqlite.rs)） | 进程 | v16 结构及其升级步骤 |
 | Rpc（[protocol.rs](../../../../crates/dim-app-server/src/protocol.rs)、[connection.rs](../../../../crates/dim-app-server/src/connection.rs)） | 进程 | v3 列表字段 |
-| 服务目录（[lib.rs](../../../../crates/dim-app-server/src/lib.rs)） | 进程 | `register_shared("sessionMetadata")`，一行，与 S2 为 `sessions` 所做的相同 |
+| 服务目录（[lib.rs](../../../../crates/dim-app-server/src/lib.rs)） | 进程 | `register_shared("store")`，一行，与 S2 为 `sessions` 所做的相同 |
 | Session 广播、Rpc 通知转发 | Session、进程 | 不变（C6） |
 
 ## 3. 数据与修订号
@@ -62,7 +62,7 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
 
 ### 4.1 语言中立形式（ADR 002 D5）
 
-`sessionMetadata`，进程作用域，只在控制节点，没有实例键，由 SessionStore 提供。
+`store`，进程作用域，只在控制节点，没有实例键，由 SessionStore 提供。
 
 | 方法 | 模式 | 请求 | 回复值 | 错误 |
 | --- | --- | --- | --- | --- |
@@ -82,8 +82,8 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
 
 ### 4.2 Rust
 
-Rust 使用方注入 `sessionMetadata` 的原生绑定 `SessionMetadataService`，调用 `read` 和 `set_title`。
-此绑定就是原 dispatcher，同一实例提供在类型键和 `host_key("sessionMetadata")` 上，两条路径直接调用
+Rust 使用方注入 `store` 的原生绑定 `Store`，调用 `read` 和 `set_title`。
+此绑定就是原 dispatcher，同一实例提供在类型键和 `host_key("store")` 上，两条路径直接调用
 同一个 SessionStore owner；既有回复类型 `SessionMetadata` 不变。
 
 `set_title` 是返回 owner 等待 future 的普通函数。调用时就接纳写入，无需先轮询 future；丢弃 future
@@ -173,7 +173,7 @@ Rpc 从不调用 `setTitle`，也不新增方法。各错误到达客户端的�
 | `session.delete`（S5c） | 在 S5c 唯一的删除事务里、在 Session 记录之前移除。之后 `read` 和 `setTitle` 失败为 `not_found` |
 | 创建回滚 | 与删除是同一事务；它会移除并发写入提交的行 |
 | `session.fork`（S5c） | 不复制（[SessionTitle A7](../plugins/SessionTitle.md#附录-e-假设)）：分叉从无标题、修订号 0 开始 |
-| SessionStore 或 SqliteStorage 重载 | 按 §6 了结。`sessionMetadata` 的使用方随 SessionStore 重载（[ADR 002](../../adr/002-plugin-scope.md) D3），SessionTitle §1 已接受。SessionStore 只随没有依赖的 SqliteStorage 重载 |
+| SessionStore 或 SqliteStorage 重载 | 按 §6 了结。`store` 的使用方随 SessionStore 重载（[ADR 002](../../adr/002-plugin-scope.md) D3），SessionTitle §1 已接受。SessionStore 只随没有依赖的 SqliteStorage 重载 |
 
 ## 10. 时序与冲突
 
@@ -227,12 +227,12 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 
 | 项 | 规则 |
 | --- | --- |
-| 身份 | 由 SessionStore 提供、位于 `host_key("sessionMetadata")` 的 `dyn HostDispatch`；App Server 服务目录中的 `register_shared("sessionMetadata")`，与 `sessions`、`settings` 并列 |
-| 使用 | C4 Session 部分声明 `inject: ['sessionMetadata']` 并调用 `ctx.use('sessionMetadata')`，与 Session 部分使用 `settings` 的路径相同（[settings-owner 夹具](../../../../runtime/fixtures/settings-owner.ts)）。类型在 [npm/plugin.d.ts](../../../../npm/plugin.d.ts) |
+| 身份 | 由 SessionStore 提供、位于 `host_key("store")` 的 `dyn HostDispatch`；App Server 服务目录中的 `register_shared("store")`，与 `sessions`、`settings` 并列 |
+| 使用 | C4 Session 部分声明 `inject: ['store']` 并调用 `ctx.use('store')`，与 Session 部分使用 `settings` 的路径相同（[settings-owner 夹具](../../../../runtime/fixtures/settings-owner.ts)）。类型在 [npm/plugin.d.ts](../../../../npm/plugin.d.ts) |
 | 模式 | `read` 与 `setTitle` 都是 `async` |
 | 写入者 | 服务不携带调用方身份，与 `settings` 相同（AGENTS.md 第 11 条）。按设计 SessionTitle 是标题唯一的写入者（[SessionTitle §2](../plugins/SessionTitle.md#2-数据与状态)）；其他包只读取 |
 | 重载 | 使用它的行随 SessionStore 重载。SessionStore 只随 SqliteStorage 重载，所以不需要一个永不重载的目录部件；`sessions` 需要，是因为它的索引随 Settings 重载（[sessions D1](sessions-service.md#3-决定)） |
-| 提供方缺失 | 没有原生存储的守护进程没有 SessionStore，注入 `sessionMetadata` 的行按既有规则保持 Pending；原生 Session 照常 |
+| 提供方缺失 | 没有原生存储的守护进程没有 SessionStore，注入 `store` 的行按既有规则保持 Pending；原生 Session 照常 |
 
 这里只用了既有的服务目录和 `HostDispatch` 机制（[#4](https://github.com/arcships/dim/issues/4) 命名服务规则）。S5b 没有留给 C4 或 S4 的工作；S4 自己的辅助模型命名绑定是 SessionTitle 另一项前置。
 
@@ -246,7 +246,7 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 | [Session 删除与分叉](session-deletion-and-fork.md) | §3.3 与 §14 指向本设计 |
 | [原生存储格式](../../../design/appserver/native-storage-format.md) | v16 决定、表、完整记录示例 |
 | [ADR 001](../../../adr/001-harness-foundation.md)、[Timeline 存储](../../../architecture/rust-agent/timeline-storage.md) | 当前格式 v16 |
-| [TypeScript 插件编写](../../../typescript-plugin-authoring.md)、[npm/plugin.d.ts](../../../../npm/plugin.d.ts) | `sessionMetadata` 服务及其类型 |
+| [TypeScript 插件编写](../../../typescript-plugin-authoring.md)、[npm/plugin.d.ts](../../../../npm/plugin.d.ts) | `store` 服务及其类型 |
 
 ## 14. 规则检查
 
@@ -258,7 +258,7 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 | §4 第 4 条（核心不带业务含义） | SessionStore 保存文本和来源而不解释它们；通知是 C6 的通用记录；Rpc 原样复制字段 |
 | §4 第 5 条（批次） | 不适用：没有 Timeline 事件 |
 | §4 第 6 条（模型上下文） | 对模型不可见 |
-| §4 第 7 条（公开的事件与服务） | SessionTitle 使用公开的 `sessionMetadata` 服务；客户端使用公开的通知与列表字段 |
+| §4 第 7 条（公开的事件与服务） | SessionTitle 使用公开的 `store` 服务；客户端使用公开的通知与列表字段 |
 | §4 第 8 条（基础设施不变） | Timeline、Dispatcher、事件格式、装配、rutis 与 Session 门面都不变。SessionTitle 的需求在它的所有者 SessionStore 内闭环，见总览 B.2 的补充 |
 | §4 第 9 条（只有决定用的事实进 Timeline） | 标题从不进入 Timeline；客户端经通知看到变更 |
 | §1（Capability 与 App Server 的边界） | 在既有的 SessionStore 插件与 Rpc 内；不新增插件 |
@@ -283,11 +283,11 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 7. v3 的 `session.summaries` 带 `title`、`titleSource`、`titleRevision`；v2 没有 Session 列表。
 8. 标题在重启后保留，Session 未装载时也能读写；分叉从无标题、修订号 0 开始；删除移除该行。
 9. 空库建为 v16。一次性的 v15 与 v13 库原地升级为精确的 v16 结构，所有业务行不变，并报告一次升级；标记不符的 v16 结构、升级到一半的库与更旧的结构被拒绝并保留。
-10. 在 Node 中运行的 TypeScript Session 部分注入 `sessionMetadata`，读写标题，附加的客户端收到通知（`node_` 测试，由 CI 的 Node 步骤运行）。
+10. 在 Node 中运行的 TypeScript Session 部分注入 `store`，读写标题，附加的客户端收到通知（`node_` 测试，由 CI 的 Node 步骤运行）。
 11. 缺少 `title` 的 `setTitle` 请求被拒绝；插件 SDK 类型检查覆盖调用形状。
 12. 卸载：SessionStore 开始关闭之前已接纳的写入（一个正在执行，一个在等待轮次）提交并回复各自的修订号，关闭过程等待它们；关闭开始之后的调用立即失败为 `storage`，重启后存储里没有它（§6）。
 
-测试：第 1 至 8 项、第 10 项与第 12 项在 [titles.rs](../../../../crates/dim-app-server/tests/transport_flow/titles.rs)，经由 Session 部件注入的 `sessionMetadata` 服务和 [session-metadata 夹具](../../../../runtime/fixtures/session-metadata.ts)；第 6 项与第 12 项用 `storage::testing::hold_title_write`（`testing` 特性）让写入停住；第 9 项是 [storage_flow.rs](../../../../crates/dim-app-server/tests/storage_flow.rs) 中的 `a_v15_store_upgrades_in_place_once`、`a_v13_store_upgrades_in_place_once`、`the_daemon_reports_a_v13_upgrade_on_stderr_once` 与拒绝用例；第 11 项是 titles.rs 中格式错误的调用和 [plugin-sdk.test.mjs](../../../../runtime/plugin-sdk.test.mjs)。S5c 的删除测试也统计 `session_metadata` 的行。
+测试：第 1 至 8 项、第 10 项与第 12 项在 [titles.rs](../../../../crates/dim-app-server/tests/transport_flow/titles.rs)，经由 Session 部件注入的 `store` 服务和 [session-metadata 夹具](../../../../runtime/fixtures/session-metadata.ts)；第 6 项与第 12 项用 `storage::testing::hold_title_write`（`testing` 特性）让写入停住；第 9 项是 [storage_flow.rs](../../../../crates/dim-app-server/tests/storage_flow.rs) 中的 `a_v15_store_upgrades_in_place_once`、`a_v13_store_upgrades_in_place_once`、`the_daemon_reports_a_v13_upgrade_on_stderr_once` 与拒绝用例；第 11 项是 titles.rs 中格式错误的调用和 [plugin-sdk.test.mjs](../../../../runtime/plugin-sdk.test.mjs)。S5c 的删除测试也统计 `session_metadata` 的行。
 
 ## 17. 决定
 
@@ -300,11 +300,11 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
 | D5 | 通知 `data` 为 `{title, titleSource, titleRevision}` | A.2 的 `{sessionId, title, titleSource, revision}` | 频道已经代表 Session（C6 D4）；列表条目和通知用同一组字段，客户端合并时无需映射 |
 | D6 | v3 列表条目带 `titleRevision` | 只带 `title` 与 `titleSource` | 没有它，客户端无法给列表回复和通知排序（§8） |
 | D7 | 列表字段只用于协议 v3 | 所有协议版本 | v1 与 v2 没有 Session 列表，也收不到标题通知 |
-| D8 | 服务 `sessionMetadata`，方法 `read` 与 `setTitle`；Rust binding 使用 `read` 与 `set_title` | A.2 的方法名 `metadata` | `sessionMetadata.metadata` 重复；`read` 与 `settings.read` 一致 |
+| D8 | 服务 `store`，方法 `read` 与 `setTitle`；Rust binding 使用 `read` 与 `set_title` | A.2 的方法名 `metadata` | `store.metadata` 重复；`read` 与 `settings.read` 一致 |
 | D9 | 错误 `conflict`、`not_found`、`storage` 作为数据；格式错误的调用是桥接错误 | 像 `sessions` 那样的 `rejected` 代码 | 三个代码是写入的结果；格式错误是编程错误，与 `settings` 相同 |
 | D10 | 存储里没有的 Session 返回 `not_found` | `session_closed` | 维护者的决定；这是 SessionStore 的用语，SessionTitle 把它映射为 `session_not_found` |
 | D11 | SessionStore 原样保存文本 | 校验长度和字符 | 标题规则属于 SessionTitle，由它校验；再查一次会重复合同 |
-| D12 | 由 SessionStore 自己提供 `sessionMetadata` | 一个永不重载的部件 | SessionStore 只随 SqliteStorage 重载（§12） |
+| D12 | 由 SessionStore 自己提供 `store` | 一个永不重载的部件 | SessionStore 只随 SqliteStorage 重载（§12） |
 | D13 | 再次写入相同文本也提交新修订号 | 当作空操作 | SessionTitle 附录 B 期望重复重命名会重写；空操作需要自己的回复 |
 | D14 | 在调用时接纳；卸载先停止接纳，再等待每个已接纳的写入 | 写入轮到时才接纳，卸载时让仍在等待的写入失败（最初的实现） | 那样已交接的写入没有确定的接纳点：它能否执行，取决于它的任务和清理谁先到达标题写入者；卸载期间到达的调用，在当前写入结束前既不被拒绝也不被接纳。调用时接纳让交接和拒绝都立即确定。标题写得很少，等待已接纳的写入很短。Session 文件的写入也这样接纳 |
 
@@ -326,8 +326,8 @@ pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct TitleFields { pub title: Option<String>, pub title_source: Option<TitleSource>, pub title_revision: u64 }
 pub enum MetadataError { Conflict, NotFound, Storage(String) }
 
-impl SessionMetadataService {
-    pub async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+impl Store {
+    pub async fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
     /// 被调用时就接纳并启动写入；SessionStore 正在关闭时失败为 `Storage`：
     /// 调用即交接。放弃返回的 future 只丢掉回复。
     pub fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)

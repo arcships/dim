@@ -158,9 +158,9 @@ gate applies; workspace writes use the fallback below.
 
 [Worktree access](../../../design/worktree-access.md) extends the workspace fact with Session-local,
 Git-verified roots. FileAccessFacts owns discovery, shared in-flight probes and root identities;
-its optional process dependency `worktreeAssociations` persists a repository/root and Session subtree
+its optional process dependency `store` persists a repository/root and Session subtree
 atomically before publication. The port is the data face
-`worktreeAssociations.associate {sessionId, repository, root, subtree}` with the paths as UTF-8
+`store.associateWorktree {sessionId, repository, root, subtree}` with the paths as UTF-8
 strings; FileAccessFacts calls the same method in process. Without this port it keeps the original
 workspace boundary.
 The service reports discovery unavailability separately from failed ownership/grant reads: the former

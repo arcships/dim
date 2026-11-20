@@ -1616,11 +1616,6 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::storage::metadata::binding::SessionMetadata",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
             "service": "dim_app_server::storage::sqlite::SqliteStorage",
             "scope": null,
             "status": "Ready"
@@ -1663,12 +1658,6 @@
           },
           {
             "service": "dim_app_server::storage::face::Store",
-            "scope": null,
-            "provider": 8,
-            "generation": 1
-          },
-          {
-            "service": "dim_app_server::storage::metadata::binding::SessionMetadata",
             "scope": null,
             "provider": 8,
             "generation": 1
@@ -1719,12 +1708,6 @@
           },
           {
             "service": "dim_app_server::storage::face::Store",
-            "provider": 8,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_app_server::storage::metadata::binding::SessionMetadata",
             "provider": 8,
             "declared": true,
             "external": true
@@ -3343,12 +3326,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::file_access::WorktreeAssociations",
-        "provider": 8,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::file_storage::FileStorage",
         "provider": 4,
         "generation": 1,
@@ -3643,12 +3620,6 @@
         "removing": false
       },
       {
-        "service": "dim_app_server::storage::metadata::binding::SessionMetadata",
-        "provider": 8,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_app_server::storage::sqlite::SqliteStorage",
         "provider": 6,
         "generation": 1,
@@ -3889,12 +3860,6 @@
         "removing": false
       },
       {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#sessionMetadata",
-        "provider": 8,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#sessionPermissions",
         "provider": 38,
         "generation": 1,
@@ -3957,12 +3922,6 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#workflowFiles",
         "provider": 18,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#worktreeAssociations",
-        "provider": 8,
         "generation": 1,
         "removing": false
       },

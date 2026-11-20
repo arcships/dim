@@ -1,6 +1,3 @@
-use dim_agent_capabilities::file_access::{
-    WorktreeAssociation, WorktreeAssociationError, WorktreeAssociations, WorktreeDirectory,
-};
 use dim_agent_capabilities::prompt_sources::{SessionLanguage, SessionLanguageReply};
 use dim_agent_capabilities::skills::{SkillsConfig, SkillsConfigReply};
 use dim_agent_runtime::{AgentConfig, ReplyLanguage};
@@ -74,69 +71,6 @@ async fn the_agents_configuration_answers_the_same_through_the_binding_and_the_f
     let face: AgentConfig = wire(&root, "agentConfig", "get", ()).await;
     assert_eq!(binding.get(), face);
     assert_eq!(face, config);
-}
-
-#[tokio::test]
-async fn the_worktree_association_answers_the_same_through_the_binding_and_the_face() {
-    let root = Ctx::root().unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let counted = calls.clone();
-    root.provide(WorktreeAssociations::new(Arc::new(move |request| {
-        let counted = counted.clone();
-        Box::pin(async move {
-            assert_eq!(request.session_id, "session");
-            assert_eq!(
-                request.directory(),
-                WorktreeDirectory {
-                    repository: "/repo".into(),
-                    root: "/repo/tree".into(),
-                }
-            );
-            assert_eq!(request.subtree, "/repo/tree/sub");
-            counted.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        })
-    })))
-    .unwrap();
-    let binding = root.get::<WorktreeAssociations>().unwrap();
-    let request = WorktreeAssociation {
-        session_id: "session".into(),
-        repository: "/repo".into(),
-        root: "/repo/tree".into(),
-        subtree: "/repo/tree/sub".into(),
-    };
-    binding.associate(request.clone()).await.unwrap();
-    let face: () = wire(&root, "worktreeAssociations", "associate", (request,)).await;
-    assert_eq!(face, ());
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        2,
-        "the binding and the face each ran the owner's write"
-    );
-}
-
-#[tokio::test]
-async fn a_worktree_association_failure_crosses_as_a_code_and_a_message() {
-    let root = Ctx::root().unwrap();
-    root.provide(WorktreeAssociations::new(Arc::new(|_| {
-        Box::pin(async {
-            Err(WorktreeAssociationError::Failed {
-                message: "session is closed".into(),
-            })
-        })
-    })))
-    .unwrap();
-    let request = WorktreeAssociation {
-        session_id: "session".into(),
-        repository: "/repo".into(),
-        root: "/repo/tree".into(),
-        subtree: "/repo/tree/sub".into(),
-    };
-    let error = call_service::<()>(&root, "worktreeAssociations", "associate", (request,))
-        .await
-        .expect_err("the owner refused the write");
-    assert_eq!(error.code(), Some("failed"));
-    assert!(error.to_string().contains("session is closed"));
 }
 
 struct AgentConfigReader {

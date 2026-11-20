@@ -48,12 +48,23 @@ export default definePlugin({
         if (call.method === 'storefixture.file_ownership') {
           const { file, path } = params
           const { sessionId } = file
+          const session = { sessionId }
+          assert.deepEqual(await sqlite.hasRecords(session), await store.hasRecords(session))
+          assert.deepEqual(await sqlite.owner(session), await store.owner(session))
+          assert.deepEqual(await sqlite.creationRecord(session), await store.creationRecord(session))
+          assert.deepEqual(await sqlite.sessionConfigText(session), await store.sessionConfigText(session))
+          assert.deepEqual(await sqlite.grants(session), await store.grants(session))
+          assert.deepEqual(await sqlite.worktreeDirectories({}), await store.worktreeDirectories({}))
           assert.equal(await sqlite.commitFile({ ...file, generation: 'other' }), 'superseded')
           assert.equal(await sqlite.commitFile(file), 'owned')
           assert.equal(await sqlite.ownsFile({ sessionId, fileId: file.fileId }), true)
           const abandoned = { ...file, fileId: 'fixture-abandoned' }
           assert.equal(await sqlite.reserveFile(abandoned), true)
           assert.equal(await sqlite.abandonFile({ fileId: abandoned.fileId, generation: file.generation }), 1)
+          assert.deepEqual(await sqlite.recordedFiles({ names: [file.fileId, 'absent'] }), [file.fileId])
+          assert.ok((await sqlite.unownedFiles({})).includes(abandoned.fileId))
+          assert.equal(await sqlite.deleteIfUnowned({ fileId: file.fileId }), 0)
+          assert.equal(await sqlite.deleteIfUnowned({ fileId: abandoned.fileId }), 1)
           assert.equal(await sqlite.registerOutput({ sessionId: 'missing', path }), false)
           assert.equal(await sqlite.ownsFile({ sessionId, fileId: 'absent' }), false)
           assert.equal(await sqlite.ownsOutput({ sessionId, path }), false)
@@ -147,6 +158,13 @@ export default definePlugin({
         const directories = await store.worktreeDirectories({})
         assert.equal(directories.directories.length, 1)
         const directory = directories.directories[0]
+        const association = { sessionId, repository: directory.repository, root: directory.root, subtree: directory.root }
+        assert.deepEqual(await store.associateWorktree(association), {})
+        assert.deepEqual(await sqlite.associateWorktree(association), {})
+        await assert.rejects(() => store.associateWorktree({ ...association, sessionId: 'missing' }),
+          (error: unknown) => error instanceof Error && 'code' in error && error.code === 'closed')
+        assert.deepEqual(await sqlite.worktreeUsages({ repository: directory.repository, root: directory.root }),
+          await store.worktreeUsages({ repository: directory.repository, root: directory.root }))
         assert.deepEqual(await store.sessionsUnderWorkspace({ root: directory.root }), { sessionIds: [sessionId] })
         assert.deepEqual(await store.worktreeUsages({ repository: directory.repository, root: directory.root }), {
           usages: [{ sessionId, subtree: directory.root }],

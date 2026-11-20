@@ -77,14 +77,6 @@ export interface Title { text: string; source: TitleSource }
 export interface SessionMetadataSnapshot { revision: number; title: Title | null }
 export type SessionMetadataResult<T> = { ok: true; value: T } |
   { ok: false; error: { code: 'conflict' | 'not_found' | 'storage'; message: string } };
-/** Process service `sessionMetadata`, provided by SessionStore. `setTitle` is handed over
- * when the host receives it: a lost reply neither cancels nor undoes it, so read again. */
-export interface SessionMetadata {
-  read(request: { sessionId: string }): Promise<SessionMetadataResult<SessionMetadataSnapshot>>;
-  setTitle(request: { sessionId: string; expectedRevision: number; title: Title | null }):
-    Promise<SessionMetadataResult<{ revision: number }>>;
-}
-
 export interface ModelId { providerId: string; modelId: string }
 export interface AuxiliaryRequest {
   system?: string | null;
@@ -628,7 +620,7 @@ export type StoredAgentProfile = {
   name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
-export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+export interface SqliteStorage extends Pick<Store, "catalog" | "fork" | "createOwnedSession" | "associateWorktree" | "removeWorktreeDirectory" | "addGrant" | "removeGrant" | "grants" | "setSessionLanguage" | "creationRecord" | "owner" | "hasRecords" | "sessionConfigText" | "worktreeDirectories" | "sessionsUnderWorkspace" | "worktreeUsages">, Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
   commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
   readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
   writeSelection(request: { scope: string; expectedVersion?: number | null; selection: ModelId }): Promise<StoredProviderSelection>;
@@ -636,6 +628,12 @@ export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "se
   reserveFile(request: { sessionId: string; fileId: string; generation: string }): Promise<boolean>;
   commitFile(request: { sessionId: string; fileId: string; generation: string }): Promise<"owned" | "sessionGone" | "superseded">;
   abandonFile(request: { fileId: string; generation: string }): Promise<number>;
+  removableOutputDirectories(request: { sessionId: string }): Promise<{ directories: string[] }>;
+  touchWorktreeDirectories(request: { sessionId: string }): Promise<{}>;
+  releaseStaleFileWriters(request: { generation: string }): Promise<number>;
+  unownedFiles(request: {}): Promise<string[]>;
+  deleteIfUnowned(request: { fileId: string }): Promise<number>;
+  recordedFiles(request: { names: string[] }): Promise<string[]>;
   ownsFile(request: { sessionId: string; fileId: string }): Promise<boolean>;
   ownsOutput(request: { sessionId: string; path: string }): Promise<boolean>;
   ownedPaths(request: { sessionId: string }): Promise<[string[], string[]]>;
@@ -660,6 +658,10 @@ export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "se
 
 /** Process repository operations for trusted plugins; ids are not scoped to the caller. Create/fork/delete reject ids that are not one normal path component. */
 export interface Store {
+  readMetadata(request: { sessionId: string }): Promise<SessionMetadataResult<SessionMetadataSnapshot>>;
+  setTitle(request: { sessionId: string; expectedRevision: number; title: Title | null }):
+    Promise<SessionMetadataResult<{ revision: number }>>;
+  associateWorktree(request: {sessionId: string; repository: string; root: string; subtree: string}): Promise<{}>;
   query(request: { scope: TimelineReadScope; query: import('./branch-services.js').QuerySpec; page?: import('./branch-services.js').QueryPage | null }): Promise<{ result: import('./branch-services.js').QueryOutput; next: import('./branch-services.js').QueryCursor | null }>;
   /** Stored page: database sequence and closed=false; the lifecycle owner supplies live enrichment. */
   catalog(request: { request: { limit?: number; cursor?: string; query?: string; cwd?: string | string[]; withPreview?: boolean; withInternal?: boolean; withAcpSessions?: boolean; withAutomationSessions?: boolean; includeClosed?: boolean }; agent?: string | null; version: number; hosts: string[]; closed: string[] }): Promise<{ sessions: import('./client-protocol.js').SessionSummary[]; nextCursor?: string }>;
@@ -683,7 +685,7 @@ export interface Store {
   sessionsUnderWorkspace(request: { root: string }): Promise<{ sessionIds: string[] }>;
   removeWorktreeDirectory(request: WorktreeDirectory): Promise<{ removed: boolean }>;
   worktreeUsages(request: WorktreeDirectory): Promise<{ usages: { sessionId: string; subtree: string }[] }>;
-  /** Callback runs under the native ownership mutex: do not await createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree or worktreeAssociations.associate from it. */
+  /** Callback runs under the native ownership mutex: do not await createOwnedSession, fork, delete, removeWorktreeDirectory, removeWorktree or associateWorktree from it. */
   removeWorktree(request: WorktreeDirectory, remove: (path: string) => Promise<void>): Promise<{ removed: boolean }>;
 }
 

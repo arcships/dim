@@ -309,54 +309,7 @@ impl SessionFiles {
     /// `DirectoryNotEmpty` while a writer outside the closed Session holds
     /// an entry; the delete is then retried.
     pub(super) async fn remove_output(&self, session_id: &str) -> dim_agent_runtime::Result<()> {
-        let session = session_id.to_owned();
-        let own = self
-            .0
-            .db
-            .path
-            .parent()
-            .map(|directory| {
-                directory
-                    .join(super::COMMAND_OUTPUT_DIRECTORY)
-                    .join(session_id)
-            })
-            .ok_or_else(|| error("the native store path has no directory"))?;
-        let candidates = self
-            .0
-            .db
-            .run_read(move |connection| {
-                let mut candidates = BTreeSet::from([own]);
-                let mut query = connection
-                    .prepare("SELECT DISTINCT path FROM session_output_owners WHERE session_id = ?1")
-                    .map_err(error)?;
-                let rows = query
-                    .query_map([&session], |row| row.get::<_, String>(0))
-                    .map_err(error)?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(error)?;
-                for path in rows {
-                    if let Some(directory) = Path::new(&path).parent() {
-                        candidates.insert(directory.to_path_buf());
-                    }
-                }
-                let mut kept = Vec::new();
-                for candidate in candidates {
-                    let text = candidate.to_string_lossy().into_owned();
-                    let prefix = like_prefix(&candidate, std::path::MAIN_SEPARATOR);
-                    let shared: bool = connection
-                        .query_row(
-                            "SELECT EXISTS(SELECT 1 FROM session_output_owners WHERE session_id <> ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '\\'))",
-                            params![session, text, prefix],
-                            |row| row.get(0),
-                        )
-                        .map_err(error)?;
-                    if !shared {
-                        kept.push(candidate);
-                    }
-                }
-                Ok(kept)
-            })
-            .await?;
+        let candidates = self.0.db.removable_output_directories(session_id).await?;
         let storage = self
             .0
             .ctx
@@ -580,10 +533,12 @@ impl SessionFilesService for SessionFiles {
             if uuid::Uuid::parse_str(&file_id).is_err() {
                 return Err(file_error(SessionFileErrorCode::Invalid, "Invalid file id"));
             }
-            let id = file_id.clone();
-            let owned = self.0.db.run_read(move |connection| {
-                connection.query_row("SELECT EXISTS(SELECT 1 FROM session_file_owners WHERE session_id = ?1 AND file_id = ?2)", params![session_id, id], |row| row.get::<_, bool>(0)).map_err(error)
-            }).await.map_err(|e| file_error(SessionFileErrorCode::Storage, e))?;
+            let owned = self
+                .0
+                .db
+                .owns_file(session_id, file_id.clone())
+                .await
+                .map_err(|failure| file_error(SessionFileErrorCode::Storage, failure))?;
             if !owned {
                 return Err(file_error(
                     SessionFileErrorCode::NotFound,
@@ -815,41 +770,16 @@ impl Files {
             return false;
         };
         let cancel = &self.stopping;
-        let rows = |sql: &'static str| {
-            self.db.run_read(move |connection| {
-                connection
-                    .prepare(sql)
-                    .and_then(|mut query| {
-                        query
-                            .query_map([], |row| row.get(0))?
-                            .collect::<rusqlite::Result<Vec<String>>>()
-                    })
-                    .map_err(error)
-            })
-        };
-
-        let generation = self.generation.clone();
         let claimed = self
             .db
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "UPDATE session_files SET writer = NULL WHERE node IS NULL AND writer IS NOT NULL AND writer <> ?1",
-                        [generation],
-                    )
-                    .map_err(error)
-            })
+            .release_stale_file_writers(self.generation.clone())
             .await;
         if let Err(failure) = claimed {
             tracing::warn!(error = %failure, "Session file sweep could not claim pending files");
             return false;
         }
 
-        let unowned = match rows(
-            "SELECT file_id FROM session_files f WHERE node IS NULL AND writer IS NULL AND NOT EXISTS (SELECT 1 FROM session_file_owners o WHERE o.file_id = f.file_id)",
-        )
-        .await
-        {
+        let unowned = match self.db.unowned_files().await {
             Ok(unowned) => unowned,
             Err(failure) => {
                 tracing::warn!(error = %failure, "Session file sweep could not read unowned files");
@@ -864,18 +794,7 @@ impl Files {
             {
                 return false;
             }
-            let id = file_id.clone();
-            let deleted = self
-                .db
-                .run(move |connection| {
-                    connection
-                        .execute(
-                            "DELETE FROM session_files WHERE file_id = ?1 AND writer IS NULL AND NOT EXISTS (SELECT 1 FROM session_file_owners WHERE file_id = ?1)",
-                            [id],
-                        )
-                        .map_err(error)
-                })
-                .await;
+            let deleted = self.db.delete_if_unowned(file_id.clone()).await;
             if let Err(failure) = deleted {
                 tracing::warn!(file_id, error = %failure, "Session file row kept for the next sweep");
             }
@@ -897,34 +816,24 @@ impl Files {
                 return false;
             }
         };
-        let names: Vec<OsString> = entries.into_iter().map(|entry| entry.name).collect();
-        let listed = names.clone();
-        let recorded = self
-            .db
-            .run_read(move |connection| {
-                let mut query = connection
-                    .prepare("SELECT EXISTS(SELECT 1 FROM session_files WHERE file_id = ?1)")
-                    .map_err(error)?;
-                listed
-                    .iter()
-                    .map(|name| match name.to_str() {
-                        Some(name) => query.query_row([name], |row| row.get(0)).map_err(error),
-                        None => Ok(false),
-                    })
-                    .collect::<dim_agent_runtime::Result<Vec<bool>>>()
-            })
-            .await;
-        let recorded = match recorded {
+        let names = entries
+            .iter()
+            .filter_map(|entry| entry.name.to_str().map(str::to_owned))
+            .collect();
+        let recorded = match self.db.recorded_files(names).await {
             Ok(recorded) => recorded,
             Err(failure) => {
                 tracing::warn!(error = %failure, "Session file sweep could not read its rows");
                 return false;
             }
         };
-        for (name, recorded) in names.into_iter().zip(recorded) {
-            if !recorded
+        for entry in entries {
+            if !entry
+                .name
+                .to_str()
+                .is_some_and(|name| recorded.contains(name))
                 && self
-                    .remove(&storage, Path::new(&name), cancel)
+                    .remove(&storage, Path::new(&entry.name), cancel)
                     .await
                     .is_break()
             {
@@ -960,6 +869,107 @@ impl Files {
 }
 
 impl SqliteStorage {
+    pub(super) async fn removable_output_directories(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> dim_agent_runtime::Result<Vec<PathBuf>> {
+        let session = session_id.to_owned();
+        let own = self
+            .path
+            .parent()
+            .map(|directory| {
+                directory
+                    .join(super::COMMAND_OUTPUT_DIRECTORY)
+                    .join(session_id)
+            })
+            .ok_or_else(|| error("the native store path has no directory"))?;
+        self
+            .run_read(move |connection| {
+                let mut candidates = BTreeSet::from([own]);
+                let mut query = connection
+                    .prepare("SELECT DISTINCT path FROM session_output_owners WHERE session_id = ?1")
+                    .map_err(error)?;
+                let rows = query
+                    .query_map([&session], |row| row.get::<_, String>(0))
+                    .map_err(error)?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(error)?;
+                for path in rows {
+                    if let Some(directory) = Path::new(&path).parent() {
+                        candidates.insert(directory.to_path_buf());
+                    }
+                }
+                let mut kept = Vec::new();
+                for candidate in candidates {
+                    let text = candidate.to_string_lossy().into_owned();
+                    let prefix = like_prefix(&candidate, std::path::MAIN_SEPARATOR);
+                    let shared: bool = connection
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM session_output_owners WHERE session_id <> ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '\\'))",
+                            params![session, text, prefix],
+                            |row| row.get(0),
+                        )
+                        .map_err(error)?;
+                    if !shared {
+                        kept.push(candidate);
+                    }
+                }
+                Ok(kept)
+            })
+            .await
+    }
+
+    pub(super) async fn release_stale_file_writers(
+        self: &Arc<Self>,
+        generation: String,
+    ) -> dim_agent_runtime::Result<usize> {
+        self.run(move |connection| connection.execute(
+            "UPDATE session_files SET writer = NULL WHERE node IS NULL AND writer IS NOT NULL AND writer <> ?1",
+            [generation],
+        ).map_err(error)).await
+    }
+
+    pub(super) async fn unowned_files(self: &Arc<Self>) -> dim_agent_runtime::Result<Vec<String>> {
+        self.run_read(|connection| {
+            let mut query = connection.prepare(
+                "SELECT file_id FROM session_files f WHERE node IS NULL AND writer IS NULL AND NOT EXISTS (SELECT 1 FROM session_file_owners o WHERE o.file_id = f.file_id)",
+            ).map_err(error)?;
+            query.query_map([], |row| row.get(0)).and_then(Iterator::collect).map_err(error)
+        }).await
+    }
+
+    pub(super) async fn delete_if_unowned(
+        self: &Arc<Self>,
+        file_id: String,
+    ) -> dim_agent_runtime::Result<usize> {
+        self.run(move |connection| connection.execute(
+            "DELETE FROM session_files WHERE file_id = ?1 AND writer IS NULL AND NOT EXISTS (SELECT 1 FROM session_file_owners WHERE file_id = ?1)",
+            [file_id],
+        ).map_err(error)).await
+    }
+
+    pub(super) async fn recorded_files(
+        self: &Arc<Self>,
+        names: Vec<String>,
+    ) -> dim_agent_runtime::Result<BTreeSet<String>> {
+        self.run_read(move |connection| {
+            let mut query = connection
+                .prepare("SELECT EXISTS(SELECT 1 FROM session_files WHERE file_id = ?1)")
+                .map_err(error)?;
+            let mut recorded = BTreeSet::new();
+            for name in names {
+                if query
+                    .query_row([&name], |row| row.get::<_, bool>(0))
+                    .map_err(error)?
+                {
+                    recorded.insert(name);
+                }
+            }
+            Ok(recorded)
+        })
+        .await
+    }
+
     pub(super) async fn abandon_file(
         self: &Arc<Self>,
         id: String,

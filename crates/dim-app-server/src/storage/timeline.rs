@@ -5,14 +5,11 @@ use super::{
         WireEvent,
     },
     files,
-    metadata::{self, Titles},
+    metadata::Titles,
     sqlite::error,
 };
 use crate::protocol::SessionOrigin;
-use dim_agent_capabilities::{
-    file_access::{WorktreeAssociation, WorktreeAssociationError, WorktreeAssociations},
-    host::SessionFiles,
-};
+use dim_agent_capabilities::host::SessionFiles;
 use dim_agent_runtime::Names;
 use dim_agent_runtime::{
     AgentError, BoxFuture, BranchRecord, PublishCallback, ReplyLanguage, Result, SessionConfig,
@@ -1242,48 +1239,15 @@ impl SessionStore {
         kind: GrantKind,
         mode: GrantMode,
     ) -> Result<()> {
-        let id = session_id.to_owned();
-        let path = path.to_string_lossy().into_owned();
-        let kind = match kind {
-            GrantKind::File => "file",
-            GrantKind::Dir => "dir",
-        };
-        let mode = match mode {
-            GrantMode::Read => "read",
-            GrantMode::Write => "write",
-        };
         self.timeline
             .db
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "INSERT INTO session_grants (session_id, path, kind, mode) VALUES (?1, ?2, ?3, ?4) \
-                         ON CONFLICT(session_id, path) DO UPDATE SET kind=excluded.kind, \
-                         mode=CASE WHEN session_grants.mode='write' THEN 'write' ELSE excluded.mode END",
-                        params![id, path, kind, mode],
-                    )
-                    .map_err(error)?;
-                Ok(())
-            })
+            .add_grant(session_id, path, kind, mode)
             .await
     }
     /// Removes the grant at the canonical `path`; the caller resolves it the
     /// same way `add_grant` does.
     pub async fn remove_grant(&self, session_id: &str, path: PathBuf) -> Result<()> {
-        let id = session_id.to_owned();
-        let path = path.to_string_lossy().into_owned();
-        self.timeline
-            .db
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "DELETE FROM session_grants WHERE session_id=?1 AND path=?2",
-                        params![id, path],
-                    )
-                    .map_err(error)?;
-                Ok(())
-            })
-            .await
+        self.timeline.db.remove_grant(session_id, path).await
     }
     /// Writes the Session's reply language into its config record as one JSON
     /// member; the rest of the record is unchanged. A missing Session is
@@ -1293,58 +1257,13 @@ impl SessionStore {
         session_id: &str,
         language: Option<ReplyLanguage>,
     ) -> Result<()> {
-        let session = session_id.to_owned();
         self.timeline
             .db
-            .run(move |connection| {
-                let changed = match language {
-                    Some(language) => connection.execute(
-                        "UPDATE agent_sessions SET config = json_set(config, '$.language', ?2) \
-                         WHERE session_id = ?1",
-                        params![&session, language.code()],
-                    ),
-                    None => connection.execute(
-                        "UPDATE agent_sessions SET config = json_remove(config, '$.language') \
-                         WHERE session_id = ?1",
-                        params![&session],
-                    ),
-                }
-                .map_err(error)?;
-                if changed != 1 {
-                    return Err(AgentError::Closed(session));
-                }
-                Ok(())
-            })
+            .set_session_language(session_id, language)
             .await
     }
     pub async fn grants(&self, session_id: &str) -> Result<Vec<SessionGrant>> {
-        let id = session_id.to_owned();
-        self.timeline
-            .db
-            .run_read(move |connection| {
-                let mut query = connection
-                    .prepare("SELECT path, kind, mode FROM session_grants WHERE session_id=?1 ORDER BY path")
-                    .map_err(error)?;
-                let rows = query
-                    .query_map([id], |row| {
-                        let path: String = row.get(0)?;
-                        let kind: String = row.get(1)?;
-                        let mode: String = row.get(2)?;
-                        Ok((path, kind, mode))
-                    })
-                    .map_err(error)?;
-                let mut grants = Vec::new();
-                for row in rows {
-                    let (path, kind, mode) = row.map_err(error)?;
-                    grants.push(SessionGrant {
-                        path: PathBuf::from(path),
-                        kind: if kind == "file" { GrantKind::File } else { GrantKind::Dir },
-                        mode: if mode == "write" { GrantMode::Write } else { GrantMode::Read },
-                    });
-                }
-                Ok(grants)
-            })
-            .await
+        self.timeline.db.grants(session_id).await
     }
     /// ADR 013 D2: records `path` as output owned by `session_id` before the
     /// tool result hands it to the model. A repeated path is a no-op; a
@@ -1378,61 +1297,17 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> Result<(SessionOrigin, Option<String>)> {
-        let id = session_id.to_owned();
-        self.timeline
-            .db
-            .run_read(move |connection| {
-                let (text, parent): (String, Option<String>) = connection
-                    .query_row(
-                        "SELECT origin, leader_session_id FROM agent_sessions WHERE session_id=?1",
-                        [&id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .optional()
-                    .map_err(error)?
-                    .ok_or_else(|| AgentError::Closed(id))?;
-                Ok((origin_from_stored(&text)?, parent))
-            })
-            .await
+        self.timeline.db.creation_record(session_id).await
     }
     /// The Agent that owns a stored Session, read from `session_owners`,
     /// which its delete removes with the Session's other rows. Agents reads
     /// it before a delete, for the notice of a Session this process never
     /// loaded (EventHub §9.1).
     pub async fn owner(&self, id: &str) -> Result<Option<String>> {
-        let id = id.to_owned();
-        self.timeline
-            .db
-            .run_read(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT agent_id FROM session_owners WHERE session_id=?1",
-                        [&id],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(error)
-            })
-            .await
+        self.timeline.db.owner(id).await
     }
     pub async fn has_records(&self, id: &str) -> Result<bool> {
-        let id = id.to_owned();
-        self.timeline
-            .db
-            .run_read(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1) \
-                 OR EXISTS(SELECT 1 FROM session_owners WHERE session_id=?1) \
-                 OR EXISTS(SELECT 1 FROM timeline_branches WHERE session_id=?1) \
-                 OR EXISTS(SELECT 1 FROM timeline_events WHERE session_id=?1) \
-                 OR EXISTS(SELECT 1 FROM timeline_content WHERE session_id=?1)",
-                        [id],
-                        |row| row.get(0),
-                    )
-                    .map_err(error)
-            })
-            .await
+        self.timeline.db.has_records(id).await
     }
     /// The storage steps of `session.delete` ([S5c §3.2](../../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)),
     /// once Agents has closed the Session: its output directories go first,
@@ -1464,21 +1339,9 @@ impl SessionStore {
     /// prune can age a candidate by; a directory it never associated is not
     /// touched. The caller holds the ownership lock.
     async fn touch_worktree_directories(&self, session_id: &str) -> Result<()> {
-        let session = session_id.to_owned();
-        let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
         self.timeline
             .db
-            .run(move |connection| {
-                connection
-                    .execute(
-                        "UPDATE worktree_directories SET last_used_at_ms=?1 \
-                         WHERE (repository, root) IN \
-                         (SELECT repository, root FROM session_worktrees WHERE session_id=?2)",
-                        params![now, session],
-                    )
-                    .map_err(error)?;
-                Ok(())
-            })
+            .touch_worktree_directories(session_id)
             .await
     }
     /// The prepare step of `session.fork`; the ownership lock keeps this copy
@@ -1517,10 +1380,6 @@ impl SessionStore {
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
         crate::protocol::check_session_id(session_id)?;
-        let session = session_id.to_owned();
-        let config = config.clone();
-        let agent = agent_id.to_owned();
-        let leader = leader.map(str::to_owned);
         let _ownership = self.ownership.lock().await;
         if !tokio::fs::metadata(&config.cwd)
             .await
@@ -1532,52 +1391,18 @@ impl SessionStore {
                 config.cwd
             )));
         }
-        let worktree = worktree
-            .map(
-                |PreparedWorktree { directory, subtree }| -> Result<(String, String, String, i64)> {
-                    let repository = stored_worktree_path(&directory.repository)?.to_owned();
-                    let root = stored_worktree_path(&directory.root)?.to_owned();
-                    if !subtree.starts_with(&directory.root) {
-                        return Err(error(
-                            "the inherited subtree must be inside the worktree root",
-                        ));
-                    }
-                    let subtree = stored_worktree_path(&subtree)?.to_owned();
-                    let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
-                    Ok((repository, root, subtree, now))
-                },
-            )
-            .transpose()?;
+
         self.timeline
             .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                create_session(&tx, &session, &config, leader.as_deref(), origin)?;
-                tx.execute(
-                    "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
-                    params![session, agent, protocol_version],
-                )
-                .map_err(error)?;
-                if let Some((repository, root, subtree, now)) = worktree {
-                    tx.execute(
-                        "INSERT INTO worktree_directories (repository, root, last_used_at_ms) \
-                         VALUES (?1, ?2, ?3) ON CONFLICT (repository, root) \
-                         DO UPDATE SET last_used_at_ms=excluded.last_used_at_ms",
-                        params![repository, root, now],
-                    )
-                    .map_err(error)?;
-                    tx.execute(
-                        "INSERT INTO session_worktrees (session_id, repository, root, subtree) \
-                         VALUES (?1, ?2, ?3, ?4) ON CONFLICT (session_id, repository, root) \
-                         DO UPDATE SET subtree=excluded.subtree",
-                        params![session, repository, root, subtree],
-                    )
-                    .map_err(error)?;
-                }
-                tx.commit().map_err(error)
-            })
+            .create_owned_session(
+                session_id,
+                config,
+                agent_id,
+                protocol_version,
+                leader,
+                origin,
+                worktree,
+            )
             .await
     }
     /// Atomically records a Git-verified directory and its Session association.
@@ -1590,14 +1415,6 @@ impl SessionStore {
         directory: WorktreeDirectory,
         subtree: PathBuf,
     ) -> Result<()> {
-        let repository = stored_worktree_path(&directory.repository)?.to_owned();
-        let root = stored_worktree_path(&directory.root)?.to_owned();
-        let subtree_text = stored_worktree_path(&subtree)?.to_owned();
-        if !subtree.starts_with(&directory.root) {
-            return Err(error(
-                "the inherited subtree must be inside the worktree root",
-            ));
-        }
         let _ownership = self.ownership.lock().await;
         if !tokio::fs::metadata(&directory.root)
             .await
@@ -1608,95 +1425,24 @@ impl SessionStore {
                 "the worktree root no longer exists".into(),
             ));
         }
-        let session = session_id.to_owned();
-        let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
+
         self.timeline
             .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                let exists: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1)",
-                        [&session],
-                        |row| row.get(0),
-                    )
-                    .map_err(error)?;
-                if !exists {
-                    return Err(AgentError::Closed(session));
-                }
-                tx.execute(
-                    "INSERT INTO worktree_directories (repository, root, last_used_at_ms) \
-                     VALUES (?1, ?2, ?3) ON CONFLICT (repository, root) \
-                     DO UPDATE SET last_used_at_ms=excluded.last_used_at_ms",
-                    params![repository, root, now],
-                )
-                .map_err(error)?;
-                tx.execute(
-                    "INSERT INTO session_worktrees (session_id, repository, root, subtree) \
-                     VALUES (?1, ?2, ?3, ?4) ON CONFLICT (session_id, repository, root) \
-                     DO UPDATE SET subtree=excluded.subtree",
-                    params![session, repository, root, subtree_text],
-                )
-                .map_err(error)?;
-                tx.commit().map_err(error)
-            })
+            .associate_worktree(session_id, directory, subtree)
             .await
     }
 
     /// Lists recorded directories, including those with no Session association.
     /// The result is not a Git inventory or authority to delete any directory.
     pub async fn worktree_directories(&self) -> Result<Vec<WorktreeDirectoryRecord>> {
-        self.timeline
-            .db
-            .run_read(|connection| {
-                connection
-                    .prepare("SELECT repository, root, last_used_at_ms FROM worktree_directories ORDER BY repository, root")
-                    .map_err(error)?
-                    .query_map([], |row| {
-                        Ok(WorktreeDirectoryRecord {
-                            directory: WorktreeDirectory {
-                                repository: PathBuf::from(row.get::<_, String>(0)?),
-                                root: PathBuf::from(row.get::<_, String>(1)?),
-                            },
-                            last_used_at_ms: row.get(2)?,
-                        })
-                    })
-                    .map_err(error)?
-                    .collect::<rusqlite::Result<_>>()
-                    .map_err(error)
-            })
-            .await
+        self.timeline.db.worktree_directories().await
     }
 
     /// The stored Sessions whose workspace is `root` or lies under it,
     /// including those that are not loaded. A management operation re-checks
     /// this under the ownership lock before it removes a directory.
     pub async fn sessions_under_workspace(&self, root: &Path) -> Result<Vec<String>> {
-        let root = root.to_path_buf();
-        self.timeline
-            .db
-            .run_read(move |connection| {
-                let mut statement = connection
-                    .prepare("SELECT session_id, cwd FROM session_catalog")
-                    .map_err(error)?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })
-                    .map_err(error)?;
-                let mut sessions = Vec::new();
-                for row in rows {
-                    let (session, cwd) = row.map_err(error)?;
-                    if Path::new(&cwd).starts_with(&root) {
-                        sessions.push(session);
-                    }
-                }
-                sessions.sort();
-                Ok(sessions)
-            })
-            .await
+        self.timeline.db.sessions_under_workspace(root).await
     }
 
     /// Deletes a directory record after its worktree was removed, or after
@@ -1705,38 +1451,8 @@ impl SessionStore {
     /// re-checks under the same ownership lock before its Git removal.
     /// Returns whether this database had the record.
     pub async fn remove_worktree_directory(&self, directory: WorktreeDirectory) -> Result<bool> {
-        let repository = stored_worktree_path(&directory.repository)?.to_owned();
-        let root = stored_worktree_path(&directory.root)?.to_owned();
         let _ownership = self.ownership.lock().await;
-        self.timeline
-            .db
-            .run(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(error)?;
-                let used: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM session_worktrees \
-                         WHERE repository=?1 AND root=?2)",
-                        params![repository, root],
-                        |row| row.get(0),
-                    )
-                    .map_err(error)?;
-                if used {
-                    return Err(AgentError::InvalidInput(
-                        "the worktree directory still has Session associations".into(),
-                    ));
-                }
-                let removed = tx
-                    .execute(
-                        "DELETE FROM worktree_directories WHERE repository=?1 AND root=?2",
-                        params![repository, root],
-                    )
-                    .map_err(error)?;
-                tx.commit().map_err(error)?;
-                Ok(removed > 0)
-            })
-            .await
+        self.timeline.db.remove_worktree_directory(directory).await
     }
 
     /// Removes one worktree under the store's exclusion: the ownership lock
@@ -1802,28 +1518,7 @@ impl SessionStore {
         &self,
         directory: WorktreeDirectory,
     ) -> Result<Vec<WorktreeUsage>> {
-        let repository = stored_worktree_path(&directory.repository)?.to_owned();
-        let root = stored_worktree_path(&directory.root)?.to_owned();
-        self.timeline
-            .db
-            .run_read(move |connection| {
-                connection
-                    .prepare(
-                        "SELECT session_id, subtree FROM session_worktrees \
-                         WHERE repository=?1 AND root=?2 ORDER BY session_id",
-                    )
-                    .map_err(error)?
-                    .query_map(params![repository, root], |row| {
-                        Ok(WorktreeUsage {
-                            session_id: row.get(0)?,
-                            subtree: PathBuf::from(row.get::<_, String>(1)?),
-                        })
-                    })
-                    .map_err(error)?
-                    .collect::<rusqlite::Result<_>>()
-                    .map_err(error)
-            })
-            .await
+        self.timeline.db.worktree_usages(directory).await
     }
 }
 
@@ -1842,7 +1537,7 @@ fn stored_worktree_path(path: &Path) -> Result<&str> {
 }
 
 /// The Session directory, the `sessionFiles` service and the
-/// `sessionMetadata` service. Session files live below the FileStorage root
+/// `store` service. Session files live below the FileStorage root
 /// `files_root`, which is the database directory.
 pub struct SessionStorePlugin {
     files_root: usize,
@@ -1877,39 +1572,15 @@ impl DynPlugin for SessionStorePlugin {
             })?;
             files.start();
             ctx.provide_as::<SessionStore>(store.clone())?;
-            let binding = Arc::new(super::Store(store.clone()));
+            let binding = Arc::new(super::Store(store));
             ctx.provide_as::<super::Store>(binding.clone())?;
             ctx.provide_at(host_key("store"), binding as Arc<dyn HostDispatch>)?;
-            let associations = store.clone();
-            ctx.provide_as::<WorktreeAssociations>(Arc::new(WorktreeAssociations::new(Arc::new(
-                move |request: WorktreeAssociation| {
-                    let store = associations.clone();
-                    Box::pin(async move {
-                        store
-                            .associate_worktree(
-                                &request.session_id,
-                                request.directory(),
-                                PathBuf::from(&request.subtree),
-                            )
-                            .await
-                            .map_err(|error| WorktreeAssociationError::Failed {
-                                message: error.to_string(),
-                            })
-                    })
-                },
-            ))))?;
             let binding = Arc::new(SessionFiles(Arc::new(files)));
             ctx.provide_at(
                 host_key("sessionFiles"),
                 binding.clone() as Arc<dyn HostDispatch>,
             )?;
             ctx.provide_as::<SessionFiles>(binding)?;
-            let metadata = Arc::new(metadata::SessionMetadataService(store));
-            ctx.provide_as::<metadata::SessionMetadataService>(metadata.clone())?;
-            ctx.provide_at(
-                host_key("sessionMetadata"),
-                metadata as Arc<dyn HostDispatch>,
-            )?;
             Ok(Effect::Done)
         })
     }
@@ -2575,48 +2246,13 @@ impl SqliteTimelineStore {
         at: u64,
         config: &str,
     ) -> Result<()> {
-        let (references, arrays) = fork_references(&self.db, source, at).await?;
-        let content: Vec<String> = content_closure(&self.db, source, references)
-            .await?
-            .into_iter()
-            .collect();
-        let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
-        let reset = fork.clone();
-        let copied = self
-            .db
-            .run_copy(move |connection| {
-                copy_fork(connection, &source, &fork, at, &content, &arrays, &config)
-            })
-            .await;
-        if copied.is_ok() {
-            // A fork's default branch is its root: the cache starts the fork
-            // there, and forgets the source's entry nothing reads again (design
-            // §5, §13).
-            self.db
-                .defaults
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .insert(reset, ROOT_BRANCH_ID.into());
-        }
-        copied
+        self.db.fork_session(source, fork, at, config).await
     }
 
     /// The source record's configuration text, so a caller can copy it into
     /// another record without re-serializing the bytes.
     pub async fn session_config_text(&self, session_id: &str) -> Result<Option<String>> {
-        let session = session_id.to_owned();
-        self.db
-            .run_read(move |connection| {
-                connection
-                    .query_row(
-                        "SELECT config FROM agent_sessions WHERE session_id=?1",
-                        [&session],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(error)
-            })
-            .await
+        self.db.session_config_text(session_id).await
     }
 
     /// The `session.delete` row step ([S5c §3.2](../../../../docs/design/appserver/session-deletion-and-fork.md#32-sequence)).
@@ -3776,4 +3412,474 @@ async fn release_flow_preserves_history_and_tolerates_a_stopped_writer() {
     store.release_session("session").await.unwrap();
     db.close().await.unwrap();
     std::fs::remove_dir_all(directory).unwrap();
+}
+
+impl SqliteStorage {
+    pub(super) async fn add_grant(
+        self: &Arc<Self>,
+        session_id: &str,
+        path: PathBuf,
+        kind: GrantKind,
+        mode: GrantMode,
+    ) -> Result<()> {
+        let id = session_id.to_owned();
+        let path = path.to_string_lossy().into_owned();
+        let kind = match kind {
+            GrantKind::File => "file",
+            GrantKind::Dir => "dir",
+        };
+        let mode = match mode {
+            GrantMode::Read => "read",
+            GrantMode::Write => "write",
+        };
+        self
+            .run(move |connection| {
+                connection
+                    .execute(
+                        "INSERT INTO session_grants (session_id, path, kind, mode) VALUES (?1, ?2, ?3, ?4) \
+                         ON CONFLICT(session_id, path) DO UPDATE SET kind=excluded.kind, \
+                         mode=CASE WHEN session_grants.mode='write' THEN 'write' ELSE excluded.mode END",
+                        params![id, path, kind, mode],
+                    )
+                    .map_err(error)?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub(super) async fn remove_grant(
+        self: &Arc<Self>,
+        session_id: &str,
+        path: PathBuf,
+    ) -> Result<()> {
+        let id = session_id.to_owned();
+        let path = path.to_string_lossy().into_owned();
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "DELETE FROM session_grants WHERE session_id=?1 AND path=?2",
+                    params![id, path],
+                )
+                .map_err(error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn grants(self: &Arc<Self>, session_id: &str) -> Result<Vec<SessionGrant>> {
+        let id = session_id.to_owned();
+        self.run_read(move |connection| {
+            let mut query = connection
+                .prepare(
+                    "SELECT path, kind, mode FROM session_grants WHERE session_id=?1 ORDER BY path",
+                )
+                .map_err(error)?;
+            let rows = query
+                .query_map([id], |row| {
+                    let path: String = row.get(0)?;
+                    let kind: String = row.get(1)?;
+                    let mode: String = row.get(2)?;
+                    Ok((path, kind, mode))
+                })
+                .map_err(error)?;
+            let mut grants = Vec::new();
+            for row in rows {
+                let (path, kind, mode) = row.map_err(error)?;
+                grants.push(SessionGrant {
+                    path: PathBuf::from(path),
+                    kind: if kind == "file" {
+                        GrantKind::File
+                    } else {
+                        GrantKind::Dir
+                    },
+                    mode: if mode == "write" {
+                        GrantMode::Write
+                    } else {
+                        GrantMode::Read
+                    },
+                });
+            }
+            Ok(grants)
+        })
+        .await
+    }
+
+    pub(super) async fn set_session_language(
+        self: &Arc<Self>,
+        session_id: &str,
+        language: Option<ReplyLanguage>,
+    ) -> Result<()> {
+        let session = session_id.to_owned();
+        self.run(move |connection| {
+            let changed = match language {
+                Some(language) => connection.execute(
+                    "UPDATE agent_sessions SET config = json_set(config, '$.language', ?2) \
+                         WHERE session_id = ?1",
+                    params![&session, language.code()],
+                ),
+                None => connection.execute(
+                    "UPDATE agent_sessions SET config = json_remove(config, '$.language') \
+                         WHERE session_id = ?1",
+                    params![&session],
+                ),
+            }
+            .map_err(error)?;
+            if changed != 1 {
+                return Err(AgentError::Closed(session));
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn creation_record(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<(SessionOrigin, Option<String>)> {
+        let id = session_id.to_owned();
+        self.run_read(move |connection| {
+            let (text, parent): (String, Option<String>) = connection
+                .query_row(
+                    "SELECT origin, leader_session_id FROM agent_sessions WHERE session_id=?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()
+                .map_err(error)?
+                .ok_or_else(|| AgentError::Closed(id))?;
+            Ok((origin_from_stored(&text)?, parent))
+        })
+        .await
+    }
+
+    pub(super) async fn owner(self: &Arc<Self>, id: &str) -> Result<Option<String>> {
+        let id = id.to_owned();
+        self.run_read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT agent_id FROM session_owners WHERE session_id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn has_records(self: &Arc<Self>, id: &str) -> Result<bool> {
+        let id = id.to_owned();
+        self.run_read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1) \
+                 OR EXISTS(SELECT 1 FROM session_owners WHERE session_id=?1) \
+                 OR EXISTS(SELECT 1 FROM timeline_branches WHERE session_id=?1) \
+                 OR EXISTS(SELECT 1 FROM timeline_events WHERE session_id=?1) \
+                 OR EXISTS(SELECT 1 FROM timeline_content WHERE session_id=?1)",
+                    [id],
+                    |row| row.get(0),
+                )
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn session_config_text(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<Option<String>> {
+        let session = session_id.to_owned();
+        self.run_read(move |connection| {
+            connection
+                .query_row(
+                    "SELECT config FROM agent_sessions WHERE session_id=?1",
+                    [&session],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn worktree_directories(
+        self: &Arc<Self>,
+    ) -> Result<Vec<WorktreeDirectoryRecord>> {
+        self
+            .run_read(|connection| {
+                connection
+                    .prepare("SELECT repository, root, last_used_at_ms FROM worktree_directories ORDER BY repository, root")
+                    .map_err(error)?
+                    .query_map([], |row| {
+                        Ok(WorktreeDirectoryRecord {
+                            directory: WorktreeDirectory {
+                                repository: PathBuf::from(row.get::<_, String>(0)?),
+                                root: PathBuf::from(row.get::<_, String>(1)?),
+                            },
+                            last_used_at_ms: row.get(2)?,
+                        })
+                    })
+                    .map_err(error)?
+                    .collect::<rusqlite::Result<_>>()
+                    .map_err(error)
+            })
+            .await
+    }
+
+    pub(super) async fn sessions_under_workspace(
+        self: &Arc<Self>,
+        root: &Path,
+    ) -> Result<Vec<String>> {
+        let root = root.to_path_buf();
+        self.run_read(move |connection| {
+            let mut statement = connection
+                .prepare("SELECT session_id, cwd FROM session_catalog")
+                .map_err(error)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(error)?;
+            let mut sessions = Vec::new();
+            for row in rows {
+                let (session, cwd) = row.map_err(error)?;
+                if Path::new(&cwd).starts_with(&root) {
+                    sessions.push(session);
+                }
+            }
+            sessions.sort();
+            Ok(sessions)
+        })
+        .await
+    }
+
+    pub(super) async fn worktree_usages(
+        self: &Arc<Self>,
+        directory: WorktreeDirectory,
+    ) -> Result<Vec<WorktreeUsage>> {
+        let repository = stored_worktree_path(&directory.repository)?.to_owned();
+        let root = stored_worktree_path(&directory.root)?.to_owned();
+        self.run_read(move |connection| {
+            connection
+                .prepare(
+                    "SELECT session_id, subtree FROM session_worktrees \
+                         WHERE repository=?1 AND root=?2 ORDER BY session_id",
+                )
+                .map_err(error)?
+                .query_map(params![repository, root], |row| {
+                    Ok(WorktreeUsage {
+                        session_id: row.get(0)?,
+                        subtree: PathBuf::from(row.get::<_, String>(1)?),
+                    })
+                })
+                .map_err(error)?
+                .collect::<rusqlite::Result<_>>()
+                .map_err(error)
+        })
+        .await
+    }
+}
+
+impl SqliteStorage {
+    pub(super) async fn touch_worktree_directories(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> Result<()> {
+        let session = session_id.to_owned();
+        let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
+        self.run(move |connection| {
+            connection
+                .execute(
+                    "UPDATE worktree_directories SET last_used_at_ms=?1 \
+                         WHERE (repository, root) IN \
+                         (SELECT repository, root FROM session_worktrees WHERE session_id=?2)",
+                    params![now, session],
+                )
+                .map_err(error)?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub(super) async fn fork_session(
+        self: &Arc<Self>,
+        source: &str,
+        fork: &str,
+        at: u64,
+        config: &str,
+    ) -> Result<()> {
+        let (references, arrays) = fork_references(self, source, at).await?;
+        let content: Vec<String> = content_closure(self, source, references)
+            .await?
+            .into_iter()
+            .collect();
+        let (source, fork, config) = (source.to_owned(), fork.to_owned(), config.to_owned());
+        let reset = fork.clone();
+        let copied = self
+            .run_copy(move |connection| {
+                copy_fork(connection, &source, &fork, at, &content, &arrays, &config)
+            })
+            .await;
+        if copied.is_ok() {
+            // A fork's default branch is its root: the cache starts the fork
+            // there, and forgets the source's entry nothing reads again (design
+            // §5, §13).
+            self.defaults
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(reset, ROOT_BRANCH_ID.into());
+        }
+        copied
+    }
+
+    pub(super) async fn remove_worktree_directory(
+        self: &Arc<Self>,
+        directory: WorktreeDirectory,
+    ) -> Result<bool> {
+        let repository = stored_worktree_path(&directory.repository)?.to_owned();
+        let root = stored_worktree_path(&directory.root)?.to_owned();
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            let used: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_worktrees \
+                         WHERE repository=?1 AND root=?2)",
+                    params![repository, root],
+                    |row| row.get(0),
+                )
+                .map_err(error)?;
+            if used {
+                return Err(AgentError::InvalidInput(
+                    "the worktree directory still has Session associations".into(),
+                ));
+            }
+            let removed = tx
+                .execute(
+                    "DELETE FROM worktree_directories WHERE repository=?1 AND root=?2",
+                    params![repository, root],
+                )
+                .map_err(error)?;
+            tx.commit().map_err(error)?;
+            Ok(removed > 0)
+        })
+        .await
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one parameter per field of the owned Session"
+    )]
+    pub(super) async fn create_owned_session(
+        self: &Arc<Self>,
+        session_id: &str,
+        config: &SessionConfig,
+        agent_id: &str,
+        protocol_version: u32,
+        leader: Option<&str>,
+        origin: SessionOrigin,
+        worktree: Option<PreparedWorktree>,
+    ) -> Result<()> {
+        crate::protocol::check_session_id(session_id)?;
+        let session = session_id.to_owned();
+        let config = config.clone();
+        let agent = agent_id.to_owned();
+        let leader = leader.map(str::to_owned);
+        let worktree = worktree
+            .map(
+                |PreparedWorktree { directory, subtree }| -> Result<(String, String, String, i64)> {
+                    let repository = stored_worktree_path(&directory.repository)?.to_owned();
+                    let root = stored_worktree_path(&directory.root)?.to_owned();
+                    if !subtree.starts_with(&directory.root) {
+                        return Err(error(
+                            "the inherited subtree must be inside the worktree root",
+                        ));
+                    }
+                    let subtree = stored_worktree_path(&subtree)?.to_owned();
+                    let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
+                    Ok((repository, root, subtree, now))
+                },
+            )
+            .transpose()?;
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            create_session(&tx, &session, &config, leader.as_deref(), origin)?;
+            tx.execute(
+                "INSERT INTO session_owners VALUES (?1, ?2, ?3)",
+                params![session, agent, protocol_version],
+            )
+            .map_err(error)?;
+            if let Some((repository, root, subtree, now)) = worktree {
+                tx.execute(
+                    "INSERT INTO worktree_directories (repository, root, last_used_at_ms) \
+                         VALUES (?1, ?2, ?3) ON CONFLICT (repository, root) \
+                         DO UPDATE SET last_used_at_ms=excluded.last_used_at_ms",
+                    params![repository, root, now],
+                )
+                .map_err(error)?;
+                tx.execute(
+                    "INSERT INTO session_worktrees (session_id, repository, root, subtree) \
+                         VALUES (?1, ?2, ?3, ?4) ON CONFLICT (session_id, repository, root) \
+                         DO UPDATE SET subtree=excluded.subtree",
+                    params![session, repository, root, subtree],
+                )
+                .map_err(error)?;
+            }
+            tx.commit().map_err(error)
+        })
+        .await
+    }
+
+    pub(super) async fn associate_worktree(
+        self: &Arc<Self>,
+        session_id: &str,
+        directory: WorktreeDirectory,
+        subtree: PathBuf,
+    ) -> Result<()> {
+        let repository = stored_worktree_path(&directory.repository)?.to_owned();
+        let root = stored_worktree_path(&directory.root)?.to_owned();
+        let subtree_text = stored_worktree_path(&subtree)?.to_owned();
+        if !subtree.starts_with(&directory.root) {
+            return Err(error(
+                "the inherited subtree must be inside the worktree root",
+            ));
+        }
+        let session = session_id.to_owned();
+        let now = sql_sequence(dim_agent_runtime::core::unix_millis())?;
+        self.run(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(error)?;
+            let exists: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=?1)",
+                    [&session],
+                    |row| row.get(0),
+                )
+                .map_err(error)?;
+            if !exists {
+                return Err(AgentError::Closed(session));
+            }
+            tx.execute(
+                "INSERT INTO worktree_directories (repository, root, last_used_at_ms) \
+                     VALUES (?1, ?2, ?3) ON CONFLICT (repository, root) \
+                     DO UPDATE SET last_used_at_ms=excluded.last_used_at_ms",
+                params![repository, root, now],
+            )
+            .map_err(error)?;
+            tx.execute(
+                "INSERT INTO session_worktrees (session_id, repository, root, subtree) \
+                     VALUES (?1, ?2, ?3, ?4) ON CONFLICT (session_id, repository, root) \
+                     DO UPDATE SET subtree=excluded.subtree",
+                params![session, repository, root, subtree_text],
+            )
+            .map_err(error)?;
+            tx.commit().map_err(error)
+        })
+        .await
+    }
 }

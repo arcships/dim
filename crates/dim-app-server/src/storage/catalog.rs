@@ -233,6 +233,23 @@ impl SessionStore {
         closed: Vec<String>,
         cancel: tokio_util::sync::CancellationToken,
     ) -> Result<CatalogResult> {
+        self.timeline
+            .db
+            .catalog(request, agent, version, hosts, closed, cancel)
+            .await
+    }
+}
+
+impl super::SqliteStorage {
+    pub(crate) async fn catalog(
+        self: &std::sync::Arc<Self>,
+        request: Catalog,
+        agent: Option<String>,
+        version: u32,
+        hosts: Vec<String>,
+        closed: Vec<String>,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<CatalogResult> {
         let digest = format!(
             "{:x}",
             Sha256::digest(
@@ -263,7 +280,7 @@ impl SessionStore {
                 Ok((time, id))
             })
             .transpose()?;
-        self.timeline.db.run_read_cancellable(cancel, move |connection| {
+        self.run_read_cancellable(cancel, move |connection| {
             let acp_history = request.with_acp_sessions && request.with_acp_history;
             let index = if request.with_preview && !acp_history { "session_catalog_with_preview" } else { "session_catalog_by_activity" };
             let mut sql = format!(

@@ -99,9 +99,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<input_queue::SubmitChecks>(catalog, session);
     register::<session_grants::SessionGrantsHost>(catalog, session);
     register::<file_access::FileAccessFacts>(catalog, session);
-    catalog.register_shared(dim_agent_runtime::names::name_of::<
-        file_access::WorktreeAssociations,
-    >());
     register::<methods::SessionMethods>(catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<input_queue::InputQueue>(catalog, branch);
