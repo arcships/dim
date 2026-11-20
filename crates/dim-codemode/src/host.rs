@@ -1,9 +1,9 @@
 use dim_agent_capabilities::{
-    host::{HostError, ToolExecutionContext},
+    host::{HostError, HostFuture, ToolExecutionContext},
     tool_binding::ToolBinding,
-    tool_executor::{NestedGate, ToolExecutor},
+    tool_executor::ToolExecutor,
 };
-use dim_agent_types::ToolDefinition;
+use dim_agent_types::{ToolCall, ToolDefinition, ToolEffect, ToolResult};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -19,7 +19,9 @@ pub trait NestedToolHost: Send + Sync + 'static {
         parent_call_id: String,
         context: ToolExecutionContext,
         cancel: CancellationToken,
-    ) -> Result<Arc<dyn NestedGate>, HostError>;
+    ) -> Result<String, HostError>;
+    fn invoke<'a>(&'a self, gate_id: &'a str, call: ToolCall) -> HostFuture<'a, ToolResult>;
+    fn close<'a>(&'a self, gate_id: &'a str) -> HostFuture<'a, Vec<ToolEffect>>;
 }
 
 pub struct ToolExecutorHost {
@@ -43,7 +45,13 @@ impl NestedToolHost for ToolExecutorHost {
         parent_call_id: String,
         context: ToolExecutionContext,
         cancel: CancellationToken,
-    ) -> Result<Arc<dyn NestedGate>, HostError> {
+    ) -> Result<String, HostError> {
         ToolExecutor::open(&self.executor, parent_call_id, context, cancel)
+    }
+    fn invoke<'a>(&'a self, gate_id: &'a str, call: ToolCall) -> HostFuture<'a, ToolResult> {
+        Box::pin(self.executor.invoke(gate_id, call))
+    }
+    fn close<'a>(&'a self, gate_id: &'a str) -> HostFuture<'a, Vec<ToolEffect>> {
+        Box::pin(self.executor.close(gate_id))
     }
 }

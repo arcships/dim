@@ -1719,6 +1719,12 @@
         "provider": 48,
         "generation": 1,
         "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolExecutor@main",
+        "provider": 49,
+        "generation": 1,
+        "removing": false
       }
     ]
   },

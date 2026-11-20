@@ -1,3 +1,4 @@
+mod face;
 pub mod read;
 
 use crate::{
@@ -17,10 +18,8 @@ use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
     collections::BTreeMap,
-    future::Future,
     num::NonZeroU64,
     panic::AssertUnwindSafe,
-    pin::Pin,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -36,6 +35,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 #[derive(Default)]
 struct ToolState {
     current: Option<CancellationToken>,
+    gates: BTreeMap<String, Arc<NestedGate>>,
     /// The context of the current top-level batch. A nested gate opens only
     /// for this context.
     current_context: Option<ToolExecutionContext>,
@@ -54,81 +54,43 @@ pub struct ToolExecutor {
     timeline: Arc<Timeline>,
 }
 
-/// The child-call gate of one outer tool call. `invoke` writes a child
-/// `step/tool-call` batch and its terminal `step/tool-result`; `close` rejects
-/// new children and waits for every child task.
-pub trait NestedGate: Send + Sync + 'static {
-    fn invoke(
-        &self,
-        call: ToolCall,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult, HostError>> + Send + '_>>;
-    fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    fn effects(&self) -> Vec<ToolEffect>;
-}
-
-type ChildEffects = Arc<Mutex<Vec<(u64, Vec<ToolEffect>)>>>;
-
-struct NestedGateImpl {
-    executor: Arc<ToolExecutor>,
+struct NestedGate {
+    timeline: Arc<Timeline>,
+    binding: Arc<ToolBinding>,
+    approval: Arc<Approval>,
     parent_call_id: String,
     context: ToolExecutionContext,
     cancel: CancellationToken,
     tasks: TaskTracker,
-    state: Mutex<GateState>,
+    closing: Mutex<bool>,
     next: AtomicU64,
-    effects: ChildEffects,
+    effects: Mutex<Vec<(u64, Vec<ToolEffect>)>>,
 }
 
-#[derive(Default)]
-struct GateState {
-    closing: bool,
-}
-
-impl NestedGate for NestedGateImpl {
-    fn invoke(
-        &self,
-        call: ToolCall,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult, HostError>> + Send + '_>> {
-        Box::pin(async move {
-            let (sender, receiver) = oneshot::channel();
-            {
-                let state = self.state.lock().unwrap();
-                if state.closing {
-                    return Err(HostError::failed("the Code Mode child gate is closed"));
-                }
-                let executor = self.executor.clone();
-                let parent_call_id = self.parent_call_id.clone();
-                let context = self.context.clone();
-                let cancel = self.cancel.clone();
-                let effects = self.effects.clone();
-                let sequence = self.next.fetch_add(1, Ordering::SeqCst);
-                self.tasks.spawn(async move {
-                    let result = run_child(
-                        executor,
-                        parent_call_id,
-                        context,
-                        call,
-                        cancel,
-                        sequence,
-                        effects,
-                    )
-                    .await;
-                    let _ = sender.send(result);
-                });
+impl NestedGate {
+    async fn invoke(self: &Arc<Self>, call: ToolCall) -> Result<ToolResult, HostError> {
+        let (sender, receiver) = oneshot::channel();
+        {
+            let closing = self.closing.lock().unwrap();
+            if *closing {
+                return Err(HostError::failed("the Code Mode child gate is closed"));
             }
-            receiver
-                .await
-                .unwrap_or_else(|_| Err(HostError::failed("a Code Mode child task ended")))
-        })
+            let sequence = self.next.fetch_add(1, Ordering::SeqCst);
+            let gate = self.clone();
+            self.tasks.spawn(async move {
+                let _ = sender.send(gate.run_child(call, sequence).await);
+            });
+        }
+        receiver
+            .await
+            .unwrap_or_else(|_| Err(HostError::failed("a Code Mode child task ended")))
     }
 
-    fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async move {
-            self.state.lock().unwrap().closing = true;
-            self.cancel.cancel();
-            self.tasks.close();
-            let _ = timeout(Duration::from_secs(5), self.tasks.wait()).await;
-        })
+    async fn close(&self) {
+        *self.closing.lock().unwrap() = true;
+        self.cancel.cancel();
+        self.tasks.close();
+        let _ = timeout(Duration::from_secs(5), self.tasks.wait()).await;
     }
 
     fn effects(&self) -> Vec<ToolEffect> {
@@ -139,68 +101,60 @@ impl NestedGate for NestedGateImpl {
             .flat_map(|(_, effects)| effects)
             .collect()
     }
-}
-
-async fn run_child(
-    executor: Arc<ToolExecutor>,
-    parent_call_id: String,
-    context: ToolExecutionContext,
-    call: ToolCall,
-    cancel: CancellationToken,
-    sequence: u64,
-    effects: ChildEffects,
-) -> Result<ToolResult, HostError> {
-    let batch = executor
-        .timeline
-        .append(
-            EventDraft::from(EventKind::ToolCall(ToolCallData {
-                turn_id: context.turn_id.clone(),
-                request_id: context.request_id.clone(),
-                calls: vec![call.clone()],
-            }))
-            .with_parent_call_id(parent_call_id.clone()),
-        )
-        .map_err(|error| HostError::failed(error.to_string()))?;
-    let child_call_id = call.id.clone();
-    let outcome = AssertUnwindSafe(dim_agent_runtime::core::with_parent_call_id(
-        child_call_id,
-        async {
-            execute(
-                &executor.binding,
-                &executor.approval,
-                call.clone(),
-                context.clone(),
-                cancel,
+    async fn run_child(&self, call: ToolCall, sequence: u64) -> Result<ToolResult, HostError> {
+        let context = &self.context;
+        let parent_call_id = &self.parent_call_id;
+        let batch = self
+            .timeline
+            .append(
+                EventDraft::from(EventKind::ToolCall(ToolCallData {
+                    turn_id: context.turn_id.clone(),
+                    request_id: context.request_id.clone(),
+                    calls: vec![call.clone()],
+                }))
+                .with_parent_call_id(parent_call_id.clone()),
             )
-            .await
-        },
-    ))
-    .catch_unwind()
-    .await;
-    let result = match outcome {
-        Ok(Ok(result)) => result,
-        Ok(Err(error)) => ToolResult::error(error.to_string()),
-        Err(panic) => ToolResult::error(panic_message(panic)),
-    };
-    if let Some(child_effects) = result.effects.clone() {
-        effects.lock().unwrap().push((sequence, child_effects));
+            .map_err(|error| HostError::failed(error.to_string()))?;
+        let child_call_id = call.id.clone();
+        let outcome = AssertUnwindSafe(dim_agent_runtime::core::with_parent_call_id(
+            child_call_id,
+            async {
+                execute(
+                    &self.binding,
+                    &self.approval,
+                    call.clone(),
+                    context.clone(),
+                    self.cancel.clone(),
+                )
+                .await
+            },
+        ))
+        .catch_unwind()
+        .await;
+        let result = match outcome {
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => ToolResult::error(error.to_string()),
+            Err(panic) => ToolResult::error(panic_message(panic)),
+        };
+        if let Some(child_effects) = result.effects.clone() {
+            self.effects.lock().unwrap().push((sequence, child_effects));
+        }
+        self.timeline
+            .append(
+                EventDraft::from(EventKind::ToolResult(ToolResultData {
+                    turn_id: context.turn_id.clone(),
+                    request_id: context.request_id.clone(),
+                    call_event_id: Some(batch.id.clone()),
+                    results: vec![ToolCallResult {
+                        call_id: call.id,
+                        result: result.clone(),
+                    }],
+                }))
+                .with_parent_call_id(parent_call_id.clone()),
+            )
+            .map_err(|error| HostError::failed(error.to_string()))?;
+        Ok(result)
     }
-    executor
-        .timeline
-        .append(
-            EventDraft::from(EventKind::ToolResult(ToolResultData {
-                turn_id: context.turn_id,
-                request_id: context.request_id,
-                call_event_id: Some(batch.id.clone()),
-                results: vec![ToolCallResult {
-                    call_id: call.id,
-                    result: result.clone(),
-                }],
-            }))
-            .with_parent_call_id(parent_call_id),
-        )
-        .map_err(|error| HostError::failed(error.to_string()))?;
-    Ok(result)
 }
 impl ToolExecutor {
     /// Opens the child-call gate for the current top-level batch. A gate
@@ -211,8 +165,17 @@ impl ToolExecutor {
         parent_call_id: String,
         context: ToolExecutionContext,
         cancel: CancellationToken,
-    ) -> Result<Arc<dyn NestedGate>, HostError> {
-        let state = self.state.lock().unwrap();
+    ) -> Result<String, HostError> {
+        self.open_gate(parent_call_id, context, |_| cancel)
+            .map(|(id, _)| id)
+    }
+    fn open_gate(
+        &self,
+        parent_call_id: String,
+        context: ToolExecutionContext,
+        cancellation: impl FnOnce(&CancellationToken) -> CancellationToken,
+    ) -> Result<(String, Arc<NestedGate>), HostError> {
+        let mut state = self.state.lock().unwrap();
         if state.closed {
             return Err(HostError::failed("ToolExecutor is closed"));
         }
@@ -221,25 +184,57 @@ impl ToolExecutor {
                 "ToolExecutor is interrupted: {reason}"
             )));
         }
-        if state.current.is_none() || state.current_context.as_ref() != Some(&context) {
+        let Some(batch) = state
+            .current
+            .as_ref()
+            .filter(|_| state.current_context.as_ref() == Some(&context))
+        else {
             return Err(HostError::failed(
                 "no current tool batch accepts a Code Mode child",
             ));
-        }
-        drop(state);
-        Ok(Arc::new(NestedGateImpl {
-            executor: self.clone(),
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let gate = Arc::new(NestedGate {
+            binding: self.binding.clone(),
+            approval: self.approval.clone(),
+            timeline: self.timeline.clone(),
             parent_call_id,
             context,
-            cancel,
+            cancel: cancellation(batch),
             tasks: TaskTracker::new(),
-            state: Mutex::new(GateState::default()),
+            closing: Mutex::new(false),
             next: AtomicU64::new(0),
-            effects: Arc::new(Mutex::new(Vec::new())),
-        }))
+            effects: Mutex::default(),
+        });
+        state.gates.insert(id.clone(), gate.clone());
+        Ok((id, gate))
+    }
+    pub async fn invoke(&self, gate_id: &str, call: ToolCall) -> Result<ToolResult, HostError> {
+        let gate = self
+            .state
+            .lock()
+            .unwrap()
+            .gates
+            .get(gate_id)
+            .cloned()
+            .ok_or_else(|| HostError::failed("the Code Mode child gate is closed"))?;
+        gate.invoke(call).await
+    }
+
+    pub async fn close(&self, gate_id: &str) -> Result<Vec<ToolEffect>, HostError> {
+        let gate = self
+            .state
+            .lock()
+            .unwrap()
+            .gates
+            .remove(gate_id)
+            .ok_or_else(|| HostError::failed("the Code Mode child gate is closed"))?;
+        gate.close().await;
+        Ok(gate.effects())
     }
 }
 pub struct ToolExecutorPlugin {
+    instance: rutis::host::InstanceId,
     pub emit_progress: bool,
     executor: Key<ToolExecutor>,
     timeline: Key<Timeline>,
@@ -252,6 +247,7 @@ impl ToolExecutorPlugin {
     pub fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
             emit_progress: false,
+            instance: names.instance(dim_agent_runtime::BRANCH_GROUP)?,
             executor: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
@@ -588,12 +584,13 @@ impl DynPlugin for ToolExecutorPlugin {
                             }).catch_unwind().await
                                 .map_err(|panic| AgentError::fault("ToolExecutor batch", panic_message(panic)))
                                 .and_then(|result| result);
-                            let unloading = {
+                            let (unloading, gates) = {
                                 let mut state = worker.state.lock().unwrap();
                                 state.current = None;
                                 state.current_context = None;
-                                state.closed || generation.is_cancelled()
+                                (state.closed || generation.is_cancelled(), std::mem::take(&mut state.gates))
                             };
+                            futures_util::future::join_all(gates.values().map(|gate| gate.close())).await;
                             let (mut results, mut errors) = match outcome {
                                 Ok(settled) => settled,
                                 Err(error) => {
@@ -662,6 +659,13 @@ impl DynPlugin for ToolExecutorPlugin {
                     })
                 }),
             ).await?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in(
+                    &dim_agent_runtime::names::name_of::<ToolExecutor>(),
+                    self.instance,
+                ),
+                Arc::new(face::Face(service.clone())),
+            )?;
             ctx.provide_at(self.executor.clone(), service)?;
             Ok(Effect::Done)
         })

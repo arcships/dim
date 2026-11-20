@@ -831,6 +831,11 @@ export interface FileReads {
 }
 
 export type BoundToolDefinition = Omit<ToolDefinition, 'risk'> & { risk?: string };
+export interface ToolExecutor {
+  open(request: { parentCallId: string; context: { turnId: string; requestId: string; branchId: string } }, cancelled: () => Promise<void>): string;
+  invoke(request: { gateId: string; call: { id: string; name: string; input: JsonObject } }): Promise<ToolResult>;
+  close(request: { gateId: string }): Promise<ToolEffect[]>;
+}
 export interface ToolBinding {
   bind(request: { requestId: string; through: number | bigint; tools: BoundToolDefinition[]; toolSources: { key: string; version: string }[] }): void;
   bindCurrent(request: { requestId: string; declared?: BoundToolDefinition[] | null }): BoundToolDefinition[];

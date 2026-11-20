@@ -663,3 +663,72 @@ async fn node_file_reads_round_trips_a_native_binding_used_by_write() {
     server.join().await.unwrap();
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch() {
+    use dim_agent_capabilities::host::{HostFuture, ToolExecutionContext};
+    use dim_agent_types::{ToolCall, ToolDefinition, ToolResult};
+
+    struct Tools(tokio::sync::mpsc::UnboundedSender<(String, ToolExecutionContext)>);
+    impl ToolDriver for Tools {
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            MockTools.definitions()
+        }
+        fn execute(
+            &self,
+            call: ToolCall,
+            context: ToolExecutionContext,
+            cancel: CancellationToken,
+        ) -> HostFuture<'_, ToolResult> {
+            if call.name == "wait" {
+                self.0.send((call.id.clone(), context.clone())).unwrap();
+            }
+            MockTools.execute(call, context, cancel)
+        }
+    }
+
+    let (started, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"tool-executor","name":parts.anchor.parent().unwrap().join("fixtures/tool-executor.ts"),"provides":{}}),
+    ];
+    let (server, _agent) = launch_with(
+        Arc::new(Tools(started)),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("ToolExecutorFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let id = super::session_typescript::new_session(&mut client, json!(["echo", "wait"])).await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":"main","text":"tool:wait {\"millis\":60000}"}),
+            )
+            .await,
+    );
+    let (parent, context) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let response = client.rpc("session.nestedfixture.run", json!({"sessionId":id,"parentCallId":parent,"turnId":context.turn_id,"requestId":context.request_id,"branchId":context.branch_id})).await;
+    assert_ok(&response);
+    assert_eq!(
+        response["result"],
+        json!({"output":"from node","effectCount":0})
+    );
+    assert_ok(
+        &client
+            .rpc("session.stop", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

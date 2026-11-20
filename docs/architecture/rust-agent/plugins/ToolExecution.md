@@ -165,6 +165,10 @@ declarations on it travel on that fact
 ([session boundary A.6](../../../design/contracts/session-boundary.md#a6-tool-effects));
 a call it settles without a tool result carries none. Calls in a batch settle
 before the correlated batch result.
+The branch `toolExecutor.open({parentCallId, context}, cancelled)` returns a gate ID for the current batch.
+`invoke({gateId, call})` executes the pinned tool and returns its result.
+`close({gateId})` closes admission, joins child tasks and returns their effects in invocation order.
+
 One top-level batch runs at once. A child batch carries `parent_call_id`; the
 top-level consumer ignores child batches, and the nested gate writes their
 `step/tool-call`/`step/tool-result` and joins them before the outer result. Child
@@ -220,7 +224,7 @@ effect before it retries, and reports the work neither as done nor as never run.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Approval`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding` |
-| 提供 | `B:ToolExecutor` |
+| 提供 | `B:ToolExecutor`、`B:dyn HostDispatch#toolExecutor` |
 | 被注入于 | — |
 <!-- /generated -->
 

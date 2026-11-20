@@ -2255,6 +2255,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolExecutor@main",
+        "provider": 79,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#wait@main",
         "provider": 81,
         "generation": 1,

@@ -121,7 +121,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `timeline` | branch | BranchScope | data | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `query` async, `sequence` async |
 | `timelineIdentity` | branch | BranchScope | data | `get` async |
 | `toolBinding` | branch | ToolBinding | data | `bind` sync, `bindCurrent` sync, `definitions` sync, `release` sync, `transfer` sync |
-| `toolExecutor` | branch | ToolExecutor | internal(hot-path) | — |
+| `toolExecutor` | branch | ToolExecutor | data | `close` async, `invoke` async, `open` sync |
 | `wait` | branch | WaitBranch | data | `wait` async |
 
 ## Capabilities

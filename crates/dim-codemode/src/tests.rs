@@ -1,15 +1,15 @@
 use crate::{CodeModeConfig, NestedToolHost, interpreter::run_program};
 use dim_agent_capabilities::{
-    host::{HostError, ToolExecutionContext},
-    tool_executor::NestedGate,
+    host::{HostError, HostFuture, ToolExecutionContext},
     tool_registry::definition,
 };
 use dim_agent_types::{ToolCall, ToolContent, ToolDefinition, ToolResult, ToolSource};
 use serde_json::json;
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 struct MockHost {
+    effects: std::sync::Mutex<Vec<dim_agent_types::ToolEffect>>,
     definitions: Vec<ToolDefinition>,
 }
 
@@ -23,22 +23,11 @@ impl NestedToolHost for MockHost {
         _: String,
         _: ToolExecutionContext,
         _: CancellationToken,
-    ) -> Result<Arc<dyn NestedGate>, HostError> {
-        Ok(Arc::new(MockGate {
-            effects: std::sync::Mutex::new(Vec::new()),
-        }))
+    ) -> Result<String, HostError> {
+        Ok("gate".to_owned())
     }
-}
 
-struct MockGate {
-    effects: std::sync::Mutex<Vec<dim_agent_types::ToolEffect>>,
-}
-
-impl NestedGate for MockGate {
-    fn invoke(
-        &self,
-        call: ToolCall,
-    ) -> Pin<Box<dyn Future<Output = Result<ToolResult, HostError>> + Send + '_>> {
+    fn invoke<'a>(&'a self, _: &'a str, call: ToolCall) -> HostFuture<'a, ToolResult> {
         Box::pin(async move {
             let result = match call.name.as_str() {
                 "echo" => Ok::<ToolResult, HostError>(ToolResult::text(
@@ -77,12 +66,8 @@ impl NestedGate for MockGate {
         })
     }
 
-    fn close(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
-    }
-
-    fn effects(&self) -> Vec<dim_agent_types::ToolEffect> {
-        self.effects.lock().unwrap().clone()
+    fn close<'a>(&'a self, _: &'a str) -> HostFuture<'a, Vec<dim_agent_types::ToolEffect>> {
+        Box::pin(async { Ok(std::mem::take(&mut *self.effects.lock().unwrap())) })
     }
 }
 
@@ -98,6 +83,7 @@ fn host() -> Arc<MockHost> {
     let mut codemode = definition("codemode", "self", json!({"type": "object"}));
     codemode.source = ToolSource::Extension;
     Arc::new(MockHost {
+        effects: Default::default(),
         definitions: vec![
             definition("echo", "echo", json!({"type": "object"})),
             definition("fail", "fail", json!({"type": "object"})),

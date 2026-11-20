@@ -468,16 +468,16 @@ CodeModeBranch::run(outer_call_id, code, context, cancel):
   runtime = AsyncRuntime::new(); runtime.set_memory_limit(max)
   runtime.set_interrupt_handler(deadline || child_cancel)
   quickjs = AsyncContext::full(runtime)
-  gate = toolExecutor.open(outer_call_id)
+  gateId = toolExecutor.open({parentCallId: outer_call_id, context}, cancelled)
   result = try:
     quickjs.async_with(|ctx|:
       install tools.list / tools.describe from toolBinding.definitions({requestId: context.request_id})
-      install tools.call = Async(|name, args| gate.invoke(ToolCall{name, args}, context, child_cancel))
+      install tools.call = Async(|name, args| toolExecutor.invoke({gateId, call: {id: child_id, name, input: args}}))
       promise = ctx.eval(async function body)
       return promise.into_future())
   finally:
     child_cancel.cancel()
-    gate.close(reason)
+    collected_effects = toolExecutor.close({gateId})
     drop(program_slot)
   return ToolResult { content: JSON(result), effects: collected_effects }
 ```
