@@ -352,8 +352,6 @@ async fn a_provider_records_own_identity_headers_win_over_dims() {
         .await
         .unwrap();
     let provider = root.get::<ProviderService>().unwrap();
-    let resolver = root.get::<ProviderService>().unwrap();
-    let host = root.get::<ModelDriverHost>().unwrap();
     let cancel = CancellationToken::new();
 
     let default_user_agent = format!(
@@ -406,18 +404,36 @@ async fn a_provider_records_own_identity_headers_win_over_dims() {
             config: selection.config,
             ..ModelRequest::new(id, "same", vec![Message::text(Role::User, "hello")])
         });
-        let resolved = resolver
-            .resolve_for_test(request.clone(), cancel.clone())
-            .await
-            .unwrap();
-        let mut output = host
-            .0
-            .invoke(request, resolved.connection, cancel.clone())
-            .await
-            .unwrap();
-        while let Some(chunk) = output.next().await {
-            chunk.unwrap();
-        }
+        let consume = RpcValue::callback(|args| {
+            let args = args.list()?;
+            let reader = args[0].clone().reference()?;
+            Ok(RpcValue::future(async move {
+                loop {
+                    let item = reader.call_async(RpcValue::List(vec![])).await?;
+                    let item = rutis_bridge::session::settle(item).await?.json()?;
+                    match item["kind"].as_str() {
+                        Some("chunk") => {}
+                        Some("end") => break,
+                        other => panic!("unexpected invocation item: {other:?} {item}"),
+                    }
+                }
+                Ok(json!({"kind":"returned","value":"complete","replaySafe":false}).into())
+            }))
+        });
+        let cancelled = RpcValue::callback(|_| Ok(RpcValue::future(std::future::pending())));
+        let reply = face_call(
+            &root,
+            "modelHost",
+            "invoke",
+            vec![
+                json!(request).into(),
+                json!({"kind":"once"}).into(),
+                consume,
+                cancelled,
+            ],
+        )
+        .await;
+        assert_eq!(reply, "complete");
         let seen = seen.lock().unwrap();
         let (_, sent) = seen.last().unwrap();
         let user_agent = sent["user-agent"].to_str().unwrap();

@@ -1276,7 +1276,7 @@ impl ModelHost {
         let scope = ctx
             .isolate_label(&wire.erase())
             .map_or_else(|| ctx.clone(), |label| ctx.isolate(native.erase(), &label));
-        scope.require_at(&native)
+        Ok(scope.require_at(&native)?)
     }
 
     pub fn local(driver: Arc<dyn ModelDriver>) -> Self {
