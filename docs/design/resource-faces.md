@@ -256,7 +256,7 @@ reads it, and this face does not write it.
 purpose, never an agent-decided command — and answers its exit status, both streams within the
 limits, whether the host could confine it, and whether either stream was cut. Its refusals are the
 ones it has today: `InvalidPath`, `TimedOut`, `OutputLimit`, `Cancelled`, `Spawn`, `Cleanup`. It
-reads no setting and grants no network.
+reads no setting and grants no network. `outputLimit` gives the stdout and stderr byte limits separately. A successful call returns the numeric exit code (null for a signal) and both streams as base64 bytes. Exceeding either limit returns `OutputLimit`.
 
 `configured` runs a **configuration command**: a command that exists because of configuration, not
 because an agent decided it (a Hooks handler,

@@ -743,6 +743,11 @@ export interface TimelineStore {
 
 /** Host facts of the node that executes commands. */
 export interface ExecHost {
+  confined(request: {
+    program: string; args: string[]; read: string[]; write: string[];
+    env?: Record<string, string>; timeoutMs: number; outputLimit: {stdout: number; stderr: number};
+    services: 'none' | 'onDeviceRecognition';
+  }): Promise<{status: number | null; stdout: string; stderr: string; confined: boolean; stdoutTruncated: boolean; stderrTruncated: boolean}>;
   info(request: Record<string, never>): Promise<{
     os: 'darwin' | 'linux' | 'win32';
     arch: string;

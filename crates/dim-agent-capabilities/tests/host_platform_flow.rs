@@ -263,6 +263,25 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     assert_eq!(facts["arch"], platform.arch);
     assert_eq!(facts["execShell"]["state"], "available");
     assert_eq!(facts["execShell"]["executable"], shell.to_str().unwrap());
+    let request = serde_json::json!([{
+        "program": "/bin/sh",
+        "args": ["-c", "printf abc; printf def >&2; exit 7"],
+        "read": [],
+        "write": [home],
+        "timeoutMs": 10000,
+        "outputLimit": {"stdout": 3, "stderr": 3},
+        "services": "none"
+    }]);
+    let reply = rutis_bridge::session::settle(face.invoke("confined", request.into()).unwrap())
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(reply["status"], 7);
+    assert_eq!(reply["stdout"], "YWJj");
+    assert_eq!(reply["stderr"], "ZGVm");
+    assert_eq!(reply["stdoutTruncated"], false);
+    assert_eq!(reply["stderrTruncated"], false);
 
     std::fs::remove_file(&shell).unwrap();
     let cloned = (*platform).clone();
