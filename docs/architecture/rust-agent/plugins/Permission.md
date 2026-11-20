@@ -12,7 +12,7 @@ The facts service is owned by the Session part in
 ([ADR 014 D1](../../../adr/014-file-access-facts.md#d1-fixed-facts)).
 
 `PermissionState` is serializable for read-only generated host exports. Agents'
-`sessionPermissions.permission` reads this same dispatched state through the
+`sessions.permission` reads this same dispatched state through the
 Session facade and holds its Session lease; it adds no Permission dependency,
 cache or event.
 

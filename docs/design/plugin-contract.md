@@ -106,7 +106,6 @@ R4). This table says what each name Dim defines is for.
 | Name | Scope | Provider | Crosses languages today | Notes |
 | --- | --- | --- | --- | --- |
 | `sessions` | process | Agents | yes | Start or drive another Session |
-| `sessionPermissions` | process | Agents | yes | Marked `#[rutis::service]` |
 | `sessionMetadata` | process | SessionStore | yes | SessionTitle is the title's one writer |
 | `settings` | process | Settings | yes | Business configuration |
 | `auxiliaryModel` | process | the profile's model-selection owner | yes | Auxiliary model requests |
