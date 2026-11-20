@@ -142,6 +142,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Session closed" => "Sesión cerrada",
         "Member conversation" => "Conversación de miembro",
         "x stop command · Esc back" => "x parar comando · Esc volver",
+        "x stop command · Esc close" => "x parar comando · Esc cerrar",
+        "x stop workflow · Esc close" => "x parar workflow · Esc cerrar",
         "Esc back" => "Esc volver",
         "Tail preview - last 2,000 lines / 50 KiB" => "Final - últimas 2000 líneas / 50 KiB",
         "Loading output..." => "Cargando salida…",

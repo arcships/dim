@@ -8,7 +8,7 @@
 //! wins and a later outcome is discarded.
 use crate::adapter::AdapterProgress;
 use dim_agent_types::ModelId;
-use dim_app_server::plugin_files::{PluginFileError, PluginFileTransactions};
+use dim_app_server::plugin_files::{FileScope, PluginFileError};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
@@ -220,12 +220,9 @@ fn parse(text: &str) -> Result<TaskRecord, serde_json::Error> {
 
 /// Reads a task record, or `None` when it does not exist. The file's lock is
 /// taken and the bytes are left unchanged.
-pub async fn load(
-    files: &PluginFileTransactions,
-    task_id: &str,
-) -> Result<Option<TaskRecord>, StoreError> {
+pub async fn load(files: &FileScope, task_id: &str) -> Result<Option<TaskRecord>, StoreError> {
     let parsed = files
-        .transact(&record_name(task_id), |text| {
+        .with_lock(&record_name(task_id), |text| {
             (None, text.map(parse).transpose())
         })
         .await?;
@@ -233,10 +230,7 @@ pub async fn load(
 }
 
 /// Writes the first revision of a new record. The file must not exist yet.
-pub async fn create(
-    files: &PluginFileTransactions,
-    record: TaskRecord,
-) -> Result<TaskRecord, StoreError> {
+pub async fn create(files: &FileScope, record: TaskRecord) -> Result<TaskRecord, StoreError> {
     match write(files, record, Expect::Revision(0)).await? {
         Write::Written(record) => Ok(record),
         Write::Discarded(_) => Err(StoreError::Invalid("task id already exists".into())),
@@ -246,13 +240,13 @@ pub async fn create(
 /// Writes `record` under the file's lock when `expect` accepts the current
 /// record; `record.revision` becomes one more than the current revision.
 pub async fn write(
-    files: &PluginFileTransactions,
+    files: &FileScope,
     mut record: TaskRecord,
     expect: Expect,
 ) -> Result<Write, StoreError> {
     let name = record_name(&record.task_id);
     let outcome = files
-        .transact(&name, move |text| {
+        .with_lock(&name, move |text| {
             let current = match text {
                 Some(text) => match parse(text) {
                     Ok(current) => Some(current),
@@ -296,7 +290,7 @@ pub async fn write(
 
 /// Writes an inline input file of `task_id`.
 pub async fn write_input(
-    files: &PluginFileTransactions,
+    files: &FileScope,
     task_id: &str,
     name: &str,
     bytes: Vec<u8>,
@@ -364,7 +358,7 @@ pub fn sha256(bytes: &[u8]) -> String {
 /// Streams `source` into the result file `name` of `task_id`, returning the
 /// bytes written and their SHA-256.
 pub async fn write_result(
-    files: &PluginFileTransactions,
+    files: &FileScope,
     task_id: &str,
     name: &str,
     source: impl Read + Send + 'static,
@@ -377,23 +371,19 @@ pub async fn write_result(
 }
 
 /// Removes one result file of `task_id`, if it exists.
-pub async fn remove_result(
-    files: &PluginFileTransactions,
-    task_id: &str,
-    name: &str,
-) -> Result<(), StoreError> {
+pub async fn remove_result(files: &FileScope, task_id: &str, name: &str) -> Result<(), StoreError> {
     files.remove(&result_name(task_id, name)).await?;
     Ok(())
 }
 
 /// Removes the task's work directory, if it exists.
-pub async fn remove_work(files: &PluginFileTransactions, task_id: &str) -> Result<(), StoreError> {
+pub async fn remove_work(files: &FileScope, task_id: &str) -> Result<(), StoreError> {
     files.remove(&work_name(task_id)).await?;
     Ok(())
 }
 
 /// Removes the whole task directory with its inputs and results.
-pub async fn remove_task(files: &PluginFileTransactions, task_id: &str) -> Result<(), StoreError> {
+pub async fn remove_task(files: &FileScope, task_id: &str) -> Result<(), StoreError> {
     files.remove(&task_dir(task_id)).await?;
     Ok(())
 }

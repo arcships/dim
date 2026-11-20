@@ -55,10 +55,80 @@ struct SourceGraph {
     symbols: BTreeMap<String, BTreeMap<String, BTreeSet<Symbol>>>,
 }
 
+/// Analyze production crate source and reject architectural violations without
+/// serializing the module graph. All edges come from source declarations/references.
+pub fn check(workspace: &Path) -> Result<()> {
+    let graph = analyze(workspace)?;
+    println!(
+        "module source boundaries passed ({} modules, {} edges)",
+        graph.modules.len(),
+        graph.edges.len()
+    );
+    Ok(())
+}
+
 /// Analyze production crate source, emit deterministic JSON/Mermaid and reject
 /// architectural violations. All edges come from source declarations/references.
-/// Returns the rendered `modules.json` and `modules.mmd`; the caller writes or verifies them.
+/// Returns the rendered `modules.json` and `modules.mmd` for on-demand inspection.
 pub fn generate(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
+    let graph = analyze(workspace)?;
+    let nodes: Vec<_> = graph
+        .modules
+        .iter()
+        .map(|(id, module)| {
+            json!({
+                "id":id,"crate":module.root,"parent":module.parent,"file":module.file,
+                "unexpandedMacros":module.macros,
+            })
+        })
+        .collect();
+    let edges: Vec<_> = graph
+        .edges
+        .iter()
+        .map(|((from, to), reasons)| json!({"from":from,"to":to,"references":reasons}))
+        .collect();
+    let report = json!({
+        "analysis": {
+            "source":"syn AST: mod declarations, use trees, item definitions and symbol paths",
+            "scope":"dim-agent-*, dim-app-server, dim-client, dim-acp, dim-cli, dim-migration, dim-session-title, dim-goal and dim-report library/binary targets; cfg branches are conservatively included",
+            "glob":"glob/re-export chains are resolved for referenced names; an unused glob does not create every possible dependency",
+            "limitations":["Macros are not expanded; unexpandedMacros names are reported per module", "Method receiver types, local-variable shadowing and trait-associated item inference are not resolved", "Qualified unresolved paths are reported; this graph supplements cargo check and is not complete rustc name resolution"],
+            "typesAllowedDependencies":TYPES_VALUE_DEPENDENCIES,
+        },
+        "modules":nodes,"edges":edges,
+        "unresolved":graph.unresolved.iter().map(|(module,path)|json!({"module":module,"path":path})).collect::<Vec<_>>(),
+    });
+    let json = serde_json::to_string_pretty(&report)? + "\n";
+    let ids: BTreeMap<_, _> = graph
+        .modules
+        .keys()
+        .enumerate()
+        .map(|(index, id)| (id, format!("m{index}")))
+        .collect();
+    let mut mermaid = String::from(
+        "%% Generated from Rust source AST; do not edit.\n%% Conservative cfg union; macros and inferred method receivers are not expanded.\nflowchart LR\n",
+    );
+    for (id, node) in &ids {
+        mermaid.push_str(&format!("  {node}[\"{}\"]\n", escape(id)));
+    }
+    for ((from, to), reasons) in &graph.edges {
+        let declaration = reasons.iter().all(|reason| reason.starts_with("mod "));
+        mermaid.push_str(&format!(
+            "  {} {} {}\n",
+            ids[from],
+            if declaration { "-.->" } else { "-->" },
+            ids[to]
+        ));
+    }
+    println!(
+        "module source boundaries passed ({} modules, {} edges)",
+        graph.modules.len(),
+        graph.edges.len()
+    );
+    Ok(vec![("modules.json", json), ("modules.mmd", mermaid)])
+}
+
+fn analyze(workspace: &Path) -> Result<SourceGraph> {
     let output = Command::new("cargo")
         .args([
             "metadata",
@@ -174,60 +244,7 @@ pub fn generate(workspace: &Path) -> Result<Vec<(&'static str, String)>> {
     graph.resolve_symbols()?;
     graph.resolve_edges();
     graph.check_boundaries()?;
-    let nodes: Vec<_> = graph
-        .modules
-        .iter()
-        .map(|(id, module)| {
-            json!({
-                "id":id,"crate":module.root,"parent":module.parent,"file":module.file,
-                "unexpandedMacros":module.macros,
-            })
-        })
-        .collect();
-    let edges: Vec<_> = graph
-        .edges
-        .iter()
-        .map(|((from, to), reasons)| json!({"from":from,"to":to,"references":reasons}))
-        .collect();
-    let report = json!({
-        "analysis": {
-            "source":"syn AST: mod declarations, use trees, item definitions and symbol paths",
-            "scope":"dim-agent-*, dim-app-server, dim-client, dim-acp, dim-cli, dim-migration, dim-session-title, dim-goal and dim-report library/binary targets; cfg branches are conservatively included",
-            "glob":"glob/re-export chains are resolved for referenced names; an unused glob does not create every possible dependency",
-            "limitations":["Macros are not expanded; unexpandedMacros names are reported per module", "Method receiver types, local-variable shadowing and trait-associated item inference are not resolved", "Qualified unresolved paths are reported; this graph supplements cargo check and is not complete rustc name resolution"],
-            "typesAllowedDependencies":TYPES_VALUE_DEPENDENCIES,
-        },
-        "modules":nodes,"edges":edges,
-        "unresolved":graph.unresolved.iter().map(|(module,path)|json!({"module":module,"path":path})).collect::<Vec<_>>(),
-    });
-    let json = serde_json::to_string_pretty(&report)? + "\n";
-    let ids: BTreeMap<_, _> = graph
-        .modules
-        .keys()
-        .enumerate()
-        .map(|(index, id)| (id, format!("m{index}")))
-        .collect();
-    let mut mermaid = String::from(
-        "%% Generated from Rust source AST; do not edit.\n%% Conservative cfg union; macros and inferred method receivers are not expanded.\nflowchart LR\n",
-    );
-    for (id, node) in &ids {
-        mermaid.push_str(&format!("  {node}[\"{}\"]\n", escape(id)));
-    }
-    for ((from, to), reasons) in &graph.edges {
-        let declaration = reasons.iter().all(|reason| reason.starts_with("mod "));
-        mermaid.push_str(&format!(
-            "  {} {} {}\n",
-            ids[from],
-            if declaration { "-.->" } else { "-->" },
-            ids[to]
-        ));
-    }
-    println!(
-        "module source boundaries passed ({} modules, {} edges)",
-        graph.modules.len(),
-        graph.edges.len()
-    );
-    Ok(vec![("modules.json", json), ("modules.mmd", mermaid)])
+    Ok(graph)
 }
 
 impl SourceGraph {
@@ -859,10 +876,17 @@ mod tests {
                 format!("{definitions}\n{source}"),
             )
             .unwrap();
+            let checked = check(&workspace);
             let result = generate(&workspace);
             match expected {
-                None => drop(result.unwrap()),
-                Some(expected) => assert!(result.unwrap_err().to_string().contains(expected)),
+                None => {
+                    checked.unwrap();
+                    drop(result.unwrap());
+                }
+                Some(expected) => {
+                    assert!(checked.unwrap_err().to_string().contains(expected));
+                    assert!(result.unwrap_err().to_string().contains(expected));
+                }
             }
         }
         fs::remove_dir_all(workspace).unwrap();

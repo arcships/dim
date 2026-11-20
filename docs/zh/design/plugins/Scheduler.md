@@ -871,9 +871,9 @@ Scheduler 是原生 Rust，无 TypeScript 包、Node 进程或回退。上面的
 | 注册到 `toolRegistry` 的工具 `schedule` | Session 部分经 `names.key()` 取得 `ToolRegistry`，并在 `apply` 中调用 `tools.register(ctx, ToolContribution {definition, handler})`，与 `dim-agent-questions` 相同 |
 | 注册到 `managementMethods` 的命名空间 `schedule` | 进程部分取得 `ManagementMethods` 并调用 `methods.register(ctx, "schedule", declarations, handler)`；Rpc 每次调用查找它，不持有对 Scheduler 的依赖 |
 | `scheduleJobs`、`wakeups`、`loops` | 注册为 shared 的进程组数据面，在各自的 `host_key` 提供 dispatcher。原生 `ScheduleJobs`、`Wakeups`、`Loops` 是同一 owner 操作的绑定，在类型键提供。原生 Session 部分用 `names.key()` 声明这些依赖并直接调用；wire 投影仅在 bridge 边界发生。`loops` 提供 `start`、`next`、`list`、`stop`；投递 pass、恢复与 `settle_delivering` 保持内部（§12.6） |
-| `settings`、`pluginFiles` | 用 `names.key()` 键入的 App Server 类型化服务(`SettingsService`、`PluginFileTransactions`)；该 crate 依赖 `dim-app-server`，`xtask check` 允许 |
+| `settings`、`pluginFiles` | 用 `names.key()` 键入的 App Server 类型化服务(`SettingsService`、`PluginFiles`)；该 crate 依赖 `dim-app-server`，`xtask check` 允许 |
 | `sessions` | 共享的宿主分发名称，以其 JSON 信封调用；其原生请求类型对 App Server 私有 |
-| 进程存储 | App Server 的类型化 `PluginFileTransactions` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |
+| 进程存储 | App Server 的类型化 `PluginFiles` 服务([可信插件存储](../../../../crates/dim-app-server/README.md#trusted-plugin-storage))。宿主写入 `{version: 1, text}` 信封；Scheduler 提供内层 v1 文本，即 TypeScript 版本写下的同一批字节。 |
 | 定时器、投递写入与停止定时器 | 由进程部分拥有：定时器、投递任务与保留期在其任务跟踪器中运行，并在其方法与服务注册之后、进程发布之后启动(§9 R1)。卸载时(`ctx.cancellation_token()`)，新工作停止、等待结束，清理在关闭存储作用域之前等待跟踪器；已准入的 `sessions` 调用先结算。仍为 `delivering` 的记录留在文件中，交给下一代的恢复。Session 工具返回 §1.3 的卸载结果及其自己的 `schedule: cancelled before handover` 或 `wakeup: cancelled before handover`。 |
 | 策略文本 | `install_with(builder, SchedulerTexts {description})`；`install` 使用内置文本。描述只含协议，因此不携带评估成员，也不需要校验。 |
 | guide 条目 | Session 部分取得 `GuideEntries` 并注册 §5.2 的条目，作用域为 Session，order 110 |
