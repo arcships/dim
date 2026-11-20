@@ -112,6 +112,17 @@ pub(crate) type GenerationEnd = Shared<BoxFuture<'static, SessionEnd>>;
 /// The process Session directory.
 pub struct Sessions(pub(crate) Ctx);
 impl Sessions {
+    pub(crate) async fn admit(
+        &self,
+        session_id: &str,
+    ) -> dim_agent_runtime::Result<super::SessionUse> {
+        let index = self
+            .0
+            .get::<AgentIndex>()
+            .ok_or_else(|| AgentError::Reloading("the Agents index".into()))?;
+        index.acquire(session_id).await
+    }
+
     pub(crate) fn generation_end(session: Session) -> GenerationEnd {
         async move {
             let _ = session.closed().await;

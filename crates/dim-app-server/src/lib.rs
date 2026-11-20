@@ -1433,7 +1433,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<storage::Store>(catalog, None);
     catalog.register_shared("store");
     register::<worktrees::ManagedWorktrees>(catalog, None);
-    register::<AgentIndex>(catalog, None);
     register::<rutis_loader::Loader>(catalog, None);
     catalog.register_shared(dim_agent_runtime::names::name_of::<
         collaboration::CollaborationDirectory,
@@ -1478,7 +1477,6 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
 pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
     for (name, reason) in [
         ("promptSourcesBranch", "hot-path"),
-        ("agentIndex", "owner-api"),
         ("agentLoop", "hot-path"),
         ("branchOpening", "hot-path"),
         ("compactionStrategyHost", "hot-path"),

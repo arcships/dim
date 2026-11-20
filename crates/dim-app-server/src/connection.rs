@@ -505,7 +505,7 @@ impl Connection {
             return Err(integration_pending());
         }
         self.authorize(rpc, &session_id)?;
-        let usage = rpc.index.acquire(&session_id).await?;
+        let usage = rpc.sessions.admit(&session_id).await?;
         let provider = crate::methods::session_provider(&rpc.loader, &usage.session, &method)?;
         if rpc.stopping.is_cancelled() {
             return Err(RpcError::reloading());
@@ -1722,7 +1722,7 @@ impl Connection {
         }
         let source = if let Some(id) = &params.model_from_session {
             self.authorize(rpc, id)?;
-            Some(rpc.index.acquire(id).await?)
+            Some(rpc.sessions.admit(id).await?)
         } else {
             None
         };
@@ -2273,6 +2273,7 @@ impl DynPlugin for ConnectionPlugin {
 
 /// Typed services behind protocol handlers; accepted commands belong to it.
 pub(crate) struct RpcService {
+    sessions: Arc<crate::agents::Sessions>,
     pub index: Arc<AgentIndex>,
     /// The process root, for per-call lookups of services Rpc does not depend
     /// on: management method providers and, in the product profile, Provider.
@@ -2459,6 +2460,7 @@ pub(crate) struct RpcPlugin {
     config: Arc<ServerConfig>,
     root: Ctx,
     index: Key<AgentIndex>,
+    sessions: Key<crate::agents::Sessions>,
     collaboration: Key<crate::collaboration::Collaboration>,
     hub: Key<ConnectionHub>,
     control: Key<ServerControl>,
@@ -2471,7 +2473,8 @@ impl RpcPlugin {
         Ok(Self {
             config,
             root,
-            index: names.key()?,
+            index: Key::of(),
+            sessions: Key::of(),
             collaboration: names.key()?,
             hub: names.key()?,
             control: names.key()?,
@@ -2488,6 +2491,7 @@ impl DynPlugin for RpcPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.index.erase(),
+            self.sessions.erase(),
             self.collaboration.erase(),
             self.hub.erase(),
             self.control.erase(),
@@ -2505,6 +2509,7 @@ impl DynPlugin for RpcPlugin {
             let management = ctx.require_at(&self.management)?;
             let callers = ctx.require_at(&self.callers)?;
             let service = Arc::new(RpcService {
+                sessions: ctx.require_at(&self.sessions)?,
                 index,
                 ctx: self.root.clone(),
                 management,

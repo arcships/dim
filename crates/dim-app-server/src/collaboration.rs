@@ -760,7 +760,7 @@ impl CollaborationPlugin {
             settings: local_execution
                 .then(|| names.key::<SettingsService>())
                 .transpose()?,
-            index: names.key()?,
+            index: Key::of(),
             sessions: Key::of(),
             directory: names.key()?,
             parts: names.key()?,

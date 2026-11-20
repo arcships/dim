@@ -26,7 +26,7 @@ pub(crate) struct AgentsSessionPlugin {
 impl AgentsSessionPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            index: names.key()?,
+            index: Key::of(),
             tree: names.key()?,
             methods: names.key()?,
         })
