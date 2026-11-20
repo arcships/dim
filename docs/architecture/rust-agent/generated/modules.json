@@ -17191,6 +17191,14 @@
     },
     {
       "from": "dim_agent_capabilities::shell_tools",
+      "to": "dim_agent_capabilities::host_platform::face",
+      "references": [
+        "path HostInfo",
+        "use crate::host_platform::HostInfo"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::shell_tools",
       "to": "dim_agent_capabilities::shell_session",
       "references": [
         "path CallContext",
@@ -19713,6 +19721,13 @@
         "use crate::host_platform::ShellKind",
         "use crate::host_platform::TemporaryDirectory",
         "use crate::host_platform::signal_name"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools::exec",
+      "to": "dim_agent_capabilities::host_platform::face",
+      "references": [
+        "path crate::host_platform::HostInfo"
       ]
     },
     {
