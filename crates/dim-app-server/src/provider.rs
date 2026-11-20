@@ -1742,22 +1742,14 @@ impl ProviderService {
 
     async fn managed_credential(
         self: &Arc<Self>,
-        authority: CredentialAuthority,
+        account: Arc<managed_oauth::Service>,
         rejected: Option<managed_oauth::CredentialLease>,
         cancel: &CancellationToken,
     ) -> Result<managed_oauth::CredentialLease, HostError> {
         let owner = self.clone();
         self.owned(cancel, move |cancel| {
             Box::pin(async move {
-                let lease = match authority {
-                    CredentialAuthority::OpenaiCodex => {
-                        owner.codex.credential(rejected.as_ref(), &cancel).await
-                    }
-                    CredentialAuthority::Grok => {
-                        owner.grok.credential(rejected.as_ref(), &cancel).await
-                    }
-                    CredentialAuthority::Static => unreachable!(),
-                };
+                let lease = account.credential(rejected.as_ref(), &cancel).await;
                 owner.check(&cancel)?;
                 lease.map_err(failure)
             })
@@ -2848,12 +2840,18 @@ impl ProviderService {
                 ));
             }
             if record.credential_authority != CredentialAuthority::Static {
+                let account = match record.credential_authority {
+                    CredentialAuthority::OpenaiCodex => self.codex.account(),
+                    CredentialAuthority::Grok => self.grok.account(),
+                    CredentialAuthority::Static => unreachable!(),
+                };
                 let lease = self
-                    .managed_credential(record.credential_authority, None, cancel)
+                    .managed_credential(account.clone(), None, cancel)
                     .await?;
                 let recovered = managed_connection(
                     self.clone(),
                     record.credential_authority,
+                    account.clone(),
                     lease,
                     record.network,
                 );
@@ -3137,6 +3135,7 @@ impl ResolveModalityConnection for ProductResolver {
 struct ManagedRecovery {
     owner: Arc<ProviderService>,
     authority: CredentialAuthority,
+    account: Arc<managed_oauth::Service>,
     lease: managed_oauth::CredentialLease,
     network: ModelNetwork,
 }
@@ -3144,6 +3143,7 @@ struct ManagedRecovery {
 fn managed_connection(
     owner: Arc<ProviderService>,
     authority: CredentialAuthority,
+    account: Arc<managed_oauth::Service>,
     lease: managed_oauth::CredentialLease,
     network: ModelNetwork,
 ) -> RecoveredModelConnection {
@@ -3178,6 +3178,7 @@ fn managed_connection(
         recovery: Arc::new(ManagedRecovery {
             owner,
             authority,
+            account,
             lease,
             network,
         }),
@@ -3192,11 +3193,12 @@ impl RecoverModelConnection for ManagedRecovery {
         Box::pin(async move {
             let lease = self
                 .owner
-                .managed_credential(self.authority, Some(self.lease.clone()), &cancel)
+                .managed_credential(self.account.clone(), Some(self.lease.clone()), &cancel)
                 .await?;
             Ok(managed_connection(
                 self.owner.clone(),
                 self.authority,
+                self.account.clone(),
                 lease,
                 self.network.clone(),
             ))
@@ -3204,21 +3206,13 @@ impl RecoverModelConnection for ManagedRecovery {
     }
     fn finish_rejected(&self, cancel: CancellationToken) -> HostFuture<'_, ()> {
         let owner = self.owner.clone();
-        let authority = self.authority;
+        let account = self.account.clone();
         let lease = self.lease.clone();
         Box::pin(async move {
             self.owner
                 .owned(&cancel, move |cancel| {
                     Box::pin(async move {
-                        let result = match authority {
-                            CredentialAuthority::OpenaiCodex => {
-                                owner.codex.finish_rejected(&lease, &cancel).await
-                            }
-                            CredentialAuthority::Grok => {
-                                owner.grok.finish_rejected(&lease, &cancel).await
-                            }
-                            CredentialAuthority::Static => unreachable!(),
-                        };
+                        let result = account.finish_rejected(&lease, &cancel).await;
                         owner.check(&cancel)?;
                         result.map_err(failure)
                     })
@@ -3325,8 +3319,8 @@ impl ProviderPlugin {
             db: names.key()?,
             sessions: lifecycle.then(Key::of),
             oauth: crate::managed_provider::owner_key(),
-            codex: names.key()?,
-            grok: names.key()?,
+            codex: Key::of(),
+            grok: Key::of(),
             secret_host: secret_host.then(|| names.key()).transpose()?,
             host: Key::of(),
             methods: names.key()?,

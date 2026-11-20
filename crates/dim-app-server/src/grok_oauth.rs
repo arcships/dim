@@ -15,6 +15,9 @@ pub use managed_oauth::{
 pub type Result<T> = managed_oauth::Result<T>;
 pub struct GrokOAuthService(Arc<Service>);
 impl GrokOAuthService {
+    pub(crate) fn account(&self) -> &Arc<Service> {
+        &self.0
+    }
     pub async fn status(&self, c: &CancellationToken) -> Result<AuthStatus> {
         self.0.status(c).await
     }

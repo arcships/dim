@@ -141,6 +141,18 @@ export interface ManagedProviderService extends ProviderService {
   configuration(request: {
     explicit?: ModelId; cwd?: string; preferences: { reasoningEffort?: string; serviceTier?: string };
   }): Promise<import('./branch-services.js').ModelSelection>;
+  prepareStartup(request: {
+    target: { provider?: string; modelId?: string }; cwd: string;
+    preferences: { reasoningEffort?: string; serviceTier?: string };
+    input: {
+      connection?: { apiFormat: import('./branch-services.js').ModelProtocol; baseUrl: string; apiKey?: string; authToken?: string; headers?: Record<string, string> };
+      contextWindow?: number; maxOutputTokens?: number; autoCompactWindow?: number | 'auto';
+    };
+    current?: Parameters<ManagedProviderService['applyPreferences']>[0]['current'];
+  }): Promise<{ model: import('./branch-services.js').ModelSelection; admissionId?: string }>;
+  retainStartup(request: { sessionId: string; generation: string; model: import('./branch-services.js').ModelSelection; admissionId?: string }): Promise<void>;
+  checkStartup(source: import('./branch-services.js').StartupConnectionSource): Promise<void>;
+  releaseStartup(request: { admissionId: string }): Promise<void>;
   applyPreferences(request: {
     current: import('./branch-services.js').ModelSelection & { tools?: ToolDefinition[]; toolSources?: { key: string; version: string }[] };
     update: { reasoningEffort?: string | { action: 'clear' }; serviceTier?: string | { action: 'clear' } };
