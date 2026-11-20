@@ -26,7 +26,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
 | `listenAddresses` | process | Transport | data | `read` async |
-| `loader` | process | rutis-loader | internal(owner-api) | — |
 | `localId` | process | root | data | `get` sync |
 | `loops` | process | Scheduler | data | `list` async, `next` async, `start` async, `stop` async |
 | `managedSearch` | process | ManagedProviders | data | `search` async |

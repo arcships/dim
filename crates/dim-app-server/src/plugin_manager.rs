@@ -2352,7 +2352,7 @@ impl PluginManagerPlugin {
         Ok(Self {
             state,
             plugin_tools,
-            loader: names.key()?,
+            loader: Key::of(),
             methods: names.key()?,
             parts: names.key()?,
             skills: names.key()?,

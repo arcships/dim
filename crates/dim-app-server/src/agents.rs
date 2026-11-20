@@ -2165,7 +2165,7 @@ impl AgentsPlugin {
                 .local_execution()
                 .then(|| names.key::<SettingsService>())
                 .transpose()?,
-            loader: names.key()?,
+            loader: Key::of(),
             directory: Key::of(),
             activity: names.key()?,
             parts: names.key()?,

@@ -543,7 +543,7 @@ before the loader mounts (`attach`), and follows each runtime row once the loade
 (`follow_row`). Dim's `SnapshotResolver` wraps it only for what rutis does not do: it checks each row
 against its `provides` snapshot and hands `workflowFiles` rows their packages. With configured runtime paths,
 admission waits for each runtime's rows (`SessionRows::key(row)`); a runtime RuntimeManager acquires
-is optional, so startup never waits for a download. `plugin.reload` is `Loader::reload(row)`; there
+is optional, so startup never waits for a download. `plugin.reload` calls `rutis/loader.reload(row)`; there
 is no resolver cache.
 
 rutis-loader's `LoaderPlugin` also serves the marked service `rutis/loader`. A foreign row that injects it
