@@ -3,7 +3,7 @@
 //! and the end.
 use super::*;
 use crate::tree_protocol as wire;
-use dim_agent_capabilities::prompt_state::PromptSnapshot;
+use dim_agent_capabilities::prompt::Prompt;
 use dim_agent_capabilities::session_broadcast::{
     SessionBroadcast, SessionBroadcastEvent, session_channel,
 };
@@ -558,10 +558,9 @@ impl Connection {
                 },
             );
             let adopted = session
-                .get::<PromptSnapshot>(ROOT_BRANCH_ID)
+                .service::<Prompt>(ROOT_BRANCH_ID)
                 .ok()
-                .flatten()
-                .and_then(|snapshot| snapshot.configuration);
+                .and_then(|prompt| prompt.adopted_configuration(Default::default()));
             let (model, model_preferences, capability_snapshot) = match adopted {
                 Some(configuration) => (
                     dim_agent_types::ModelId {

@@ -87,4 +87,4 @@ impl BranchScope {
     }
 }
 impl PublicService for SessionConfig {}
-impl PublicService for dyn LoopState {}
+impl PublicService for dyn AgentLoop {}

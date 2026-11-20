@@ -122,9 +122,6 @@ impl Branch {
     pub async fn idle(&self) -> Result<u64> {
         self.0.idle().await
     }
-    pub async fn configure(&self, update: ConfigureUpdate) -> Result<ConfigureOutcome> {
-        self.0.configure(update).await
-    }
     pub fn get<S: Clone + Send + Sync + 'static>(&self) -> Option<S> {
         self.0.state_cell::<S>().map(|s| s.get())
     }
@@ -134,6 +131,16 @@ impl Branch {
     /// Reads the current capability service, including after a reload.
     pub fn service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
         self.0.public::<T>()
+    }
+    /// Reads a service for a new operation on this branch.
+    pub fn admitted_service<T: ?Sized + PublicService>(&self) -> Result<Arc<T>> {
+        if self.is_closing() {
+            return Err(AgentError::Closed(self.id().into()));
+        }
+        self.service::<T>().map_err(|error| match error {
+            AgentError::Reloading(name) => AgentError::Build(format!("{name} is not installed")),
+            other => other,
+        })
     }
     /// The branch scope and the capabilities it installed.
     pub fn diagnostics(&self) -> rutis::host::diagnostics::RuntimeDiagnostics {

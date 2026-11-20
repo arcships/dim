@@ -489,7 +489,7 @@ impl DynPlugin for ToolBindingPlugin {
                     if registered.is_ok() {
                         opening_tasks.spawn(async move {
                             let result = AssertUnwindSafe(async {
-                                prompt.initial_completion().await?;
+                                prompt.initial_completion(Default::default()).await?;
                                 owner.reconcile(&prompt, &timeline, &cancel).await
                             })
                             .catch_unwind()

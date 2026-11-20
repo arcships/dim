@@ -4,13 +4,14 @@ use crate::{
     input_queue::{
         CheckSubmission, SubmitCheckReply, SubmitCheckRequest, SubmitChecks, SubmitEntry,
     },
+    prompt::{Prompt, PromptConfigurationRequest},
     prompt_registry::{PromptRegistry, targets},
     prompt_sources::sha256_version,
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry},
 };
 use dim_agent_runtime::{
-    BRANCH_GROUP, BranchLifecycle, ConfigureControl, ConfigureUpdate, Names, PromptSourceTarget,
-    SESSION_GROUP, SessionConfig, SessionLifecycle, SessionLoader,
+    BRANCH_GROUP, BranchLifecycle, ConfigureUpdate, Names, PromptSourceTarget, SESSION_GROUP,
+    SessionConfig, SessionLifecycle, SessionLoader,
 };
 use dim_agent_types::*;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, InstanceId, Key, TypeKey};
@@ -618,7 +619,7 @@ pub struct SkillsBranchPlugin {
     instance: InstanceId,
     skills: Key<SessionSkills>,
     phase: Key<BranchLifecycle>,
-    configure: Key<dyn ConfigureControl>,
+    prompt: Key<Prompt>,
     branch: Key<SkillsBranch>,
 }
 impl SkillsBranchPlugin {
@@ -627,7 +628,7 @@ impl SkillsBranchPlugin {
             instance: names.instance(BRANCH_GROUP)?,
             skills: Key::of().instance(names.instance(SESSION_GROUP)?),
             phase: names.key()?,
-            configure: names.key()?,
+            prompt: names.key()?,
             branch: names.key()?,
         })
     }
@@ -637,17 +638,13 @@ impl DynPlugin for SkillsBranchPlugin {
         "SkillsBranch"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![
-            self.skills.erase(),
-            self.phase.erase(),
-            self.configure.erase(),
-        ]
+        vec![self.skills.erase(), self.phase.erase(), self.prompt.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let skills = ctx.require_at(&self.skills)?;
             let phase = ctx.require_at(&self.phase)?;
-            let configure = ctx.require_at(&self.configure)?;
+            let prompt = ctx.require_at(&self.prompt)?;
             let lifecycle = ctx.cancellation_token();
             let mut changed = skills.changed.subscribe();
             changed.mark_unchanged();
@@ -663,13 +660,13 @@ impl DynPlugin for SkillsBranchPlugin {
                         _ = phase.closing() => return,
                         result = changed.changed() => if result.is_err() { return },
                     }
-                    let update = ConfigureUpdate {
+                    let update = PromptConfigurationRequest::Targets(ConfigureUpdate {
                         sources: targets([LIST]),
                         model: None,
-                    };
+                    });
                     tokio::select! {
                         _ = lifecycle.cancelled() => return,
-                        result = configure.clone().configure(update) => if let Err(error) = result {
+                        result = prompt.configure(update) => if let Err(error) = result {
                             tracing::warn!(%error, "Skill list was not adopted");
                         },
                     }

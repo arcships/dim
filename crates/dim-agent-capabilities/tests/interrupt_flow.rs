@@ -377,7 +377,7 @@ struct InputGate {
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     input_queue: Option<Key<InputQueue>>,
-    loop_state: Option<Key<dyn LoopState>>,
+    loop_state: Option<Key<dyn AgentLoop>>,
 }
 impl InputGate {
     /// The gate as a branch part loading after `after`.
@@ -1636,7 +1636,7 @@ async fn stop_turn_stops_only_the_open_turn_it_names() {
         })
         .expect("the turn started");
     let control = session
-        .service::<dim_agent_capabilities::agent_loop::AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap();
 
     // Another id names no open turn: nothing is written.

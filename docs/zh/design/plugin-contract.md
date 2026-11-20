@@ -123,7 +123,7 @@ Rust 宿主端口和注册表（ToolRegistry、PromptRegistry、ToolHost、Model
 `register`，即 `sessionMethods`（`session`）或 `managementMethods`（进程，仅向 protected-local v3 提供），Rpc 每次调用时读取方法表。
 每种贡献遵循所属 owner 的数据面契约和登记生命周期。
 
-两条机制契约把门面绑定到核心部件：分支只在有 `LoopState` 提供者时发布，Session 只在有
+两条机制契约把门面绑定到核心部件：分支只在有 `AgentLoop` 提供者时发布，Session 只在有
 `TimelineTreeControl` 提供者时发布。因此 Loop 和 TimelineTree 是核心部件，用 Rust 编写。
 本设计不改变这一点。
 

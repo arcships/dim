@@ -1,6 +1,6 @@
 use dim_agent_capabilities::{
     methods::RpcError,
-    prompt_state::PromptSnapshot,
+    prompt::Prompt,
     timeline_tree::{DirectoryReply, DirectoryRequest, TimelineTree},
 };
 use dim_agent_runtime::{
@@ -395,7 +395,10 @@ fn eligible_line(line: &str) -> bool {
 }
 
 fn adopted_model(branch: &Branch) -> Option<ModelId> {
-    let configuration = branch.get::<PromptSnapshot>()?.configuration?;
+    let configuration = branch
+        .service::<Prompt>()
+        .ok()?
+        .adopted_configuration(Default::default())?;
     Some(ModelId {
         provider_id: configuration.provider_id,
         model_id: configuration.model_id,

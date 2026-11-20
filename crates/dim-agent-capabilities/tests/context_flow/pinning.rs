@@ -488,7 +488,7 @@ async fn a_compaction_with_no_running_turn_pins_nothing() {
         session.idle("main").await.unwrap();
     }
     let command = session
-        .service::<dim_agent_capabilities::agent_loop::AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();

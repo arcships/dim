@@ -10,7 +10,7 @@ use crate::{
     tool_binding::ToolBinding,
 };
 use dim_agent_runtime::{
-    AgentError, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot, LoopState, Names,
+    AgentError, AgentLoop, CAPABILITY_RELOADING, Dispatcher, LoopPhase, LoopSnapshot, Names,
     QueryComparison, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect,
     QuerySpec, QueryValue, Result, StateCell, Timeline, TimelineIdentity, TimelineQuery,
     TimelineQueryScope,
@@ -92,7 +92,7 @@ impl Applied {
     }
 }
 /// The one outstanding manual compaction command: written and without a
-/// result. Repeated requests join it (`AgentLoop::compact`); deduplication
+/// result. Repeated requests join it (`Loop::compact`); deduplication
 /// belongs to the interaction boundary, not to a queue of commands.
 struct Command {
     sequence: u64,
@@ -123,7 +123,7 @@ impl CompactionSlot {
 /// The reason a `context/compact` consumed while another command is
 /// outstanding is skipped.
 pub const ALREADY_IN_PROGRESS: &str = "a compaction is already in progress";
-pub struct AgentLoop {
+struct Loop {
     turn: Mutex<Option<Turn>>,
     /// Locked after `turn`.
     compaction: Mutex<CompactionSlot>,
@@ -155,7 +155,7 @@ pub struct AgentLoop {
     lifecycle: CancellationToken,
     dispatcher: Arc<Dispatcher>,
 }
-impl AgentLoop {
+impl Loop {
     fn publish(&self, slot: &Option<Turn>) {
         let open = slot.as_ref().filter(|turn| turn.open);
         let phase = match slot {
@@ -179,48 +179,6 @@ impl AgentLoop {
                 && input.sequence > interrupted_at
                 && !claimed.contains(&input.id)
         })
-    }
-    /// The only writer of `context/compact`. With a command outstanding
-    /// (written and without a result) it writes nothing and returns that
-    /// command's sequence, so every caller waits for the same result;
-    /// otherwise it appends the command and returns its sequence.
-    pub fn compact(&self) -> Result<u64> {
-        let mut compaction = self.compaction.lock().unwrap();
-        if let Some(command) = &compaction.command {
-            return Ok(command.sequence);
-        }
-        let sequence = self
-            .timeline
-            .append(EventKind::ContextCompact(ContextCompactData {}).into())?
-            .sequence;
-        compaction.command = Some(Command {
-            sequence,
-            consumed: false,
-            running: None,
-        });
-        Ok(sequence)
-    }
-    /// Stops one turn if it is still the open one: commits the same
-    /// `stop/interrupt` a stop of the running turn writes, with the same
-    /// scope and effect, decided under the lock that opens and closes turns.
-    /// A turn that already ended, or an id that is not the open turn's,
-    /// writes nothing and answers `None`.
-    pub fn stop_turn(&self, turn_id: &str, reason: String) -> Result<Option<u64>> {
-        let slot = self.turn.lock().unwrap();
-        if !slot
-            .as_ref()
-            .is_some_and(|turn| turn.id == turn_id && !turn.ending)
-        {
-            return Ok(None);
-        }
-        let interrupt = self.timeline.append(
-            EventKind::StopInterrupt(StopInterruptData {
-                reason,
-                scope: InterruptScope::Turn,
-            })
-            .into(),
-        )?;
-        Ok(Some(interrupt.sequence))
     }
     /// Starts a turn when idle and an applied input drives one; nothing
     /// starts while a compaction step runs.
@@ -1770,7 +1728,106 @@ impl AgentLoop {
         Ok(())
     }
 }
-impl LoopState for AgentLoop {
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StopTurn {
+    turn_id: String,
+    reason: String,
+}
+
+impl rutis_bridge::session::HostDispatch for Loop {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(
+            serde_json::json!({"state":"sync","compact":"sync","stopTurn":"sync","observe":"async"}),
+        )
+    }
+
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        use crate::port_faces::{Empty, invalid, request, unknown_method};
+        use rutis_bridge::session::{Value, arg};
+        let failure = |error: AgentError| {
+            rutis_bridge::exports::failure("AgentError", error.variant(), error.to_string(), None)
+        };
+        match method {
+            "state" => {
+                let _: Empty = request("agentLoop", args)?;
+                arg(&self.state())
+            }
+            "compact" => {
+                let _: Empty = request("agentLoop", args)?;
+                arg(&self.compact().map_err(failure)?)
+            }
+            "stopTurn" => {
+                let request: StopTurn = request("agentLoop", args)?;
+                arg(&self
+                    .stop_turn(&request.turn_id, request.reason)
+                    .map_err(failure)?)
+            }
+            "observe" => {
+                let args = args.list()?;
+                let [Value::Reference(callback)] = args.as_slice() else {
+                    return Err(invalid("agentLoop", "expected a listener"));
+                };
+                crate::port_faces::observe(
+                    "agentLoop",
+                    callback,
+                    self.watch(),
+                    self.lifecycle.clone(),
+                )
+            }
+            _ => Err(unknown_method("agentLoop", method)),
+        }
+    }
+}
+
+impl AgentLoop for Loop {
+    /// The only writer of `context/compact`. With a command outstanding
+    /// (written and without a result) it writes nothing and returns that
+    /// command's sequence, so every caller waits for the same result;
+    /// otherwise it appends the command and returns its sequence.
+    fn compact(&self) -> Result<u64> {
+        let mut compaction = self.compaction.lock().unwrap();
+        if let Some(command) = &compaction.command {
+            return Ok(command.sequence);
+        }
+        let sequence = self
+            .timeline
+            .append(EventKind::ContextCompact(ContextCompactData {}).into())?
+            .sequence;
+        compaction.command = Some(Command {
+            sequence,
+            consumed: false,
+            running: None,
+        });
+        Ok(sequence)
+    }
+    /// Stops one turn if it is still the open one: commits the same
+    /// `stop/interrupt` a stop of the running turn writes, with the same
+    /// scope and effect, decided under the lock that opens and closes turns.
+    /// A turn that already ended, or an id that is not the open turn's,
+    /// writes nothing and answers `None`.
+    fn stop_turn(&self, turn_id: &str, reason: String) -> Result<Option<u64>> {
+        let slot = self.turn.lock().unwrap();
+        if !slot
+            .as_ref()
+            .is_some_and(|turn| turn.id == turn_id && !turn.ending)
+        {
+            return Ok(None);
+        }
+        let interrupt = self.timeline.append(
+            EventKind::StopInterrupt(StopInterruptData {
+                reason,
+                scope: InterruptScope::Turn,
+            })
+            .into(),
+        )?;
+        Ok(Some(interrupt.sequence))
+    }
+
     fn state(&self) -> LoopSnapshot {
         self.observable.get()
     }
@@ -1781,8 +1838,8 @@ impl LoopState for AgentLoop {
 
 pub struct LoopPlugin {
     state: Key<StateCell<LoopSnapshot>>,
-    service: Key<AgentLoop>,
-    loop_state: Key<dyn LoopState>,
+    instance: rutis::host::InstanceId,
+    loop_state: Key<dyn AgentLoop>,
     timeline: Key<Timeline>,
     dispatcher: Key<Dispatcher>,
     prepare: Key<PrepareModelHost>,
@@ -1798,7 +1855,7 @@ impl LoopPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             state: names.state_cell()?,
-            service: names.key()?,
+            instance: names.instance(dim_agent_runtime::BRANCH_GROUP)?,
             loop_state: names.key()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
@@ -1844,7 +1901,7 @@ impl DynPlugin for LoopPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let policy = ContextPolicy::bind(&timeline, &context, &strategy, &history)
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
-            let service = Arc::new(AgentLoop {
+            let service = Arc::new(Loop {
                 turn: Mutex::new(None),
                 compaction: Mutex::new(CompactionSlot::default()),
                 observable: Arc::new(StateCell::new(LoopSnapshot::default())),
@@ -1906,8 +1963,11 @@ impl DynPlugin for LoopPlugin {
                 )
                 .await?;
             ctx.provide_at(self.state.clone(), service.observable.clone())?;
-            ctx.provide_at(self.service.clone(), service.clone())?;
-            ctx.provide_at(self.loop_state.clone(), service as Arc<dyn LoopState>)?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key_in("agentLoop", self.instance),
+                service.clone(),
+            )?;
+            ctx.provide_at(self.loop_state.clone(), service as Arc<dyn AgentLoop>)?;
             Ok(Effect::Done)
         })
     }

@@ -3,12 +3,13 @@
 //! in PromptSources' live cell; this part reads both and changes both, then
 //! has Prompt adopt the `dim/language` source.
 use crate::storage::Store;
+use dim_agent_capabilities::prompt::BranchPrompt as _;
 use dim_agent_capabilities::{
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params},
-    prompt_sources::{self, PromptSourcesBranch},
+    prompt_sources::{self, SessionLanguage},
     timeline_tree::TimelineTree,
 };
-use dim_agent_runtime::{AgentError, Names, ReplyLanguage};
+use dim_agent_runtime::{Names, ReplyLanguage};
 use dim_agent_types::ROOT_BRANCH_ID;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
@@ -24,6 +25,7 @@ const FAILED: &str = "language_failed";
 /// The Session's two reply-language methods; one per Session instance.
 pub(crate) struct SessionLanguagePlugin {
     tree: Key<TimelineTree>,
+    language: Key<SessionLanguage>,
     methods: Key<SessionMethods>,
     /// Native storage, when the assembly has it: the record carries the value.
     store: Option<Key<Store>>,
@@ -32,6 +34,7 @@ impl SessionLanguagePlugin {
     pub(crate) fn new(names: &Names<'_>, stored: bool) -> Result<Self, Error> {
         Ok(Self {
             tree: names.key()?,
+            language: names.key()?,
             methods: names.key()?,
             store: stored.then(|| names.key()).transpose()?,
         })
@@ -56,6 +59,8 @@ impl DynPlugin for SessionLanguagePlugin {
                 Some(key) => Some(ctx.require_at(key)?),
                 None => None,
             };
+            let scope = ctx.clone();
+            let language = self.language.clone();
             methods.register(
                 ctx,
                 NAMESPACE,
@@ -65,12 +70,22 @@ impl DynPlugin for SessionLanguagePlugin {
                 ],
                 Arc::new(move |call, cancel, _| {
                     let tree = tree.clone();
+                    let cell = scope.get_at(&language).ok_or_else(|| {
+                        RpcError::app(
+                            -32000,
+                            UNAVAILABLE,
+                            "This Session's prompt sources are unavailable",
+                        )
+                    });
                     let store = store.clone();
                     let MethodCall { method, params, .. } = call;
                     Box::pin(async move {
                         match method.as_str() {
-                            "session.language.get" => read(&tree).await,
-                            _ => change(&tree, store.as_deref(), params, cancel).await,
+                            "session.language.get" => {
+                                tree.get(ROOT_BRANCH_ID).map_err(RpcError::from)?;
+                                read(cell?).await
+                            }
+                            _ => change(&tree, cell, store.as_deref(), params, cancel).await,
                         }
                     })
                 }),
@@ -82,8 +97,7 @@ impl DynPlugin for SessionLanguagePlugin {
 
 /// `session.language.get`: the value the Session holds now, `null` when the
 /// operator selected none.
-async fn read(tree: &TimelineTree) -> Result<Value, RpcError> {
-    let language = cell(tree)?.language();
+async fn read(language: Arc<SessionLanguage>) -> Result<Value, RpcError> {
     let _guard = language.gate().await;
     Ok(language_value(language.get().language))
 }
@@ -92,6 +106,7 @@ async fn read(tree: &TimelineTree) -> Result<Value, RpcError> {
 /// has Prompt adopt the source, all under the Session's language gate.
 async fn change(
     tree: &TimelineTree,
+    language_cell: Result<Arc<SessionLanguage>, RpcError>,
     store: Option<&Store>,
     value: Value,
     cancel: CancellationToken,
@@ -129,7 +144,7 @@ async fn change(
         Change::Code(code) => Some(code),
     };
     let branch = tree.get(ROOT_BRANCH_ID).map_err(RpcError::from)?;
-    let language_cell = cell(tree)?.language();
+    let language_cell = language_cell?;
     let _guard = language_cell.gate().await;
     // A failure before this write leaves the value unchanged; once the record
     // is written and the cell replaced, a later failure or a cancellation
@@ -177,22 +192,6 @@ async fn change(
     let mut answer = language_value(applied);
     answer["outcome"] = json!(outcome);
     Ok(answer)
-}
-
-/// The branch service that carries the Session's cell. An assembly without
-/// PromptSources has none, which is an explicit unavailable result and never a
-/// default language.
-fn cell(tree: &TimelineTree) -> Result<Arc<PromptSourcesBranch>, RpcError> {
-    let branch = tree.get(ROOT_BRANCH_ID).map_err(RpcError::from)?;
-    match branch.service::<PromptSourcesBranch>() {
-        Ok(service) => Ok(service),
-        Err(AgentError::Closed(_)) => Err(RpcError::closed()),
-        Err(_) => Err(RpcError::app(
-            -32000,
-            UNAVAILABLE,
-            "This Session's prompt sources are unavailable",
-        )),
-    }
 }
 
 fn language_value(language: Option<ReplyLanguage>) -> Value {

@@ -44,7 +44,7 @@ configuration and no profile record of its own. Its implementation is
   preferences do not preserve previous Session choices.
 - `ConfigureUpdate` carries source targets and a model. Prompt owns the existing
   configure-request/result commands, pending records and serial adoption queue.
-- `ConfigurationPublisher` publishes prompt/model changes atomically and retains
+- `ContextPreparation` publishes prompt/model changes atomically and retains
   the previous tool part.
 - `Prompt::open` already preserves System entries and the adopted model on resume
   and child creation. No opening/recovery extension is needed.
@@ -502,10 +502,8 @@ the Session already gives for an operation on it, an unknown branch
 methods are v3 and are listed through `session.methods`: a v1 or v2 client has
 `unknown_method`.
 
-This is Prompt configuration behavior, not runtime infrastructure. Neither
-`ConfigureControl` nor `ConfigureUpdate` changes. Source-name-only loading cannot
-carry selected profile text without mutating a shared source behind another
-request's back; frozen values avoid that staging state and additional locks.
+Prompt adopts the selected profile text supplied to `prompt.configure`. Each
+request owns the values it supplies.
 
 ```text
 /agent ID -> existing sessionMethods dispatch
@@ -701,7 +699,7 @@ supplies immutable content. Neither owns another module's state.
 | §4.2 | Prepared requests/bindings retain handed-over configuration. |
 | §4.3 | No before callback or entry-side adoption; entries check shape and scope. |
 | §4.4 | No core business branch; Provider owns mapping and Prompt owns adoption. |
-| §4.5 | ConfigurationPublisher commits prompt/model facts atomically. |
+| §4.5 | ContextPreparation commits prompt/model facts atomically. |
 | §4.6 | Context follows existing adopted configuration and consumed inputs/results. |
 | §4.7 | Public profiles, model resolution, published Prompt state and Prompt operations. |
 | §4.8 | Existing infrastructure suffices; no mechanism-owner requirement. |

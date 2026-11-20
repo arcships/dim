@@ -57,7 +57,7 @@ flowchart LR
   p35 -->|"dim_agent_runtime::timeline_context::BranchOpening@main"| p48
   p35 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p47
   p35 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p47
-  p40 -->|"dim_agent_capabilities::context_preparation::ConfigurationPublisher@main"| p46
+  p40 -->|"dim_agent_capabilities::context_preparation::ContextPreparation@main"| p46
   p21 -->|"dim_agent_capabilities::host::PromptHost@session"| p46
   p21 -->|"dim_agent_capabilities::prompt::InitialPromptConfiguration@session"| p46
   p28 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p46

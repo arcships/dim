@@ -80,7 +80,6 @@ impl BranchRefusal {
 }
 
 impl AgentError {
-    /// The tree's refusal of an operation on a line.
     /// The error code exposed by rutis for this variant.
     pub fn variant(&self) -> &'static str {
         match self {

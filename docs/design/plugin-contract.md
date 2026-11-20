@@ -137,7 +137,7 @@ its owner, and the registration ends when the part unloads
 ToolRegistry or PromptRegistry, or on the method table of its scope, `sessionMethods` (`session`) or
 `managementMethods` (process, served to protected-local v3 only), which Rpc reads per call. Each contribution follows its owner's data-face contract and registration lifetime.
 
-Two mechanism contracts tie the facades to core parts: a branch is published only with a `LoopState`
+Two mechanism contracts tie the facades to core parts: a branch is published only with a `AgentLoop`
 provider, and a Session only with a `TimelineTreeControl` provider. Loop and TimelineTree are therefore
 core parts, written in Rust. This design does not change that.
 

@@ -19,8 +19,8 @@ use dim_agent_capabilities::{
 };
 use dim_agent_runtime::testing::MinimalHost;
 use dim_agent_runtime::{
-    AgentBuilder, AgentConfig, AgentError, BoxFuture, BranchOptions, Dispatcher, Feature,
-    LoopSnapshot, LoopState, MemoryTimelineStore, Names, PublishCallback, Session, SessionConfig,
+    AgentBuilder, AgentConfig, AgentError, AgentLoop, BoxFuture, BranchOptions, Dispatcher,
+    Feature, LoopSnapshot, MemoryTimelineStore, Names, PublishCallback, Session, SessionConfig,
     StoredBranch, StoredEvent, Timeline, TimelineIdentity, TimelineKey, TimelineQueryDirection,
     TimelineStore, TimelineTrace,
 };
@@ -188,7 +188,13 @@ impl DynPlugin for ProbeBranch {
 /// harness supplies an idle state instead of the AgentLoop, so no turn is
 /// driven and the test owns every fact.
 struct IdleLoop(tokio::sync::watch::Sender<LoopSnapshot>);
-impl LoopState for IdleLoop {
+impl AgentLoop for IdleLoop {
+    fn compact(&self) -> dim_agent_runtime::Result<u64> {
+        unreachable!("idle fixture cannot compact")
+    }
+    fn stop_turn(&self, _: &str, _: String) -> dim_agent_runtime::Result<Option<u64>> {
+        unreachable!("idle fixture has no turns")
+    }
     fn state(&self) -> LoopSnapshot {
         LoopSnapshot::default()
     }
@@ -198,7 +204,7 @@ impl LoopState for IdleLoop {
 }
 
 struct LoopStub {
-    key: Key<dyn LoopState>,
+    key: Key<dyn AgentLoop>,
     watch: tokio::sync::watch::Sender<LoopSnapshot>,
 }
 impl LoopStub {
@@ -220,7 +226,7 @@ impl DynPlugin for LoopStub {
         Box::pin(async move {
             ctx.provide_at(
                 self.key.clone(),
-                Arc::new(IdleLoop(self.watch.clone())) as Arc<dyn LoopState>,
+                Arc::new(IdleLoop(self.watch.clone())) as Arc<dyn AgentLoop>,
             )?;
             Ok(Effect::Done)
         })

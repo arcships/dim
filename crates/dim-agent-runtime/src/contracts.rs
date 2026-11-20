@@ -2,7 +2,6 @@ use crate::{Branch, Result};
 use dim_agent_types::{ModelFailureKind, ModelSelection, PromptScope};
 use rutis::host::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tokio::sync::watch;
 
 /// Inputs admitted and not yet consumed by Loop, except one addressed to a
@@ -76,12 +75,16 @@ pub enum LoopPhase {
 }
 /// Execution state of one branch, a pure function of Loop's dispatched events.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct LoopSnapshot {
     pub phase: LoopPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<String>,
 }
 
-pub trait LoopState: Send + Sync + 'static {
+pub trait AgentLoop: Send + Sync + 'static {
+    fn compact(&self) -> Result<u64>;
+    fn stop_turn(&self, turn_id: &str, reason: String) -> Result<Option<u64>>;
     fn state(&self) -> LoopSnapshot;
     fn watch(&self) -> watch::Receiver<LoopSnapshot>;
 }
@@ -100,18 +103,12 @@ pub struct ConfigureUpdate {
     pub model: Option<ModelSelection>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ConfigureOutcome {
     Unchanged,
     Adopted,
     Superseded,
-}
-
-pub trait ConfigureControl: Send + Sync + 'static {
-    fn configure(
-        self: Arc<Self>,
-        update: ConfigureUpdate,
-    ) -> BoxFuture<'static, Result<ConfigureOutcome>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

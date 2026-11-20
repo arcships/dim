@@ -400,8 +400,8 @@ listed (§3.5). Dim adds no trait or adapter of its own. A strict read of a list
 provider gone returns its own error, and rutis puts the part back to Pending (A.3). The binding carries
 out §3.5 for Rust:
 
-- It names a type as `#[rutis::service]` does: `Timeline` is `timeline`, `dyn LoopState`
-  `loopState` (`names::name_of`). One Rust type is one name, so a type provided in two groups
+- It names a type as `#[rutis::service]` does: `Timeline` is `timeline`, `dyn AgentLoop`
+  `agentLoop` (`names::name_of`). One Rust type is one name, so a type provided in two groups
   becomes two types, or one group.
 - The key comes from the catalog for the name and the copy's instances. `names.key::<T>()` is the
   form for a name registered with the Rust type `T`: `Key::<T>::of().instance(id)` for the instance of

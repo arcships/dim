@@ -33,7 +33,7 @@ relation alone does not prove that a new bus is necessary.
 | Existing notifications and subscriptions | Observe lifecycle and configuration owners | Notifications are not durable business history |
 
 A no-Loop Session is not an existing assembly option: branch publication requires
-LoopState, and Agent branch creation adopts a first input. Changing that contract
+AgentLoop, and Agent branch creation adopts a first input. Changing that contract
 would also require a mechanism decision; a fake model is not a neutral owner.
 
 Workflow and ExternalAgent need not migrate merely to supply a second consumer.
@@ -157,7 +157,7 @@ The current implementation cannot be reused unchanged merely by changing an id.
 | --- | --- |
 | `TimelineKey` / `TimelineStore` | Replace Session-only root ownership with a common root identity; keep one event/branch/trace/snapshot store implementation |
 | `TimelineFactory` / `BranchAssembly` / part registry | Separate neutral bus assembly from SessionConfig and Agent lifecycle; the independent instance mounts its owner's registered parts under its own profile, without fake Agent services |
-| `TimelineContext` | Separate ordered dispatch and storage failure handling from LoopState, model/input processing and Agent stop behavior |
+| `TimelineContext` | Separate ordered dispatch and storage failure handling from AgentLoop, model/input processing and Agent stop behavior |
 | Timeline / Dispatcher | Reuse sequence, commit/publication and dispatch algorithms; construct them with the new root's storage and failure owner |
 | TimelineTree | Keep Agent creation, first prompt adoption and `branch/create` / `branch/start` receipts unchanged; no claim that a no-Loop root can call these methods |
 | Process assembly | Register an instanced `timeline` group alongside `agent` in the same loader, owned by `timelineInstances` |

@@ -821,6 +821,14 @@ export interface HooksService {
 export interface ToolSourceRejection { version: string; reason: string }
 export interface ToolSourceStatus { adopted: string | null; rejected: ToolSourceRejection | null }
 export type ToolSourcesState = Record<string, ToolSourceStatus>
+export type LoopSnapshot = { phase: "idle" | "running" | "stopping"; turnId?: string };
+export interface AgentLoop {
+  compact(request: Record<string, never>): number | bigint;
+  stopTurn(request: { turnId: string; reason: string }): number | bigint | null;
+  state(request: Record<string, never>): LoopSnapshot;
+  observe(listener: (snapshot: LoopSnapshot) => void | Promise<void>): Promise<void>;
+}
+
 export interface ToolSourcesView {
   get(request: Record<string, never>): ToolSourcesState
   observe(request: Record<string, never>, onState: (state: ToolSourcesState) => void | Promise<void>): Promise<void>

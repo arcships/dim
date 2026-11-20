@@ -1291,8 +1291,10 @@ impl Projection {
         if changed || !expired.is_empty() {
             state.finish(owner, expired, changed)?;
             owner
-                .publisher
-                .await_published(state.written_result)
+                .preparation
+                .await_published(super::PublishedSequence {
+                    sequence: state.written_result,
+                })
                 .await?;
         }
         Ok(state)
@@ -1411,7 +1413,9 @@ impl Prompt {
             return Err(error);
         }
         let written = self.projection.lock().unwrap().written_result;
-        self.publisher.await_published(written).await?;
+        self.preparation
+            .await_published(super::PublishedSequence { sequence: written })
+            .await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(())
     }
@@ -1498,7 +1502,9 @@ impl Prompt {
             }
         }
         let written = self.projection.lock().unwrap().written_result;
-        self.publisher.await_published(written).await?;
+        self.preparation
+            .await_published(super::PublishedSequence { sequence: written })
+            .await?;
         self.projection.lock().unwrap().publish(self, written);
         Ok(())
     }
