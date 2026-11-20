@@ -57,7 +57,7 @@ use crate::scenario_eval::{
 };
 use crate::summary_eval::complete_detailed;
 use dim_agent_capabilities::history::fold_output_parts;
-use dim_agent_capabilities::host::{ModelHost, ProviderConnectionResolver};
+use dim_agent_capabilities::host::ModelInvocation;
 use dim_agent_capabilities::prompt_suggestion::{
     PromptSuggestionSettings, compaction_due, instruction, last_user_text, part_text, refusal_rule,
     suggestion_request, validate_reply,
@@ -824,8 +824,8 @@ struct Reply {
 /// deterministic stub for CI, which has no network.
 enum Model {
     Live {
-        host: Arc<ModelHost>,
-        resolver: Arc<ProviderConnectionResolver>,
+        host: Arc<ModelInvocation>,
+
         cancel: CancellationToken,
     },
     #[cfg(test)]
@@ -837,19 +837,13 @@ impl Model {
         request: &Arc<ModelRequest>,
     ) -> std::result::Result<Reply, String> {
         match self {
-            Model::Live {
-                host,
-                resolver,
-                cancel,
-            } => {
+            Model::Live { host, cancel } => {
                 let started = Instant::now();
-                let reply = tokio::time::timeout(
-                    CALL_TIMEOUT,
-                    complete_detailed(host, resolver, request, cancel),
-                )
-                .await
-                .map_err(|_| "the model call did not answer within its budget".to_owned())?
-                .map_err(|error| error.to_string())?;
+                let reply =
+                    tokio::time::timeout(CALL_TIMEOUT, complete_detailed(host, request, cancel))
+                        .await
+                        .map_err(|_| "the model call did not answer within its budget".to_owned())?
+                        .map_err(|error| error.to_string())?;
                 Ok(Reply {
                     text: reply.text,
                     usage: reply.usage,
@@ -994,10 +988,7 @@ async fn replay(options: &Options, scenarios: &[&Scenario]) -> Result<()> {
         )
         .await?;
         let served = async {
-            let (Some(host), Some(resolver)) = (
-                server.service::<ModelHost>(),
-                server.service::<ProviderConnectionResolver>(),
-            ) else {
+            let Some(host) = server.service::<ModelInvocation>() else {
                 return Err("the served profile resolves no model host".to_string());
             };
             let judge = selection(&server, &options.judge, &options.out, &cancel)
@@ -1005,12 +996,12 @@ async fn replay(options: &Options, scenarios: &[&Scenario]) -> Result<()> {
                 .map_err(|error| error.to_string())?;
             let mut model = Model::Live {
                 host: host.clone(),
-                resolver: resolver.clone(),
+
                 cancel: cancel.clone(),
             };
             let mut judge_model = Model::Live {
                 host,
-                resolver,
+
                 cancel: cancel.clone(),
             };
             for scenario in group {
