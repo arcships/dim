@@ -629,7 +629,7 @@ impl DynPlugin for SkillsCatalogPlugin {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
             let parts = ctx.require_at(&self.parts)?;
-            let home = platform.info().await.home;
+            let home = platform.facts().home.to_owned();
             clean_staging(&home);
             settings.register::<SkillDocument>(ctx)?;
             let settings = Arc::new(SkillSettingsHost(Arc::new(SkillStorage { settings })));

@@ -267,7 +267,7 @@ impl DynPlugin for FileAccessFactsPlugin {
                 self.service.clone(),
                 Arc::new(FileAccessFacts(Arc::new(Facts {
                     config,
-                    platform_roots: platform.info().await.platform_roots,
+                    platform_roots: platform.facts().platform_roots.to_vec(),
                     files: ctx.require_at(&self.files)?,
                     grants: ctx.require_at(&self.grants)?,
                     worktrees,

@@ -751,7 +751,7 @@ impl DynPlugin for SkillsCatalogPlugin {
             let platform = ctx.require_at(&self.platform)?;
             let settings = ctx.require_at(&self.settings)?;
             let parts = ctx.require_at(&self.parts)?;
-            let catalog = Self::mount(ctx, (platform.info().await.home, settings)).await?;
+            let catalog = Self::mount(ctx, (platform.facts().home.to_owned(), settings)).await?;
             ctx.provide_at(owner_key(), catalog.clone())?;
             let binding = Arc::new(super::SkillsCatalogBinding::new(catalog));
             ctx.provide_as::<super::SkillsCatalogBinding>(binding.clone())?;

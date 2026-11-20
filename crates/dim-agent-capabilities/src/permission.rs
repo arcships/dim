@@ -329,7 +329,7 @@ impl Permission {
             .then(|| {
                 self.ctx
                     .get_at(&self.platform)
-                    .map(|platform| platform.home.clone())
+                    .map(|platform| platform.facts().home.to_owned())
             })
             .flatten();
         let read_facts = (category == Risk::Read)

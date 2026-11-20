@@ -223,11 +223,11 @@ fn xml_tag(name: &str, value: &str) -> String {
 
 /// The runtime environment (TS `renderRuntimeEnvironment`): one tag per
 /// line, values escaped; the date is its own source.
-fn environment(platform: &HostInfo, cwd: &str, policy: &PromptSourcesConfig) -> String {
-    let os = platform.os.node_platform();
+fn environment(platform: &HostInfo<'_>, cwd: &str, policy: &PromptSourcesConfig) -> String {
+    let os = platform.facts.os.node_platform();
     let mut entries = vec![
         xml_tag("cwd", cwd),
-        xml_tag("home", &platform.home.to_string_lossy()),
+        xml_tag("home", &platform.facts.home.to_string_lossy()),
     ];
     match &platform.exec_shell {
         ShellStatus::Available(ExecShellRuntime {
@@ -252,7 +252,7 @@ fn environment(platform: &HostInfo, cwd: &str, policy: &PromptSourcesConfig) -> 
                     OutputEncoding::Unknown => "unknown",
                 },
             ));
-            if platform.os == Os::Windows {
+            if platform.facts.os == Os::Windows {
                 let guidance = policy
                     .file_encoding_guidance
                     .as_deref()
@@ -265,7 +265,7 @@ fn environment(platform: &HostInfo, cwd: &str, policy: &PromptSourcesConfig) -> 
         }
     }
     entries.push(xml_tag("platform", os));
-    if let Some(timezone) = &platform.timezone {
+    if let Some(timezone) = platform.facts.timezone {
         entries.push(xml_tag("timezone", timezone));
     }
     format!("\n{}\n", entries.join("\n"))
@@ -603,7 +603,7 @@ impl DynPlugin for PromptSourcesPlugin {
                 }
             }
             let sources: Arc<dyn LoadPrompt> = Arc::new(Sources {
-                home: platform.info().await.home,
+                home: platform.facts().home.to_owned(),
                 platform,
                 config,
                 today: self.today.clone(),

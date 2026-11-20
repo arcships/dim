@@ -29,7 +29,7 @@ mod confined;
 pub use configured::{ConfiguredCommand, ConfiguredEnd, ConfiguredError};
 mod face;
 pub(crate) mod shell;
-pub use face::HostInfo;
+pub use face::{HostFacts, HostInfo};
 mod exec_shell_settings;
 #[cfg(unix)]
 mod isolation;

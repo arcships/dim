@@ -11,14 +11,21 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HostInfo {
+pub struct HostFacts<'a> {
     pub os: Os,
-    pub arch: String,
-    pub home: PathBuf,
+    pub arch: &'a str,
+    pub home: &'a std::path::Path,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<String>,
+    pub timezone: Option<&'a str>,
+    pub platform_roots: &'a [PathBuf],
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInfo<'a> {
+    #[serde(flatten)]
+    pub facts: HostFacts<'a>,
     pub exec_root: PathBuf,
-    pub platform_roots: Vec<PathBuf>,
     pub backend: SandboxBackend,
     pub exec_shell: ShellStatus,
 }
@@ -99,14 +106,20 @@ impl HostPlatform {
             .unwrap_or(false);
         decode_page(&buffer[..read], cursor, limit, truncated)
     }
-    pub async fn info(&self) -> HostInfo {
-        HostInfo {
+    pub fn facts(&self) -> HostFacts<'_> {
+        HostFacts {
             os: self.os,
-            arch: self.arch.clone(),
-            home: self.home.clone(),
-            timezone: self.timezone.clone(),
+            arch: &self.arch,
+            home: &self.home,
+            timezone: self.timezone.as_deref(),
+            platform_roots: &self.platform_roots,
+        }
+    }
+
+    pub async fn info(&self) -> HostInfo<'_> {
+        HostInfo {
+            facts: self.facts(),
             exec_root: self.exec_root(),
-            platform_roots: self.platform_roots.clone(),
             backend: self.sandbox_backend(),
             exec_shell: self.exec_shell().await,
         }

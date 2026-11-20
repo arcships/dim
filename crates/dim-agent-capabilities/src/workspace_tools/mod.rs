@@ -387,13 +387,13 @@ impl DynPlugin for WorkspaceToolsPlugin {
             let output_dir = self.config.output_root.join(&identity.session_id);
             // A configured boundary is the file tools' home too: `~`
             // resolves against it, never against the platform home.
-            let info = platform.info().await;
+            let info = platform.facts();
             let exec_definition = exec::definition_for(&info);
             let home = self
                 .config
                 .boundary
                 .as_ref()
-                .map_or_else(|| info.home.clone(), |boundary| boundary.home.clone());
+                .map_or_else(|| info.home.to_owned(), |boundary| boundary.home.clone());
             let tools = Arc::new(WorkspaceTools {
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
@@ -410,7 +410,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 member: config.collaboration_role == CollaborationRole::Member,
                 cwd,
                 exec_definition,
-                execution_home: info.home,
+                execution_home: info.home.to_owned(),
                 execution_os: info.os,
                 platform,
                 tree,

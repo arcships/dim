@@ -380,7 +380,7 @@ impl HooksRuntime {
         cancel: &CancellationToken,
         gate: Option<&CancellationToken>,
     ) -> HookResult {
-        let command = handler.command(self.platform.os == Os::Windows);
+        let command = handler.command(self.platform.facts().os == Os::Windows);
         let started = Instant::now();
         let request = ConfiguredCommand {
             command: command.into(),
