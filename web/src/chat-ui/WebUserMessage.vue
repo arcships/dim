@@ -6,6 +6,7 @@ import {
   TimelineUserBubble,
   TimelineUserContent,
   getLinkIconKind,
+  useChatUiHost,
   type ChatUiTimelineRowMessage,
 } from "@dimcode/chat-ui"
 import { copyText } from "../clipboard"
@@ -14,10 +15,34 @@ import { formatTimelineTimestamp } from "../features/chat/timeline-time"
 import { useToastStore } from "../stores/toast"
 import { Button, Passthrough, fileIconUrl, icon, icons, tooltip, useWebTimeline } from "./primitives"
 
-const props = defineProps<{ message: ChatUiTimelineRowMessage }>()
+const props = withDefaults(defineProps<{ message: ChatUiTimelineRowMessage; readOnly?: boolean; canBranch?: boolean; branchDisabled?: boolean }>(), {
+  readOnly: true,
+  canBranch: false,
+  branchDisabled: false,
+})
+const emit = defineEmits<{ "branch-message": []; "fork-message": [] }>()
 const { t, locale } = useI18n()
 const toast = useToastStore()
 const context = useWebTimeline()
+const actions = useChatUiHost().timeline?.actions
+const pending = computed(() => actions?.pending.value === true)
+const canFork = computed(() => !props.readOnly && actions?.canFork(props.message.id) === true)
+/** This message's turn is still running, so no cut before it is a rest point yet. */
+const inRunningTurn = computed(() => props.branchDisabled || context.runningUserMessageIds.value.has(props.message.id))
+/** Why branching is off for this message, or undefined when it is on. */
+const branchBlocked = computed(() => {
+  const branch = context.actions.value.branch
+  if (!branch.available) return branch.reason
+  return inRunningTurn.value ? t("chatTimeline.unavailable.branchRunning") : undefined
+})
+const userLabels = computed(() => {
+  const labels = context.labels.value.user
+  return {
+    ...labels,
+    ...(branchBlocked.value === undefined ? {} : { branch: branchBlocked.value }),
+    ...(inRunningTurn.value ? { fork: t("chatTimeline.unavailable.forkRunning") } : {}),
+  }
+})
 const row = computed(() => {
   const source = context.rowByKey(props.message.id)
   return source?.kind === "user" ? source : undefined
@@ -38,6 +63,7 @@ const actionIcons = {
   fork: icons.gitFork,
   branch: icons.gitBranch,
 }
+const quoteIcon = icon("i-lucide-quote")
 
 async function copy(): Promise<void> {
   try {
@@ -75,22 +101,46 @@ async function copy(): Promise<void> {
     </TimelineUserBubble>
     <div v-for="skill in row?.skills ?? []" :key="skill" class="web-user-note">{{ t("message.skillLoaded", { name: skill }) }}</div>
     <div v-for="hook in row?.hooks ?? 0" :key="hook" class="web-user-note">{{ t("message.hookContext") }}</div>
-    <TimelineUserActions
-      :time-text="timeText"
-      :can-withdraw="false"
-      :can-edit="false"
-      :can-fork="false"
-      :can-branch="false"
-      :copied="copied"
-      :labels="context.labels.value.user"
-      :icons="actionIcons"
-      :button-component="Button"
-      :tooltip-provider-component="Passthrough"
-      :tooltip-component="tooltip.tooltipComponent"
-      :tooltip-trigger-component="tooltip.tooltipTriggerComponent"
-      :tooltip-content-component="tooltip.tooltipContentComponent"
-      @copy="copy"
-    />
+    <div class="flex items-center gap-1">
+      <TimelineUserActions
+        :time-text="timeText"
+        :can-withdraw="false"
+        :can-edit="false"
+        :can-fork="canFork"
+        :can-branch="canBranch"
+        :branch-disabled="branchBlocked !== undefined"
+        :action-pending="pending || inRunningTurn"
+        :copied="copied"
+        :labels="userLabels"
+        :icons="actionIcons"
+        :button-component="Button"
+        :tooltip-provider-component="Passthrough"
+        :tooltip-component="tooltip.tooltipComponent"
+        :tooltip-trigger-component="tooltip.tooltipTriggerComponent"
+        :tooltip-content-component="tooltip.tooltipContentComponent"
+        @copy="copy"
+        @fork="emit('fork-message')"
+        @branch="emit('branch-message')"
+      />
+      <div v-if="context.quotable.value || !readOnly" class="web-user-extra-actions flex h-7 items-center gap-1 text-muted-foreground opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+        <component :is="tooltip.tooltipComponent" v-if="!readOnly">
+          <component :is="tooltip.tooltipTriggerComponent">
+            <Button data-testid="web-user-edit" class="h-7 w-7 justify-center rounded-lg" disabled>
+              <component :is="actionIcons.edit" class="h-3.5 w-3.5" />
+            </Button>
+          </component>
+          <component :is="tooltip.tooltipContentComponent">{{ t("chatTimeline.unavailable.edit") }}</component>
+        </component>
+        <component :is="tooltip.tooltipComponent" v-if="context.quotable.value">
+          <component :is="tooltip.tooltipTriggerComponent">
+            <Button data-testid="web-user-quote" class="h-7 w-7 justify-center rounded-lg" @click="context.quote(message.content)">
+              <component :is="quoteIcon" class="h-3.5 w-3.5" />
+            </Button>
+          </component>
+          <component :is="tooltip.tooltipContentComponent">{{ t("message.quote") }}</component>
+        </component>
+      </div>
+    </div>
   </article>
 </template>
 
