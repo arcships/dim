@@ -604,14 +604,16 @@ impl TimelineTree {
         + use<>,
     > {
         let branch = self.get(branch_id)?;
-        Ok(move |request| {
-            Box::pin(async move {
-                branch
-                    .service::<crate::prompt::Prompt>()?
-                    .configure(request)
-                    .await
-            })
-        })
+        Ok(
+            move |request| -> BoxFuture<'static, Result<dim_agent_runtime::ConfigureOutcome>> {
+                Box::pin(async move {
+                    branch
+                        .service::<crate::prompt::Prompt>()?
+                        .configure(request)
+                        .await
+                })
+            },
+        )
     }
 
     /// The native result of the selected branch's `prompt.adoptedConfiguration` operation.
