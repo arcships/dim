@@ -599,7 +599,7 @@ impl TimelineTree {
         let branch_id = &request.branch_id;
         match request.operation {
             BranchOperation::ContextUsage => {
-                crate::context_methods::usage(&self.get(branch_id)?, cancel).await
+                crate::methods::reply(self.context_usage(branch_id, cancel).await?)
             }
             BranchOperation::CompactAndWait => {
                 crate::context_methods::compact(&self.get(branch_id)?, &cancel).await

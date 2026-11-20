@@ -10,7 +10,6 @@
 //! The `prompt-suggestion` Settings source belongs to the App Server
 //! ([`PromptSuggestionSettingsHost`]); the part reads it at each decision and
 //! stays idle while it is off.
-use crate::context_preparation::ContextPreparation;
 use crate::history::fold_output_parts;
 use crate::host::{
     HostError, ModelChunk, ModelConnection, ModelHost, ModelStream, ProviderConnectionResolver,
@@ -1100,13 +1099,12 @@ impl Part {
     }
 
     async fn compaction_due(&self, max_chars: u32, cancel: CancellationToken) -> bool {
-        let Ok(branch) = self.hosts.tree.get(DEFAULT_BRANCH_ID) else {
-            return false;
-        };
-        let Ok(preparation) = branch.service::<ContextPreparation>() else {
-            return false;
-        };
-        let Ok(usage) = preparation.usage(cancel).await else {
+        let Ok(usage) = self
+            .hosts
+            .tree
+            .context_usage(DEFAULT_BRANCH_ID, cancel)
+            .await
+        else {
             return false;
         };
         compaction_due(

@@ -202,24 +202,31 @@ pub(crate) async fn compact(
     }
 }
 
-pub(crate) async fn usage(branch: &Branch, cancel: CancellationToken) -> Result<Value, RpcError> {
-    match branch.service::<ContextPreparation>()?.usage(cancel).await {
-        Ok(usage) => reply(usage),
-        Err(ContextOpError::NotReady) => Err(RpcError::app(
-            -32000,
-            "context_usage_unavailable",
-            ContextOpError::NotReady.to_string(),
-        )),
-        Err(ContextOpError::NotConfigured) => Err(RpcError::app(
-            -32000,
-            "context_not_configured",
-            ContextOpError::NotConfigured.to_string(),
-        )),
-        Err(ContextOpError::Model(error)) => Err(RpcError::app(
-            -32000,
-            "context_model_failed",
-            error.to_string(),
-        )),
-        Err(ContextOpError::Read(error)) => Err(error.into()),
+impl TimelineTree {
+    pub(crate) async fn context_usage(
+        &self,
+        branch_id: &str,
+        cancel: CancellationToken,
+    ) -> Result<crate::context_preparation::ContextUsage, RpcError> {
+        let branch = self.get(branch_id)?;
+        match branch.service::<ContextPreparation>()?.usage(cancel).await {
+            Ok(usage) => Ok(usage),
+            Err(ContextOpError::NotReady) => Err(RpcError::app(
+                -32000,
+                "context_usage_unavailable",
+                ContextOpError::NotReady.to_string(),
+            )),
+            Err(ContextOpError::NotConfigured) => Err(RpcError::app(
+                -32000,
+                "context_not_configured",
+                ContextOpError::NotConfigured.to_string(),
+            )),
+            Err(ContextOpError::Model(error)) => Err(RpcError::app(
+                -32000,
+                "context_model_failed",
+                error.to_string(),
+            )),
+            Err(ContextOpError::Read(error)) => Err(error.into()),
+        }
     }
 }
