@@ -5861,6 +5861,7 @@ fn opening_blocks(events: &[Arc<AgentEvent>]) -> Vec<(Option<String>, String, bo
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_nested_line_is_told_its_own_parent_at_open() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
@@ -5868,9 +5869,12 @@ async fn a_nested_line_is_told_its_own_parent_at_open() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -6031,14 +6035,18 @@ async fn a_nested_line_is_told_its_own_parent_at_open() {
 async fn a_nested_line_whose_opening_read_fails_is_a_failed_create() {
     let store = Arc::new(TestStore::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -6389,6 +6397,7 @@ async fn an_ending_line_and_main_get_no_parent_block() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_parent_block_replays_after_a_compaction() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
@@ -6396,9 +6405,12 @@ async fn the_parent_block_replays_after_a_compaction() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -7519,6 +7531,7 @@ fn baseline_message(events: &[Arc<AgentEvent>], key: &str) -> Option<Message> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_roster_and_an_identity_replay_separately_after_a_compaction() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
@@ -7526,9 +7539,12 @@ async fn a_roster_and_an_identity_replay_separately_after_a_compaction() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -9494,6 +9510,7 @@ async fn a_default_branch_that_was_a_tool_line_stops_sending_its_idle_notice() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_switched_line_keeps_its_identity_after_a_compaction() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
@@ -9501,9 +9518,12 @@ async fn a_switched_line_keeps_its_identity_after_a_compaction() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -9557,6 +9577,7 @@ async fn a_switched_line_keeps_its_identity_after_a_compaction() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
@@ -9564,9 +9585,12 @@ async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -9698,6 +9722,7 @@ async fn a_move_leaves_the_new_default_branchs_prefix_unchanged() {
 #[ignore]
 async fn measure_e2_chained_reads_before_and_after_a_compaction() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
@@ -9705,9 +9730,12 @@ async fn measure_e2_chained_reads_before_and_after_a_compaction() {
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(FlowModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -11033,14 +11061,18 @@ async fn a_clean_restart_writes_no_status_note() {
 /// the summary strategy [`Compact`] and the hosts the branch tool needs.
 fn compacting_builder(store: Arc<dyn TimelineStore>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
+            Arc::new(Compact),
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

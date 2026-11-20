@@ -484,7 +484,7 @@ impl ModelProvider {
                 crate::context_policy::check_cancel(&cancel)?;
                 let request = images::adapt(&call.request, self.files.as_deref(), &cancel).await?;
                 self.context
-                    .validate(&call.request_id, request.clone(), cancel.clone())
+                    .validate_request(&call.request_id, request.clone(), cancel.clone())
                     .await?;
                 let resolved = match &self.resolver {
                     Some(resolver) => resolver.0.resolve(request.clone(), cancel.clone()).await?,

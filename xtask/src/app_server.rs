@@ -235,7 +235,7 @@ pub async fn serve_home(
     dim_app_server::permission_rules::install(&mut builder);
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))));
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))));
     match run.model_config {
         Some(path) => {
             let (models, profile) = dim_app_server::cli::model_profile(&path)?;

@@ -9,7 +9,7 @@ pub mod context_methods;
 pub mod context_model;
 mod context_policy;
 pub mod context_preparation;
-mod context_usage;
+pub mod context_usage;
 pub mod defaults;
 pub mod environment_clients;
 pub mod exec_stop;
@@ -80,6 +80,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<tool_registry::ToolRegistry>(catalog, session);
     catalog.register_shared_instance("toolSourcesView", SESSION_GROUP);
     register::<history::HistoryRenderer>(catalog, session);
+    catalog.register_shared_instance("historyRenderer", SESSION_GROUP);
     catalog.register_shared_instance("initialPromptConfiguration", SESSION_GROUP);
     register::<prompt_guide::GuideEntries>(catalog, session);
     catalog.register_shared_instance("promptRegistry", SESSION_GROUP);
@@ -88,9 +89,13 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
         SESSION_GROUP,
     );
     register::<host::PrepareModelHost>(catalog, session);
+    catalog.register_shared_instance("prepareModelHost", SESSION_GROUP);
     register::<host::PrepareContextHost>(catalog, session);
+    catalog.register_shared_instance("prepareContextHost", SESSION_GROUP);
     register::<host::ContextModelHost>(catalog, session);
+    catalog.register_shared_instance("contextModelHost", SESSION_GROUP);
     register::<host::CompactionStrategyHost>(catalog, session);
+    catalog.register_shared_instance("compactionStrategyHost", SESSION_GROUP);
     catalog.register_shared_instance("promptHost", SESSION_GROUP);
     register::<host::ToolHost>(catalog, session);
     catalog.register_shared_instance("commandRules", SESSION_GROUP);
@@ -108,6 +113,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<prompt::Prompt>(catalog, branch);
     register::<context_preparation::ContextPreparation>(catalog, branch);
     register::<context_usage::ContextUsage>(catalog, branch);
+    catalog.register_shared_instance("contextUsage", BRANCH_GROUP);
     register::<tool_executor::ToolExecutor>(catalog, branch);
     register::<tool_binding::ToolBinding>(catalog, branch);
     register::<permission::Permission>(catalog, branch);
@@ -151,5 +157,6 @@ impl PublicService for prompt::Prompt {}
 impl PublicService for tool_registry::ToolSourcesView {}
 impl PublicService for methods::SessionMethods {}
 impl PublicService for context_preparation::ContextPreparation {}
+impl PublicService for context_usage::ContextUsage {}
 
 pub mod session_files;

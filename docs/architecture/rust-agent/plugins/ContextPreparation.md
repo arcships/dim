@@ -5,6 +5,10 @@ and [context_policy.rs](../../../../crates/dim-agent-capabilities/src/context_po
 Prepares a fixed-source model request, enforces context policy and provides the
 atomic configuration publication used by Prompt.
 
+The branch service exposes `prepare({source, projection?}, cancelled)` and
+`validate({requestId, request}, cancelled)`. Preparation accepts the projection
+at the source cutoff. Validation checks the final request against the model budget.
+
 An estimate above the input budget triggers compaction within preparation, before
 publishing a model call, under [ContextCompaction §5.3](../../../design/plugins/ContextCompaction.md#53-one-compaction-path-contextpolicy).
 Successful local budget recovery publishes no failed model result. A recovery that
@@ -17,7 +21,7 @@ cannot fit the request fails terminally without requesting another recovery.
 | `S:HistoryRenderer` | Render supported history for preparation/budget checks. |
 | `S:ContextModelHost` | Optional window facts for context policy and recovery. |
 | `S:CompactionStrategyHost` | Optional compaction strategy; the policy exists when both hosts are bound. |
-| `S:PrepareContextHost` | Host preparation hook. |
+| `S:PrepareContextHost` | Call `prepare({request, source:{turnId, requestId, through}}, cancelled)` with the request and its original Timeline cutoff. |
 | `S:GuideEntries` | Register the digest entry while a strategy is bound. |
 | `B:TimelineIdentity` | Identify configuration publication scope; Session and branch ids of the `context.prepare` span. |
 | `B:Dispatcher` | Hand off recovery to live preparation/steer/interrupt transitions and report faults. |

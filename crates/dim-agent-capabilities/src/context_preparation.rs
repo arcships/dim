@@ -1,6 +1,6 @@
 use crate::{
     context_policy::ContextPolicy,
-    history::{HistoryRenderer, StreamedContext},
+    history::{StreamedContext, face::HistoryFace},
     host::*,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     prompt_state::{PromptSnapshot, scope_is_visible},
@@ -57,6 +57,37 @@ pub struct PublishedSequence {
 
 #[rutis::service]
 impl ContextPreparation {
+    pub async fn prepare(
+        &self,
+        request: PreparationRequest,
+        cancelled: CancelledFn,
+    ) -> Result<Arc<ModelRequest>, HostError> {
+        let cancel = self.lifetime.child_token();
+        let _finished = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.prepare_request(&request.source, request.projection, cancel),
+        )
+        .await
+        .map(|prepared| prepared.request)
+    }
+
+    pub async fn validate(
+        &self,
+        request: ValidationRequest,
+        cancelled: CancelledFn,
+    ) -> Result<(), HostError> {
+        let cancel = self.lifetime.child_token();
+        let _finished = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.validate_request(&request.request_id, request.request, cancel),
+        )
+        .await
+    }
+
     pub async fn publish(
         &self,
         request: PublishConfiguration,
@@ -435,8 +466,8 @@ struct PreparationState {
 /// `context/budget`, plus the compaction threshold. Token counts are
 /// estimates that travel as JSON numbers and may carry a fraction, so
 /// clients decode them as `f64`.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContextUsage {
     pub through: u64,
     pub context_window: f64,
@@ -468,6 +499,7 @@ struct PreparedProjection {
 }
 
 pub struct ContextPreparation {
+    lifetime: CancellationToken,
     guide: Arc<GuideEntries>,
     branch_phase: Arc<BranchLifecycle>,
     projection: Mutex<Option<PreparedProjection>>,
@@ -841,11 +873,23 @@ impl ContextPreparation {
                 .unwrap_or_else(|| CAPABILITY_RELOADING.into());
             (Err(HostError::Cancelled(reason)), None)
         } else {
-            match AssertUnwindSafe(self.prepare(source.clone(), cancel, &generation))
+            let projection = self.take_projection(&source);
+            match AssertUnwindSafe(self.prepare_request(&source, projection, cancel))
                 .catch_unwind()
                 .await
             {
-                Ok(result) => (result, None),
+                Ok(result) => (
+                    result.map(|prepared| {
+                        if let Some(estimate) = prepared.estimate {
+                            self.references.lock().unwrap().insert(
+                                source.request_id.clone(),
+                                (Arc::downgrade(&prepared.request), estimate),
+                            );
+                        }
+                        prepared.request
+                    }),
+                    None,
+                ),
                 Err(panic) => {
                     let message = panic_message(panic);
                     (
@@ -887,7 +931,7 @@ impl ContextPreparation {
     }
     /// Checks the actual final request. Its preparation estimate is reused only
     /// for the same request object and compatible model counter and limits.
-    pub async fn validate(
+    pub async fn validate_request(
         &self,
         request_id: &str,
         request: Arc<ModelRequest>,
@@ -910,25 +954,15 @@ impl ContextPreparation {
         }
     }
 
-    /// The current head's budget; writes nothing.
-    pub async fn usage(
+    async fn prepare_request(
         &self,
+        source: &ContextPrepareData,
+        projection: Option<StreamedContext>,
         cancel: CancellationToken,
-    ) -> std::result::Result<ContextUsage, ContextOpError> {
-        self.usage.read(None, cancel).await
-    }
-
-    async fn prepare(
-        &self,
-        source: ContextPrepareData,
-        cancel: CancellationToken,
-        generation: &CancellationToken,
-    ) -> std::result::Result<Arc<ModelRequest>, HostError> {
-        let projection = self.take_projection(&source);
+    ) -> std::result::Result<crate::context_policy::PreparedRequest, HostError> {
         crate::context_policy::check_cancel(&cancel)?;
         let request = self
             .host
-            .0
             .prepare(
                 source.request.clone(),
                 ContextSource {
@@ -956,7 +990,7 @@ impl ContextPreparation {
         let exact_prefix = request.messages.len() == source.request.messages.len();
         let cancelled = || {
             let state = self.state.lock().unwrap();
-            if generation.is_cancelled() || state.closed {
+            if self.lifetime.is_cancelled() || state.closed {
                 return CAPABILITY_RELOADING.to_owned();
             }
             state
@@ -970,12 +1004,12 @@ impl ContextPreparation {
                 })
                 .unwrap_or_else(|| "Operation cancelled".to_owned())
         };
-        let prepared = match &self.policy {
+        match &self.policy {
             Some(policy) => {
                 policy
                     .prepare(
                         request,
-                        &source,
+                        source,
                         projection,
                         exact_prefix.then_some(self.usage.as_ref()),
                         cancel.clone(),
@@ -987,15 +1021,22 @@ impl ContextPreparation {
                 request,
                 estimate: None,
             }),
-        }?;
-        if let Some(estimate) = prepared.estimate {
-            self.references.lock().unwrap().insert(
-                source.request_id,
-                (Arc::downgrade(&prepared.request), estimate),
-            );
         }
-        Ok(prepared.request)
     }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparationRequest {
+    pub source: ContextPrepareData,
+    pub projection: Option<StreamedContext>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationRequest {
+    pub request_id: String,
+    pub request: Arc<ModelRequest>,
 }
 
 fn validate_capability_snapshot(request: &ModelRequest) -> Result<(), HostError> {
@@ -1020,7 +1061,7 @@ pub struct ContextPreparationPlugin {
     host: Key<PrepareContextHost>,
     model_context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
-    history: Key<HistoryRenderer>,
+    history: Key<HistoryFace>,
     identity: Key<TimelineIdentity>,
     guide: Key<GuideEntries>,
     branch_phase: Key<BranchLifecycle>,
@@ -1035,7 +1076,7 @@ impl ContextPreparationPlugin {
             host: names.key()?,
             model_context: names.key()?,
             strategy: names.key()?,
-            history: names.key()?,
+            history: HistoryFace::key(names)?,
             identity: names.key()?,
             guide: names.key()?,
             branch_phase: names.key()?,
@@ -1071,7 +1112,7 @@ impl DynPlugin for ContextPreparationPlugin {
             let identity = ctx.require_at(&self.identity)?;
             let guide = ctx.require_at(&self.guide)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
-            if strategy.0.is_some() {
+            if strategy.is_bound() {
                 guide.register(
                     ctx,
                     GuideScope::Branch(identity.branch_id.clone()),
@@ -1083,6 +1124,7 @@ impl DynPlugin for ContextPreparationPlugin {
                 )?;
             }
             let service = Arc::new(ContextPreparation {
+                lifetime: ctx.cancellation_token(),
                 guide,
                 branch_phase,
                 projection: Mutex::new(None),

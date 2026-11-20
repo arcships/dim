@@ -161,6 +161,10 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 
 `hostPlatform`、`fileStorage`、`timelineStore` 不按对象分类保留：数据面就是公开契约，`execHost`、`fsHost`、`store`、`timelineStore` 的操作就是它们的接口，旧名字是提供方和它的 Rust binding，调用方在进程内直接调这组操作，不再有第二套公开 API。凭据是操作内部用的能力，不是保留 `internal` 的理由。`hostPlatform`、`fileStorage` 的提供方在持有资源的那个 daemon（控制节点自己的插件，或 #1296 挂载的资源 leaf）；`store` 在持有 Session 状态的那个 daemon，SQLite 还是 PostgreSQL 只是实现（#1298，[resource and store data faces](resource-faces.md) §6）。
 
+Session 的 `historyRenderer` 提供 `context({branchId, through})`、`renderedContext({branchId, through})`、`snapshot({context, retainFrom, anchor})` 和 `streamCheckpoint({branchId, through, retainFrom, batch})`。
+
+Session 的 `compactionStrategyHost.describe(model)` 返回策略名和预计替换大小；`compact(input, cancelled)` 返回策略结果与诊断。策略提供方从请求解析模型，保留模型对象。
+
 ### 3.5 热路径与顺序：待操作化
 
 Proposed target operations: [Session and branch operations](contracts/runtime-owner-operations.md).
@@ -169,17 +173,11 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；`session.context.usage` 是 App Server RPC。按 #1292 确认是否需要独立插件操作。 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
 | `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
 | `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
-| `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
 | `faultReporter` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 
 ### 3.6 入口、凭据与宿主资源

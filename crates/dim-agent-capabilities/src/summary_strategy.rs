@@ -158,6 +158,7 @@ impl rutis_bridge::session::HostDispatch for SummaryPromptSettingsHost {
 
 pub struct ProductSummaryStrategyPlugin {
     host: Key<CompactionStrategyHost>,
+    context_model: Key<ContextModelHost>,
     model: Key<ModelHost>,
     resolver: Key<ProviderConnectionResolver>,
     guide: Key<GuideEntries>,
@@ -168,6 +169,7 @@ impl ProductSummaryStrategyPlugin {
     pub fn new(names: &Names<'_>, config: ProductSummaryStrategyConfig) -> rutis::Result<Self> {
         Ok(Self {
             host: names.key()?,
+            context_model: names.key()?,
             model: names.key()?,
             resolver: names.key()?,
             guide: names.key()?,
@@ -186,6 +188,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.model.erase(),
+            self.context_model.erase(),
             self.resolver.erase(),
             self.guide.erase(),
         ]
@@ -225,10 +228,18 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
                 }
             }
             let strategy = SummaryStrategy::new(host, resolver, config);
+            let host = Arc::new(CompactionStrategyHost::new(
+                Arc::new(strategy),
+                ctx.require_at(&self.context_model)?,
+            ));
             ctx.provide_at(
-                self.host.clone(),
-                Arc::new(CompactionStrategyHost(Some(Arc::new(strategy)))),
+                rutis_bridge::session::host_key_in(
+                    "compactionStrategyHost",
+                    self.host.erase().instance_id().expect("Session strategy"),
+                ),
+                host.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,
             )?;
+            ctx.provide_at(self.host.clone(), host)?;
             Ok(Effect::Done)
         })
     }

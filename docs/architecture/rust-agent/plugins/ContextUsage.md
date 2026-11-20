@@ -4,6 +4,8 @@ Owner: [context_usage.rs](../../../../crates/dim-agent-capabilities/src/context_
 A branch part of the ContextPreparation feature. It owns persisted numeric context
 contributions and request calibration under [ContextUsage](../../../design/plugins/ContextUsage.md).
 
+The branch `contextUsage.read({through?}, cancelled)` returns the budget at the requested committed sequence. Omitting `through` reads the current head. The Session usage method and prompt suggestion read this owner directly.
+
 ## Dependencies
 
 | Service | Purpose |
@@ -11,7 +13,7 @@ contributions and request calibration under [ContextUsage](../../../design/plugi
 | `B:Timeline` | Read source fields and cumulative numeric results; commit changed results. |
 | `B:Dispatcher` | Observe publication and report owned failures. |
 | `B:BranchLifecycle` | Start after activation and stop when closing. |
-| `S:ContextModelHost` | Resolve the additive counter and algorithm. |
+| `S:ContextModelHost` | Resolve window facts and the counting algorithm. The Session face provides `describe`, `count`, `contributions` and `estimate`. Contributions keep message order and can be combined only within the reported algorithm. |
 | `S:ToolRegistry` | Read current declarations when configuration does not specify tools. |
 
 ## Events and lifetime
@@ -60,6 +62,6 @@ receive the ordinary final full-request check.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:Dispatcher`、`B:Timeline`、`S:ContextModelHost`、`S:ToolRegistry` |
-| 提供 | `B:ContextUsage` |
+| 提供 | `B:ContextUsage`、`B:dyn HostDispatch#contextUsage` |
 | 被注入于 | `ContextPreparation` |
 <!-- /generated -->

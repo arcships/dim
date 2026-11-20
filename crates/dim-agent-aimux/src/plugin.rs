@@ -290,7 +290,7 @@ impl ResolveModalityConnection for ConfiguredConnection {
 
 /// Request preparation stays on the calling side of the process adapter.
 pub struct ConfiguredModelPlugin {
-    prepare: Key<PrepareModelHost>,
+    session: rutis::host::InstanceId,
     models: Key<AimuxModels>,
     config: Key<SessionConfig>,
     identity: Key<SessionIdentity>,
@@ -298,7 +298,7 @@ pub struct ConfiguredModelPlugin {
 impl ConfiguredModelPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            prepare: names.key()?,
+            session: names.instance(dim_agent_runtime::SESSION_GROUP)?,
             models: names.key()?,
             config: names.key()?,
             identity: names.key()?,
@@ -330,14 +330,12 @@ impl DynPlugin for ConfiguredModelPlugin {
                 })?
                 .defaults
                 .clone();
-            ctx.provide_at(
-                self.prepare.clone(),
-                Arc::new(PrepareModelHost(Arc::new(Prepare {
-                    config,
-                    identity,
-                    defaults,
-                }))),
-            )?;
+            PrepareModelHost(Arc::new(Prepare {
+                config,
+                identity,
+                defaults,
+            }))
+            .provide(ctx, self.session)?;
             Ok(Effect::Done)
         })
     }

@@ -153,7 +153,7 @@ impl ModelDriver for ToolOnRequest {
 struct StrategyReload(Arc<std::sync::Mutex<Vec<rutis::host::FiberView>>>);
 struct StrategyOwner {
     key: rutis::host::Key<CompactionStrategyHost>,
-    strategy: Arc<Scripted>,
+    strategy: Arc<CompactionStrategyHost>,
     views: Arc<std::sync::Mutex<Vec<rutis::host::FiberView>>>,
 }
 impl Plugin for StrategyOwner {
@@ -171,7 +171,10 @@ impl Plugin for StrategyOwner {
         Ok(())
     }
 }
-struct StrategyProvider(rutis::host::Key<CompactionStrategyHost>, Arc<Scripted>);
+struct StrategyProvider(
+    rutis::host::Key<CompactionStrategyHost>,
+    Arc<CompactionStrategyHost>,
+);
 impl Plugin for StrategyProvider {
     type Deps = ();
     fn name(&self) -> &str {
@@ -179,9 +182,13 @@ impl Plugin for StrategyProvider {
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
         ctx.provide_at(
-            self.0.clone(),
-            Arc::new(CompactionStrategyHost(Some(self.1.clone()))),
+            rutis_bridge::session::host_key_in(
+                "compactionStrategyHost",
+                self.0.erase().instance_id().unwrap(),
+            ),
+            self.1.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,
         )?;
+        ctx.provide_at(self.0.clone(), self.1.clone())?;
         Ok(())
     }
 }
@@ -192,13 +199,15 @@ fn builder_with_strategy(
     strategy: Arc<Scripted>,
     reload: Option<&StrategyReload>,
 ) -> AgentBuilder {
+    let context_model = Arc::new(ContextModelHost(Some(Arc::new(strategy.context))));
+    let strategy = Arc::new(CompactionStrategyHost::new(strategy, context_model.clone()));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(history))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(strategy.context)))))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(context_model)
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -219,7 +228,7 @@ fn builder_with_strategy(
             ));
         }
         None => {
-            builder.session_value(Arc::new(CompactionStrategyHost(Some(strategy))));
+            builder.session_data_value(strategy);
         }
     }
     defaults::install_with_prompt(

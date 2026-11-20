@@ -87,7 +87,7 @@ unreleased.
  |  ContextMethods (new part)                                        |
  |    registers session.context with sessionMethods: compact, usage  |
  |      compact -> TreeCommands.get(b).service::<AgentLoop>().compact()
- |      usage   -> TreeCommands.get(b).service::<ContextPreparation>().usage()
+ |      usage   -> TreeCommands.get(b).service::<ContextUsage>().read(None, cancel)
  +---------------------------------^---------------------------------+
             Rpc (C1) dispatches ---'
  Branch scope (one Timeline, one Dispatcher)
@@ -496,10 +496,10 @@ impl ContextPolicy { async fn compact_step(&self, step: CompactionStep, cancel: 
 // dim-agent-capabilities/src/agent_loop.rs
 impl AgentLoop { pub fn compact(&self) -> Result<u64>; }  // appends context/compact
 impl PublicService for AgentLoop {}
-// dim-agent-capabilities/src/context_preparation.rs
-impl ContextPreparation { pub async fn usage(&self, cancel: CancellationToken)
-                              -> Result<ContextUsage, ContextOpError>; }
-impl PublicService for ContextPreparation {}
+// dim-agent-capabilities/src/context_usage.rs
+impl ContextUsage { pub async fn read(&self, through: Option<u64>, cancel: CancellationToken)
+                              -> Result<UsageRead, ContextOpError>; }
+impl PublicService for ContextUsage {}
 
 // dim-agent-capabilities: context_model.rs, summary_strategy.rs, context_methods.rs (new)
 pub struct ProductContextModel;                    // ResolveContextModel, no dependencies
@@ -515,7 +515,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
        .require_feature(Feature::new("ContextCompaction")
            .session("ProductSummaryStrategy", |names| names.part(ProductSummaryStrategyPlugin::new(names)?))
            .session("ContextMethods", |names| names.part(ContextMethodsPlugin)));
-// The mock profile binds ContextModelHost(None) and CompactionStrategyHost(None).
+// The mock profile binds ContextModelHost(None) and CompactionStrategyHost::default().
 ```
 
 ## 5. Flows

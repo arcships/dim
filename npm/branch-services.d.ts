@@ -41,37 +41,71 @@ export interface Approval {
   decide(requestId: string, decision: ApprovalDecision): Promise<void>
 }
 
-export type PromptScope =
-  | { kind: "branch"; timeline: string }
-  | { kind: "turn"; timeline: string; id: string }
-  | { kind: "task"; timeline: string; id: string }
+export type Role = "user" | "assistant" | "tool_result"
 
-export type PromptDelivery =
-  | /** Part of the system prompt. */ "system"
-  | /** A rule delivered as a `dim-rule` input. */ "context"
-  | /** State delivered as a `dim-state` input. */ "state"
+/** Native continuation facts preserved at the model boundary. */
+export type ContentMetadata =
+  | { protocol: "bedrock"; signature?: string | null }
+  | { protocol: "bedrock-redacted"; data: string }
+  | { protocol: "anthropic"; signature: string }
+  | { protocol: "anthropic-redacted"; data: string }
+  | { protocol: "gemini"; thoughtSignature: string }
+  | { protocol: "xai-responses"; itemId: string; encryptedContent?: string | null }
+  | { protocol: "openai-responses"; itemId: string; encryptedContent?: string | null; summaryIndex?: number | null; phase?: string | null }
 
-export type PromptEntry = {
-  source: string
-  version: string
-  body: string
-  scope: PromptScope
-  delivery: PromptDelivery
-  order: number
+export type ImageSourceType = "base64" | "url" | "file"
+
+export type ImageSource = {
+  fileId?: string | null
+  type: ImageSourceType
+  mediaType: string
+  data?: string | null
+  url?: string | null
+}
+
+export type ContentBlock = { type: "text"; text: string } | { type: "image"; source: ImageSource }
+
+export type ToolContent = string | ContentBlock[]
+
+export type MessagePart =
+  | { type: "text"; providerMetadata?: ContentMetadata | null; text: string; startTime?: string | null; endTime?: string | null }
+  | { type: "image"; source: ImageSource }
+  | { type: "tool_use"; providerMetadata?: ContentMetadata | null; id: string; name: string; input: import('./plugin.js').BridgeJsonObject; startTime?: string | null }
+  | { type: "tool_result"; tool_use_id: string; content: ToolContent; structuredContent?: import('./plugin.js').BridgeJsonObject | null; is_error?: boolean | null }
+  | { type: "thinking"; providerMetadata?: ContentMetadata | null; thinking: string; startTime?: string | null; endTime?: string | null }
+
+export type MessageContent = string | MessagePart[]
+
+export type Message = {
+  role: Role
+  content: MessageContent
+}
+
+export type ContextBaselineEntry = {
+  key: string
+  sourceEvent: string
+  message: Message
+}
+
+/** An ephemeral view of a fixed timeline prefix, never a second history store. */
+export type HistoryEntry = {
+  id: string
+  message: Message
+  toolContext: boolean
+  /** Deterministic state immediately after this entry's source event. */
+  baseline: ContextBaselineEntry[]
+  /**
+   * Id of the Timeline event that placed this entry; compaction cuts are
+   * event ids, so they do not depend on the entry id scheme.
+   */
+  eventId: string
+  /** Position of that event: the Timeline primary key's two columns. */
+  position: { branch_id: string; sequence: number | bigint }
 }
 
 export type PromptReference = {
   timeline: string
   revision: string
-}
-
-export type PromptCheckpointState = {
-  entries: PromptEntry[]
-  revision?: PromptReference | null
-  system_revision?: PromptReference | null
-  system: string
-  turns: string[]
-  tasks: PromptScope[]
 }
 
 export type ModelId = {
@@ -282,6 +316,68 @@ export type ContextConfiguredData = {
   system_source?: string | null
 }
 
+/** The projection of a streamed branch. The events are not retained. */
+export type StreamedContext = {
+  history: HistoryEntry[]
+  configuration?: ContextConfiguredData | null
+  prompt?: PromptReference | null
+  ancestry: string[]
+  compaction?: import('./plugin.js').BranchEvent | null
+  /** Root first, the segments the stream read. */
+  branches: string[]
+  /** The position of the cut in effect. */
+  compactionCut?: { branch_id: string; sequence: number | bigint } | null
+}
+
+export type PreparationRequest = {
+  source: import('./plugin.js').ContextPrepareData
+  projection?: StreamedContext | null
+}
+
+export type ModelRequest = {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  messages: Message[]
+  tools?: ToolDefinition[] | null
+  system?: SystemPrompt | null
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
+}
+
+export type ValidationRequest = {
+  requestId: string
+  request: ModelRequest
+}
+
+export type PromptScope =
+  | { kind: "branch"; timeline: string }
+  | { kind: "turn"; timeline: string; id: string }
+  | { kind: "task"; timeline: string; id: string }
+
+export type PromptDelivery =
+  | /** Part of the system prompt. */ "system"
+  | /** A rule delivered as a `dim-rule` input. */ "context"
+  | /** State delivered as a `dim-state` input. */ "state"
+
+export type PromptEntry = {
+  source: string
+  version: string
+  body: string
+  scope: PromptScope
+  delivery: PromptDelivery
+  order: number
+}
+
+export type PromptCheckpointState = {
+  entries: PromptEntry[]
+  revision?: PromptReference | null
+  system_revision?: PromptReference | null
+  system: string
+  turns: string[]
+  tasks: PromptScope[]
+}
+
 export type AdoptedPrompt = {
   prompts: PromptCheckpointState
   configuration?: ContextConfiguredData | null
@@ -331,6 +427,10 @@ export type PublishedSequence = {
 }
 
 export interface ContextPreparation {
+  /** @throws {HostErrorThrown} */
+  prepare(request: PreparationRequest, cancelled: () => void | Promise<void>): Promise<ModelRequest>
+  /** @throws {HostErrorThrown} */
+  validate(request: ValidationRequest, cancelled: () => void | Promise<void>): Promise<void>
   /** @throws {AgentErrorThrown} */
   publish(request: PublishConfiguration): Promise<number | bigint | null>
   /**
@@ -441,18 +541,6 @@ export interface ToolHost {
    */
   execute(call: { id: string; name: string; input: { [key: string]: unknown } }, caller: ToolExecutionContext, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').ToolResult>
 }
-
-export type ImageSourceType = "base64" | "url" | "file"
-
-export type ImageSource = {
-  fileId?: string | null
-  type: ImageSourceType
-  mediaType: string
-  data?: string | null
-  url?: string | null
-}
-
-export type ContentBlock = { type: "text"; text: string } | { type: "image"; source: ImageSource }
 
 export type UserInput = {
   content: ContentBlock[]
@@ -1288,8 +1376,6 @@ export type McpWidgetResult = {
   blob?: string | null
   app?: import('./plugin.js').BridgeJsonObject | null
 }
-
-export type ToolContent = string | ContentBlock[]
 
 /**
  * A view's tool result (MCP Apps §4.2), `_meta` included. It is the reply to

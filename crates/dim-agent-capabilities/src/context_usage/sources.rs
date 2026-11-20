@@ -338,9 +338,6 @@ impl ContextUsage {
                 }
                 let resolved = self
                     .resolver
-                    .0
-                    .as_ref()
-                    .expect("bound usage resolver")
                     .resolve(Arc::new(request), self.cancel.clone())
                     .await;
                 let matching = match (&configuration, &resolved) {
@@ -515,9 +512,6 @@ impl ContextUsage {
         };
         let model = match self
             .resolver
-            .0
-            .as_ref()
-            .expect("bound usage resolver")
             .resolve(Arc::new(control.clone()), self.cancel.clone())
             .await
         {

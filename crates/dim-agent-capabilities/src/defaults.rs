@@ -115,6 +115,13 @@ fn install_with_prompt_capability_and_branch(
                 }),
         )
         .require_feature(
+            Feature::new("HistoryRenderer").session("HistoryRenderer", |names| {
+                Ok(Box::new(crate::history::face::HistoryFacePlugin::new(
+                    names,
+                )?))
+            }),
+        )
+        .require_feature(
             Feature::new("TimelineTree")
                 .session("TimelineTree", |names| {
                     Ok(Box::new(TimelineTreePlugin::new(names)?))
@@ -283,7 +290,7 @@ pub fn install_compaction(
     config: ProductSummaryStrategyConfig,
 ) {
     builder
-        .session_value(Arc::new(ContextModelHost(Some(model))))
+        .session_data_value(Arc::new(ContextModelHost(Some(model))))
         .require_feature(
             Feature::new("ContextCompaction")
                 .session("ProductSummaryStrategy", move |names| {
@@ -323,9 +330,9 @@ pub fn mock_model_hosts_with_model(
     builder
         .session_value(Arc::new(history))
         .process_value(Arc::new(ModelHost(model)))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

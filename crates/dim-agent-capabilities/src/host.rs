@@ -117,14 +117,20 @@ impl HostError {
 }
 
 /// Request settings deliberately omit messages: the loop owns the fixed prefix.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelSettings {
     pub provider_id: String,
     pub model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub capability_snapshot: Option<ModelCapabilitySnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemPrompt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ModelConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RequestMetadata>,
 }
 impl ModelSettings {
@@ -165,8 +171,62 @@ pub trait PrepareModel: Send + Sync + 'static {
     ) -> Result<ModelSettings, HostError>;
 }
 pub struct PrepareModelHost(pub Arc<dyn PrepareModel>);
+impl PrepareModelHost {
+    pub fn provide(self, ctx: &Ctx, session: rutis::host::InstanceId) -> rutis::Result<()> {
+        let owner = Arc::new(self);
+        ctx.provide_at(Key::of().instance(session), owner.clone())?;
+        ctx.provide_at::<dyn HostDispatch>(
+            rutis_bridge::session::host_key_in("prepareModelHost", session),
+            owner,
+        )?;
+        Ok(())
+    }
 
-#[derive(Debug, Clone)]
+    pub fn prepare(
+        &self,
+        turn_id: &str,
+        request_id: &str,
+        history: &[Arc<Message>],
+        available_tools: &[ToolDefinition],
+    ) -> Result<ModelSettings, HostError> {
+        self.0
+            .prepare(turn_id, request_id, history, available_tools)
+    }
+}
+
+impl HostDispatch for PrepareModelHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"prepare":"sync"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        const NAME: &str = "prepareModelHost";
+        if method != "prepare" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            turn_id: String,
+            request_id: String,
+            history: Vec<Arc<Message>>,
+            available_tools: Vec<ToolDefinition>,
+        }
+        let request: Request = crate::port_faces::request(NAME, args)?;
+        let settings = self
+            .prepare(
+                &request.turn_id,
+                &request.request_id,
+                &request.history,
+                &request.available_tools,
+            )
+            .map_err(|error| crate::port_faces::failure(NAME, ModelPortError::from(error)))?;
+        rutis_bridge::session::arg(&settings)
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContextSource {
     pub turn_id: String,
     pub request_id: String,
@@ -180,7 +240,98 @@ pub trait PrepareContext: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> HostFuture<'_, Arc<ModelRequest>>;
 }
+#[derive(Clone)]
 pub struct PrepareContextHost(pub Arc<dyn PrepareContext>);
+
+impl PrepareContextHost {
+    pub fn prepare(
+        &self,
+        request: Arc<ModelRequest>,
+        source: ContextSource,
+        cancel: CancellationToken,
+    ) -> HostFuture<'_, Arc<ModelRequest>> {
+        self.0.prepare(request, source, cancel)
+    }
+}
+
+impl HostDispatch for PrepareContextHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"prepare":"async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        const NAME: &str = "prepareContextHost";
+        if method != "prepare" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Request {
+            request: Arc<ModelRequest>,
+            source: ContextSource,
+        }
+        let (Request { request, source }, cancel, cancelled) = cancellable_request(NAME, args)?;
+        let owner = self.clone();
+        Ok(BridgeValue::future(async move {
+            let _finished = cancel.clone().drop_guard();
+            let result = call_until_cancelled(
+                cancelled,
+                cancel.clone(),
+                owner.prepare(request, source, cancel),
+            )
+            .await
+            .map_err(|error| crate::port_faces::failure(NAME, ModelPortError::from(error)))?;
+            rutis_bridge::session::arg(&result)
+        }))
+    }
+}
+
+pub(crate) fn cancellable_request<T: serde::de::DeserializeOwned>(
+    name: &str,
+    args: BridgeValue,
+) -> Result<(T, CancellationToken, CancelledFn), rutis_bridge::session::Error> {
+    let args = args.list()?;
+    let [data, BridgeValue::Reference(cancelled)] = args.as_slice() else {
+        return Err(crate::port_faces::invalid(
+            name,
+            "expected request and cancellation function",
+        ));
+    };
+    if !cancelled.is_function() {
+        return Err(crate::port_faces::invalid(
+            name,
+            "cancellation must be a function",
+        ));
+    }
+    let request = serde_json::from_value(data.clone().json()?)
+        .map_err(|error| crate::port_faces::invalid(name, error))?;
+    let caller = rutis_bridge::session::caller_row()
+        .map(|row| row.ctx().cancellation_token())
+        .unwrap_or_default();
+    let cancel = caller.child_token();
+    let cancelled = wire_cancellation(caller, cancelled.clone());
+    Ok((request, cancel, cancelled))
+}
+
+fn wire_cancellation(
+    caller: CancellationToken,
+    cancelled: rutis_bridge::session::Reference,
+) -> CancelledFn {
+    Arc::new(move || {
+        let cancelled = cancelled.clone();
+        let caller = caller.clone();
+        Box::pin(async move {
+            tokio::select! {
+                _ = caller.cancelled() => {},
+                _ = async {
+                    let reply = cancelled.call_async(BridgeValue::List(vec![])).await?;
+                    rutis_bridge::session::settle(reply).await
+                } => {},
+            }
+            Ok(())
+        })
+    })
+}
 
 pub trait LoadPrompt: Send + Sync + 'static {
     fn load(
@@ -235,20 +386,7 @@ impl HostDispatch for PromptHost {
         Ok(BridgeValue::future(async move {
             let cancel = caller.child_token();
             let _finished = cancel.clone().drop_guard();
-            let cancelled: CancelledFn = Arc::new(move || {
-                let cancelled = cancelled.clone();
-                let caller = caller.clone();
-                Box::pin(async move {
-                    tokio::select! {
-                        _ = caller.cancelled() => {},
-                        _ = async {
-                            let reply = cancelled.call_async(BridgeValue::List(vec![])).await?;
-                            rutis_bridge::session::settle(reply).await
-                        } => {},
-                    }
-                    Ok(())
-                })
-            });
+            let cancelled = wire_cancellation(caller, cancelled);
             let result =
                 call_until_cancelled(cancelled, cancel.clone(), owner.load(target, cancel)).await;
             match result {
@@ -1254,13 +1392,15 @@ impl ToolHost {
 /// What ContextPolicy hands a strategy: the entries from the previous cut
 /// on, the previous result, the request whose context is compacted and the
 /// cuts the retention rule allows.
-#[derive(Clone)]
-pub struct CompactionInput {
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CompactionInput<M = Arc<dyn ContextModel>> {
     /// The projected entries from the previous `retain_from` on.
     pub history: Vec<HistoryEntry>,
     pub checkpoint: Option<CompactionCheckpoint>,
     pub request: Arc<ModelRequest>,
-    pub model: Arc<dyn ContextModel>,
+    #[serde(skip)]
+    pub model: M,
     /// `retain_from` of the earliest cut whose kept tail fits the retention
     /// budget (for a manual step, at least the latest turn's start).
     pub retain_limit: Option<String>,
@@ -1280,7 +1420,8 @@ pub struct CompactionInput {
     pub prior: Option<StrategyDiagnostics>,
 }
 /// A legal cut: `history[..entry]` is replaced, `history[entry..]` is kept.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionCut {
     pub retain_from: String,
     pub entry: usize,
@@ -1311,7 +1452,8 @@ impl CompactionInput {
         self.provider_budget.is_some() || cut.entry < self.history.len()
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactionCheckpoint {
     pub retain_from: String,
     pub replacement: Arc<[Message]>,
@@ -1358,7 +1500,8 @@ pub trait ContextCounter: Send + Sync {
 }
 /// A strategy's diagnostics: its model calls, their summed usage and its own
 /// record.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StrategyDiagnostics {
     pub model_call_count: u64,
     pub model_usage: Option<Usage>,
@@ -1399,7 +1542,13 @@ pub(crate) fn add_usage(total: &mut Option<Usage>, usage: Usage) {
         }
     }
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum StrategyOutcome {
     Completed {
         retain_from: String,
@@ -1435,7 +1584,117 @@ pub trait CompactionStrategy: Send + Sync + 'static {
 }
 /// An explicit optional binding, like `ContextModelHost`; the policy exists
 /// when both are `Some`.
-pub struct CompactionStrategyHost(pub Option<Arc<dyn CompactionStrategy>>);
+#[derive(Clone, Default)]
+pub struct CompactionStrategyHost(Option<(Arc<dyn CompactionStrategy>, Arc<ContextModelHost>)>);
+
+impl CompactionStrategyHost {
+    pub fn new(strategy: Arc<dyn CompactionStrategy>, model: Arc<ContextModelHost>) -> Self {
+        Self(Some((strategy, model)))
+    }
+
+    pub(crate) fn is_bound(&self) -> bool {
+        self.0.is_some()
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        self.0
+            .as_ref()
+            .map_or("none", |(strategy, _)| strategy.name())
+    }
+
+    pub(crate) fn replacement_size(&self, model: &dyn ContextModel) -> f64 {
+        self.0
+            .as_ref()
+            .expect("active compaction policy")
+            .0
+            .replacement_size(model)
+    }
+
+    pub(crate) async fn compact(
+        &self,
+        input: CompactionInput,
+        cancel: CancellationToken,
+    ) -> Result<StrategyOutcome, HostError> {
+        let (strategy, _) = self
+            .0
+            .as_ref()
+            .ok_or_else(|| HostError::failed("Context compaction is not available"))?;
+        strategy.compact(input, cancel).await
+    }
+}
+
+impl HostDispatch for CompactionStrategyHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"describe": "async", "compact": "async"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        const NAME: &str = "compactionStrategyHost";
+        let owner = self.clone();
+        match method {
+            "describe" => {
+                let facts = crate::port_faces::request(NAME, args)?;
+                let cancel = rutis_bridge::session::caller_row()
+                    .map(|row| row.ctx().cancellation_token())
+                    .unwrap_or_default()
+                    .child_token();
+                crate::port_faces::serving(NAME, async move {
+                    let _finished = cancel.clone().drop_guard();
+                    let (_, resolver) = owner.0.as_ref().ok_or_else(|| {
+                        ModelPortError::from(HostError::failed(
+                            "Context compaction is not available",
+                        ))
+                    })?;
+                    let model = resolver
+                        .model(facts, cancel)
+                        .await
+                        .map_err(ModelPortError::from)?;
+                    Ok::<_, ModelPortError>(
+                        json!({"name":owner.name(),"replacementSize":owner.replacement_size(model.as_ref())}),
+                    )
+                })
+            }
+            "compact" => {
+                let (input, cancel, cancelled) =
+                    cancellable_request::<CompactionInput<()>>(NAME, args)?;
+                crate::port_faces::serving(NAME, async move {
+                    let _finished = cancel.clone().drop_guard();
+                    call_until_cancelled(cancelled, cancel.clone(), async {
+                        let (_, resolver) = owner.0.as_ref().ok_or_else(|| {
+                            HostError::failed("Context compaction is not available")
+                        })?;
+                        let model = resolver
+                            .resolve(input.request.clone(), cancel.clone())
+                            .await?;
+                        owner
+                            .compact(
+                                CompactionInput {
+                                    history: input.history,
+                                    checkpoint: input.checkpoint,
+                                    request: input.request,
+                                    model,
+                                    retain_limit: input.retain_limit,
+                                    cuts: input.cuts,
+                                    trigger: input.trigger,
+                                    estimated_input_tokens: input.estimated_input_tokens,
+                                    baseline_source: input.baseline_source,
+                                    baseline_prompt_tokens: input.baseline_prompt_tokens,
+                                    delta_tokens: input.delta_tokens,
+                                    provider_budget: input.provider_budget,
+                                    prior: input.prior,
+                                },
+                                cancel,
+                            )
+                            .await
+                    })
+                    .await
+                    .map_err(ModelPortError::from)
+                })
+            }
+            _ => Err(crate::port_faces::unknown_method(NAME, method)),
+        }
+    }
+}
 pub trait ResolveContextModel: Send + Sync + 'static {
     /// A model exposing a contribution counter must resolve its algorithm and
     /// limits from provider/model, capabilities, config and metadata alone.
@@ -1448,6 +1707,7 @@ pub trait ResolveContextModel: Send + Sync + 'static {
     ) -> HostFuture<'_, Arc<dyn ContextModel>>;
 }
 /// An explicit optional policy binding keeps dependencies visible in every profile.
+#[derive(Clone)]
 pub struct ContextModelHost(pub Option<Arc<dyn ResolveContextModel>>);
 
 /// A Session file SessionStore stored. `path` is absolute on the Session's

@@ -73,14 +73,14 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `collaborationSession` | session | CollaborationSession | data | `approvalDestination` sync |
 | `commandRules` | session | CommandRules | data | `read` async |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | internal(hot-path) | — |
-| `contextModelHost` | session | SessionScope | internal(hot-path) | — |
+| `contextModelHost` | session | SessionScope | data | `contributions` async, `count` async, `describe` async, `estimate` async |
 | `faultReporter` | session | SessionScope | internal(hot-path) | — |
 | `guideEntries` | session | PromptGuide | data | `register` async |
 | `historyRenderer` | session | SessionScope | internal(hot-path) | — |
 | `initialPromptConfiguration` | session | PromptRegistry | data | `get` async |
 | `mcpSession` | session | McpSession | data | `call` async, `refresh` async, `state` async, `widget` async |
-| `prepareContextHost` | session | SessionScope | internal(hot-path) | — |
-| `prepareModelHost` | session | PrepareModelHost | internal(hot-path) | — |
+| `prepareContextHost` | session | SessionScope | data | `prepare` async |
+| `prepareModelHost` | session | PrepareModelHost | data | `prepare` sync |
 | `promptHost` | session | PromptRegistry | data | `load` async |
 | `promptRegistry` | session | PromptRegistry | data | `names` sync, `register` async |
 | `sessionConfig` | session | SessionScope | data | `get` async |
@@ -106,8 +106,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
 | `branchLine` | branch | BranchLine | data | `cursor` async, `ending` async, `resolved` async |
 | `branchOpening` | branch | BranchScope | internal(hot-path) | — |
-| `contextPreparation` | branch | ContextPreparation | data | `awaitPublished` async, `publish` async |
-| `contextUsage` | branch | ContextUsage | internal(hot-path) | — |
+| `contextPreparation` | branch | ContextPreparation | data | `awaitPublished` async, `prepare` async, `publish` async, `validate` async |
+| `contextUsage` | branch | ContextUsage | data | `read` async |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
 | `fileReads` | branch | FileReads | internal(hot-path) | — |
 | `inputQueue` | branch | InputQueue | data | `submit` async, `withdraw` async |

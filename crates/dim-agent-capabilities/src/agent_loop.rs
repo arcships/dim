@@ -2,7 +2,7 @@ pub mod read;
 
 use crate::{
     context_policy::{CompactionStep, ContextPolicy, configured_request},
-    history::HistoryRenderer,
+    history::face::HistoryFace,
     host::{
         CompactionStrategyHost, ContextModelHost, HostError, PrepareModelHost, ToolExecutionContext,
     },
@@ -142,7 +142,7 @@ struct Loop {
     /// Fixes each request's tools; released when its calls settle or its
     /// turn ends.
     binding: Arc<ToolBinding>,
-    history: Arc<HistoryRenderer>,
+    history: Arc<HistoryFace>,
     preparation: Arc<crate::context_preparation::ContextPreparation>,
     /// The Session's guide entries, for the host-prepared path.
     guide: Arc<crate::prompt_guide::GuideEntries>,
@@ -376,10 +376,7 @@ impl Loop {
         let Some(policy) = &self.policy else {
             return failed("Context compaction is not available".into());
         };
-        let (context, history) = self
-            .history
-            .rendered_context(&self.timeline, through)
-            .await?;
+        let (context, history) = self.history.rendered_context(&self.branch, through).await?;
         let Some(request) = configured_request(
             &crate::context_policy::PolicyContext::from_context(context.clone()),
             &history,
@@ -1176,7 +1173,7 @@ impl Loop {
                 }
                 let streamed = owner
                     .history
-                    .rendered_stream(&owner.timeline, through, 256)
+                    .rendered_stream(&owner.branch, through, 256)
                     .await?;
                 let (prefix, entries, configuration, prompt) = (
                     crate::context_policy::PolicyContext::from_stream(&streamed),
@@ -1216,7 +1213,6 @@ impl Loop {
                             .prepare(&request_id, |tools| {
                                 owner
                                     .prepare
-                                    .0
                                     .prepare(&turn_id, &request_id, &history, tools)
                                     .map_err(|error| AgentError::fault("Loop", error.to_string()))
                             })?;
@@ -1844,7 +1840,7 @@ pub struct LoopPlugin {
     dispatcher: Key<Dispatcher>,
     prepare: Key<PrepareModelHost>,
     binding: Key<ToolBinding>,
-    history: Key<HistoryRenderer>,
+    history: Key<HistoryFace>,
     preparation: Key<crate::context_preparation::ContextPreparation>,
     context: Key<ContextModelHost>,
     strategy: Key<CompactionStrategyHost>,
@@ -1861,7 +1857,7 @@ impl LoopPlugin {
             dispatcher: names.key()?,
             prepare: names.key()?,
             binding: names.key()?,
-            history: names.key()?,
+            history: HistoryFace::key(names)?,
             preparation: names.key()?,
             context: names.key()?,
             strategy: names.key()?,

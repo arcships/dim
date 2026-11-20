@@ -1857,9 +1857,9 @@ async fn node_workflow_report_wakes_wait_and_is_adopted_after_its_start_batch() 
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(BatchModel))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

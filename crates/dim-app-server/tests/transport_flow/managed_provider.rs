@@ -457,9 +457,9 @@ async fn an_injected_managed_provider_serves_accounts_and_recovers_credentials()
     dim_app_server::permission_rules::install(&mut builder);
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -1055,9 +1055,9 @@ async fn a_managed_model_made_usable_by_its_edit_is_governed_by_its_effective_li
     dim_app_server::permission_rules::install(&mut builder);
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

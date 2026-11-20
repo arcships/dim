@@ -401,8 +401,8 @@ async fn product_session_on(
     builder
         .session_value(Arc::new(ToolHost(tools)))
         .session_value(Arc::new(HistoryRenderer::default()))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(
             ProductContextModel,
         )))))
         .require_feature(Feature::new("ProductSummaryStrategy").session(
@@ -1484,7 +1484,7 @@ async fn summary_reasoning_maps_off_and_falls_back_to_inherit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowing_capacity() {
     use dim_agent_capabilities::{
-        context_preparation::ContextPreparation, prompt::Prompt, prompt_state::PromptSnapshot,
+        context_usage::ContextUsage, prompt::Prompt, prompt_state::PromptSnapshot,
     };
 
     for startup in [false, true] {
@@ -1559,9 +1559,9 @@ async fn startup_summaries_keep_selection_and_strategy_reasoning_without_narrowi
             .unwrap();
         session.idle("main").await.unwrap();
         let usage = session
-            .service::<ContextPreparation>("main")
+            .service::<ContextUsage>("main")
             .unwrap()
-            .usage(CancellationToken::new())
+            .read(None, CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(usage.context_window, WINDOW as f64);

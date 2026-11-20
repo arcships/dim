@@ -80,9 +80,9 @@ fn mock_model_hosts(builder: &mut AgentBuilder) {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -371,16 +371,18 @@ async fn an_adopted_request_and_the_summarizers_request_carry_one_system() {
     let (strategy, requests) = compaction_support::Window::recording();
     let strategy = Arc::new(strategy);
     let mut builder = AgentBuilder::new(AgentConfig::default());
+    let strategy_model = Arc::new(ContextModelHost(Some(
+        strategy.clone() as Arc<dyn ResolveContextModel>
+    )));
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(
-            strategy.clone() as Arc<dyn ResolveContextModel>
-        ))))
-        .session_value(Arc::new(CompactionStrategyHost(Some(
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(strategy_model.clone())
+        .session_data_value(Arc::new(CompactionStrategyHost::new(
             strategy as Arc<dyn CompactionStrategy>,
-        ))))
+            strategy_model,
+        )))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

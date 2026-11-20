@@ -1230,17 +1230,21 @@ pub(super) async fn start_recording(
         "dm-ts-{}/server.sock",
         &uuid::Uuid::new_v4().simple().to_string()[..8]
     )));
-    let (builder, requests, release, tools) = setup_recording();
+    let (builder, requests, release, tools) =
+        setup_recording(PrepareContextHost(Arc::new(IdentityContext)));
     let server = serve(builder, config).await.unwrap();
     (server, requests, release, tools)
 }
 
 pub(super) fn setup() -> (AgentBuilder, ModelRequests, Arc<tokio::sync::Notify>) {
-    let (builder, requests, release, _) = setup_recording();
+    let (builder, requests, release, _) =
+        setup_recording(PrepareContextHost(Arc::new(IdentityContext)));
     (builder, requests, release)
 }
 
-fn setup_recording() -> (
+fn setup_recording(
+    context: PrepareContextHost,
+) -> (
     AgentBuilder,
     ModelRequests,
     Arc<tokio::sync::Notify>,
@@ -1254,9 +1258,9 @@ fn setup_recording() -> (
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(CheckedModel { names, tools }))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(context))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -3168,9 +3172,9 @@ async fn node_session_command_rules_share_the_native_owner_and_survive_another_s
         ))
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
-        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -3786,4 +3790,65 @@ async fn node_tool_source_observation_matches_native_watch_and_closes_a_pending_
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_model_preparation_uses_the_session_model_and_preserves_pinned_tools() {
+    let mut parts = fixture();
+    parts.rows = vec![
+        json!({"id":"prepare-model","name":parts.anchor.parent().unwrap().join("fixtures/prepare-model.ts"),"provides":{}}),
+    ];
+    use dim_agent_capabilities::host::{ContextSource, HostError, HostFuture, PrepareContext};
+    struct Context;
+    impl PrepareContext for Context {
+        fn prepare(
+            &self,
+            request: Arc<ModelRequest>,
+            source: ContextSource,
+            cancel: CancellationToken,
+        ) -> HostFuture<'_, Arc<ModelRequest>> {
+            Box::pin(async move {
+                if source.request_id == "waiting" {
+                    cancel.cancelled().await;
+                    return Err(HostError::Cancelled("preparation stopped".into()));
+                }
+                assert_eq!(source.request_id, "request");
+                assert_eq!(source.turn_id, "turn");
+                assert_eq!(source.through, 9_007_199_254_740_993);
+                Ok(request)
+            })
+        }
+    }
+    let (mut builder, _requests, _release, _tools) =
+        setup_recording(PrepareContextHost(Arc::new(Context)));
+    builder.require_part("PrepareModelFixture");
+    let server = serve(
+        builder,
+        ServerConfig {
+            unix_path: Some(std::env::temp_dir().join(format!(
+                "dm-ts-{}/server.sock",
+                &uuid::Uuid::new_v4().simple().to_string()[..8]
+            ))),
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let agent = server.agent().unwrap();
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = new_session(&mut client, json!(["echo"])).await;
+    let reply = client
+        .rpc("session.preparefixture.read", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    let session = agent.get_session(&id).unwrap();
+    let model = &session.config().model;
+    assert_eq!(
+        reply["result"],
+        json!({"providerId":model.provider_id, "modelId":model.model_id})
+    );
+    server.shutdown();
+    server.join().await.unwrap();
 }

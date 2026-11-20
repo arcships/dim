@@ -2717,11 +2717,16 @@ impl Plugin for ContextHostPlugin {
         "ContextHost"
     }
     async fn apply(&self, ctx: &rutis::Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide_at(
-            self.0.clone(),
-            Arc::new(dim_agent_capabilities::host::PrepareContextHost(Arc::new(
-                dim_agent_capabilities::host::IdentityContext,
-            ))),
+        let host = Arc::new(dim_agent_capabilities::host::PrepareContextHost(Arc::new(
+            dim_agent_capabilities::host::IdentityContext,
+        )));
+        ctx.provide_at(self.0.clone(), host.clone())?;
+        ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+            rutis_bridge::session::host_key_in(
+                "prepareContextHost",
+                self.0.erase().instance_id().unwrap(),
+            ),
+            host,
         )?;
         Ok(())
     }
@@ -2746,8 +2751,8 @@ async fn model_progress_follows_a_reloaded_provider() {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
-        .session_value(Arc::new(ContextModelHost(None)))
-        .session_value(Arc::new(CompactionStrategyHost(None)))
+        .session_data_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(CompactionStrategyHost::default()))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

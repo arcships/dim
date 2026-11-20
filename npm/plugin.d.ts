@@ -262,7 +262,7 @@ export type {
   AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
-  UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
+  ContextPreparation, UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
@@ -439,6 +439,119 @@ export interface ToolDefinition {
     postExecutePaths?: 'path' | 'affectedPaths';
   };
 }
+export type ContextContribution = { serialized_bytes: number | bigint; images: number | bigint };
+export interface ContextModelHost {
+  describe(model: import('./branch-services.js').ModelSelection): Promise<{
+    contextWindow: number; outputTokens: number; thresholdTokens: number; algorithm?: string;
+  }>;
+  count(request: PreparedModelRequest): Promise<number>;
+  contributions(request: { model: import('./branch-services.js').ModelSelection; fixed?: Pick<ModelSettings, 'system' | 'tools'>; messages: Message[] }): Promise<{
+    algorithm: string; fixed?: ContextContribution; messages: ContextContribution[];
+  }>;
+  estimate(request: { model: import('./branch-services.js').ModelSelection; algorithm: string; contribution: ContextContribution }): Promise<number>;
+}
+export type HistoryPrefix = { branchId: string; through: number | bigint };
+export type HistoryPosition = import('./branch-services.js').HistoryEntry['position'];
+export type ProjectionCheckpoint = {
+  resume: HistoryPosition & { event_id: string };
+  state: {
+    retain_from: string;
+    prompts: {
+      entries: import('./branch-services.js').PromptEntry[];
+      revision: import('./branch-services.js').PromptReference | null;
+      system_revision: import('./branch-services.js').PromptReference | null;
+      system: string; turns: string[]; tasks: import('./branch-services.js').PromptScope[];
+    };
+    delivered: import('./branch-services.js').ContextBaselineEntry[];
+    inputs: [string, import('./branch-services.js').InputMessageData][];
+    configuration: import('./branch-services.js').ContextConfiguredData | null;
+    output: import('./branch-services.js').MessagePart[];
+    open_tools: string[]; output_open: boolean;
+  };
+};
+export type ContextHistory = {
+  checkpoint: ProjectionCheckpoint | null;
+  ancestry: string[];
+  events: AgentEvent[];
+  positions: HistoryPosition[];
+};
+export interface HistoryRenderer {
+  context(prefix: HistoryPrefix): Promise<ContextHistory>;
+  renderedContext(prefix: HistoryPrefix): Promise<{ context: ContextHistory; history: import('./branch-services.js').HistoryEntry[] }>;
+  renderedStream(input: HistoryPrefix & { batch: number | bigint }): Promise<{
+    history: import('./branch-services.js').HistoryEntry[];
+    configuration: import('./branch-services.js').ContextConfiguredData | null;
+    prompt: import('./branch-services.js').PromptReference | null;
+    ancestry: string[]; compaction: AgentEvent | null; branches: string[]; compactionCut: HistoryPosition | null;
+  }>;
+  snapshotFromCheckpoint(input: { checkpoint: ProjectionCheckpoint; anchor: AgentEvent }): Promise<TimelineRecoverySnapshot>;
+  snapshot(input: { context: ContextHistory; retainFrom: string; anchor: AgentEvent }): Promise<TimelineRecoverySnapshot>;
+  streamCheckpoint(input: HistoryPrefix & { retainFrom: string; batch: number | bigint }): Promise<ProjectionCheckpoint>;
+}
+export type StrategyDiagnostics = {
+  modelCallCount: number | bigint;
+  modelUsage: NonNullable<AuxiliaryReply['usage']> | null;
+  record: JsonObject & { kind: string };
+};
+export type CompactionInput = {
+  history: import('./branch-services.js').HistoryEntry[];
+  checkpoint?: {
+    retainFrom: string;
+    replacement: Message[];
+    contextBaseline: import('./branch-services.js').ContextBaselineEntry[];
+    replacementParts?: { strategy: number; digest: number } | null;
+  } | null;
+  request: import('./branch-services.js').ModelRequest;
+  retainLimit?: string | null;
+  cuts: { retainFrom: string; entry: number; withinLimit: boolean }[];
+  trigger: 'threshold' | 'provider_output_budget_exhausted' | 'manual';
+  estimatedInputTokens: number;
+  baselineSource: 'provider_baseline' | 'full_estimate';
+  baselinePromptTokens?: number | null;
+  deltaTokens?: number | null;
+  providerBudget?: ContextPrepareData['recovery'] | null;
+  prior?: StrategyDiagnostics | null;
+};
+export interface CompactionStrategyHost {
+  describe(model: import('./branch-services.js').ModelSelection): Promise<{ name: string; replacementSize: number }>;
+  compact(input: CompactionInput, cancelled: () => Promise<void>): Promise<(
+    | { kind: 'completed'; retainFrom: string; replacement: Message[] }
+    | { kind: 'skipped'; reason: string }
+    | { kind: 'failed'; error: string }
+  ) & { diagnostics: StrategyDiagnostics }>;
+}
+export type ContextPrepareData = {
+  turn_id: string;
+  request_id: string;
+  through: number;
+  request: import('./branch-services.js').ModelRequest;
+  configuration?: import('./branch-services.js').PromptReference;
+  prompt?: import('./branch-services.js').PromptReference;
+  recovery?: { inputTokens: number; contextWindow: number; requestedMaxTokens: number; allowedMaxTokens: number; ratio: number };
+  failure_chain?: { from_request_id: string; attempts: number; waited_ms: number | bigint };
+};
+export interface ContextUsage {
+  read(request: { through?: number | bigint }, cancelled: () => Promise<void>): Promise<import('./client-protocol.js').ContextUsage & {
+    through: number | bigint;
+    baselineSource: 'provider_baseline' | 'full_estimate';
+  }>;
+}
+export interface PrepareContextHost {
+  prepare(request: { request: PreparedModelRequest; source: { turnId: string; requestId: string; through: number | bigint } }, cancelled: () => Promise<void>): Promise<PreparedModelRequest>;
+}
+export type PreparedModelRequest = ModelSettings & { messages: Message[] };
+export interface PrepareModelHost {
+  prepare(request: {
+    turnId: string;
+    requestId: string;
+    history: Message[];
+    availableTools: (Omit<ToolDefinition, 'risk'> & { risk?: string })[];
+  }): ModelSettings;
+}
+export type ModelSettings = import('./branch-services.js').ModelSelection & {
+    tools?: (Omit<ToolDefinition, 'risk'> & { risk?: string })[];
+    system?: string | { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[];
+};
 export interface ToolCall extends SessionRef {
   turnId: string;
   callId: string;

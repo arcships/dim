@@ -48,7 +48,7 @@ F1 把压缩分成三层（§2.2），并新增：
  |  ContextMethods（新部件）                                         |
  |    把 session.context 注册到 sessionMethods：compact, usage       |
  |      compact -> TreeCommands.get(b).service::<AgentLoop>().compact()
- |      usage   -> TreeCommands.get(b).service::<ContextPreparation>().usage()
+ |      usage   -> TreeCommands.get(b).service::<ContextUsage>().read(None, cancel)
  +---------------------------------^---------------------------------+
             Rpc（C1）分发 ---------'
  分支作用域（一个 Timeline，一个 Dispatcher）
@@ -308,10 +308,10 @@ impl ContextPolicy { async fn compact_step(&self, step: CompactionStep, cancel: 
 // dim-agent-capabilities/src/agent_loop.rs
 impl AgentLoop { pub fn compact(&self) -> Result<u64>; }  // 追加 context/compact
 impl PublicService for AgentLoop {}
-// dim-agent-capabilities/src/context_preparation.rs
-impl ContextPreparation { pub async fn usage(&self, cancel: CancellationToken)
-                              -> Result<ContextUsage, ContextOpError>; }
-impl PublicService for ContextPreparation {}
+// dim-agent-capabilities/src/context_usage.rs
+impl ContextUsage { pub async fn read(&self, through: Option<u64>, cancel: CancellationToken)
+                              -> Result<UsageRead, ContextOpError>; }
+impl PublicService for ContextUsage {}
 
 // dim-agent-capabilities：context_model.rs、summary_strategy.rs、context_methods.rs（新）
 pub struct ProductContextModel;                    // ResolveContextModel，无依赖
@@ -326,7 +326,7 @@ builder.session_value(Arc::new(ContextModelHost(Some(model))))
        .require_feature(Feature::new("ContextCompaction")
            .session("ProductSummaryStrategy", |names| names.part(ProductSummaryStrategyPlugin::new(names)?))
            .session("ContextMethods", |names| names.part(ContextMethodsPlugin)));
-// mock 配置绑定 ContextModelHost(None) 和 CompactionStrategyHost(None)。
+// mock 配置绑定 ContextModelHost(None) 和 CompactionStrategyHost::default()。
 ```
 
 ## 5. 流程

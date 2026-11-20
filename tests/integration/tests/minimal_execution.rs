@@ -210,18 +210,26 @@ impl Harness {
         let store = Arc::new(MemoryTimelineStore::default());
         let mut builder = AgentBuilder::new(AgentConfig::default());
         platform(&mut builder);
+        let strategy_model = Arc::new(ContextModelHost(compacting.then(|| {
+            Arc::new(compaction_support::Window::default()) as Arc<dyn ResolveContextModel>
+        })));
         builder
             .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(model.clone())))
-            .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-            .session_value(Arc::new(ContextModelHost(compacting.then(|| {
-                Arc::new(compaction_support::Window::default()) as Arc<dyn ResolveContextModel>
-            }))))
+            .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+            .session_data_value(strategy_model.clone())
             .session_data_value(Arc::new(CommandRules(Arc::new(NoCommandRules))))
-            .session_value(Arc::new(CompactionStrategyHost(compacting.then(|| {
-                Arc::new(compaction_support::Window::default()) as Arc<dyn CompactionStrategy>
-            }))))
+            .session_data_value(Arc::new(
+                compacting
+                    .then(|| {
+                        Arc::new(compaction_support::Window::default())
+                            as Arc<dyn CompactionStrategy>
+                    })
+                    .map_or_else(CompactionStrategyHost::default, |strategy| {
+                        CompactionStrategyHost::new(strategy, strategy_model)
+                    }),
+            ))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

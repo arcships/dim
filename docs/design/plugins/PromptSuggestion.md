@@ -186,7 +186,7 @@ Input that the running turn consumes, such as a steer, arrives before that turn'
 
 The unused counter: an offer shown and then cleared without an accept counts once; twenty in a row stop offering in that Session with `throttled`. The count resets on an accept and when the switch is turned on after being off, so turning suggestions off and on in `/settings` resumes them. The pause is Session-long on purpose: it stops spending requests on a user who does not use suggestions, and a user who ignores an offer is usually typing their own message.
 
-The context gate reads `main`'s usage through `ContextPreparation` exactly as `session.context.usage` reads it, before anything is built; the instruction's tokens are counted at four characters per token, since the part has no model counter. The suggestion never runs preparation and so never compacts: at a head where a real request would compact first, the suggestion is not sent, because it would be built on the prefix that request is about to replace. When the usage cannot be read (no compaction installed, no configuration yet), no compaction is imminent and the request proceeds as it is.
+The context gate reads `main`'s usage through `contextUsage.read` exactly as `session.context.usage` reads it, before anything is built; the instruction's tokens are counted at four characters per token, since the part has no model counter. The suggestion never runs preparation and so never compacts: at a head where a real request would compact first, the suggestion is not sent, because it would be built on the prefix that request is about to replace. When the usage cannot be read (no compaction installed, no configuration yet), no compaction is imminent and the request proceeds as it is.
 
 A committed write that leaves the switch on cancels nothing: the shown offer and the request in flight were valid when they began, and the next request reads the new `maxChars`.
 
@@ -302,7 +302,7 @@ None ([principles §4 rule 8](../../architecture/rust-agent/principles.md)). The
 | `ModelHost` | `invoke` | async | `{request, connection, cancel}` | A stream of `ModelChunk` |
 | `ProviderConnectionResolver` | `resolve` | async | `{request, cancel}` | `{connection, failurePolicy, recovery}` (process models only; a local model sends `ModelConnection::Local`, and its assembly installs the part with `install_local` instead of `install`) |
 | `SessionMethods` | `register` | sync | namespace `session.suggestion`, two declarations | The registrations end with this part's generation |
-| `TreeCommands` | `get` | sync | `main` | The branch, whose `ContextPreparation::usage` the context gate reads |
+| `TreeCommands` | `get` | sync | `main` | The branch, whose `ContextUsage::read` the context gate reads |
 | Session broadcast | record on `session/{sessionId}` | bus event | - | `Event {branchId, event}`, `Notice`, `Fence`, `Closed` |
 | Settings source `prompt-suggestion` | `read` | async | user scope | `{enabled, maxChars}` |
 

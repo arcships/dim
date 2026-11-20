@@ -2195,6 +2195,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#contextUsage@main",
+        "provider": 67,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#dispatcher@main",
         "provider": 60,
         "generation": 1,
@@ -4149,6 +4155,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#contextModelHost@session",
+        "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#guideEntries@session",
         "provider": 42,
         "generation": 1,
@@ -4157,6 +4169,18 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#initialPromptConfiguration@session",
         "provider": 43,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#prepareContextHost@session",
+        "provider": 33,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#prepareModelHost@session",
+        "provider": 41,
         "generation": 1,
         "removing": false
       },

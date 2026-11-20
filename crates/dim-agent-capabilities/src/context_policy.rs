@@ -1,8 +1,8 @@
 use crate::{
     context_usage::Estimate,
     history::{
-        HistoryEntry, HistoryRenderer, chain_by_id, context_compaction, context_configuration,
-        digest_message, truncate_middle, user_message,
+        HistoryEntry, chain_by_id, context_compaction, context_configuration, digest_message,
+        face::HistoryFace, truncate_middle, user_message,
     },
     host::*,
 };
@@ -104,9 +104,9 @@ const WINDOW_PAGE: u64 = 256;
 
 pub(crate) struct ContextPolicy {
     pub timeline: Arc<Timeline>,
-    pub resolver: Arc<dyn ResolveContextModel>,
-    pub strategy: Arc<dyn CompactionStrategy>,
-    pub history: Arc<HistoryRenderer>,
+    pub resolver: Arc<ContextModelHost>,
+    pub strategy: Arc<CompactionStrategyHost>,
+    pub history: Arc<HistoryFace>,
 }
 
 /// The caller of a compaction step and its reason; the ids and `through`
@@ -424,18 +424,18 @@ impl ContextPolicy {
     /// is an assembly defect.
     pub fn bind(
         timeline: &Arc<Timeline>,
-        model: &ContextModelHost,
-        strategy: &CompactionStrategyHost,
-        history: &Arc<HistoryRenderer>,
+        model: &Arc<ContextModelHost>,
+        strategy: &Arc<CompactionStrategyHost>,
+        history: &Arc<HistoryFace>,
     ) -> Result<Option<Self>, String> {
-        match (&model.0, &strategy.0) {
-            (Some(resolver), Some(strategy)) => Ok(Some(Self {
+        match (model.is_bound(), strategy.is_bound()) {
+            (true, true) => Ok(Some(Self {
                 timeline: timeline.clone(),
-                resolver: resolver.clone(),
+                resolver: model.clone(),
                 strategy: strategy.clone(),
                 history: history.clone(),
             })),
-            (None, None) => Ok(None),
+            (false, false) => Ok(None),
             _ => Err("ContextModelHost and CompactionStrategyHost must be bound together".into()),
         }
     }
@@ -1131,7 +1131,7 @@ impl ContextPolicy {
             Some(projection) => projection,
             None => self
                 .history
-                .rendered_stream(&self.timeline, source.through, 256)
+                .rendered_stream(&self.timeline.branch_id(), source.through, 256)
                 .await
                 .map_err(|error| HostError::failed(error.to_string()))?,
         };
@@ -1708,7 +1708,12 @@ impl ContextPolicy {
                     None => {
                         let checkpoint = self
                             .history
-                            .stream_checkpoint(&self.timeline, view.through, retain_from, 256)
+                            .stream_checkpoint(
+                                &self.timeline.branch_id(),
+                                view.through,
+                                retain_from,
+                                256,
+                            )
                             .await
                             .map_err(|error| error.to_string())?;
                         Some(self.history.snapshot_from_checkpoint(&checkpoint, &fact)?)
