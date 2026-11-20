@@ -3,7 +3,7 @@
 //! is refused without changing its bytes.
 use dim_agent_capabilities::defaults;
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Names};
-use dim_app_server::{ServerConfig, plugin_files::PluginFileTransactions, serve};
+use dim_app_server::{ServerConfig, serve};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
@@ -13,7 +13,7 @@ use std::{
 };
 
 struct Probe {
-    files: Key<PluginFileTransactions>,
+    files: Key<dim_app_server::plugin_files::PluginFiles>,
     observed: Arc<OnceLock<Value>>,
 }
 
@@ -26,21 +26,21 @@ impl DynPlugin for Probe {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let files = ctx.require_at(&self.files)?;
+            let files = ctx.require_at(&self.files)?.open(ctx)?;
             let observed = self.observed.clone();
             tokio::spawn(async move {
                 let created = files
-                    .transact("scheduler/runs.json", |current| {
+                    .with_lock("scheduler/runs.json", |current| {
                         (Some("first".to_owned()), current.map(str::to_owned))
                     })
                     .await;
                 let read = files
-                    .transact("scheduler/runs.json", |current| {
+                    .with_lock("scheduler/runs.json", |current| {
                         (None, current.map(str::to_owned))
                     })
                     .await;
                 let refused = files
-                    .transact("scheduler/invalid.json", |_| (Some("never".to_owned()), ()))
+                    .with_lock("scheduler/invalid.json", |_| (Some("never".to_owned()), ()))
                     .await;
                 let _ = observed.set(json!({
                     "created": format!("{created:?}"),

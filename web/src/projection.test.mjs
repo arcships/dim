@@ -135,6 +135,8 @@ test("a user row carries the Skills its message loaded", () => {
     at: 1_005,
     sequence: 5,
     cut: 4,
+    inputId: "e5",
+    settled: false,
   }])
 })
 
@@ -150,6 +152,8 @@ test("a hook-bearing user row carries the number of hook contexts", () => {
     at: 1_005,
     sequence: 5,
     cut: 4,
+    inputId: "e5",
+    settled: false,
   }])
 })
 
@@ -246,4 +250,37 @@ test("a Stop hook's follow-up is a notice row, not the operator's words", () => 
     projection.apply(event(projection.cursor + 1, { kind: "source-input", text, blocks: [] }))
     assert.equal(projection.rows.length, 1, text)
   }
+})
+
+test("a user row is settled by the turn end after its consumption, across an earlier window", () => {
+  const say = (sequence, text) => event(sequence, { kind: "input", text, content: [{ type: "text", text }], blocks: [] })
+  const applied = (sequence, input) => event(sequence, { kind: "input-applied", inputId: `e${input}` })
+  const consumed = (sequence, input) => event(sequence, { kind: "input-consumed", inputId: `e${input}` })
+  const settled = (projection) => Object.fromEntries(projection.rows.filter(row => row.kind === "user").map(row => [row.text, row.settled]))
+
+  const earlier = new Projection()
+  for (const item of [say(1, "first"), applied(2, 1), consumed(3, 1), say(4, "queued")]) earlier.apply(item)
+  assert.deepEqual(settled(earlier), { first: false, queued: false })
+
+  const latest = new Projection()
+  for (const item of [
+    event(5, { kind: "turn-end", outcome: "completed" }),
+    applied(6, 4),
+    consumed(7, 4),
+    say(8, "steered"),
+    applied(9, 8),
+  ]) latest.apply(item)
+  latest.prepend(earlier, "before-5")
+  assert.deepEqual(settled(latest), { first: true, queued: false, steered: false }, "the queued input was consumed after the turn end that settled the first")
+
+  latest.apply(event(10, { kind: "turn-end", outcome: "cancelled" }))
+  assert.deepEqual(settled(latest), { first: true, queued: true, steered: false }, "a stop ends the turn before a request consumes the steer")
+
+  latest.apply(say(11, "next"))
+  latest.apply(applied(12, 11))
+  latest.apply(consumed(13, 8))
+  latest.apply(consumed(14, 11))
+  assert.deepEqual(settled(latest), { first: true, queued: true, steered: false, next: false })
+  latest.apply(event(15, { kind: "turn-end", outcome: "completed" }))
+  assert.deepEqual(settled(latest), { first: true, queued: true, steered: true, next: true })
 })

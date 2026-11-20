@@ -30,7 +30,8 @@ function isNoticeRow(row: TimelineRow): row is NoticeRow {
     || row.kind === "source-idle" || row.kind === "source-ended" || row.kind === "hook-follow-up"
 }
 
-function imageUrl(sessionId: string, fileId: string): string {
+/** Where the Web serves a stored image of the Session. */
+export function imageUrl(sessionId: string, fileId: string): string {
   return `/api/sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`
 }
 
