@@ -2926,14 +2926,12 @@ impl HostDispatch for SqliteDispatch {
                     )
                 }
                 Request::Fork(p) => {
-                    let _ownership = db.ownership.lock().await;
                     db.fork_session(&p.source_session_id, &p.session_id, p.at, &p.config_text)
                         .await
                         .map_err(super::face::failure)?;
                     serde_json::json!({})
                 }
                 Request::CreateOwnedSession(p) => {
-                    let _ownership = db.ownership.lock().await;
                     db.create_owned_session(
                         &p.session_id,
                         &p.config,

@@ -620,7 +620,13 @@ export type StoredAgentProfile = {
   name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
-export interface SqliteStorage extends Pick<Store, "readMetadata" | "setTitle" | "catalog" | "fork" | "createOwnedSession" | "associateWorktree" | "removeWorktreeDirectory" | "addGrant" | "removeGrant" | "grants" | "setSessionLanguage" | "creationRecord" | "owner" | "hasRecords" | "sessionConfigText" | "worktreeDirectories" | "sessionsUnderWorkspace" | "worktreeUsages">, Pick<TimelineStore, "readPage" | "readSegments" | "query" | "trace" | "saveSnapshot" | "latestSnapshot" | "releaseSession" | "rollbackSession" | "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+export interface SqliteStorage extends Pick<Store, "readMetadata" | "catalog" | "fork" | "createOwnedSession" | "associateWorktree" | "removeWorktreeDirectory" | "addGrant" | "removeGrant" | "grants" | "setSessionLanguage" | "creationRecord" | "owner" | "hasRecords" | "sessionConfigText" | "worktreeDirectories" | "sessionsUnderWorkspace" | "worktreeUsages">, Pick<TimelineStore, "readPage" | "readSegments" | "query" | "trace" | "saveSnapshot" | "latestSnapshot" | "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+  /** Commits the title revision. SessionStore publishes the notice through store.setTitle. */
+  setTitle: Store["setTitle"];
+  /** Drops SQLite's cached state after the timeline writer has drained the Session. */
+  releaseSession: TimelineStore["releaseSession"];
+  /** Deletes the prepared rows and drops SQLite's cached state after the writer drains. */
+  rollbackSession: TimelineStore["rollbackSession"];
   commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
   readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
   writeSelection(request: { scope: string; expectedVersion?: number | null; selection: ModelId }): Promise<StoredProviderSelection>;

@@ -135,6 +135,8 @@ export default definePlugin({
         if (call.method === 'storefixture.invalid_id') {
           const errors: { code: string; message: string }[] = []
           for (const operation of [
+            () => sqlite.createOwnedSession(params.create),
+            () => sqlite.fork({ sourceSessionId: 'wire-source', sessionId: params.create.sessionId, at: 0, configText: '{}' }),
             () => store.createOwnedSession(params.create),
             () => store.fork({ sourceSessionId: 'wire-source', sessionId: params.create.sessionId, at: 0, configText: '{}' }),
             () => store.delete({ sessionId: params.create.sessionId }),

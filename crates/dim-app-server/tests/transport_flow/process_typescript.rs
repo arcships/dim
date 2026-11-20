@@ -1452,7 +1452,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
             )
             .await;
         assert_ok(&refused);
-        assert_eq!(refused["result"]["errors"].as_array().unwrap().len(), 3);
+        assert_eq!(refused["result"]["errors"].as_array().unwrap().len(), 5);
         assert!(!store.has_records(id).await.unwrap());
         assert!(matches!(
             store.delete_session(id).await,

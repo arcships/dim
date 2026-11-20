@@ -1496,9 +1496,6 @@ impl SessionStore {
         at: u64,
         config: &str,
     ) -> Result<()> {
-        crate::protocol::check_session_id(source)?;
-        crate::protocol::check_session_id(fork)?;
-        let _ownership = self.timeline.db.ownership.lock().await;
         self.timeline.fork_session(source, fork, at, config).await
     }
     /// The source record's configuration text, for a caller that copies it
@@ -1520,19 +1517,6 @@ impl SessionStore {
         origin: SessionOrigin,
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
-        crate::protocol::check_session_id(session_id)?;
-        let _ownership = self.timeline.db.ownership.lock().await;
-        if !tokio::fs::metadata(&config.cwd)
-            .await
-            .map(|metadata| metadata.is_dir())
-            .unwrap_or(false)
-        {
-            return Err(AgentError::InvalidInput(format!(
-                "the Session workspace {} no longer exists",
-                config.cwd
-            )));
-        }
-
         self.timeline
             .db
             .create_owned_session(
@@ -3759,6 +3743,9 @@ impl SqliteStorage {
         at: u64,
         config: &str,
     ) -> Result<()> {
+        crate::protocol::check_session_id(source)?;
+        crate::protocol::check_session_id(fork)?;
+        let _ownership = self.ownership.lock().await;
         let (references, arrays) = fork_references(self, source, at).await?;
         let content: Vec<String> = content_closure(self, source, references)
             .await?
@@ -3833,6 +3820,18 @@ impl SqliteStorage {
         worktree: Option<PreparedWorktree>,
     ) -> Result<()> {
         crate::protocol::check_session_id(session_id)?;
+        let _ownership = self.ownership.lock().await;
+        if !tokio::fs::metadata(&config.cwd)
+            .await
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(AgentError::InvalidInput(format!(
+                "the Session workspace {} no longer exists",
+                config.cwd
+            )));
+        }
+
         let session = session_id.to_owned();
         let config = config.clone();
         let agent = agent_id.to_owned();
