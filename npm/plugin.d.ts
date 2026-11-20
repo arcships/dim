@@ -478,6 +478,13 @@ export type ContextHistory = {
 export interface HistoryRenderer {
   context(prefix: HistoryPrefix): Promise<ContextHistory>;
   renderedContext(prefix: HistoryPrefix): Promise<{ context: ContextHistory; history: import('./branch-services.js').HistoryEntry[] }>;
+  renderedStream(input: HistoryPrefix & { batch: number | bigint }): Promise<{
+    history: import('./branch-services.js').HistoryEntry[];
+    configuration: import('./branch-services.js').ContextConfiguredData | null;
+    prompt: import('./branch-services.js').PromptReference | null;
+    ancestry: string[]; compaction: AgentEvent | null; branches: string[]; compactionCut: HistoryPosition | null;
+  }>;
+  snapshotFromCheckpoint(input: { checkpoint: ProjectionCheckpoint; anchor: AgentEvent }): Promise<TimelineRecoverySnapshot>;
   snapshot(input: { context: ContextHistory; retainFrom: string; anchor: AgentEvent }): Promise<TimelineRecoverySnapshot>;
   streamCheckpoint(input: HistoryPrefix & { retainFrom: string; batch: number | bigint }): Promise<ProjectionCheckpoint>;
 }

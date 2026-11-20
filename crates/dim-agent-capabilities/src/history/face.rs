@@ -46,13 +46,7 @@ impl DynPlugin for HistoryFacePlugin {
                 .expect("Session renderer");
             ctx.provide_at(Key::<HistoryFace>::of().instance(instance), host.clone())?;
             ctx.provide_at(
-                rutis_bridge::session::host_key_in(
-                    NAME,
-                    self.renderer
-                        .erase()
-                        .instance_id()
-                        .expect("Session renderer"),
-                ),
+                rutis_bridge::session::host_key_in(NAME, instance),
                 host as Arc<dyn HostDispatch>,
             )?;
             Ok(Effect::Done)
@@ -149,7 +143,7 @@ struct Snapshot {
 impl HostDispatch for HistoryFace {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"context":"async","renderedContext":"async","streamCheckpoint":"async","snapshot":"async"}),
+            serde_json::json!({"context":"async","renderedContext":"async","renderedStream":"async","snapshotFromCheckpoint":"async","streamCheckpoint":"async","snapshot":"async"}),
         )
     }
 
@@ -183,6 +177,38 @@ impl HostDispatch for HistoryFace {
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok::<_, String>(Rendered { context, history })
+                })
+            }
+            "renderedStream" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct Stream {
+                    branch_id: String,
+                    through: u64,
+                    batch: u64,
+                }
+                let Stream {
+                    branch_id,
+                    through,
+                    batch,
+                } = port_faces::request(NAME, args)?;
+                port_faces::serving(NAME, async move {
+                    owner
+                        .rendered_stream(&branch_id, through, batch)
+                        .await
+                        .map_err(|error| error.to_string())
+                })
+            }
+            "snapshotFromCheckpoint" => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Save {
+                    checkpoint: ProjectionCheckpoint,
+                    anchor: AgentEvent,
+                }
+                let Save { checkpoint, anchor } = port_faces::request(NAME, args)?;
+                port_faces::serving(NAME, async move {
+                    owner.snapshot_from_checkpoint(&checkpoint, &anchor)
                 })
             }
             "snapshot" => {
