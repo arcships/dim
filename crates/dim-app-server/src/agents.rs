@@ -39,8 +39,8 @@ mod fork;
 pub(crate) const SESSION_NAMESPACE: &str = "session.agent";
 
 mod sessions;
-pub(crate) use sessions::AcquireUse;
 pub(crate) use sessions::SessionEnd;
+pub(crate) use sessions::{AcquireUse, DirectoryUse};
 pub use sessions::{SessionRef, Sessions, SessionsError};
 
 pub(crate) enum CreateSessionError {

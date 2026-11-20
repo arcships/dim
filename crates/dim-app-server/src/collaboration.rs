@@ -13,7 +13,9 @@ mod pending;
 
 pub use approvals::ApprovalDestination;
 
-use crate::agents::{AgentIndex, AgentProfile, SessionRestored, UnloadedSessionDeleted};
+use crate::agents::{
+    AgentIndex, AgentProfile, DirectoryUse, SessionRestored, UnloadedSessionDeleted,
+};
 use crate::collaboration_model_policy::ModelPolicy;
 use crate::protocol::SessionOrigin;
 use crate::settings::{SettingsScope, SettingsService};
@@ -240,54 +242,10 @@ pub struct Collaboration {
     reads: AtomicUsize,
 }
 struct Peer {
-    usage: Arc<MemberUse>,
+    usage: Arc<DirectoryUse>,
     agent_id: String,
     session: Session,
 }
-struct MemberUse {
-    id: uuid::Uuid,
-    index: Arc<AgentIndex>,
-}
-
-impl Drop for MemberUse {
-    fn drop(&mut self) {
-        if let Some(cleanup) = self.index.retire_use(self.id) {
-            tokio::spawn(async move {
-                let _ = cleanup.dispose().await;
-            });
-        }
-    }
-}
-
-impl MemberUse {
-    fn session(&self) -> dim_agent_runtime::Result<Session> {
-        self.index
-            .pinned_use(self.id)
-            .map(|lease| lease.session.clone())
-            .map_err(|error| AgentError::Closed(error.to_string()))
-    }
-
-    fn state(&self, branch: &str) -> dim_agent_runtime::Result<dim_agent_runtime::BranchStatus> {
-        self.session()?.state(branch)
-    }
-
-    async fn input(
-        &self,
-        message: InputMessageData,
-        branch: &str,
-    ) -> dim_agent_runtime::Result<Arc<AgentEvent>> {
-        self.session()?.input(message, branch).await
-    }
-
-    async fn stop(&self, branch: &str, reason: String) -> dim_agent_runtime::Result<u64> {
-        self.session()?.stop(branch, reason).await
-    }
-
-    async fn idle(&self, branch: &str) -> dim_agent_runtime::Result<u64> {
-        self.session()?.idle(branch).await
-    }
-}
-
 enum NewMember {
     Agent(String),
     Temporary(AgentProfile),
@@ -668,10 +626,7 @@ impl Collaboration {
                 crate::agents::SessionsError::Rejected { .. } => Refusal::TeamMemberNotFound,
                 _ => Refusal::MemberClosed,
             })?;
-        let usage = Arc::new(MemberUse {
-            id: acquired.use_id,
-            index: self.index.clone(),
-        });
+        let usage = Arc::new(acquired.bind(self.index.clone()));
         let session = usage.session().map_err(|_| Refusal::MemberClosed)?;
         Ok(Peer {
             agent_id: agent_id.to_owned(),
@@ -913,7 +868,7 @@ struct BranchRecord {
 }
 /// A delivered or delivering request, until its `result` is written.
 struct Request {
-    usage: Arc<MemberUse>,
+    usage: Arc<DirectoryUse>,
     /// Keeps the leader from an idle release while the request is open
     /// (idle unload R4).
     _hold: SessionHold,
@@ -2474,7 +2429,7 @@ impl CollaborationSession {
     /// mark goes, so a later cancel or interrupt starts the stop again.
     async fn carry_out_stop(
         self: &Arc<Self>,
-        session: &Arc<MemberUse>,
+        session: &Arc<DirectoryUse>,
         input: &str,
         reason: &str,
         stopping: Stopping,
@@ -2493,7 +2448,7 @@ impl CollaborationSession {
     /// mark across both and clears the request's flag when either fails.
     async fn stop_request_input(
         self: &Arc<Self>,
-        usage: &Arc<MemberUse>,
+        usage: &Arc<DirectoryUse>,
         input: &str,
         reason: &str,
         stopping: Arc<Stopping>,
@@ -2516,13 +2471,15 @@ impl CollaborationSession {
             InputFate::Consumed(None) | InputFate::Deleted => return Ok(()),
             InputFate::Pending => {}
         }
-        match session
-            .service::<dim_agent_capabilities::input_queue::InputQueue>(ROOT_BRANCH_ID)?
-            .withdraw(InputWithdrawData {
-                input_id: input.to_owned(),
-                reason: Some(reason.into()),
-                steer: None,
-            })
+        match usage
+            .withdraw(
+                ROOT_BRANCH_ID,
+                InputWithdrawData {
+                    input_id: input.to_owned(),
+                    reason: Some(reason.into()),
+                    steer: None,
+                },
+            )
             .await?
         {
             // (W): no turn will run for the input; the settle names it.
