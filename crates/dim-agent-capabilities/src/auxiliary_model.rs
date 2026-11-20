@@ -4,19 +4,15 @@
 //! The owner resolves the model, the configuration it would send for a
 //! Session request (its adopted output allowance included), then calls
 //! [`complete`].
-//! Whoever owns model selection exports the operation with [`provide`], so a
-//! profile that serves a model offers the same `auxiliaryModel` name to
+//! Managed and configured model owners expose `providerService.complete` to
 //! Session parts ([AuxiliaryModel §4.3](../../../docs/design/appserver/auxiliary-model.md#43-named-binding)).
 use crate::host::{
     AuxiliaryError, AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryReply, AuxiliaryRequest,
-    CompleteAuxiliary, HostError, ModelChunk, ModelHost, ModelStopReason, ModelStream,
-    ResolveModelConnection,
+    HostError, ModelChunk, ModelHost, ModelStopReason, ModelStream, ResolveModelConnection,
 };
 use crate::model_provider::invoke_with_recovery;
 use dim_agent_types::{ModelCapabilitySnapshot, ModelConfig, ModelId, ModelRequest, SystemPrompt};
 use futures_util::StreamExt;
-use rutis::Ctx;
-use rutis::host::CtxHost;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::Deserialize;
 use serde_json::json;
@@ -117,18 +113,6 @@ pub fn record(model: &ModelId, started: Instant, result: Result<&AuxiliaryReply,
     );
 }
 
-/// Provides one owner's operation as the Rust port and under the shared
-/// `auxiliaryModel` name Session parts inject.
-pub fn provide(ctx: &Ctx, operation: Arc<dyn CompleteAuxiliary>) -> rutis::Result<()> {
-    let binding = Arc::new(AuxiliaryModel(operation));
-    ctx.provide_as::<AuxiliaryModel>(binding.clone())?;
-    ctx.provide_at(
-        rutis_bridge::session::host_key("auxiliaryModel"),
-        binding as Arc<dyn HostDispatch>,
-    )?;
-    Ok(())
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct CompleteRequest {
@@ -151,21 +135,21 @@ impl HostDispatch for AuxiliaryModel {
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method != "complete" {
             return Err(Error::Value(format!(
-                "unknown auxiliaryModel method {method}"
+                "unknown providerService method {method}"
             )));
         }
         let mut args = args
             .list()
-            .map_err(|_| failure(invalid("Invalid auxiliaryModel arguments")))?
+            .map_err(|_| failure(invalid("Invalid providerService.complete arguments")))?
             .into_iter();
         let request = args
             .next()
-            .ok_or_else(|| failure(invalid("Missing auxiliaryModel request")))?;
+            .ok_or_else(|| failure(invalid("Missing providerService.complete request")))?;
         let CompleteRequest { model, request } = request
             .json()
             .ok()
             .and_then(|request| serde_json::from_value(request).ok())
-            .ok_or_else(|| failure(invalid("Invalid auxiliaryModel request")))?;
+            .ok_or_else(|| failure(invalid("Invalid providerService.complete request")))?;
         let model = ModelId {
             provider_id: model.provider_id,
             model_id: model.model_id,
@@ -173,10 +157,16 @@ impl HostDispatch for AuxiliaryModel {
         let cancelled = match args.next() {
             None | Some(Value::Undefined) => None,
             Some(Value::Reference(reference)) if reference.is_function() => Some(reference),
-            Some(_) => return Err(failure(invalid("Invalid auxiliaryModel cancellation"))),
+            Some(_) => {
+                return Err(failure(invalid(
+                    "Invalid providerService.complete cancellation",
+                )));
+            }
         };
         if args.next().is_some() {
-            return Err(failure(invalid("Too many auxiliaryModel arguments")));
+            return Err(failure(invalid(
+                "Too many providerService.complete arguments",
+            )));
         }
         let operation = self.0.clone();
         Ok(Value::future(async move {

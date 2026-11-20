@@ -3361,12 +3361,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host::AuxiliaryModel",
-        "provider": 17,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::host::CredentialVariablesHost",
         "provider": 1,
         "generation": 0,
@@ -3392,6 +3386,12 @@
       },
       {
         "service": "dim_agent_capabilities::host::ProviderConnectionResolver",
+        "provider": 17,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dim_agent_capabilities::host::ProviderService",
         "provider": 17,
         "generation": 1,
         "removing": false
@@ -3717,12 +3717,6 @@
       {
         "service": "dyn rutis_bridge::runtime::definitions::PluginMounter",
         "provider": 2,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dyn rutis_bridge::session::services::HostDispatch#auxiliaryModel",
-        "provider": 17,
         "generation": 1,
         "removing": false
       },

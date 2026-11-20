@@ -9,9 +9,10 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
-        AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest, CredentialRecoveryPhase,
-        CredentialRejection, HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget,
-        ModelChunk, ModelHost, ModelProtocol, ProviderConnectionResolver, SelectableModelsHost,
+        AuxiliaryErrorCode, AuxiliaryRequest, CredentialRecoveryPhase, CredentialRejection,
+        HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget, ModelChunk, ModelHost,
+        ModelProtocol, ProviderConnectionResolver, ProviderService as ModelProviderService,
+        SelectableModelsHost,
     },
 };
 use dim_agent_runtime::Names;
@@ -1388,11 +1389,10 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     .await
     .unwrap();
     assert!(grok.status(&cancel).await.unwrap().authenticated);
-    let auxiliary = root.get::<AuxiliaryModel>().unwrap();
+    let auxiliary = root.get::<ModelProviderService>().unwrap();
     let sent = f.model_requests.lock().unwrap().len();
     f.model_rejections.store(2, Ordering::SeqCst);
     let error = auxiliary
-        .0
         .complete(
             ModelId {
                 provider_id: "grok-build".into(),

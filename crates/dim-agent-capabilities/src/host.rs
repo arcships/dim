@@ -1150,7 +1150,92 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
+pub(crate) struct AuxiliaryModel(pub(crate) Arc<dyn CompleteAuxiliary>);
+
+/// Model selection and completion provided by the active model catalog.
+pub struct ProviderService {
+    selection: ModelSelectionHost,
+    selectable: SelectableModelsHost,
+    auxiliary: AuxiliaryModel,
+    configuration: Option<Arc<dyn HostDispatch>>,
+}
+
+impl ProviderService {
+    pub fn provide(
+        ctx: &Ctx,
+        selection: ModelSelectionHost,
+        selectable: SelectableModelsHost,
+        auxiliary: Arc<dyn CompleteAuxiliary>,
+        configuration: Option<Arc<dyn HostDispatch>>,
+    ) -> rutis::Result<()> {
+        let owner = Arc::new(Self {
+            selection,
+            selectable,
+            auxiliary: AuxiliaryModel(auxiliary),
+            configuration,
+        });
+        ctx.provide_as::<Self>(owner.clone())?;
+        ctx.provide_at(
+            rutis_bridge::session::host_key("providerService"),
+            owner as Arc<dyn HostDispatch>,
+        )?;
+        Ok(())
+    }
+
+    pub async fn resolve(
+        &self,
+        request: ModelSelectionRequest,
+        cancel: CancellationToken,
+    ) -> Result<ModelSelection, ModelPortError> {
+        self.selection.resolve(request, cancel).await
+    }
+
+    pub async fn selectable_models(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<SelectableModelsReply, ModelPortError> {
+        self.selectable.selectable_models(cancel).await
+    }
+
+    pub async fn selectable_for_modality(
+        &self,
+        cancel: CancellationToken,
+    ) -> Result<ModalityModelsReply, ModelPortError> {
+        self.selectable.selectable_for_modality(cancel).await
+    }
+
+    pub async fn complete(
+        &self,
+        model: ModelId,
+        request: AuxiliaryRequest,
+        cancel: CancellationToken,
+    ) -> Result<AuxiliaryReply, AuxiliaryError> {
+        self.auxiliary.0.complete(model, request, cancel).await
+    }
+}
+
+impl HostDispatch for ProviderService {
+    fn methods(&self) -> Option<serde_json::Value> {
+        let mut methods = json!({"resolve":"async","selectableModels":"async","selectableForModality":"async","complete":"async"});
+        if self.configuration.is_some() {
+            methods["configuration"] = json!("async");
+            methods["applyPreferences"] = json!("async");
+        }
+        Some(methods)
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        match method {
+            "resolve" => self.selection.invoke(method, args),
+            "selectableModels" | "selectableForModality" => self.selectable.invoke(method, args),
+            "complete" => self.auxiliary.invoke(method, args),
+            _ => match &self.configuration {
+                Some(owner) => owner.invoke(method, args),
+                None => Err(crate::port_faces::unknown_method("providerService", method)),
+            },
+        }
+    }
+}
 
 pub trait ModelDriver: Send + Sync + 'static {
     fn invoke(

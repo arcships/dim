@@ -3402,31 +3402,30 @@ impl DynPlugin for ProviderPlugin {
             let resolver = Arc::new(ProductResolver(service.clone()));
             ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
             let selection = resolver.clone();
-            dim_agent_capabilities::host::provide_model_selection(
-                ctx,
-                &ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
-                    selection.resolve(explicit, cwd, cancel)
-                })),
-            )?;
+            let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
+                selection.resolve(explicit, cwd, cancel)
+            }));
+            dim_agent_capabilities::host::provide_model_selection(ctx, &selection_host)?;
             ctx.provide(ModalityConnectionHost(resolver.clone()))?;
             let selectable = resolver.clone();
             let modalities = resolver;
-            dim_agent_capabilities::host::provide_selectable_models(
-                ctx,
-                &SelectableModelsHost::new(
-                    Arc::new(move |cancel| selectable.selectable(cancel)),
-                    Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
-                ),
-            )?;
+            let selectable_host = SelectableModelsHost::new(
+                Arc::new(move |cancel| selectable.selectable(cancel)),
+                Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
+            );
+            dim_agent_capabilities::host::provide_selectable_models(ctx, &selectable_host)?;
             let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
                 owner: service.clone(),
                 host,
             });
-            dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary.clone())?;
+
             management::provide(ctx, &methods, service.clone())?;
-            ctx.provide_at(
-                rutis_bridge::session::host_key("providerService"),
-                auxiliary as Arc<dyn rutis_bridge::session::HostDispatch>,
+            dim_agent_capabilities::host::ProviderService::provide(
+                ctx,
+                selection_host,
+                selectable_host,
+                auxiliary.clone(),
+                Some(auxiliary),
             )?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)

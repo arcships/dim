@@ -8,10 +8,10 @@ use axum::{
 use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
-        AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest, AwsCredentials, BedrockAuth,
-        HostError, ModalityConnectionHost, ModalityTarget, ModelChunk, ModelConnection, ModelHost,
+        AuxiliaryErrorCode, AuxiliaryRequest, AwsCredentials, BedrockAuth, HostError,
+        ModalityConnectionHost, ModalityTarget, ModelChunk, ModelConnection, ModelHost,
         ModelPortError, ModelProtocol, ModelStopReason, ProviderConnectionResolver,
-        SelectableModelsHost,
+        ProviderService as ModelProviderService, SelectableModelsHost,
     },
 };
 use dim_agent_runtime::{Names, names::ServiceCatalog};
@@ -8043,7 +8043,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     let view = root.plugin(provider_part(ProviderPlugin::new));
     active(&view).await;
     let provider = root.get::<ProviderService>().unwrap();
-    let auxiliary = root.get::<AuxiliaryModel>().unwrap();
+    let auxiliary = root.get::<ModelProviderService>().unwrap();
     let cancel = CancellationToken::new();
     let saved = provider
         .create(
@@ -8085,7 +8085,6 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     };
 
     let reply = auxiliary
-        .0
         .complete(target(AUX), request(Some(32)), cancel.clone())
         .await
         .unwrap();
@@ -8101,7 +8100,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     assert_eq!(max_tokens(&sent.body), Some(32));
     let face = root
         .get_at::<dyn rutis_bridge::session::HostDispatch>(&rutis_bridge::session::host_key(
-            "auxiliaryModel",
+            "providerService",
         ))
         .unwrap();
     let wire = rutis_bridge::session::settle(
@@ -8125,7 +8124,6 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     assert_eq!(wire, serde_json::to_value(&reply).unwrap());
     assert_eq!(seen.lock().unwrap().pop().unwrap().body, sent.body);
     auxiliary
-        .0
         .complete(target(AUX), request(Some(1_000_000)), cancel.clone())
         .await
         .unwrap();
@@ -8138,7 +8136,6 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     empty.messages.clear();
     for invalid in [empty, request(Some(0))] {
         let error = auxiliary
-            .0
             .complete(target(AUX), invalid, cancel.clone())
             .await
             .unwrap_err();
@@ -8147,9 +8144,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     assert!(seen.lock().unwrap().is_empty());
 
     let call_cancel = CancellationToken::new();
-    let call = auxiliary
-        .0
-        .complete(target(HANG), request(None), call_cancel.clone());
+    let call = auxiliary.complete(target(HANG), request(None), call_cancel.clone());
     tokio::pin!(call);
     tokio::select! {
         result = &mut call => panic!("unexpected {result:?}"),
@@ -8165,9 +8160,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     assert!(
         tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            auxiliary
-                .0
-                .complete(target(HANG), request(None), cancel.clone()),
+            auxiliary.complete(target(HANG), request(None), cancel.clone()),
         )
         .await
         .is_err()
@@ -8178,7 +8171,6 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
         .await
         .unwrap();
     let error = auxiliary
-        .0
         .complete(target(AUX), request(None), cancel.clone())
         .await
         .unwrap_err();
@@ -8189,7 +8181,6 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
         .await
         .unwrap();
     let error = auxiliary
-        .0
         .complete(target(AUX), request(None), cancel.clone())
         .await
         .unwrap_err();
@@ -8200,7 +8191,6 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
         let auxiliary = auxiliary.clone();
         async move {
             auxiliary
-                .0
                 .complete(target(HANG), request(None), CancellationToken::new())
                 .await
         }

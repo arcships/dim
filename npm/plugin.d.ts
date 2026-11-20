@@ -86,10 +86,15 @@ export interface SessionMetadata {
 }
 
 export interface ModelId { providerId: string; modelId: string }
-export interface ProviderService extends AuxiliaryModel {
+export interface ProviderService {
+  /** Resolving or rejecting cancelled cancels and joins the original model call. */
+  complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
   resolve(request: { explicit?: ModelId; cwd?: string }): Promise<import('./branch-services.js').ModelSelection>;
   selectableModels(request: {}): Promise<{ models: import('./branch-services.js').ModelCapabilitySnapshot[] }>;
   selectableForModality(request: {}): Promise<{ models: { target: ModelId; operations: string[] }[] }>;
+}
+
+export interface ManagedProviderService extends ProviderService {
   configuration(request: {
     explicit?: ModelId; cwd?: string; preferences: { reasoningEffort?: string; serviceTier?: string };
   }): Promise<import('./branch-services.js').ModelSelection>;
@@ -121,11 +126,6 @@ export interface AuxiliaryReply {
 }
 export interface AuxiliaryError extends Error {
   code: 'invalid_request' | 'model_unavailable' | 'failed' | 'cancelled';
-}
-/** Provider-owned process service; credentials and request lifetime stay with Provider. */
-export interface AuxiliaryModel {
-  /** Resolving or rejecting cancelled cancels and joins the original model call. */
-  complete(call: { model: ModelId; request: AuxiliaryRequest }, cancelled?: () => Promise<void>): Promise<AuxiliaryReply>;
 }
 
 export type ModalityTargetReply =

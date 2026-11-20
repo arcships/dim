@@ -1,5 +1,5 @@
 import { definePlugin } from '@arcships/rutis'
-import type { ManagementMethods, ModelId, ProviderService } from '../../npm/plugin.js'
+import type { ManagementMethods, ModelId, ManagedProviderService } from '../../npm/plugin.js'
 
 type Read = { read(request: object): Promise<unknown> }
 
@@ -12,7 +12,7 @@ export default definePlugin({
     const execution = ctx.use<Read>('executionSettingsHost')
     const toolchains = ctx.use<{ list(request: object): Promise<unknown> }>('toolchainSourceHost')
     const suggestions = ctx.use<Read>('promptSuggestionSettingsHost')
-    const provider = ctx.use<ProviderService>('providerService')
+    const provider = ctx.use<ManagedProviderService>('providerService')
     await ctx.use<ManagementMethods>('managementMethods').register(
       'hostports',
       [{ name: 'hostports.read', mutating: false, interruption: 'report', progress: false }],

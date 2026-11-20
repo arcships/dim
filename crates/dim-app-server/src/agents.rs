@@ -5,7 +5,7 @@ use crate::{
     storage::{PreparedWorktree, SessionMetadataService, SessionStore, SqliteStorage, Store},
     worktrees::{CreatedWorktree, ManagedWorktrees, WorktreeError},
 };
-use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
+use dim_agent_capabilities::{host::ProviderService, methods::RpcError};
 use dim_agent_runtime::{
     AGENT_GROUP, Agent, AgentBuilder, AgentError, CollaborationRole, InUse, Modules, Names,
     NoConfig, QueryFilter, QueryOperand, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec,
@@ -382,7 +382,7 @@ pub struct AgentIndex {
     activity: Arc<ProcessActivity>,
     builder: AgentBuilder,
     session_defaults: SessionConfig,
-    /// Protected profiles resolve Session models through a `ModelSelectionHost`.
+    /// Protected profiles resolve Session models through a `ProviderService`.
     selects_models: bool,
     /// Loading context of `AgentsPlugin`.
     ctx: OnceLock<Ctx>,
@@ -494,9 +494,9 @@ impl AgentIndex {
     /// the product profile Provider supplies it, and an inactive or reloading
     /// management owner must not keep Agents, and so Rpc, from loading
     /// (methods contract §3.2). `None` while its provider is not active.
-    pub(crate) fn model_selection(&self) -> Option<Arc<ModelSelectionHost>> {
+    pub(crate) fn model_selection(&self) -> Option<Arc<ProviderService>> {
         self.selects_models
-            .then(|| self.ctx.get()?.get::<ModelSelectionHost>())
+            .then(|| self.ctx.get()?.get::<ProviderService>())
             .flatten()
     }
     /// How many `input/message` facts a session summary's preview scan keeps.

@@ -284,8 +284,8 @@ use crate::summary_eval::{
 use dim_agent_capabilities::{
     context_model::{output_allowance, window_facts},
     host::{
-        HostFuture, ModelHost, ModelSelectionHost, ModelSelectionRequest, ModelStopReason,
-        ProviderConnectionResolver, ResolveContextModel, ToolExecutionContext,
+        HostFuture, ModelHost, ModelSelectionRequest, ModelStopReason, ProviderConnectionResolver,
+        ProviderService, ResolveContextModel, ToolExecutionContext,
     },
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
     workspace_tools::FileToolBoundary,
@@ -4477,7 +4477,7 @@ pub(crate) async fn selection(
     cancel: &CancellationToken,
 ) -> Result<ModelSelection> {
     let host = server
-        .service::<ModelSelectionHost>()
+        .service::<ProviderService>()
         .ok_or("the served profile resolves no model selection")?;
     host.resolve(
         ModelSelectionRequest::at(Some(target.clone()), Some(cwd))

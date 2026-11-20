@@ -80,12 +80,10 @@ impl Plugin for ConfiguredModelsPlugin {
         });
         ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
         let selection = resolver.clone();
-        dim_agent_capabilities::host::provide_model_selection(
-            ctx,
-            &ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
-                selection.resolve(explicit, cwd, cancel)
-            })),
-        )?;
+        let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
+            selection.resolve(explicit, cwd, cancel)
+        }));
+        dim_agent_capabilities::host::provide_model_selection(ctx, &selection_host)?;
         ctx.provide(ModalityConnectionHost(resolver.clone()))?;
         let selectable = ConfiguredSelectable {
             models: self.0.clone(),
@@ -93,19 +91,24 @@ impl Plugin for ConfiguredModelsPlugin {
         let modalities = ConfiguredSelectable {
             models: self.0.clone(),
         };
-        dim_agent_capabilities::host::provide_selectable_models(
-            ctx,
-            &SelectableModelsHost::new(
-                Arc::new(move |cancel| selectable.selectable(cancel)),
-                Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
-            ),
-        )?;
+        let selectable_host = SelectableModelsHost::new(
+            Arc::new(move |cancel| selectable.selectable(cancel)),
+            Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
+        );
+        dim_agent_capabilities::host::provide_selectable_models(ctx, &selectable_host)?;
         let auxiliary = Arc::new(crate::auxiliary::ConfiguredAuxiliary {
             models: self.0.clone(),
             connection: resolver,
             host,
         });
-        dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary)?;
+
+        dim_agent_capabilities::host::ProviderService::provide(
+            ctx,
+            selection_host,
+            selectable_host,
+            auxiliary,
+            None,
+        )?;
         Ok(())
     }
 }
