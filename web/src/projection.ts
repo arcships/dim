@@ -16,7 +16,14 @@ import type { Goal } from "./goal"
 import type { AskQuestion, ModelFailure, ModelId, ModelProgress, ProviderPresentation, QueuedInput, SessionEvent, ToolResult } from "./rpc/protocol"
 
 export type TimelineRow =
-  | { kind: "user"; key: string; text: string; images?: import("./rpc/protocol").ImageBlock[]; skills?: string[]; hooks?: number; at: number; sequence: number; cut: number }
+  /**
+   * `inputId` is the `input/message` event's id. `settled` is true once a turn
+   * end follows the input's consumption (`input/consumed`, which Loop writes
+   * for every applied input when a request takes it), or once it is withdrawn;
+   * until then the input is held, applied and waiting for a request, or in the
+   * running turn.
+   */
+  | { kind: "user"; key: string; text: string; images?: import("./rpc/protocol").ImageBlock[]; skills?: string[]; hooks?: number; at: number; sequence: number; cut: number; inputId: string; settled: boolean }
   | { kind: "assistant"; key: string; text: string; streaming: boolean }
   | { kind: "thinking"; key: string; text: string; streaming: boolean; elapsedMs?: number }
   | { kind: "tool"; key: string; callId: string; name: string; input: Record<string, unknown>; pending: boolean; result?: ToolResult }
@@ -28,6 +35,13 @@ export type TimelineRow =
   | { kind: "hook-follow-up"; key: string; body: string; lines: number }
   | { kind: "error"; key: string; text: string; details?: ModelFailure }
   | { kind: "stopped"; key: string }
+
+/**
+ * Where a user input is: held by the queue, applied and waiting for a request
+ * (a stop can end the turn before one takes it), consumed by a request at a
+ * sequence, or settled by the turn end after that or by its withdrawal.
+ */
+type InputProgress = { kind: "held" } | { kind: "applied" } | { kind: "consumed"; at: number } | { kind: "settled" }
 
 /** A request's reasoning or answer while it is still arriving. */
 type Stream = {
@@ -56,6 +70,8 @@ export class Projection {
   private lines = new Map<string, number>()
   /** `ask_user` calls whose batch has no `step/tool-result` yet, oldest first. */
   private asks: Array<{ requestId: string; callId: string; questions: AskQuestion[] }> = []
+  /** Each user input's progress through its turn, by input id; an id may arrive before its message's row, in a later window. */
+  private inputs = new Map<string, InputProgress>()
   /** Messages the server holds in the queue: written, not yet adopted, not withdrawn. */
   private held = new Map<string, QueuedInput>()
   goal: Goal | undefined
@@ -78,6 +94,7 @@ export class Projection {
 
   restoreControls(inputs: readonly QueuedInput[], asks: typeof this.asks, through: number): void {
     this.held = new Map(inputs.map(input => [input.id, input]))
+    for (const input of inputs) if (!this.inputs.has(input.id)) this.inputs.set(input.id, { kind: "held" })
     this.asks = asks
     this.controlCursor = through
   }
@@ -129,12 +146,21 @@ export class Projection {
             at: event.createAt,
             sequence: event.sequence,
             cut: Math.max(0, event.sequence - 1),
+            inputId: event.id,
+            settled: false,
           })
+          this.inputs.set(event.id, { kind: "held" })
         }
         break
       case "input-applied":
-      case "input-consumed":
+        if (this.inputs.get(content.inputId)?.kind !== "settled") this.inputs.set(content.inputId, { kind: "applied" })
+        break
       case "input-deleted":
+        this.inputs.set(content.inputId, { kind: "settled" })
+        this.settleRows()
+        break
+      case "input-consumed":
+        if (this.inputs.get(content.inputId)?.kind !== "settled") this.inputs.set(content.inputId, { kind: "consumed", at: event.sequence })
         break
       case "source-input": {
         const notice = branchNotice(content.text, content.mode)
@@ -220,6 +246,8 @@ export class Projection {
       }
       case "turn-end": {
         this.lastTurnEnd = event.sequence
+        for (const [id, progress] of this.inputs) if (progress.kind === "consumed" && progress.at < event.sequence) this.inputs.set(id, { kind: "settled" })
+        this.settleRows()
         for (const requestId of [...this.thoughts.keys()]) this.closeThinking(requestId, event.createAt)
         for (const requestId of [...this.answers.keys()]) this.closeAnswer(requestId)
         // The marker belongs to this turn only, whatever the outcome.
@@ -260,12 +288,34 @@ export class Projection {
     }
   }
 
-  prepend(rows: readonly TimelineRow[], prefix: string): void {
+  /**
+   * Puts an earlier window's rows before these. Its inputs' progress joins
+   * this one's: what this window saw of an input wins, and an input the
+   * earlier window saw consumed is settled when this window's newest turn end
+   * follows the consumption.
+   */
+  prepend(earlier: Projection, prefix: string): void {
+    const rows = earlier.rows
+    for (const [id, progress] of earlier.inputs) {
+      if (this.inputs.has(id)) continue
+      const ended = progress.kind === "consumed" && this.lastTurnEnd !== undefined && this.lastTurnEnd > progress.at
+      this.inputs.set(id, ended ? { kind: "settled" } : progress)
+    }
     const count = rows.length
     for (const stream of [...this.answers.values(), ...this.thoughts.values()]) stream.index += count
     for (const [key, index] of this.tools) this.tools.set(key, index + count)
     for (const [key, index] of this.lines) this.lines.set(key, index + count)
     this.rows = rows.map(row => ({ ...row, key: `${prefix}:${row.key}`, ...((row.kind === "assistant" || row.kind === "thinking") ? { streaming: false } : {}) })).concat(this.rows)
+    this.settleRows()
+  }
+
+  /** Brings each user row's `settled` to its input's progress, replacing only the rows that change. */
+  private settleRows(): void {
+    for (const [index, row] of this.rows.entries()) {
+      if (row.kind !== "user") continue
+      const settled = this.inputs.get(row.inputId)?.kind === "settled"
+      if (row.settled !== settled) this.update(index, { settled })
+    }
   }
 
   private push(row: TimelineRow): number {

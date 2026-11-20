@@ -52,9 +52,10 @@ checks a cursor against that line's atomic batch boundaries.
 `query` selects a line's own facts or its inherited chain: it forwards to the Timeline while open and uses the ended head and retained directory after closing, with the property query's fixed cutoff, selection and continuation. Chain scope accepts only published facts (`include_publishing: false`), bounds every ancestor at its inherited cut and never reaches siblings or later parent facts. Continuation retains the original cutoff and query, including when a page ends in an ancestor. Own-line queries retain their existing publishing-tail contract.
 
 A child's opening input
-is the identity block, and when the prefix it inherits holds a live parent
-block, one more parent block after it naming the line that opened it at the
-cut; the keyed state is read over the chain the child
+is the identity block, then, when the prefix it inherits holds a live roster,
+one block that retires that key, and when it holds a live parent block, one
+parent block naming the line that opened it at the cut; both keys are read
+over the chain the child
 inherits, never from the rendered history, while the child opens, as a resumed
 line's facts are, and a failed read fails the create like any other opening
 failure (branch/create-failed). Each line's node publishes the
@@ -81,6 +82,8 @@ Session close, and closing is not deletion of persisted history.
 `ending_a_line_ends_its_children_first_and_records_one_result_each`,
 `a_restart_completes_an_end_without_its_result`,
 `a_host_line_opens_with_its_identity_block_and_the_creator_prompt`,
+`a_nested_line_is_told_its_own_parent_at_open`,
+`a_child_cut_after_a_roster_retires_it_and_one_cut_before_gets_nothing`,
 `a_line_reports_the_source_its_create_recorded_open_or_restored`,
 `the_default_branch_starts_at_the_root_and_survives_a_restart`,
 `a_restore_reads_one_fact_for_a_multi_line_session_and_none_for_a_single_line`,

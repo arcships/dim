@@ -52,6 +52,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     match std::env::args().nth(1).as_deref() {
         Some("graph") => graph().await?,
+        Some("module-graph") => module_graph()?,
         Some("measure") => measure().await?,
         Some("context-replay") => context_replay().await?,
         Some("restore-replay") => restore_replay().await?,
@@ -75,11 +76,27 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("types") => types::write(&root())?,
         _ => {
             return Err(
-                "usage: cargo run -p xtask -- graph|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|migrate-prompt-references DB SESSION BRANCH|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
+                "usage: cargo run -p xtask -- graph|module-graph DIR|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|migrate-prompt-references DB SESSION BRANCH|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
                     .into(),
             );
         }
     }
+    Ok(())
+}
+fn module_graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    let mut args = std::env::args().skip(2);
+    let Some(out) = args.next() else {
+        return Err("usage: cargo run -p xtask -- module-graph DIR".into());
+    };
+    if args.next().is_some() {
+        return Err("module-graph takes one output directory".into());
+    }
+    let out = PathBuf::from(out);
+    std::fs::create_dir_all(&out)?;
+    for (name, text) in modules::generate(&root())? {
+        std::fs::write(out.join(name), text)?;
+    }
+    println!("generated {}", out.display());
     Ok(())
 }
 async fn migrate_prompt_references() -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -385,11 +402,11 @@ fn boundaries(write: bool) -> std::result::Result<(), Box<dyn std::error::Error>
         }
     }
     let out = root().join("docs/architecture/rust-agent/generated");
-    let mut files = vec![
+    let files = [
         ("crates.json", serde_json::to_string_pretty(&edges)? + "\n"),
         ("crates.mmd", graph),
     ];
-    files.extend(modules::generate(&root())?);
+    modules::check(&root())?;
     if write {
         std::fs::create_dir_all(&out)?;
         for (name, text) in &files {

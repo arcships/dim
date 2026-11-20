@@ -482,6 +482,24 @@ mod tests {
     }
 
     #[test]
+    fn every_locale_translates_the_task_detail_close_hints() {
+        for (locale, code, _) in LOCALES {
+            if locale == Locale::En {
+                continue;
+            }
+            for key in [
+                "Esc close",
+                "x stop command · Esc close",
+                "x stop workflow · Esc close",
+            ] {
+                let translated = table(locale, key);
+                assert!(translated.is_some(), "{code} lacks {key:?}");
+                assert_ne!(translated.unwrap(), key, "{code} copies {key:?}");
+            }
+        }
+    }
+
+    #[test]
     fn every_locale_translates_the_daemon_notice_strings() {
         // The strings the notice prints, so a changed text cannot pass here
         // while every locale silently falls back to English.

@@ -21,7 +21,6 @@ mod subscriptions;
 mod text;
 
 use dim_agent_runtime::{AgentBuilder, Names, PartRegistry, PartScope};
-use dim_app_server::plugin_files::PluginFileTransactions;
 use dim_app_server::{ProcessActivity, methods::ManagementMethods};
 use hub::Shared;
 use rutis::Ctx;
@@ -118,7 +117,7 @@ pub fn install_with(builder: &mut AgentBuilder, texts: EventHubTexts) {
 }
 
 pub struct EventHubPlugin {
-    files: Key<PluginFileTransactions>,
+    files: Key<dim_app_server::plugin_files::PluginFiles>,
     methods: Key<ManagementMethods>,
     sessions: Key<dyn HostDispatch>,
     parts: Key<PartRegistry>,
@@ -166,7 +165,7 @@ impl DynPlugin for EventHubPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let files = ctx.require_at(&self.files)?;
+            let files = ctx.require_at(&self.files)?.scope(Some(ctx.clone()));
             let sessions = ctx.require_at(&self.sessions)?;
             let store = Arc::new(store::Store::new(files, self.state.clone()));
             // The file is read once, into the install's view; a corrupt one
