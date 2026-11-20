@@ -5,7 +5,7 @@ pub use resources::{PublishFile, ResourceRef, UiResources};
 
 use crate::methods::ManagementMethods;
 use dim_agent_capabilities::{
-    file_storage::{EntryKind, FileStorage},
+    file_storage::{EntryKind, FileStorage, FsHost},
     methods::{Interruption, MethodCall, MethodDecl, params, reply},
 };
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
@@ -88,7 +88,9 @@ impl Configuration {
 
 pub struct UiExtensions {
     configuration: Arc<Configuration>,
-    files: Arc<FileStorage>,
+    files: Arc<FsHost>,
+    roots: Arc<FileStorage>,
+    ctx: Ctx,
     cache: PathBuf,
     catalog: Mutex<Catalog>,
     changes: watch::Sender<u64>,
@@ -242,22 +244,16 @@ impl UiExtensions {
         panels: &[Panel],
     ) -> Result<BTreeSet<String>, String> {
         let cancel = &self.reads.stop;
-        let source = self
-            .files
-            .register_root(
-                root.parent().ok_or("UI root needs a parent")?.to_path_buf(),
-                cancel,
-            )
+        let parent = root.parent().ok_or("UI root needs a parent")?;
+        self.roots
+            .register_root(parent.to_path_buf(), cancel)
             .await
             .map_err(|error| error.to_string())?;
         let base = PathBuf::from(root.file_name().ok_or("UI root needs a basename")?);
         let mut pending = vec![base.clone()];
         let mut paths = BTreeSet::new();
         while let Some(directory) = pending.pop() {
-            let path = self
-                .files
-                .path(source, &directory)
-                .map_err(|error| error.to_string())?;
+            let path = parent.join(&directory);
             for entry in self
                 .files
                 .list(&path, cancel)
@@ -280,10 +276,7 @@ impl UiExtensions {
                         {
                             continue;
                         }
-                        let path = self
-                            .files
-                            .path(source, &relative)
-                            .map_err(|error| error.to_string())?;
+                        let path = parent.join(&relative);
                         let name = target
                             .to_str()
                             .ok_or("UI resources must have UTF-8 paths")?
@@ -292,29 +285,39 @@ impl UiExtensions {
                         let copied: Result<(), String> = async {
                             let file = self
                                 .files
-                                .open_read(&path, cancel)
+                                .open_read(&self.ctx, &path, cancel)
                                 .await
                                 .map_err(|error| error.to_string())?;
-                            let mut output = tokio::fs::OpenOptions::new()
-                                .write(true)
-                                .create_new(true)
-                                .open(destination.join(target))
-                                .await
-                                .map_err(|error| error.to_string())?;
-                            let mut offset = 0;
-                            while offset < file.len() {
-                                let bytes = file
-                                    .read_at(offset, 65536, cancel)
+                            let copy_result: Result<(), String> = async {
+                                let mut output = tokio::fs::OpenOptions::new()
+                                    .write(true)
+                                    .create_new(true)
+                                    .open(destination.join(target))
                                     .await
                                     .map_err(|error| error.to_string())?;
-                                output
-                                    .write_all(&bytes)
-                                    .await
-                                    .map_err(|error| error.to_string())?;
-                                offset += bytes.len() as u64;
+                                let mut offset = 0;
+                                while offset < file.size {
+                                    let bytes = self
+                                        .files
+                                        .read_at(file.read_id.clone(), offset, 65536, cancel)
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    output
+                                        .write_all(&bytes)
+                                        .await
+                                        .map_err(|error| error.to_string())?;
+                                    offset += bytes.len() as u64;
+                                }
+                                output.flush().await.map_err(|error| error.to_string())?;
+                                Ok(())
                             }
-                            output.flush().await.map_err(|error| error.to_string())?;
-                            Ok(())
+                            .await;
+                            let closed = self
+                                .files
+                                .close_read(file.read_id)
+                                .await
+                                .map_err(|error| error.to_string());
+                            copy_result.and(closed)
                         }
                         .await;
                         match copied {
@@ -368,18 +371,20 @@ impl UiExtensions {
         if !snapshot.paths.contains(relative) {
             return Err(gone());
         }
-        let path = self
-            .files
-            .resolve(&snapshot.directory.join(relative))
-            .map_err(file_error)?;
         let file = self
             .files
-            .open_read(&path, &snapshot.reads.stop)
+            .open_read(
+                &self.ctx,
+                snapshot.directory.join(relative),
+                &snapshot.reads.stop,
+            )
             .await
             .map_err(file_error)?;
         let (media_type, attachment) = mime(relative);
         Ok(Read {
             file,
+            files: self.files.clone(),
+            close_file: true,
             stop: snapshot.reads.stop.clone(),
             token,
             media_type: media_type.into(),
@@ -423,7 +428,8 @@ fn mime(path: &str) -> (&'static str, bool) {
 }
 
 pub(crate) struct UiExtensionsPlugin {
-    files: Key<FileStorage>,
+    files: Key<FsHost>,
+    roots: Key<FileStorage>,
     methods: Key<ManagementMethods>,
     parts: Key<PartRegistry>,
     configuration: Arc<Configuration>,
@@ -432,6 +438,7 @@ impl UiExtensionsPlugin {
     pub fn new(names: &Names<'_>, configuration: Arc<Configuration>) -> rutis::Result<Self> {
         Ok(Self {
             files: names.key()?,
+            roots: names.key()?,
             methods: names.key()?,
             parts: names.key()?,
             configuration,
@@ -443,7 +450,12 @@ impl DynPlugin for UiExtensionsPlugin {
         "UiExtensions"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.files.erase(), self.methods.erase(), self.parts.erase()]
+        vec![
+            self.files.erase(),
+            self.roots.erase(),
+            self.methods.erase(),
+            self.parts.erase(),
+        ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
@@ -477,6 +489,8 @@ impl DynPlugin for UiExtensionsPlugin {
             let service = Arc::new(UiExtensions {
                 configuration: self.configuration.clone(),
                 files,
+                roots: ctx.require_at(&self.roots)?,
+                ctx: ctx.clone(),
                 cache,
                 catalog: Mutex::default(),
                 changes: watch::channel(self.configuration.revision()).0,
@@ -489,7 +503,7 @@ impl DynPlugin for UiExtensionsPlugin {
                 Ok(())
             })?;
             service
-                .files
+                .roots
                 .register_root(self.configuration.cache.clone(), &ctx.cancellation_token())
                 .await
                 .map_err(|error| ErrorKind::PluginFailed(error.into()))?;

@@ -1,6 +1,6 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::{
-    file_storage::{FileReader, FileStorage, FileStorageError},
+    file_storage::{FileStorageError, FsHost, OpenRead},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
 };
 use dim_agent_runtime::{Names, PublicService, SessionIdentity, SessionLifecycle, SessionPhase};
@@ -68,12 +68,26 @@ impl Reads {
 }
 
 pub(crate) struct Read {
-    pub file: FileReader,
+    pub file: OpenRead,
+    pub files: Arc<FsHost>,
+    pub(super) close_file: bool,
     pub stop: CancellationToken,
     pub token: TaskTrackerToken,
     pub media_type: String,
     pub attachment: bool,
     pub etag: Option<String>,
+}
+
+impl Drop for Read {
+    fn drop(&mut self) {
+        if self.close_file {
+            let files = self.files.clone();
+            let id = std::mem::take(&mut self.file.read_id);
+            self.token.task_tracker().spawn(async move {
+                let _ = files.close_read(id).await;
+            });
+        }
+    }
 }
 
 /// The page a read returns when the caller names no `limit`.
@@ -112,7 +126,7 @@ pub(crate) async fn read_page(
     if limit == 0 {
         return Err(ResourceError::invalid("limit must be positive"));
     }
-    let total = read.file.len();
+    let total = read.file.size;
     let offset = offset.unwrap_or(0);
     if offset > total {
         return Err(ResourceError::invalid("offset is beyond the resource"));
@@ -126,7 +140,7 @@ pub(crate) async fn read_page(
             biased;
             _ = cancel.cancelled() => return Err(gone()),
             _ = stop.cancelled() => return Err(gone()),
-            chunk = read.file.read_at(at, (end - at) as usize, &stop) => chunk,
+            chunk = read.files.read_at(read.file.read_id.clone(), at, (end - at) as usize, &stop) => chunk,
         }
         .map_err(page_error)?;
         if chunk.is_empty() {
@@ -173,7 +187,8 @@ struct ResourcePageRequest {
 
 struct Published {
     owner: InstanceId,
-    file: Mutex<Option<FileReader>>,
+    file: Mutex<Option<OpenRead>>,
+    files: Arc<FsHost>,
     reads: Reads,
     media_type: String,
     attachment: bool,
@@ -181,7 +196,10 @@ struct Published {
 impl Published {
     async fn close(&self) {
         self.reads.close().await;
-        self.file.lock().unwrap().take();
+        let file = self.file.lock().unwrap().take();
+        if let Some(file) = file {
+            let _ = self.files.close_read(file.read_id).await;
+        }
     }
 }
 
@@ -207,7 +225,7 @@ struct Registration {
 pub struct UiResources {
     session_id: String,
     lifecycle: Arc<SessionLifecycle>,
-    files: Arc<FileStorage>,
+    files: Arc<FsHost>,
     resources: Arc<Mutex<HashMap<String, Registration>>>,
     reads: Arc<Reads>,
 }
@@ -232,16 +250,12 @@ impl UiResources {
         if self.lifecycle.phase() >= SessionPhase::Closing {
             return Err(gone());
         }
-        let path = self
-            .files
-            .resolve(Path::new(&request.path))
-            .map_err(file_error)?;
         let cancel = caller.cancellation_token().child_token();
         let _cancel = cancel.clone().drop_guard();
         let file = tokio::select! {
             _ = self.reads.stop.cancelled() => return Err(gone()),
             _ = self.lifecycle.closing() => return Err(gone()),
-            file = self.files.open_read(&path, &cancel) => file.map_err(file_error)?,
+            file = self.files.open_read(caller, &request.path, &cancel) => file.map_err(file_error)?,
         };
         let inline = matches!(
             request.media_type.as_str(),
@@ -264,6 +278,7 @@ impl UiResources {
         let published = Arc::new(Published {
             owner: caller.instance(),
             file: Mutex::new(Some(file)),
+            files: self.files.clone(),
             reads: Reads::new(self.reads.stop.child_token()),
             media_type: if inline {
                 request.media_type
@@ -276,27 +291,34 @@ impl UiResources {
         let resources = self.resources.clone();
         let cleanup = published.clone();
         let key = id.clone();
-        let mut entries = self.resources.lock().unwrap();
-        if self.reads.stop.is_cancelled()
-            || self.lifecycle.phase() >= SessionPhase::Closing
-            || caller.cancellation_token().is_cancelled()
-        {
-            return Err(gone());
+        let registered = (|| {
+            let mut entries = self.resources.lock().unwrap();
+            if self.reads.stop.is_cancelled()
+                || self.lifecycle.phase() >= SessionPhase::Closing
+                || caller.cancellation_token().is_cancelled()
+            {
+                return Err(gone());
+            }
+            let disposer = caller
+                .effect(move || async move {
+                    cleanup.close().await;
+                    resources.lock().unwrap().remove(&key);
+                    Ok(())
+                })
+                .map_err(|error| ResourceError::service("resource_closed", error.to_string()))?;
+            entries.insert(
+                id.clone(),
+                Registration {
+                    resource: published.clone(),
+                    cleanup: disposer,
+                },
+            );
+            Ok(())
+        })();
+        if let Err(error) = registered {
+            published.close().await;
+            return Err(error);
         }
-        let disposer = caller
-            .effect(move || async move {
-                cleanup.close().await;
-                resources.lock().unwrap().remove(&key);
-                Ok(())
-            })
-            .map_err(|error| ResourceError::service("resource_closed", error.to_string()))?;
-        entries.insert(
-            id.clone(),
-            Registration {
-                resource: published,
-                cleanup: disposer,
-            },
-        );
         Ok(ResourceRef {
             session_id: self.session_id.clone(),
             id,
@@ -343,6 +365,8 @@ impl UiResources {
         let file = entry.file.lock().unwrap().clone().ok_or_else(gone)?;
         Ok(Read {
             file,
+            files: self.files.clone(),
+            close_file: false,
             stop: entry.reads.stop.clone(),
             token,
             media_type: entry.media_type.clone(),
@@ -371,7 +395,7 @@ pub(super) fn file_error(error: impl std::fmt::Display) -> ResourceError {
 pub(super) struct UiResourcesPlugin {
     identity: Key<SessionIdentity>,
     lifecycle: Key<SessionLifecycle>,
-    files: Key<FileStorage>,
+    files: Key<FsHost>,
     methods: Key<SessionMethods>,
     key: Key<UiResources>,
 }
