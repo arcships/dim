@@ -6118,21 +6118,24 @@ impl App {
             .unwrap_or_default()
             .as_secs();
         let task_start = live.len();
-        if self.prompt.is_none()
+        if matches!(self.prompt, None | Some(Prompt::Tasks(_)))
             && let Some(snapshot) = &self.snapshot
         {
             let tasks = shown_tasks(&snapshot.tasks, now);
-            frame.task_rows = tasks
-                .iter()
-                .enumerate()
-                .map(|(row, (task, _))| (live.len() + row, task.id.clone()))
-                .collect();
+            if !(self.fullscreen && self.composer.palette_open()) {
+                frame.task_rows = tasks
+                    .iter()
+                    .enumerate()
+                    .map(|(row, (task, _))| (live.len() + row, task.id.clone()))
+                    .collect();
+            }
             live.extend(
                 task_lines(tasks, now, width, &self.palette)
                     .into_iter()
                     .map(|line| format!("{}{line}", " ".repeat(MARGIN))),
             );
         }
+        let task_strip = live.len() - task_start;
         frame.anchor = live.len();
         let live_budget = crate::ui::render::live_row_budget(
             size.1 as usize,
@@ -6146,7 +6149,7 @@ impl App {
         let input_budget = live_budget
             .saturating_sub(
                 3 + status_rows
-                    + (live.len() - task_start)
+                    + task_strip
                     + if !self.fullscreen && self.composer.palette_open() {
                         3
                     } else {
@@ -6390,7 +6393,11 @@ impl App {
             let budget = if native_selection {
                 size.1 as usize
             } else {
-                overlay_panel_rows(size.1 as usize, composer_rows)
+                let strip = match self.prompt {
+                    Some(Prompt::Tasks(_)) => task_strip,
+                    _ => 0,
+                };
+                overlay_panel_rows(size.1 as usize, composer_rows + strip)
             };
             let list_width = if native_selection {
                 cols
@@ -11653,23 +11660,111 @@ mod tests {
                 MouseOutcome::Ignored
             );
         }
+        app.snapshot
+            .as_mut()
+            .unwrap()
+            .tasks
+            .push(background_task("t2", "cargo test"));
         app.open_task("t1");
         app.sync_task_details();
-        let frame = app.frame((80, 30));
-        assert!(
-            frame
-                .overlay
-                .as_ref()
-                .unwrap()
-                .rows
+        {
+            use crate::ui::render::fullscreen::MouseOutcome;
+            use crate::ui::terminal::{MouseEvent, MouseKind};
+            let size = (80, 30);
+            let strip = |frame: &Frame| -> Vec<String> {
+                frame.live[frame.dock..frame.anchor]
+                    .iter()
+                    .map(|row| strip_escapes(row))
+                    .collect()
+            };
+            let frame = app.frame(size);
+            let overlay = strip_escapes(&frame.overlay.as_ref().unwrap().rows.join("\n"));
+            assert!(overlay.contains("Loading output..."), "{overlay}");
+            assert!(overlay.contains("x stop command · Esc close"), "{overlay}");
+            assert_eq!(strip(&frame).len(), 6, "the tasks prompt keeps the strip");
+            assert!(sent.borrow().iter().any(|command| matches!(command, Command::WatchTaskOutput { target: Some(target), .. } if target.task_id == "t1")));
+            let mut screen = FullScreen::new(size, true);
+            let mut emu = crate::ui::render::testterm::Emu::new(size.0 as usize, size.1 as usize);
+            emu.feed(&screen.render(&frame, size, &app.palette, &app));
+            let row = emu
+                .rows_text()
                 .iter()
-                .any(|row| row.contains("Loading output..."))
-        );
-        assert!(sent.borrow().iter().any(|command| matches!(command, Command::WatchTaskOutput { target: Some(target), .. } if target.task_id == "t1")));
-        app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
-            KeyCode::Esc,
-            Modifiers::NONE,
-        )));
+                .rposition(|row| row.contains("cargo test"))
+                .unwrap_or_else(|| panic!("{}", emu.rows_text().join("\n")))
+                as u16;
+            let event = |kind| MouseEvent {
+                kind,
+                column: 4,
+                row,
+            };
+            let watched_t2 = || {
+                sent.borrow().iter().any(|command| matches!(command, Command::WatchTaskOutput { target: Some(target), .. } if target.task_id == "t2"))
+            };
+            screen.mouse(event(MouseKind::Press), &app);
+            screen.mouse(
+                MouseEvent {
+                    kind: MouseKind::Drag,
+                    column: 4,
+                    row: row - 3,
+                },
+                &app,
+            );
+            screen.render(&app.frame(size), size, &app.palette, &app);
+            screen.mouse(event(MouseKind::Drag), &app);
+            assert_ne!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Task("t2".into()),
+                "a drag under the tasks prompt cancels the row click"
+            );
+            app.sync_task_details();
+            assert!(!watched_t2(), "the watch stays on t1");
+            let overlay = strip_escapes(&app.frame(size).overlay.unwrap().rows.join("\n"));
+            assert!(overlay.contains("╭─ cargo build"), "{overlay}");
+
+            screen.mouse(event(MouseKind::Press), &app);
+            screen.render(&app.frame(size), size, &app.palette, &app);
+            assert_eq!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Task("t2".into()),
+                "a row click under the tasks prompt retargets the detail"
+            );
+            app.open_task("t2");
+            app.sync_task_details();
+            assert!(
+                matches!(sent.borrow().last(), Some(Command::WatchTaskOutput { target: Some(target), .. }) if target.task_id == "t2")
+            );
+            let frame = app.frame(size);
+            let overlay = strip_escapes(&frame.overlay.as_ref().unwrap().rows.join("\n"));
+            assert!(overlay.contains("cargo test"), "{overlay}");
+            assert_eq!(strip(&frame).len(), 6);
+
+            let mut approval = app.snapshot.clone().unwrap();
+            approval.approvals = vec![crate::model::view::ApprovalView {
+                member: None,
+                request_id: "r1".into(),
+                branch_id: "main".into(),
+                reason: "shell command".into(),
+                tool_name: "exec".into(),
+                tool_input: serde_json::Value::Null,
+                always: None,
+            }];
+            app.apply(Update::Snapshot(Box::new(approval)));
+            assert!(matches!(app.prompt, Some(Prompt::Permission(_))));
+            let frame = app.frame(size);
+            assert!(strip(&frame).is_empty(), "an approval hides the strip");
+            assert!(frame.task_rows.is_empty());
+            screen.render(&frame, size, &app.palette, &app);
+            screen.mouse(event(MouseKind::Press), &app);
+            assert_ne!(
+                screen.mouse(event(MouseKind::Release), &app),
+                MouseOutcome::Task("t2".into())
+            );
+            let mut cleared = app.snapshot.clone().unwrap();
+            cleared.approvals.clear();
+            app.apply(Update::Snapshot(Box::new(cleared)));
+            app.sync_task_details();
+            assert!(app.prompt.is_none());
+        }
         app.composer.set_draft("");
         app.fullscreen = false;
         app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
@@ -11685,6 +11780,21 @@ mod tests {
                 .iter()
                 .any(|command| matches!(command, Command::TaskHistory { .. })),
             "the panel reads the Session's task history"
+        );
+        app.handle_input(InputEvent::Key(crate::ui::terminal::KeyEvent::new(
+            KeyCode::Enter,
+            Modifiers::NONE,
+        )));
+        let frame = app.frame((80, 30));
+        let rows: Vec<_> = frame.live.iter().map(|row| strip_escapes(row)).collect();
+        assert!(
+            rows.iter().any(|row| row.contains("Esc back")),
+            "a detail opened from the list goes back to it: {rows:?}"
+        );
+        assert_eq!(
+            frame.live[frame.dock..frame.anchor].len(),
+            6,
+            "the scrollback strip stays above the detail: {rows:?}"
         );
     }
 
