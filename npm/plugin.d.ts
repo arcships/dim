@@ -629,9 +629,9 @@ export type StoredAgentProfile = {
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
 export interface UiHost {
-  detach(request: {connectionId: string, sessionId: string}): Promise<void>;
-  release(request: {connectionId: string}): Promise<void>;
-  finished(request: {connectionId: string}): Promise<void>;
+  detach(request: {connectionId: string, sessionId: string}): void;
+  release(request: {connectionId: string}): void;
+  finished(request: {connectionId: string}): void;
 }
 
 export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {

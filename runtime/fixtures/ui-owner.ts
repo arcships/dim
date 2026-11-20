@@ -21,13 +21,13 @@ export default definePlugin({
         assert.ok(params && typeof params === 'object' && !Array.isArray(params) && 'sessionId' in params)
         const {sessionId} = params
         assert.ok(typeof sessionId === 'string')
-        await host.detach({connectionId, sessionId})
+        assert.equal(host.detach({connectionId, sessionId}), undefined)
         await assert.rejects(extensions.register({plugin, name: plugin, package: {kind: 'unsupported', version: 2}}), /Unsupported UI version 2/)
         assert.ok((await extensions.plugins({})).includes(plugin))
         assert.equal(await extensions.refusal({plugin}), 'Unsupported UI version 2')
       } else {
-        await host.release({connectionId})
-        await host.finished({connectionId})
+        assert.equal(host.release({connectionId}), undefined)
+        assert.equal(host.finished({connectionId}), undefined)
         await extensions.withdraw({plugin})
         assert.equal(await extensions.refusal({plugin}), null)
         assert.ok(!(await extensions.plugins({})).includes(plugin))
