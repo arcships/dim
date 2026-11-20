@@ -823,7 +823,13 @@ impl SqliteStorage {
                             let targets = std::slice::from_ref(&target);
                             let mut listed = persistence::names(&tx, &bundled, &id, targets)?;
                             let name = listed.remove(&target);
-                            return Ok(ManagementWindow {record,target_name:name,pending,next:None,page_names:None});
+                            return Ok(ManagementWindow {
+                                record,
+                                target_name: name,
+                                pending,
+                                next: None,
+                                page_names: None,
+                            });
                         }
                         if let Some(page) = page {
                             let limit = page.limit.unwrap_or(32);
@@ -863,10 +869,22 @@ impl SqliteStorage {
                             let names = persistence::names(&tx, &bundled, &id, &targets)?;
                             let selected = persistence::Models::Selected { model_ids: targets };
                             let record = persistence::read(&tx, &id, selected)?;
-                            return Ok(ManagementWindow {record,target_name:None,pending,next,page_names:Some(names)});
+                            return Ok(ManagementWindow {
+                                record,
+                                target_name: None,
+                                pending,
+                                next,
+                                page_names: Some(names),
+                            });
                         }
                         let all = persistence::read(&tx, &id, persistence::Models::All)?;
-                        Ok(ManagementWindow {record:all,target_name:None,pending,next:None,page_names:None})
+                        Ok(ManagementWindow {
+                            record: all,
+                            target_name: None,
+                            pending,
+                            next: None,
+                            page_names: None,
+                        })
                     })
                     .await
     }
