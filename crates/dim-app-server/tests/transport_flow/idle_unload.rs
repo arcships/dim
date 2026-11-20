@@ -4,8 +4,9 @@
 //! the loaded count in `agent.list`, or a call's reply.
 use super::super::deletion::eventually;
 use super::*;
+use dim_agent_capabilities::timeline_tree::TimelineTree;
+use dim_agent_runtime::SessionIdentity;
 use dim_agent_runtime::testing::branch_events;
-use dim_agent_runtime::{SessionIdentity, TimelineTreeControl};
 use rutis::host::CtxHost;
 use std::sync::Weak;
 use tokio::sync::Notify;
@@ -86,7 +87,7 @@ async fn checked_attach_rejects_a_different_cwd_before_restoring_the_session() {
 /// keeping that release under way until the test lets it finish.
 #[derive(Clone, Default)]
 pub(crate) struct Loads(Arc<LoadsState>);
-type Load = (String, bool, Weak<dyn TimelineTreeControl>);
+type Load = (String, bool, Weak<TimelineTree>);
 #[derive(Default)]
 struct LoadsState {
     loads: std::sync::Mutex<Vec<Load>>,
@@ -145,7 +146,7 @@ impl Loads {
 struct LoadsPart(
     Loads,
     rutis::host::Key<SessionIdentity>,
-    rutis::host::Key<dyn TimelineTreeControl>,
+    rutis::host::Key<TimelineTree>,
 );
 impl LoadsPart {
     fn new(names: &dim_agent_runtime::Names<'_>, a0: Loads) -> rutis::Result<Self> {

@@ -99,9 +99,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<SessionIdentity>(&mut catalog, session);
     register::<SessionLifecycle>(&mut catalog, session);
     register::<FaultReporter>(&mut catalog, session);
-    register::<TimelineFactory>(&mut catalog, session);
     catalog.register_shared_instance("timelineStore", SESSION_GROUP);
-    register::<dyn TimelineTreeControl>(&mut catalog, session);
     register::<SessionLoader>(&mut catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<Timeline>(&mut catalog, branch);

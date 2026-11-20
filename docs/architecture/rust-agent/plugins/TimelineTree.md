@@ -23,7 +23,7 @@ block a nested line is told at open, the `info.source` a line was opened with,
 the one `branch/default` fact on the root, `branch/end` to `branch/ended` on the parent, and the restore rule that leaves
 an ended line closed
 ([timeline branches §5–§10](../../../design/timeline-branches.md#10-ending-a-line)).
-Provides the TimelineTree/TimelineTreeControl ports. The `branch` tool is
+The public Session service is `timelineTree`. Session assembly holds the native tree for startup and teardown. The branch factory is private to that assembly and its tree. The `branch` tool is
 [BranchTool](BranchTool.md)'s. Its model-facing texts — every child's identity
 block and the branch markers — with their classes are listed on
 [timeline branches §12.4](../../../design/timeline-branches.md#124-texts-and-their-classes).

@@ -2956,10 +2956,11 @@ pub struct TimelineTreePlugin {
 }
 impl TimelineTreePlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
+        let session = names.instance(dim_agent_runtime::SESSION_GROUP)?;
         Ok(Self {
             tree: names.key()?,
-            control: names.key()?,
-            factory: names.key()?,
+            control: Key::of().instance(session),
+            factory: Key::of().instance(session),
             store: names.key()?,
             identity: names.key()?,
             guide: names.key()?,
