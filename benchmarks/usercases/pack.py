@@ -31,7 +31,7 @@ from datetime import date
 from pathlib import Path
 from xml.sax.saxutils import unescape
 
-RULES_VERSION = 8
+RULES_VERSION = 9
 PACK_ID = re.compile(r"[0-9a-f]{16}")
 PROVIDER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 LEVEL_ONE = {"user-input", "assistant-text"}
@@ -832,6 +832,7 @@ def review(scan, replacements, candidate, confirmation):
         " `keep` if listed there, and add its id to `omit` if it is kept by default. Then run again.", "",
     ]
     hosts, owners, folders = set(), set(), set()
+    homes = {h.rstrip("/") for h in scan.homes.union(replacements.homes) if h.rstrip("/")}
     for key, unit in kept:
         body = key[1:] if key[:1] == "\0" else key
         shown = canonical(replacements.tree(json.loads(body))) if key[:1] == "\0" else replacements.text(body)
@@ -842,7 +843,7 @@ def review(scan, replacements, candidate, confirmation):
         lines += [fence(shown), ""]
         hosts.update(h.lower() for h in URL_HOST.findall(shown))
         owners.update(a or b for a, b in HOSTED_OWNER.findall(shown))
-        for home in replacements.homes:
+        for home in homes:
             folders.update(re.findall(re.escape(home) + r"/([^/\s\"'<>]+)", shown))
     lines += ["## 2. Replacements", "", "| Original | Stands in | Times |", "|---|---|---:|"]
     lines += [f"| `{original}` | `{replacements.labels[original]}` | {times} |"

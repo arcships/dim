@@ -120,6 +120,8 @@ fn evidence_redact_pipe_bounds_unicode_forms_and_preserves_encoded_spans() {
         "%c4%b1%2f%5c%22%5c%0a%cf%82".into(),
         "/Users/\\u0131&lt;&amp;&gt;name".into(),
         "%c4%b0&lt;&amp;&gt;name".into(),
+        "\\u0049s%6c%41nd".into(),
+        "%2FUsers\\u002F%69%3c%26%3ename".into(),
     ];
     let labels = [
         "[term-1]",
@@ -135,6 +137,8 @@ fn evidence_redact_pipe_bounds_unicode_forms_and_preserves_encoded_spans() {
         "[term-4]",
         "/Users/useruser",
         "useruser",
+        "[term-2]",
+        "/Users/useruser",
     ];
     let facts = dim_report::redaction::Facts {
         homes: vec![home.into()],
@@ -158,6 +162,11 @@ fn evidence_redact_pipe_bounds_unicode_forms_and_preserves_encoded_spans() {
         "islandx",
         "\\u0130island",
         "island%c4%b1",
+        "%78island",
+        "island\\u0078",
+        "%2569sland",
+        "\\u005cu0069sland",
+        r"\\u0069sland",
         "\\uD800",
         "\\uDC00",
         "%c0%af",
@@ -167,6 +176,11 @@ fn evidence_redact_pipe_bounds_unicode_forms_and_preserves_encoded_spans() {
     ]
     .join(" | ");
     assert_eq!(replacements.text(&blocked), blocked);
+    assert!(!replacements.has_residue(&blocked));
+    assert_eq!(
+        replacements.text(r"%28\u0049s%6c%41nd\u0029"),
+        r"%28[term-2]\u0029"
+    );
     let input = format!("🧪 {} | {blocked}", sources.join(" | "));
     let expected = format!("🧪 {} | {blocked}", labels.join(" | "));
     let init = json!({
@@ -196,6 +210,8 @@ fn evidence_redact_pipe_bounds_unicode_forms_and_preserves_encoded_spans() {
         punctuation,
         home,
         account,
+        "island",
+        home,
     ];
     let spans = response[1]["spans"].as_array().unwrap();
     assert_eq!(spans.len(), sources.len());
@@ -1049,8 +1065,30 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
     let marker = "Why did /report return 2/3?";
     let session_id = id.as_str().unwrap();
     let fake_key = format!("sk-{}", "A".repeat(32));
+    let encoded_home = r"%2FUs%65rs\u002F%49sma\u0069l";
+    let discussion = "Discuss Cookie and Set-Cookie handling; x-cookie: example";
+    let cookie_fixtures = [
+        "fixture-cookie-value",
+        "fixture-cookie-folded",
+        "fixture-set-cookie-value",
+        "fixture-cookie-json",
+        "fixture-cookie-escaped-header",
+        "fixture-cookie-next-line-json",
+    ];
     let message = format!(
-        "{marker} {session_id} at {host_home}/sample.txt; /USERS/ISMAIL/other.txt; owner İsmail, ISMAIL, ısmail\n{fake_key}\nAuthorization: Bearer fixture-not-a-real-credential\nservice_credential = fixture-value\naccess_token = fixture-spaced-value\n\"token\": \"fixture-json-value\""
+        "{marker} {session_id} at {host_home}/sample.txt; /USERS/ISMAIL/other.txt; owner İsmail, ISMAIL, ısmail; {encoded_home}/mixed.txt\n\
+         {fake_key}\nAuthorization: Bearer fixture-not-a-real-credential\nservice_credential = fixture-value\naccess_token = fixture-spaced-value\n\"token\": \"fixture-json-value\"\n\
+         cOoKiE: sid={};\r\n\tother={}\n\
+         curl -H 'Set-Cookie: sid={}; HttpOnly'\n\
+         {{\"Cookie\": \"sid={}\"}}\n\
+         HTTP/1.1 200 OK\\r\\nSet-Cookie: sid={}\n\
+         {{\"Cookie\":\n\"sid={}\"}}\n{discussion}",
+        cookie_fixtures[0],
+        cookie_fixtures[1],
+        cookie_fixtures[2],
+        cookie_fixtures[3],
+        cookie_fixtures[4],
+        cookie_fixtures[5],
     );
     submit(&mut owner, &message).await;
     let prepared = owner
@@ -1072,7 +1110,24 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
             })
             .collect::<Vec<_>>()
     };
+    let no_credentials = |value: &Value| {
+        let value = value.to_string();
+        for forbidden in [
+            "fixture-not-a-real-credential",
+            "service_credential",
+            "fixture-value",
+            "fixture-spaced-value",
+            "fixture-json-value",
+            fake_key.as_str(),
+        ]
+        .into_iter()
+        .chain(cookie_fixtures)
+        {
+            assert!(!value.contains(forbidden), "fixture leaked: {forbidden}");
+        }
+    };
     for (plan, redact) in [(&visible, false), (&checked, true)] {
+        no_credentials(plan);
         assert_eq!(selection(plan), selection(&visible));
         let conversation = plan["evidence"]["conversation"].as_array().unwrap();
         let report = plan["files"]["report.md"].as_str().unwrap();
@@ -1086,6 +1141,10 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
             let line = text.lines().find(|line| line.contains(marker)).unwrap();
             assert!(report.contains(line));
             assert!(line.contains("/sample.txt"));
+            assert!(text.lines().any(|line| line == discussion));
+            assert!(report.contains(discussion));
+            assert_eq!(line.contains(encoded_home), !redact);
+            assert_eq!(line.contains("/Users/userus/mixed.txt"), redact);
             assert_eq!(line.contains(session_id), !redact);
             assert_eq!(line.contains(host_home), !redact);
             for original in ["İsmail", "ISMAIL", "ısmail"] {
@@ -1096,16 +1155,6 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
                 assert!(line.contains("/Users/userus/sample.txt; /Users/userus/other.txt"));
                 assert!(line.contains("owner userus, userus, userus"));
             }
-        }
-        for forbidden in [
-            "fixture-not-a-real-credential",
-            "service_credential",
-            "fixture-value",
-            "fixture-spaced-value",
-            "fixture-json-value",
-            &fake_key,
-        ] {
-            assert!(!plan.to_string().contains(forbidden));
         }
         assert!(
             !plan["files"]["diagnostics.json"]
@@ -1130,6 +1179,7 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
         .await
         .unwrap();
     archive(&generated);
+    no_credentials(&generated);
     assert_eq!(checked["files"], generated["files"]);
     for surface in [
         &generated["files"]["diagnostics.json"],
@@ -1152,6 +1202,7 @@ async fn conversation_modes_share_a_cutoff_and_only_attach_text_to_the_report_me
         .await
         .unwrap();
     archive(&raw_zip);
+    no_credentials(&raw_zip);
     assert_eq!(raw_zip["files"], visible["files"]);
     assert_eq!(
         raw_zip["files"]["diagnostics.json"],

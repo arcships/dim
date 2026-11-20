@@ -98,8 +98,7 @@ fn encoded_scalar(text: &str) -> Option<(char, usize)> {
         } else {
             (u32::from(first), 6)
         };
-        let c = char::from_u32(scalar)?;
-        return (!c.is_ascii()).then_some((c, len));
+        return Some((char::from_u32(scalar)?, len));
     }
     if text.starts_with('%') {
         let byte = |at| {
@@ -115,6 +114,7 @@ fn encoded_scalar(text: &str) -> Option<(char, usize)> {
         };
         let first = byte(0)?;
         let len = match first {
+            0x00..=0x7f => return Some((char::from(first), 3)),
             0xc2..=0xdf => 2,
             0xe0..=0xef => 3,
             0xf0..=0xf4 => 4,
@@ -133,10 +133,18 @@ fn encoded_scalar(text: &str) -> Option<(char, usize)> {
 
 fn scalars(text: &str) -> impl Iterator<Item = (usize, char)> + '_ {
     let mut at = 0;
+    let mut escaped_backslash = false;
     std::iter::from_fn(move || {
         let tail = &text[at..];
-        let (c, len) =
-            encoded_scalar(tail).or_else(|| tail.chars().next().map(|c| (c, c.len_utf8())))?;
+        let (c, len) = if escaped_backslash {
+            escaped_backslash = false;
+            ('\\', 1)
+        } else if tail.starts_with("\\\\") {
+            escaped_backslash = true;
+            ('\\', 1)
+        } else {
+            encoded_scalar(tail).or_else(|| tail.chars().next().map(|c| (c, c.len_utf8())))?
+        };
         let start = at;
         at += len;
         Some((start, c))

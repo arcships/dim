@@ -695,6 +695,18 @@ class PackFlowTest(unittest.TestCase):
         self.assertIn("- `/Users/alice/.dimcode/output.txt`", review, "a file outside the export went unmentioned")
         self.assertEqual(json.loads((self.out / "pack" / "pack.json").read_text())["files_not_packed"], 1)
 
+    def test_a_folder_under_a_generic_home_is_suggested_not_automatically_replaced(self) -> None:
+        lines = export_lines(home="/home/ubuntu")
+        lines[5]["event"]["data"]["user"]["content"][0]["text"] = "Read /home/ubuntu/acme-customer/src"
+        export = self.write(lines)
+        pack.build(export, self.out)
+        self.assertIn("- `acme-customer`", (self.out / "review.md").read_text().splitlines())
+        self.assertIn("/home/ubuntu/acme-customer/src", self.packed())
+        self.decide(terms=["acme-customer"])
+        pack.build(export, self.out)
+        self.assertNotIn("acme-customer", self.packed())
+        self.assertIn("/home/ubuntu/[term-1]/src", self.packed())
+
     def test_confirming_binds_the_digest_that_was_read(self) -> None:
         consent = {"diagnosis": True, "regression": True, "providers": ["test"], "expires": date.max.isoformat()}
         self.decide(consent=consent)

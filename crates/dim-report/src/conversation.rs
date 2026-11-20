@@ -7,12 +7,17 @@ use dim_agent_types::{
     ContentBlock, ContentMetadata, EventKind, FinishReason, MessagePart, ModelOutputOutcome,
     markup::runtime_context,
 };
-use std::{collections::HashMap, path::Path};
+use regex::Regex;
+use std::{collections::HashMap, path::Path, sync::LazyLock};
 
 const MAX_SOURCE: usize = 64 * 1024;
 const EXCERPT_LIMIT: usize = 2048;
 const TOTAL_LIMIT: usize = 8 * 1024;
 const WITHHELD: &str = "[excerpt withheld]";
+static COOKIE_FIELD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:^|[^a-z0-9_-]|\\[rn])(?:set-)?cookie(?:\\?["'`])?[ \t]*[:=]"#)
+        .expect("static cookie field pattern")
+});
 
 #[derive(Default)]
 pub(super) struct Conversation {
@@ -227,8 +232,16 @@ fn guarded(value: &str) -> String {
     let masked = mask_credentials(value);
     let normalized = masked.replace("\r\n", "\n").replace('\r', "\n");
     let mut lines = Vec::new();
+    let mut cookie_continuation = false;
+    let mut cookie_value_pending = false;
     for line in normalized.lines() {
         let lower = line.to_ascii_lowercase();
+        let field = COOKIE_FIELD.find(&lower);
+        cookie_continuation = field.is_some()
+            || (cookie_continuation && line.starts_with([' ', '\t']))
+            || (cookie_value_pending && line.trim_start().starts_with(['"', '\'']));
+        cookie_value_pending = field.is_some_and(|m| line[m.end()..].trim().is_empty())
+            || (cookie_value_pending && line.trim().is_empty());
         if lower.contains("-----begin") && lower.contains("private key") {
             lines.push(WITHHELD);
             break;
@@ -254,6 +267,7 @@ fn guarded(value: &str) -> String {
         ]
         .iter()
         .any(|p| lower.contains(p))
+            || cookie_continuation
             || lower.match_indices("token").any(|(at, _)| {
                 lower[at + "token".len()..]
                     .trim_start_matches(['\'', '"', ' ', '\t'])
