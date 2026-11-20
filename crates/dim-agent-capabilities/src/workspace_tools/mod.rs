@@ -299,17 +299,20 @@ impl ToolDriver for WorkspaceTools {
                 // platform's otherwise — the same home the executed tool
                 // resolves `~` against, so pre-admission resolution cannot
                 // disagree with execution.
-                let (cwd, home, path) = (
-                    self.cwd.clone(),
-                    self.files.home().to_owned(),
-                    path.to_owned(),
+                let target = self.fs_host.resolve_workspace_path(
+                    crate::file_access::ResolvePath {
+                        path: path.to_owned(),
+                        cwd: self.cwd.clone(),
+                        workspace: self.cwd.clone(),
+                        roots: Vec::new(),
+                        recognize: false,
+                    },
+                    self.files.home(),
+                    &self.platform.platform_roots,
+                    &cancel,
                 );
-                let target = tokio::task::spawn_blocking(move || {
-                    files::resolve_path(&cwd, &home, None, files::Access::Write, &path)
-                });
                 let path = tokio::select! {
-                    result = target => result.map_err(|error| HostError::failed(error.to_string()))?
-                        .map_err(HostError::failed)?,
+                    result = target => result?.path,
                     _ = cancel.cancelled() => return Err(HostError::Cancelled("Tool execution cancelled.".into())),
                 };
                 let path = path

@@ -177,7 +177,7 @@ pub const PLATFORM_ROOTS: &[&str] = {
 /// The fixed roots at their requested paths and, where the host resolves a
 /// symlink or firmlink, their canonical forms: the sandbox binds the requested
 /// destination and the facts compare a resolved path.
-fn platform_roots() -> Vec<PathBuf> {
+pub(crate) fn platform_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for path in PLATFORM_ROOTS {
         let path = PathBuf::from(path);
@@ -397,7 +397,7 @@ impl HostPlatform {
         resolved.status.clone()
     }
     /// The command for `spec` with a cleared environment; `stdin` is the caller's choice.
-    fn command(spec: &ProcessSpec, stdin: Stdio) -> tokio::process::Command {
+    pub(crate) fn command(spec: &ProcessSpec, stdin: Stdio) -> tokio::process::Command {
         let mut command = tokio::process::Command::new(&spec.executable);
         command
             .args(&spec.args)

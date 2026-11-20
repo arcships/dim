@@ -139,6 +139,7 @@ pub fn install(builder: &mut AgentBuilder) {
 }
 
 struct Facts {
+    fs: Arc<crate::file_storage::FsHost>,
     config: Arc<SessionConfig>,
     platform: Arc<HostPlatform>,
     files: Arc<SessionFiles>,
@@ -158,12 +159,25 @@ impl ReadFileAccessFacts for Facts {
         let session_id = session_id.to_owned();
         Box::pin(async move {
             let cwd = PathBuf::from(&self.config.cwd);
-            let workspace = tokio::task::spawn_blocking(move || canonical_prefix(cwd))
-                .await
-                .map_err(|error| {
-                    HostError::failed(format!("file access facts task failed: {error}"))
-                })?
-                .map_err(HostError::failed)?;
+            let resolved = self
+                .fs
+                .resolve_workspace_path(
+                    ResolvePath {
+                        path: path
+                            .to_str()
+                            .ok_or_else(|| HostError::failed("file path is not UTF-8"))?
+                            .to_owned(),
+                        cwd: cwd.clone(),
+                        workspace: cwd,
+                        roots: Vec::new(),
+                        recognize: false,
+                    },
+                    &self.platform.home,
+                    &self.platform.platform_roots,
+                    &cancel,
+                )
+                .await?;
+            let path = resolved.path;
             let owned = self
                 .files
                 .0
@@ -172,12 +186,8 @@ impl ReadFileAccessFacts for Facts {
                 .map_err(|error| HostError::failed(error.to_string()))?;
             let grants = self.grants.0.grants(cancel.clone()).await?;
             let mut facts = FileFacts {
-                workspace: path.starts_with(&workspace),
-                system: self
-                    .platform
-                    .platform_roots
-                    .iter()
-                    .any(|root| path.starts_with(root)),
+                workspace: resolved.workspace,
+                system: resolved.system,
                 owned,
                 grant: grants.iter().any(|grant| match mode {
                     GrantMode::Write => {
@@ -213,6 +223,7 @@ impl ReadFileAccessFacts for Facts {
 }
 
 struct FileAccessFactsPlugin {
+    fs: Key<crate::file_storage::FsHost>,
     config: Key<SessionConfig>,
     platform: Key<HostPlatform>,
     files: Key<SessionFiles>,
@@ -224,6 +235,7 @@ struct FileAccessFactsPlugin {
 impl FileAccessFactsPlugin {
     fn new(names: &Names<'_>) -> Result<Self, Error> {
         Ok(Self {
+            fs: names.key()?,
             config: names.key()?,
             platform: names.key()?,
             files: names.key()?,
@@ -240,6 +252,7 @@ impl DynPlugin for FileAccessFactsPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.fs.erase(),
             self.config.erase(),
             self.platform.erase(),
             self.files.erase(),
@@ -267,6 +280,7 @@ impl DynPlugin for FileAccessFactsPlugin {
             ctx.provide_at(
                 self.service.clone(),
                 Arc::new(FileAccessFacts(Arc::new(Facts {
+                    fs: ctx.require_at(&self.fs)?,
                     config,
                     platform,
                     files: ctx.require_at(&self.files)?,
@@ -289,13 +303,178 @@ struct Root {
 }
 impl Root {
     fn valid(&self) -> bool {
-        let Ok(current) = open_directory(&self.directory.root) else {
-            return false;
+        identity_text(&self.identity)
+            .is_ok_and(|id| valid_root(&self.directory.root, &self.subtree, &id))
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ResolvePath {
+    pub path: String,
+    pub cwd: PathBuf,
+    pub workspace: PathBuf,
+    #[serde(default)]
+    pub roots: Vec<ConfirmedRoot>,
+    #[serde(default)]
+    pub recognize: bool,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConfirmedRoot {
+    root: PathBuf,
+    subtree: PathBuf,
+    root_identity: String,
+}
+
+#[derive(serde::Serialize)]
+struct RootFacts {
+    root: PathBuf,
+    contains: bool,
+    valid: bool,
+}
+
+#[derive(serde::Serialize)]
+struct Candidate {
+    repository: PathBuf,
+    #[serde(flatten)]
+    root: ConfirmedRoot,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ResolvedPath {
+    pub path: PathBuf,
+    workspace: bool,
+    system: bool,
+    roots: Vec<RootFacts>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree: Option<Candidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery_error: Option<String>,
+}
+
+fn identity_text(file: &File) -> io::Result<String> {
+    let (volume, entry) = identity(file)?;
+    Ok(format!("{volume}:{entry}"))
+}
+
+fn valid_root(root: &Path, subtree: &Path, expected_identity: &str) -> bool {
+    subtree.starts_with(root)
+        && open_directory(root)
+            .and_then(|file| identity_text(&file))
+            .is_ok_and(|id| id == expected_identity)
+        && std::fs::canonicalize(root).is_ok_and(|path| path == root)
+        && canonical_prefix(subtree.to_owned()).is_ok_and(|path| path == subtree)
+}
+
+impl crate::file_storage::FsHost {
+    pub(crate) async fn resolve_workspace_path(
+        &self,
+        request: ResolvePath,
+        home: &Path,
+        system_roots: &[PathBuf],
+        cancel: &CancellationToken,
+    ) -> Result<ResolvedPath, HostError> {
+        if !request.cwd.is_absolute()
+            || !request.workspace.is_absolute()
+            || request
+                .roots
+                .iter()
+                .any(|r| !r.root.is_absolute() || !r.subtree.is_absolute())
+        {
+            return Err(HostError::failed(
+                "Expected absolute cwd, workspace and root paths",
+            ));
+        }
+        let (operation, stopping) = self.begin_workspace_operation(cancel)?;
+        let _stop = stopping.clone().drop_guard();
+        let home = home.to_owned();
+        let (path, workspace, roots) = blocking(move || {
+            let path = crate::workspace_tools::files::resolve_path(
+                &request.cwd,
+                &home,
+                None,
+                crate::workspace_tools::files::Access::Read,
+                &request.path,
+            )
+            .map_err(HostError::failed)?;
+            let workspace = canonical_prefix(request.workspace).map_err(HostError::failed)?;
+            let roots = request
+                .roots
+                .into_iter()
+                .map(|confirmed| {
+                    let valid = valid_root(
+                        &confirmed.root,
+                        &confirmed.subtree,
+                        &confirmed.root_identity,
+                    );
+                    RootFacts {
+                        contains: path.starts_with(&confirmed.subtree),
+                        root: confirmed.root,
+                        valid,
+                    }
+                })
+                .collect::<Vec<_>>();
+            Ok((path, workspace, roots))
+        })
+        .await?;
+        let mut reply = ResolvedPath {
+            workspace: path.starts_with(&workspace),
+            system: system_roots.iter().any(|root| path.starts_with(root)),
+            roots,
+            path,
+            worktree: None,
+            discovery_error: None,
         };
-        matches!((identity(&current), identity(&self.identity)), (Ok(a), Ok(b)) if a == b)
-            && std::fs::canonicalize(&self.directory.root)
-                .is_ok_and(|path| path == self.directory.root)
-            && canonical_prefix(self.subtree.clone()).is_ok_and(|path| path == self.subtree)
+        if request.recognize
+            && !reply.workspace
+            && !reply.roots.iter().any(|r| r.valid && r.contains)
+        {
+            let path = reply.path.clone();
+            let probe = async {
+                let directory = blocking(move || existing_directory(&path)).await?;
+                let env = std::env::vars_os().collect::<Vec<_>>();
+                let probe = GitProbe {
+                    env: &env,
+                    stopping: &stopping,
+                    lifecycle: None,
+                };
+                let Some(candidate) = probe
+                    .discover(&directory, &workspace, &Mutex::new(None))
+                    .await?
+                else {
+                    return Ok(None);
+                };
+                if !reply.path.starts_with(&candidate.subtree) {
+                    return Ok(None);
+                }
+                Ok(Some(Candidate {
+                    repository: candidate.directory.repository,
+                    root: ConfirmedRoot {
+                        root: candidate.directory.root,
+                        subtree: candidate.subtree,
+                        root_identity: identity_text(&candidate.identity).map_err(failed)?,
+                    },
+                }))
+            };
+            tokio::pin!(probe);
+            let result = tokio::select! {
+                result = &mut probe => result,
+                _ = cancel.cancelled() => { stopping.cancel(); probe.await }
+            };
+            match result {
+                Ok(candidate) => reply.worktree = candidate,
+                Err(error @ HostError::Cancelled(_)) => return Err(error),
+                Err(error) => reply.discovery_error = Some(error.to_string()),
+            }
+        }
+        drop(operation);
+        if cancel.is_cancelled() || stopping.is_cancelled() {
+            return Err(cancelled());
+        }
+        Ok(reply)
     }
 }
 
@@ -484,9 +663,31 @@ impl Worktrees {
     }
 
     async fn discover(&self, candidate: &Path) -> ProbeResult {
-        let mut cached = self.source.lock().await;
+        GitProbe {
+            env: &self.platform.env,
+            stopping: &self.stopping,
+            lifecycle: Some(&self.lifecycle),
+        }
+        .discover(candidate, &self.workspace, &self.source)
+        .await
+    }
+}
+
+struct GitProbe<'a> {
+    env: &'a [(std::ffi::OsString, std::ffi::OsString)],
+    stopping: &'a CancellationToken,
+    lifecycle: Option<&'a SessionLifecycle>,
+}
+impl GitProbe<'_> {
+    async fn discover(
+        &self,
+        candidate: &Path,
+        workspace: &Path,
+        source: &Mutex<Option<(WorktreeDirectory, PathBuf)>>,
+    ) -> ProbeResult {
+        let mut cached = source.lock().await;
         if cached.is_none() {
-            let workspace = self.workspace.clone();
+            let workspace = workspace.to_owned();
             let workspace =
                 blocking(move || canonical_prefix(workspace).map_err(HostError::failed)).await?;
             let existing = workspace.clone();
@@ -606,11 +807,14 @@ impl Worktrees {
     }
 
     async fn git_path(&self, cwd: &Path, option: &str) -> Result<Option<PathBuf>, HostError> {
-        if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {
+        if self.stopping.is_cancelled()
+            || self
+                .lifecycle
+                .is_some_and(|l| l.phase() != SessionPhase::Active)
+        {
             return Err(cancelled());
         }
         let mut env: Vec<_> = self
-            .platform
             .env
             .iter()
             .filter(|(key, _)| {
@@ -622,21 +826,23 @@ impl Worktrees {
             .collect();
         env.retain(|(key, _)| key != "LC_ALL");
         env.push(("LC_ALL".into(), "C".into()));
-        let mut tree = self
-            .platform
-            .spawn(ProcessSpec {
-                executable: "git".into(),
-                args: vec![
-                    "-C".into(),
-                    cwd.as_os_str().to_owned(),
-                    "rev-parse".into(),
-                    "--path-format=absolute".into(),
-                    option.into(),
-                ],
-                cwd: cwd.to_path_buf(),
-                env,
-            })
-            .map_err(failed)?;
+        let spec = ProcessSpec {
+            executable: "git".into(),
+            args: vec![
+                "-C".into(),
+                cwd.as_os_str().to_owned(),
+                "rev-parse".into(),
+                "--path-format=absolute".into(),
+                option.into(),
+            ],
+            cwd: cwd.to_path_buf(),
+            env,
+        };
+        let mut tree = crate::host_platform::ProcessTree::spawn(HostPlatform::command(
+            &spec,
+            std::process::Stdio::null(),
+        ))
+        .map_err(failed)?;
         let mut stdout = tree.stdout().take(METADATA_LIMIT + 1);
         let mut stderr = tree.stderr().take(16 * 1024);
         let mut output = Vec::new();
@@ -661,7 +867,12 @@ impl Worktrees {
                 tree.terminate().await.map_err(failed)?;
                 return Err(cancelled());
             },
-            _ = self.lifecycle.closing() => {
+            _ = async {
+                match self.lifecycle {
+                    Some(lifecycle) => lifecycle.closing().await,
+                    None => std::future::pending().await,
+                }
+            } => {
                 tree.terminate().await.map_err(failed)?;
                 return Err(cancelled());
             },

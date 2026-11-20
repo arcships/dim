@@ -97,6 +97,7 @@ impl FsPermissions {
 /// Filesystem operations on the existing storage generation.
 #[derive(Clone)]
 pub struct FsHost {
+    system_roots: Arc<Vec<PathBuf>>,
     storage: Arc<FileStorage>,
     generation: Ctx,
 }
@@ -104,12 +105,13 @@ pub struct FsHost {
 impl FsHost {
     pub(super) fn new(owner: Arc<FileStorage>, ctx: Ctx) -> Self {
         Self {
+            system_roots: Arc::new(crate::host_platform::platform_roots()),
             storage: owner,
             generation: ctx,
         }
     }
 
-    pub(crate) fn begin_search(
+    pub(crate) fn begin_workspace_operation(
         &self,
         cancel: &CancellationToken,
     ) -> std::result::Result<(impl Send + use<>, CancellationToken), crate::host::HostError> {
@@ -498,6 +500,7 @@ impl FileStorage {
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
 enum Request {
+    Resolve(crate::file_access::ResolvePath),
     Glob(dim_agent_types::JsonObject),
     Grep(dim_agent_types::JsonObject),
     Mentions(MentionsRequest),
@@ -573,7 +576,7 @@ struct Close {
 impl HostDispatch for FsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
+            serde_json::json!({"resolve":"async","glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
         )
     }
 
@@ -592,6 +595,25 @@ impl HostDispatch for FsHost {
             let cancel = CancellationToken::new();
             let _dropped = cancel.clone().drop_guard();
             let reply = match request {
+                Request::Resolve(request) => {
+                    let home = std::env::home_dir()
+                        .ok_or_else(|| failure(FileStorageError::Unsupported))?;
+                    let resolved = owner
+                        .resolve_workspace_path(request, &home, &owner.system_roots, &cancel)
+                        .await
+                        .map_err(|error| {
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                match &error {
+                                    crate::host::HostError::Cancelled(_) => "cancelled",
+                                    _ => "invalid",
+                                },
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!(resolved)
+                }
                 request @ (Request::Glob(_) | Request::Grep(_)) => {
                     let (kind, input) = match request {
                         Request::Glob(input) => (SearchKind::Glob, input),

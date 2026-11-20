@@ -47,7 +47,7 @@ impl crate::file_storage::FsHost {
         input: &JsonObject,
         cancel: &CancellationToken,
     ) -> Result<ToolResult, HostError> {
-        let (operation, stopping) = self.begin_search(cancel)?;
+        let (operation, stopping) = self.begin_workspace_operation(cancel)?;
         let _stop = stopping.clone().drop_guard();
         let cwd = cwd.to_owned();
         let home = home.to_owned();

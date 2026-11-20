@@ -10,12 +10,13 @@ export default definePlugin({
     const files = ctx.use<FsHost>('fsHost')
     await ctx.use<ManagementMethods>('managementMethods').register(
       'fsreader',
-      ['status', 'glob', 'grep', 'stat', 'open', 'read', 'close', 'mkdir', 'list', 'remove', 'lock', 'unlock', 'replace', 'backup', 'read_bytes'].map(name => ({ name: `fsreader.${name}`, mutating: true, interruption: 'report', progress: false })),
+      ['status', 'resolve', 'glob', 'grep', 'stat', 'open', 'read', 'close', 'mkdir', 'list', 'remove', 'lock', 'unlock', 'replace', 'backup', 'read_bytes'].map(name => ({ name: `fsreader.${name}`, mutating: true, interruption: 'report', progress: false })),
       async (call: { method: string; params: any }) => {
         if (call.method === 'fsreader.status') {
           await assert.rejects(() => Reflect.apply(files.openRead, files, [['/unused']]), /request must be an object/)
           return { kind: 'value', value: { pid: process.pid } }
         }
+        if (call.method === 'fsreader.resolve') return {kind: 'value', value: await files.resolve(call.params)}
         if (call.method === 'fsreader.glob' || call.method === 'fsreader.grep') {
           const { result } = await (call.method === 'fsreader.glob' ? files.glob(call.params) : files.grep(call.params))
           return { kind: 'value', value: result.structuredContent ?? null }

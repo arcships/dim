@@ -743,7 +743,12 @@ export interface TimelineStore {
 
 export type FsEntryName = string | { Unix: number[] } | { Windows: number[] };
 /** Directory operations and pinned reads on the filesystem owner; see resource-faces §4.1. */
+export type FsConfirmedRoot = { root: string; subtree: string; rootIdentity: string };
 export interface FsHost {
+  resolve(request: {path: string; cwd: string; workspace: string; roots?: FsConfirmedRoot[]; recognize?: boolean}): Promise<{
+    path: string; workspace: boolean; system: boolean; roots: {root: string; contains: boolean; valid: boolean}[];
+    worktree?: FsConfirmedRoot & {repository: string}; discoveryError?: string;
+  }>;
   glob(request: {path: string; pattern: string; limit?: number}): Promise<{result: ToolResult}>;
   grep(request: {path: string; pattern: string; include?: string; outputMode?: 'files' | 'content'; lineNumbers?: boolean; context?: number; beforeContext?: number; afterContext?: number; limit?: number; multiline?: boolean; literal?: boolean; timeoutMs?: number}): Promise<{result: ToolResult}>;
   mentions(request: {path: string; query: string; limit?: number}): Promise<{candidates: {relativePath: string; absolutePath: string; dir: boolean}[]}>;

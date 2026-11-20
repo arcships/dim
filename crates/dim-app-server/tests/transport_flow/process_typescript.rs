@@ -2270,6 +2270,26 @@ async fn node_fs_readers_share_pinned_files_and_release_with_the_caller() {
             .await,
     );
     std::fs::write(directory.join("contents"), b"payload").unwrap();
+    let resolved = client
+        .rpc(
+            "fsreader.resolve",
+            json!({
+                "cwd": directory, "workspace": directory, "path":"./future/../contents",
+                "roots":[{"root":directory,"subtree":directory,"rootIdentity":"stale"}]
+            }),
+        )
+        .await;
+    assert_ok(&resolved);
+    assert_eq!(
+        resolved["result"]["path"],
+        json!(directory.join("contents"))
+    );
+    assert_eq!(resolved["result"]["workspace"], true);
+    assert_eq!(
+        resolved["result"]["roots"],
+        json!([{"root":directory,"contains":true,"valid":false}])
+    );
+    assert!(resolved["result"].get("worktree").is_none());
     let glob = client
         .rpc(
             "fsreader.glob",
