@@ -265,8 +265,10 @@ impl DynPlugin for FileAccessFactsPlugin {
         Box::pin(async move {
             let config = ctx.require_at(&self.config)?;
             let platform = ctx.require_at(&self.platform)?;
+            let fs = ctx.require_at(&self.fs)?;
             let worktrees = Worktrees::new(
                 ctx.clone(),
+                fs.clone(),
                 platform.clone(),
                 ctx.require_at(&self.lifecycle)?,
                 ctx.require_at(&self.identity)?.session_id.clone(),
@@ -280,7 +282,7 @@ impl DynPlugin for FileAccessFactsPlugin {
             ctx.provide_at(
                 self.service.clone(),
                 Arc::new(FileAccessFacts(Arc::new(Facts {
-                    fs: ctx.require_at(&self.fs)?,
+                    fs,
                     config,
                     platform,
                     files: ctx.require_at(&self.files)?,
@@ -302,9 +304,12 @@ struct Root {
     identity: Arc<File>,
 }
 impl Root {
-    fn valid(&self) -> bool {
-        identity_text(&self.identity)
-            .is_ok_and(|id| valid_root(&self.directory.root, &self.subtree, &id))
+    fn confirmed(&self) -> Result<ConfirmedRoot, HostError> {
+        Ok(ConfirmedRoot {
+            root: self.directory.root.clone(),
+            subtree: self.subtree.clone(),
+            root_identity: identity_text(&self.identity).map_err(failed)?,
+        })
     }
 }
 
@@ -486,6 +491,7 @@ struct State {
 }
 
 struct Worktrees {
+    fs: Arc<crate::file_storage::FsHost>,
     ctx: Ctx,
     platform: Arc<HostPlatform>,
     lifecycle: Arc<SessionLifecycle>,
@@ -499,6 +505,7 @@ struct Worktrees {
 impl Worktrees {
     fn new(
         ctx: Ctx,
+        fs: Arc<crate::file_storage::FsHost>,
         platform: Arc<HostPlatform>,
         lifecycle: Arc<SessionLifecycle>,
         session: String,
@@ -507,6 +514,7 @@ impl Worktrees {
         let stopping = ctx.cancellation_token().child_token();
         Arc::new(Self {
             ctx,
+            fs,
             platform,
             lifecycle,
             session,
@@ -548,7 +556,7 @@ impl Worktrees {
             return Err(cancelled());
         }
         let mut state = self.state.lock().await;
-        self.refresh(&mut state).await?;
+        self.refresh(&mut state, &path).await?;
         if state
             .roots
             .iter()
@@ -593,7 +601,7 @@ impl Worktrees {
             return Ok(false);
         }
         let mut state = self.state.lock().await;
-        self.refresh(&mut state).await?;
+        self.refresh(&mut state, &path).await?;
         if state
             .roots
             .iter()
@@ -601,8 +609,7 @@ impl Worktrees {
         {
             return Ok(true);
         }
-        let check = root.clone();
-        if !blocking(move || Ok(check.valid())).await? {
+        if !self.candidate_valid(&root, &path).await? {
             return Ok(false);
         }
         if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {
@@ -616,17 +623,59 @@ impl Worktrees {
         if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {
             return Err(cancelled());
         }
-        let check = root.clone();
-        if !blocking(move || Ok(check.valid())).await? {
+        if !self.candidate_valid(&root, &path).await? {
             return Ok(false);
+        }
+        if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {
+            return Err(cancelled());
         }
         state.roots.push(root);
         Ok(true)
     }
 
-    async fn refresh(&self, state: &mut State) -> Result<(), HostError> {
-        let roots = state.roots.clone();
-        state.roots = blocking(move || Ok(roots.into_iter().filter(Root::valid).collect())).await?;
+    async fn verify_roots(
+        &self,
+        path: &Path,
+        roots: Vec<ConfirmedRoot>,
+    ) -> Result<ResolvedPath, HostError> {
+        self.fs
+            .resolve_workspace_path(
+                ResolvePath {
+                    path: path
+                        .to_str()
+                        .ok_or_else(|| HostError::failed("worktree path is not UTF-8"))?
+                        .to_owned(),
+                    cwd: self.workspace.clone(),
+                    workspace: self.workspace.clone(),
+                    roots,
+                    recognize: false,
+                },
+                &self.platform.home,
+                &self.platform.platform_roots,
+                &self.stopping,
+            )
+            .await
+    }
+
+    async fn candidate_valid(&self, root: &Root, path: &Path) -> Result<bool, HostError> {
+        let resolved = self.verify_roots(path, vec![root.confirmed()?]).await?;
+        Ok(resolved.path == path && resolved.roots[0].valid && resolved.roots[0].contains)
+    }
+
+    async fn refresh(&self, state: &mut State, path: &Path) -> Result<(), HostError> {
+        if state.roots.is_empty() {
+            return Ok(());
+        }
+        let roots = state
+            .roots
+            .iter()
+            .map(Root::confirmed)
+            .collect::<Result<Vec<_>, _>>()?;
+        let resolved = self.verify_roots(path, roots).await?;
+        let mut facts = resolved.roots.into_iter();
+        state
+            .roots
+            .retain(|_| facts.next().expect("one fact per root").valid);
         Ok(())
     }
 
@@ -654,7 +703,7 @@ impl Worktrees {
             _ = self.lifecycle.closing() => Err(cancelled()),
             result = async {
                 let mut state = self.state.lock().await;
-                self.refresh(&mut state).await?;
+                self.refresh(&mut state, &cwd).await?;
                 Ok(std::iter::once(workspace)
                     .chain(state.roots.iter().map(|root| root.subtree.clone()))
                     .collect())
