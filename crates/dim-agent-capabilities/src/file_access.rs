@@ -441,13 +441,15 @@ impl crate::file_storage::FsHost {
             let probe = async {
                 let directory = blocking(move || existing_directory(&path)).await?;
                 let env = std::env::vars_os().collect::<Vec<_>>();
-                let probe = GitProbe {
-                    env: &env,
-                    stopping: &stopping,
-                    lifecycle: None,
-                };
-                let Some(candidate) = probe
-                    .discover(&directory, &workspace, &Mutex::new(None))
+                let Some(candidate) = self
+                    .recognize_worktree(
+                        &directory,
+                        &workspace,
+                        &Mutex::new(None),
+                        &env,
+                        &stopping,
+                        None,
+                    )
                     .await?
                 else {
                     return Ok(None);
@@ -712,13 +714,21 @@ impl Worktrees {
     }
 
     async fn discover(&self, candidate: &Path) -> ProbeResult {
-        GitProbe {
-            env: &self.platform.env,
-            stopping: &self.stopping,
-            lifecycle: Some(&self.lifecycle),
+        let (_operation, stopping) = self.fs.begin_workspace_operation(&self.stopping)?;
+        let _stop = stopping.clone().drop_guard();
+        let probe = self.fs.recognize_worktree(
+            candidate,
+            &self.workspace,
+            &self.source,
+            &self.platform.env,
+            &stopping,
+            Some(&self.lifecycle),
+        );
+        tokio::pin!(probe);
+        tokio::select! {
+            result = &mut probe => result,
+            _ = self.stopping.cancelled() => { stopping.cancel(); probe.await }
         }
-        .discover(candidate, &self.workspace, &self.source)
-        .await
     }
 }
 
@@ -727,13 +737,21 @@ struct GitProbe<'a> {
     stopping: &'a CancellationToken,
     lifecycle: Option<&'a SessionLifecycle>,
 }
-impl GitProbe<'_> {
-    async fn discover(
+impl crate::file_storage::FsHost {
+    async fn recognize_worktree(
         &self,
         candidate: &Path,
         workspace: &Path,
         source: &Mutex<Option<(WorktreeDirectory, PathBuf)>>,
+        env: &[(std::ffi::OsString, std::ffi::OsString)],
+        stopping: &CancellationToken,
+        lifecycle: Option<&SessionLifecycle>,
     ) -> ProbeResult {
+        let probe = GitProbe {
+            env,
+            stopping,
+            lifecycle,
+        };
         let mut cached = source.lock().await;
         if cached.is_none() {
             let workspace = workspace.to_owned();
@@ -741,7 +759,7 @@ impl GitProbe<'_> {
                 blocking(move || canonical_prefix(workspace).map_err(HostError::failed)).await?;
             let existing = workspace.clone();
             let existing = blocking(move || existing_directory(&existing)).await?;
-            let Some(source) = self.probe(&existing, None).await? else {
+            let Some(source) = probe.probe(&existing, None).await? else {
                 return Ok(None);
             };
             let relative = workspace
@@ -755,7 +773,7 @@ impl GitProbe<'_> {
             .expect("a verified source was cached")
             .clone();
         drop(cached);
-        let Some(directory) = self.probe(candidate, Some(&source.repository)).await? else {
+        let Some(directory) = probe.probe(candidate, Some(&source.repository)).await? else {
             return Ok(None);
         };
         let subtree = directory.root.join(relative);
@@ -772,7 +790,9 @@ impl GitProbe<'_> {
         })
         .await
     }
+}
 
+impl GitProbe<'_> {
     async fn probe(
         &self,
         cwd: &Path,
