@@ -321,7 +321,7 @@ fn present<'de, D: Deserializer<'de>>(value: D) -> Result<Option<Title>, D::Erro
 /// One request object; anything else is the caller's programming error.
 fn request<T: DeserializeOwned>(args: RpcValue) -> Result<T, Error> {
     let invalid =
-        |detail: String| Error::Value(format!("expected one store request object: {detail}"));
+        |detail: String| Error::value(format!("expected one store request object: {detail}"));
     let Value::Array(args) = args.json()? else {
         return Err(invalid("not an argument list".into()));
     };
@@ -374,7 +374,7 @@ impl super::Store {
                     Ok(envelope(reply.await.map(|revision| json!({"revision": revision}))).into())
                 }))
             }
-            _ => Err(Error::Value(format!("unknown store method {method}"))),
+            _ => Err(Error::value(format!("unknown store method {method}"))),
         }
     }
 }

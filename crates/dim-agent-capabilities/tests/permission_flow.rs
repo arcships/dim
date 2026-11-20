@@ -1211,6 +1211,12 @@ async fn full_access_releases_all_waiting_calls_without_user_responses() {
             .await
             .unwrap();
         let child_approval = session.service::<Approval>(&child).unwrap();
+        let child_request = loop {
+            if let Some(request) = child_approval.pending().pop() {
+                break request.approval_id;
+            }
+            tokio::task::yield_now().await;
+        };
         submit_exec(&session, "echo model call").await;
         let model_request = approval_request(&session, "echo model call").await;
         let approval = session.service::<Approval>("main").unwrap();
@@ -1288,14 +1294,6 @@ async fn full_access_releases_all_waiting_calls_without_user_responses() {
             );
         }
         approval.replay(|request| panic!("stale approval: {request:?}"));
-        let child_request = loop {
-            let mut requests = Vec::new();
-            child_approval.replay(|request| requests.push(request.approval_id.clone()));
-            if let Some(request) = requests.pop() {
-                break request;
-            }
-            tokio::task::yield_now().await;
-        };
         child_approval
             .respond(&child_request, ApprovalDecision::Deny)
             .await

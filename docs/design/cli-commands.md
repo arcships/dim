@@ -677,22 +677,14 @@ prints two lines: usage, then the no-goal notice.
 The line client and both terminal UI modes print these lines; in the terminal UI they are one
 report in the transcript, so earlier reports stay readable above later ones. The status area
 carries one short element while the shown line follows a goal, and nothing for a completed,
-blocked or cleared one:
+blocked or cleared one. Both modes draw it the same way: on the composer's bottom border, beside
+the run status and context usage, with the place on its right:
 
 ```text
- ╭──────────────────────────────────────────────────────────────────────────────╮
+ ╭────────────────────────────────────────────────────── local / fixture-model ─╮
  │ › _                                                                          │
- ╰────────────────────────────── ⑂ main ▸ child work · after message 0 ─────────╯
-  ⏵⏵ Workspace write (shift+tab to cycle)  ◎ goal active  1.8K / 256K
-```
-
-Fullscreen draws the same element in the composer's bottom border, beside the run status:
-
-```text
- ╭──────────────────────────────────────────────────────────────────────────────╮
- │ › _                                                                          │
- ╰──── ◎ goal paused   1.8K / 256K ────────────────── ● main · after message 4 ─╯
-  ⏵⏵ Full access (shift+tab to cycle)
+ ╰─ ◎ goal active  1.8K / 256K ───────── ⑂ main ▸ child work · after message 0 ─╯
+  ⏵⏵ Workspace write (shift+tab to cycle)
 ```
 
 ## Loop
@@ -1490,7 +1482,7 @@ Enter also writes the default a new Session in this folder reads ([provider mana
 
 Bare `/effort` and `/reasoning` open the current model's inline effort picker in both TUI
 modes; explicit-value forms and the line client keep their command behavior. At Home the
-picker and the explicit-value forms act on the footer's preview, the model the first
+picker and the explicit-value forms act on the top border's preview, the model the first
 message's Session adopts. The selection contract is owned by [model
 configuration](model-configuration.md#scrollback-interaction).
 
@@ -3109,11 +3101,20 @@ Assistant: ...
 Both TUI modes draw a live permission footer under the composer, without an `AGENT` prefix;
 the preset, colors, localized shortcut hint and key behavior are defined in
 [`/permissions`](#permissions). It is not committed to transcript history.
-Scrollback keeps the goal marker, context use against its window, and one slot for the state
-in force — a notice, a required answer or permission, `esc interrupt`, or the background task
-count — on the same line. The model, with its effort when both fit, is right-aligned there;
-the line is clipped to the terminal width. Fullscreen instead keeps run status, the status
-slot, goal and context information in the composer border, not the permission preset.
+Both modes place the model label (with its effort when both fit) on the right side of the
+composer's top border, and keep the run status, the status slot (a notice, a required answer
+or permission, `esc interrupt`, or disconnect), background task count, goal and context
+information on the left side of the composer's bottom border, leaving only the permission
+preset and its shortcut hint on the footer line. When the corner is too narrow, the first
+candidate that fits wins, in this order: (1) the full run status, with its retry reason, and
+every optional part; (2) the phase with the slot and the optional parts, dropping context,
+then goal, then background tasks; (3) the optional parts with the slot and without the phase,
+dropped the same way; (4) the slot alone. The retry reason goes before the phase, and the
+slot outranks every optional part, so it is kept whole when it fits the border. The slot
+alone is clipped from its end only when it is wider than the border. While a prompt replaces the composer
+(permission, question, effort, exit, upgrade, fork, timeline, queue, export or report),
+the composer is not drawn, so a notice or the disconnect state is drawn once, on the rows
+just above the footer, and the footer stays permission-only.
 
 ### Submit check warnings
 
@@ -3277,14 +3278,10 @@ The three rows above are alternatives: only the effective preset appears. The sh
 is translated into the selected interface language. Read only is cyan,
 Workspace write is purple and Full access is yellow; the shortcut hint is muted. Light themes
 use darker shades for contrast, and limited-color terminals use their cyan, magenta and yellow
-slots. The permission label takes priority over the hint and other status content on narrow
-terminals. Fullscreen retains run, goal, context and notice information in the composer border.
-In scrollback the hint ranks last: the permission label is drawn first and the hint only when
-the whole line still fits with it, so the hint's cells go to the rest when they are needed. A
-slot that asks the user something or reports a problem, which is a notice, the disconnected
-text, `answer required` and `permission required`, outranks the right-aligned model: the model
-gives up its effort first, then its place while that slot shows. `esc interrupt`, goal, context
-and background text still yield to the model, which keeps its space before they are clipped.
+slots. The permission label takes priority over the hint on narrow terminals, where the line
+is clipped to the terminal width. Both modes keep run status, the status slot, background
+task count, goal and context information on the composer's bottom border, and the model label
+on the composer's top border.
 
 With the composer owning the keys, Shift+Tab cycles Read only → Workspace write → Full access
 → Read only without submitting or changing the draft, including during a running turn. It

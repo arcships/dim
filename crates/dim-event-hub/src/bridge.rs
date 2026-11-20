@@ -54,7 +54,7 @@ impl HostDispatch for ForeignEventHub {
                         .map_err(bridge_error)
                 }))
             }
-            _ => Err(BridgeError::Value(format!(
+            _ => Err(BridgeError::value(format!(
                 "eventHub has no method {method}"
             ))),
         }
@@ -64,12 +64,12 @@ impl HostDispatch for ForeignEventHub {
 /// The single request object a bridge call carries.
 fn request<T: DeserializeOwned>(args: Value) -> Result<T, BridgeError> {
     let serde_json::Value::Array(args) = args.json()? else {
-        return Err(BridgeError::Value("expected one request object".into()));
+        return Err(BridgeError::value("expected one request object"));
     };
     let Ok([request]) = <[serde_json::Value; 1]>::try_from(args) else {
-        return Err(BridgeError::Value("expected one request object".into()));
+        return Err(BridgeError::value("expected one request object"));
     };
-    serde_json::from_value(request).map_err(|error| BridgeError::Value(error.to_string()))
+    serde_json::from_value(request).map_err(|error| BridgeError::value(error.to_string()))
 }
 
 fn bridge_error(error: EventHubError) -> BridgeError {
@@ -148,7 +148,7 @@ impl HostDispatch for ForeignEventSubscriptions {
                 let call: crate::ListCall = request(args)?;
                 Ok(service.list(call).into())
             }
-            _ => Err(BridgeError::Value(format!(
+            _ => Err(BridgeError::value(format!(
                 "eventSubscriptions has no method {method}"
             ))),
         }

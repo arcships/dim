@@ -334,19 +334,17 @@ impl HostDispatch for TimelineStoreBinding {
         if method == "commits" {
             let caller = rutis_bridge::session::caller_row()
                 .map(|row| row.ctx().clone())
-                .ok_or_else(|| Error::Value("commits needs the calling row's context".into()))?;
+                .ok_or_else(|| Error::value("commits needs the calling row's context"))?;
             let [request, listener]: [Value; 2] = args
                 .list()?
                 .try_into()
-                .map_err(|_| Error::Value("commits expects a request and listener".into()))?;
+                .map_err(|_| Error::value("commits expects a request and listener"))?;
             let request = request.json()?;
             if !request.is_object() {
-                return Err(Error::Value(
-                    "timelineStore request must be an object".into(),
-                ));
+                return Err(Error::value("timelineStore request must be an object"));
             }
             let request: TimelineSessionRequest =
-                serde_json::from_value(request).map_err(|error| Error::Value(error.to_string()))?;
+                serde_json::from_value(request).map_err(|error| Error::value(error.to_string()))?;
             let listener = listener.reference()?;
             let owner = self.clone();
             return Ok(Value::future(async move {
@@ -381,7 +379,7 @@ impl HostDispatch for TimelineStoreBinding {
                             Ok(None)
                         }
                     })
-                    .map_err(|error| Error::Value(error.to_string()))?;
+                    .map_err(|error| Error::value(error.to_string()))?;
                 owner
                     .0
                     .subscriptions
@@ -400,17 +398,15 @@ impl HostDispatch for TimelineStoreBinding {
                     if let Some(disposer) = disposer {
                         let _ = disposer.dispose().await;
                     }
-                    return Err(Error::Value(error.to_string()));
+                    return Err(Error::value(error.to_string()));
                 }
                 Ok(json!({"subscriptionId":id}).into())
             }));
         }
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(Error::Value(
-                "timelineStore request must be an object".into(),
-            ));
+            return Err(Error::value("timelineStore request must be an object"));
         }
         if method == "append" {
             if rutis_bridge::session::caller().is_some() {
@@ -419,7 +415,7 @@ impl HostDispatch for TimelineStoreBinding {
                 )));
             }
             let p: TimelineAppend =
-                serde_json::from_value(request).map_err(|error| Error::Value(error.to_string()))?;
+                serde_json::from_value(request).map_err(|error| Error::value(error.to_string()))?;
             if p.events.is_empty() {
                 return Err(failure(AgentError::InvalidInput(
                     "timeline batch must not be empty".into(),
@@ -439,7 +435,7 @@ impl HostDispatch for TimelineStoreBinding {
         }
         if method == "closeCommits" {
             let p: Close =
-                serde_json::from_value(request).map_err(|error| Error::Value(error.to_string()))?;
+                serde_json::from_value(request).map_err(|error| Error::value(error.to_string()))?;
             let disposer = self
                 .0
                 .subscriptions
@@ -451,13 +447,13 @@ impl HostDispatch for TimelineStoreBinding {
                     disposer
                         .dispose()
                         .await
-                        .map_err(|error| Error::Value(error.to_string()))?;
+                        .map_err(|error| Error::value(error.to_string()))?;
                 }
                 Ok(json!({}).into())
             }));
         }
         let request: Request = serde_json::from_value(json!({"method":method,"request":request}))
-            .map_err(|error| Error::Value(error.to_string()))?;
+            .map_err(|error| Error::value(error.to_string()))?;
         let store = self.clone();
         Ok(Value::future(async move {
             let result: crate::Result<serde_json::Value> = async {
