@@ -1653,7 +1653,14 @@ impl Manager {
                             == Some(&self.state.config_of(name, &code.config))
                 });
                 if same {
-                    if let Err(error) = self.loader.reload(&row).await {
+                    if let Err(error) = rutis_bridge::session::call_service::<()>(
+                        &self.ctx,
+                        "rutis/loader",
+                        "reload",
+                        (&row,),
+                    )
+                    .await
+                    {
                         tracing::warn!(%row, %error, "plugin reload refused");
                     }
                 } else {
@@ -2365,6 +2372,7 @@ impl DynPlugin for PluginManagerPlugin {
     fn injects(&self) -> Vec<TypeKey> {
         vec![
             self.loader.erase(),
+            rutis_bridge::session::host_key("rutis/loader").erase(),
             self.methods.erase(),
             self.parts.erase(),
         ]
