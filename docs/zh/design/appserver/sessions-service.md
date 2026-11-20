@@ -6,6 +6,8 @@ Agents 的稳定目录提供 `sessions.permission({sessionId, branchId})` 和 `s
 
 `sessions.observeCurrent({sessionId,generation?}, onEnd)` 返回匹配的已加载实例 `{agentId,generation}`，未匹配时返回 null。实例卸载或关闭后，回调收到一次 `{sessionId,agentId,generation,reason}`。观察随调用方卸载而结束，不阻止 Session 空闲卸载。
 
+`acquireUse({sessionId,agentId})` 返回 `{useId,generation}`。目录持有该实例直到 `releaseUse({useId})` 或调用方卸载。input、pending、withdraw、stop 和 idle 可传入 `useId` 以使用同一实例。`state({useId,branchId})` 返回该实例的分支状态。
+
 §5、§6.2 与 §8.3–8.4 的输入所有权沿用已接受的[原生访问合同](../../../design/p6-p7-bindings.md#4-native-report-settlement)：已准入输入等待自身追加/发布结果，分支对每个 `submissionId` 只接受一次，因此回复丢失的调用方重新提交，而不等待旧写入者。
 
 ## 1. 概要

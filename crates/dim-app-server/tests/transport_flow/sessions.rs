@@ -1863,6 +1863,19 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
         assert_ok(&observed);
         assert_eq!(observed["result"]["generation"], generation);
         let agent_id = observed["result"]["agentId"].as_str().unwrap();
+        let used = client
+            .rpc(
+                "permissions.use",
+                json!({"sessionId":target.id(),"agentId":agent_id}),
+            )
+            .await;
+        assert_ok(&used);
+        assert_eq!(used["result"]["generation"], generation);
+        assert_eq!(used["result"]["closed"], false);
+        let expired = sessions.error("pending", json!({
+            "sessionId":target.id(),"branchId":"main","inputId":"missing","useId":used["result"]["useId"]
+        })).await;
+        assert_eq!(expired, "rejected");
         if reason == "unloaded" {
             tokio::time::timeout(Duration::from_secs(10), async {
                 while !target.unload_if_idle().await.unwrap() {

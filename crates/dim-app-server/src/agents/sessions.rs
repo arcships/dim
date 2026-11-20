@@ -68,6 +68,34 @@ pub(crate) struct SessionEnded {
     pub(crate) reason: SessionEnd,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AcquireUse {
+    session_id: String,
+    agent_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ReleaseUse {
+    use_id: uuid::Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UseState {
+    use_id: uuid::Uuid,
+    branch_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IdleRequest {
+    session_id: String,
+    branch_id: String,
+    use_id: Option<uuid::Uuid>,
+}
+
 /// The process Session directory.
 pub struct Sessions(pub(crate) Ctx);
 impl Sessions {
@@ -286,6 +314,7 @@ pub struct LaunchReply {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputWrite {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     pub mode: InputMode,
@@ -387,6 +416,7 @@ pub struct HistoryPage {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PendingRequest {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     /// The `inputId` an earlier write or lookup named.
@@ -402,6 +432,7 @@ pub struct PendingReply {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WithdrawRequest {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     /// The `inputId` the caller received when it wrote the input.
@@ -414,6 +445,7 @@ pub struct WithdrawRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StopRequest {
+    pub use_id: Option<uuid::Uuid>,
     pub session_id: String,
     pub branch_id: String,
     /// Default: "Stopped by automation".
@@ -513,6 +545,72 @@ fn settlement(error: AgentError) -> SessionsError {
 }
 
 impl AgentIndex {
+    async fn acquire_use(
+        self: &Arc<Self>,
+        request: AcquireUse,
+        caller: &Ctx,
+    ) -> Result<serde_json::Value, SessionsError> {
+        let lease = self.acquire(&request.session_id).await?;
+        if lease.host.agent_id != request.agent_id {
+            return Err(SessionsError::rejected("Session belongs to another Agent"));
+        }
+        let generation = lease.session.instance()?.to_string();
+        let id = uuid::Uuid::new_v4();
+        let owner = Arc::downgrade(self);
+        let mut uses = self.session_uses.lock().unwrap();
+        if self.stopping.is_cancelled() {
+            return Err(SessionsError::reloading("the Agents index"));
+        }
+        let cleanup = caller
+            .effect(move || async move {
+                if let Some(owner) = owner.upgrade() {
+                    owner.session_uses.lock().unwrap().remove(&id);
+                }
+                Ok(())
+            })
+            .map_err(|_| SessionsError::reloading("the calling row"))?;
+        uses.insert(id, (lease, cleanup));
+        Ok(json!({"useId":id,"generation":generation}))
+    }
+
+    fn pinned_use(&self, id: uuid::Uuid) -> Result<super::SessionUse, SessionsError> {
+        self.session_uses
+            .lock()
+            .unwrap()
+            .get(&id)
+            .map(|(lease, _)| lease.clone())
+            .ok_or_else(|| SessionsError::rejected("unknown Session use"))
+    }
+
+    async fn use_session(
+        &self,
+        session_id: &str,
+        id: Option<uuid::Uuid>,
+    ) -> Result<super::SessionUse, SessionsError> {
+        let Some(id) = id else {
+            return Ok(self.acquire(session_id).await?);
+        };
+        let lease = self.pinned_use(id)?;
+        if lease.session.id() != session_id {
+            return Err(SessionsError::rejected(
+                "Session use belongs to another Session",
+            ));
+        }
+        Ok(lease)
+    }
+
+    async fn release_use(&self, id: uuid::Uuid) -> Result<(), SessionsError> {
+        let entry = self.session_uses.lock().unwrap().remove(&id);
+        if let Some((lease, cleanup)) = entry {
+            drop(lease);
+            cleanup
+                .dispose()
+                .await
+                .map_err(|_| SessionsError::reloading("the calling row"))?;
+        }
+        Ok(())
+    }
+
     /// Ends a call with `reloading` when this index generation unloads; the
     /// `sessions` service and its callers stay (§8.3).
     async fn until_unloaded<T>(
@@ -671,7 +769,7 @@ impl AgentIndex {
                 if write.submission_id.is_empty() {
                     return Err(SessionsError::rejected("submissionId must not be empty"));
                 }
-                let lease = self.acquire(&write.session_id).await?;
+                let lease = self.use_session(&write.session_id, write.use_id).await?;
                 let publication = lease.session.publication(&write.branch_id)?;
                 let blocks = write
                     .raw_blocks
@@ -833,7 +931,9 @@ impl AgentIndex {
             if request.input_id.is_empty() {
                 return Err(SessionsError::rejected("inputId must not be empty"));
             }
-            let lease = self.acquire(&request.session_id).await?;
+            let lease = self
+                .use_session(&request.session_id, request.use_id)
+                .await?;
             let publication = lease.session.publication(&request.branch_id)?;
             let through = publication.sequence();
             let mut dispatch = lease.session.dispatch_watch(&request.branch_id)?;
@@ -870,7 +970,9 @@ impl AgentIndex {
     /// replies once `input/deleted` is published.
     pub async fn withdraw(&self, request: WithdrawRequest) -> Result<Withdrawal, SessionsError> {
         self.until_unloaded(async {
-            let lease = self.acquire(&request.session_id).await?;
+            let lease = self
+                .use_session(&request.session_id, request.use_id)
+                .await?;
             let publication = lease.session.publication(&request.branch_id)?;
             let answer = lease
                 .session
@@ -893,7 +995,9 @@ impl AgentIndex {
     /// the dispatched sequence.
     pub async fn stop(&self, request: StopRequest) -> Result<u64, SessionsError> {
         self.until_unloaded(async {
-            let lease = self.acquire(&request.session_id).await?;
+            let lease = self
+                .use_session(&request.session_id, request.use_id)
+                .await?;
             lease
                 .session
                 .stop(
@@ -912,9 +1016,9 @@ impl AgentIndex {
     /// returns its dispatched sequence. A pending approval or question keeps
     /// the turn open, so the wait lasts until it is answered or `stop` ends
     /// the turn; there is no timeout.
-    pub async fn idle(&self, at: SessionRef) -> Result<u64, SessionsError> {
+    async fn idle(&self, at: IdleRequest) -> Result<u64, SessionsError> {
         self.until_unloaded(async {
-            let lease = self.acquire(&at.session_id).await?;
+            let lease = self.use_session(&at.session_id, at.use_id).await?;
             let session = &lease.session;
             #[cfg(feature = "testing")]
             self.idle_admitted.notify_one();
@@ -946,10 +1050,40 @@ impl HostDispatch for Sessions {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async", "permission": "async", "permissionDefaults": "async", "startupSources": "async", "observeCurrent": "async",
+            "delete": "async", "permission": "async", "permissionDefaults": "async", "startupSources": "async", "observeCurrent": "async", "acquireUse": "async", "releaseUse": "async", "state": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if matches!(method, "acquireUse" | "releaseUse" | "state") {
+            let caller = caller_row().map(|row| row.ctx().clone());
+            let index = self.0.get::<AgentIndex>();
+            let method = method.to_owned();
+            return Ok(Value::future(async move {
+                let args = args.json()?;
+                let operation = async {
+                    let index =
+                        index.ok_or_else(|| SessionsError::reloading("the Agents index"))?;
+                    match method.as_str() {
+                        "acquireUse" => {
+                            let caller = caller.ok_or_else(|| {
+                                SessionsError::rejected("acquireUse needs the calling row")
+                            })?;
+                            index.acquire_use(request(args)?, &caller).await
+                        }
+                        "releaseUse" => {
+                            let ReleaseUse { use_id } = request(args)?;
+                            index.release_use(use_id).await?;
+                            reply(())
+                        }
+                        _ => {
+                            let UseState { use_id, branch_id } = request(args)?;
+                            reply(index.pinned_use(use_id)?.session.state(&branch_id)?)
+                        }
+                    }
+                };
+                operation.await.map(Value::from).map_err(sessions_failure)
+            }));
+        }
         if method == "observeCurrent" {
             return self.observe_wire(args);
         }

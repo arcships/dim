@@ -31,6 +31,7 @@ async fn typed_input_retains_admitted_io_and_accepts_each_submission_once() {
         .unwrap();
     let index = server.root.get::<AgentIndex>().unwrap();
     let write = |submission: &str| InputWrite {
+        use_id: None,
         session_id: session.id().into(),
         branch_id: "main".into(),
         mode: InputMode::Append,

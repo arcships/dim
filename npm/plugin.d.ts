@@ -235,7 +235,7 @@ export interface RawBlock {
   text: string;
   key?: { use: 'live' | 'retire'; name: string } | null;
 }
-export interface InputWrite extends SessionRef {
+export interface InputWrite extends SessionRef { useId?: string;
   mode: 'queue' | 'steer' | 'append';
   submissionId: string;
   rawBlocks: RawBlock[];
@@ -265,13 +265,13 @@ export type {
   UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
-export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
+export interface WithdrawRequest extends SessionRef { useId?: string; inputId: string; reason?: string | null }
 /** Whether an input is still pending on the branch (session access §2): from
  * its write until consumption or deletion. An id the branch does not hold is
  * not pending. */
-export interface PendingRequest extends SessionRef { inputId: string }
+export interface PendingRequest extends SessionRef { useId?: string; inputId: string }
 export type WithdrawReply = { status: 'deleted'; sequence: number } | { status: 'notHeld' };
-export interface StopRequest extends SessionRef { reason?: string | null }
+export interface StopRequest extends SessionRef { useId?: string; reason?: string | null }
 export interface SequenceReply { sequence: number }
 export interface PermissionState { version: number | bigint; policy: PermissionPolicy }
 export type SessionsErrorCode = 'rejected' | 'agent_unknown' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'future_sequence' | 'ambiguous' | 'publication_unknown' | 'failed';
@@ -285,6 +285,9 @@ export type SessionEnded = ObservedSession & { sessionId: string; reason: 'unloa
 /** Process service `sessions`; these methods are not terminal RPC methods. */
 export interface Sessions {
   permission(request: SessionRef): Promise<PermissionState>;
+  acquireUse(request: {sessionId: string; agentId: string}): Promise<{useId: string; generation: string}>;
+  releaseUse(request: {useId: string}): Promise<void>;
+  state(request: {useId: string; branchId: string}): Promise<{running: boolean; stopping: boolean; closed: boolean; failure: string | null}>;
   observeCurrent(request: { sessionId: string; generation?: string }, onEnd: (end: SessionEnded) => void | Promise<void>): Promise<ObservedSession | null>;
   startupSources(request: { sessionId: string; generation: string }): Promise<import('./branch-services.js').StartupConnectionSource[]>;
   permissionDefaults(request: {}): Promise<PermissionPolicy>;
@@ -299,7 +302,7 @@ export interface Sessions {
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
   pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
   stop(request: StopRequest): Promise<SessionsResult<SequenceReply>>;
-  idle(request: SessionRef): Promise<SessionsResult<SequenceReply>>;
+  idle(request: SessionRef & { useId?: string }): Promise<SessionsResult<SequenceReply>>;
   delete(request: { sessionId: string }): Promise<SessionsResult<Record<string, never>>>;
 }
 

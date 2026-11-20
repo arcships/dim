@@ -17,6 +17,8 @@ dispatched `PermissionState`. The second returns the current host bound. Both re
 
 `sessions.observeCurrent({sessionId,generation?}, onEnd)` returns the matching loaded instance as `{agentId,generation}`, or null. Its callback receives `{sessionId,agentId,generation,reason}` once on unload or close. An observer ends when its calling row unloads and does not keep the Session loaded.
 
+`acquireUse({sessionId,agentId})` returns `{useId,generation}`. The directory holds the loaded instance until `releaseUse({useId})` or caller unload. Input, pending, withdraw, stop and idle accept an optional `useId`; passing it pins that call to the admitted Session. `state({useId,branchId})` returns its branch status.
+
 Input ownership in §5, §6.2 and §8.3–8.4 follows the accepted
 [native access contract](../p6-p7-bindings.md#4-native-report-settlement): admitted
 input retains its own append/publication outcome, and the branch accepts each

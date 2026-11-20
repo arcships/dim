@@ -12,12 +12,22 @@ export default definePlugin({
     const sessions = ctx.use<Sessions>('sessions')
     await ctx.use<ManagementMethods>('managementMethods').register(
       'permissions',
-      ['branch', 'defaults', 'legacy', 'sources', 'observe', 'ends'].map(name => ({
+      ['branch', 'defaults', 'legacy', 'sources', 'observe', 'ends', 'use'].map(name => ({
         name: `permissions.${name}`, mutating: false, interruption: 'report', progress: false,
       })),
       async (call): Promise<MethodReply> => {
         try {
           const at = call.params as unknown as SessionRef
+          if (call.method === 'permissions.use') {
+            const request = call.params as unknown as Parameters<Sessions['acquireUse']>[0]
+            const { useId, generation } = await sessions.acquireUse(request)
+            try {
+              const state = await sessions.state({ useId, branchId: 'main' })
+              return { kind: 'value', value: { useId, generation, closed: state.closed } }
+            } finally {
+              await sessions.releaseUse({ useId })
+            }
+          }
           if (call.method === 'permissions.ends') return { kind: 'value', value: JSON.stringify(ends) }
           if (call.method === 'permissions.observe') {
             const request = call.params as unknown as Parameters<Sessions['observeCurrent']>[0]

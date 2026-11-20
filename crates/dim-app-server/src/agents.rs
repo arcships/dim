@@ -385,6 +385,7 @@ impl Plugin for AgentDirectoryPlugin {
 /// lookups, Session admission and creating and closing Agents through the
 /// loader. A reload of it is a reload of the directory logic only.
 pub struct AgentIndex {
+    session_uses: Mutex<HashMap<uuid::Uuid, (SessionUse, rutis::Disposer)>>,
     directory: Arc<AgentDirectory>,
     activity: Arc<ProcessActivity>,
     builder: AgentBuilder,
@@ -2273,6 +2274,7 @@ impl DynPlugin for AgentsPlugin {
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let _ = directory.default_agent_id.set(default_id);
             let index = AgentIndex {
+                session_uses: Mutex::default(),
                 directory,
                 activity: ctx.require_at(&self.activity)?,
                 builder,
@@ -2293,6 +2295,10 @@ impl DynPlugin for AgentsPlugin {
             let cleanup = index.clone();
             ctx.effect(move || async move {
                 cleanup.stopping.cancel();
+                let uses = std::mem::take(&mut *cleanup.session_uses.lock().unwrap());
+                for (_, (_, cleanup)) in uses {
+                    let _ = cleanup.dispose().await;
+                }
                 Ok(())
             })?;
             if self.config.session_execution {
