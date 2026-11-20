@@ -62,7 +62,7 @@ struct NestedGate {
     cancel: CancellationToken,
     tasks: TaskTracker,
     closing: Mutex<Option<Instant>>,
-    effects: Mutex<Vec<(u64, Vec<ToolEffect>)>>,
+    effects: Mutex<Vec<(usize, Vec<ToolEffect>)>>,
 }
 
 impl NestedGate {
@@ -89,10 +89,11 @@ impl NestedGate {
                     call.id
                 )));
             }
+            let ordinal = ids.len();
             let gate = self.clone();
             let tracker = owner.tasks.clone();
             self.tasks.spawn(tracker.track_future(async move {
-                let _ = sender.send(gate.run_child(&owner, call).await);
+                let _ = sender.send(gate.run_child(&owner, call, ordinal).await);
             }));
         }
         Ok(receiver)
@@ -114,7 +115,7 @@ impl NestedGate {
 
     fn effects(&self) -> Vec<ToolEffect> {
         let mut collected = self.effects.lock().unwrap().clone();
-        collected.sort_by_key(|(sequence, _)| *sequence);
+        collected.sort_by_key(|(ordinal, _)| *ordinal);
         collected
             .into_iter()
             .flat_map(|(_, effects)| effects)
@@ -124,6 +125,7 @@ impl NestedGate {
         &self,
         owner: &ToolExecutor,
         call: ToolCall,
+        ordinal: usize,
     ) -> Result<ToolResult, HostError> {
         let context = &self.context;
         let parent_call_id = &self.parent_call_id;
@@ -183,7 +185,7 @@ impl NestedGate {
             self.effects
                 .lock()
                 .unwrap()
-                .push((batch.sequence, child_effects));
+                .push((ordinal, child_effects));
         }
         Ok(result)
     }
@@ -232,7 +234,7 @@ impl ToolExecutor {
         for gate in gates {
             confirmed.extend(gate.effects.lock().unwrap().iter().cloned());
         }
-        confirmed.sort_by_key(|(sequence, _)| *sequence);
+        confirmed.sort_by_key(|(ordinal, _)| *ordinal);
         let mut reported = result.effects.clone().unwrap_or_default();
         for effect in confirmed.into_iter().flat_map(|(_, effects)| effects) {
             if let Some(index) = reported.iter().position(|item| item == &effect) {
