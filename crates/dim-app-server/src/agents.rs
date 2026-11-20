@@ -108,7 +108,16 @@ pub struct AgentHost {
 pub(crate) struct SessionRestored {
     pub agent_id: String,
     pub session_id: String,
+    pub generation: String,
 }
+
+impl SessionRestored {
+    pub(crate) fn session(&self, index: &AgentIndex) -> Option<Session> {
+        let (_, session) = index.session(&self.session_id)?;
+        (session.instance().ok()?.to_string() == self.generation).then_some(session)
+    }
+}
+
 impl Event for SessionRestored {
     const NAME: &'static str = "agent/session-restored";
     type Value = ();
@@ -945,6 +954,7 @@ impl AgentIndex {
                         .await?;
                     ctx.parallel(SessionRestored {
                         agent_id: host.agent_id.clone(),
+                        generation: session.instance()?.to_string(),
                         session_id: id,
                     })
                     .await?;
@@ -1893,6 +1903,7 @@ impl AgentIndex {
             .expect("AgentsPlugin apply sets its context")
             .parallel(SessionRestored {
                 agent_id: usage.host.agent_id.clone(),
+                generation: fork.instance()?.to_string(),
                 session_id: id,
             })
             .await?;

@@ -686,7 +686,7 @@ impl Collaboration {
 
 impl Collaboration {
     fn session_restored(self: &Arc<Self>, event: &SessionRestored) {
-        let Some((_, session)) = self.index.session(&event.session_id) else {
+        let Some(session) = event.session(&self.index) else {
             return;
         };
         let participates = {

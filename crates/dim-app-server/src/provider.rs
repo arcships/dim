@@ -3384,7 +3384,7 @@ impl DynPlugin for ProviderPlugin {
             if let Some(index) = index {
                 let restored = service.clone();
                 ctx.on::<crate::agents::SessionRestored>(move |event, _| {
-                    if let Some((_, session)) = index.session(&event.session_id) {
+                    if let Some(session) = event.session(&index) {
                         restored.restore_startup(session);
                     }
                     async { Ok(None) }
