@@ -36,18 +36,31 @@ test('documents that code reads keep their checks',()=>{
   assert.deepEqual(classify(['docs/design/appserver/native-storage-format.md']),only('rust'));
 });
 
+test('Web sources that xtask reads keep its check',()=>{
+  for (const file of ['web/src/main.ts','web/src/chat-ui/WebChatTimeline.vue','web/src/rpc/protocol.ts','web/src/a.mjs','web/src/a.js'])
+    assert.deepEqual(classify([file]),only('web','xtask'),file);
+});
+
 test('dependency policy changes select the scan without compiling the workspace',()=>{
   assert.deepEqual(classify(['deny.toml','LICENSE']),only('dependencies'));
 });
 
 test('source areas select their groups',()=>{
-  assert.deepEqual(classify(['web/src/main.ts']),only('web'));
+  assert.deepEqual(classify(['web/package.json','web/src/styles/base.css']),only('web'));
   assert.deepEqual(classify(['web/src/features/chat/quote-cases.json']),only('web','rust','windows'));
   assert.deepEqual(classify(['scripts/stage-web.mjs']),only('scripts','web'));
   assert.deepEqual(classify(['docker/Dockerfile']),only('scripts'));
   assert.deepEqual(classify(['crates/dim-app-server/src/lib.rs','runtime/fixtures/session-part.json']),only('rust','node'));
   assert.deepEqual(classify(['crates/dim-cli/src/main.rs']),only('rust','windows'));
   assert.deepEqual(classify(['docs/notes.md','crates/dim-cli/src/notes.rs']),only('rust','windows'));
+});
+
+test('native macOS CI follows its runner, packaging and Mach-O layout sources',()=>{
+  assert.deepEqual(classify(['scripts/test-macos-native.mjs']),only('rust','scripts','web'));
+  for (const name of ['release.test.mjs','stage-release.mjs','pack-release.mjs','native-binary.mjs','store-formats.mjs',
+    'code-layout-darwin.test.mjs','code-layout/macho.py','code-layout/link_capture.rs']) {
+    assert.deepEqual(classify([`scripts/${name}`]),only('scripts','web','macos_scripts'),name);
+  }
 });
 
 test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{

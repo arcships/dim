@@ -152,7 +152,7 @@ impl HostDispatch for ModalityTargets {
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method != "resolve" {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "unknown modalityTargets method {method}"
             )));
         }

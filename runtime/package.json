@@ -1,14 +1,14 @@
 {
   "name": "dimcode-plugin-runtime",
   "private": true,
-  "version": "0.1.0-alpha.26",
+  "version": "0.1.0-alpha.27",
   "type": "module",
   "dependencies": {
-    "@arcships/rutis-runtime": "0.19.3"
+    "@arcships/rutis-runtime": "0.23.0"
   },
   "devDependencies": {
-    "@arcships/rutis": "0.19.3",
-    "@arcships/rutis-host": "0.19.3",
+    "@arcships/rutis": "0.23.0",
+    "@arcships/rutis-host": "0.23.0",
     "@modelcontextprotocol/sdk": "1.31.0",
     "zod": "4.6.7"
   }

@@ -26,8 +26,8 @@ The proxy rewrites `Origin` to the entry's own address, because the entry accept
 cd web
 npm ci
 npm run build      # vue-tsc type check, then vite build into web/dist
-npm run typecheck  # type check only
-npm test           # Node test runner over unit and component tests
+npm run typecheck  # type check only (against the declarations of packages/chat-ui)
+npm test           # Node test runner over unit and component tests, then Vitest over src/**/*.test.ts
 ```
 
 `web/dist` is what the entry serves: `index.html` for every non-asset path and `/assets/*` as immutable files. The build keeps to the entry's CSP: no inline scripts, no `data:` fonts, `@nuxt/ui` v4 icons are bundled offline from `@iconify-json/lucide` (network Iconify API providers are disabled in `main.ts`), and Shiki highlights with its JavaScript regex engine (WebAssembly would need `wasm-unsafe-eval`). `vite.config.ts` replaces markstream's optional `@terrastruct/d2` renderer with an inert module; that renderer is intentionally not shipped, so removing the alias pulls it into the bundle.
@@ -42,9 +42,8 @@ npm test           # Node test runner over unit and component tests
 | `src/projection.ts` | Folds history pages, `session.event` and `session.model.progress` into timeline rows (as `crates/dim-cli/src/projection.rs`) |
 | `src/lines.ts` | Folds branch facts into the Session's line tree, line states and cut message counts |
 | `src/stores/` | Connection, session directory, attached sessions and their per-line streams, models, layout, toasts and line tabs |
-| `src/features/chat/` | Chat page, new-session page, timeline, composer, model menu, approval prompt |
+| `src/features/chat/` | Chat page, new-session page, composer, model menu, approval prompt |
 | `src/features/lines/` | Right-side Lines panel, tree, line conversation, new-line and end-line dialogs |
 | `packages/chat-ui/` | Shared presentational chat timeline package (`@dimcode/chat-ui`); host contracts and component tests |
+| `src/chat-ui/` | The Web host of `@dimcode/chat-ui` and the only Web code that imports it: row mapping, the `ChatUiHost` whose commands call the chat store, labels, and `WebChatTimeline`, the chat and line timeline |
 | `src/features/settings/` | Account, appearance, agent defaults, providers, modality, MCP, plugins, skills, permissions, scheduled tasks, archived sessions and diagnostics |
-
-The conversation work-status presentation is visually inspired by [Rare UI AI Status](https://www.rareui.com/components/aistatus), implemented with Vue transitions and local icons. Active groups show the current action; completed groups retain their expandable activity summary. Reduced-motion preferences disable the animations.

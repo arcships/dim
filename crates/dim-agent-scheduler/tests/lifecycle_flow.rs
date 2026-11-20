@@ -610,14 +610,18 @@ async fn branch_events(client: &mut dim_client::Client, session_id: &str) -> Vec
 async fn hold_runs_file(
     server: &dim_app_server::RunningServer,
 ) -> (std::sync::mpsc::Sender<()>, tokio::task::JoinHandle<()>) {
+    use rutis::host::CtxHost;
+    let caller = rutis::Ctx::root().unwrap();
     let files = server
-        .service::<dim_app_server::plugin_files::PluginFileTransactions>()
-        .expect("the App Server provides the file transactions");
+        .service::<dim_app_server::plugin_files::PluginFiles>()
+        .expect("the App Server provides pluginFiles")
+        .open(&caller)
+        .unwrap();
     let (release, held) = std::sync::mpsc::channel();
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         files
-            .transact("scheduler/runs.json", move |_| {
+            .with_lock("scheduler/runs.json", move |_| {
                 entered.send(()).unwrap();
                 held.recv_timeout(std::time::Duration::from_secs(30))
                     .unwrap();
@@ -625,6 +629,7 @@ async fn hold_runs_file(
             })
             .await
             .unwrap();
+        caller.shutdown().await.unwrap();
     });
     entered_rx.await.unwrap();
     (release, task)

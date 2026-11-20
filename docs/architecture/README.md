@@ -17,7 +17,7 @@ Terminal / npm launcher
 
 `dim-agent-types` owns serialized data. `dim-agent-runtime` owns instance construction, timeline ordering and close coordination. Capabilities own their work, cancellation and state. Model and tool adapters provide typed ports; transport and product configuration belong to the App Server. The CLI is a client, not another agent execution engine.
 
-Parts are rutis 0.19.3 plugins; a part that depends on services by name is a `host::DynPlugin` that keeps their keys ([How Dim uses rutis, appendix A](../design/rutis-usage.md#appendix-a-rust-binding)). Dependencies are declared once; the catalog keys each name for the instances a copy runs in. A managed provider is an optional Rust process plugin that an account build's own executable installs; without it, managed-provider requests fail explicitly while API-key providers remain available.
+Parts are rutis 0.23.0 plugins; a part that depends on services by name is a `host::DynPlugin` that keeps their keys ([How Dim uses rutis, appendix A](../design/rutis-usage.md#appendix-a-rust-binding)). Dependencies are declared once; the catalog keys each name for the instances a copy runs in. A managed provider is an optional Rust process plugin that an account build's own executable installs; without it, managed-provider requests fail explicitly while API-key providers remain available.
 
 Plugin and part factories are pure and preserve plugin names and dependency keys. Configuration that must survive reload belongs to the captured plugin configuration; each `apply` acquires fresh I/O resources and registers their cleanup. FileStorage clones share the append-only authorized-root identities, while directory handles, operations and leases belong to one service generation. Rebuilding from the initial root list would let a later project reuse an earlier project's index.
 
@@ -107,7 +107,7 @@ cargo run --locked -p xtask -- graph
 cargo run --locked -p xtask -- check
 ```
 
-Graphs are generated from actual runtime bindings and Cargo/syn analysis into `docs/architecture/rust-agent/generated/`. Do not edit generated graphs by hand. `graph` is the only command that writes them; `check` renders `crates.*` and `modules.*` in memory and fails, naming the stale files, when they differ from the committed ones. `tests/extension-a`, `tests/extension-b` and `tests/integration` verify that independent external capabilities can participate without depending on internal implementation details.
+Graphs are generated from actual runtime bindings and Cargo metadata into `docs/architecture/rust-agent/generated/`. Do not edit generated graphs by hand. `graph` is the only command that writes the generated architecture files; `check` verifies crate and syn-AST module boundaries live from source and fails, naming the stale files, when committed `crates.*` differ. Run `cargo run --locked -p xtask -- module-graph DIR` when you need `modules.json` / `modules.mmd` locally. `tests/extension-a`, `tests/extension-b` and `tests/integration` verify that independent external capabilities can participate without depending on internal implementation details.
 
 ## Daemon profile identity
 

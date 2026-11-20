@@ -2,8 +2,7 @@
 use dim_agent_capabilities::file_storage::{EntryKind, FileStorage, FileStoragePlugin};
 use dim_agent_runtime::Names;
 use dim_app_server::plugin_files::{
-    MAX_WHOLE_FILE_BYTES, PluginFileEntry, PluginFileError, PluginFileTransactions,
-    PluginFilesPlugin,
+    FileScope, MAX_WHOLE_FILE_BYTES, PluginFileEntry, PluginFileError, PluginFilesPlugin,
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
@@ -63,13 +62,18 @@ async fn call(value: &Value, name: &str, args: Vec<Value>) -> Value {
     )
     .await
 }
-type Services = (Arc<PluginFileTransactions>, Arc<FileStorage>);
+type Services = (
+    Arc<FileScope>,
+    Arc<FileStorage>,
+    Arc<dim_agent_capabilities::file_storage::FsHost>,
+);
 struct Capture {
     captured: Arc<OnceLock<Arc<dyn HostDispatch>>>,
     services: Arc<OnceLock<Services>>,
     files: Key<dyn HostDispatch>,
-    transactions: Key<PluginFileTransactions>,
+    transactions: Key<dim_app_server::plugin_files::PluginFiles>,
     storage: Key<FileStorage>,
+    fs: Key<dim_agent_capabilities::file_storage::FsHost>,
 }
 impl DynPlugin for Capture {
     fn name(&self) -> &str {
@@ -80,15 +84,18 @@ impl DynPlugin for Capture {
             self.files.erase(),
             self.transactions.erase(),
             self.storage.erase(),
+            self.fs.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let files = ctx.require_at(&self.files)?;
             let _ = self.captured.set(files);
-            let transactions = ctx.require_at(&self.transactions)?;
+            let transactions = ctx.require_at(&self.transactions)?.open(ctx)?;
             let storage = ctx.require_at(&self.storage)?;
-            let _ = self.services.set((transactions, storage));
+            let _ = self
+                .services
+                .set((transactions, storage, ctx.require_at(&self.fs)?));
             Ok(Effect::Done)
         })
     }
@@ -113,6 +120,7 @@ async fn mount(path: &Path) -> (Ctx, Value, Services) {
         files: key,
         transactions: names.key().unwrap(),
         storage: names.key().unwrap(),
+        fs: names.key().unwrap(),
     }))
         .await
         .unwrap();
@@ -366,6 +374,75 @@ async fn versioned_records_reopen_and_preserve_rejected_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_text_replace_over_the_frame_limit_leaves_the_file_unchanged() {
+    let directory = Directory::new();
+    let (_root, scope, _) = mount(&directory.0).await;
+    let result = call(
+        &scope,
+        "withLock",
+        vec![
+            json!("state.txt").into(),
+            Value::callback(|args| {
+                let file = args.list()?.remove(0);
+                Ok(Value::future(async move {
+                    assert_eq!(
+                        call(&file, "replace", vec![json!("original").into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    let near = "y".repeat(16 * 1024 * 1024 - 40 * 1024);
+                    assert_eq!(
+                        call(&file, "replace", vec![json!(near.clone()).into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    assert_eq!(
+                        call(&file, "read", vec![]).await.json().unwrap(),
+                        json!({"ok":true,"value":near})
+                    );
+                    assert_eq!(
+                        call(&file, "replace", vec![json!("original").into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    let text = "x".repeat(16 * 1024 * 1024);
+                    let pending = member(&file, "replace")
+                        .reference()
+                        .unwrap()
+                        .call_async(Value::List(vec![json!(text).into()]))
+                        .await
+                        .unwrap();
+                    let Value::Reference(reference) = pending else {
+                        panic!("replace returns a future")
+                    };
+                    let error = reference
+                        .wait_async()
+                        .await
+                        .expect_err("a text replace over the frame limit is refused");
+                    assert_eq!(error.code(), Some("bad-value"));
+                    assert!(error.to_string().contains("16 MiB"), "{error}");
+                    assert_eq!(
+                        call(&file, "read", vec![]).await.json().unwrap(),
+                        json!({"ok":true,"value":"original"})
+                    );
+                    Ok(json!(null).into())
+                }))
+            }),
+        ],
+    )
+    .await
+    .json()
+    .unwrap();
+    assert_eq!(result, json!({"ok":true,"value":null}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn quiesce_cancels_waiters_but_settles_issued_transactions_and_isolates_scopes() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let directory = Directory::new();
@@ -510,7 +587,7 @@ async fn concurrent_stale_lock_reclaimers_serialize_through_native_ownership() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn binary_files_round_trip_and_stream_without_an_envelope() {
     let directory = Directory::new();
-    let (root, _, (files, _)) = mount(&directory.0).await;
+    let (root, scope, (files, _, fs)) = mount(&directory.0).await;
     let cancel = CancellationToken::new();
     files.directory("media").await.unwrap();
 
@@ -530,11 +607,16 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
     assert_eq!(files.read_bytes("media/missing.bin").await.unwrap(), None);
 
     let reader = files.open_read("media/blob.bin").await.unwrap().unwrap();
-    assert_eq!(reader.len(), bytes.len() as u64);
+    assert_eq!(reader.size, bytes.len() as u64);
     let mut streamed = Vec::new();
     loop {
-        let chunk = reader
-            .read_at(streamed.len() as u64, usize::MAX, &cancel)
+        let chunk = fs
+            .read_at(
+                reader.read_id.clone(),
+                streamed.len() as u64,
+                usize::MAX,
+                &cancel,
+            )
             .await
             .unwrap();
         if chunk.is_empty() {
@@ -542,6 +624,7 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
         }
         streamed.extend_from_slice(&chunk);
     }
+    fs.close_read(reader.read_id).await.unwrap();
     assert_eq!(streamed, bytes);
     assert!(
         files
@@ -552,16 +635,34 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
     );
 
     files
-        .transact("media/text.json", |_| (Some("inner".to_owned()), ()))
+        .with_lock("media/text.json", |_| (Some("inner".to_owned()), ()))
         .await
         .unwrap();
+    let read = call(
+        &scope,
+        "withLock",
+        vec![
+            json!("media/text.json").into(),
+            Value::callback(|args| {
+                let lease = args.list()?.remove(0);
+                Ok(Value::future(async move {
+                    Ok(call(&lease, "read", vec![]).await)
+                }))
+            }),
+        ],
+    )
+    .await;
+    assert_eq!(
+        read.json().unwrap(),
+        json!({"ok": true, "value": {"ok": true, "value": "inner"}})
+    );
     assert_eq!(
         files.read_bytes("media/text.json").await.unwrap().unwrap(),
         br#"{"version":1,"text":"inner"}"#
     );
     assert_eq!(
         files
-            .transact("media/blob.bin", |current| (
+            .with_lock("media/blob.bin", |current| (
                 None,
                 current.map(str::to_owned)
             ))
@@ -592,7 +693,7 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_cancelled_streaming_write_keeps_the_old_file_and_leaves_no_temporary() {
     let directory = Directory::new();
-    let (root, _, (files, _)) = mount(&directory.0).await;
+    let (root, _, (files, _, _)) = mount(&directory.0).await;
     files.directory("media").await.unwrap();
     files
         .write_stream("media/blob.bin", std::io::Cursor::new(b"original".to_vec()))
@@ -665,7 +766,7 @@ async fn a_cancelled_streaming_write_keeps_the_old_file_and_leaves_no_temporary(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn list_remove_and_work_directories_follow_the_root_and_its_leases() {
     let directory = Directory::new();
-    let (root, _, (files, storage)) = mount(&directory.0).await;
+    let (root, _, (files, storage, _)) = mount(&directory.0).await;
     let cancel = CancellationToken::new();
 
     let work = files.directory("media/tasks/a1/result").await.unwrap();
@@ -711,7 +812,7 @@ async fn list_remove_and_work_directories_follow_the_root_and_its_leases() {
         .await
         .unwrap();
     files
-        .transact("media/tasks/a1/task.json", |_| {
+        .with_lock("media/tasks/a1/task.json", |_| {
             (Some("record".to_owned()), ())
         })
         .await
@@ -774,7 +875,7 @@ async fn list_remove_and_work_directories_follow_the_root_and_its_leases() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_backslash_in_a_listed_name_stays_inside_its_component() {
     let directory = Directory::new();
-    let (root, _, (files, _)) = mount(&directory.0).await;
+    let (root, _, (files, _, _)) = mount(&directory.0).await;
 
     std::fs::create_dir_all(directory.0.join("a\\b")).unwrap();
     std::fs::create_dir_all(directory.0.join("a/b")).unwrap();

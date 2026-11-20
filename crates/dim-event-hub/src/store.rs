@@ -1,6 +1,6 @@
 //! The subscription file `eventhub/subscriptions.json` (design §2.2, A.5):
 //! one inner v1 JSON document inside the host's `{version, text}` envelope,
-//! which [`PluginFileTransactions`] reads and writes. The part reads the file
+//! which [`FileScope`] reads and writes. The part reads the file
 //! once when it applies; the subscriptions and the guide records live in the
 //! install's state, and every change writes the file through the running
 //! generation's handle under the install's change lock and then replaces that
@@ -11,7 +11,7 @@ use crate::{
     state::InstanceState,
 };
 use dim_agent_types::InputMode;
-use dim_app_server::plugin_files::{PluginFileError, PluginFileTransactions};
+use dim_app_server::plugin_files::{FileScope, PluginFileError};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
@@ -236,12 +236,12 @@ fn encode(document: &Document) -> String {
 /// a detached publish still runs after its generation ended lands where the
 /// next generation reads it (design §2.1, A.5).
 pub(crate) struct Store {
-    files: Arc<PluginFileTransactions>,
+    files: Arc<FileScope>,
     state: Arc<InstanceState>,
 }
 
 impl Store {
-    pub(crate) fn new(files: Arc<PluginFileTransactions>, state: Arc<InstanceState>) -> Self {
+    pub(crate) fn new(files: Arc<FileScope>, state: Arc<InstanceState>) -> Self {
         Self { files, state }
     }
 
@@ -254,7 +254,7 @@ impl Store {
         let _guard = self.state.change_lock().await;
         let document = self
             .files
-            .transact(SUBSCRIPTIONS_FILE, |current| (None, decode(current)))
+            .with_lock(SUBSCRIPTIONS_FILE, |current| (None, decode(current)))
             .await
             .map_err(|error| error.to_string())??;
         self.state.replace_subscriptions(document);
@@ -288,7 +288,7 @@ impl Store {
         let _guard = self.state.change_lock().await;
         let outcome = self
             .files
-            .transact(SUBSCRIPTIONS_FILE, move |current| {
+            .with_lock(SUBSCRIPTIONS_FILE, move |current| {
                 let mut document = match decode(current) {
                     Ok(document) => document,
                     Err(error) => {

@@ -13,6 +13,10 @@ and has landed. It replaces the "one row per instance" draft of this design, and
 read [#645](https://github.com/arcships/dim/pull/645) added goes with it.
 Decision: [ADR 015](../adr/015-scopes-are-plugins.md) (Proposed).
 
+The design landed on 0.19.3; the current runtime baseline is 0.23.0
+([ADR 025](../adr/025-rutis-0-23.md)). The source line numbers below are the 0.19.3 ones and stay as the
+design's record.
+
 ## 1. Scope and non-goals
 
 A Session or branch is a loader instance today for one reason. When a part of another language is

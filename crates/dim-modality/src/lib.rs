@@ -50,7 +50,6 @@ use dim_agent_runtime::{AgentBuilder, Names};
 use dim_agent_types::{ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId};
 use dim_app_server::{
     methods::ManagementMethods,
-    plugin_files::PluginFileTransactions,
     protocol::Empty,
     settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
 };
@@ -1200,7 +1199,8 @@ pub struct ModalityPlugin {
     methods: Key<ManagementMethods>,
     selection: Key<ModelSelectionHost>,
     selectable: Key<SelectableModelsHost>,
-    files: Key<PluginFileTransactions>,
+    files: Key<dim_app_server::plugin_files::PluginFiles>,
+    fs: Key<dim_agent_capabilities::file_storage::FsHost>,
     options: InstallOptions,
 }
 impl ModalityPlugin {
@@ -1211,6 +1211,7 @@ impl ModalityPlugin {
             selection: names.key()?,
             selectable: names.key()?,
             files: names.key()?,
+            fs: names.key()?,
             options,
         })
     }
@@ -1226,6 +1227,7 @@ impl DynPlugin for ModalityPlugin {
             self.selection.erase(),
             self.selectable.erase(),
             self.files.erase(),
+            self.fs.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -1234,12 +1236,13 @@ impl DynPlugin for ModalityPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let selection = ctx.require_at(&self.selection)?;
             let selectable = ctx.require_at(&self.selectable)?;
-            let files = ctx.require_at(&self.files)?;
+            let files = ctx.require_at(&self.files)?.open(ctx)?;
             settings.register::<ModalitySettings>(ctx)?;
             // The task layer: one state for the methods, the scheduler and
             // `modalityTasks` (A.3, A.6).
             let shared = Arc::new(engine::Shared::new(
                 files,
+                ctx.require_at(&self.fs)?,
                 settings.clone(),
                 selection.clone(),
                 selectable.clone(),
