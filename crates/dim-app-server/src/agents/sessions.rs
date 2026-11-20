@@ -15,6 +15,10 @@ use dim_agent_types::{
     AgentEvent, ContentBlock, InputBlock, InputMessageData, InputMode, InputWithdrawData, ModelId,
     ModelSelection, PermissionPolicy, StartupConnectionSource, UserInput,
 };
+use futures_util::{
+    FutureExt,
+    future::{BoxFuture, Shared},
+};
 use rutis::Ctx;
 use rutis::host::CtxHost;
 use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value, caller_row, settle};
@@ -106,13 +110,17 @@ struct IdleRequest {
 /// The process Session directory.
 pub struct Sessions(pub(crate) Ctx);
 impl Sessions {
-    pub(crate) async fn session_end(session: &Session) -> SessionEnd {
-        let _ = session.closed().await;
-        if session.is_unloading() {
-            SessionEnd::Unloaded
-        } else {
-            SessionEnd::Closed
+    pub(crate) fn generation_end(session: Session) -> Shared<BoxFuture<'static, SessionEnd>> {
+        async move {
+            let _ = session.closed().await;
+            if session.is_unloading() {
+                SessionEnd::Unloaded
+            } else {
+                SessionEnd::Closed
+            }
         }
+        .boxed()
+        .shared()
     }
 
     fn observe_wire(&self, args: Value) -> Reply {
@@ -176,9 +184,10 @@ impl Sessions {
         let reply = observed.clone();
         tokio::spawn(async move {
             let notify = async {
-                let reason = Self::session_end(&session).await;
+                let session_id = session.id().to_owned();
+                let reason = Self::generation_end(session).await;
                 on_end(SessionEnded {
-                    session_id: session.id().to_owned(),
+                    session_id,
                     observed,
                     reason,
                 })

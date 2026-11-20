@@ -147,7 +147,9 @@ struct Relation {
 
 struct WatchedSession {
     agent_id: String,
-    session: Session,
+    session_id: String,
+    generation: Option<InstanceId>,
+    ended: Shared<WorkFuture<'static, crate::agents::SessionEnd>>,
 }
 
 /// One member relation as `collaborationDirectory.relations` answers it.
@@ -488,17 +490,21 @@ impl Collaboration {
     fn watch(self: &Arc<Self>, agent_id: &str, session: Session) {
         let watched = {
             let mut entries = self.directory.watched.lock().unwrap();
-            if entries
-                .get(session.id())
-                .is_some_and(|entry| !entry.session.is_closing())
+            let generation = session.instance().ok();
+            if generation.is_some()
+                && entries
+                    .get(session.id())
+                    .is_some_and(|entry| entry.generation == generation)
             {
                 return;
             }
             let watched = Arc::new(WatchedSession {
                 agent_id: agent_id.to_owned(),
-                session,
+                session_id: session.id().to_owned(),
+                generation,
+                ended: crate::agents::Sessions::generation_end(session),
             });
-            entries.insert(watched.session.id().to_owned(), watched.clone());
+            entries.insert(watched.session_id.clone(), watched.clone());
             watched
         };
         self.observe(watched);
@@ -509,7 +515,7 @@ impl Collaboration {
         self.tasks.spawn(async move {
             tokio::select! {
                 _ = stop.cancelled() => {}
-                reason = crate::agents::Sessions::session_end(&watched.session) => this.session_closed(watched, reason).await,
+                reason = watched.ended.clone() => this.session_closed(watched, reason).await,
             }
         });
     }
@@ -523,7 +529,7 @@ impl Collaboration {
         watched: Arc<WatchedSession>,
         reason: crate::agents::SessionEnd,
     ) {
-        let id = watched.session.id();
+        let id = watched.session_id.as_str();
         {
             let mut entries = self.directory.watched.lock().unwrap();
             if !entries
