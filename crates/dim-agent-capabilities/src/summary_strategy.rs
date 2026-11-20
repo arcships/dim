@@ -233,7 +233,10 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
                 ctx.require_at(&self.context_model)?,
             ));
             ctx.provide_at(
-                crate::port_faces::face_key::<CompactionStrategyHost>(),
+                rutis_bridge::session::host_key_in(
+                    "compactionStrategyHost",
+                    self.host.erase().instance_id().expect("Session strategy"),
+                ),
                 host.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,
             )?;
             ctx.provide_at(self.host.clone(), host)?;

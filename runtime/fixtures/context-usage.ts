@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { definePlugin } from '@arcships/rutis'
-import type { CompactionStrategyHost, ContextModelHost, ContextPreparation, ContextUsage, Message, SessionMethods } from '../../npm/plugin.js'
+import type { CompactionStrategyHost, HistoryRenderer, ContextModelHost, ContextPreparation, ContextUsage, Message, SessionMethods } from '../../npm/plugin.js'
 import { partRow } from './part-row.ts'
 
 const part = definePlugin({
   name: 'ContextUsageFixture',
-  inject: ['compactionStrategyHost', 'contextModelHost', 'contextPreparation', 'contextUsage', 'sessionMethods'],
+  inject: ['historyRenderer', 'compactionStrategyHost', 'contextModelHost', 'contextPreparation', 'contextUsage', 'sessionMethods'],
   async apply(ctx) {
+    const renderer = ctx.use<HistoryRenderer>('historyRenderer')
     const strategy = ctx.use<CompactionStrategyHost>('compactionStrategyHost')
     const counter = ctx.use<ContextModelHost>('contextModelHost')
     const preparation = ctx.use<ContextPreparation>('contextPreparation')
@@ -19,6 +20,12 @@ const part = definePlugin({
       let release!: () => void
       const cancelled = new Promise<void>(done => { release = done })
       try {
+        const prefix = { branchId: 'main', through }
+        const history = await renderer.context(prefix)
+        const rendered = await renderer.renderedContext(prefix)
+        assert.deepEqual(rendered.context, history)
+        assert.ok(history.positions.every(position => Number(position.sequence) <= through))
+        assert.equal(history.positions.length, history.events.length)
         const reply = await usage.read({ through }, () => cancelled)
         const model = { providerId: 'mock', modelId: 'echo' }
         const messages: Message[] = [

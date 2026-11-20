@@ -80,6 +80,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<tool_registry::ToolRegistry>(catalog, session);
     catalog.register_shared_instance("toolSourcesView", SESSION_GROUP);
     register::<history::HistoryRenderer>(catalog, session);
+    catalog.register_shared_instance("historyRenderer", SESSION_GROUP);
     catalog.register_shared_instance("initialPromptConfiguration", SESSION_GROUP);
     register::<prompt_guide::GuideEntries>(catalog, session);
     catalog.register_shared_instance("promptRegistry", SESSION_GROUP);

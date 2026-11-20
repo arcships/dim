@@ -114,6 +114,13 @@ fn install_with_prompt_capability_and_branch(
                     Ok(Box::new(SessionBroadcastPlugin::new(names)?))
                 }),
         )
+        .feature(
+            Feature::new("HistoryRenderer").session("HistoryRenderer", |names| {
+                Ok(Box::new(crate::history::face::HistoryFacePlugin::new(
+                    names,
+                )?))
+            }),
+        )
         .require_feature(
             Feature::new("TimelineTree")
                 .session("TimelineTree", |names| {

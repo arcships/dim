@@ -450,6 +450,37 @@ export interface ContextModelHost {
   }>;
   estimate(request: { model: import('./branch-services.js').ModelSelection; algorithm: string; contribution: ContextContribution }): Promise<number>;
 }
+export type HistoryPrefix = { branchId: string; through: number | bigint };
+export type HistoryPosition = import('./branch-services.js').HistoryEntry['position'];
+export type ProjectionCheckpoint = {
+  resume: HistoryPosition & { event_id: string };
+  state: {
+    retain_from: string;
+    prompts: {
+      entries: import('./branch-services.js').PromptEntry[];
+      revision: import('./branch-services.js').PromptReference | null;
+      system_revision: import('./branch-services.js').PromptReference | null;
+      system: string; turns: string[]; tasks: import('./branch-services.js').PromptScope[];
+    };
+    delivered: import('./branch-services.js').ContextBaselineEntry[];
+    inputs: [string, import('./branch-services.js').InputMessageData][];
+    configuration: import('./branch-services.js').ContextConfiguredData | null;
+    output: import('./branch-services.js').MessagePart[];
+    open_tools: string[]; output_open: boolean;
+  };
+};
+export type ContextHistory = {
+  checkpoint: ProjectionCheckpoint | null;
+  ancestry: string[];
+  events: AgentEvent[];
+  positions: HistoryPosition[];
+};
+export interface HistoryRenderer {
+  context(prefix: HistoryPrefix): Promise<ContextHistory>;
+  renderedContext(prefix: HistoryPrefix): Promise<{ context: ContextHistory; history: import('./branch-services.js').HistoryEntry[] }>;
+  snapshot(input: { context: ContextHistory; retainFrom: string; anchor: AgentEvent }): Promise<TimelineRecoverySnapshot>;
+  streamCheckpoint(input: HistoryPrefix & { retainFrom: string; batch: number | bigint }): Promise<ProjectionCheckpoint>;
+}
 export type StrategyDiagnostics = {
   modelCallCount: number | bigint;
   modelUsage: NonNullable<AuxiliaryReply['usage']> | null;

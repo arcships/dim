@@ -78,7 +78,7 @@ pub struct TimelineTrace {
 }
 
 /// A checkpoint and the ordered events replayed after its saved projection state.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContextHistory {
     pub checkpoint: Option<ProjectionCheckpoint>,
     pub ancestry: Vec<String>,

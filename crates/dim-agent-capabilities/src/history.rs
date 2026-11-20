@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, num::NonZeroU64, sync::Arc};
 
+pub(crate) mod face;
 mod settled_output;
 pub(crate) use settled_output::settled_request_output;
 

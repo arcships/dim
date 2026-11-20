@@ -962,6 +962,12 @@ impl TimelineTree {
             admitted: tokio::sync::Notify::new(),
         })
     }
+    pub(crate) fn history_timeline(&self, id: &str) -> Result<Timeline> {
+        self.owned_context(id)
+            .map(|context| context.timeline().clone())
+            .ok_or_else(|| AgentError::UnknownBranch(id.into()))
+    }
+
     fn owned_context(&self, id: &str) -> Option<Arc<TimelineContext>> {
         self.state
             .lock()
