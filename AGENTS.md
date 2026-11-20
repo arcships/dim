@@ -66,7 +66,6 @@ Every public service is a data face. The contract is [service faces](docs/design
 
 ## Testing
 
-- Follow [ADR 025](docs/adr/025-verification-tiers-and-ci-governance.md) for verification tiers (L0–L4, including when formal models run), test placement and CI governance.
 - Verify that the remaining necessary changes satisfy the user flow, reusing relevant tests first; after integration, check the interfaces and flows actually affected. Reuse evidence that still applies; only expand or repeat verification for new changes, failures or unresolved doubts. Progress is not measured by test count, failure count or number of runs.
 - Automated tests only protect architectural flows, public interfaces, cross-crate contracts, persistence formats, user flows and release artifacts. Assertions about private modules, helper functions, single functions, internal call order or mock configuration belong in the nearest flow test, not in standalone tests.
 - Scenarios involving security, data loss, data migration, protocol compatibility or release artifacts may keep a dedicated test if they cannot be triggered reliably in a flow test.
