@@ -3,7 +3,7 @@
 Owner: [context_preparation.rs](../../../../crates/dim-agent-capabilities/src/context_preparation.rs)
 and [context_policy.rs](../../../../crates/dim-agent-capabilities/src/context_policy.rs).
 Prepares a fixed-source model request, enforces context policy and provides the
-atomic ConfigurationPublisher used by Prompt.
+atomic configuration publication used by Prompt.
 
 The branch service exposes `prepare({source, projection?}, cancelled)` and
 `validate({requestId, request}, cancelled)`. Preparation accepts the projection
@@ -90,6 +90,10 @@ branch and only while a strategy is bound: without one the policy compacts
 nothing and no digest can be written
 ([Prompt §4](../../../design/plugins/Prompt.md#4-the-built-in-entries-and-their-writers)).
 
+## Configuration publication
+
+`publish({adopted, changes, model?, toolAdoption?, inputs})` returns the last sequence of the committed batch, or null for an unchanged adoption. `adopted` carries the prompt checkpoint and the previous configuration from the same consumed prefix. For a prompt change, each supplied input block is committed in order and its event ID is recorded in the prompt change. `awaitPublished({sequence})` waits for publication and returns that sequence or the Timeline failure.
+
 ## Tests
 
 [context_flow.rs](../../../../crates/dim-agent-capabilities/tests/context_flow.rs):
@@ -102,6 +106,6 @@ nothing and no digest can be written
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareContextHost` |
-| 提供 | `B:ConfigurationPublisher`、`B:ContextPreparation`、`B:dyn HostDispatch#contextPreparation` |
+| 提供 | `B:ContextPreparation`、`B:dyn HostDispatch#contextPreparation` |
 | 被注入于 | `Loop`、`ModelProvider`、`Prompt` |
 <!-- /generated -->

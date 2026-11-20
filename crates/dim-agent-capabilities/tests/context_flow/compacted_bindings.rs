@@ -4,7 +4,6 @@
 
 use super::*;
 use dim_agent_capabilities::{
-    agent_loop::AgentLoop,
     defaults,
     history::summary_message,
     host_platform::{HostPlatform, ShellStatus},
@@ -250,7 +249,7 @@ impl Files {
     /// A manual compaction, waited for, returning its `retain_from`.
     async fn compact(&self, session: &Session) -> String {
         let command = session
-            .service::<AgentLoop>("main")
+            .service::<dyn dim_agent_runtime::AgentLoop>("main")
             .unwrap()
             .compact()
             .unwrap();

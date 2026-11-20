@@ -62,10 +62,10 @@
 | `exec/ended` | 后台执行终态 | BackgroundExec、ShellSession | 各执行所有者、GoalBranch；另由生产方发布唤醒输入 |
 | `turn/start` | 回合开始 | Loop | WaitBranch、Prompt、InputQueue、执行与协作部件 |
 | `turn/end` | 回合结束及结果 | Loop | WaitBranch、InputQueue、GoalBranch、HooksBranch、执行与协作部件 |
-| `prompt/changed` | 提示词快照已采用 | Prompt 经 ConfigurationPublisher | Prompt、ContextUsage/配置恢复 |
+| `prompt/changed` | 提示词快照已采用 | Prompt 经 ContextPreparation | Prompt、ContextUsage/配置恢复 |
 | `prompt/configure-request` | 请求配置提示词 | Prompt 配置入口 | Prompt |
 | `prompt/configure-result` | 提示词配置操作结果 | Prompt | Prompt |
-| `context/configured` | 上下文配置已采用 | ConfigurationPublisher（ContextPreparation） | Prompt、ToolBinding、ContextUsage |
+| `context/configured` | 上下文配置已采用 | ContextPreparation | Prompt、ToolBinding、ContextUsage |
 | `context/scope` | 上下文作用域状态 | 本基线未找到专门的生产写入路径 | Prompt |
 | `context/prepare` | 请求准备一次模型上下文 | Loop | ContextPreparation、ContextUsage |
 | `context/compact` | 请求压缩上下文 | Loop 的 compact 入口 | Loop、ContextPreparation、ContextUsage |

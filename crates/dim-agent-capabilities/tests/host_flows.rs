@@ -1,6 +1,6 @@
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, EchoModel, MockTools},
-    agent_loop::AgentLoop,
     defaults,
     host::*,
     tool_registry::definition,
@@ -914,7 +914,7 @@ async fn a_compaction_step_before_the_continuation_keeps_its_chain() {
         .unwrap();
     entered.notified().await;
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();

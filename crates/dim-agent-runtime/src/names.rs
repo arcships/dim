@@ -22,7 +22,7 @@ use std::result::Result;
 
 /// The service name of the Rust type `T`: its type name with the first word
 /// lowercased, as `#[rutis::service]` names a type (`Timeline` is
-/// `timeline`, `dyn LoopState` `loopState`, `HTTPClient` `httpClient`).
+/// `timeline`, `dyn AgentLoop` `agentLoop`, `HTTPClient` `httpClient`).
 pub fn name_of<T: ?Sized>() -> String {
     name_of_type(type_name::<T>())
 }
@@ -109,8 +109,7 @@ pub fn catalog() -> ServiceCatalog {
     register::<TimelineIdentity>(&mut catalog, branch);
     register::<BranchLifecycle>(&mut catalog, branch);
     register::<BranchOpening>(&mut catalog, branch);
-    register::<dyn LoopState>(&mut catalog, branch);
-    register::<dyn ConfigureControl>(&mut catalog, branch);
+    register::<dyn AgentLoop>(&mut catalog, branch);
     catalog
 }
 
@@ -376,7 +375,7 @@ mod tests {
     fn names_follow_the_service_macro() {
         assert_eq!(name_of::<Timeline>(), "timeline");
         assert_eq!(name_of::<TimelineIdentity>(), "timelineIdentity");
-        assert_eq!(name_of::<dyn LoopState>(), "loopState");
+        assert_eq!(name_of::<dyn AgentLoop>(), "agentLoop");
         assert_eq!(name_of::<dyn TimelineStore>(), "timelineStore");
         assert_eq!(name_of::<StateCell<u8>>(), "stateCell");
         struct HTTPClient;

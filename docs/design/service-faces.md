@@ -127,7 +127,6 @@ Proposed target operations: [Resource and repository operations](contracts/resou
 | `fileStorage` | `FilePath`、根与代次 | 数据面 `fsHost`：工具部分 `resolve`/`read`/`write`/`edit`/`glob`/`grep`/`mentions`，存储部分 `stat`/`readBytes`/`openRead`/`readAt`/`closeRead`/`lock`/`unlock`/`backup`/`createDirectory`/`replace`/`list`/`remove`（§4，#1297）；`fileStorage` 是提供方和 binding |
 | `sqliteStorage` | 连接与事务 | Session 行走 `store`；原生 Agent、Provider 和 Settings 的记录操作直接调用 `sqliteStorage`，连接与事务由 SQLite 插件持有。`sqliteStorage.storageReport({})` 返回 SQLite 文件和 WAL 的容量指标（[存储契约](appserver/native-storage-format.md)） |
 | `timelineStore` | 连接与批次 | Session 作用域的 `timelineStore` 数据面（resource-faces §9 允许与仓储族分名）：`createSession`/`sessionConfig`/`releaseSession`/`rollbackSession`/`append`（同步受理）/`commits`、`closeCommits`（按分支序的完成通知）/`head`/`branches`/`readPage`/`readSegments`/`query`/`trace`/`batchEnd`/`batchEndAt`/`saveSnapshot`/`latestSnapshot`；`TimelineStore` trait 是 binding（#1298） |
-| `promptSourcesBranch` | 分支 prompt 装配 | 按 #1292 确认公共操作与装配内部职责。 |
 
 这些行按当前对象形状分组。前四行的数据契约由 [resource and store data faces](resource-faces.md) 定义（#1295/#1297/#1298）。其余行按 #1292 逐批确定操作面。
 
@@ -170,14 +169,9 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 
 | 名字 | scope | provider | reason | 动作 |
 | --- | --- | --- | --- | --- |
-| `agentLoop` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
-| `loopState` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prompt` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
 | `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
-| `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
 | `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
@@ -316,7 +310,7 @@ store.associateWorktree {sessionId, repository, root, subtree} -> {}
 
 - `agentConfig` 在 runtime 的 catalog 注册 shared instance；`SessionScope` 已经提供值，`get` 返回同一个快照。 配置快照直接使用所有者的数据定义，接收端允许未知字段；公开类型名称的迁移见[插件配置类型兼容性说明](../release/README.md#plugin-configuration-type-compatibility)。
 - `skillsConfig`、`collaborationConfig` 的注册从 typed 改成 shared instance；值仍由 `install_with_config` 的 `session_value` 提供。
-- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，branch 通过 `PromptSourcesBranch::language()` 读同一个 cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
+- `sessionLanguage` 只把读做成面；值由 PromptSources 的 Session part 提供，Session 语言方法和分支定期检查直接读取同一个 Session cell。写入不暴露，避免绕过 Session 记录和 Prompt 的采用。
 - FileAccess 通过 `store.associateWorktree` 调用 SessionStore；Rust 与跨语言调用共享同一写入操作。迁移调用方时移除 `worktreeAssociations`。路径校验和原子关联由 SessionStore 负责。
 - 测试：`crates/dim-agent-capabilities/tests/legacy_session_faces.rs` 与 `crates/dim-app-server/tests/legacy_session_faces.rs` 比较 typed binding 与 wire 的同一操作。
 

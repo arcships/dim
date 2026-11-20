@@ -108,18 +108,15 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<methods::SessionMethods>(catalog, session);
     let branch = Some(BRANCH_GROUP);
     register::<input_queue::InputQueue>(catalog, branch);
-    register::<agent_loop::AgentLoop>(catalog, branch);
     register::<prompt::Prompt>(catalog, branch);
     register::<context_preparation::ContextPreparation>(catalog, branch);
     register::<context_usage::ContextUsage>(catalog, branch);
     catalog.register_shared_instance("contextUsage", BRANCH_GROUP);
-    register::<context_preparation::ConfigurationPublisher>(catalog, branch);
     register::<tool_executor::ToolExecutor>(catalog, branch);
     register::<tool_binding::ToolBinding>(catalog, branch);
     register::<permission::Permission>(catalog, branch);
     register::<approval::Approval>(catalog, branch);
     catalog.register_shared_instance("skillsBranch", BRANCH_GROUP);
-    register::<prompt_sources::PromptSourcesBranch>(catalog, branch);
     register::<workspace_tools::background::BackgroundExec>(catalog, branch);
     register::<shell_session::ShellSession>(catalog, branch);
     register::<dyn exec_stop::ExecStop>(catalog, branch);
@@ -152,13 +149,11 @@ impl PublicService for dyn exec_stop::ExecStop {}
 impl PublicService for workspace_tools::file_reads::FileReads {}
 impl PublicService for timeline_tree::BranchLine {}
 impl PublicService for timeline_tree::TreeCommands {}
-impl PublicService for prompt_sources::PromptSourcesBranch {}
 impl PublicService for wait::Wait {}
 impl PublicService for skills::SkillsBranch {}
 impl PublicService for prompt::Prompt {}
 impl PublicService for tool_registry::ToolSourcesView {}
 impl PublicService for methods::SessionMethods {}
-impl PublicService for agent_loop::AgentLoop {}
 impl PublicService for context_preparation::ContextPreparation {}
 impl PublicService for context_usage::ContextUsage {}
 

@@ -226,7 +226,7 @@ impl TimelineContext {
                 if phase.as_ref().is_none_or(|rx| rx.has_changed().is_err()) {
                     phase = inner
                         .ctx
-                        .get_at::<dyn LoopState>(&inner.scope.key::<dyn LoopState>())
+                        .get_at::<dyn AgentLoop>(&inner.scope.key::<dyn AgentLoop>())
                         .map(|state| state.watch());
                 }
                 if signal || had != phase.is_some() {
@@ -338,8 +338,8 @@ impl TimelineContext {
     pub(crate) fn dispatch_watch(&self) -> watch::Receiver<crate::core::DispatchState> {
         self.dispatcher.watch()
     }
-    fn loop_state(&self) -> Result<Arc<dyn LoopState>> {
-        self.port::<dyn LoopState>("Loop")
+    fn loop_state(&self) -> Result<Arc<dyn AgentLoop>> {
+        self.port::<dyn AgentLoop>("Loop")
     }
     /// Capability ports are looked up per call: a reloading capability is absent.
     /// A branch service a facade reads: a name of the branch group.
@@ -376,16 +376,6 @@ impl TimelineContext {
     pub(crate) fn state_cell<S: Clone + Send + Sync + 'static>(&self) -> Option<Arc<StateCell<S>>> {
         self.ctx
             .get_at::<StateCell<S>>(&self.scope.key::<StateCell<S>>())
-    }
-    pub(crate) async fn configure(&self, update: ConfigureUpdate) -> Result<ConfigureOutcome> {
-        if self.close.started() {
-            return Err(AgentError::Closed(self.id().into()));
-        }
-        let control = self
-            .ctx
-            .get_at::<dyn ConfigureControl>(&self.scope.key::<dyn ConfigureControl>())
-            .ok_or_else(|| AgentError::Build("ConfigureControl is not installed".into()))?;
-        control.configure(update).await
     }
     /// Validates input from outside the branch and appends it. Whether it
     /// starts a turn is Loop's decision when the input is dispatched. An

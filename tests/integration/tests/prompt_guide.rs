@@ -6,6 +6,7 @@ mod local_support;
 #[path = "local_support/compaction.rs"]
 mod compaction_support;
 
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, EchoModel},
     defaults,

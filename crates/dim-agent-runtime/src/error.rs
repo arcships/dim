@@ -80,6 +80,26 @@ impl BranchRefusal {
 }
 
 impl AgentError {
+    /// The error code exposed by rutis for this variant.
+    pub fn variant(&self) -> &'static str {
+        match self {
+            Self::InvalidInput(_) => "InvalidInput",
+            Self::Closed(_) => "Closed",
+            Self::UnknownBranch(_) => "UnknownBranch",
+            Self::BranchEnded(_) => "BranchEnded",
+            Self::BranchRefused { .. } => "BranchRefused",
+            Self::Storage(_) => "Storage",
+            Self::PublicationUnknown(_) => "PublicationUnknown",
+            Self::Build(_) => "Build",
+            Self::Cancelled(_) => "Cancelled",
+            Self::Reloading(_) => "Reloading",
+            Self::AmbiguousSubmission(_) => "AmbiguousSubmission",
+            Self::PartialSubmission(_) => "PartialSubmission",
+            Self::Fault { .. } => "Fault",
+            Self::Framework(_) => "Framework",
+            Self::Multiple(_) => "Multiple",
+        }
+    }
     /// The tree's refusal of an operation on a line.
     pub fn refused(refusal: BranchRefusal, message: impl Into<String>) -> Self {
         Self::BranchRefused {

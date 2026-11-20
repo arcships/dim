@@ -5,6 +5,7 @@ use axum::{
     http::{HeaderMap, Uri},
     response::sse::{Event, Sse},
 };
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
     context_model::ProductContextModel,

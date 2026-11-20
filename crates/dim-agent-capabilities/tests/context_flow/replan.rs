@@ -160,7 +160,7 @@ async fn turns(session: &dim_agent_runtime::Session, turns: usize, chars: usize)
 /// result is committed.
 async fn compact_now(session: &dim_agent_runtime::Session) -> (u64, Vec<Arc<AgentEvent>>) {
     let command = session
-        .service::<dim_agent_capabilities::agent_loop::AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();

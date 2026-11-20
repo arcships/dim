@@ -175,7 +175,13 @@ async fn one_tool_panic_does_not_abandon_other_native_cleanup_or_reorder_actual_
 }
 
 struct EmptyLoop(tokio::sync::watch::Sender<LoopSnapshot>);
-impl LoopState for EmptyLoop {
+impl AgentLoop for EmptyLoop {
+    fn compact(&self) -> dim_agent_runtime::Result<u64> {
+        unreachable!("idle fixture cannot compact")
+    }
+    fn stop_turn(&self, _: &str, _: String) -> dim_agent_runtime::Result<Option<u64>> {
+        unreachable!("idle fixture has no turns")
+    }
     fn state(&self) -> LoopSnapshot {
         LoopSnapshot::default()
     }
@@ -183,7 +189,7 @@ impl LoopState for EmptyLoop {
         self.0.subscribe()
     }
 }
-struct ExtensionControls(Arc<AtomicUsize>, rutis::host::Key<dyn LoopState>);
+struct ExtensionControls(Arc<AtomicUsize>, rutis::host::Key<dyn AgentLoop>);
 impl Plugin for ExtensionControls {
     type Deps = ();
     fn name(&self) -> &str {
@@ -200,7 +206,7 @@ impl Plugin for ExtensionControls {
             self.1.clone(),
             Arc::new(EmptyLoop(
                 tokio::sync::watch::channel(LoopSnapshot::default()).0,
-            )) as Arc<dyn LoopState>,
+            )) as Arc<dyn AgentLoop>,
         )?;
         Ok(())
     }

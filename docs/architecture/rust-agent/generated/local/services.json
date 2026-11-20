@@ -391,6 +391,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::skills::session::SessionSkills@session",
             "scope": null,
             "status": "Ready"
@@ -399,14 +404,15 @@
             "service": "dim_agent_runtime::config::BranchLifecycle@main",
             "scope": null,
             "status": "Ready"
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "scope": null,
-            "status": "Ready"
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "scope": null,
+            "provider": 74,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::skills::session::SessionSkills@session",
             "scope": null,
@@ -418,15 +424,15 @@
             "scope": null,
             "provider": 60,
             "generation": 1
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "scope": null,
-            "provider": 74,
-            "generation": 1
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::prompt::Prompt@main",
+            "provider": 74,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_capabilities::skills::session::SessionSkills@session",
             "provider": 51,
@@ -438,12 +444,6 @@
             "provider": 60,
             "declared": true,
             "external": false
-          },
-          {
-            "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-            "provider": 74,
-            "declared": true,
-            "external": true
           }
         ]
       },
@@ -600,7 +600,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "scope": null,
             "status": "Ready"
           },
@@ -652,7 +652,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "scope": null,
             "provider": 66,
             "generation": 1
@@ -714,7 +714,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "provider": 66,
             "declared": true,
             "external": true
@@ -2015,20 +2015,8 @@
     ],
     "bindings": [
       {
-        "service": "dim_agent_capabilities::agent_loop::AgentLoop@main",
-        "provider": 71,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::approval::Approval@main",
         "provider": 63,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
-        "provider": 66,
         "generation": 1,
         "removing": false
       },
@@ -2059,12 +2047,6 @@
       {
         "service": "dim_agent_capabilities::prompt::Prompt@main",
         "provider": 74,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::prompt_sources::PromptSourcesBranch@main",
-        "provider": 75,
         "generation": 1,
         "removing": false
       },
@@ -2171,13 +2153,13 @@
         "removing": false
       },
       {
-        "service": "dyn dim_agent_runtime::contracts::ConfigureControl@main",
-        "provider": 74,
+        "service": "dyn dim_agent_runtime::contracts::AgentLoop@main",
+        "provider": 71,
         "generation": 1,
         "removing": false
       },
       {
-        "service": "dyn dim_agent_runtime::contracts::LoopState@main",
+        "service": "dyn rutis_bridge::session::services::HostDispatch#agentLoop@main",
         "provider": 71,
         "generation": 1,
         "removing": false
@@ -2233,6 +2215,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#permission@main",
         "provider": 73,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#prompt@main",
+        "provider": 74,
         "generation": 1,
         "removing": false
       },

@@ -28,7 +28,13 @@ enum Action {
 }
 
 struct IdleLoop(tokio::sync::watch::Sender<LoopSnapshot>);
-impl LoopState for IdleLoop {
+impl AgentLoop for IdleLoop {
+    fn compact(&self) -> dim_agent_runtime::Result<u64> {
+        unreachable!("idle fixture cannot compact")
+    }
+    fn stop_turn(&self, _: &str, _: String) -> dim_agent_runtime::Result<Option<u64>> {
+        unreachable!("idle fixture has no turns")
+    }
     fn state(&self) -> LoopSnapshot {
         LoopSnapshot::default()
     }
@@ -40,7 +46,7 @@ impl LoopState for IdleLoop {
 type ProbedBranch = Arc<Mutex<Option<(Arc<Timeline>, Ctx)>>>;
 
 struct Probe {
-    idle: Key<dyn LoopState>,
+    idle: Key<dyn AgentLoop>,
     timeline: Key<Timeline>,
     seen: ProbedBranch,
 }
@@ -58,7 +64,7 @@ impl DynPlugin for Probe {
                 self.idle.clone(),
                 Arc::new(IdleLoop(
                     tokio::sync::watch::channel(LoopSnapshot::default()).0,
-                )) as Arc<dyn LoopState>,
+                )) as Arc<dyn AgentLoop>,
             )?;
             *self.seen.lock().unwrap() = Some((ctx.require_at(&self.timeline)?, ctx.clone()));
             Ok(Effect::Done)

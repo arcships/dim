@@ -2,10 +2,7 @@
 //! §5.3–§5.8, acceptance 3–6 and 8 at the capability level).
 use super::context_reads::{CountContextReads, TASK_READS};
 use super::*;
-use dim_agent_capabilities::{
-    agent_loop::AgentLoop,
-    history::{context_messages, summary_message},
-};
+use dim_agent_capabilities::history::{context_messages, summary_message};
 use dim_agent_runtime::testing::{branch_events, chain_events, timeline_events};
 use rutis::host::CtxHost;
 use std::sync::atomic::AtomicBool;
@@ -345,7 +342,7 @@ async fn steers_wait_for_compaction_and_explicit_interrupts_still_cancel() {
         strategy.hold.store(true, Ordering::SeqCst);
         if trigger == CompactionTrigger::Manual {
             session
-                .service::<AgentLoop>("main")
+                .service::<dyn dim_agent_runtime::AgentLoop>("main")
                 .unwrap()
                 .compact()
                 .unwrap();
@@ -588,7 +585,7 @@ async fn a_manual_compaction_with_no_turn_writes_only_its_facts() {
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -688,7 +685,7 @@ async fn a_checkpointed_step_renders_its_context_once() {
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -729,7 +726,7 @@ async fn a_checkpointed_step_renders_its_context_once() {
     store.context_pages.lock().unwrap().clear();
     RENDERS.store(0, Ordering::SeqCst);
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -802,7 +799,7 @@ async fn a_manual_compaction_keeps_at_most_the_latest_turn() {
             .unwrap();
         turns(&session, &[first().as_str(), latest.as_str()]).await;
         let command = session
-            .service::<AgentLoop>("main")
+            .service::<dyn dim_agent_runtime::AgentLoop>("main")
             .unwrap()
             .compact()
             .unwrap();
@@ -858,7 +855,7 @@ async fn a_manual_compaction_inside_a_turn_runs_at_the_next_step_boundary() {
         .unwrap();
     model.entered.notified().await;
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -1084,7 +1081,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -1235,7 +1232,7 @@ async fn a_replaced_strategy_is_replayed_by_the_same_rule_and_checked_by_the_pol
         messages
     );
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -1301,7 +1298,9 @@ async fn an_interrupt_cancels_a_running_step_and_a_pending_command() {
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
     strategy.hold.store(true, Ordering::SeqCst);
-    let loop_service = session.service::<AgentLoop>("main").unwrap();
+    let loop_service = session
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
+        .unwrap();
     let command = loop_service.compact().unwrap();
     strategy.entered.notified().await;
     session.interrupt("main", "user stop".into()).unwrap();
@@ -1364,7 +1363,7 @@ async fn a_reload_during_a_step_settles_it_without_another_strategy_call() {
     let before = projected(&session, "main").await;
     strategy.hold.store(true, Ordering::SeqCst);
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -1386,7 +1385,7 @@ async fn a_reload_during_a_step_settles_it_without_another_strategy_call() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert_eq!(strategy.calls.load(Ordering::SeqCst), 1);
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -1428,7 +1427,7 @@ async fn a_failed_manual_compaction_lets_the_turn_continue_and_recovery_compacts
         .unwrap();
     model.entered.notified().await;
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -1546,7 +1545,9 @@ async fn repeated_and_concurrent_requests_join_the_outstanding_command() {
         .unwrap();
     turns(&session, &[first().as_str(), "second", "third"]).await;
     let before = session.sequence("main").unwrap();
-    let loop_service = session.service::<AgentLoop>("main").unwrap();
+    let loop_service = session
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
+        .unwrap();
     strategy.hold.store(true, Ordering::SeqCst);
     let concurrent: Vec<_> = (0..4)
         .map(|_| {
@@ -1617,7 +1618,7 @@ async fn a_second_command_consumed_while_one_is_outstanding_is_skipped() {
     turns(&session, &[first().as_str(), "second", "third"]).await;
     strategy.hold.store(true, Ordering::SeqCst);
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();

@@ -1,6 +1,4 @@
-use dim_agent_capabilities::{
-    methods::RpcError, prompt_state::PromptSnapshot, timeline_tree::TreeCommands,
-};
+use dim_agent_capabilities::{methods::RpcError, prompt::Prompt, timeline_tree::TreeCommands};
 use dim_agent_runtime::{
     AgentError, Branch, QueryEvent, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
     QuerySpec, TimelineQuery, TimelineQueryScope,
@@ -386,7 +384,10 @@ fn eligible_line(line: &str) -> bool {
 }
 
 fn adopted_model(branch: &Branch) -> Option<ModelId> {
-    let configuration = branch.get::<PromptSnapshot>()?.configuration?;
+    let configuration = branch
+        .service::<Prompt>()
+        .ok()?
+        .adopted_configuration(Default::default())?;
     Some(ModelId {
         provider_id: configuration.provider_id,
         model_id: configuration.model_id,

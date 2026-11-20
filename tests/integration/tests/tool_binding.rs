@@ -3,6 +3,7 @@
 
 mod local_support;
 
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{
     defaults,
     history::HistoryRenderer,

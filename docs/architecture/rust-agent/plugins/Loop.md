@@ -4,6 +4,12 @@ Owner: [agent_loop.rs](../../../../crates/dim-agent-capabilities/src/agent_loop.
 Coordinates turns, request preparation and model/tool steps from adopted inputs;
 exposes loop state without itself executing model or tool effects.
 
+
+The branch service `agentLoop` exposes `compact({})`, `stopTurn({turnId, reason})`,
+`state({})` and `observe(listener)`. A stale turn id returns null. Concurrent
+compaction requests receive the same outstanding command sequence. Observation
+delivers the current snapshot and subsequent changes until the caller or Loop unloads.
+
 ## Dependencies
 
 | Service | Purpose |
@@ -145,7 +151,7 @@ interruption, pending-input restore and the manual compaction step.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareModelHost` |
-| 提供 | `B:AgentLoop`、`B:StateCell<LoopSnapshot>`、`B:dyn LoopState` |
+| 提供 | `B:StateCell<LoopSnapshot>`、`B:dyn AgentLoop`、`B:dyn HostDispatch#agentLoop` |
 | 被注入于 | — |
 <!-- /generated -->
 

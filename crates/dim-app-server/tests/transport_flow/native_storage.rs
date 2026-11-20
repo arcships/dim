@@ -1,4 +1,5 @@
 use super::*;
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_runtime::testing::{branch_events, chain_events};
 use rusqlite::Connection;
 

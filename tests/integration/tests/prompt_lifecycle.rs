@@ -1,3 +1,4 @@
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{
     adapters::{DefaultPrepareModelPlugin, EchoModel, MockTools},
     defaults,
@@ -1963,7 +1964,7 @@ async fn restoring_a_session_keeps_its_adopted_system_and_model() {
     );
     assert_eq!(
         session
-            .service::<dyn LoopState>("main")
+            .service::<dyn AgentLoop>("main")
             .unwrap()
             .state()
             .phase,

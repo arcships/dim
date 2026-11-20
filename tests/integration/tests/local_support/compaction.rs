@@ -6,7 +6,6 @@
     reason = "three flow binaries share this fixture; each uses the parts it needs"
 )]
 use dim_agent_capabilities::{
-    agent_loop::AgentLoop,
     history::summary_message,
     host::{
         CompactionInput, CompactionStrategy, ContextModel, HostFuture, ResolveContextModel,
@@ -114,7 +113,7 @@ fn diagnostics() -> StrategyDiagnostics {
 /// The Loop's manual compaction, waited for, with the branch's events.
 pub async fn compact_now(session: &Session) -> (u64, Vec<Arc<AgentEvent>>) {
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();

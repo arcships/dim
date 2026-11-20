@@ -4,7 +4,6 @@
 //! (ContextCompaction §5.1, §5.2).
 use super::*;
 use dim_agent_capabilities::{
-    agent_loop::AgentLoop,
     context_model::{ProductContextModel, output_allowance},
     history::{context_messages, project_context_history},
     summary_strategy::{
@@ -58,7 +57,7 @@ async fn projected(session: &dim_agent_runtime::Session, branch: &str) -> Vec<Me
 /// Asks the branch to compact and waits for that command's fact.
 async fn compact_now(session: &dim_agent_runtime::Session) -> (u64, Vec<Arc<AgentEvent>>) {
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -468,7 +467,7 @@ async fn every_summary_request_fits_the_window_for_cjk_history() {
         session.idle("main").await.unwrap();
     }
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
@@ -844,7 +843,7 @@ async fn compact_first_turn(session: &dim_agent_runtime::Session) -> Vec<Arc<Age
         session.idle("main").await.unwrap();
     }
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();

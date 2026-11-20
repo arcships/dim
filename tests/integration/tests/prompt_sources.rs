@@ -1,5 +1,6 @@
 mod local_support;
 
+use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::prompt_sources::refresh_update;
 use dim_agent_runtime::testing::chain_events;
 use dim_agent_runtime::*;

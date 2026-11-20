@@ -1,7 +1,7 @@
 //! Class 3a: the digest composed from the effects tools declare
 //! (ContextCompaction §5.10, acceptance 18).
 use super::*;
-use dim_agent_capabilities::{agent_loop::AgentLoop, history::digest_message};
+use dim_agent_capabilities::history::digest_message;
 use dim_agent_runtime::testing::chain_events;
 use serde_json::{Value, json};
 use std::{
@@ -185,7 +185,7 @@ async fn turn(
 /// The Loop's manual compaction, waited for, with the branch's events.
 async fn compact_now(session: &dim_agent_runtime::Session) -> (u64, Vec<Arc<AgentEvent>>) {
     let command = session
-        .service::<AgentLoop>("main")
+        .service::<dyn dim_agent_runtime::AgentLoop>("main")
         .unwrap()
         .compact()
         .unwrap();
