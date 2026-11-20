@@ -125,7 +125,7 @@ async fn launch_codemode_with_model(
         ))
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(UsageResolver)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(UsageResolver)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
             UsageResolver,
         )))))

@@ -1,6 +1,8 @@
 //! Window facts of a profile that compacts, from the model's declared limits
 //! with a local token estimate (ContextCompaction §5.1).
 //! The trigger reserve is a provisional heuristic (#128).
+pub mod face;
+
 use crate::host::*;
 use dim_agent_types::*;
 use std::{io, sync::Arc};

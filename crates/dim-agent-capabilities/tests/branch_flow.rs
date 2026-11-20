@@ -5869,7 +5869,7 @@ async fn a_nested_line_is_told_its_own_parent_at_open() {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -6037,7 +6037,7 @@ async fn a_nested_line_whose_opening_read_fails_is_a_failed_create() {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -6397,7 +6397,7 @@ async fn the_parent_block_replays_after_a_compaction() {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -7527,7 +7527,7 @@ async fn a_roster_and_an_identity_replay_separately_after_a_compaction() {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -9502,7 +9502,7 @@ async fn a_switched_line_keeps_its_identity_after_a_compaction() {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -9565,7 +9565,7 @@ async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -9706,7 +9706,7 @@ async fn measure_e2_chained_reads_before_and_after_a_compaction() {
         .process_value(Arc::new(ModelHost(Arc::new(FlowModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -11039,7 +11039,7 @@ fn compacting_builder(store: Arc<dyn TimelineStore>) -> AgentBuilder {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

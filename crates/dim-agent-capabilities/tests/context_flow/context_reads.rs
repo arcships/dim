@@ -147,7 +147,16 @@ impl Plugin for TestContextHosts {
             ),
             host,
         )?;
-        ctx.provide_at(model.clone(), Arc::new(ContextModelHost(None)))?;
+        let counter = Arc::new(ContextModelHost(None));
+        ctx.provide_at(model.clone(), counter.clone())?;
+        ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+            rutis_bridge::session::host_key_in(
+                "contextModelHost",
+                model.erase().instance_id().unwrap(),
+            ),
+            counter,
+        )?;
+
         ctx.provide_at(strategy.clone(), Arc::new(CompactionStrategyHost(None)))?;
         Ok(())
     }
@@ -1134,7 +1143,7 @@ fn builder_with_usage_resolver(resolver: Arc<dyn ResolveContextModel>) -> AgentB
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(resolver))))
+        .session_data_value(Arc::new(ContextModelHost(Some(resolver))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
             Context::default(),
         )))))
@@ -2468,7 +2477,7 @@ async fn a_request_written_after_an_interrupt_loop_has_not_handled_does_not_run(
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(
             Context::default(),
         )))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(
@@ -2633,7 +2642,7 @@ async fn progress_keeps_committed_output_until_it_is_published() {
             .session_value(Arc::new(HistoryRenderer::default()))
             .process_value(Arc::new(ModelHost(Arc::new(HeldTextModel(end.clone())))))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-            .session_value(Arc::new(ContextModelHost(None)))
+            .session_data_value(Arc::new(ContextModelHost(None)))
             .session_value(Arc::new(CompactionStrategyHost(None)))
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

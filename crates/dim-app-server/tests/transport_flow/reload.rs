@@ -418,7 +418,7 @@ async fn reloaded_loop_fails_the_unfinished_turn_and_later_turns_run() {
             gated: std::sync::atomic::AtomicBool::new(true),
         }))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -614,7 +614,7 @@ async fn contributed_tools_follow_session_config_and_survive_tool_host_reload() 
         .session_value(Arc::new(HistoryRenderer::default()))
         .process_value(Arc::new(ModelHost(declared.clone())))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -739,7 +739,7 @@ async fn a_stop_while_loop_reloads_waits_for_its_successor() {
             gated: std::sync::atomic::AtomicBool::new(true),
         }))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -847,7 +847,7 @@ async fn state_notifications_follow_a_loop_reload() {
             gated: std::sync::atomic::AtomicBool::new(true),
         }))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

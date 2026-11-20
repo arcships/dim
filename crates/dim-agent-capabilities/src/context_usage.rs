@@ -1124,7 +1124,7 @@ impl ContextUsage {
         through: u64,
         cancel: CancellationToken,
     ) -> std::result::Result<Progress, ContextOpError> {
-        if self.resolver.0.is_none() {
+        if !self.resolver.is_bound() {
             return Err(ContextOpError::Model(HostError::failed(
                 "Context compaction is not available",
             )));
@@ -1397,7 +1397,7 @@ impl DynPlugin for ContextUsagePlugin {
                 cleanup.tasks.wait().await;
                 AgentError::aggregate(cleanup.errors.lock().unwrap().clone()).map_err(Into::into)
             })?;
-            if owner.resolver.0.is_some() {
+            if owner.resolver.is_bound() {
                 let initial = owner.timeline.sequence();
                 let notify = owner.clone();
                 owner.dispatcher.subscribe(

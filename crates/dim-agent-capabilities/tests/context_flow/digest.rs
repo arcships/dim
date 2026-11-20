@@ -127,7 +127,7 @@ async fn effects_session(
         .session_value(Arc::new(ToolHost(Arc::new(Effects))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(context)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(context)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(context)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

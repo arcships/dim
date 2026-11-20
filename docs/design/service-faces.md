@@ -182,7 +182,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
 | `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
 | `faultReporter` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 

@@ -104,7 +104,7 @@ const WINDOW_PAGE: u64 = 256;
 
 pub(crate) struct ContextPolicy {
     pub timeline: Arc<Timeline>,
-    pub resolver: Arc<dyn ResolveContextModel>,
+    pub resolver: Arc<ContextModelHost>,
     pub strategy: Arc<dyn CompactionStrategy>,
     pub history: Arc<HistoryRenderer>,
 }
@@ -424,18 +424,18 @@ impl ContextPolicy {
     /// is an assembly defect.
     pub fn bind(
         timeline: &Arc<Timeline>,
-        model: &ContextModelHost,
+        model: &Arc<ContextModelHost>,
         strategy: &CompactionStrategyHost,
         history: &Arc<HistoryRenderer>,
     ) -> Result<Option<Self>, String> {
-        match (&model.0, &strategy.0) {
-            (Some(resolver), Some(strategy)) => Ok(Some(Self {
+        match (model.is_bound(), &strategy.0) {
+            (true, Some(strategy)) => Ok(Some(Self {
                 timeline: timeline.clone(),
-                resolver: resolver.clone(),
+                resolver: model.clone(),
                 strategy: strategy.clone(),
                 history: history.clone(),
             })),
-            (None, None) => Ok(None),
+            (false, None) => Ok(None),
             _ => Err("ContextModelHost and CompactionStrategyHost must be bound together".into()),
         }
     }

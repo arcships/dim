@@ -439,6 +439,17 @@ export interface ToolDefinition {
     postExecutePaths?: 'path' | 'affectedPaths';
   };
 }
+export type ContextContribution = { serialized_bytes: number | bigint; images: number | bigint };
+export interface ContextModelHost {
+  describe(model: import('./branch-services.js').ModelSelection): Promise<{
+    contextWindow: number; outputTokens: number; thresholdTokens: number; algorithm?: string;
+  }>;
+  count(request: PreparedModelRequest): Promise<number>;
+  contributions(request: { model: import('./branch-services.js').ModelSelection; fixed?: Pick<ModelSettings, 'system' | 'tools'>; messages: Message[] }): Promise<{
+    algorithm: string; fixed?: ContextContribution; messages: ContextContribution[];
+  }>;
+  estimate(request: { model: import('./branch-services.js').ModelSelection; algorithm: string; contribution: ContextContribution }): Promise<number>;
+}
 export interface ContextUsage {
   read(request: { through?: number | bigint }, cancelled: () => Promise<void>): Promise<import('./client-protocol.js').ContextUsage & {
     through: number | bigint;

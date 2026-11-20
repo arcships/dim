@@ -251,7 +251,7 @@ fn builder_with_prepare(
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(history))
         .session_data_value(Arc::new(PrepareContextHost(prepare)))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(context)))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(context)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(context)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
@@ -2093,7 +2093,7 @@ async fn a_compaction_completed_after_a_stop_is_committed_not_discarded() {
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(context.clone())))))
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(context.clone())))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(context)))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

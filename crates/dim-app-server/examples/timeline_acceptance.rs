@@ -258,7 +258,7 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compactor {
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(Compactor {
             samples: samples.clone(),
         })))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(

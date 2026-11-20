@@ -92,6 +92,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<host::PrepareContextHost>(catalog, session);
     catalog.register_shared_instance("prepareContextHost", SESSION_GROUP);
     register::<host::ContextModelHost>(catalog, session);
+    catalog.register_shared_instance("contextModelHost", SESSION_GROUP);
     register::<host::CompactionStrategyHost>(catalog, session);
     catalog.register_shared_instance("promptHost", SESSION_GROUP);
     register::<host::ToolHost>(catalog, session);

@@ -1586,6 +1586,7 @@ pub trait ResolveContextModel: Send + Sync + 'static {
     ) -> HostFuture<'_, Arc<dyn ContextModel>>;
 }
 /// An explicit optional policy binding keeps dependencies visible in every profile.
+#[derive(Clone)]
 pub struct ContextModelHost(pub Option<Arc<dyn ResolveContextModel>>);
 
 /// A Session file SessionStore stored. `path` is absolute on the Session's

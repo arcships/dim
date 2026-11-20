@@ -258,7 +258,7 @@ async fn accumulated_user_and_read_images_do_not_block_native_conversation() {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(None)))
+        .session_data_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
         .plugin(|_| Ok(Box::new(AimuxPlugin::default())))
         .plugin(move |_| Ok(Box::new(ConfiguredModelsPlugin(models.clone()))));

@@ -74,7 +74,7 @@ pub fn product(builder: &mut AgentBuilder) -> std::result::Result<(), Error> {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .session_value(Arc::new(ContextModelHost(Some(Arc::new(
+        .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(
             ProductContextModel,
         )))))
         .require_feature(Feature::new("ProductSummaryStrategy").session(
