@@ -142,11 +142,24 @@ jobs:
     if: >-
       needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
       needs.changes.outputs.scripts == 'true'
+    name: verify (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: [self-hosted, macOS, ARM64]
+            cargo-jobs: "4"
+          - platform: linux
+            runner: [self-hosted, linux, x64]
+            cargo-jobs: "8"
+    # Linux is a trial (#1919): its result is reported and does not decide ci-ok.
+    continue-on-error: ${{ matrix.platform == 'linux' }}
     # PR runners must be isolated from release credentials and private networks.
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 75
     env:
-      CARGO_BUILD_JOBS: "4"
+      CARGO_BUILD_JOBS: ${{ matrix.cargo-jobs }}
       CARGO_INCREMENTAL: "0"
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
       RUSTC_WRAPPER: ""
@@ -158,6 +171,22 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
+      - uses: actions-rust-lang/setup-rust-toolchain@c8ff772090ab9d00f7f7bd7b388f3c3032282e3b
+        if: runner.os == 'Linux'
+        with:
+          cache: false
+          build-warnings: ""
+      - name: Report Linux host support
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          echo "CPUs: $(nproc)"
+          grep -E 'MemTotal|MemAvailable' /proc/meminfo
+          if ! command -v bwrap; then
+            echo '::warning::bubblewrap is not installed on this runner: the confined process tests return without running.'
+          elif ! bwrap --ro-bind / / true; then
+            echo '::warning::bubblewrap cannot create a sandbox on this runner.'
+          fi
       - name: Build and lint the Rust workspace
         if: needs.changes.outputs.rust == 'true'
         shell: bash
