@@ -13,6 +13,7 @@ const rules=[
   [documentation,[]],
   [/^deny\.toml$|^LICENSE$/,['dependencies']],
   [/^web\/src\/features\/chat\/quote-cases\.json$/,['web','rust','windows']],
+  [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','xtask']],
   [/^web\//,['web']],
   [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\//,['scripts','web']],
