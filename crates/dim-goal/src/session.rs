@@ -13,6 +13,7 @@ use dim_agent_capabilities::{
     timeline_tree::TimelineTree,
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
+use dim_agent_runtime::BranchDirectoryState::{Ended, Ending, Open};
 use dim_agent_runtime::{Names, SessionIdentity, TimelineKey};
 use dim_agent_types::{DEFAULT_BRANCH_ID, ToolCall, ToolDefinition, ToolResult, ToolSource};
 use rutis::Ctx;
@@ -118,14 +119,14 @@ impl DynPlugin for GoalSession {
                             return tokio::select! {
                                 result = async {
                                     match owner.tree.directory_entry(&id)?.state {
-                                        dim_agent_runtime::BranchDirectoryState::Open | dim_agent_runtime::BranchDirectoryState::Ending => {
+                                        Open | Ending => {
                                             let key = TimelineKey {
                                                 session_id: owner.identity.session_id.clone(),
                                                 branch_id: id,
                                             };
                                             owner.changes.current(&key).await
                                         }
-                                        dim_agent_runtime::BranchDirectoryState::Ended => {
+                                        Ended => {
                                             crate::read::current(&owner.tree, &id, &cancel).await
                                         }
                                     }
