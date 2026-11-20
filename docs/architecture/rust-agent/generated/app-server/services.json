@@ -169,7 +169,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "scope": null,
             "status": "Ready"
           },
@@ -199,7 +199,7 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "scope": null,
             "provider": 14,
             "generation": 1
@@ -231,7 +231,7 @@
             "external": true
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "provider": 14,
             "declared": true,
             "external": true
@@ -290,7 +290,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "scope": null,
             "status": "Ready"
           },
@@ -325,7 +325,7 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "scope": null,
             "provider": 14,
             "generation": 1
@@ -363,7 +363,7 @@
             "external": true
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "provider": 14,
             "declared": true,
             "external": true
@@ -480,6 +480,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::host::ModelSelectionHost",
             "scope": null,
             "status": "Ready"
@@ -495,7 +500,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "scope": null,
             "status": "Ready"
           },
@@ -506,6 +511,12 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "provider": 4,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::host::ModelSelectionHost",
             "scope": null,
@@ -525,7 +536,7 @@
             "generation": 1
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "scope": null,
             "provider": 14,
             "generation": 1
@@ -539,6 +550,12 @@
         ],
         "reads": [
           {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "provider": 4,
+            "declared": true,
+            "external": true
+          },
+          {
             "service": "dim_agent_capabilities::host::ModelSelectionHost",
             "provider": 17,
             "declared": true,
@@ -557,7 +574,7 @@
             "external": true
           },
           {
-            "service": "dim_app_server::plugin_files::PluginFileTransactions",
+            "service": "dim_app_server::plugin_files::PluginFiles",
             "provider": 14,
             "declared": true,
             "external": true
@@ -3590,7 +3607,7 @@
         "removing": false
       },
       {
-        "service": "dim_app_server::plugin_files::PluginFileTransactions",
+        "service": "dim_app_server::plugin_files::PluginFiles",
         "provider": 14,
         "generation": 1,
         "removing": false

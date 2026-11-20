@@ -14,11 +14,13 @@ import {
   ToolCodeBlock,
   classifyTimelineToolCategory,
   formatWorkDuration,
+  useChatUiHost,
   useThinkingExcerpt,
   type ChatUiAssistantMessageBlock,
   type ChatUiAssistantMessageIcons,
   type ChatUiTimelineBlockGroupIcons,
   type ChatUiTimelineBlockGroupSummaryItem,
+  type ChatUiTimelineToolCallBlock,
   type ChatUiTimelineToolCallIcons,
   type ChatUiTimelineToolSummaryCategory,
   type ChatUiToolCallInlineIcons,
@@ -32,6 +34,7 @@ import { i18n } from "../i18n"
 import { toolTranslate } from "./i18n"
 import { Button, Empty, Passthrough, icon, icons, tooltip, useWebTimeline, type WebTimelineContext } from "./primitives"
 import { ICON } from "./WebIcon.vue"
+import WebToolResult from "./WebToolResult.vue"
 import WebUserMessage from "./WebUserMessage.vue"
 
 const t = (key: string, params: Record<string, string | number> = {}, plural?: number): string =>
@@ -267,10 +270,26 @@ const WebInlineSummary = defineComponent({
 const WebToolCallItem = defineComponent({
   name: "WebChatToolCallItem",
   inheritAttrs: false,
-  setup(_, { attrs }) {
+  props: { block: { type: Object as PropType<ChatUiTimelineToolCallBlock>, required: true } },
+  setup(props, { attrs }) {
     const context = useWebTimeline()
+    const hasImages = (): boolean => {
+      const row = context.rowByKey(props.block.id)
+      return row?.kind === "tool" && (row.result?.images?.length ?? 0) > 0
+    }
+    // The card opens a `read` result in a file preview, which the Web has not;
+    // a read that returned images unfolds them in place instead.
+    const onPreviewFile = (target: unknown): void => {
+      if (hasImages()) {
+        if (typeof attrs.onToggle === "function") attrs.onToggle()
+      } else if (typeof attrs.onPreviewFile === "function") attrs.onPreviewFile(target)
+    }
     return () => h(TimelineToolCallItem as Component, {
       ...attrs,
+      block: props.block,
+      hasToolMedia: hasImages,
+      toolResultComponent: WebToolResult,
+      onPreviewFile,
       labels: context.labels.value.tool,
       icons: toolIcons,
       buttonComponent: Button,
@@ -418,13 +437,23 @@ const WebAssistantMessage = defineComponent({
   },
 })
 
+/**
+ * The turn's action row. The Web cannot retry a turn yet, so where the timeline
+ * is interactive a finished turn shows retry disabled, its tooltip saying why.
+ */
 const WebAssistantActions = defineComponent({
   name: "WebChatAssistantActions",
   inheritAttrs: false,
-  setup(_, { attrs }) {
+  props: { isRunning: { type: Boolean, required: true } },
+  setup(props, { attrs }) {
     const context = useWebTimeline()
+    const host = useChatUiHost()
     return () => h(TimelineAssistantActions as Component, {
       ...attrs,
+      isRunning: props.isRunning,
+      ...(host.capabilities.value.interactive && !props.isRunning
+        ? { canRetry: true, retryDisabled: true, retryLabel: t("chatTimeline.unavailable.retry") }
+        : {}),
       labels: context.labels.value.actions,
       copyLabels: context.labels.value.copy,
       locale: i18n.global.locale.value,

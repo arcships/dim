@@ -363,7 +363,7 @@ async fn a_reload_answers_the_open_call_and_a_new_watch_starts_at_zero() {
     wait_watching(&mut client, first).await;
 
     // The Scheduler reloads when a row it injects restarts: PluginFiles
-    // provides its PluginFileTransactions. The restart is the row's own, so
+    // provides its FileScope. The restart is the row's own, so
     // the test drives it through the probe's runtime context.
     let generation = scheduler_generation(&server);
     let files = server

@@ -698,7 +698,7 @@ button.event-row { width: 100%; border: 0; background: transparent; font: inheri
   --markdown-link: var(--primary);
 }
 /* The shared timeline reveals a turn's action rows on hover; keyboard focus and touch screens show them too. */
-.dim-chat-ui .group:focus-within :is([data-testid="timeline-assistant-actions"], [data-testid="timeline-user-actions"]) { opacity: 1; }
+.dim-chat-ui .group:focus-within :is([data-testid="timeline-assistant-actions"], [data-testid="timeline-user-actions"], .web-user-extra-actions) { opacity: 1; }
 @media (hover: none) {
-  .dim-chat-ui :is([data-testid="timeline-assistant-actions"], [data-testid="timeline-user-actions"]) { opacity: 1; }
+  .dim-chat-ui :is([data-testid="timeline-assistant-actions"], [data-testid="timeline-user-actions"], .web-user-extra-actions) { opacity: 1; }
 }
