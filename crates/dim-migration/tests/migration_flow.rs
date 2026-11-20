@@ -737,7 +737,7 @@ async fn migrated_dim_account_states_are_readable_by_the_account_owner() {
         let provider = owner.plugin(
             dim_oauth::DimOAuthPlugin::new(
                 &names,
-                0,
+                target.canonicalize().unwrap(),
                 dim_oauth::ClientIds {
                     global: "test-global".into(),
                     cn: "test-cn".into(),

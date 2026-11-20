@@ -843,7 +843,10 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     }
     if let Some(home_root) = product_root {
         if let Some(provider) = &config.managed_provider {
-            rows.push((provider.0)(&mut builtins, home_root));
+            rows.push((provider.0)(
+                &mut builtins,
+                config.file_roots[home_root].clone(),
+            ));
             rows.push(register_part(&mut builtins, builder.catalog(), |_| {
                 Ok(Box::new(managed_provider::ManagedProviderBinding))
             })?);

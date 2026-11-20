@@ -106,7 +106,7 @@ async fn process(home: &Path) -> Process {
     let views = [
         root.plugin(FileStoragePlugin::new(vec![home.to_path_buf()])),
         root.plugin(ManagedProvidersPlugin::new(None)),
-        root.plugin(DimOAuthPlugin::new(&names, 0, ids).unwrap()),
+        root.plugin(DimOAuthPlugin::new(&names, home.to_path_buf(), ids).unwrap()),
         root.plugin(ManagedProviderBinding),
         root.plugin(Capture(captured.clone())),
     ];

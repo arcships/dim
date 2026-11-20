@@ -225,11 +225,12 @@ impl CredentialLease {
 pub type ManagedFuture<T> = BoxFuture<'static, Result<T, ManagedError>>;
 
 /// Registers the process row of a managed provider plugin built outside this
-/// repository, given the product root's FileStorage index, and returns the
+/// repository, given the absolute product home path, and returns the
 /// row name. The row provides `Arc<dyn ManagedProvider>`.
 #[derive(Clone)]
 pub struct ManagedProviderRow(pub Arc<RegisterRow>);
-pub type RegisterRow = dyn Fn(&mut dim_agent_runtime::Modules, usize) -> String + Send + Sync;
+pub type RegisterRow =
+    dyn Fn(&mut dim_agent_runtime::Modules, std::path::PathBuf) -> String + Send + Sync;
 impl std::fmt::Debug for ManagedProviderRow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ManagedProviderRow")
