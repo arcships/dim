@@ -87,14 +87,14 @@ whether a call may run, or consults who is calling.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `start` | async | `{taskId, command, cwd, workspace, roots}` | `{outputPath}` |
+| `start` | async | `{taskId, command, cwd, workspace, roots, outputDir}` | `{outputPath}` |
 | `wait` | async | `{taskId, timeoutMs?}` | terminal record (§3.2) |
 | `kill` | async | `{taskId}` | `{}` |
 | `settle` | async | `{taskId}` | `{}` |
 | `output` | async | `{taskId, cursor?, limit?} \| {outputPath, cursor?, limit?}` | page (§3.4) |
 | `tail` | async | `{taskId}` | `{text, totalBytes, truncated}` (§3.5) |
 | `removeOutputDirectory` | async | `{path}` | `{}` (§3.8) |
-| `shell` | async | `{taskId, cwd, workspace, roots, cols, rows}` | `{outputPath}` |
+| `shell` | async | `{taskId, cwd, workspace, roots, outputDir, cols, rows}` | `{outputPath}` |
 | `write` | async | `{taskId, data}` | `{}` |
 | `resize` | async | `{taskId, cols, rows}` | `{}` |
 | `info` | async | `{}` | host facts (§3.7) |
@@ -103,11 +103,11 @@ whether a call may run, or consults who is calling.
 
 ### 3.2 `start` and `wait`
 
-`start` accepts only `{taskId, command, cwd, workspace, roots}`. `cwd` is a resolved working
+`start` accepts only `{taskId, command, cwd, workspace, roots, outputDir}`. `cwd` is a resolved working
 directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
 [worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
 known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
-`roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute.
+`roots` the mapped subtree paths from the Session's confirmed worktrees. All are node-absolute. WorkspaceTools passes the Session command-output directory as `outputDir`; ShellSession passes its branch shell output directory.
 A cwd that does not exist is `cwd_not_found`; the provider never resolves a relative path itself.
 
 The provider prepares the boundary with `workspace` plus exactly `roots` and adds no other
@@ -219,7 +219,7 @@ to the existing `exec_task_unknown` response for this RPC. The terminal preview 
 
 ### 3.6 Persistent shell
 
-`shell {taskId, cwd, workspace, roots, cols, rows}` creates one persistent PTY shell as a task;
+`shell {taskId, cwd, workspace, roots, outputDir, cols, rows}` creates one persistent PTY shell as a task;
 `write {taskId, data}` sends `data` (base64 bytes) to it, `resize` sets the geometry, `output`
 reads its captured text, and `kill` ends it. `cwd` and `roots` are resolved and confirmed exactly
 as for `start` (§3.2); a running shell keeps the roots it started with. `read` is not a separate
@@ -239,7 +239,7 @@ settles the command as ended with the task's loss, never as still running.
 `info {}` answers the provider's host facts as data, because other owners read them today:
 
 ```text
-{os: "darwin" | "linux" | "win32",
+{os: "darwin" | "linux" | "win32", arch: string,
  home: string, timezone?: string, execRoot: string, platformRoots: [string],
  backend: {state: "available"} | {state: "unavailable", reason: string},
  execShell: {state: "available", executable: string, edition: string,

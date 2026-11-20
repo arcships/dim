@@ -8,6 +8,7 @@ use std::{path::PathBuf, sync::Arc};
 #[serde(rename_all = "camelCase")]
 pub struct HostInfo {
     pub os: Os,
+    pub arch: String,
     pub home: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
@@ -21,6 +22,7 @@ impl HostPlatform {
     pub async fn info(&self) -> HostInfo {
         HostInfo {
             os: self.os,
+            arch: self.arch.clone(),
             home: self.home.clone(),
             timezone: self.timezone.clone(),
             exec_root: self.exec_root(),

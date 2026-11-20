@@ -745,6 +745,7 @@ export interface TimelineStore {
 export interface ExecHost {
   info(request: Record<string, never>): Promise<{
     os: 'darwin' | 'linux' | 'win32';
+    arch: string;
     home: string;
     timezone?: string;
     execRoot: string;

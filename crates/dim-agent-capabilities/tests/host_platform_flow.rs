@@ -260,6 +260,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             .json()
             .unwrap();
     assert_eq!(facts, serde_json::to_value(platform.info().await).unwrap());
+    assert_eq!(facts["arch"], platform.arch);
     assert_eq!(facts["execShell"]["state"], "available");
     assert_eq!(facts["execShell"]["executable"], shell.to_str().unwrap());
 
