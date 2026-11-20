@@ -75,7 +75,7 @@ fn unauthorized() -> Reply {
 #[derive(Clone)]
 struct Scripted {
     requests: Arc<Mutex<Vec<Recorded>>>,
-    respond: Arc<dyn Fn(&Recorded) -> Reply + Send + Sync>,
+    respond: Arc<dyn Fn(&Recorded) -> Option<Reply> + Send + Sync>,
 }
 
 #[async_trait]
@@ -97,7 +97,9 @@ impl Fetch for Scripted {
             body: request.body.to_vec(),
         };
         self.requests.lock().unwrap().push(recorded.clone());
-        let reply = (self.respond)(&recorded);
+        let Some(reply) = (self.respond)(&recorded) else {
+            return std::future::pending().await;
+        };
         Ok(FetchResponse::from_bytes(
             reply.status,
             HeaderMap::new(),
@@ -114,7 +116,7 @@ fn scripted(
     let requests = Arc::new(Mutex::new(Vec::new()));
     let fetch: FetchFunction = Arc::new(Scripted {
         requests: requests.clone(),
-        respond: Arc::new(respond),
+        respond: Arc::new(move |request| Some(respond(request))),
     });
     (Arc::new(MediaAdapter::scripted(fetch)), requests)
 }
@@ -620,6 +622,38 @@ async fn an_unmapped_provider_is_unavailable() {
 
 fn path_is_inside(path: &Path, dir: &Path) -> bool {
     path.strip_prefix(dir).is_ok()
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_dim_account_relay_does_not_retry_a_timed_out_post() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let adapter = Arc::new(MediaAdapter::scripted(Arc::new(Scripted {
+        requests: requests.clone(),
+        respond: Arc::new(|_| None),
+    })));
+    let dir = work_dir("relay-timeout");
+    let error = run(
+        &adapter,
+        job(
+            "dimcode-api-oauth",
+            "arcship-image",
+            "image",
+            "generate",
+            json!({"prompt": "a red circle"}),
+            Vec::new(),
+            &dir,
+        ),
+        "https://relay.example.test/v1",
+        "arcship-image",
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.code, AdapterErrorCode::ProviderError);
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].method, Method::POST);
+    assert!(requests[0].url.ends_with("/images/generations"));
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 /// The Dim account relay speaks the OpenAI Image API on its `/v1` base with

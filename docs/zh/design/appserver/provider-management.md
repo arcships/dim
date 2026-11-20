@@ -620,7 +620,7 @@ ModelCapabilities, reasoning?, serviceTier?}`——不是新的模型类型：�
 `<category>.<operation>` id，按条目中的顺序；未声明任何操作的模型被省略。条目在
 `metadata.raw.modalityCapabilities` 中声明操作，显式列表（包括空列表）就是全部答案。没有列表的
 条目会被识别为图像模型，因为中转与账号目录列出这类模型时不带媒体元数据：其 id 是已知图像模型之一
-（`arcship-image`、`gpt-image-2` 系列、`grok-imagine-image` 系列）或包含 `seedream`；或其 `type`
+（`arcship-image`、`gpt-image-2` 和 `grok-imagine-image` 系列中的已知 ID）或包含 `seedream`；或其 `type`
 为 `image`/`image-generation` 且输出包含图像或未说明；或 `imageGeneration` 为 true；或其唯一输出是
 `image`。这样的模型声明 `image.generate`，当它也读取图像或是已知模型时还声明 `image.edit`；`type`
 为 `image-edit` 时只声明 `image.edit`，`imageGeneration: false` 不识别任何操作。下面的连接规则读取

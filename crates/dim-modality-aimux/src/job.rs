@@ -51,6 +51,10 @@ fn milliseconds(seconds: f64) -> i64 {
 pub fn image_options(job: &Job, vendor: &Vendor) -> Result<ImageCallOptions, AdapterError> {
     let params = &job.params;
     let mut options = ImageCallOptions::new(text(params, "prompt").unwrap_or_default());
+    if vendor.catalog == "dimcode-api-oauth" {
+        // A timed-out relay request may already have started a paid job.
+        options.max_retries = Some(0);
+    }
     if text(params, "prompt").is_none() {
         options.prompt = None;
     }

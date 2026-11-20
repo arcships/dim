@@ -1488,6 +1488,7 @@ async fn capabilities_and_configure_resolve_defaults_through_the_fixture_adapter
         "a selectable default that no adapter serves is unavailable: {edit}"
     );
     assert_eq!(edit["default"]["reason"]["dimension"], "adapter");
+    assert_eq!(edit["reasons"][0]["dimension"], "adapter");
     assert!(edit["effective"].is_null());
 
     fixture.set_available(false);
@@ -1567,9 +1568,50 @@ async fn a_declared_media_model_served_by_the_adapter_is_an_option() {
     );
     let edit = operation(&snapshot, "edit");
     assert_eq!(edit["available"], false);
+    assert_eq!(edit["reasons"][0]["dimension"], "adapter");
     assert_eq!(
-        edit["reasons"][0]["detail"], "No selectable model is served by an available adapter",
-        "the adapter narrows the candidates per operation"
+        operation(&snapshot, "enhance")["reasons"][0]["dimension"],
+        "adapter"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_online_speech_adapter_does_not_hide_the_offline_image_adapter() {
+    let image = Arc::new(FixtureAdapter::default());
+    image.serve(&[("image-media", &["image.generate"])]);
+    image.set_available(false);
+    let speech = Arc::new(FixtureAdapter::default());
+    speech.serve(&[("voice", &["speech.synthesize"])]);
+    let home = home("dm-mixed-adapters");
+    let server = start_with_copies(home.clone(), speech, image).await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    create_provider_with(&mut client, vec![media("image-media", &["image.generate"])]).await;
+    assert_ok(
+        &client
+            .rpc(
+                "provider.create",
+                json!({
+                    "providerId": "018ec73f-0000-7000-8000-0000000000bb",
+                    "displayName": "Speech fixture",
+                    "connection": {"driverKind": "openai-compatible", "baseUrl": "http://127.0.0.1:1/v1", "auth": {"type": "anonymous"}},
+                    "models": [chat("voice", &["speech.synthesize"])],
+                    "enabled": true
+                }),
+            )
+            .await,
+    );
+    let snapshot = client.rpc("modality.capabilities", json!({})).await;
+    assert_ok(&snapshot);
+    let generate = operation(&snapshot, "generate");
+    assert_eq!(generate["available"], false, "{generate}");
+    assert_eq!(generate["options"][0]["reason"]["dimension"], "runtime");
+    assert_eq!(generate["reasons"][0], generate["options"][0]["reason"]);
+    assert_eq!(
+        operation_in(&snapshot, "speech", "synthesize")["available"],
+        true
     );
     server.shutdown();
     server.join().await.unwrap();

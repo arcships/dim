@@ -863,25 +863,14 @@ impl Evaluation {
                     vec![reason("configuration", "No selectable vision model")],
                 )
             }
-        } else if self.adapter_serves(category) {
+        } else if is_realtime(category) && self.adapter_serves(category) {
             match self.adapter_available() {
                 false => (false, vec![reason("runtime", "The adapter is unavailable")]),
-                // A realtime operation names itself: the adapter serves the
-                // category for one of its operations and nothing serves this
-                // one, which a client reads as an adapter gap, not a
-                // configuration one (A.3).
-                true if !served && is_realtime(category) => (
+                true if !served => (
                     false,
                     vec![reason(
                         "adapter",
                         format!("No available adapter serves {}", row.id(category)),
-                    )],
-                ),
-                true if !served => (
-                    false,
-                    vec![reason(
-                        "configuration",
-                        "No selectable model is served by an available adapter",
                     )],
                 ),
                 true => (true, vec![]),
@@ -899,6 +888,22 @@ impl Evaluation {
                 }
                 (false, reasons)
             }
+        } else if served && !is_realtime(category) {
+            (true, vec![])
+        } else if let Some(runtime) = options
+            .iter()
+            .filter_map(|option| option.reason.as_ref())
+            .find(|reason| reason.dimension == "runtime")
+        {
+            (false, vec![runtime.clone()])
+        } else if self.adapter_serves(category) {
+            (
+                false,
+                vec![reason(
+                    "adapter",
+                    format!("No available adapter serves {}", row.id(category)),
+                )],
+            )
         } else if category == "image" {
             let detail = if self.has_adapter() {
                 "The adapter serves no image model Provider lists"
