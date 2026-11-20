@@ -1,9 +1,9 @@
 //! The delivery history file `scheduler/runs.json` (A.1, A.7): one inner v1
 //! JSON document inside the host's `{version, text}` envelope, which
-//! [`PluginFileTransactions`] reads and writes.
+//! [`FileScope`] reads and writes.
 use crate::document::{canonical_instant, format_instant};
 use dim_agent_types::PermissionPolicy;
-use dim_app_server::plugin_files::{PluginFileError, PluginFileTransactions};
+use dim_app_server::plugin_files::{FileScope, PluginFileError};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
@@ -347,20 +347,20 @@ fn encode(runs: Vec<Delivery>) -> String {
 
 /// Reads the history. A file that is not valid v1 is an error, not an empty
 /// history.
-pub async fn read(files: &PluginFileTransactions) -> Result<Vec<Delivery>, SchedulerError> {
+pub async fn read(files: &FileScope) -> Result<Vec<Delivery>, SchedulerError> {
     files
-        .transact(RUNS_FILE, |current| (None, decode(current)))
+        .with_lock(RUNS_FILE, |current| (None, decode(current)))
         .await?
 }
 
 /// Applies `change` to the history under the file lock. `change` returns
 /// whether it modified the runs; an unmodified history is not written back.
 pub async fn update<R: Send + 'static>(
-    files: &PluginFileTransactions,
+    files: &FileScope,
     change: impl FnOnce(&mut Vec<Delivery>) -> Result<(bool, R), SchedulerError> + Send + 'static,
 ) -> Result<R, SchedulerError> {
     files
-        .transact(RUNS_FILE, move |current| {
+        .with_lock(RUNS_FILE, move |current| {
             let mut runs = match decode(current) {
                 Ok(runs) => runs,
                 Err(error) => return (None, Err(error)),

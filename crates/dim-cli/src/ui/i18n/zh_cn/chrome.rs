@@ -129,6 +129,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         }
         "Member conversation" => "成员会话内容",
         "x stop command · Esc back" => "x 停止命令 · Esc 返回",
+        "x stop command · Esc close" => "x 停止命令 · Esc 关闭",
+        "x stop workflow · Esc close" => "x 停止工作流 · Esc 关闭",
         "Esc back" => "Esc 返回",
         "Tail preview - last 2,000 lines / 50 KiB" => "末尾预览 - 最近 2,000 行 / 50 KiB",
         "Loading output..." => "正在读取输出…",

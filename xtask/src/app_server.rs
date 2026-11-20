@@ -303,7 +303,29 @@ pub async fn serve_home(
 pub async fn graph() -> Result<Value> {
     let dir = scratch("server")?;
     let server = serve_product(&dir, |_| {}).await?;
-    let snapshot = process_layer(server.diagnostics());
+    let mut snapshot = process_layer(server.diagnostics());
+    let mut ids: Vec<_> = snapshot.plugins.iter().map(|plugin| plugin.id).collect();
+    ids.sort_unstable();
+    let graph_id = |mut id: rutis::host::PluginId| {
+        id.0 = ids
+            .binary_search(&id)
+            .expect("provider in the process graph") as u64
+            + 1;
+        id
+    };
+    for plugin in &mut snapshot.plugins {
+        plugin.id = graph_id(plugin.id);
+        plugin.parent = plugin.parent.map(graph_id);
+        for dep in &mut plugin.resolved_dependencies {
+            dep.provider = graph_id(dep.provider);
+        }
+        for read in &mut plugin.accesses {
+            read.provider = read.provider.map(graph_id);
+        }
+    }
+    for binding in &mut snapshot.bindings {
+        binding.provider = graph_id(binding.provider);
+    }
     let graph = crate::diagnostics(snapshot, &[]);
     server.shutdown();
     server.join().await?;

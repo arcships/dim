@@ -114,7 +114,6 @@ export class TmuxCase {
         'set-option -g history-limit 20000',
         'set-option -g status off',
         'set-option -g escape-time 10',
-        'set-option -g window-size manual',
         'set-option -g detach-on-destroy on',
         'set-option -g set-clipboard off',
         '',
@@ -203,6 +202,10 @@ export class TmuxCase {
       this.tmuxRun(['set-environment', '-g', key, value]);
     }
     this.tmuxRun(['new-session', '-d', '-s', session, '-x', String(cols), '-y', String(rows), placeholder]);
+    // `resize-window` sets an exact size only under `manual`. tmux 3.6a exits
+    // at `new-session -x -y` when `manual` is a global startup option, so it is
+    // set on the session's window once that exists (#1890).
+    this.tmuxRun(['set-option', '-w', '-t', session, 'window-size', 'manual']);
     const rawFile = path.join(this.root, `${session}.raw`);
     this.tmuxRun(['pipe-pane', '-o', '-t', session, `cat >> ${quote(rawFile)}`]);
     this.tmuxRun(['respawn-pane', '-k', '-t', session, line]);
