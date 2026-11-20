@@ -1593,6 +1593,7 @@ async fn an_adapter_serving_no_provider_model_is_not_reported_as_missing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn the_product_build_reports_image_operations_without_an_adapter() {
     let (server, home) = start(None, "dm-product").await;
     let mut client = Client::new_version(&server, false, 3).await;
@@ -4789,6 +4790,7 @@ async fn result_bytes(client: &mut Client, task_id: &str, name: &str, length: us
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_offers_the_local_target_and_configure_sets_the_default() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4867,6 +4869,7 @@ async fn ocr_offers_the_local_target_and_configure_sets_the_default() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn an_ocr_task_publishes_the_helper_artifacts() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4910,6 +4913,7 @@ async fn an_ocr_task_publishes_the_helper_artifacts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn data_carries_at_most_one_mebibyte_of_page_text() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4945,6 +4949,7 @@ async fn data_carries_at_most_one_mebibyte_of_page_text() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_layout_task_publishes_the_page_image() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -4968,6 +4973,7 @@ async fn a_layout_task_publishes_the_page_image() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn helper_artifacts_that_are_not_regular_files_are_refused_without_blocking() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5016,6 +5022,7 @@ async fn helper_artifacts_that_are_not_regular_files_are_refused_without_blockin
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn an_oversized_helper_result_is_refused_before_it_is_read() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5049,6 +5056,7 @@ async fn an_oversized_helper_result_is_refused_before_it_is_read() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_failed_host_task_removes_its_work_directory() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5109,6 +5117,7 @@ impl ArtifactHook for ReplaceAfterCount {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn the_host_path_publishes_the_bytes_the_cap_counted() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5153,6 +5162,7 @@ async fn the_host_path_publishes_the_bytes_the_cap_counted() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn typed_and_broken_helpers_fail_with_the_mapped_code() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5171,6 +5181,7 @@ async fn typed_and_broken_helpers_fail_with_the_mapped_code() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_helper_over_its_output_limit_fails_executor_error() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5191,6 +5202,7 @@ async fn a_helper_over_its_output_limit_fails_executor_error() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn cancel_stops_a_running_helper() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5244,6 +5256,7 @@ async fn cancel_stops_a_running_helper() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_named_node_is_unavailable() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5259,6 +5272,7 @@ async fn a_named_node_is_unavailable() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn a_foreign_explicit_model_is_refused() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5271,6 +5285,7 @@ async fn a_foreign_explicit_model_is_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_takes_one_input_file() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5283,6 +5298,7 @@ async fn ocr_takes_one_input_file() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn queued_ocr_keeps_its_input_after_the_source_is_removed() {
     let home = home("dm-ocr");
     let helper = fake_helper(&home);
@@ -5324,6 +5340,7 @@ async fn queued_ocr_keeps_its_input_after_the_source_is_removed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_is_absent_when_the_build_starts_no_helper() {
     let (server, _home) = start(None, "dm-ocr-nobuild").await;
     let mut client = Client::new_version(&server, false, 3).await;
@@ -5748,6 +5765,7 @@ async fn ocr_lists_a_plugin_target_and_runs_its_helper() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_target_is_absent_without_the_service() {
     let home = home("dm-ocr-plugin");
     let helper = fake_helper(&home);
@@ -5788,6 +5806,7 @@ async fn ocr_plugin_target_is_absent_without_the_service() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
     let home = home("dm-ocr-plugin");
     let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
@@ -5887,6 +5906,7 @@ async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
 /// fails with that reason. The kind is checked before the call, so a package
 /// built against the old form cannot block a thread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
     let home = home("dm-ocr-plugin");
     let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
@@ -5936,6 +5956,7 @@ async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_removal_after_describe_keeps_the_admitted_task() {
     let home = home("dm-ocr-plugin");
     let plugin = plugin_copy(&home, "pp-ocr-plugin", "old-copy");

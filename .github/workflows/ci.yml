@@ -151,7 +151,7 @@ jobs:
             runner: [self-hosted, macOS, ARM64]
             cargo-jobs: "4"
           - platform: linux
-            runner: [self-hosted, linux, x64]
+            runner: [self-hosted, linux, x64, dim-verify]
             cargo-jobs: "8"
     # Linux is a trial (#1919): its result is reported and does not decide ci-ok.
     continue-on-error: ${{ matrix.platform == 'linux' }}
@@ -182,11 +182,8 @@ jobs:
         run: |
           echo "CPUs: $(nproc)"
           grep -E 'MemTotal|MemAvailable' /proc/meminfo
-          if ! command -v bwrap; then
-            echo '::warning::bubblewrap is not installed on this runner: the confined process tests return without running.'
-          elif ! bwrap --ro-bind / / true; then
-            echo '::warning::bubblewrap cannot create a sandbox on this runner.'
-          fi
+          # Without a working bubblewrap the confined process tests return without running.
+          bwrap --ro-bind / / true
       - name: Build and lint the Rust workspace
         if: needs.changes.outputs.rust == 'true'
         shell: bash
