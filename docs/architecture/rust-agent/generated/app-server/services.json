@@ -23,7 +23,7 @@
         "reads": []
       },
       {
-        "id": 76,
+        "id": 77,
         "parent": 2,
         "name": "Attachments",
         "state": "Active",
@@ -53,7 +53,7 @@
         ]
       },
       {
-        "id": 75,
+        "id": 76,
         "parent": 2,
         "name": "Report",
         "state": "Active",
@@ -100,7 +100,7 @@
         ]
       },
       {
-        "id": 74,
+        "id": 75,
         "parent": 2,
         "name": "goal",
         "state": "Active",
@@ -147,7 +147,7 @@
         ]
       },
       {
-        "id": 73,
+        "id": 74,
         "parent": 2,
         "name": "eventhub",
         "state": "Active",
@@ -245,8 +245,8 @@
         ]
       },
       {
-        "id": 77,
-        "parent": 73,
+        "id": 78,
+        "parent": 74,
         "name": "eventhub-ready",
         "state": "Active",
         "generation": 1,
@@ -261,14 +261,14 @@
           {
             "service": "dim_event_hub::bridge::EventHub",
             "scope": null,
-            "provider": 73,
+            "provider": 74,
             "generation": 1
           }
         ],
         "reads": []
       },
       {
-        "id": 72,
+        "id": 73,
         "parent": 2,
         "name": "Scheduler",
         "state": "Active",
@@ -383,7 +383,7 @@
         ]
       },
       {
-        "id": 71,
+        "id": 72,
         "parent": 2,
         "name": "Questions",
         "state": "Active",
@@ -413,7 +413,7 @@
         ]
       },
       {
-        "id": 70,
+        "id": 71,
         "parent": 2,
         "name": "PromptSuggestion",
         "state": "Active",
@@ -443,7 +443,7 @@
         ]
       },
       {
-        "id": 69,
+        "id": 70,
         "parent": 2,
         "name": "ImageUnderstanding",
         "state": "Active",
@@ -473,7 +473,7 @@
         ]
       },
       {
-        "id": 68,
+        "id": 69,
         "parent": 2,
         "name": "Modality",
         "state": "Active",
@@ -571,7 +571,7 @@
         ]
       },
       {
-        "id": 67,
+        "id": 68,
         "parent": 2,
         "name": "PrepareModelHost",
         "state": "Active",
@@ -601,7 +601,7 @@
         ]
       },
       {
-        "id": 66,
+        "id": 67,
         "parent": 2,
         "name": "ContextCompaction",
         "state": "Active",
@@ -631,7 +631,7 @@
         ]
       },
       {
-        "id": 65,
+        "id": 66,
         "parent": 2,
         "name": "CommandRules",
         "state": "Active",
@@ -661,7 +661,7 @@
         ]
       },
       {
-        "id": 64,
+        "id": 65,
         "parent": 2,
         "name": "PromptSources",
         "state": "Active",
@@ -691,7 +691,7 @@
         ]
       },
       {
-        "id": 63,
+        "id": 64,
         "parent": 2,
         "name": "ShellInput",
         "state": "Active",
@@ -721,7 +721,7 @@
         ]
       },
       {
-        "id": 62,
+        "id": 63,
         "parent": 2,
         "name": "Recall",
         "state": "Active",
@@ -751,7 +751,7 @@
         ]
       },
       {
-        "id": 61,
+        "id": 62,
         "parent": 2,
         "name": "Wait",
         "state": "Active",
@@ -781,9 +781,39 @@
         ]
       },
       {
-        "id": 60,
+        "id": 61,
         "parent": 2,
         "name": "WorkspaceToolsOwner",
+        "state": "Active",
+        "generation": 1,
+        "injects": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "status": "Ready"
+          }
+        ],
+        "resolved": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "scope": null,
+            "provider": 46,
+            "generation": 1
+          }
+        ],
+        "reads": [
+          {
+            "service": "dim_agent_runtime::parts::PartRegistry",
+            "provider": 46,
+            "declared": true,
+            "external": true
+          }
+        ]
+      },
+      {
+        "id": 60,
+        "parent": 2,
+        "name": "ProgressReminder",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -3092,7 +3122,7 @@
           {
             "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
             "scope": null,
-            "provider": 60,
+            "provider": 61,
             "generation": 1
           },
           {
@@ -3105,7 +3135,7 @@
         "reads": [
           {
             "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-            "provider": 60,
+            "provider": 61,
             "declared": true,
             "external": true
           },
@@ -3453,7 +3483,7 @@
       },
       {
         "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-        "provider": 60,
+        "provider": 61,
         "generation": 1,
         "removing": false
       },
@@ -3465,19 +3495,19 @@
       },
       {
         "service": "dim_agent_scheduler::loops::Loops",
-        "provider": 72,
+        "provider": 73,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_agent_scheduler::methods::ScheduleJobs",
-        "provider": 72,
+        "provider": 73,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_agent_scheduler::wakeups::Wakeups",
-        "provider": 72,
+        "provider": 73,
         "generation": 1,
         "removing": false
       },
@@ -3669,25 +3699,25 @@
       },
       {
         "service": "dim_event_hub::bridge::EventHub",
-        "provider": 73,
+        "provider": 74,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_event_hub::subscriptions::EventSubscriptions",
-        "provider": 73,
+        "provider": 74,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_modality::engine::ModalityTasks#modalityTasks",
-        "provider": 68,
+        "provider": 69,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dim_modality::targets::ModalityTargets",
-        "provider": 68,
+        "provider": 69,
         "generation": 1,
         "removing": false
       },
@@ -3735,13 +3765,13 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventHub",
-        "provider": 73,
+        "provider": 74,
         "generation": 1,
         "removing": false
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#eventSubscriptions",
-        "provider": 73,
+        "provider": 74,
         "generation": 1,
         "removing": false
       },
@@ -3777,7 +3807,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#loops",
-        "provider": 72,
+        "provider": 73,
         "generation": 1,
         "removing": false
       },
@@ -3801,7 +3831,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#modalityTargets",
-        "provider": 68,
+        "provider": 69,
         "generation": 1,
         "removing": false
       },
@@ -3849,7 +3879,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#scheduleJobs",
-        "provider": 72,
+        "provider": 73,
         "generation": 1,
         "removing": false
       },
@@ -3933,7 +3963,7 @@
       },
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#wakeups",
-        "provider": 72,
+        "provider": 73,
         "generation": 1,
         "removing": false
       },

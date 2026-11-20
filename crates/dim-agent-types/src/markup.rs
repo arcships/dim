@@ -36,6 +36,7 @@ const MARKERS: &[&str] = &[
     "dim-goal",                 // Goal: a branch's goal and its reports
     "dim-hooks",                // Hooks: a hook's context
     "dim-notification",         // BackgroundExec: a background command ended
+    "dim-progress-reminder",    // ProgressReminder: no reply text for a while
     "dim-rule",                 // Prompt: an instruction in effect
     "dim-scheduler",            // Scheduler: a job's prompt or a wakeup
     "dim-shell-input",          // ShellInput: a command the operator ran
@@ -156,6 +157,10 @@ mod tests {
             (
                 r#"<dim-notification source="exec" task="t">a command ended</dim-notification>"#,
                 "dim-notification",
+            ),
+            (
+                r#"<dim-progress-reminder seconds="61">no text for a while</dim-progress-reminder>"#,
+                "dim-progress-reminder",
             ),
             (
                 r#"<dim-digest>wrote src/cache.rs</dim-digest>"#,
