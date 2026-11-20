@@ -197,9 +197,9 @@ impl ManagedWorktrees {
             .trim(),
         );
         let repository = canonical(repository).await?;
-        let base = base.unwrap_or("HEAD");
+        let revision = format!("{}^{{commit}}", base.unwrap_or("HEAD"));
         let base = self
-            .git(&top, &["rev-parse", "--verify", base], cancel)
+            .git(&top, &["rev-parse", "--verify", "--end-of-options", &revision], cancel)
             .await?
             .trim()
             .to_owned();
