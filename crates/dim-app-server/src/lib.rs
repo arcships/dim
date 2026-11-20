@@ -833,13 +833,15 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             )))
         },
     )?);
-    if let Some(home_root) = plugin_root {
+    if let Some(root) = &plugin_files {
+        let root = root.clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
                 Ok(Box::new(plugin_files::PluginFilesPlugin::new(
-                    names, home_root,
+                    names,
+                    root.clone(),
                 )?))
             },
         )?);
@@ -1511,7 +1513,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextUsage", "hot-path"),
         ("faultReporter", "hot-path"),
         ("fileReads", "hot-path"),
-        ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
         ("hostPlatform", "object"),

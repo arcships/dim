@@ -580,7 +580,7 @@ impl SettingsPlugin {
             project_roots,
             projects: Arc::new(Mutex::new(BTreeMap::new())),
             files: names.key()?,
-            roots: names.key()?,
+            roots: Key::of(),
             database: None,
         })
     }

@@ -438,7 +438,7 @@ impl UiExtensionsPlugin {
     pub fn new(names: &Names<'_>, configuration: Arc<Configuration>) -> rutis::Result<Self> {
         Ok(Self {
             files: names.key()?,
-            roots: names.key()?,
+            roots: Key::of(),
             methods: names.key()?,
             parts: names.key()?,
             configuration,

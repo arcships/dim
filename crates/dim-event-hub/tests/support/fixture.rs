@@ -533,7 +533,7 @@ impl Fixture {
         dim_agent_runtime::names::register::<EventHub>(&mut catalog, None);
         let build = rutis_loader::resolve::Build::default();
         let names = Names::copy(&catalog, &build);
-        (&root.plugin(PluginFilesPlugin::new(&names, 0).unwrap()))
+        (&root.plugin(PluginFilesPlugin::new(&names, dir.clone()).unwrap()))
             .await
             .unwrap();
         (&root.plugin(ManagementMethodsPlugin::new(&names).unwrap()))
@@ -758,8 +758,10 @@ impl LoaderFixture {
         // The product's catalog registers the names these rows build with
         // (`crates/dim-app-server/src/lib.rs`).
         *builder.catalog_mut() = dim_app_server::catalog();
-        builder
-            .plugin(|names| Ok(Box::new(PluginFilesPlugin::new(names, 0)?) as Box<dyn DynPlugin>));
+        let files_root = path.clone();
+        builder.plugin(move |names| {
+            Ok(Box::new(PluginFilesPlugin::new(names, files_root.clone())?) as Box<dyn DynPlugin>)
+        });
         builder.plugin(|names| {
             Ok(Box::new(ManagementMethodsPlugin::new(names)?) as Box<dyn DynPlugin>)
         });

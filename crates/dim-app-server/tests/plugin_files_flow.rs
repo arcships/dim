@@ -108,7 +108,7 @@ async fn mount(path: &Path) -> (Ctx, Value, Services) {
     let catalog = dim_app_server::catalog();
     let build = rutis_loader::resolve::Build::default();
     let names = Names::copy(&catalog, &build);
-    (&root.plugin(PluginFilesPlugin::new(&names, 0).unwrap()))
+    (&root.plugin(PluginFilesPlugin::new(&names, path.to_owned()).unwrap()))
         .await
         .unwrap();
     let captured = Arc::new(OnceLock::new());
@@ -119,7 +119,7 @@ async fn mount(path: &Path) -> (Ctx, Value, Services) {
         services: services.clone(),
         files: key,
         transactions: names.key().unwrap(),
-        storage: names.key().unwrap(),
+        storage: Key::of(),
         fs: names.key().unwrap(),
     }))
         .await

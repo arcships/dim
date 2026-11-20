@@ -42,7 +42,7 @@ impl Capture {
             services,
             mcp: dim_app_server::mcp::owner_key(),
             settings: names.key()?,
-            files: names.key()?,
+            files: Key::of(),
         })
     }
 }

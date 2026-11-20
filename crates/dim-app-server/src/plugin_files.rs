@@ -1,8 +1,8 @@
 //! Generic, host-owned file transactions for an explicitly authorized plugin root.
 //! No account formats or provider policy belong at this boundary.
 use dim_agent_capabilities::file_storage::{
-    DirectoryEntry, EntryKind, FileStorage, FileStorageError, FsHost, FsPermissions, FsRemove,
-    OpenRead, relative_file_path,
+    DirectoryEntry, EntryKind, FileStorageError, FsHost, FsPermissions, FsRemove, OpenRead,
+    relative_file_path,
 };
 use dim_agent_runtime::Names;
 use rutis::Ctx;
@@ -11,7 +11,6 @@ use rutis_bridge::session::{Error, HostDispatch, Reply, Value, host_key};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    fs::Permissions,
     io,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
@@ -58,17 +57,6 @@ fn success(value: Value) -> Value {
 fn invalid() -> Error {
     Error::value("invalid file operation")
 }
-fn private_permissions() -> Option<Permissions> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        Some(Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
 async fn resolve(value: Value) -> Reply {
     match value {
         Value::Reference(reference) if reference.is_future() => reference.wait_async().await,
@@ -78,9 +66,7 @@ async fn resolve(value: Value) -> Reply {
 
 struct Files {
     fs: Arc<FsHost>,
-    storage: Arc<FileStorage>,
     root_path: PathBuf,
-    root: usize,
     admission: Mutex<()>,
     stopping: CancellationToken,
     tasks: TaskTracker,
@@ -94,12 +80,7 @@ impl Files {
         path: &Path,
         stopping: &CancellationToken,
     ) -> Result<PathBuf, FileStorageError> {
-        let relative = path
-            .strip_prefix(&self.root_path)
-            .expect("validated scope path");
-        self.storage
-            .create_directories(&self.storage.path(self.root, relative)?, stopping)
-            .await
+        self.fs.create_directories(path, stopping).await
     }
 }
 
@@ -870,24 +851,15 @@ async fn write_stream_file(
     source: impl io::Read + Send + 'static,
     stopping: &CancellationToken,
 ) -> Result<(), FileStorageError> {
-    let relative = path
-        .strip_prefix(&files.root_path)
-        .expect("validated scope path");
-    let target = files.storage.path(files.root, relative)?;
-    loop {
-        match files.storage.lock(&target, stopping).await {
-            Ok(mut lease) => {
-                return lease
-                    .replace_from(source, private_permissions(), stopping)
-                    .await;
-            }
-            Err(FileStorageError::Locked) => tokio::select! {
-                _ = stopping.cancelled() => return Err(FileStorageError::Closed),
-                _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {},
-            },
-            Err(error) => return Err(error),
-        }
-    }
+    let fs = &files.fs;
+    let id = acquire(fs, path, stopping).await?;
+    let result = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+        fs.replace_stream(id, source, FsPermissions::Private, stopping),
+    ))
+    .await;
+    let released = fs.unlock(id).await;
+    result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))?;
+    released
 }
 
 /// Takes the file's lease, waiting while another holder has it.
@@ -924,15 +896,13 @@ impl HostDispatch for PluginFiles {
 /// The composition root chooses the authorized root; JS cannot register roots.
 #[derive(Clone)]
 pub struct PluginFilesPlugin {
-    root: usize,
+    root: PathBuf,
     fs: Key<FsHost>,
-    storage: Key<FileStorage>,
 }
 impl PluginFilesPlugin {
-    pub fn new(names: &Names<'_>, root: usize) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, root: PathBuf) -> rutis::Result<Self> {
         Ok(Self {
             root,
-            storage: names.key()?,
             fs: names.key()?,
         })
     }
@@ -942,18 +912,13 @@ impl DynPlugin for PluginFilesPlugin {
         "PluginFiles"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.fs.erase(), self.storage.erase()]
+        vec![self.fs.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let storage = ctx.require_at(&self.storage)?;
             let files = Arc::new(Files {
                 fs: ctx.require_at(&self.fs)?,
-                root_path: storage.root_path(self.root).map_err(|e| {
-                    rutis::Error::from(rutis::host::ErrorKind::PluginFailed(e.into()))
-                })?,
-                storage,
-                root: self.root,
+                root_path: self.root.clone(),
                 admission: Mutex::new(()),
                 stopping: CancellationToken::new(),
                 tasks: TaskTracker::new(),

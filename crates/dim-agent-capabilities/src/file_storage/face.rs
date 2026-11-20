@@ -354,6 +354,29 @@ impl FsHost {
             .await
     }
 
+    pub async fn create_directories(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<PathBuf> {
+        self.storage
+            .create_directories(&self.storage.resolve(path)?, cancel)
+            .await
+    }
+
+    pub async fn replace_stream(
+        &self,
+        id: Uuid,
+        source: impl std::io::Read + Send + 'static,
+        permissions: FsPermissions,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        self.held_lease(id, None, cancel)
+            .await?
+            .replace_from_with(source, permissions.mode(), cancel)
+            .await
+    }
+
     pub async fn create_directory(
         &self,
         path: impl AsRef<Path>,
