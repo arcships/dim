@@ -1,5 +1,5 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use dim_agent_capabilities::file_storage::{FileLease, FilePath, FileStorage, FileStorageError};
+use dim_agent_capabilities::file_storage::{FileStorageError, FsHost, FsPermissions};
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -227,8 +227,8 @@ enum AttemptKind {
 }
 
 pub struct Service {
-    files: Arc<FileStorage>,
-    path: FilePath,
+    files: Arc<FsHost>,
+    path: std::path::PathBuf,
     key: &'static str,
     state_key: &'static str,
     config: Config,
@@ -318,10 +318,13 @@ impl Service {
     }
     pub(crate) async fn recover(self: &Arc<Self>, c: &CancellationToken) -> Result<()> {
         self.owned(c, |s, c| async move {
-            let mut lease = s.lease(&c).await?;
-            let record = s.read(&mut lease, &c).await?;
-            s.refresh(&mut lease, record, true, &c).await?;
-            Ok(())
+            let lease = s.lease(&c).await?;
+            s.with_lease(lease, async {
+                let record = s.read(lease, &c).await?;
+                s.refresh(lease, record, true, &c).await?;
+                Ok(())
+            })
+            .await
         })
         .await
     }
@@ -350,8 +353,8 @@ impl Service {
 }
 impl Service {
     pub fn new(
-        files: Arc<FileStorage>,
-        root: usize,
+        files: Arc<FsHost>,
+        home: &std::path::Path,
         key: &'static str,
         config: Config,
         production: &Config,
@@ -363,7 +366,7 @@ impl Service {
             _ => return Err(OAuthError::Config("credential authority")),
         };
         Ok(Arc::new(Self {
-            path: files.path(root, AUTH_FILE)?,
+            path: home.join(AUTH_FILE),
             files,
             key,
             state_key,
@@ -412,12 +415,12 @@ impl Service {
             .unwrap_or_default()
             .as_millis() as u64
     }
-    async fn lease(&self, cancel: &CancellationToken) -> Result<FileLease> {
+    async fn lease(&self, cancel: &CancellationToken) -> Result<Uuid> {
         loop {
             if cancel.is_cancelled() || self.stopping.is_cancelled() {
                 return Err(OAuthError::Closed);
             }
-            match self.files.lock(&self.path, cancel).await {
+            match self.files.lock(None, &self.path, cancel).await {
                 Ok(x) => return Ok(x),
                 Err(FileStorageError::Locked) => tokio::select! {
                     _ = self.stopping.cancelled() => return Err(OAuthError::Closed),
@@ -428,8 +431,23 @@ impl Service {
             }
         }
     }
-    async fn read(&self, lease: &mut FileLease, cancel: &CancellationToken) -> Result<Record> {
-        let document = match lease.read(cancel).await {
+    async fn with_lease<T>(
+        &self,
+        lease: Uuid,
+        operation: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let result = operation.await;
+        let released = self.files.unlock(lease).await;
+        let value = result?;
+        released?;
+        Ok(value)
+    }
+    async fn read(&self, lease: Uuid, cancel: &CancellationToken) -> Result<Record> {
+        let document = match self
+            .files
+            .read_bytes(&self.path, usize::MAX, Some(lease), cancel)
+            .await
+        {
             Ok(bytes) => Self::document(&bytes),
             Err(FileStorageError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(Map::new()),
             Err(e) => Err(e.into()),
@@ -439,7 +457,11 @@ impl Service {
     /// Reads the current record without the account lease: writes are atomic
     /// replaces, so a fresh record never needs the marker or its fsync.
     async fn read_current(&self, cancel: &CancellationToken) -> Result<Record> {
-        let document = match self.files.read(&self.path, cancel).await {
+        let document = match self
+            .files
+            .read_bytes(&self.path, usize::MAX, None, cancel)
+            .await
+        {
             Ok(bytes) => Self::document(&bytes),
             Err(FileStorageError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Ok(Map::new()),
             Err(e) => Err(e.into()),
@@ -452,16 +474,18 @@ impl Service {
             .and_then(|x| x.as_object().cloned())
             .ok_or(OAuthError::InvalidStore("root must be an object"))
     }
-    async fn write(lease: &mut FileLease, doc: Map<String, Value>) -> Result<()> {
+    async fn write(&self, lease: Uuid, doc: Map<String, Value>) -> Result<()> {
         let mut bytes = serde_json::to_vec_pretty(&Value::Object(doc))
             .map_err(|_| OAuthError::InvalidStore("cannot encode"))?;
         bytes.push(b'\n');
-        #[cfg(unix)]
-        let permissions = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
-        #[cfg(not(unix))]
-        let permissions = None;
-        lease
-            .replace(bytes, permissions, &CancellationToken::new())
+        self.files
+            .replace(
+                &self.path,
+                bytes,
+                FsPermissions::Private,
+                Some(lease),
+                &CancellationToken::new(),
+            )
             .await?;
         Ok(())
     }
@@ -549,7 +573,7 @@ impl Service {
     }
     async fn persist(
         &self,
-        lease: &mut FileLease,
+        lease: Uuid,
         record: Record,
         tokens: Option<&Tokens>,
         new_account: bool,
@@ -585,21 +609,24 @@ impl Service {
             self.state_key.into(),
             serde_json::to_value(&state).map_err(|_| OAuthError::InvalidStore("account state"))?,
         );
-        Self::write(lease, doc).await?;
+        self.write(lease, doc).await?;
         Ok(state)
     }
     async fn status_inner(&self, cancel: &CancellationToken) -> Result<AuthStatus> {
-        let mut lease = self.lease(cancel).await?;
-        let record = self.read(&mut lease, cancel).await?;
-        let recovery_required =
-            record.revision().is_err() || (record.state.is_none() && record.tokens.is_some());
-        let t = record.tokens;
-        Ok(AuthStatus {
-            authenticated: t.is_some() && !recovery_required,
-            recovery_required,
-            expires_at: t.as_ref().map(|x| x.expires),
-            account_id_preview: t.and_then(|x| x.account_id).map(|x| mask(&x)),
+        let lease = self.lease(cancel).await?;
+        self.with_lease(lease, async {
+            let record = self.read(lease, cancel).await?;
+            let recovery_required =
+                record.revision().is_err() || (record.state.is_none() && record.tokens.is_some());
+            let t = record.tokens;
+            Ok(AuthStatus {
+                authenticated: t.is_some() && !recovery_required,
+                recovery_required,
+                expires_at: t.as_ref().map(|x| x.expires),
+                account_id_preview: t.and_then(|x| x.account_id).map(|x| mask(&x)),
+            })
         })
+        .await
     }
     async fn begin_browser_inner(
         self: &Arc<Self>,
@@ -619,9 +646,10 @@ impl Service {
         let state = random();
         let id = Uuid::new_v4();
         let expires_at = Self::now() + 300_000;
-        let mut lease = self.lease(cancel).await?;
-        let revision = self.read(&mut lease, cancel).await?.revision()?;
-        drop(lease);
+        let lease = self.lease(cancel).await?;
+        let revision = self
+            .with_lease(lease, async { self.read(lease, cancel).await?.revision() })
+            .await?;
         let mut url = authorization;
         url.query_pairs_mut()
             .append_pair("response_type", "code")
@@ -767,9 +795,10 @@ impl Service {
             .device
             .clone()
             .ok_or(OAuthError::Config("device flow unavailable"))?;
-        let mut lease = self.lease(cancel).await?;
-        let revision = self.read(&mut lease, cancel).await?.revision()?;
-        drop(lease);
+        let lease = self.lease(cancel).await?;
+        let revision = self
+            .with_lease(lease, async { self.read(lease, cancel).await?.revision() })
+            .await?;
         let started = Self::now();
         let id = Uuid::new_v4();
         let attempt_cancel = CancellationToken::new();
@@ -972,27 +1001,29 @@ impl Service {
             let attempt = attempts.get(&id).ok_or(OAuthError::AttemptNotFound)?;
             (attempt.cancel.clone(), attempt.expires_at)
         };
-        let mut lease = self
+        let lease = self
             .cancellable(self.lease(cancel), cancel, &attempt_cancel, expires)
             .await?;
-        let record = self.read(&mut lease, cancel).await?;
-        if record.revision()? != revision {
-            return Err(OAuthError::AccountChanged);
-        }
-        let mut attempts = self.attempts.lock().await;
-        let attempt = attempts.get_mut(&id).ok_or(OAuthError::AttemptNotFound)?;
-        if attempt.status != AttemptStatus::Pending
-            || attempt.cancel.is_cancelled()
-            || Self::now() >= attempt.expires_at
-            || self.stopping.is_cancelled()
-            || cancel.is_cancelled()
-        {
-            return Err(OAuthError::AttemptClosed);
-        }
-        self.persist(&mut lease, record, Some(&tokens), true)
-            .await?;
-        attempt.status = AttemptStatus::Completed;
-        Ok(())
+        self.with_lease(lease, async {
+            let record = self.read(lease, cancel).await?;
+            if record.revision()? != revision {
+                return Err(OAuthError::AccountChanged);
+            }
+            let mut attempts = self.attempts.lock().await;
+            let attempt = attempts.get_mut(&id).ok_or(OAuthError::AttemptNotFound)?;
+            if attempt.status != AttemptStatus::Pending
+                || attempt.cancel.is_cancelled()
+                || Self::now() >= attempt.expires_at
+                || self.stopping.is_cancelled()
+                || cancel.is_cancelled()
+            {
+                return Err(OAuthError::AttemptClosed);
+            }
+            self.persist(lease, record, Some(&tokens), true).await?;
+            attempt.status = AttemptStatus::Completed;
+            Ok(())
+        })
+        .await
     }
     async fn credential_inner(
         &self,
@@ -1007,12 +1038,15 @@ impl Service {
         {
             return Ok(lease);
         }
-        let mut lease = self.lease(cancel).await?;
-        let record = self.read(&mut lease, cancel).await?;
-        if let Some(lease) = self.reusable(&record, rejected)? {
-            return Ok(lease);
-        }
-        self.refresh(&mut lease, record, false, cancel).await
+        let lease = self.lease(cancel).await?;
+        self.with_lease(lease, async {
+            let record = self.read(lease, cancel).await?;
+            if let Some(lease) = self.reusable(&record, rejected)? {
+                return Ok(lease);
+            }
+            self.refresh(lease, record, false, cancel).await
+        })
+        .await
     }
     /// The record's lease when it needs no token request, after checking that
     /// it still belongs to the rejected account.
@@ -1041,7 +1075,7 @@ impl Service {
     }
     async fn refresh(
         &self,
-        lease: &mut FileLease,
+        lease: Uuid,
         mut record: Record,
         new_account: bool,
         cancel: &CancellationToken,
@@ -1096,34 +1130,40 @@ impl Service {
         rejected: &CredentialLease,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let mut lease = self.lease(cancel).await?;
-        let record = self.read(&mut lease, cancel).await?;
-        record.revision()?;
-        if let (Some(tokens), Some(state)) = (&record.tokens, &record.state)
-            && rejected.authority == self.key
-            && rejected.generation == state.generation
-            && rejected.revision == state.credential_revision
-            && rejected.access == tokens.access
-        {
-            self.persist(&mut lease, record, None, true).await?;
-        }
-        Ok(())
+        let lease = self.lease(cancel).await?;
+        self.with_lease(lease, async {
+            let record = self.read(lease, cancel).await?;
+            record.revision()?;
+            if let (Some(tokens), Some(state)) = (&record.tokens, &record.state)
+                && rejected.authority == self.key
+                && rejected.generation == state.generation
+                && rejected.revision == state.credential_revision
+                && rejected.access == tokens.access
+            {
+                self.persist(lease, record, None, true).await?;
+            }
+            Ok(())
+        })
+        .await
     }
     async fn logout_inner(&self, cancel: &CancellationToken) -> Result<()> {
-        let mut lease = self.lease(cancel).await?;
-        let record = self.read(&mut lease, cancel).await?;
-        let mut attempts = self.attempts.lock().await;
-        if self.stopping.is_cancelled() || cancel.is_cancelled() {
-            return Err(OAuthError::Closed);
-        }
-        self.persist(&mut lease, record, None, true).await?;
-        for a in attempts.values_mut() {
-            a.cancel.cancel();
-            if a.status == AttemptStatus::Pending {
-                a.status = AttemptStatus::Cancelled;
+        let lease = self.lease(cancel).await?;
+        self.with_lease(lease, async {
+            let record = self.read(lease, cancel).await?;
+            let mut attempts = self.attempts.lock().await;
+            if self.stopping.is_cancelled() || cancel.is_cancelled() {
+                return Err(OAuthError::Closed);
             }
-        }
-        Ok(())
+            self.persist(lease, record, None, true).await?;
+            for a in attempts.values_mut() {
+                a.cancel.cancel();
+                if a.status == AttemptStatus::Pending {
+                    a.status = AttemptStatus::Cancelled;
+                }
+            }
+            Ok(())
+        })
+        .await
     }
     async fn token_request(&self) -> Result<reqwest::RequestBuilder> {
         let request = self

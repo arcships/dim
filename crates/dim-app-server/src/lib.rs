@@ -848,21 +848,25 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                 Ok(Box::new(managed_provider::ManagedProviderBinding))
             })?);
         }
+        let codex_home = config.file_roots[home_root].clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
                 Ok(Box::new(codex_oauth::OpenAICodexOAuthPlugin::new(
-                    names, home_root,
+                    names,
+                    codex_home.clone(),
                 )?))
             },
         )?);
+        let grok_home = config.file_roots[home_root].clone();
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),
             move |names| {
                 Ok(Box::new(grok_oauth::GrokOAuthPlugin::new(
-                    names, home_root,
+                    names,
+                    grok_home.clone(),
                 )?))
             },
         )?);

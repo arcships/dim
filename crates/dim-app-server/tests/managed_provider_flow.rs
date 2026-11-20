@@ -667,9 +667,16 @@ async fn model_pages_survive_refresh_removal_and_an_unbound_empty_account() {
                 home.join("native.sqlite"),
             )),
             root.plugin(
-                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, 0).unwrap(),
+                dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(
+                    &names,
+                    home.to_path_buf(),
+                )
+                .unwrap(),
             ),
-            root.plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, 0).unwrap()),
+            root.plugin(
+                dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, home.to_path_buf())
+                    .unwrap(),
+            ),
             root.plugin(dim_agent_aimux::AimuxPlugin::default()),
         ];
         for dependency in &dependencies {

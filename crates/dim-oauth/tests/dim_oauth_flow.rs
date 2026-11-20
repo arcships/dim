@@ -1252,12 +1252,13 @@ async fn provider_process(home: &Path) -> Process {
         process
             .root
             .plugin(SqliteStoragePlugin::new(home.join("native.sqlite"))),
-        process
-            .root
-            .plugin(dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, 0).unwrap()),
-        process
-            .root
-            .plugin(dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, 0).unwrap()),
+        process.root.plugin(
+            dim_app_server::codex_oauth::OpenAICodexOAuthPlugin::new(&names, home.to_path_buf())
+                .unwrap(),
+        ),
+        process.root.plugin(
+            dim_app_server::grok_oauth::GrokOAuthPlugin::new(&names, home.to_path_buf()).unwrap(),
+        ),
         process.root.plugin(ModelHostFixture),
         process.root.plugin(ProviderPlugin::new(&names).unwrap()),
     ];
