@@ -873,6 +873,7 @@
       "parent": "dim_agent_capabilities::host_platform",
       "file": "crates/dim-agent-capabilities/src/host_platform/face.rs",
       "unexpandedMacros": [
+        "matches",
         "serde_json::json"
       ]
     },
@@ -14017,6 +14018,13 @@
     },
     {
       "from": "dim_agent_capabilities::host_platform",
+      "to": "dim_agent_capabilities::workspace_tools::exec",
+      "references": [
+        "path crate::workspace_tools::exec::Output"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform",
       "to": "dim_agent_runtime::names",
       "references": [
         "path Names",
@@ -14149,6 +14157,14 @@
         "path port_faces::unknown_method",
         "use crate::port_faces",
         "use crate::port_faces::Empty"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::face",
+      "to": "dim_agent_capabilities::workspace_tools::exec",
+      "references": [
+        "path crate::workspace_tools::exec::CaptureError::Unavailable",
+        "path crate::workspace_tools::exec::CaptureError::Unknown"
       ]
     },
     {

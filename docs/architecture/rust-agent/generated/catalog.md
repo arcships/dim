@@ -19,7 +19,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |
 | `eventSubscriptions` | process | eventhub | data | `list` sync, `sources` sync, `subscribe` async, `unsubscribe` async |
-| `execHost` | process | HostPlatform | data | `configured` async, `confined` async, `info` async, `removeOutputDirectory` async |
+| `execHost` | process | HostPlatform | data | `configured` async, `confined` async, `info` async, `removeOutputDirectory` async, `retainOutput` async, `tail` async |
 | `executionSettingsHost` | process | ExecutionSettings | data | `read` async |
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `fsHost` | process | FileStorage | data | `backup` async, `closeRead` async, `createDirectory` async, `list` async, `lock` async, `openRead` async, `readAt` async, `readBytes` async, `remove` async, `replace` async, `stat` async, `unlock` async |
