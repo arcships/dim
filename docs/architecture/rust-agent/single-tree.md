@@ -145,7 +145,7 @@ loader 的 `create_instance` 仍先等待行 settled；异步 apply 一直不返
 | `ConfiguredModelsPlugin` | `--model-config` 的开发模型目录、resolver 与 `auxiliaryModel` 操作 | 开发目录与 resolver、`AuxiliaryModel` 与具名 `auxiliaryModel` 绑定 | `ModelHost` |
 | `McpPublication` | Source selection, including project enablement from the user's record, and retirement across Session-owned instances; no root reconciliation | 私有 typed key `Publication` | `SettingsService`、`CredentialVariablesHost` |
 | `McpPlugin` | MCP 目录、连接租约与项目条目的用户启用记录；不拥有已配置行 | `McpService` | `SettingsService`、`Publication`、`CredentialVariablesHost` |
-| `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FileStorage>` |
+| `HostPlatformPlugin` | 平台与 exec shell 设置 | `HostPlatform` | `When<FsHost>` |
 | `SkillsCatalogPlugin` | Skill discovery/catalog and business settings; privately supplies the reusable catalog's SkillSettingsHost | `skillsCatalog` (`SkillsCatalogBinding`), private typed owner key, Skills management contribution | `HostPlatform`, `SettingsService` |
 | `AgentDirectoryPlugin` | `AgentDirectory`：Agent 表与实例、Session 协议版本与占用、不可用记录、默认 agentId、serverInstanceId；不可重启 | 私有 typed key `AgentDirectory`；公共 `sessions` | — |
 | `rutis-loader` | 进程装配的配置行与 `agent` / `session` / `branch` instanced 分组的实例 | `Loader` | — |

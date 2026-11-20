@@ -293,7 +293,7 @@ command there runs with the host's temporary directory.
 | §4 rule 4 | Core and assembly contain no isolation business branch. |
 | §4 rule 5 | No new batch or dispatch semantics. |
 | §4 rule 6 | Only existing tool results and adopted inputs enter model context. |
-| §4 rule 7 | Public HostPlatform and tree interfaces, the declared `ExecutionSettingsHost` port, and declared FileStorage only. |
+| §4 rule 7 | Public HostPlatform and tree interfaces, the declared `ExecutionSettingsHost` port, and declared fsHost only. |
 | §4 rule 8 | Existing mechanisms suffice; no requirement is raised to the runtime. |
 | §4 rule 9 | The switches and diagnostics are not Timeline facts. |
 | ADR 002 D2 | No wiring or cross-scope policy service. |

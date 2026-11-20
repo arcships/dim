@@ -1,5 +1,5 @@
 use super::{HostPlatform, ShellStatus, native, parse_preference, resolve_shell};
-use crate::file_storage::FileStorageError;
+use crate::file_storage::{FileStorageError, FsPermissions};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -87,12 +87,11 @@ impl HostPlatform {
         &self,
         cancel: &CancellationToken,
     ) -> Result<ExecShellSettings, ExecShellSettingsError> {
-        let (storage, root, relative) = self
+        let (storage, path) = self
             .shell_file
             .as_ref()
             .ok_or(ExecShellSettingsError::Unavailable)?;
-        let file = storage.path(*root, relative)?;
-        let bytes = optional_bytes(storage.read(&file, cancel).await)?;
+        let bytes = optional_bytes(storage.read_bytes(path, usize::MAX, None, cancel).await)?;
         self.shell_settings_snapshot(bytes.as_deref()).await
     }
 
@@ -104,7 +103,7 @@ impl HostPlatform {
         executable_path: Option<String>,
         cancel: &CancellationToken,
     ) -> Result<ExecShellSettings, ExecShellSettingsError> {
-        let (storage, root, relative) = self
+        let (storage, path) = self
             .shell_file
             .as_ref()
             .ok_or(ExecShellSettingsError::Unavailable)?;
@@ -121,14 +120,24 @@ impl HostPlatform {
                 return Err(ExecShellSettingsError::Invalid(reason));
             }
         }
-        let file = storage.path(*root, relative)?;
-        let mut lease = storage.lock(&file, cancel).await?;
-        let current = optional_bytes(lease.read(cancel).await)?;
-        if revision(current.as_deref()) != expected_revision {
-            return Err(ExecShellSettingsError::Conflict);
+        let lease = storage.lock(None, path, cancel).await?;
+        let updated = async {
+            let current = optional_bytes(
+                storage
+                    .read_bytes(path, usize::MAX, Some(lease), cancel)
+                    .await,
+            )?;
+            if revision(current.as_deref()) != expected_revision {
+                return Err(ExecShellSettingsError::Conflict);
+            }
+            let snapshot = self.shell_settings_snapshot(Some(&bytes)).await?;
+            storage
+                .replace(path, bytes, FsPermissions::Preserve, Some(lease), cancel)
+                .await?;
+            Ok(snapshot)
         }
-        let snapshot = self.shell_settings_snapshot(Some(&bytes)).await?;
-        lease.replace(bytes, None, cancel).await?;
-        Ok(snapshot)
+        .await;
+        storage.unlock(lease).await?;
+        updated
     }
 }

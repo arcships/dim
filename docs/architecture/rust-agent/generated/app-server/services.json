@@ -2243,7 +2243,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2261,7 +2261,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -2281,7 +2281,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true

@@ -921,6 +921,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
     }
     if let Some(home_root) = execution_root {
         let platform_home = config.platform_home.clone();
+        let exec_shell_file = config.file_roots[home_root].join("exec-shell.json");
         mcp::install(&mut builder);
         if native_home.is_some() {
             dim_agent_attachments::install(&mut builder);
@@ -976,7 +977,7 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                         dim_agent_capabilities::host_platform::HostPlatformConfig {
                             execution: names.key()?,
                             toolchain: names.key()?,
-                            exec_shell_file: Some((home_root, "exec-shell.json".into())),
+                            exec_shell_file: Some(exec_shell_file.clone()),
                             home: platform_home.clone(),
                         },
                     )?,

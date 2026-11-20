@@ -5,7 +5,7 @@
 //! Process facts are captured at apply; exec shell preferences are read at use
 //! time. Shell problems are returned as data, never raised during assembly.
 use crate::execution_settings::ExecutionSettingsHost;
-use crate::file_storage::{FileStorage, FileStorageError};
+use crate::file_storage::{FileStorageError, FsHost};
 use crate::toolchain::{InstalledToolchain, ToolchainSourceHost};
 use dim_agent_runtime::Names;
 use rutis::Ctx;
@@ -230,7 +230,7 @@ pub struct HostPlatform {
     /// and file-access facts read this one list.
     pub platform_roots: Vec<PathBuf>,
     shell: Arc<Mutex<ResolvedShell>>,
-    shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
+    shell_file: Option<(Arc<FsHost>, PathBuf)>,
     pub(crate) execution: Option<Arc<ExecutionSettingsHost>>,
     /// The installed runtimes a started process finds at the end of its
     /// `PATH`; `None` is a host that installs none.
@@ -379,8 +379,8 @@ impl HostPlatform {
     /// the plugin. Explicitly constructed platforms keep their supplied shell.
     pub async fn exec_shell(&self) -> ShellStatus {
         let mut resolved = self.shell.lock().await;
-        if let Some((storage, root, relative)) = &self.shell_file {
-            let config = read_config(storage, *root, relative).await;
+        if let Some((storage, path)) = &self.shell_file {
+            let config = read_config(storage, path).await;
             if config != resolved.config
                 || matches!(
                     resolved.status,
@@ -985,9 +985,9 @@ pub struct HostPlatformConfig {
     /// part. An assembly that installs none declares a fixed source with no
     /// directories.
     pub toolchain: Key<ToolchainSourceHost>,
-    /// `exec-shell.json`: FileStorage root index and relative path. `None`
+    /// Absolute path to `exec-shell.json` in an authorized root. `None`
     /// means the profile has no home; the shell is resolved automatically.
-    pub exec_shell_file: Option<(usize, PathBuf)>,
+    pub exec_shell_file: Option<PathBuf>,
     /// The user home the platform reports. `None` uses the process home; a
     /// host that runs with an isolated home sets it, so every capability
     /// resolves `~` and the user Skill root inside that home.
@@ -998,14 +998,16 @@ pub struct HostPlatformConfig {
 pub struct HostPlatformPlugin {
     config: HostPlatformConfig,
     /// File storage only when a local configuration source is configured.
-    storage: Option<Key<FileStorage>>,
+    storage: Option<Key<FsHost>>,
     execution: Key<ExecutionSettingsHost>,
     toolchain: Key<ToolchainSourceHost>,
 }
 impl HostPlatformPlugin {
     pub fn new(names: &Names<'_>, config: HostPlatformConfig) -> rutis::Result<Self> {
-        let storage = uses_storage(&config)
-            .then(|| names.key::<FileStorage>())
+        let storage = config
+            .exec_shell_file
+            .is_some()
+            .then(|| names.key::<FsHost>())
             .transpose()?;
         let execution = config.execution.clone();
         let toolchain = config.toolchain.clone();
@@ -1016,10 +1018,6 @@ impl HostPlatformPlugin {
             toolchain,
         })
     }
-}
-/// File storage only when a local configuration source is configured.
-fn uses_storage(config: &HostPlatformConfig) -> bool {
-    config.exec_shell_file.is_some()
 }
 impl DynPlugin for HostPlatformPlugin {
     fn name(&self) -> &str {
@@ -1039,14 +1037,9 @@ impl DynPlugin for HostPlatformPlugin {
                 Some(storage) => Some(ctx.require_at(storage)?),
                 None => None,
             };
-            let shell_file = self
-                .config
-                .exec_shell_file
-                .clone()
-                .zip(storage.clone())
-                .map(|((root, relative), storage)| (storage, root, relative));
+            let shell_file = storage.zip(self.config.exec_shell_file.clone());
             let config = match &shell_file {
-                Some((storage, root, relative)) => read_config(storage, *root, relative).await,
+                Some((storage, path)) => read_config(storage, path).await,
                 None => Ok(None),
             };
             let env: Vec<_> = std::env::vars_os().collect();
@@ -1068,19 +1061,14 @@ impl DynPlugin for HostPlatformPlugin {
     }
 }
 
-async fn read_config(
-    storage: &Arc<FileStorage>,
-    root: usize,
-    relative: &Path,
-) -> Result<Option<Vec<u8>>, String> {
+async fn read_config(storage: &FsHost, path: &Path) -> Result<Option<Vec<u8>>, String> {
     let failed = |error: FileStorageError| {
-        format!(
-            "Failed to read exec shell config: {}: {error}",
-            relative.display()
-        )
+        format!("Failed to read exec shell config: exec-shell.json: {error}")
     };
-    let path = storage.path(root, relative).map_err(failed)?;
-    match storage.read(&path, &CancellationToken::new()).await {
+    match storage
+        .read_bytes(path, usize::MAX, None, &CancellationToken::new())
+        .await
+    {
         Ok(bytes) => Ok(Some(bytes)),
         Err(FileStorageError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(failed(error)),

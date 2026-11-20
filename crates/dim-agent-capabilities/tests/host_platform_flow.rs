@@ -232,7 +232,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             HostPlatformConfig {
                 execution: names.key().unwrap(),
                 toolchain: names.key().unwrap(),
-                exec_shell_file: Some((0, "exec-shell.json".into())),
+                exec_shell_file: Some(home.join("exec-shell.json")),
                 home: None,
             },
         )

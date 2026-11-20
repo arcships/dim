@@ -166,7 +166,7 @@ flowchart LR
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p63
   p73 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main"| p63
   p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p28
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p5
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p5
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p56
   p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p56
   p49 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p56
