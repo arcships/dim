@@ -3903,6 +3903,14 @@ impl Terminal {
             tail.find(expected).map(|index| index + expected.len())
         });
     }
+    /// Waits for all labels in the unconsumed output, in any paint order.
+    fn until_all(&mut self, labels: &[&str]) {
+        self.wait_for(&format!("{labels:?}"), |tail| {
+            labels.iter().try_fold(0, |end, label| {
+                tail.find(label).map(|at| end.max(at + label.len()))
+            })
+        });
+    }
     /// Waits until the text the user reads has shown `expected`. A row an
     /// attribute splits into runs, as a highlighted token is, does not hold
     /// its own text contiguously, so a wait on what the row says reads the
@@ -5940,8 +5948,7 @@ fn repicking_the_current_model_keeps_the_effort() {
     terminal.write(b"/models\r");
     terminal.until("‹ high ›");
     terminal.write(b"\r");
-    terminal.until("Ask anything...");
-    terminal.until("test / model · high");
+    terminal.until_all(&["Ask anything...", "test / model · high"]);
     // The picker closes and the label redraws before the host task reads
     // provider management twice and sends the update; wait for the call the
     // test asserts, so the deliberate kill cannot land inside that window.
@@ -12104,9 +12111,11 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     terminal.write(b"\r");
     thread::sleep(Duration::from_millis(300));
     terminal.write(b"\r");
-    terminal.until("Subagent models");
-    terminal.until("Inherit requesting branch");
-    terminal.until("Subagent model policy saved");
+    terminal.until_all(&[
+        "Subagent models",
+        "Inherit requesting branch",
+        "Subagent model policy saved",
+    ]);
     terminal.write(b"\r");
     terminal.until("Fixed model");
     terminal.raw(b"\x1b");
@@ -12118,7 +12127,6 @@ fn tui_models_picker_edits_only_the_subagent_model_policy() {
     terminal.write(b"other");
     thread::sleep(Duration::from_millis(300));
     terminal.write(b"\r");
-    terminal.until("Subagent model policy saved");
     terminal.until_row("Test / other", "Enter");
     home.kill(&terminal);
     terminal.wait();
