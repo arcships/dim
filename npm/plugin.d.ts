@@ -743,6 +743,9 @@ export interface TimelineStore {
 
 /** Host facts of the node that executes commands. */
 export interface ExecHost {
+  shell(request: {taskId: string; cwd: string; workspace: string; roots: string[]; outputDir: string; cols: number; rows: number}): Promise<{outputPath: string}>;
+  write(request: {taskId: string; data: string}): Promise<Record<string, never>>;
+  resize(request: {taskId: string; cols: number; rows: number}): Promise<Record<string, never>>;
   output(request: ({taskId: string} | {outputPath: string}) & {cursor?: number; limit?: number}): Promise<{
     text: string; bytes: number; nextCursor?: number; truncated: boolean; retainedFrom: number; reset?: boolean;
   }>;

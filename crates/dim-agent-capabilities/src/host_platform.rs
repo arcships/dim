@@ -28,6 +28,7 @@ mod configured;
 mod confined;
 pub use configured::{ConfiguredCommand, ConfiguredEnd, ConfiguredError};
 mod face;
+pub(crate) mod shell;
 pub use face::HostInfo;
 mod exec_shell_settings;
 #[cfg(unix)]
@@ -232,6 +233,12 @@ const ENVIRONMENT: &[&str] = &[
 
 /// Process facts and the source of the exec shell preference.
 #[derive(Clone)]
+pub(crate) enum ExecutionTask {
+    Command(Arc<crate::workspace_tools::exec::CommandTask>),
+    Shell(Arc<shell::ShellTask>),
+}
+
+#[derive(Clone)]
 pub struct HostPlatform {
     pub home: PathBuf,
     pub os: Os,
@@ -245,11 +252,7 @@ pub struct HostPlatform {
     /// The fixed system roots, captured when the platform mounts. The sandbox
     /// and file-access facts read this one list.
     pub platform_roots: Vec<PathBuf>,
-    pub(crate) commands: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, Arc<crate::workspace_tools::exec::CommandTask>>,
-        >,
-    >,
+    pub(crate) commands: Arc<std::sync::Mutex<std::collections::HashMap<String, ExecutionTask>>>,
     pub(crate) command_shutdown: CancellationToken,
     pub(crate) command_workers: tokio_util::task::TaskTracker,
     shell: Arc<Mutex<ResolvedShell>>,

@@ -126,6 +126,30 @@ struct StartCommand {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StartShell {
+    task_id: String,
+    cwd: PathBuf,
+    workspace: PathBuf,
+    roots: Vec<PathBuf>,
+    output_dir: PathBuf,
+    cols: u16,
+    rows: u16,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ShellWrite {
+    task_id: String,
+    data: String,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ShellResize {
+    task_id: String,
+    cols: u16,
+    rows: u16,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WaitCommand {
     task_id: String,
     timeout_ms: Option<u64>,
@@ -284,7 +308,7 @@ impl Dispatch {
 impl HostDispatch for Dispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
-            "output":"async", "start":"async", "wait":"async", "kill":"async", "settle":"async",
+            "shell":"async","write":"async","resize":"async","output":"async", "start":"async", "wait":"async", "kill":"async", "settle":"async",
             "info":"async", "confined":"async", "configured":"async",
             "removeOutputDirectory":"async", "retainOutput":"async", "tail":"async"
         }))
@@ -298,6 +322,25 @@ impl HostDispatch for Dispatch {
             let request: OutputRequest = port_faces::request("execHost", args)?;
             let owner = self.owner.clone();
             return Ok(Value::cancellable_future(async move {
+                if let OutputRequest::Task {
+                    task_id,
+                    cursor,
+                    limit,
+                } = &request
+                    && let Some(shell) = owner.shell_task(task_id)
+                {
+                    let limit = limit
+                        .unwrap_or(OUTPUT_PAGE_BYTES)
+                        .min(OUTPUT_PAGE_BYTES_MAX) as usize;
+                    if limit == 0 {
+                        return Err(exec_error("invalid", "limit must be at least 1"));
+                    }
+                    return rutis_bridge::session::arg(
+                        &shell
+                            .page(*cursor, limit)
+                            .map_err(|e| exec_error("output_unavailable", e.to_string()))?,
+                    );
+                }
                 let (task, path, cursor, limit) = match request {
                     OutputRequest::Task {
                         task_id,
@@ -383,18 +426,85 @@ impl HostDispatch for Dispatch {
                 rutis_bridge::session::arg(&reply)
             }));
         }
-        if method == "start" {
-            let request: StartCommand = port_faces::request("execHost", args)?;
-            let owner = self.owner.clone();
-            return Ok(Value::cancellable_future(async move {
-                let StartCommand {
+        if matches!(method, "write" | "resize") {
+            enum Action {
+                Write(Vec<u8>),
+                Resize(super::PtySize),
+            }
+            let (id, action) = if method == "write" {
+                let ShellWrite { task_id, data } = port_faces::request("execHost", args)?;
+                (
                     task_id,
-                    command,
+                    Action::Write(
+                        STANDARD
+                            .decode(data)
+                            .map_err(|e| exec_error("invalid", e.to_string()))?,
+                    ),
+                )
+            } else {
+                let ShellResize {
+                    task_id,
+                    cols,
+                    rows,
+                } = port_faces::request("execHost", args)?;
+                (task_id, Action::Resize(super::PtySize { cols, rows }))
+            };
+            let shell = self
+                .owner
+                .shell_task(&id)
+                .ok_or_else(|| exec_error("task_unknown", "Unknown shell task"))?;
+            return Ok(Value::future(async move {
+                match action {
+                    Action::Write(bytes) => shell.write(&bytes).await,
+                    Action::Resize(size) => shell.resize(size).await,
+                }
+                .map_err(|e| exec_error("failed", e.to_string()))?;
+                rutis_bridge::session::arg(&Empty {})
+            }));
+        }
+        if matches!(method, "start" | "shell") {
+            enum Launch {
+                Command(String),
+                Shell(super::PtySize),
+            }
+            let (task_id, cwd, workspace, mut roots, output_dir, launch) = if method == "shell" {
+                let StartShell {
+                    task_id,
                     cwd,
                     workspace,
-                    mut roots,
+                    roots,
                     output_dir,
-                } = request;
+                    cols,
+                    rows,
+                } = port_faces::request("execHost", args)?;
+                (
+                    task_id,
+                    cwd,
+                    workspace,
+                    roots,
+                    output_dir,
+                    Launch::Shell(super::PtySize { cols, rows }),
+                )
+            } else {
+                let StartCommand {
+                    task_id,
+                    cwd,
+                    workspace,
+                    roots,
+                    output_dir,
+                    command,
+                } = port_faces::request("execHost", args)?;
+                (
+                    task_id,
+                    cwd,
+                    workspace,
+                    roots,
+                    output_dir,
+                    Launch::Command(command),
+                )
+            };
+            let owner = self.owner.clone();
+            return Ok(Value::cancellable_future(async move {
                 if task_id.is_empty()
                     || task_id.contains(['/', '\\', '\0', ':'])
                     || matches!(task_id.as_str(), "." | "..")
@@ -420,17 +530,32 @@ impl HostDispatch for Dispatch {
                 if !roots.contains(&workspace) {
                     roots.push(workspace);
                 }
-                let (spec, _) = owner
-                    .build_process_spec(&command, &cwd)
-                    .await
-                    .map_err(|e| exec_error(e.code, e.reason))?;
-                let process = owner
-                    .start_command(&task_id, spec, &roots, &output_dir, None)
-                    .await
-                    .map_err(|e| exec_error(e.code, e.reason))?;
-                rutis_bridge::session::arg(
-                    &serde_json::json!({"outputPath": process.retain_task()}),
-                )
+                let path = match launch {
+                    Launch::Command(command) => {
+                        let (spec, _) = owner
+                            .build_process_spec(&command, &cwd)
+                            .await
+                            .map_err(|e| exec_error(e.code, e.reason))?;
+                        owner
+                            .start_command(&task_id, spec, &roots, &output_dir, None)
+                            .await
+                            .map_err(|e| exec_error(e.code, e.reason))?
+                            .retain_task()
+                    }
+                    Launch::Shell(size) => {
+                        tokio::fs::create_dir_all(&output_dir)
+                            .await
+                            .map_err(|e| exec_error("io", e.to_string()))?;
+                        owner
+                            .start_shell(&task_id, &cwd, &roots, &output_dir, size, None)
+                            .await
+                            .map_err(|e| exec_error(e.code, e.reason))?
+                            .0
+                            .output_path()
+                            .to_owned()
+                    }
+                };
+                rutis_bridge::session::arg(&serde_json::json!({"outputPath":path}))
             }));
         }
         if method == "wait" {
@@ -438,6 +563,11 @@ impl HostDispatch for Dispatch {
                 task_id,
                 timeout_ms,
             } = port_faces::request("execHost", args)?;
+            if let Some(shell) = self.owner.shell_task(&task_id) {
+                return Ok(Value::cancellable_future(async move {
+                    rutis_bridge::session::arg(&shell.wait(timeout_ms).await)
+                }));
+            }
             let task = self
                 .owner
                 .command(&task_id)
@@ -449,6 +579,22 @@ impl HostDispatch for Dispatch {
         if matches!(method, "kill" | "settle") {
             let TaskRequest { task_id } = port_faces::request("execHost", args)?;
             let owner = self.owner.clone();
+            if let Some(shell) = owner.shell_task(&task_id) {
+                let kill = method == "kill";
+                return Ok(Value::future(async move {
+                    if kill {
+                        shell
+                            .terminate()
+                            .await
+                            .map_err(|e| exec_error("failed", e.to_string()))?;
+                    } else if shell.exit().is_some() {
+                        owner.settle_shell(&task_id, &shell);
+                    } else {
+                        return Err(exec_error("task_running", "Cannot settle a running shell"));
+                    }
+                    rutis_bridge::session::arg(&Empty {})
+                }));
+            }
             let task = owner
                 .command(&task_id)
                 .map_err(|e| exec_error("task_unknown", e.to_string()))?;
@@ -473,6 +619,13 @@ impl HostDispatch for Dispatch {
         if matches!(method, "retainOutput" | "tail") {
             let TaskRequest { task_id } = port_faces::request("execHost", args)?;
             let owner = self.owner.clone();
+            if method == "tail"
+                && let Some(shell) = owner.shell_task(&task_id)
+            {
+                return Ok(Value::future(async move {
+                    rutis_bridge::session::arg(&shell.tail())
+                }));
+            }
             let retain = method == "retainOutput";
             return Ok(Value::future(async move {
                 let result = if retain {

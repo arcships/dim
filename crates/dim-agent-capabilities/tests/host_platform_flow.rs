@@ -352,6 +352,30 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         .await
         .is_err()
     );
+    let shell_id = serde_json::json!({"taskId":"interactive"});
+    invoke("shell",serde_json::json!({"taskId":"interactive","cwd":home,"workspace":home,"roots":[],"outputDir":platform.exec_root().join("session/branch"),"cols":80,"rows":24})).await.unwrap();
+    invoke(
+        "resize",
+        serde_json::json!({"taskId":"interactive","cols":100,"rows":32}),
+    )
+    .await
+    .unwrap();
+    invoke(
+        "write",
+        serde_json::json!({"taskId":"interactive","data":"ZXhpdCA3Cg=="}),
+    )
+    .await
+    .unwrap();
+    let finished = invoke(
+        "wait",
+        serde_json::json!({"taskId":"interactive","timeoutMs":10000}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(finished["exitCode"], 7);
+    let captured = invoke("output", shell_id.clone()).await.unwrap();
+    assert_eq!(captured["retainedFrom"], 0);
+    invoke("settle", shell_id).await.unwrap();
     let output_root = platform.exec_root();
     let branch_output = output_root.join("session/branch");
     std::fs::create_dir_all(&branch_output).unwrap();

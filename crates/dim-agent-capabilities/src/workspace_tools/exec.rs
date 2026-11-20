@@ -2025,7 +2025,10 @@ impl HostPlatform {
             observed,
             terminal,
         });
-        commands.insert(task_id.to_owned(), task.clone());
+        commands.insert(
+            task_id.to_owned(),
+            crate::host_platform::ExecutionTask::Command(task.clone()),
+        );
         let running = RunningCommand {
             tree,
             stop_pumps,
@@ -2049,19 +2052,15 @@ impl HostPlatform {
     }
 
     pub(crate) fn command(&self, task_id: &str) -> Result<Arc<CommandTask>, CaptureError> {
-        self.commands
-            .lock()
-            .unwrap()
-            .get(task_id)
-            .cloned()
-            .ok_or(CaptureError::Unknown)
+        match self.commands.lock().unwrap().get(task_id) {
+            Some(crate::host_platform::ExecutionTask::Command(task)) => Ok(task.clone()),
+            _ => Err(CaptureError::Unknown),
+        }
     }
 
     pub(crate) fn settle_command(&self, task_id: &str, task: &Arc<CommandTask>) {
         let mut commands = self.commands.lock().unwrap();
-        if commands
-            .get(task_id)
-            .is_some_and(|held| Arc::ptr_eq(held, task))
+        if matches!(commands.get(task_id),Some(crate::host_platform::ExecutionTask::Command(held)) if Arc::ptr_eq(held,task))
         {
             commands.remove(task_id);
         }

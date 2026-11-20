@@ -14,9 +14,7 @@ use crate::workspace_tools::background::BackgroundExec;
 use crate::{
     exec_stop::{ExecStop, TaskError},
     host::{HostError, SessionFiles},
-    host_platform::{
-        HostPlatform, PtyProcessTree, PtySize, ShellEdition, ShellStatus, kill_job, stop_job,
-    },
+    host_platform::{HostPlatform, PtySize, ShellEdition, kill_job, shell::ShellTask, stop_job},
 };
 use dim_agent_runtime::{Dispatcher, Names, Timeline};
 use dim_agent_types::{
@@ -261,7 +259,7 @@ struct BackgroundTask {
 }
 
 struct Inner {
-    pty: Option<PtyProcessTree>,
+    pty: Option<NativeShell>,
     /// Counts spawned shells; a consumer loop serves only its own shell.
     generation: u64,
     dialect: ShellDialect,
@@ -298,6 +296,33 @@ struct Settlement {
 }
 
 /// The persistent shell of one branch.
+struct NativeShell {
+    task: Arc<ShellTask>,
+    host: Arc<HostPlatform>,
+    id: String,
+}
+impl std::ops::Deref for NativeShell {
+    type Target = ShellTask;
+    fn deref(&self) -> &Self::Target {
+        &self.task
+    }
+}
+impl Drop for NativeShell {
+    fn drop(&mut self) {
+        if self.task.exit().is_some() {
+            self.host.settle_shell(&self.id, &self.task);
+            return;
+        }
+        let host = self.host.clone();
+        let task = self.task.clone();
+        let id = self.id.clone();
+        self.host.command_workers.spawn(async move {
+            let _ = task.terminate().await;
+            host.settle_shell(&id, &task);
+        });
+    }
+}
+
 pub struct ShellSession {
     facts: Option<(Ctx, Key<crate::file_access::FileAccessFacts>)>,
     inner: tokio::sync::Mutex<Inner>,
@@ -524,39 +549,6 @@ impl ShellSession {
             let inner = self.inner.lock().await;
             inner.had_reset.then(|| "[shell was reset]".to_owned())
         };
-        let shell = self.host.persistent_shell().await;
-        let (exe, dialect) = match shell {
-            ShellStatus::Available(runtime) => {
-                let dialect = match runtime.edition {
-                    ShellEdition::Pwsh | ShellEdition::WindowsPowershell => ShellDialect::Pwsh,
-                    _ => ShellDialect::Posix,
-                };
-                (runtime.executable_path.clone(), dialect)
-            }
-            ShellStatus::Unavailable { reason, .. } => {
-                return Err(HostError::failed(reason));
-            }
-        };
-        let args = shell_args(dialect);
-        let env = self
-            .host
-            .env
-            .iter()
-            .cloned()
-            .chain([
-                ("GIT_PAGER".into(), "cat".into()),
-                ("NO_COLOR".into(), "1".into()),
-                ("TERM".into(), "dumb".into()),
-                ("PAGER".into(), "cat".into()),
-            ])
-            .collect();
-        let spec = crate::host_platform::ProcessSpec {
-            executable: exe.clone(),
-            args,
-            cwd: self.config.cwd.clone(),
-            env,
-        };
-        // The persistent shell adds no failure note (host-platform-isolation.md#visibility).
         let roots = match self.facts.as_ref().and_then(|(ctx, key)| ctx.get_at(key)) {
             Some(facts) => {
                 facts
@@ -566,23 +558,33 @@ impl ShellSession {
             }
             None => vec![self.config.cwd.clone()],
         };
-        let (spec, temporary, _) = self
+        let id = format!("shell-{}", uuid::Uuid::new_v4());
+        let (output, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (task, runtime) = self
             .host
-            .prepare_isolated_process(spec, &roots, Some(&self.config.output_dir))
-            .await
-            .map_err(|error| HostError::failed(format!("{}: {}", error.code, error.reason)))?;
-        let mut pty = self
-            .host
-            .spawn_pty(
-                spec,
+            .start_shell(
+                &id,
+                &self.config.cwd,
+                &roots,
+                &self.config.output_dir,
                 PtySize {
                     cols: 500,
                     rows: 50,
                 },
+                Some(output),
             )
-            .map_err(|e| HostError::failed(e.to_string()))?;
-        pty.hold(temporary);
-        let reader = pty.take_reader();
+            .await
+            .map_err(|error| HostError::failed(error.reason))?;
+        let dialect = match runtime.edition {
+            ShellEdition::Pwsh | ShellEdition::WindowsPowershell => ShellDialect::Pwsh,
+            _ => ShellDialect::Posix,
+        };
+        let exe = runtime.executable_path;
+        let pty = NativeShell {
+            task,
+            host: self.host.clone(),
+            id,
+        };
         let generation = {
             let mut inner = self.inner.lock().await;
             if self.lifecycle.is_cancelled() {
@@ -599,24 +601,6 @@ impl ShellSession {
             inner.pty = Some(pty);
             inner.generation
         };
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Option<Vec<u8>>>();
-        std::thread::spawn(move || {
-            let mut reader = reader;
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => {
-                        let _ = tx.send(None);
-                        break;
-                    }
-                    Ok(n) => {
-                        if tx.send(Some(buf[..n].to_vec())).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
         let this = self.clone();
         let lifecycle = self.lifecycle.clone();
         {
@@ -629,8 +613,8 @@ impl ShellSession {
                         biased;
                         _ = lifecycle.cancelled() => break,
                         chunk = rx.recv(), if reading => match chunk {
-                            Some(Some(bytes)) => {
-                                this.handle_output(&regularize_output(&bytes)).await;
+                            Some(text) => {
+                                this.handle_output(&text).await;
                             }
                             _ => {
                                 reading = false;
@@ -640,8 +624,8 @@ impl ShellSession {
                             Liveness::Alive => {}
                             Liveness::Replaced => break,
                             Liveness::Dead(status) => {
-                                while let Ok(Some(bytes)) = rx.try_recv() {
-                                    this.handle_output(&regularize_output(&bytes)).await;
+                                while let Ok(text) = rx.try_recv() {
+                                    this.handle_output(&text).await;
                                 }
                                 this.handle_shell_exit(generation, status).await;
                                 break;
@@ -707,7 +691,7 @@ impl ShellSession {
             }
             if tokio::time::Instant::now() >= deadline {
                 let mut inner = self.inner.lock().await;
-                if let Some(mut pty) = inner.pty.take() {
+                if let Some(pty) = inner.pty.take() {
                     let _ = pty.terminate().await;
                 }
                 let captured = inner.retained.clone();
@@ -734,6 +718,7 @@ impl ShellSession {
             return Err(HostError::failed("Shell is not running"));
         };
         pty.write(line.as_bytes())
+            .await
             .map_err(|e| HostError::failed(format!("Shell write failed: {e}")))?;
         inner.capture = Some(capture);
         Ok(())
@@ -803,10 +788,9 @@ impl ShellSession {
         }
         match inner.pty.as_mut() {
             None => Liveness::Dead(None),
-            Some(pty) => match pty.try_wait() {
-                Ok(None) => Liveness::Alive,
-                Ok(status) => Liveness::Dead(status),
-                Err(_) => Liveness::Dead(None),
+            Some(pty) => match pty.exit() {
+                None => Liveness::Alive,
+                Some(end) => Liveness::Dead(end.exit),
             },
         }
     }
@@ -990,7 +974,7 @@ impl ShellSession {
         {
             let mut inner = self.inner.lock().await;
             if let Some(pty) = inner.pty.as_mut() {
-                let _ = pty.write(b"\x03");
+                let _ = pty.write(b"\x03").await;
             }
         }
         let deadline = tokio::time::Instant::now() + STOP_WAIT;
@@ -1021,7 +1005,7 @@ impl ShellSession {
             if tokio::time::Instant::now() >= deadline {
                 let mut inner = self.inner.lock().await;
                 inner.capture = None;
-                if let Some(mut pty) = inner.pty.take() {
+                if let Some(pty) = inner.pty.take() {
                     let _ = pty.terminate().await;
                 }
                 inner.shell_exit = Some("[shell was terminated]".into());
@@ -1231,16 +1215,14 @@ impl ShellSession {
                     pty, background, ..
                 } = &mut *inner;
                 if let Some(task) = background.get_mut(&task_id) {
-                    task.pid = code
-                        .parse::<u32>()
-                        .map_err(|_| {
-                            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid job pid")
-                        })
-                        .and_then(|pid| {
-                            pty.as_ref()
-                                .ok_or_else(|| std::io::Error::other("shell exited"))?
-                                .job_pid(pid)
-                        });
+                    task.pid = match (code.parse::<u32>(), pty.as_ref()) {
+                        (Ok(pid), Some(shell)) => shell.job_pid(pid).await,
+                        (Ok(_), None) => Err(std::io::Error::other("shell exited")),
+                        (Err(_), _) => Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "Invalid job pid",
+                        )),
+                    };
                 }
                 break;
             }
@@ -1322,7 +1304,7 @@ impl ShellSession {
                     capture.settle(capture.pending.len());
                 }
                 if let Some(pty) = inner.pty.as_mut() {
-                    let _ = pty.write(b"\x03");
+                    let _ = pty.write(b"\x03").await;
                 }
             }
             let deadline = tokio::time::Instant::now() + STOP_WAIT;
@@ -1353,7 +1335,7 @@ impl ShellSession {
                     inner.occupy_tail = Some(capture.output);
                 }
                 if !found {
-                    if let Some(mut pty) = inner.pty.take() {
+                    if let Some(pty) = inner.pty.take() {
                         let _ = pty.terminate().await;
                     }
                     inner.shell_exit = Some("[shell was terminated]".into());
@@ -1413,6 +1395,7 @@ impl ShellSession {
             return Err(HostError::failed("Shell is not running"));
         };
         pty.write(format!("{line}\n").as_bytes())
+            .await
             .map_err(|e| HostError::failed(format!("Shell write failed: {e}")))
     }
 }
@@ -1535,7 +1518,7 @@ impl DynPlugin for ShellSessionPlugin {
                 service.lifecycle.cancel();
                 {
                     let mut inner = service.inner.lock().await;
-                    if let Some(mut pty) = inner.pty.take() {
+                    if let Some(pty) = inner.pty.take() {
                         let _ = pty.terminate().await;
                     }
                     for queued in inner.queue.drain(..) {
@@ -1564,13 +1547,6 @@ impl DynPlugin for ShellSessionPlugin {
             ctx.provide_at::<dyn ExecStop>(self.stop.clone(), session)?;
             Ok(Effect::Done)
         })
-    }
-}
-
-fn shell_args(dialect: ShellDialect) -> Vec<std::ffi::OsString> {
-    match dialect {
-        ShellDialect::Posix => vec!["-i".into()],
-        ShellDialect::Pwsh => vec!["-NoLogo".into(), "-NoProfile".into(), "-Command".into()],
     }
 }
 
@@ -1718,7 +1694,7 @@ fn marker_hold(text: &str) -> usize {
         .map_or(text.len(), |len| text.len() - len)
 }
 
-fn regularize_output(bytes: &[u8]) -> String {
+pub(crate) fn regularize_output(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut out = String::new();
     let mut chars = text.chars().peekable();
