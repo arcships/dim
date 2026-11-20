@@ -374,6 +374,75 @@ async fn versioned_records_reopen_and_preserve_rejected_files() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_text_replace_over_the_frame_limit_leaves_the_file_unchanged() {
+    let directory = Directory::new();
+    let (_root, scope, _) = mount(&directory.0).await;
+    let result = call(
+        &scope,
+        "withLock",
+        vec![
+            json!("state.txt").into(),
+            Value::callback(|args| {
+                let file = args.list()?.remove(0);
+                Ok(Value::future(async move {
+                    assert_eq!(
+                        call(&file, "replace", vec![json!("original").into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    let near = "y".repeat(16 * 1024 * 1024 - 40 * 1024);
+                    assert_eq!(
+                        call(&file, "replace", vec![json!(near.clone()).into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    assert_eq!(
+                        call(&file, "read", vec![]).await.json().unwrap(),
+                        json!({"ok":true,"value":near})
+                    );
+                    assert_eq!(
+                        call(&file, "replace", vec![json!("original").into()])
+                            .await
+                            .json()
+                            .unwrap(),
+                        json!({"ok":true,"value":null})
+                    );
+                    let text = "x".repeat(16 * 1024 * 1024);
+                    let pending = member(&file, "replace")
+                        .reference()
+                        .unwrap()
+                        .call_async(Value::List(vec![json!(text).into()]))
+                        .await
+                        .unwrap();
+                    let Value::Reference(reference) = pending else {
+                        panic!("replace returns a future")
+                    };
+                    let error = reference
+                        .wait_async()
+                        .await
+                        .expect_err("a text replace over the frame limit is refused");
+                    assert_eq!(error.code(), Some("bad-value"));
+                    assert!(error.to_string().contains("16 MiB"), "{error}");
+                    assert_eq!(
+                        call(&file, "read", vec![]).await.json().unwrap(),
+                        json!({"ok":true,"value":"original"})
+                    );
+                    Ok(json!(null).into())
+                }))
+            }),
+        ],
+    )
+    .await
+    .json()
+    .unwrap();
+    assert_eq!(result, json!({"ok":true,"value":null}));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn quiesce_cancels_waiters_but_settles_issued_transactions_and_isolates_scopes() {
     tokio::time::timeout(Duration::from_secs(5), async {
         let directory = Directory::new();

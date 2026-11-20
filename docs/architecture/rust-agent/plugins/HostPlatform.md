@@ -327,12 +327,13 @@ helper's tree; `a_confined_helper_leaves_no_process_after_it_exits` that a
 helper which exits on its own leaves nothing either;
 `a_confined_helper_returns_when_its_root_exits_with_a_descendant_on_its_pipes` that a descendant
 holding both pipes cannot turn a completed helper into a timeout, and
-`a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes` that a descendant which
-left the process group is returned past and is then the caller's to kill (skipped when perl is
-absent);
-`a_confined_helper_gets_the_allowlist_plus_its_own_environment` that only the
-allowlist and the helper's own entries reach it, with its `TMPDIR` honored; and
-`a_confined_helper_refuses_relative_and_missing_paths` the path refusals.
+`a_confined_helper_returns_when_an_escaped_descendant_holds_its_pipes` checks the lifetime of a
+descendant that left the group. On Linux with bubblewrap, the descendant's file lock must be
+released when the call returns. On macOS and unconfined Linux, the caller cleans up the surviving
+descendant. This probe requires Perl.
+`a_confined_helper_gets_the_allowlist_plus_its_own_environment` checks that only the allowlist
+and the helper's own entries reach it, with its `TMPDIR` honored.
+`a_confined_helper_refuses_relative_and_missing_paths` covers the path refusals.
 `a_host_without_bubblewrap_runs_the_confined_helper_unconfined` covers the
 Linux fallback.
 [host_platform_windows_flow.rs](../../../../crates/dim-agent-capabilities/tests/host_platform_windows_flow.rs):

@@ -6,7 +6,7 @@
 
 **Dim is a paradigm for general-purpose agents that grow into the environments they inhabit.**
 
-[![Rust toolchain 1.100.0](https://img.shields.io/badge/Rust-1.100.0-93450a.svg?logo=rust)](rust-toolchain.toml) [![npm alpha version](https://img.shields.io/npm/v/dimcode-alpha/alpha.svg?label=npm%20alpha)](https://www.npmjs.com/package/dimcode-alpha?activeTab=versions) [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZx3MycCm5)
+[![main CI](https://img.shields.io/github/actions/workflow/status/arcships/dim/ci.yml?branch=main&event=push&label=main%20CI&logo=github)](https://github.com/arcships/dim/actions/workflows/ci.yml?query=branch%3Amain+event%3Apush) [![Rust toolchain 1.100.0](https://img.shields.io/badge/Rust-1.100.0-93450a.svg?logo=rust)](rust-toolchain.toml) [![npm alpha version](https://img.shields.io/npm/v/dimcode-alpha/alpha.svg?label=npm%20alpha)](https://www.npmjs.com/package/dimcode-alpha?activeTab=versions) [![MIT license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE) [![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?logo=discord&logoColor=white)](https://discord.gg/cZx3MycCm5)
 
 <a href="https://trendshift.io/repositories/336256?utm_source=trendshift-badge&amp;utm_medium=badge&amp;utm_campaign=badge-trendshift-336256" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/336256/daily?language=Rust" alt="arcships/dim on Trendshift" width="250" height="55"></a>
 

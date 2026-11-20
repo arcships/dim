@@ -1,7 +1,7 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','dependencies'];
+export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 const documentation=/^docs\/|^[^/]+\.md$/;
 
@@ -16,6 +16,9 @@ const rules=[
   [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','xtask']],
   [/^web\//,['web']],
   [/^scripts\/run-rust-test\.mjs$/,groups],
+  [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts','web']],
+  [/^scripts\/(code-layout\/|code-layout-darwin\.test\.mjs$)/,['scripts','web','macos_scripts']],
+  [/^scripts\/(stage-release|pack-release|native-binary|store-formats|release\.test)\.mjs$/,['scripts','web','macos_scripts']],
   [/^scripts\//,['scripts','web']],
   [/^docker\//,['scripts']],
   [/^crates\/dim-cli\//,['rust','windows']],

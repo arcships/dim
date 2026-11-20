@@ -79,6 +79,18 @@ struct Installed {
     home: Home,
 }
 
+fn install_updater(destination: &Path) {
+    let status = Command::new("install")
+        .args(["-m", "700", env!("CARGO_BIN_EXE_dimcode")])
+        .arg(destination)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "install updater at {destination:?}: {status}"
+    );
+}
+
 impl Installed {
     fn new(version: &str, commands: &[&str]) -> Self {
         let home = Home::new();
@@ -91,8 +103,7 @@ impl Installed {
         // The update runs from inside the package, as the installed command
         // does, so the copy it runs from is how it finds the installation.
         let updater = package.join("bin/dimcode");
-        fs::copy(env!("CARGO_BIN_EXE_dimcode"), &updater).unwrap();
-        fs::set_permissions(&updater, fs::Permissions::from_mode(0o700)).unwrap();
+        install_updater(&updater);
         let launcher = package.join("bin/dimcode.mjs");
         fs::write(&launcher, REPORTS_VERSION).unwrap();
         fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
@@ -596,8 +607,7 @@ fn one_packages_staging_survives_the_others_update() {
     // is missing, as it is after the interrupted fallback.
     let stable_updater = installed.prefix.join("lib/node_modules/dimcode-alpha/bin");
     let updater = stable_updater.join("dim-stable");
-    fs::copy(env!("CARGO_BIN_EXE_dimcode"), &updater).unwrap();
-    fs::set_permissions(&updater, fs::Permissions::from_mode(0o700)).unwrap();
+    install_updater(&updater);
     let mut command = Command::new(fs::canonicalize(updater).unwrap());
     command
         .args(["--home", installed.home.0.to_str().unwrap(), "update"])
