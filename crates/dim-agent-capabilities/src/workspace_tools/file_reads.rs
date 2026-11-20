@@ -20,27 +20,32 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
 pub enum TextEncoding {
     Utf8,
     Utf16Le,
     Utf16Be,
     /// Only established by an explicit `read.encoding`; never guessed.
+    #[serde(deserialize_with = "super::files::deserialize_legacy_encoding")]
     Legacy {
         /// The requested name, lowercased, as echoed to the model.
         name: String,
+        #[serde(skip_serializing)]
         encoding: &'static encoding_rs::Encoding,
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum EncodingSource {
     Bom,
     User,
     Utf8Policy,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Bom {
     None,
     Utf8,
@@ -48,7 +53,8 @@ pub enum Bom {
     Utf16Be,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Eol {
     None,
     Lf,
@@ -56,14 +62,37 @@ pub enum Eol {
     Mixed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextFileBinding {
     /// SHA-256 of the raw file bytes.
+    #[serde(with = "revision_hex")]
     pub raw_revision: [u8; 32],
     pub encoding: TextEncoding,
     pub encoding_source: EncodingSource,
     pub bom: Bom,
     pub eol: Eol,
+}
+
+mod revision_hex {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(value: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&super::super::files::hex(value))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<[u8; 32], D::Error> {
+        let text = String::deserialize(deserializer)?;
+        if text.len() != 64 || !text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(D::Error::custom("expected a lowercase SHA-256 revision"));
+        }
+        let mut bytes = [0; 32];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16)
+                .map_err(D::Error::custom)?;
+        }
+        Ok(bytes)
+    }
 }
 
 /// A binding and the sequence the branch had reached when the operation that

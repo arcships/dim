@@ -1,6 +1,6 @@
 use super::mentions::{MentionsReply, MentionsRequest, parse_limit};
 use super::{DirectoryEntry, FileReader, FileStorage, FileStorageError, Result};
-use crate::workspace_tools::files::search::SearchKind;
+use crate::workspace_tools::files::{WorkspaceMutation, WorkspaceWrite, search::SearchKind};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rutis::Ctx;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
@@ -97,14 +97,20 @@ impl FsPermissions {
 /// Filesystem operations on the existing storage generation.
 #[derive(Clone)]
 pub struct FsHost {
+    pub(crate) writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     system_roots: Arc<Vec<PathBuf>>,
     storage: Arc<FileStorage>,
     generation: Ctx,
 }
 
 impl FsHost {
-    pub(super) fn new(owner: Arc<FileStorage>, ctx: Ctx) -> Self {
+    pub(super) fn new(
+        owner: Arc<FileStorage>,
+        ctx: Ctx,
+        writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
+    ) -> Self {
         Self {
+            writes,
             system_roots: Arc::new(crate::host_platform::platform_roots()),
             storage: owner,
             generation: ctx,
@@ -501,6 +507,8 @@ impl FileStorage {
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
 enum Request {
     Resolve(crate::file_access::ResolvePath),
+    Write(WorkspaceWrite),
+    Edit(dim_agent_types::JsonObject),
     Glob(dim_agent_types::JsonObject),
     Grep(dim_agent_types::JsonObject),
     Mentions(MentionsRequest),
@@ -576,7 +584,7 @@ struct Close {
 impl HostDispatch for FsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"resolve":"async","glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
+            serde_json::json!({"resolve":"async","write":"async","edit":"async","glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
         )
     }
 
@@ -613,6 +621,29 @@ impl HostDispatch for FsHost {
                             )
                         })?;
                     serde_json::json!(resolved)
+                }
+                request @ (Request::Write(_) | Request::Edit(_)) => {
+                    let mutation = match request {
+                        Request::Write(input) => WorkspaceMutation::Write(input),
+                        Request::Edit(input) => WorkspaceMutation::Edit(input),
+                        _ => unreachable!(),
+                    };
+                    let result = owner
+                        .mutate_workspace_file(mutation, &cancel)
+                        .await
+                        .map_err(|error| {
+                            let code = match &error {
+                                crate::host::HostError::Cancelled(_) => "cancelled",
+                                _ => "io",
+                            };
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!(result)
                 }
                 request @ (Request::Glob(_) | Request::Grep(_)) => {
                     let (kind, input) = match request {

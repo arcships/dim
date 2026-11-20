@@ -744,7 +744,18 @@ export interface TimelineStore {
 export type FsEntryName = string | { Unix: number[] } | { Windows: number[] };
 /** Directory operations and pinned reads on the filesystem owner; see resource-faces §4.1. */
 export type FsConfirmedRoot = { root: string; subtree: string; rootIdentity: string };
+export type TextFileBinding = {
+  rawRevision: string;
+  encoding: {kind: 'utf8' | 'utf16le' | 'utf16be'} | {kind: 'legacy'; name: string};
+  encodingSource: 'bom' | 'user' | 'utf8-policy';
+  bom: 'none' | 'utf8' | 'utf16le' | 'utf16be';
+  eol: 'none' | 'lf' | 'crlf' | 'mixed';
+};
+type FsReplacement = {oldText: string; newText: string; replaceAll?: boolean};
+type FsMutationReply = {result: ToolResult; binding?: TextFileBinding};
 export interface FsHost {
+  write(request: {path: string; content: string; binding?: TextFileBinding}): Promise<FsMutationReply>;
+  edit(request: {path: string; binding?: TextFileBinding} & (FsReplacement | {edits: FsReplacement[]})): Promise<FsMutationReply>;
   resolve(request: {path: string; cwd: string; workspace: string; roots?: FsConfirmedRoot[]; recognize?: boolean}): Promise<{
     path: string; workspace: boolean; system: boolean; roots: {root: string; contains: boolean; valid: boolean}[];
     worktree?: FsConfirmedRoot & {repository: string}; discoveryError?: string;

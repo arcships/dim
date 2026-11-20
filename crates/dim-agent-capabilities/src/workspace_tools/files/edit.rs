@@ -65,15 +65,15 @@ struct Replacement {
     replace_all: bool,
 }
 
-struct Input {
-    path: String,
+pub(super) struct Input {
+    pub(super) path: String,
     edits: Vec<Replacement>,
 }
 
 /// Reads the replacement list. A recorded call that carries the top-level
 /// `oldText` and `newText` instead is read as one replacement; a call that
 /// carries both shapes, or an empty list, is refused.
-fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
+pub(super) fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
     let Some(Value::String(path)) = field(input, "path").filter(|path| path.as_str() != Some(""))
     else {
         return Err(invalid_input("edit requires a non-empty string path."));
@@ -104,10 +104,37 @@ fn parse(input: &JsonObject) -> Result<Input, ToolResult> {
         }
         None => vec![replacement(input).map_err(|result| for_index(result, 0))?],
     };
-    Ok(Input {
+    let input = Input {
         path: path.clone(),
         edits,
-    })
+    };
+    let chars = input
+        .edits
+        .iter()
+        .map(|replacement| js_len(&replacement.old_text) + js_len(&replacement.new_text))
+        .sum::<usize>();
+    if chars > EDIT_INPUT_MAX_CHARS {
+        return Err(failed(
+            format!(
+                "edit input too large: the replacements' oldText and newText total {chars} chars, limit is {EDIT_INPUT_MAX_CHARS} chars."
+            ),
+            json!({ "code": "input_too_large", "chars": chars, "limit": EDIT_INPUT_MAX_CHARS }),
+        ));
+    }
+    if let Some(index) = input
+        .edits
+        .iter()
+        .position(|replacement| replacement.old_text == replacement.new_text)
+    {
+        return Err(for_index(
+            failed(
+                "oldText and newText are identical; no change needed.",
+                json!({ "code": "no_change" }),
+            ),
+            index,
+        ));
+    }
+    Ok(input)
 }
 
 /// One replacement read from `fields`; a failure names its entry through
@@ -141,32 +168,6 @@ pub(super) async fn run(
         Err(result) => return Ok(result),
     };
     let established = reads.established();
-    let chars = input
-        .edits
-        .iter()
-        .map(|replacement| js_len(&replacement.old_text) + js_len(&replacement.new_text))
-        .sum::<usize>();
-    if chars > EDIT_INPUT_MAX_CHARS {
-        return Ok(failed(
-            format!(
-                "edit input too large: the replacements' oldText and newText total {chars} chars, limit is {EDIT_INPUT_MAX_CHARS} chars."
-            ),
-            json!({ "code": "input_too_large", "chars": chars, "limit": EDIT_INPUT_MAX_CHARS }),
-        ));
-    }
-    if let Some(index) = input
-        .edits
-        .iter()
-        .position(|replacement| replacement.old_text == replacement.new_text)
-    {
-        return Ok(for_index(
-            failed(
-                "oldText and newText are identical; no change needed.",
-                json!({ "code": "no_change" }),
-            ),
-            index,
-        ));
-    }
     let (cwd, home, requested, boundary) = (
         tools.cwd.clone(),
         tools.home.clone(),
@@ -211,7 +212,7 @@ pub(super) async fn run(
     Ok(result)
 }
 
-fn edit_locked(
+pub(super) fn edit_locked(
     path: &Path,
     bounded: bool,
     input: &Input,

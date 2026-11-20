@@ -135,6 +135,22 @@ fn resolve_explicit(input: &str, bom: Option<&TextEncoding>) -> Result<TextEncod
     }
 }
 
+pub(in crate::workspace_tools) fn deserialize_legacy_encoding<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<(String, &'static Encoding), D::Error> {
+    use serde::{Deserialize, de::Error};
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Legacy {
+        name: String,
+    }
+    let Legacy { name } = Legacy::deserialize(deserializer)?;
+    match resolve_explicit(&name, None).map_err(|error| D::Error::custom(error.message))? {
+        TextEncoding::Legacy { name, encoding } => Ok((name, encoding)),
+        _ => Err(D::Error::custom("expected a legacy encoding")),
+    }
+}
+
 fn detect_bom(head: &[u8]) -> Option<(TextEncoding, Bom)> {
     if head.starts_with(UTF8_BOM) {
         Some((TextEncoding::Utf8, Bom::Utf8))

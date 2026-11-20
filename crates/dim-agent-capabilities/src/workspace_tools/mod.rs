@@ -31,7 +31,7 @@ use dim_agent_runtime::{
 };
 use dim_agent_types::*;
 use file_reads::{FileReads, FileReadsPlugin};
-use files::{FileTools, FileWriteCoordinator};
+use files::FileTools;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use std::{path::PathBuf, sync::Arc};
@@ -65,17 +65,10 @@ pub struct WorkspaceToolsConfig {
 pub use files::FileToolBoundary;
 
 /// Installs WorkspaceTools: the process owner, which registers its Session and
-/// branch parts, and the parts themselves. The owner holds the file-write
-/// coordinator, one lock domain for every Session it serves, across their
-/// generations and its own, and hands it to each Session's part.
+/// branch parts, and the parts themselves.
 pub fn install(builder: &mut AgentBuilder, config: WorkspaceToolsConfig) {
-    let coordinator = Arc::<FileWriteCoordinator>::default();
     builder.plugin(move |names| {
-        Ok(Box::new(WorkspaceToolsOwner::new(
-            names,
-            config.clone(),
-            coordinator.clone(),
-        )?) as Box<dyn DynPlugin>)
+        Ok(Box::new(WorkspaceToolsOwner::new(names, config.clone())?) as Box<dyn DynPlugin>)
     });
     builder.require_part("WorkspaceTools");
     builder.require_part("FileReads");
@@ -83,22 +76,16 @@ pub fn install(builder: &mut AgentBuilder, config: WorkspaceToolsConfig) {
 }
 
 /// The process plugin: it registers the Session part and both branch parts
-/// with the part registry, holds the file-write coordinator.
+/// with the part registry.
 struct WorkspaceToolsOwner {
     parts: Key<PartRegistry>,
     config: WorkspaceToolsConfig,
-    coordinator: Arc<FileWriteCoordinator>,
 }
 impl WorkspaceToolsOwner {
-    fn new(
-        names: &Names<'_>,
-        config: WorkspaceToolsConfig,
-        coordinator: Arc<FileWriteCoordinator>,
-    ) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, config: WorkspaceToolsConfig) -> rutis::Result<Self> {
         Ok(Self {
             parts: names.key()?,
             config,
-            coordinator,
         })
     }
 }
@@ -113,13 +100,11 @@ impl DynPlugin for WorkspaceToolsOwner {
         Box::pin(async move {
             let parts = ctx.require_at(&self.parts)?;
             let config = self.config.clone();
-            let coordinator = self.coordinator.clone();
             parts.register(ctx, PartScope::Session, "WorkspaceTools", move |mount| {
-                Ok(Some(Box::new(WorkspaceToolsPlugin::new(
-                    mount.names,
-                    config.clone(),
-                    coordinator.clone(),
-                )?) as Box<dyn DynPlugin>))
+                Ok(Some(
+                    Box::new(WorkspaceToolsPlugin::new(mount.names, config.clone())?)
+                        as Box<dyn DynPlugin>,
+                ))
             })?;
             parts.register(ctx, PartScope::Branch, "FileReads", |mount| {
                 Ok(Some(
@@ -346,14 +331,9 @@ struct WorkspaceToolsPlugin {
     /// The owner's one walked index, shared with `workspace.files.search`.
     mentions: Key<crate::file_storage::FsHost>,
     config: WorkspaceToolsConfig,
-    coordinator: Arc<FileWriteCoordinator>,
 }
 impl WorkspaceToolsPlugin {
-    fn new(
-        names: &Names<'_>,
-        config: WorkspaceToolsConfig,
-        coordinator: Arc<FileWriteCoordinator>,
-    ) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, config: WorkspaceToolsConfig) -> rutis::Result<Self> {
         Ok(Self {
             facts: names.key()?,
             host: names.key()?,
@@ -364,7 +344,6 @@ impl WorkspaceToolsPlugin {
             methods: names.key()?,
             mentions: names.key()?,
             config,
-            coordinator,
         })
     }
 }
@@ -416,7 +395,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                     cwd.clone(),
                     home,
                     output_dir.clone(),
-                    self.coordinator.clone(),
+                    mentions.writes.clone(),
                     self.config.boundary.clone(),
                 ),
                 output_dir,

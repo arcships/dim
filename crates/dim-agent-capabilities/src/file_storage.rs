@@ -1550,12 +1550,14 @@ fn absent_is_removed(result: std::result::Result<(), impl Into<FileStorageError>
 /// Clones share authorized root identities; each apply opens fresh I/O resources.
 #[derive(Clone)]
 pub struct FileStoragePlugin {
+    writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     roots: Arc<Mutex<Vec<PathBuf>>>,
 }
 impl FileStoragePlugin {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             roots: Arc::new(Mutex::new(roots)),
+            writes: Arc::default(),
         }
     }
 }
@@ -1577,7 +1579,11 @@ impl Plugin for FileStoragePlugin {
                 .await
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))
         })?;
-        let binding = Arc::new(FsHost::new(storage.clone(), ctx.clone()));
+        let binding = Arc::new(FsHost::new(
+            storage.clone(),
+            ctx.clone(),
+            self.writes.clone(),
+        ));
         ctx.provide_as::<FsHost>(binding.clone())?;
         ctx.provide_at(
             rutis_bridge::session::host_key("fsHost"),

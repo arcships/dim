@@ -2306,6 +2306,15 @@ async fn node_fs_readers_share_pinned_files_and_release_with_the_caller() {
         .await;
     assert_ok(&grep);
     assert_eq!(grep["result"]["matches"][0]["file"], "contents", "{grep}");
+    let text_path = directory.join("mutation.txt");
+    let mutation = client
+        .rpc("fsreader.mutate_text", json!({"path": text_path}))
+        .await;
+    assert_ok(&mutation);
+    assert_eq!(mutation["result"]["revision"].as_str().unwrap().len(), 64);
+    assert_eq!(mutation["result"]["stale"], "file_modified_since_read");
+    assert_eq!(std::fs::read_to_string(&text_path).unwrap(), "after");
+    std::fs::remove_file(text_path).unwrap();
     let link = directory.join("link");
     std::os::unix::fs::symlink(directory.join("contents"), &link).unwrap();
     for (path, expected) in [

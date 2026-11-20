@@ -106,7 +106,7 @@ pub(super) async fn run(
     Ok(result)
 }
 
-fn write_locked(
+pub(super) fn write_locked(
     path: &Path,
     bounded: bool,
     display: &str,

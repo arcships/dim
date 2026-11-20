@@ -10,6 +10,7 @@
 )]
 
 mod codec;
+pub(super) use codec::deserialize_legacy_encoding;
 mod edit;
 mod read;
 pub(crate) mod search;
@@ -30,6 +31,107 @@ use tokio_util::sync::CancellationToken;
 
 const TOOL_NAMES: [&str; 5] = ["read", "write", "edit", "glob", "grep"];
 const CANCELLED: &str = "Tool execution cancelled.";
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct WorkspaceWrite {
+    path: String,
+    content: String,
+    binding: Option<super::file_reads::TextFileBinding>,
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct WorkspaceMutationReply {
+    result: ToolResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binding: Option<super::file_reads::TextFileBinding>,
+}
+
+pub(crate) enum WorkspaceMutation {
+    Write(WorkspaceWrite),
+    Edit(JsonObject),
+}
+
+impl crate::file_storage::FsHost {
+    pub(crate) async fn mutate_workspace_file(
+        &self,
+        request: WorkspaceMutation,
+        cancel: &CancellationToken,
+    ) -> Result<WorkspaceMutationReply, HostError> {
+        use super::file_reads::{TextFileBinding, WriteBinding};
+        enum Mutation {
+            Write(WorkspaceWrite),
+            Edit(edit::Input, Option<TextFileBinding>),
+        }
+        let mutation = match request {
+            WorkspaceMutation::Write(request) => Mutation::Write(request),
+            WorkspaceMutation::Edit(mut request) => {
+                let binding = request
+                    .remove("binding")
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|error| HostError::failed(error.to_string()))?
+                    .flatten();
+                match edit::parse(&request) {
+                    Ok(input) => Mutation::Edit(input, binding),
+                    Err(result) => {
+                        return Ok(WorkspaceMutationReply {
+                            result,
+                            binding: None,
+                        });
+                    }
+                }
+            }
+        };
+        let path = PathBuf::from(match &mutation {
+            Mutation::Write(request) => &request.path,
+            Mutation::Edit(input, _) => &input.path,
+        });
+        if !path.is_absolute() {
+            return Err(HostError::failed("Expected an absolute file path"));
+        }
+        let (operation, stopping) = self.begin_workspace_operation(cancel)?;
+        let _drop = stopping.clone().drop_guard();
+        let work = async {
+            let lock = self.writes.lock(&path, &stopping).await?;
+            let stop = stopping.clone();
+            blocking(move || {
+                let (_operation, _lock) = (operation, lock);
+                match mutation {
+                    Mutation::Write(request) => write::write_locked(
+                        &path,
+                        false,
+                        &request.path,
+                        &request.content,
+                        request
+                            .binding
+                            .map_or(WriteBinding::None, WriteBinding::Text),
+                        &stop,
+                        #[cfg(test)]
+                        None,
+                    ),
+                    Mutation::Edit(input, binding) => edit::edit_locked(
+                        &path,
+                        false,
+                        &input,
+                        binding,
+                        &stop,
+                        #[cfg(test)]
+                        None,
+                    ),
+                }
+            })
+            .await?
+            .map_err(|Cancelled| cancelled())
+        };
+        tokio::pin!(work);
+        let (result, binding) = tokio::select! {
+            result = &mut work => result,
+            _ = cancel.cancelled() => { stopping.cancel(); work.await }
+        }?;
+        Ok(WorkspaceMutationReply { result, binding })
+    }
+}
 
 /// Session-level executor of the file tools. Bindings belong to the calling
 /// branch and are passed per call. Product Sessions share a process-owned
@@ -389,7 +491,7 @@ fn js_len(text: &str) -> usize {
     text.encode_utf16().count()
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
