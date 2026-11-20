@@ -32,6 +32,7 @@ original text.
 | [022 — Timeline 属性查询与正文重建](022-event-property-queries.md) | Proposed | Supersedes 019's event-only results, skip-based paging and start-only positions, and 020's single-predicate limit; retains 021's read ownership |
 | [023 — 上下文用量由独立分支部件维护](023-context-usage.md) | Accepted | Follows 021 and 022; separates context usage statistics from request preparation |
 | [024 — Web 抓取层使用请求库，地址策略在请求之前执行](024-web-fetch-transport.md) | Proposed | Follows 006 D1; replaces the hand-written transport and narrows the address policy to a pre-request check |
+| [025 — The plugin runtime baseline is rutis 0.23](025-rutis-0-23.md) | Proposed | Follows 015; sets the rutis version baseline and the protocol-5 upgrade rule |
 | [026 — Verification tiers, test coverage and CI governance](026-verification-tiers-and-ci-governance.md) | Proposed | Extends 008; defines three operational test states, verification tiers (L0–L4), form-only doc checks and CI governance |
 
 Source baseline: [initial foundation parent](https://github.com/arcships/dim/commit/aaaffa5768e031d781abb73e45b1915b05dc2aa0).

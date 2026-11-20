@@ -14,9 +14,9 @@ repository = "https://github.com/arcships/dim"
 allow_attributes_without_reason = "warn"
 
 [workspace.dependencies]
-rutis = "0.19.3"
-rutis-loader = { version = "0.19.3", features = ["node"] }
-rutis-bridge = "0.19.3"
+rutis = "0.23.0"
+rutis-loader = { version = "0.23.0", features = ["node"] }
+rutis-bridge = "0.23.0"
 schemars = "1"
 dim-agent-types = { path = "crates/dim-agent-types" }
 dim-agent-runtime = { path = "crates/dim-agent-runtime" }

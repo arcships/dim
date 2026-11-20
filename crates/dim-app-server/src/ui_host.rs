@@ -618,10 +618,10 @@ impl rutis_bridge::session::HostDispatch for UiHost {
     ) -> rutis_bridge::session::Reply {
         use rutis_bridge::session::{Error, Value};
         let [request] = <[_; 1]>::try_from(args.list()?)
-            .map_err(|_| Error::Value("expected one UI connection request".into()))?;
+            .map_err(|_| Error::value("expected one UI connection request"))?;
         let op =
             serde_json::from_value(serde_json::json!({"method":method, "request":request.json()?}))
-                .map_err(|error| Error::Value(error.to_string()))?;
+                .map_err(|error| Error::value(error.to_string()))?;
         match op {
             ConnectionOperation::Detach {
                 connection_id,

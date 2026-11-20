@@ -19,11 +19,16 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const FORMAT_VERSION: u32 = 1;
 
-/// The largest file a whole-buffer operation accepts. Bytes cross the plugin
-/// runtime's channel base64-encoded in a 16 MiB frame, which costs four bytes
-/// for every three; 8 MiB leaves the frame envelope and both sides' copies
-/// room, and bounds one allocation. Streaming operations have no such limit.
+/// The largest file a whole-buffer operation accepts. 8 MiB bounds one
+/// allocation and leaves room for both sides' copies; streaming operations
+/// have no such limit.
 pub const MAX_WHOLE_FILE_BYTES: usize = 8 * 1024 * 1024;
+
+/// The serialized text record must fit the runtime's 16 MiB frame. rutis 0.23
+/// chunks a frame over the transport limit, so the plugin runtime no longer
+/// refuses this call before it arrives: this boundary keeps the admission limit
+/// and leaves the file unchanged.
+const TEXT_REPLACE_FRAME_BYTES: usize = crate::outbound::MAX_FRAME_BYTES;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -50,7 +55,7 @@ fn success(value: Value) -> Value {
     Value::Record([("ok".into(), json!(true).into()), ("value".into(), value)].into())
 }
 fn invalid() -> Error {
-    Error::Value("invalid file operation".into())
+    Error::value("invalid file operation")
 }
 fn private_permissions() -> Option<Permissions> {
     #[cfg(unix)]
@@ -169,7 +174,7 @@ impl FileScope {
         let caller = self
             .caller
             .clone()
-            .ok_or_else(|| Error::Value("openRead requires a calling row".into()))?;
+            .ok_or_else(|| Error::value("openRead requires a calling row"))?;
         self.operation(args, move |files, _, path, cancel| {
             Box::pin(async move {
                 Ok(
@@ -420,9 +425,21 @@ fn lease_value(lease: Arc<tokio::sync::Mutex<Option<FileLease>>>, tasks: TaskTra
                                     }
                                 }
                                 ("replace", LeaseArgument::Text(text)) => {
-                                    replace_text(lease, text, &cancel)
+                                    let bytes = serde_json::to_vec(&StoredFile {
+                                        version: FORMAT_VERSION,
+                                        text,
+                                    })
+                                    .expect("text records contain only serializable fields");
+                                    if bytes.len() > TEXT_REPLACE_FRAME_BYTES {
+                                        return Err(Error::value(format!(
+                                            "text replace is {} bytes, over the plugin runtime's 16 MiB frame",
+                                            bytes.len()
+                                        )));
+                                    }
+                                    lease
+                                        .replace(bytes, private_permissions(), &cancel)
                                         .await
-                                        .map(|()| json!(null).into())
+                                        .map(|_| json!(null).into())
                                 }
                                 ("replaceBytes", LeaseArgument::Bytes(bytes))
                                     if bytes.len() <= MAX_WHOLE_FILE_BYTES =>
