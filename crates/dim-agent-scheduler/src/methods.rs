@@ -18,7 +18,7 @@ use dim_agent_types::InputMode;
 use dim_app_server::{
     ProcessActivity,
     methods::ManagementMethods,
-    plugin_files::PluginFileTransactions,
+    plugin_files::FileScope,
     settings::{BusinessDocument, SettingsError, SettingsService},
 };
 use jiff::{SignedDuration, Timestamp};
@@ -44,7 +44,7 @@ pub struct SchedulerPlugin {
     activity: Key<ProcessActivity>,
     pub(crate) deliveries: DeliveryHolds,
     settings: Key<SettingsService>,
-    files: Key<PluginFileTransactions>,
+    files: Key<dim_app_server::plugin_files::PluginFiles>,
     methods: Key<ManagementMethods>,
     sessions: Key<dyn HostDispatch>,
     parts: Key<PartRegistry>,
@@ -110,7 +110,7 @@ impl DynPlugin for SchedulerPlugin {
                 ))
             })?);
             let settings = ctx.require_at(&self.settings)?;
-            let files = ctx.require_at(&self.files)?;
+            let files = ctx.require_at(&self.files)?.open(ctx)?;
             let methods = ctx.require_at(&self.methods)?;
             let sessions = ctx.require_at(&self.sessions)?;
             settings.register::<crate::document::ScheduleDocument>(ctx)?;
@@ -353,7 +353,7 @@ pub(crate) struct Shared {
     pub(crate) deliveries: DeliveryHolds,
     pub(crate) sessions: Arc<dyn HostDispatch>,
     pub(crate) settings: Arc<SettingsService>,
-    pub(crate) files: Arc<PluginFileTransactions>,
+    pub(crate) files: Arc<FileScope>,
     /// Serializes retention passes, so a pass never deletes what another reads.
     pub(crate) pruning: tokio::sync::Mutex<()>,
     /// Serializes lookup passes over `delivering` records (A.6).

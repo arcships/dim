@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, type App, type Component } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref, type App, type Component } from 'vue'
 import {
+  CHAT_UI_HOST,
   TimelineAssistantActions,
+  chatUiEn,
+  type ChatUiHost,
   type ChatUiAssistantActionCopyLabels,
   type ChatUiAssistantActionIcons,
   type ChatUiAssistantActionLabels,
@@ -68,6 +71,43 @@ function block(overrides: Partial<ChatUiTimelineBlock> = {}): ChatUiTimelineBloc
   }
 }
 
+function copyHost(copy: ChatUiHost['commands']['copy']): ChatUiHost {
+  return {
+    session: ref(null),
+    capabilities: ref({
+      interactive: true,
+      terminal: false,
+      browserPanel: false,
+      filePreview: false,
+      mcpApps: false,
+      notifications: false,
+      attachments: false,
+    }),
+    commands: {
+      send: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      retry: vi.fn(async () => undefined),
+      fork: vi.fn(async () => undefined),
+      branch: vi.fn(async () => undefined),
+      edit: vi.fn(async () => undefined),
+      approve: vi.fn(async () => undefined),
+      answer: vi.fn(async () => undefined),
+      openFile: vi.fn(),
+      copy,
+    },
+    i18n: { locale: ref('en'), t: key => chatUiEn[key] },
+  }
+}
+
+function stubClipboard() {
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+  return writeText
+}
+
 const mounted: App[] = []
 
 afterEach(() => {
@@ -86,6 +126,7 @@ async function mountActions(options: Partial<{
   completedAt: Date | null
   retryLabel: string
   copySuccess: () => void
+  chatUiHost: ChatUiHost
 }> = {}) {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -116,19 +157,18 @@ async function mountActions(options: Partial<{
       onRetryMessage: events.retry,
     }),
   })
+  const errors: unknown[] = []
+  app.config.errorHandler = error => { errors.push(error) }
+  if (options.chatUiHost !== undefined) app.provide(CHAT_UI_HOST, options.chatUiHost)
   app.mount(host)
   mounted.push(app)
   await nextTick()
-  return { host, events }
+  return { host, events, errors }
 }
 
 describe('TimelineAssistantActions', () => {
-  it('copies the payload, shows the check icon, and notifies', async () => {
-    const writeText = vi.fn(async () => undefined)
-    Object.defineProperty(navigator, 'clipboard', {
-      configurable: true,
-      value: { writeText },
-    })
+  it('copies the payload through navigator.clipboard without a host, shows the check icon, and notifies', async () => {
+    const writeText = stubClipboard()
     const copySuccess = vi.fn()
     const { host } = await mountActions({ copySuccess })
     expect(host.querySelector('[data-testid="timeline-assistant-copy"]')).not.toBeNull()
@@ -139,6 +179,32 @@ describe('TimelineAssistantActions', () => {
     expect(copySuccess).toHaveBeenCalled()
     await nextTick()
     expect(host.querySelector('[data-testid="icon-check"]')).not.toBeNull()
+  })
+
+  it('copies the payload through the host', async () => {
+    const writeText = stubClipboard()
+    const copy = vi.fn(async () => undefined)
+    const copySuccess = vi.fn()
+    const { host } = await mountActions({ copySuccess, chatUiHost: copyHost(copy) })
+
+    host.querySelector<HTMLElement>('[data-testid="timeline-assistant-copy"]')!.click()
+    await vi.waitFor(() => expect(copySuccess).toHaveBeenCalledOnce())
+    expect(copy).toHaveBeenCalledWith('hello')
+    expect(writeText).not.toHaveBeenCalled()
+    await nextTick()
+    expect(host.querySelector('[data-testid="icon-check"]')).not.toBeNull()
+  })
+
+  it('keeps the copy icon when the host copy rejects', async () => {
+    const copy = vi.fn(async () => { throw new Error('denied') })
+    const copySuccess = vi.fn()
+    const { host, errors } = await mountActions({ copySuccess, chatUiHost: copyHost(copy) })
+
+    host.querySelector<HTMLElement>('[data-testid="timeline-assistant-copy"]')!.click()
+    await vi.waitFor(() => expect(errors).toHaveLength(1))
+    expect(copy).toHaveBeenCalledWith('hello')
+    expect(copySuccess).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="icon-copy"]')).not.toBeNull()
   })
 
   it('shows fork and retry actions with the custom retry label', async () => {

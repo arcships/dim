@@ -39,7 +39,10 @@ after?, limit?}`, with `action` required and no other properties; risk stays
 ([event-driven flows](../event-driven-flows.md)). A refusal is an error result
 whose `structuredContent` carries a code (`branch_not_opener`, `branch_limit_reached`,
 `branch_not_kin`, `branch_not_tool_line`, `branch_ended`, `branch_cannot_end`) and writes
-nothing. The tools registry and the calling line's BranchLine are found per
+nothing. `branch_not_tool_line` names the line that is not a tool line: the
+target when a caller messages or reads a plugin line it opened, and the caller
+when a plugin line messages the line it was cut from. The tools registry and
+the calling line's BranchLine are found per
 call; the registration is withdrawn when this part unloads, and a reloaded
 TimelineTree reloads it with the services it injects.
 
@@ -129,7 +132,7 @@ Consumes `branch/create`, `branch/create-failed`, `branch/ended`, `branch/end`,
   root never receives one, and a load whose latest block disagrees with the tree writes the
   missing note once (design [§5](../../../design/timeline-branches.md#5-parts), [§12.1](../../../design/timeline-branches.md#121-context-mapping)).
 - **Roster.** On a line that has opened tool lines, a keyed Append under `branch:roster` of `<dim-branch-lines>` lists the lines it opened with the tool that are still open, in the order it opened them, with the
-  first line of each purpose; when none is open the key is retired. A plugin line is never on a roster, and neither is a line the user opened: it stays in the Session's directory and coordinates its own tool lines.
+  first line of each purpose; when none is open the key is retired. A plugin line is never on a roster, and neither is a line the user opened: it stays in the Session's directory and coordinates its own tool lines. A child whose inherited prefix holds a live roster gets one block in its opening input that retires that key, so a line that opened no tool line of its own keeps no list; TimelineTree writes it with the identity block (design [§7.1](../../../design/timeline-branches.md#71-keyed-state-branchline-branchroster-and-branchparent)).
 - **Parent block.** On a line that is not the root, one keyed Append of
   `<dim-branch-parent>` on the line itself when its opener ends a turn past
   the line's read cursor for it, the head the latest block reported, and the
@@ -160,17 +163,21 @@ Consumes `branch/create`, `branch/create-failed`, `branch/ended`, `branch/end`,
   is decided when `end` is called, from the tree. The root gets no note, because neither of its
   rules changes with the role, so a note to it would say nothing.
 
-BranchLine mounts at the committed Dispatcher cutoff without reading historical events. It starts its writer after both branch and Session publication so all current child directory entries are available. Roster repair reads known current creation positions and the last roster block. Parent notices read the last parent block and the requested parent's read cursor. Old turn progress is not restored; a recovery turn end does not emit an idle notice. Read cursors are loaded for one target when used, and neither ordinary input history nor all tool results are retained. No recovery event is written.
+BranchLine mounts at the committed Dispatcher cutoff without reading historical events. It starts its writer after both branch and Session publication so all current child directory entries are available. Roster repair reads known current creation positions and the last roster block. A root whose stored history was written before the key split also holds its old roster under `branch:line`; its load reads that block once and retires the key with the roster write, alone when none is owed, so the root keeps no identity, as a root has none. Parent notices read the last parent block and the requested parent's read cursor. Old turn progress is not restored; a recovery turn end does not emit an idle notice. Read cursors are loaded for one target when used, and neither ordinary input history nor all tool results are retained. No recovery event is written.
 
 ### Tests
 
 [branch_flow.rs](../../../../crates/dim-agent-capabilities/tests/branch_flow.rs):
-`main_lists_its_open_tool_lines_under_one_key`,
+`the_root_lists_its_open_tool_lines_under_the_roster_key`,
 `a_configured_roster_closing_reaches_the_roster`,
 `an_idle_line_tells_main_once_when_its_turn_ends_without_a_word`,
 `a_tool_line_ends_itself_and_main_learns_it_from_the_roster`,
 `an_end_from_outside_a_tool_line_wakes_main_with_a_notice`,
-`the_roster_and_the_identity_replay_after_a_compaction`,
+`a_roster_and_an_identity_replay_separately_after_a_compaction`,
+`a_child_cut_after_a_roster_retires_it_and_one_cut_before_gets_nothing`,
+`the_roots_roster_from_before_the_key_split_is_retired_at_load`,
+`a_line_messages_and_reads_its_parent_and_the_lines_it_opened`,
+`a_sibling_or_grandparent_is_refused_with_nothing_written`,
 `an_idle_line_is_told_its_parent_moved_without_being_woken`,
 `a_running_line_gets_the_block_with_its_next_request_once`,
 `two_parent_turns_while_the_line_is_idle_write_one_block`,
