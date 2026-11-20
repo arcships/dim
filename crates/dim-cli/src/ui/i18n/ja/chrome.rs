@@ -136,6 +136,8 @@ pub fn lookup(english: &str) -> Option<&'static str> {
         "Session closed" => "セッション終了",
         "Member conversation" => "メンバーの会話",
         "x stop command · Esc back" => "x コマンド停止 · Esc 戻る",
+        "x stop command · Esc close" => "x コマンド停止 · Esc 閉じる",
+        "x stop workflow · Esc close" => "x ワークフロー停止 · Esc 閉じる",
         "Esc back" => "Esc 戻る",
         "Tail preview - last 2,000 lines / 50 KiB" => "末尾プレビュー - 直近 2,000 行 / 50 KiB",
         "Loading output..." => "出力を読込中…",

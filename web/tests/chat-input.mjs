@@ -17,7 +17,7 @@ globalThis.ResizeObserver = class {
   disconnect() { this.observed = [] }
 }
 
-const components = /\/(AppearanceSettings|ChatPage|LineConversation|LinesPanel|ComposerPanel|ComposerPermissionMenu|ConfirmDialog|QuestionPrompt|TimelineUserMessage)\.vue$/
+const components = /\/(AppearanceSettings|ChatPage|LineConversation|LinesPanel|ComposerPanel|ComposerPermissionMenu|ConfirmDialog|QuestionPrompt)\.vue$/
 registerHooks({
   resolve(specifier, context, next) {
     if (specifier.startsWith("../../stores/") || (context.parentURL?.endsWith("/stores/chat.ts") && ["./connection", "./sessions", "./ui"].includes(specifier))) {
@@ -45,7 +45,6 @@ registerHooks({
 const { default: ChatPage } = await import("../src/features/chat/ChatPage.vue")
 const { default: LineConversation } = await import("../src/features/lines/LineConversation.vue")
 const { default: ComposerPanel } = await import("../src/features/chat/ComposerPanel.vue")
-const { default: TimelineUserMessage } = await import("../src/features/chat/TimelineUserMessage.vue")
 const { default: AppearanceSettings } = await import("../src/features/settings/AppearanceSettings.vue")
 const { useChatStore } = await import("../src/stores/chat.ts")
 const { readNotification } = await import("../src/rpc/read.ts")
@@ -596,13 +595,6 @@ test("the input draws each /skill: token as one chip, typed or filled", async (t
   click(row)
   await flush()
   assert.deepEqual(chips(filled.root), ["/skill:commit"], "a filled token is the same chip before it is sent")
-})
-
-test("a user message draws each /skill: token as one chip", async (t) => {
-  const { root } = mount(t, "main", [], TimelineUserMessage, {}, { text: "please /skill:commit it", at: 0, quotable: false, branchable: false })
-  const chips = all(root).filter((element) => element.props.class === "skill-chip").map(text)
-  assert.deepEqual(chips, ["/skill:commit"], "the token is one chip and the words around it are not")
-  assert.ok(text(root).includes("please /skill:commit it"), "the chip keeps the typed text")
 })
 
 test("the chip layer follows the field's width when the field resizes", async (t) => {

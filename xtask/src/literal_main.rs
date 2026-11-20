@@ -101,12 +101,12 @@ const UNRELATED: [(&str, &str, &str); 9] = [
         "a layout variant's type",
     ),
     (
-        "web/src/features/chat/TimelineView.vue",
+        "web/src/chat-ui/WebChatTimeline.vue",
         ":data-variant=\"variant ?? 'main'\"",
         "a layout variant's default",
     ),
     (
-        "web/src/features/chat/TimelineView.vue",
+        "web/src/chat-ui/WebChatTimeline.vue",
         "variant?: \"main\" | \"panel\"",
         "a layout variant's type",
     ),
@@ -1878,7 +1878,7 @@ mod tests {
             "class A extends base {}\nconst b = \"main\";\n",
         ),
         (
-            "web/src/features/chat/TimelineView.vue",
+            "web/src/chat-ui/WebChatTimeline.vue",
             "<template>\n  <div :data-variant=\"variant\" @click=\"openLine('main')\"></div>\n</template>\n",
         ),
         (
@@ -2229,14 +2229,14 @@ mod tests {
     #[test]
     fn an_allowlist_entry_covers_only_the_literal_it_spans() {
         let codoggys = "<template>\n  <div :data-variant=\"variant\" @click=\"openLine('main')\"></div>\n</template>\n";
-        let errors = bounded("web/src/features/chat/TimelineView.vue", codoggys);
+        let errors = bounded("web/src/chat-ui/WebChatTimeline.vue", codoggys);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(
-            errors[0].contains("TimelineView.vue:2: `\"main\"` names neither"),
+            errors[0].contains("WebChatTimeline.vue:2: `\"main\"` names neither"),
             "{errors:?}"
         );
         let real = "<template>\n  <div :data-variant=\"variant ?? 'main'\"></div>\n</template>\n";
-        let errors = bounded("web/src/features/chat/TimelineView.vue", real);
+        let errors = bounded("web/src/chat-ui/WebChatTimeline.vue", real);
         assert!(errors.is_empty(), "{errors:?}");
         let both = "fn check(connection: &Connection) {\n    if let Ok(false) = connection.is_readonly(\"main\") { let b = \"main\"; }\n}\n";
         let errors = bounded("crates/dim-app-server/src/storage/sqlite.rs", both);

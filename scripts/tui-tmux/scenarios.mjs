@@ -1017,6 +1017,96 @@ const scenarios = [
     },
   },
   {
+    name: 'task_strip_stays_and_switches_the_open_detail',
+    area: 'tasks',
+    title: 'The task strip stays drawn under an open task detail; in fullscreen a row click switches the detail and Esc closes it, keeping the draft',
+    async run(tui) {
+      const ticker = (name) => `for i in $(seq 1 60); do echo tick-${name}-$i; sleep 1; done`;
+      await tui.setup({
+        respond: (request) => {
+          if ((request.tools ?? []).length === 0) return {text: ANSWER};
+          if (lastMessage(request).role === 'tool') return {text: 'Started both tickers.'};
+          return {
+            toolCalls: [
+              {name: 'exec', arguments: {command: ticker('a'), runInBackground: true, title: 'Ticker A'}},
+              {name: 'exec', arguments: {command: ticker('b'), runInBackground: true, title: 'Ticker B'}},
+            ],
+          };
+        },
+      });
+      const stripRows = (text) => ['A', 'B'].every((name) => new RegExp(`◐ Ticker ${name}\\s+\\d+s`).test(text));
+      const start = async (terminal) => {
+        terminal.send('start two tickers');
+        terminal.key('Enter');
+        const pending = new Set(['a', 'b']);
+        while (pending.size > 0) {
+          const names = [...pending].join('');
+          const screen = await terminal.waitFor(new RegExp(`Permission required[\\s\\S]*echo tick-[${names}]-`));
+          const panel = screen.slice(screen.lastIndexOf('Permission required'));
+          pending.delete(panel.match(new RegExp(`echo tick-([${names}])-`))[1]);
+          terminal.key('y');
+        }
+        await terminal.waitFor('Started both tickers.');
+        await terminal.waitFor('2 in background');
+        assert(stripRows(terminal.capture()), `both task rows drawn\n${terminal.capture()}`);
+      };
+
+      const full = await tui.launch(['--fullscreen'], {waitForComposer: true, cols: 140, rows: 40});
+      await start(full);
+      const cellOf = (text) => {
+        const lines = full.capture({join: false}).split('\n');
+        const index = lines.findLastIndex((line) => line.includes(text));
+        assert(index !== -1, `pane missing ${text}\n${lines.join('\n')}`);
+        return {col: lines[index].indexOf(text) + 1, row: index + 1};
+      };
+      const click = ({col, row}) => {
+        full.bytes(Buffer.from(`\u001b[<0;${col};${row}M`, 'utf8'));
+        full.bytes(Buffer.from(`\u001b[<0;${col};${row}m`, 'utf8'));
+      };
+      full.send('keep this draft');
+      await full.waitFor('keep this draft');
+
+      click(cellOf('◐ Ticker A'));
+      await full.waitFor('╭─ Ticker A');
+      await full.waitFor('x stop command · Esc close');
+      await full.waitFor(/tick-a-\d+/);
+      const first = Number(full.capture().match(/tick-a-(\d+)/g).at(-1).split('-').at(-1));
+      await full.waitFor(new RegExp(`tick-a-${first + 1}\\b`), {describe: 'the next live output line'});
+      assert(stripRows(full.capture()), `the strip stays under the detail\n${full.capture()}`);
+
+      click(cellOf('◐ Ticker B'));
+      await full.waitFor('╭─ Ticker B');
+      await full.waitFor(/tick-b-\d+/);
+      assert(!full.capture().includes('╭─ Ticker A'), `the click replaced the detail\n${full.capture()}`);
+      assert(stripRows(full.capture()), `the strip stays after the switch\n${full.capture()}`);
+
+      full.key('Escape');
+      await full.waitForAbsent('Esc close');
+      await full.waitFor('keep this draft');
+      assert(stripRows(full.capture()), `the strip is drawn with the composer\n${full.capture()}`);
+      for (let index = 0; index < 'keep this draft'.length; index += 1) full.key('BSpace');
+      await full.untilComposer();
+      await exitWith(full);
+
+      const scroll = await tui.launch([], {waitForComposer: true});
+      await start(scroll);
+      scroll.send('/tasks');
+      scroll.key('Enter');
+      await scroll.waitFor('Background tasks');
+      assert(stripRows(scroll.capture()), `the strip stays under the list\n${scroll.capture()}`);
+      scroll.key('Enter');
+      await scroll.waitFor('x stop command · Esc back');
+      await scroll.waitFor(/tick-[ab]-\d+/);
+      assert(stripRows(scroll.capture()), `the strip stays under the detail\n${scroll.capture()}`);
+      scroll.key('Escape');
+      await scroll.waitFor('Background tasks');
+      scroll.key('Escape');
+      await scroll.waitForAbsent('Background tasks');
+      await scroll.untilComposer();
+      await exitWith(scroll);
+    },
+  },
+  {
     name: 'member_conversation_and_stop_all',
     area: 'members',
     title: 'A delegated member draws a task row, opens its conversation and stop-all settles it',
