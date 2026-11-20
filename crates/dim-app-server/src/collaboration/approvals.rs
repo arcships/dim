@@ -474,17 +474,17 @@ impl CollaborationSession {
                 let branch_id = branch_id.to_owned();
                 let input_id = event.id.clone();
                 tasks.spawn(async move {
-                    if let Ok(branch) = owner.tree.get(&branch_id)
-                        && let Ok(queue) = branch.service::<InputQueue>()
-                    {
-                        let _ = queue
-                            .withdraw(InputWithdrawData {
+                    let _ = owner
+                        .tree
+                        .withdraw(
+                            &branch_id,
+                            InputWithdrawData {
                                 input_id,
                                 reason: Some("Member approval is not active".into()),
                                 steer: None,
-                            })
-                            .await;
-                    }
+                            },
+                        )
+                        .await;
                     owner.deny_member(&source.descriptor).await;
                 });
             }
