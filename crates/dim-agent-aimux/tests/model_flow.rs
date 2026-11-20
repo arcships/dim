@@ -376,7 +376,7 @@ async fn process_requests_use_connection_snapshots_and_release_retained_streams_
         let second = TestServer::start().await;
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let request = |text: &str| Arc::new(ModelRequest::new("logical-provider", "test-model", vec![Message::text(Role::User, text)]));
         let connection = |server: &TestServer, key: &str| {
             ModelConnection::Http(HttpModelConnection {
@@ -436,7 +436,7 @@ async fn process_requests_use_connection_snapshots_and_release_retained_streams_
             Err(HostError::Failed { kind: HostErrorKind::OwnerClosed, .. })));
         let next = rutis::Ctx::root().unwrap();
         next.plugin(AimuxPlugin::default()).await.unwrap();
-        let mut stream = next.get::<ModelHost>().unwrap().0.invoke(request("text"), connection(&first, "new"), CancellationToken::new()).await.unwrap();
+        let mut stream = next.get::<ModelDriverHost>().unwrap().0.invoke(request("text"), connection(&first, "new"), CancellationToken::new()).await.unwrap();
         while let Some(chunk) = stream.next().await { chunk.unwrap(); }
         next.shutdown().await.unwrap();
         first.close().await; second.close().await;
@@ -1226,7 +1226,7 @@ async fn recorded_connection_headers_redact_sensitive_names() {
         let url = format!("{}/chat/completions", server.url);
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let connection = ModelConnection::Http(HttpModelConnection {
             api_key: None,
             network: Default::default(),
@@ -1289,7 +1289,7 @@ async fn recorded_failures_and_cancellations_close_their_record() {
         let url = format!("{}/chat/completions", server.url);
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let request = |text: &str| {
             Arc::new(ModelRequest::new(
                 "logical-provider",
@@ -1474,7 +1474,7 @@ async fn serve_redirect(
 async fn redirect_failure(base_url: &str, bearer: &str) -> HostError {
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let request = Arc::new(ModelRequest::new(
         "local",
         "test-model",

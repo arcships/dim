@@ -212,7 +212,7 @@ impl Harness {
         builder
             .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
             .session_value(Arc::new(HistoryRenderer::default()))
-            .process_value(Arc::new(ModelHost(model.clone())))
+            .process_data_value(Arc::new(ModelHost::local(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(compacting.then(|| {
                 Arc::new(compaction_support::Window::default()) as Arc<dyn ResolveContextModel>

@@ -12,10 +12,7 @@
 //! stays idle while it is off.
 use crate::context_preparation::ContextPreparation;
 use crate::history::fold_output_parts;
-use crate::host::{
-    HostError, InvocationMode, ModelChunk, ModelHost, ModelInvocation, ModelStream,
-    ProviderConnectionResolver,
-};
+use crate::host::{HostError, InvocationMode, ModelChunk, ModelHost, ModelStream};
 use crate::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply,
 };
@@ -154,29 +151,17 @@ impl HostDispatch for PromptSuggestionSettingsHost {
     }
 }
 
-/// Installs PromptSuggestion in every Session, resolving each request's
-/// connection through the process [`ProviderConnectionResolver`].
+/// Installs PromptSuggestion with the profile's model host.
 pub fn install(builder: &mut AgentBuilder) {
-    install_mode(builder, true);
+    builder.require_feature(
+        Feature::new("PromptSuggestion").session("PromptSuggestion", |names| {
+            Ok(Box::new(PromptSuggestionPlugin::with(names)?))
+        }),
+    );
 }
 
-/// Installs PromptSuggestion for a Session whose model is local: the part
-/// sends [`ModelConnection::Local`], as `ModelProviderPlugin::new` does, and
-/// depends on no process resolver.
 pub fn install_local(builder: &mut AgentBuilder) {
-    install_mode(builder, false);
-}
-
-fn install_mode(builder: &mut AgentBuilder, process_resolver: bool) {
-    builder.require_feature(Feature::new("PromptSuggestion").session(
-        "PromptSuggestion",
-        move |names| {
-            Ok(Box::new(PromptSuggestionPlugin::with(
-                names,
-                process_resolver,
-            )?))
-        },
-    ));
+    install(builder);
 }
 
 /// The one line the model is asked for.
@@ -481,7 +466,7 @@ impl State {
 }
 
 struct Hosts {
-    model: ModelInvocation,
+    model: Arc<ModelHost>,
     settings: Option<Arc<PromptSuggestionSettingsHost>>,
     tree: Arc<TreeCommands>,
 }
@@ -493,12 +478,11 @@ struct PromptSuggestionPlugin {
     methods: Key<SessionMethods>,
     tree: Key<TreeCommands>,
     model: Key<ModelHost>,
-    resolver: Option<Key<ProviderConnectionResolver>>,
     settings: Option<Key<PromptSuggestionSettingsHost>>,
 }
 
 impl PromptSuggestionPlugin {
-    fn with(names: &Names<'_>, process_resolver: bool) -> rutis::Result<Self> {
+    fn with(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             identity: names.key()?,
             config: names.key()?,
@@ -506,7 +490,6 @@ impl PromptSuggestionPlugin {
             methods: names.key()?,
             tree: names.key()?,
             model: names.key()?,
-            resolver: process_resolver.then(|| names.key()).transpose()?,
             settings: names
                 .registered::<PromptSuggestionSettingsHost>()
                 .then(|| names.key::<PromptSuggestionSettingsHost>())
@@ -534,7 +517,6 @@ impl DynPlugin for PromptSuggestionPlugin {
             self.tree.erase(),
             self.model.erase(),
         ];
-        deps.extend(self.resolver.iter().map(Key::erase));
         deps.extend(self.settings.iter().map(Key::erase));
         deps
     }
@@ -546,10 +528,6 @@ impl DynPlugin for PromptSuggestionPlugin {
             let methods = ctx.require_at(&self.methods)?;
             let tree = ctx.require_at(&self.tree)?;
             let model = ctx.require_at(&self.model)?;
-            let resolver = match &self.resolver {
-                Some(key) => Some(ctx.require_at(key)?),
-                None => None,
-            };
             let settings = match &self.settings {
                 Some(key) => ctx.get_at(key),
                 None => None,
@@ -559,7 +537,7 @@ impl DynPlugin for PromptSuggestionPlugin {
                 root: config.interactive && config.collaboration_role == CollaborationRole::Leader,
                 state: Mutex::new(State::default()),
                 hosts: Hosts {
-                    model: ModelInvocation::new(model, resolver),
+                    model,
                     settings,
                     tree,
                 },

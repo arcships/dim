@@ -508,7 +508,7 @@ async fn serve_compaction_fixture_with(
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
-        .process_value(Arc::new(ModelHost(model.clone())))
+        .process_data_value(Arc::new(ModelHost::local(model.clone())))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                 Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))

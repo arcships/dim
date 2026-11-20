@@ -284,7 +284,7 @@ use crate::summary_eval::{
 use dim_agent_capabilities::{
     context_model::{output_allowance, window_facts},
     host::{
-        HostFuture, ModelInvocation, ModelSelectionRequest, ModelStopReason, ProviderService,
+        HostFuture, ModelHost, ModelSelectionRequest, ModelStopReason, ProviderService,
         ResolveContextModel, ToolExecutionContext,
     },
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
@@ -992,7 +992,7 @@ async fn rejudge_with(
     plan: &[(&SavedRun, usize)],
     cancel: &CancellationToken,
 ) -> Result<(Vec<RunRecord>, ModelSelection, ModelSelection, JudgeWindow)> {
-    let Some(host) = server.service::<ModelInvocation>() else {
+    let Some(host) = server.service::<ModelHost>() else {
         return Err("the served profile has no model host for the judge".into());
     };
     let judge = selection(server, &options.judge, &options.out, cancel).await?;
@@ -1030,7 +1030,7 @@ async fn rejudge_with(
 )]
 async fn rejudge_one(
     source: &Path,
-    host: &Arc<ModelInvocation>,
+    host: &Arc<ModelHost>,
 
     judge: &ModelSelection,
     scenario: &Scenario,
@@ -4381,7 +4381,7 @@ async fn drive_once(
             });
         }
     };
-    let Some(host) = server.service::<ModelInvocation>() else {
+    let Some(host) = server.service::<ModelHost>() else {
         return Ok(Finished {
             driven,
             export: Some(export),
@@ -6080,7 +6080,7 @@ async fn judge_window(
 /// times; a call that fails during a re-ask ends the asking. An answer that
 /// stays unusable leaves every probe `unparsed` (model-prompts §8.1).
 async fn judge_export(
-    host: &Arc<ModelInvocation>,
+    host: &Arc<ModelHost>,
 
     judge: &ModelSelection,
     scenario: &Scenario,
@@ -8395,7 +8395,7 @@ mod tests {
         );
     }
 
-    use dim_agent_capabilities::host::{ModelHost, ProviderConnectionResolver};
+    use dim_agent_capabilities::host::ModelDriverHost;
     struct Local;
     impl ResolveModelConnection for Local {
         fn resolve(
@@ -8457,9 +8457,9 @@ mod tests {
         };
         let driver = Arc::new(Garbage::default());
         let judging = judge_export(
-            &Arc::new(ModelInvocation::new(
-                Arc::new(ModelHost(driver.clone())),
-                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            &Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(driver.clone())),
+                Some(Arc::new(Local)),
             )),
             &judge,
             &scenario,
@@ -8582,9 +8582,9 @@ mod tests {
         };
         let driver = Arc::new(Capped::default());
         let judging = judge_export(
-            &Arc::new(ModelInvocation::new(
-                Arc::new(ModelHost(driver.clone())),
-                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            &Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(driver.clone())),
+                Some(Arc::new(Local)),
             )),
             &judge,
             &scenario,

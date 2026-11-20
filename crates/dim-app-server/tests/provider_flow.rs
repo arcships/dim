@@ -9,9 +9,8 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
         AuxiliaryErrorCode, AuxiliaryRequest, AwsCredentials, BedrockAuth, HostError,
-        ModalityConnectionHost, ModalityTarget, ModelChunk, ModelConnection, ModelHost,
-        ModelPortError, ModelProtocol, ModelStopReason, ProviderConnectionResolver,
-        ProviderService as ModelProviderService,
+        ModalityConnectionHost, ModalityTarget, ModelChunk, ModelConnection, ModelDriverHost,
+        ModelPortError, ModelProtocol, ModelStopReason, ProviderService as ModelProviderService,
     },
 };
 use dim_agent_runtime::{Names, names::ServiceCatalog};
@@ -130,19 +129,17 @@ async fn completion(
 }
 
 struct Capture {
-    captured: Arc<OnceLock<(Arc<ProviderService>, Arc<ProviderConnectionResolver>)>>,
+    captured: Arc<OnceLock<Arc<ProviderService>>>,
     provider: Key<ProviderService>,
-    resolver: Key<ProviderConnectionResolver>,
 }
 impl Capture {
     fn new(
         names: &Names<'_>,
-        captured: Arc<OnceLock<(Arc<ProviderService>, Arc<ProviderConnectionResolver>)>>,
+        captured: Arc<OnceLock<Arc<ProviderService>>>,
     ) -> rutis::Result<Self> {
         Ok(Self {
             captured,
             provider: names.key()?,
-            resolver: names.key()?,
         })
     }
 }
@@ -151,13 +148,12 @@ impl DynPlugin for Capture {
         "test.provider.capture"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.provider.erase(), self.resolver.erase()]
+        vec![self.provider.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let provider = ctx.require_at(&self.provider)?;
-            let resolver = ctx.require_at(&self.resolver)?;
-            self.captured.set((provider, resolver)).map_err(|_| {
+            self.captured.set(provider).map_err(|_| {
                 rutis::Error::from(ErrorKind::PluginFailed("duplicate capture".into()))
             })?;
             Ok(Effect::Done)
@@ -356,8 +352,8 @@ async fn a_provider_records_own_identity_headers_win_over_dims() {
         .await
         .unwrap();
     let provider = root.get::<ProviderService>().unwrap();
-    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let resolver = root.get::<ProviderService>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let cancel = CancellationToken::new();
 
     let default_user_agent = format!(
@@ -411,8 +407,7 @@ async fn a_provider_records_own_identity_headers_win_over_dims() {
             ..ModelRequest::new(id, "same", vec![Message::text(Role::User, "hello")])
         });
         let resolved = resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await
             .unwrap();
         let mut output = host
@@ -514,8 +509,8 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
         active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
         active(&root.plugin(provider_part(ProviderPlugin::new))).await;
         let provider = root.get::<ProviderService>().unwrap();
-        let resolver = root.get::<ProviderConnectionResolver>().unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let resolver = root.get::<ProviderService>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let mut config = input(
             PROXY,
             &base,
@@ -591,8 +586,7 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
                 ..ModelRequest::new(id, "same", vec![Message::text(Role::User, "hello")])
             });
             let connection = resolver
-                .0
-                .resolve(request.clone(), cancel.clone())
+                .resolve_for_test(request.clone(), cancel.clone())
                 .await
                 .unwrap();
             let mut output = host
@@ -726,8 +720,7 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
                 ..ModelRequest::new(PROXY, "same", vec![Message::text(Role::User, "hello")])
             });
             let connection = resolver
-                .0
-                .resolve(request.clone(), cancel.clone())
+                .resolve_for_test(request.clone(), cancel.clone())
                 .await
                 .unwrap();
             let mut output = host
@@ -778,8 +771,7 @@ async fn provider_network_is_request_local_and_covers_catalogs_and_stream_bodies
             let before = direct.lock().unwrap().len();
             let before_proxied = proxied.lock().unwrap().len();
             let connection = resolver
-                .0
-                .resolve(request.clone(), cancel.clone())
+                .resolve_for_test(request.clone(), cancel.clone())
                 .await
                 .unwrap();
             let mut output = host
@@ -943,10 +935,9 @@ async fn external_secrets_are_request_local_and_follow_plugin_lifetime() {
         ..ModelRequest::new(ANONYMOUS, "same", vec![])
     });
     let anonymous = root
-        .get::<ProviderConnectionResolver>()
+        .get::<ProviderService>()
         .unwrap()
-        .0
-        .resolve(anonymous, cancel.clone())
+        .resolve_for_test(anonymous, cancel.clone())
         .await
         .unwrap();
     assert!(
@@ -967,10 +958,9 @@ async fn external_secrets_are_request_local_and_follow_plugin_lifetime() {
         ..ModelRequest::new(EXTERNAL, "same", vec![Message::text(Role::User, "hello")])
     });
     assert!(matches!(
-        root.get::<ProviderConnectionResolver>()
+        root.get::<ProviderService>()
             .unwrap()
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await,
         Err(HostError::Failed {
             kind: HostErrorKind::Unsupported,
@@ -993,8 +983,8 @@ async fn external_secrets_are_request_local_and_follow_plugin_lifetime() {
         .await
         .unwrap();
     let provider = root.get::<ProviderService>().unwrap();
-    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let resolver = root.get::<ProviderService>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let probe_id = "018ec73f-4d19-7f61-bc79-7130618bb452";
     let probe_input = json!({"providerId":probe_id,"connection":{"driverKind":"openai-compatible","auth":{"type":"bearer"},"baseUrl":base,"credential":{"action":"set_ref","reference":"unsaved-reference"}}});
     let before_probe = serde_json::to_value(provider.list(&cancel).await.unwrap()).unwrap();
@@ -1033,7 +1023,7 @@ async fn external_secrets_are_request_local_and_follow_plugin_lifetime() {
     let spawn = |cancel: CancellationToken| {
         let resolver = resolver.clone();
         let request = request.clone();
-        tokio::spawn(async move { resolver.0.resolve(request, cancel).await })
+        tokio::spawn(async move { resolver.resolve_for_test(request, cancel).await })
     };
     for token in ["resolved-first", "resolved-rotated"] {
         let task = spawn(cancel.clone());
@@ -1306,14 +1296,13 @@ async fn an_undeclared_model_limit_is_refused_until_a_source_declares_it() {
         reset.models[0].missing_limits,
         ["contextWindow", "maxOutputTokens"]
     );
-    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
+    let resolver = root.get::<ProviderService>().unwrap();
     let request = Arc::new(ModelRequest {
         capability_snapshot: Some(snapshot),
         ..ModelRequest::new(NARROW, "narrow", vec![Message::text(Role::User, "hello")])
     });
     let error = resolver
-        .0
-        .resolve(request, cancel.clone())
+        .resolve_for_test(request, cancel.clone())
         .await
         .err()
         .unwrap();
@@ -2900,10 +2889,9 @@ async fn remote_catalog_refresh_preserves_edits_and_rejects_stale_or_partial_res
         )
         .await
         .unwrap();
-    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
+    let resolver = root.get::<ProviderService>().unwrap();
     let resolved = resolver
-        .0
-        .resolve(
+        .resolve_for_test(
             Arc::new(ModelRequest {
                 capability_snapshot: selection.capability_snapshot,
                 ..ModelRequest::new(REMOTE, "other", vec![])
@@ -4655,8 +4643,8 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
     active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
     active(&root.plugin(provider_part(ProviderPlugin::new))).await;
     let provider = root.get::<ProviderService>().unwrap();
-    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let resolver = root.get::<ProviderService>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let cancel = CancellationToken::new();
     let bundled = BundledCatalog::load().unwrap();
     for (index, (driver, model_id, suffix, max_field, app_code)) in [
@@ -4891,8 +4879,7 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
         request.config = selection.config;
         let request = Arc::new(request);
         let mut resolved = resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await
             .unwrap();
         let ModelConnection::Http(connection) = &mut resolved.connection else {
@@ -5072,8 +5059,7 @@ async fn vendor_routes_agree_across_selection_and_actual_http_execution() {
             ),
         ] {
             let resolved = resolver
-                .0
-                .resolve(Arc::new(request), cancel.clone())
+                .resolve_for_test(Arc::new(request), cancel.clone())
                 .await
                 .unwrap();
             let ModelConnection::Http(connection) = resolved.connection else {
@@ -5157,8 +5143,8 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
         active(&root.plugin(dim_agent_aimux::AimuxPlugin::default())).await;
         active(&root.plugin(provider_part(ProviderPlugin::new))).await;
         let provider = root.get::<ProviderService>().unwrap();
-        let resolver = root.get::<ProviderConnectionResolver>().unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let resolver = root.get::<ProviderService>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let cancel = CancellationToken::new();
         for (index, (model_id, raw, suffix)) in [
             (
@@ -5279,9 +5265,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
             request.config = selection.config;
             request.metadata = selection.metadata;
             let request = Arc::new(request);
-            let resolved = resolver
-                .0
-                .resolve(request.clone(), cancel.clone())
+            let resolved = resolver.resolve_for_test(request.clone(), cancel.clone())
                 .await
                 .unwrap();
             let mut stream = host
@@ -5355,7 +5339,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
                     "a route-only edit does not create a descriptor override"
                 );
                 assert!(matches!(
-                    resolver.0.resolve(request.clone(), cancel.clone()).await,
+                    resolver.resolve_for_test(request.clone(), cancel.clone()).await,
                     Err(dim_agent_capabilities::host::HostError::Failed {
                         kind: dim_agent_capabilities::host::HostErrorKind::InvalidRequest,
                         ..
@@ -5369,7 +5353,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
                     metadata
                 });
                 assert!(matches!(
-                    resolver.0.resolve(Arc::new(unreadable), cancel.clone()).await,
+                    resolver.resolve_for_test(Arc::new(unreadable), cancel.clone()).await,
                     Err(dim_agent_capabilities::host::HostError::Failed {
                         kind: dim_agent_capabilities::host::HostErrorKind::InvalidRequest,
                         ..
@@ -5410,9 +5394,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
                 let mut unstamped_request = (*request).clone();
                 unstamped_request.metadata = None;
                 assert!(
-                    resolver
-                        .0
-                        .resolve(Arc::new(unstamped_request), cancel.clone())
+                    resolver.resolve_for_test(Arc::new(unstamped_request), cancel.clone())
                         .await
                         .is_ok()
                 );
@@ -5435,9 +5417,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
                 let mut selected_request = (*request).clone();
                 selected_request.metadata = selected.metadata.clone();
                 assert!(
-                    resolver
-                        .0
-                        .resolve(Arc::new(selected_request), cancel.clone())
+                    resolver.resolve_for_test(Arc::new(selected_request), cancel.clone())
                         .await
                         .is_ok()
                 );
@@ -5569,8 +5549,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
             request.config = selection.config;
             assert!(
                 resolver
-                    .0
-                    .resolve(Arc::new(request.clone()), cancel.clone())
+                    .resolve_for_test(Arc::new(request.clone()), cancel.clone())
                     .await
                     .is_err()
             );
@@ -5580,8 +5559,7 @@ async fn new_api_metadata_routes_and_builtin_routes_survive_restart() {
             });
             let request = Arc::new(request);
             let resolved = resolver
-                .0
-                .resolve(request.clone(), cancel.clone())
+                .resolve_for_test(request.clone(), cancel.clone())
                 .await
                 .unwrap();
             let mut stream = host
@@ -5639,7 +5617,8 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     for plugin in [&files, &oauth, &sqlite, &provider_plugin, &aimux, &capture] {
         active(plugin).await;
     }
-    let (provider, resolver) = captured.get().unwrap();
+    let provider = captured.get().unwrap();
+    let resolver = provider.clone();
     let cancel = CancellationToken::new();
 
     let managed_id = "018ec73f-4d19-7f61-bc79-7130618bb450";
@@ -6045,8 +6024,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
     request.capability_snapshot = selection.capability_snapshot;
     let bedrock_request = Arc::new(request);
     let resolved = resolver
-        .0
-        .resolve(bedrock_request.clone(), cancel.clone())
+        .resolve_for_test(bedrock_request.clone(), cancel.clone())
         .await
         .unwrap();
     assert!(resolved.recovery.is_none());
@@ -6289,8 +6267,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         request.config = selection.config;
         let request = Arc::new(request);
         let resolved = resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await
             .unwrap();
         let ModelConnection::Http(connection) = &resolved.connection else {
@@ -6298,7 +6275,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         };
         assert!(connection.base_url.ends_with(&format!("/{suffix}")));
         let mut output = root
-            .get::<ModelHost>()
+            .get::<ModelDriverHost>()
             .unwrap()
             .0
             .invoke(request, resolved.connection, cancel.clone())
@@ -6362,12 +6339,11 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         request.capability_snapshot = selected.capability_snapshot;
         let request = Arc::new(request);
         let resolved = resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await
             .unwrap();
         let mut output = root
-            .get::<ModelHost>()
+            .get::<ModelDriverHost>()
             .unwrap()
             .0
             .invoke(request, resolved.connection, cancel.clone())
@@ -6611,7 +6587,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         ..ModelRequest::new(PROVIDER_A, "same", vec![])
     });
     assert!(matches!(
-        resolver.0.resolve(request, cancel.clone()).await,
+        resolver.resolve_for_test(request, cancel.clone()).await,
         Err(dim_agent_capabilities::host::HostError::Failed {
             kind: dim_agent_capabilities::host::HostErrorKind::OwnerClosed,
             ..
@@ -6654,10 +6630,9 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
         persisted
     );
     let resolved = restarted
-        .get::<ProviderConnectionResolver>()
+        .get::<ProviderService>()
         .unwrap()
-        .0
-        .resolve(bedrock_request, cancel.clone())
+        .resolve_for_test(bedrock_request, cancel.clone())
         .await
         .unwrap();
     assert!(

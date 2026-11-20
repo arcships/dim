@@ -3011,6 +3011,17 @@ impl ProviderService {
     }
 }
 
+#[cfg(feature = "testing")]
+impl ProviderService {
+    pub async fn resolve_for_test(
+        self: &Arc<Self>,
+        request: Arc<ModelRequest>,
+        cancel: CancellationToken,
+    ) -> Result<ResolvedModelConnection, HostError> {
+        ResolveModelConnection::resolve(&ProductResolver(self.clone()), request, cancel).await
+    }
+}
+
 struct ProductResolver(Arc<ProviderService>);
 impl ResolveModelConnection for ProductResolver {
     fn resolve(
@@ -3293,7 +3304,7 @@ pub struct ProviderPlugin {
     grok: Key<GrokOAuthService>,
     /// ProviderSecretHost only when a plugin supplies it.
     secret_host: Option<Key<ProviderSecretHost>>,
-    host: Key<ModelHost>,
+    host: Key<ModelDriverHost>,
     methods: Key<crate::methods::ManagementMethods>,
 }
 impl ProviderPlugin {
@@ -3316,7 +3327,7 @@ impl ProviderPlugin {
             codex: names.key()?,
             grok: names.key()?,
             secret_host: secret_host.then(|| names.key()).transpose()?,
-            host: names.key()?,
+            host: Key::of(),
             methods: names.key()?,
         })
     }
@@ -3400,13 +3411,8 @@ impl DynPlugin for ProviderPlugin {
                 rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
             })?;
             let resolver = Arc::new(ProductResolver(service.clone()));
-            let connection = Arc::new(ProviderConnectionResolver(resolver.clone()));
-            dim_agent_capabilities::host::ModelInvocation::new(
-                host.clone(),
-                Some(connection.clone()),
-            )
-            .provide(ctx)?;
-            ctx.provide_as::<ProviderConnectionResolver>(connection)?;
+            dim_agent_capabilities::host::ModelHost::new(host.clone(), Some(resolver.clone()))
+                .provide(ctx)?;
             let selection = resolver.clone();
             let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
                 selection.resolve(explicit, cwd, cancel)

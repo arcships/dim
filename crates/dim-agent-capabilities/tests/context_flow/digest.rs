@@ -123,7 +123,7 @@ async fn effects_session(
 ) -> (MinimalHost, dim_agent_runtime::Session) {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(script)))
+        .process_data_value(Arc::new(ModelHost::local(script)))
         .session_value(Arc::new(ToolHost(Arc::new(Effects))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

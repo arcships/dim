@@ -677,7 +677,6 @@ pub trait ResolveModelConnection: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> HostFuture<'_, ResolvedModelConnection>;
 }
-pub struct ProviderConnectionResolver(pub Arc<dyn ResolveModelConnection>);
 
 /// One non-conversational call of a model: the catalogued model a process
 /// adapter routes work to, and the `<category>.<operation>` it serves.
@@ -1249,14 +1248,14 @@ pub trait ModelDriver: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> HostFuture<'_, ModelStream>;
 }
-pub struct ModelHost(pub Arc<dyn ModelDriver>);
+pub struct ModelDriverHost(pub Arc<dyn ModelDriver>);
 
 mod invocation_face;
 
 #[derive(Clone)]
-pub struct ModelInvocation {
-    driver: Arc<ModelHost>,
-    resolver: Option<Arc<ProviderConnectionResolver>>,
+pub struct ModelHost {
+    driver: Arc<ModelDriverHost>,
+    resolver: Option<Arc<dyn ResolveModelConnection>>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -1270,7 +1269,11 @@ pub enum InvocationMode {
     Recovering { failure_chain: Option<FailureChain> },
 }
 
-impl ModelInvocation {
+impl ModelHost {
+    pub fn local(driver: Arc<dyn ModelDriver>) -> Self {
+        Self::new(Arc::new(ModelDriverHost(driver)), None)
+    }
+
     pub fn provide(self, ctx: &Ctx) -> rutis::Result<()> {
         let owner = Arc::new(self);
         ctx.provide_as::<Self>(owner.clone())?;
@@ -1281,7 +1284,10 @@ impl ModelInvocation {
         Ok(())
     }
 
-    pub fn new(driver: Arc<ModelHost>, resolver: Option<Arc<ProviderConnectionResolver>>) -> Self {
+    pub fn new(
+        driver: Arc<ModelDriverHost>,
+        resolver: Option<Arc<dyn ResolveModelConnection>>,
+    ) -> Self {
         Self { driver, resolver }
     }
 
@@ -1294,7 +1300,7 @@ impl ModelInvocation {
         consume: crate::model_provider::Consume<S, T>,
     ) -> Result<T, HostError> {
         let resolved = match &self.resolver {
-            Some(resolver) => resolver.0.resolve(request.clone(), cancel.clone()).await?,
+            Some(resolver) => resolver.resolve(request.clone(), cancel.clone()).await?,
             None => ResolvedModelConnection {
                 connection: ModelConnection::Local,
                 failure_policy: None,

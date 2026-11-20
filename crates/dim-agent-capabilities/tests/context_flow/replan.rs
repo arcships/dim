@@ -112,7 +112,7 @@ async fn replanned_session_with(
 ) -> (MinimalHost, dim_agent_runtime::Session) {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(driver)))
+        .process_data_value(Arc::new(ModelHost::local(driver)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

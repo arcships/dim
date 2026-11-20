@@ -51,23 +51,6 @@ impl ModelDriver for Summarizing {
     }
 }
 
-pub struct Local;
-impl ResolveModelConnection for Local {
-    fn resolve(
-        &self,
-        _: Arc<ModelRequest>,
-        _: CancellationToken,
-    ) -> HostFuture<'_, ResolvedModelConnection> {
-        Box::pin(async {
-            Ok(ResolvedModelConnection {
-                connection: ModelConnection::Local,
-                failure_policy: None,
-                recovery: None,
-            })
-        })
-    }
-}
-
 /// The product context window over the echo model. The process model host is
 /// provided by [`product_hosts`] or [`product_process`].
 pub fn product(builder: &mut AgentBuilder) -> std::result::Result<(), Error> {
@@ -118,8 +101,7 @@ pub fn product(builder: &mut AgentBuilder) -> std::result::Result<(), Error> {
 /// The product mix's model hosts, which a `MinimalHost` root provides.
 pub fn product_hosts(root: &rutis::Ctx) -> dim_agent_runtime::Result<()> {
     let driver: Arc<dyn ModelDriver> = Arc::new(Summarizing::default());
-    root.provide(ModelHost(driver))?;
-    root.provide(ProviderConnectionResolver(Arc::new(Local)))?;
+    ModelHost::local(driver).provide(root)?;
     Ok(())
 }
 
@@ -127,7 +109,5 @@ pub fn product_hosts(root: &rutis::Ctx) -> dim_agent_runtime::Result<()> {
 /// `serve`.
 pub fn product_process(builder: &mut AgentBuilder) {
     let driver: Arc<dyn ModelDriver> = Arc::new(Summarizing::default());
-    builder
-        .process_value(Arc::new(ModelHost(driver)))
-        .process_value(Arc::new(ProviderConnectionResolver(Arc::new(Local))));
+    builder.process_data_value(Arc::new(ModelHost::local(driver)));
 }

@@ -231,7 +231,7 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
-            .process_value(Arc::new(ModelHost(Arc::new(Model {
+            .process_data_value(Arc::new(ModelHost::local(Arc::new(Model {
                 stage,
                 barrier: native.clone(),
                 calls: model_calls.clone(),
@@ -618,7 +618,7 @@ async fn a_tool_call_already_committed_when_the_interrupt_arrives_is_not_execute
     );
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(ProposesTool))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(ProposesTool))))
         .session_value(Arc::new(ToolHost(Arc::new(CountedTools(executed.clone())))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
             stage: Stage::Model,
@@ -686,7 +686,7 @@ async fn stop_waits_for_an_interrupted_turn_whose_start_is_not_yet_dispatched() 
     );
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(Model {
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(Model {
             stage: Stage::Model,
             barrier: next_model.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
@@ -840,7 +840,7 @@ fn channel_builder(model: Arc<ChannelModel>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(model)))
+        .process_data_value(Arc::new(ModelHost::local(model)))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
@@ -1185,7 +1185,7 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(Model {
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(Model {
             stage: Stage::Preparation,
             barrier: native.clone(),
             calls: model_calls.clone(),
@@ -1577,7 +1577,7 @@ async fn a_steer_is_not_consumed_between_a_failed_preparation_and_its_terminal()
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(PrepareContextHost(prepare.clone())))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
@@ -1828,7 +1828,7 @@ async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
             dim_agent_runtime::MemoryTimelineStore::default(),
         )))
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(BatchModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(BatchModel))))
         .session_value(Arc::new(ToolHost(tools)))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))

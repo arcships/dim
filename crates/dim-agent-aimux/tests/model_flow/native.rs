@@ -79,7 +79,7 @@ async fn bedrock_native_auth_stream_and_continuation_are_first_party() {
             .await;
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let connection = || {
             ModelConnection::Bedrock(BedrockModelConnection {
                 base_url: server.uri(),
@@ -431,7 +431,7 @@ async fn bedrock_unreadable_tool_delta_fails_the_turn_without_a_call() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let mut request = ModelRequest::new(
         "bedrock",
         "anthropic.model",
@@ -545,7 +545,7 @@ async fn bedrock_finishes_at_metadata_while_the_body_stays_open() {
         });
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         let request = ModelRequest::new(
             "bedrock",
             "anthropic.model",
@@ -654,7 +654,7 @@ async fn xai_native_continuation_roundtrips_and_owner_releases_streams() {
         .mount(&server).await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let connection = |protocol| {
         ModelConnection::Http(HttpModelConnection {
             protocol,
@@ -881,7 +881,7 @@ async fn xai_responses_content_parts_keep_their_blocks() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let request = ModelRequest::new("xai", "alias", vec![Message::text(Role::User, "start")]);
     let mut output = host
         .0
@@ -991,7 +991,7 @@ async fn explicit_preferences_reach_chat_and_responses_for_model_aliases() {
         let server = NativeServer::start(kind).await;
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         for (tier, effort) in [
             (Some("priority"), Some("high")),
             (Some("flex"), Some("none")),
@@ -1062,7 +1062,7 @@ async fn codex_request_profile_is_isolated_to_responses() {
     let server = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let request = || {
         let mut request = ModelRequest::new(
             "openai-codex",
@@ -1191,7 +1191,7 @@ async fn openai_chat_protocols_send_reasoning_models_the_rules_they_accept() {
     let server = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     for protocol in [ModelProtocol::OpenaiChat, ModelProtocol::OpenaiCompatible] {
         for model_id in ["gpt-4o", "gpt-5", "o3"] {
             let mut request =
@@ -1465,7 +1465,7 @@ async fn malformed_native_block_lifecycle_is_a_classified_failure() {
 
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let server = MockServer::start().await;
     let text_start =
         json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}});
@@ -1571,7 +1571,7 @@ async fn chat_reasoning_can_reopen_a_completed_segment_identity() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let mut stream = host
         .0
         .invoke(
@@ -1611,7 +1611,7 @@ async fn chat_reasoning_can_reopen_a_completed_segment_identity() {
 }
 
 async fn invoke_failure(
-    host: &ModelHost,
+    host: &ModelDriverHost,
     protocol: ModelProtocol,
     base_url: String,
     prompt: &str,
@@ -1694,7 +1694,7 @@ async fn native_failures_carry_their_kind_and_a_safe_reason() {
     let anthropic = NativeServer::start("anthropic").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
 
     let error = invoke_failure(
         &host,
@@ -1839,7 +1839,7 @@ async fn native_http_statuses_and_codes_classify() {
     let chat = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
 
     for (prompt, status, kind) in [
         ("facts-status-401", 401, ModelFailureKind::AuthRejected),
@@ -1927,7 +1927,7 @@ async fn a_malformed_stream_body_is_a_malformed_response() {
     let chat = NativeServer::start("openai-chat").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
 
     let error = invoke_failure(
         &host,
@@ -1989,7 +1989,7 @@ async fn a_reset_after_headers_is_a_network_failure() {
 
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let error = invoke_failure(
         &host,
         ModelProtocol::OpenaiChat,
@@ -2019,7 +2019,7 @@ async fn a_stream_event_failure_with_an_unknown_code_is_not_retried() {
     let responses = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let error = invoke_failure(
         &host,
         ModelProtocol::OpenaiResponses,
@@ -2727,7 +2727,7 @@ async fn four_native_apis_preserve_signed_blocks_and_tool_continuation() {
                     }
                 }
             }
-            let host=agent.root().get::<ModelHost>().unwrap();
+            let host=agent.root().get::<ModelDriverHost>().unwrap();
             let protocol=match kind {"openai-chat"=>ModelProtocol::OpenaiChat,"openai-responses"=>ModelProtocol::OpenaiResponses,"anthropic"=>ModelProtocol::Anthropic,_=>ModelProtocol::Gemini};
             let connection=||ModelConnection::Http(HttpModelConnection{protocol,base_url:server.url.clone(),network:Default::default(),headers:Default::default(),bearer:if kind=="anthropic" {Some("bearer-secret".into())} else {None},api_key:None,preset:None});
             let request=Arc::new(ModelRequest::new("local","test-model",vec![Message::text(Role::User,"tool")]));
@@ -3162,7 +3162,7 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
                 }
             }
             // A request built from stored content drops the part on its own.
-            let host = agent.root().get::<ModelHost>().unwrap();
+            let host = agent.root().get::<ModelDriverHost>().unwrap();
             let request = Arc::new(ModelRequest::new(
                 "local",
                 server.model_id(),
@@ -3247,7 +3247,7 @@ async fn native_unsigned_thinking_completes_and_is_not_replayed() {
                 .await;
             let root = rutis::Ctx::root().unwrap();
             root.plugin(AimuxPlugin::default()).await.unwrap();
-            let host = root.get::<ModelHost>().unwrap();
+            let host = root.get::<ModelDriverHost>().unwrap();
             let request = Arc::new(ModelRequest::new(
                 "local",
                 "arn:aws:bedrock:us-west-2:123:inference-profile/model-A",
@@ -3336,7 +3336,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
             assert!(matches!(events.iter().rfind(|event| matches!(event.kind, EventKind::TurnEnd(_))).unwrap().kind,EventKind::TurnEnd(TurnEndData{outcome:TurnOutcome::Completed{..},..})),"{kind}");
             assert!(events.iter().any(|event|matches!(&event.kind,EventKind::ModelContent(_))),"{kind}");
             if kind == "anthropic" {
-                let host = agent.root().get::<ModelHost>().unwrap();
+                let host = agent.root().get::<ModelDriverHost>().unwrap();
                 // Thinking off: stored signed thinking is left out of the
                 // request instead of failing it.
                 let request=Arc::new(ModelRequest::new("local",server.model_id(),vec![
@@ -3470,7 +3470,7 @@ async fn native_content_keeps_unsigned_thinking_and_respects_committed_tools() {
         let server = NativeServer::start("gemini").await;
         let agent = model_agent(server.models(),None).await;
         agent.create_session(server.session_config()).await.unwrap();
-        let host = agent.root().get::<ModelHost>().unwrap();
+        let host = agent.root().get::<ModelDriverHost>().unwrap();
         for (config, expected_budget) in [
             (json!({"reasoning":{"enabled":true,"budgetTokens":0}}),None),
             (json!({"reasoning":{"enabled":true},"providerOptions":{"gemini":{"thinkingConfig":{"thinkingBudget":0}}}}),Some(0)),
@@ -3712,7 +3712,7 @@ async fn native_bedrock_leaves_stored_chat_thinking_out_of_the_turn() {
             .await;
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         // The history a Chat model leaves behind: thinking without data.
         let request = ModelRequest::new(
             "bedrock",
@@ -4060,7 +4060,7 @@ async fn an_error_tool_result_image_keeps_the_flag_and_the_image() {
 
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -4204,7 +4204,7 @@ async fn a_native_stream_without_its_terminal_is_classified_and_not_retried() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let failure =
         invoke_failure(&host, ModelProtocol::Anthropic, server.uri(), "no-terminal").await;
     assert!(
@@ -4293,7 +4293,7 @@ async fn a_stored_summary_index_loads_and_continues() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let request = ModelRequest::new(
         "local",
         "alias",
@@ -4365,7 +4365,7 @@ async fn an_xai_chat_request_uses_the_compatible_chat_path() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let mut request = ModelRequest::new(
         "xai",
         "fixture-model",
@@ -4428,7 +4428,7 @@ async fn an_alias_with_explicit_reasoning_and_temperature_is_unsupported() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let mut request = ModelRequest::new("local", "alias", vec![Message::text(Role::User, "hello")]);
     request.config = Some(
         serde_json::from_value(json!({"temperature":0.2,"reasoning":{"effort":"high"}})).unwrap(),
@@ -4490,7 +4490,7 @@ async fn chat_refusal_delta_is_visible_text() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let mut stream = host
         .0
         .invoke(
@@ -4552,7 +4552,7 @@ async fn responses_refusal_deltas_are_visible_text() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let mut stream = host
         .0
         .invoke(
@@ -4967,7 +4967,7 @@ impl CountingProxy {
 }
 
 /// One request, drained to its end: what matters is the transport it used.
-async fn drain_request(host: &ModelHost, base_url: String, timeout_ms: Option<u64>) {
+async fn drain_request(host: &ModelDriverHost, base_url: String, timeout_ms: Option<u64>) {
     let connection = ModelConnection::Http(HttpModelConnection {
         protocol: ModelProtocol::OpenaiChat,
         base_url,
@@ -5008,7 +5008,7 @@ async fn a_connection_reuses_one_tcp_connection_for_its_query_and_timeout() {
     let proxy = CountingProxy::start(target).await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
 
     for _ in 0..2 {
         drain_request(&host, format!("{}/v1?tenant=sandbox", proxy.url), None).await;
@@ -5049,7 +5049,7 @@ async fn the_http_body_budget_counts_the_exact_bytes_sent_and_does_not_retry() {
         .await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let proxy = CountingProxy::start(*server.address()).await;
     let mut request = ModelRequest::new(
         "local",
@@ -5159,7 +5159,7 @@ fn expected_default_user_agent() -> String {
 }
 
 /// One request over `connection`, drained to its end.
-async fn send_over(host: &ModelHost, server: &NativeServer, connection: ModelConnection) {
+async fn send_over(host: &ModelDriverHost, server: &NativeServer, connection: ModelConnection) {
     let request = Arc::new(ModelRequest::new(
         "tenant",
         server.model_id(),
@@ -5262,7 +5262,7 @@ async fn every_protocol_sends_dims_own_identity_before_the_library_parts() {
         let server = NativeServer::start(kind).await;
         let root = rutis::Ctx::root().unwrap();
         root.plugin(AimuxPlugin::default()).await.unwrap();
-        let host = root.get::<ModelHost>().unwrap();
+        let host = root.get::<ModelDriverHost>().unwrap();
         send_over(
             &host,
             &server,
@@ -5290,7 +5290,7 @@ async fn a_preset_connection_sends_dims_own_identity() {
     let server = NativeServer::start("openai-compatible").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     send_over(
         &host,
         &server,
@@ -5320,7 +5320,7 @@ async fn the_openai_codex_preset_carries_no_identity_of_dims_own() {
     let server = NativeServer::start("openai-responses").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let codex = "codex-tui/0.170.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.170.0)";
     let headers = std::collections::HashMap::from([
         ("originator".into(), "codex-tui".into()),
@@ -5362,7 +5362,7 @@ async fn a_providers_own_headers_win_over_dims_identity() {
     let server = NativeServer::start("openai-compatible").await;
     let root = rutis::Ctx::root().unwrap();
     root.plugin(AimuxPlugin::default()).await.unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let headers = std::collections::HashMap::from([
         ("User-Agent".into(), "gateway-client/9".into()),
         ("X-Title".into(), "Gateway Title".into()),
@@ -5401,7 +5401,7 @@ async fn an_override_replaces_the_user_agent_and_keeps_the_library_parts() {
     )
     .await
     .unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     send_over(
         &host,
         &server,

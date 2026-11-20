@@ -186,7 +186,7 @@ fn consume<'a>(
     })
 }
 
-impl HostDispatch for ModelInvocation {
+impl HostDispatch for ModelHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({"invoke":"async"}))
     }

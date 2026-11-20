@@ -74,7 +74,7 @@ struct ModelProvider {
     tasks: TaskTracker,
     errors: Mutex<Vec<AgentError>>,
     context: Arc<ContextPreparation>,
-    host: ModelInvocation,
+    host: Arc<ModelHost>,
     files: Option<Arc<SessionFiles>>,
     timeline: Arc<Timeline>,
     identity: Arc<TimelineIdentity>,
@@ -567,31 +567,22 @@ pub struct ModelProviderPlugin {
     dispatcher: Key<Dispatcher>,
     context: Key<ContextPreparation>,
     host: Key<ModelHost>,
-    /// Each request's connection comes from the process
-    /// `ProviderConnectionResolver`; otherwise it is local.
-    resolver: Option<Key<ProviderConnectionResolver>>,
     /// Optional process service, read at load without gating standalone hosts.
     files: Option<Key<SessionFiles>>,
     identity: Key<TimelineIdentity>,
 }
 impl ModelProviderPlugin {
-    /// Requests run on the local connection.
-    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Self::with(names, false)
-    }
-    /// The network profile resolves each request's connection through the
-    /// process `ProviderConnectionResolver`.
     pub fn process(names: &Names<'_>) -> rutis::Result<Self> {
-        Self::with(names, true)
+        Self::new(names)
     }
-    fn with(names: &Names<'_>, resolves: bool) -> rutis::Result<Self> {
+
+    pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             progress: names.state_cell()?,
             timeline: names.key()?,
             dispatcher: names.key()?,
             context: names.key()?,
             host: names.key()?,
-            resolver: resolves.then(|| names.key()).transpose()?,
             files: names
                 .registered::<SessionFiles>()
                 .then(|| names.key())
@@ -611,7 +602,6 @@ impl DynPlugin for ModelProviderPlugin {
             self.context.erase(),
             self.host.erase(),
         ];
-        keys.extend(self.resolver.as_ref().map(Key::erase));
         keys.push(self.identity.erase());
         keys
     }
@@ -621,10 +611,6 @@ impl DynPlugin for ModelProviderPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let context = ctx.require_at(&self.context)?;
             let host = ctx.require_at(&self.host)?;
-            let resolver = match &self.resolver {
-                Some(key) => Some(ctx.require_at(key)?),
-                None => None,
-            };
             let files = self.files.as_ref().and_then(|key| ctx.get_at(key));
             let identity = ctx.require_at(&self.identity)?;
             let service = Arc::new(ModelProvider {
@@ -632,7 +618,7 @@ impl DynPlugin for ModelProviderPlugin {
                 tasks: TaskTracker::new(),
                 errors: Mutex::new(Vec::new()),
                 context,
-                host: ModelInvocation::new(host, resolver),
+                host,
                 files,
                 timeline,
                 identity,

@@ -83,7 +83,7 @@ pub type Consume<S, T> = for<'a> fn(
 /// into `state` and clears `replay_safe` once output that cannot be replayed
 /// was handed on.
 pub async fn invoke<S: Send + RetryObserver, T>(
-    host: &ModelHost,
+    host: &ModelDriverHost,
     request: &Arc<ModelRequest>,
     chain: Option<&FailureChain>,
     resolved: ResolvedModelConnection,

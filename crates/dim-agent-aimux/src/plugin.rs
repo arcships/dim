@@ -56,7 +56,7 @@ impl DynPlugin for AimuxPlugin {
                 driver.close().await;
                 return Err(error);
             }
-            ctx.provide(ModelHost(driver))?;
+            ctx.provide(ModelDriverHost(driver))?;
             Ok(Effect::Done)
         })
     }
@@ -68,7 +68,7 @@ pub struct ConfiguredModelsPlugin(pub Arc<AimuxModels>);
 impl Plugin for ConfiguredModelsPlugin {
     /// The shared name and the run for auxiliary calls need the model host;
     /// Aimux provides it and depends on nothing here.
-    type Deps = (Arc<ModelHost>,);
+    type Deps = (Arc<ModelDriverHost>,);
     fn name(&self) -> &str {
         "ConfiguredModels"
     }
@@ -78,10 +78,8 @@ impl Plugin for ConfiguredModelsPlugin {
             models: self.0.clone(),
             generation: ctx.cancellation_token(),
         });
-        let connection = Arc::new(ProviderConnectionResolver(resolver.clone()));
-        dim_agent_capabilities::host::ModelInvocation::new(host.clone(), Some(connection.clone()))
+        dim_agent_capabilities::host::ModelHost::new(host.clone(), Some(resolver.clone()))
             .provide(ctx)?;
-        ctx.provide_as::<ProviderConnectionResolver>(connection)?;
         let selection = resolver.clone();
         let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
             selection.resolve(explicit, cwd, cancel)

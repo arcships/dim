@@ -87,7 +87,7 @@ async fn launch_identity_server(home: &Path) -> RunningServer {
 
 /// The User-Agent one model request through `server` carries.
 async fn sent_user_agent(server: &RunningServer, seen: &UserAgents, base: &str) -> String {
-    let host = server.service::<ModelHost>().expect("a model host");
+    let host = server.service::<ModelDriverHost>().expect("a model host");
     let request = Arc::new(ModelRequest::new(
         "local",
         "same",

@@ -29,7 +29,7 @@ use dim_agent_capabilities::{
     history::{HistoryEntry, summary_message},
     host::{
         CompactionCheckpoint, CompactionCut, CompactionInput, CompactionStrategy, ContextModel,
-        HostError, InvocationMode, ModelChunk, ModelInvocation, ModelStopReason, ModelStream,
+        HostError, InvocationMode, ModelChunk, ModelHost, ModelStopReason, ModelStream,
         ResolveContextModel, StrategyOutcome,
     },
     summary_strategy::{
@@ -81,7 +81,7 @@ pub async fn run() -> Result<()> {
         .service::<ProviderService>()
         .ok_or("the product profile serves no provider catalog")?;
     let host = server
-        .service::<ModelInvocation>()
+        .service::<ModelHost>()
         .ok_or("the product profile serves no model host")?;
     let model = selection_with_preferences(&providers, &options.model, &cancel).await?;
     let judge = selection_with_preferences(&providers, &options.judge, &cancel).await?;
@@ -1139,7 +1139,7 @@ fn probe_records(probes: &[Probe], summary: &str, judged: &Judged) -> Vec<Value>
 /// reports whether the judge had to drop its temperature, which is part of the
 /// instrument's record (ContextCompaction §13.4).
 async fn judge_run(
-    host: &Arc<ModelInvocation>,
+    host: &Arc<ModelHost>,
 
     judge: &ModelSelection,
     case: &Prepared,
@@ -1174,7 +1174,7 @@ enum JudgeError {
 }
 
 async fn judge_probes(
-    host: &Arc<ModelInvocation>,
+    host: &Arc<ModelHost>,
 
     judge: &ModelSelection,
     case: &Prepared,
@@ -1245,7 +1245,7 @@ async fn judge_probes(
 }
 
 async fn complete(
-    host: &Arc<ModelInvocation>,
+    host: &Arc<ModelHost>,
 
     request: &Arc<ModelRequest>,
     cancel: &CancellationToken,
@@ -1272,7 +1272,7 @@ pub(crate) struct Completion {
 }
 
 pub(crate) async fn complete_detailed(
-    host: &Arc<ModelInvocation>,
+    host: &Arc<ModelHost>,
 
     request: &Arc<ModelRequest>,
     cancel: &CancellationToken,
@@ -2339,9 +2339,9 @@ mod tests {
         let case = prepared("case", vec![probe("floods", ProbeKind::Fact)]);
         let mut no_temperature = false;
         let judged = judge_run(
-            &Arc::new(ModelInvocation::new(
-                Arc::new(ModelHost(Arc::new(Malformed))),
-                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            &Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(Arc::new(Malformed))),
+                Some(Arc::new(Local)),
             )),
             &fake_selection(),
             &case,
@@ -2787,7 +2787,7 @@ mod tests {
             })
         }
     }
-    use dim_agent_capabilities::host::{ModelHost, ProviderConnectionResolver};
+    use dim_agent_capabilities::host::ModelDriverHost;
     struct Local;
     impl ResolveModelConnection for Local {
         fn resolve(
@@ -2836,9 +2836,9 @@ mod tests {
             .expect("the chain case");
         let driver = Arc::new(Markers::default());
         let strategy = SummaryStrategy::new(
-            Arc::new(ModelInvocation::new(
-                Arc::new(ModelHost(driver.clone())),
-                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(driver.clone())),
+                Some(Arc::new(Local)),
             )),
             ProductSummaryStrategyConfig::default(),
         );
@@ -2927,9 +2927,9 @@ mod tests {
             .expect("the code case");
         let driver = Arc::new(Reply);
         let strategy = SummaryStrategy::new(
-            Arc::new(ModelInvocation::new(
-                Arc::new(ModelHost(driver)),
-                Some(Arc::new(ProviderConnectionResolver(Arc::new(Local)))),
+            Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(driver)),
+                Some(Arc::new(Local)),
             )),
             ProductSummaryStrategyConfig::default(),
         );

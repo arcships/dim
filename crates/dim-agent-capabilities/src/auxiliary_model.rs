@@ -8,7 +8,7 @@
 //! Session parts ([AuxiliaryModel §4.3](../../../docs/design/appserver/auxiliary-model.md#43-named-binding)).
 use crate::host::{
     AuxiliaryError, AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryReply, AuxiliaryRequest,
-    HostError, ModelChunk, ModelHost, ModelStopReason, ModelStream, ResolveModelConnection,
+    HostError, ModelChunk, ModelDriverHost, ModelStopReason, ModelStream, ResolveModelConnection,
 };
 use crate::model_provider::invoke_with_recovery;
 use dim_agent_types::{ModelCapabilitySnapshot, ModelConfig, ModelId, ModelRequest, SystemPrompt};
@@ -48,7 +48,7 @@ pub fn check(request: &AuxiliaryRequest) -> Result<(), AuxiliaryError> {
 /// connection comes from the owner's resolver; credentials never leave it.
 /// The owner checked the request with [`check`] before this run.
 pub async fn complete(
-    host: &ModelHost,
+    host: &ModelDriverHost,
     connection: &dyn ResolveModelConnection,
     target: AuxiliaryTarget,
     request: AuxiliaryRequest,

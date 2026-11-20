@@ -57,7 +57,7 @@ use crate::scenario_eval::{
 };
 use crate::summary_eval::complete_detailed;
 use dim_agent_capabilities::history::fold_output_parts;
-use dim_agent_capabilities::host::ModelInvocation;
+use dim_agent_capabilities::host::ModelHost;
 use dim_agent_capabilities::prompt_suggestion::{
     PromptSuggestionSettings, compaction_due, instruction, last_user_text, part_text, refusal_rule,
     suggestion_request, validate_reply,
@@ -824,7 +824,7 @@ struct Reply {
 /// deterministic stub for CI, which has no network.
 enum Model {
     Live {
-        host: Arc<ModelInvocation>,
+        host: Arc<ModelHost>,
 
         cancel: CancellationToken,
     },
@@ -988,7 +988,7 @@ async fn replay(options: &Options, scenarios: &[&Scenario]) -> Result<()> {
         )
         .await?;
         let served = async {
-            let Some(host) = server.service::<ModelInvocation>() else {
+            let Some(host) = server.service::<ModelHost>() else {
                 return Err("the served profile resolves no model host".to_string());
             };
             let judge = selection(&server, &options.judge, &options.out, &cancel)

@@ -155,7 +155,6 @@ impl rutis_bridge::session::HostDispatch for SummaryPromptSettingsHost {
 pub struct ProductSummaryStrategyPlugin {
     host: Key<CompactionStrategyHost>,
     model: Key<ModelHost>,
-    resolver: Key<ProviderConnectionResolver>,
     guide: Key<GuideEntries>,
     settings: Option<Key<SummaryPromptSettingsHost>>,
     config: ProductSummaryStrategyConfig,
@@ -165,7 +164,6 @@ impl ProductSummaryStrategyPlugin {
         Ok(Self {
             host: names.key()?,
             model: names.key()?,
-            resolver: names.key()?,
             guide: names.key()?,
             settings: names
                 .registered::<SummaryPromptSettingsHost>()
@@ -180,16 +178,11 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
         "ProductSummaryStrategy"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![
-            self.model.erase(),
-            self.resolver.erase(),
-            self.guide.erase(),
-        ]
+        vec![self.model.erase(), self.guide.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let host = ctx.require_at(&self.model)?;
-            let resolver = ctx.require_at(&self.resolver)?;
             let guide = ctx.require_at(&self.guide)?;
             guide.register(
                 ctx,
@@ -220,8 +213,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
                     }
                 }
             }
-            let strategy =
-                SummaryStrategy::new(Arc::new(ModelInvocation::new(host, Some(resolver))), config);
+            let strategy = SummaryStrategy::new(host, config);
             ctx.provide_at(
                 self.host.clone(),
                 Arc::new(CompactionStrategyHost(Some(Arc::new(strategy)))),
@@ -232,7 +224,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
 }
 
 pub struct SummaryStrategy {
-    host: Arc<ModelInvocation>,
+    host: Arc<ModelHost>,
     /// The factory's reasoning value; Provider's mapping may fall back to
     /// `inherit` for a model or protocol that rejects the effort.
     reasoning: SummaryReasoning,
@@ -357,7 +349,7 @@ impl SummaryStrategy {
     }
     /// The strategy over the process's model host and connection resolver,
     /// with its factory configuration.
-    pub fn new(host: Arc<ModelInvocation>, config: ProductSummaryStrategyConfig) -> Self {
+    pub fn new(host: Arc<ModelHost>, config: ProductSummaryStrategyConfig) -> Self {
         Self {
             host,
             reasoning: config.reasoning,

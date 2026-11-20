@@ -122,7 +122,7 @@ async fn launch_codemode_with_model(
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
         ))
-        .process_value(Arc::new(ModelHost(model)))
+        .process_data_value(Arc::new(ModelHost::local(model)))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(Some(Arc::new(UsageResolver)))))
         .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(

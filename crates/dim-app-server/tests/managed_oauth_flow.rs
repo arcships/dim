@@ -10,8 +10,8 @@ use dim_agent_capabilities::{
     file_storage::FileStoragePlugin,
     host::{
         AuxiliaryErrorCode, AuxiliaryRequest, CredentialRecoveryPhase, CredentialRejection,
-        HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget, ModelChunk, ModelHost,
-        ModelProtocol, ProviderConnectionResolver, ProviderService as ModelProviderService,
+        HostError, HostErrorKind, ModalityConnectionHost, ModalityTarget, ModelChunk,
+        ModelDriverHost, ModelProtocol, ProviderService as ModelProviderService,
     },
 };
 use dim_agent_runtime::Names;
@@ -972,8 +972,8 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         active(plugin).await;
     }
     let provider = root.get::<ProviderService>().unwrap();
-    let resolver = root.get::<ProviderConnectionResolver>().unwrap();
-    let host = root.get::<ModelHost>().unwrap();
+    let resolver = root.get::<ProviderService>().unwrap();
+    let host = root.get::<ModelDriverHost>().unwrap();
     let grok = root.get::<GrokOAuthService>().unwrap();
     let cancel = CancellationToken::new();
     for id in ["openai-codex", "grok-build"] {
@@ -1176,8 +1176,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         request.capability_snapshot = config.capability_snapshot;
         let request = Arc::new(request);
         let resolved = resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await
             .unwrap();
         let rejected = resolved.recovery.unwrap();
@@ -1223,8 +1222,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             matches!(&recovered.connection, dim_agent_capabilities::host::ModelConnection::Http(connection) if connection.network.timeout_ms == Some(6000 + index as u64))
         );
         let fresh = resolver
-            .0
-            .resolve(request.clone(), cancel.clone())
+            .resolve_for_test(request.clone(), cancel.clone())
             .await
             .unwrap();
         assert!(
@@ -1329,8 +1327,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
             assert!(!grok.status(&cancel).await.unwrap().authenticated);
             assert!(
                 resolver
-                    .0
-                    .resolve(request.clone(), cancel.clone())
+                    .resolve_for_test(request.clone(), cancel.clone())
                     .await
                     .is_err()
             );
@@ -1460,8 +1457,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         Arc::new(request)
     };
     let old = resolver
-        .0
-        .resolve(old_request.clone(), cancel.clone())
+        .resolve_for_test(old_request.clone(), cancel.clone())
         .await
         .unwrap()
         .recovery
@@ -1531,10 +1527,9 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
         Some(4321.0)
     );
     restarted
-        .get::<ProviderConnectionResolver>()
+        .get::<ProviderService>()
         .unwrap()
-        .0
-        .resolve(old_request, cancel)
+        .resolve_for_test(old_request, cancel)
         .await
         .unwrap();
     restarted.shutdown().await.unwrap();

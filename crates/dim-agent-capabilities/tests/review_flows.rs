@@ -29,7 +29,7 @@ fn builder(model: Arc<dyn ModelDriver>, tools: Arc<dyn ToolDriver>) -> AgentBuil
         dim_agent_runtime::MemoryTimelineStore::default(),
     )));
     builder
-        .process_value(Arc::new(ModelHost(model)))
+        .process_data_value(Arc::new(ModelHost::local(model)))
         .session_value(Arc::new(ToolHost(tools)))
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),

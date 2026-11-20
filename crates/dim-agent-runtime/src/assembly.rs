@@ -573,6 +573,30 @@ impl AgentBuilder {
         });
         self
     }
+    /// Provides a process operation and its wire dispatcher in the Agent's own scope.
+    pub fn process_data_value<T>(&mut self, value: Arc<T>) -> &mut Self
+    where
+        T: rutis_bridge::session::HostDispatch + 'static,
+    {
+        let name = crate::names::name_of::<T>();
+        self.assembly.process_values.push(ProcessValue {
+            name: name.clone(),
+            bind: Arc::new(move |names| {
+                let key = names.key::<T>()?;
+                let wire = rutis_bridge::session::host_key(&name);
+                let value = value.clone();
+                Ok(Box::new(move |ctx: &Ctx| {
+                    ctx.provide_at(key.clone(), value.clone())?;
+                    ctx.provide_at(
+                        wire.clone(),
+                        value.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,
+                    )?;
+                    Ok(())
+                }))
+            }),
+        });
+        self
+    }
     /// The [`AGENT_GROUP`] row a host places in its loader, holding `rows`:
     /// the host's Agent plugin and the Session row [`Self::install`]
     /// returned. With values registered with [`Self::process_value`] it also

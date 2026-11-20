@@ -127,8 +127,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<file_storage::FsHost>(catalog, None);
     catalog.register_shared("fsHost");
     catalog.register_shared("providerService");
-    register::<host::ModelHost>(catalog, None);
-    register::<host::ProviderConnectionResolver>(catalog, None);
+    catalog.register_shared("modelHost");
     catalog.register_shared(name_of::<host::CredentialVariablesHost>());
     catalog.register_shared("sessionFiles");
     register::<workspace_tools::mentions::MentionIndex>(catalog, None);

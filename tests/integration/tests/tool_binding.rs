@@ -219,7 +219,7 @@ async fn env_named(
     }
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(model.clone())))
+        .process_data_value(Arc::new(ModelHost::local(model.clone())))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
@@ -483,7 +483,7 @@ fn unconfigured_builder(prepare: Arc<dyn PrepareModel>) -> AgentBuilder {
     );
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(
             dim_agent_capabilities::adapters::EchoModel,
         ))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -1300,7 +1300,7 @@ async fn tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_ass
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
             .session_value(Arc::new(HistoryRenderer::default()))
-            .process_value(Arc::new(ModelHost(model.clone())))
+            .process_data_value(Arc::new(ModelHost::local(model.clone())))
             .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ContextModelHost(None)))
             .session_value(Arc::new(CompactionStrategyHost(None)))
