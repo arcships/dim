@@ -262,7 +262,7 @@ export type {
   AgentErrorThrown, BranchLifecycle, Dispatcher, PartRegistry, PartScope, ProcessActivity, Services, SessionIdentity, SessionLifecycle,
   TimelineIdentity, TreeCommands, PermissionState, SessionPermissions, SessionsErrorThrown,
   WorkflowFiles, WorkflowFileEntry, WorkflowRoot, WorkflowFilesErrorThrown,
-  UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
+  ContextPreparation, UiResources, PublishFile, ResourceRef, ResourceErrorThrown,
 } from './branch-services.js';
 export interface HistoryPage { through: number; events: AgentEvent[] }
 export interface WithdrawRequest extends SessionRef { inputId: string; reason?: string | null }
@@ -450,6 +450,16 @@ export interface ContextModelHost {
   }>;
   estimate(request: { model: import('./branch-services.js').ModelSelection; algorithm: string; contribution: ContextContribution }): Promise<number>;
 }
+export type ContextPrepareData = {
+  turn_id: string;
+  request_id: string;
+  through: number;
+  request: import('./branch-services.js').ModelRequest;
+  configuration?: import('./branch-services.js').PromptReference;
+  prompt?: import('./branch-services.js').PromptReference;
+  recovery?: { inputTokens: number; contextWindow: number; requestedMaxTokens: number; allowedMaxTokens: number; ratio: number };
+  failure_chain?: { from_request_id: string; attempts: number; waited_ms: number | bigint };
+};
 export interface ContextUsage {
   read(request: { through?: number | bigint }, cancelled: () => Promise<void>): Promise<import('./client-protocol.js').ContextUsage & {
     through: number | bigint;

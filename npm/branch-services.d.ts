@@ -41,6 +41,322 @@ export interface Approval {
   decide(requestId: string, decision: ApprovalDecision): Promise<void>
 }
 
+export type Role = "user" | "assistant" | "tool_result"
+
+/** Native continuation facts preserved at the model boundary. */
+export type ContentMetadata =
+  | { protocol: "bedrock"; signature?: string | null }
+  | { protocol: "bedrock-redacted"; data: string }
+  | { protocol: "anthropic"; signature: string }
+  | { protocol: "anthropic-redacted"; data: string }
+  | { protocol: "gemini"; thoughtSignature: string }
+  | { protocol: "xai-responses"; itemId: string; encryptedContent?: string | null }
+  | { protocol: "openai-responses"; itemId: string; encryptedContent?: string | null; summaryIndex?: number | null; phase?: string | null }
+
+export type ImageSourceType = "base64" | "url" | "file"
+
+export type ImageSource = {
+  fileId?: string | null
+  type: ImageSourceType
+  mediaType: string
+  data?: string | null
+  url?: string | null
+}
+
+export type ContentBlock = { type: "text"; text: string } | { type: "image"; source: ImageSource }
+
+export type ToolContent = string | ContentBlock[]
+
+export type MessagePart =
+  | { type: "text"; providerMetadata?: ContentMetadata | null; text: string; startTime?: string | null; endTime?: string | null }
+  | { type: "image"; source: ImageSource }
+  | { type: "tool_use"; providerMetadata?: ContentMetadata | null; id: string; name: string; input: import('./plugin.js').BridgeJsonObject; startTime?: string | null }
+  | { type: "tool_result"; tool_use_id: string; content: ToolContent; structuredContent?: import('./plugin.js').BridgeJsonObject | null; is_error?: boolean | null }
+  | { type: "thinking"; providerMetadata?: ContentMetadata | null; thinking: string; startTime?: string | null; endTime?: string | null }
+
+export type MessageContent = string | MessagePart[]
+
+export type Message = {
+  role: Role
+  content: MessageContent
+}
+
+export type ContextBaselineEntry = {
+  key: string
+  sourceEvent: string
+  message: Message
+}
+
+/** An ephemeral view of a fixed timeline prefix, never a second history store. */
+export type HistoryEntry = {
+  id: string
+  message: Message
+  toolContext: boolean
+  /** Deterministic state immediately after this entry's source event. */
+  baseline: ContextBaselineEntry[]
+  /**
+   * Id of the Timeline event that placed this entry; compaction cuts are
+   * event ids, so they do not depend on the entry id scheme.
+   */
+  eventId: string
+  /** Position of that event: the Timeline primary key's two columns. */
+  position: { branch_id: string; sequence: number | bigint }
+}
+
+export type PromptReference = {
+  timeline: string
+  revision: string
+}
+
+export type ModelId = {
+  providerId: string
+  modelId: string
+}
+
+/**
+ * The adopted capabilities of a model: an exact value a Session carries and
+ * ContextCompaction reads. Both limits are required and positive; absence is
+ * a property of the catalog, which carries [`CatalogCapabilities`] and
+ * converts through [`CatalogCapabilities::declared`].
+ */
+export type ModelCapabilities = {
+  modalities: string[]
+  toolCalling: boolean
+  streaming: boolean
+  structuredOutput: boolean
+  vision: boolean
+  audio: boolean
+  reasoning: boolean
+  contextWindow: number | bigint
+  maxOutputTokens: number | bigint
+  providerState?: import('./plugin.js').BridgeJsonObject | null
+}
+
+export type ReasoningBudget = {
+  min?: number | null
+  max?: number | null
+  default?: number | null
+  unit?: string | null
+}
+
+export type ReasoningOff =
+  | { kind: "thinking_type"; value: string }
+  | { kind: "thinking_budget"; value: number | bigint }
+  | { kind: "enable_thinking"; value: boolean }
+  | { kind: "chat_template_kwargs"; keys: string[] }
+
+export type ModelReasoning = {
+  supported: boolean
+  defaultEnabled?: boolean | null
+  mode?: string | null
+  effort?: string | null
+  effortOptions?: string[] | null
+  level?: string | null
+  levelOptions?: string[] | null
+  verbosity?: string | null
+  verbosityOptions?: string[] | null
+  interleaved?: boolean | null
+  summaries?: boolean | null
+  visibility?: string | null
+  continuation?: string[] | null
+  budget?: ReasoningBudget | null
+  notes?: string[] | null
+  off?: ReasoningOff | null
+}
+
+export type ModelServiceTier = {
+  supported: boolean
+  default?: string | null
+  options?: string[]
+}
+
+export type ModelCapabilitySnapshot = {
+  target: ModelId
+  capabilities: ModelCapabilities
+  reasoning?: ModelReasoning | null
+  serviceTier?: ModelServiceTier | null
+}
+
+export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+
+/**
+ * A tool input schema.
+ *
+ * Deserialization accepts the JSON Schema forms an MCP server may send and
+ * stores the canonical shape the v22 format defines: a `type` array of one
+ * name becomes that name, two or more names become `anyOf` branches (under
+ * `allOf` when the node already has an `anyOf`), and a boolean subschema
+ * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
+ * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
+ * walked. A rejected node's error names its path under `inputSchema`.
+ */
+export type JsonSchema = {
+  type?: SchemaType | null
+  properties?: Record<string, JsonSchema> | null
+  items?: JsonSchema | null
+  required?: string[] | null
+  enum?: import('./plugin.js').BridgeJsonValue[] | null
+  description?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ToolSource = "static" | "builtin" | "extension" | "dynamic"
+
+export type ToolMetadata = {
+  version?: string | null
+  author?: string | null
+  docsUrl?: string | null
+  sourcePluginId?: string | null
+  mcpServerId?: string | null
+  mcpOriginalToolName?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ToolFilePathSelector = "path" | "affectedPaths"
+
+export type ToolPreExecutePaths = {
+  selector: ToolFilePathSelector
+}
+
+export type ToolFileChangeDeclaration = {
+  preExecutePaths?: ToolPreExecutePaths | null
+  postExecutePaths?: ToolFilePathSelector | null
+}
+
+export type ToolDefinition = {
+  name: string
+  description: string
+  inputSchema: JsonSchema
+  source: ToolSource
+  risk?: string | null
+  metadata?: ToolMetadata | null
+  fileChanges?: ToolFileChangeDeclaration | null
+}
+
+export type ToolSourceVersion = {
+  key: string
+  version: string
+}
+
+export type ModelProtocol =
+  | "openai-chat"
+  | "openai-compatible"
+  | "openai-responses"
+  | "xai"
+  | "xai-responses"
+  | "anthropic"
+  | "gemini"
+  | "bedrock"
+
+export type StartupAuth = "anonymous" | "apiKey" | "bearer"
+
+/**
+ * Non-secret connection declaration. Credentials are rebound in Provider
+ * memory; this identity remains valid across Session unload and restore.
+ */
+export type StartupConnectionSource = {
+  id: string
+  apiFormat: ModelProtocol
+  baseUrl: string
+  auth: StartupAuth
+  headerNames: string[]
+}
+
+/**
+ * Adopted startup policy, copied with the model at a branch cut and into
+ * newly created native members and summary requests. Contains no secrets.
+ */
+export type ModelStartup = {
+  connection?: StartupConnectionSource | null
+  autoCompactWindow?: number | bigint | null
+}
+
+export type RequestMetadata = {
+  sessionId?: string | null
+  runId?: string | null
+  traceId?: string | null
+  turnId?: string | null
+  startup?: ModelStartup | null
+  /**
+   * The Agent profile whose prompt the branch runs: the profile it last
+   * adopted. An adoption from a profile records it; a model selection and a
+   * preference update carry it into the new configuration, and only
+   * another adoption replaces it.
+   */
+  agentId?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ModelConfiguration = {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  tools?: ToolDefinition[] | null
+  toolSources?: ToolSourceVersion[]
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
+}
+
+export type CacheControl = { type: "ephemeral" }
+
+export type SystemPromptPart = { type: "text"; text: string; cache_control?: CacheControl | null }
+
+export type SystemPrompt = string | SystemPromptPart[]
+
+export type ContextConfiguredData = {
+  timeline: string
+  revision: string
+  previous?: PromptReference | null
+  prompt?: PromptReference | null
+  settings: ModelConfiguration
+  system?: SystemPrompt | null
+  /**
+   * The source text `system` was composed after, apart from the guide: a
+   * model- or tool-only adoption re-renders the guide over it. Absent in
+   * records written before it was recorded, which keep their adopted
+   * System.
+   */
+  system_source?: string | null
+}
+
+/** The projection of a streamed branch. The events are not retained. */
+export type StreamedContext = {
+  history: HistoryEntry[]
+  configuration?: ContextConfiguredData | null
+  prompt?: PromptReference | null
+  ancestry: string[]
+  compaction?: import('./plugin.js').BranchEvent | null
+  /** Root first, the segments the stream read. */
+  branches: string[]
+  /** The position of the cut in effect. */
+  compactionCut?: { branch_id: string; sequence: number | bigint } | null
+}
+
+export type PreparationRequest = {
+  source: import('./plugin.js').ContextPrepareData
+  projection?: StreamedContext | null
+}
+
+export type ModelRequest = {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  messages: Message[]
+  tools?: ToolDefinition[] | null
+  system?: SystemPrompt | null
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
+}
+
+export type ValidationRequest = {
+  requestId: string
+  request: ModelRequest
+}
+
+export interface ContextPreparation {
+  /** @throws {HostErrorThrown} */
+  prepare(request: PreparationRequest, cancelled: () => void | Promise<void>): Promise<ModelRequest>
+  /** @throws {HostErrorThrown} */
+  validate(request: ValidationRequest, cancelled: () => void | Promise<void>): Promise<void>
+}
+
 /** The connections attached to one Session now. */
 export type SessionPresenceRequest = {
   sessionId: string
@@ -141,18 +457,6 @@ export interface ToolHost {
    */
   execute(call: { id: string; name: string; input: { [key: string]: unknown } }, caller: ToolExecutionContext, cancelled: () => void | Promise<void>): Promise<import('./plugin.js').ToolResult>
 }
-
-export type ImageSourceType = "base64" | "url" | "file"
-
-export type ImageSource = {
-  fileId?: string | null
-  type: ImageSourceType
-  mediaType: string
-  data?: string | null
-  url?: string | null
-}
-
-export type ContentBlock = { type: "text"; text: string } | { type: "image"; source: ImageSource }
 
 export type UserInput = {
   content: ContentBlock[]
@@ -290,123 +594,6 @@ export type PromptSourceTarget = {
   source: string
   scope: PromptScope
 }
-
-export type ModelId = {
-  providerId: string
-  modelId: string
-}
-
-/**
- * The adopted capabilities of a model: an exact value a Session carries and
- * ContextCompaction reads. Both limits are required and positive; absence is
- * a property of the catalog, which carries [`CatalogCapabilities`] and
- * converts through [`CatalogCapabilities::declared`].
- */
-export type ModelCapabilities = {
-  modalities: string[]
-  toolCalling: boolean
-  streaming: boolean
-  structuredOutput: boolean
-  vision: boolean
-  audio: boolean
-  reasoning: boolean
-  contextWindow: number | bigint
-  maxOutputTokens: number | bigint
-  providerState?: import('./plugin.js').BridgeJsonObject | null
-}
-
-export type ReasoningBudget = {
-  min?: number | null
-  max?: number | null
-  default?: number | null
-  unit?: string | null
-}
-
-export type ReasoningOff =
-  | { kind: "thinking_type"; value: string }
-  | { kind: "thinking_budget"; value: number | bigint }
-  | { kind: "enable_thinking"; value: boolean }
-  | { kind: "chat_template_kwargs"; keys: string[] }
-
-export type ModelReasoning = {
-  supported: boolean
-  defaultEnabled?: boolean | null
-  mode?: string | null
-  effort?: string | null
-  effortOptions?: string[] | null
-  level?: string | null
-  levelOptions?: string[] | null
-  verbosity?: string | null
-  verbosityOptions?: string[] | null
-  interleaved?: boolean | null
-  summaries?: boolean | null
-  visibility?: string | null
-  continuation?: string[] | null
-  budget?: ReasoningBudget | null
-  notes?: string[] | null
-  off?: ReasoningOff | null
-}
-
-export type ModelServiceTier = {
-  supported: boolean
-  default?: string | null
-  options?: string[]
-}
-
-export type ModelCapabilitySnapshot = {
-  target: ModelId
-  capabilities: ModelCapabilities
-  reasoning?: ModelReasoning | null
-  serviceTier?: ModelServiceTier | null
-}
-
-export type ModelProtocol =
-  | "openai-chat"
-  | "openai-compatible"
-  | "openai-responses"
-  | "xai"
-  | "xai-responses"
-  | "anthropic"
-  | "gemini"
-  | "bedrock"
-
-export type StartupAuth = "anonymous" | "apiKey" | "bearer"
-
-/**
- * Non-secret connection declaration. Credentials are rebound in Provider
- * memory; this identity remains valid across Session unload and restore.
- */
-export type StartupConnectionSource = {
-  id: string
-  apiFormat: ModelProtocol
-  baseUrl: string
-  auth: StartupAuth
-  headerNames: string[]
-}
-
-/**
- * Adopted startup policy, copied with the model at a branch cut and into
- * newly created native members and summary requests. Contains no secrets.
- */
-export type ModelStartup = {
-  connection?: StartupConnectionSource | null
-  autoCompactWindow?: number | bigint | null
-}
-
-export type RequestMetadata = {
-  sessionId?: string | null
-  runId?: string | null
-  traceId?: string | null
-  turnId?: string | null
-  startup?: ModelStartup | null
-  /**
-   * The Agent profile whose prompt the branch runs: the profile it last
-   * adopted. An adoption from a profile records it; a model selection and a
-   * preference update carry it into the new configuration, and only
-   * another adoption replaces it.
-   */
-  agentId?: string | null
-} & import('./plugin.js').BridgeJsonObject
 
 /**
  * The model-owned part of configuration. Tool declarations and system content
@@ -1095,28 +1282,6 @@ export type McpSessionState = {
   closed: boolean
 }
 
-export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
-
-/**
- * A tool input schema.
- *
- * Deserialization accepts the JSON Schema forms an MCP server may send and
- * stores the canonical shape the v22 format defines: a `type` array of one
- * name becomes that name, two or more names become `anyOf` branches (under
- * `allOf` when the node already has an `anyOf`), and a boolean subschema
- * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
- * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
- * walked. A rejected node's error names its path under `inputSchema`.
- */
-export type JsonSchema = {
-  type?: SchemaType | null
-  properties?: Record<string, JsonSchema> | null
-  items?: JsonSchema | null
-  required?: string[] | null
-  enum?: import('./plugin.js').BridgeJsonValue[] | null
-  description?: string | null
-} & import('./plugin.js').BridgeJsonObject
-
 /**
  * The mount read's reply (MCP Apps §4.1). `text` and `blob` are exclusive;
  * `app` is the document's own `_meta.ui`, which the host applies.
@@ -1132,8 +1297,6 @@ export type McpWidgetResult = {
   blob?: string | null
   app?: import('./plugin.js').BridgeJsonObject | null
 }
-
-export type ToolContent = string | ContentBlock[]
 
 /**
  * A view's tool result (MCP Apps §4.2), `_meta` included. It is the reply to
@@ -1343,6 +1506,7 @@ export type WorktreeAssociationErrorThrown = RustError<"WorktreeAssociationError
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
   approval: Approval
+  contextPreparation: ContextPreparation
   sessionClientsHost: SessionClientsHost
   worktreeAssociations: WorktreeAssociations
   credentialVariablesHost: CredentialVariablesHost

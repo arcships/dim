@@ -227,7 +227,8 @@ fn runs<'a>(
 }
 
 /// An ephemeral view of a fixed timeline prefix, never a second history store.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct HistoryEntry {
     pub id: String,
     pub message: Arc<Message>,
@@ -726,7 +727,8 @@ impl HistoryRenderer {
 }
 
 /// The projection of a streamed branch. The events are not retained.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StreamedContext {
     pub history: Vec<HistoryEntry>,
     pub configuration: Option<ContextConfiguredData>,

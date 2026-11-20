@@ -41,6 +41,10 @@ fn declarations(root: &Path) -> Result<String> {
             "dim_agent_types::ModelConfig",
             "import('./plugin.js').ModelConfig",
         )
+        .declared(
+            "dim_agent_types::ContextPrepareData",
+            "import('./plugin.js').ContextPrepareData",
+        )
         .declared("std::num::NonZeroU64", "number | bigint")
         .declared(
             "dim_agent_types::ToolCall",

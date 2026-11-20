@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { definePlugin } from '@arcships/rutis'
-import type { ContextModelHost, ContextUsage, Message, SessionMethods } from '../../npm/plugin.js'
+import type { ContextModelHost, ContextPreparation, ContextUsage, Message, SessionMethods } from '../../npm/plugin.js'
 import { partRow } from './part-row.ts'
 
 const part = definePlugin({
   name: 'ContextUsageFixture',
-  inject: ['contextModelHost', 'contextUsage', 'sessionMethods'],
+  inject: ['contextModelHost', 'contextPreparation', 'contextUsage', 'sessionMethods'],
   async apply(ctx) {
     const counter = ctx.use<ContextModelHost>('contextModelHost')
+    const preparation = ctx.use<ContextPreparation>('contextPreparation')
     const usage = ctx.use<ContextUsage>('contextUsage')
     await ctx.use<SessionMethods>('sessionMethods').register('session.usagefixture', [
       { name: 'session.usagefixture.read', mutating: false, interruption: 'report', progress: false },
@@ -22,6 +23,14 @@ const part = definePlugin({
         const messages: Message[] = [
           { role: 'user', content: 'some content' }, { role: 'assistant', content: 'a response' },
         ]
+        const source = {
+          turn_id: 'fixture-turn', request_id: 'fixture-request', through,
+          request: { ...model, messages: [{ role: 'user' as const, content: 'prepare this request' }] },
+        }
+        const prepared = await preparation.prepare({ source }, () => cancelled)
+        assert.equal(prepared.providerId, model.providerId)
+        assert.equal(prepared.modelId, model.modelId)
+        await preparation.validate({ requestId: source.request_id, request: prepared }, () => cancelled)
         const facts = await counter.describe(model)
         assert.equal(facts.contextWindow, reply.contextWindow)
         assert.equal(facts.outputTokens, reply.outputTokens)

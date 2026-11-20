@@ -10,7 +10,7 @@ A Session part. It observes its own Session's broadcast on `session/{sessionId}`
 folds each `main` turn's last `model/call` and `model/content`, and serves
 `session.suggestion.request` and `session.suggestion.respond` through the
 `session.suggestion` namespace of `sessionMethods`. A request checks its gates,
-including the one that reads `main`'s `ContextPreparation::usage` and refuses a
+including the one that reads `main`'s `contextUsage.read` and refuses a
 head that would compact first, clones the turn's last request with
 [`suggestion_request`](../../../../crates/dim-agent-capabilities/src/prompt_suggestion.rs),
 resolves the connection, calls `ModelHost`, reads one line and validates it. The
@@ -26,7 +26,7 @@ storage, no replay, no `model/usage` event.
 | `S:SessionConfig` | `interactive` and `collaboration_role`: only a root interactive Session offers. |
 | `S:SessionLifecycle` | `closing()` clears the offer before the channel ends. |
 | `S:SessionMethods` | Registers `session.suggestion` from `apply`, until this generation unloads. |
-| `S:TreeCommands` | Resolves `main` for the context gate, which reads that branch's `ContextPreparation::usage`. |
+| `S:TreeCommands` | Resolves `main` for the context gate, which reads that branch's `contextUsage.read`. |
 | `P:ModelHost` | Invokes the suggestion request. |
 
 `PromptSuggestionSettingsHost`, the `prompt-suggestion` source read at each

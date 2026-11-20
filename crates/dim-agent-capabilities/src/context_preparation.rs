@@ -427,6 +427,7 @@ struct PreparedProjection {
 }
 
 pub struct ContextPreparation {
+    lifetime: CancellationToken,
     projection: Mutex<Option<PreparedProjection>>,
     state: Mutex<PreparationState>,
     tasks: TaskTracker,
@@ -798,11 +799,23 @@ impl ContextPreparation {
                 .unwrap_or_else(|| CAPABILITY_RELOADING.into());
             (Err(HostError::Cancelled(reason)), None)
         } else {
-            match AssertUnwindSafe(self.prepare(source.clone(), cancel, &generation))
+            let projection = self.take_projection(&source);
+            match AssertUnwindSafe(self.prepare_request(&source, projection, cancel))
                 .catch_unwind()
                 .await
             {
-                Ok(result) => (result, None),
+                Ok(result) => (
+                    result.map(|prepared| {
+                        if let Some(estimate) = prepared.estimate {
+                            self.references.lock().unwrap().insert(
+                                source.request_id.clone(),
+                                (Arc::downgrade(&prepared.request), estimate),
+                            );
+                        }
+                        prepared.request
+                    }),
+                    None,
+                ),
                 Err(panic) => {
                     let message = panic_message(panic);
                     (
@@ -844,7 +857,7 @@ impl ContextPreparation {
     }
     /// Checks the actual final request. Its preparation estimate is reused only
     /// for the same request object and compatible model counter and limits.
-    pub async fn validate(
+    pub async fn validate_request(
         &self,
         request_id: &str,
         request: Arc<ModelRequest>,
@@ -867,13 +880,12 @@ impl ContextPreparation {
         }
     }
 
-    async fn prepare(
+    async fn prepare_request(
         &self,
-        source: ContextPrepareData,
+        source: &ContextPrepareData,
+        projection: Option<StreamedContext>,
         cancel: CancellationToken,
-        generation: &CancellationToken,
-    ) -> std::result::Result<Arc<ModelRequest>, HostError> {
-        let projection = self.take_projection(&source);
+    ) -> std::result::Result<crate::context_policy::PreparedRequest, HostError> {
         crate::context_policy::check_cancel(&cancel)?;
         let request = self
             .host
@@ -904,7 +916,7 @@ impl ContextPreparation {
         let exact_prefix = request.messages.len() == source.request.messages.len();
         let cancelled = || {
             let state = self.state.lock().unwrap();
-            if generation.is_cancelled() || state.closed {
+            if self.lifetime.is_cancelled() || state.closed {
                 return CAPABILITY_RELOADING.to_owned();
             }
             state
@@ -918,12 +930,12 @@ impl ContextPreparation {
                 })
                 .unwrap_or_else(|| "Operation cancelled".to_owned())
         };
-        let prepared = match &self.policy {
+        match &self.policy {
             Some(policy) => {
                 policy
                     .prepare(
                         request,
-                        &source,
+                        source,
                         projection,
                         exact_prefix.then_some(self.usage.as_ref()),
                         cancel.clone(),
@@ -935,14 +947,55 @@ impl ContextPreparation {
                 request,
                 estimate: None,
             }),
-        }?;
-        if let Some(estimate) = prepared.estimate {
-            self.references.lock().unwrap().insert(
-                source.request_id,
-                (Arc::downgrade(&prepared.request), estimate),
-            );
         }
-        Ok(prepared.request)
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparationRequest {
+    pub source: ContextPrepareData,
+    pub projection: Option<StreamedContext>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ValidationRequest {
+    pub request_id: String,
+    pub request: Arc<ModelRequest>,
+}
+
+#[rutis::service]
+impl ContextPreparation {
+    pub async fn prepare(
+        &self,
+        request: PreparationRequest,
+        cancelled: CancelledFn,
+    ) -> Result<Arc<ModelRequest>, HostError> {
+        let cancel = self.lifetime.child_token();
+        let _finished = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.prepare_request(&request.source, request.projection, cancel),
+        )
+        .await
+        .map(|prepared| prepared.request)
+    }
+
+    pub async fn validate(
+        &self,
+        request: ValidationRequest,
+        cancelled: CancelledFn,
+    ) -> Result<(), HostError> {
+        let cancel = self.lifetime.child_token();
+        let _finished = cancel.clone().drop_guard();
+        call_until_cancelled(
+            cancelled,
+            cancel.clone(),
+            self.validate_request(&request.request_id, request.request, cancel),
+        )
+        .await
     }
 }
 
@@ -1040,6 +1093,7 @@ impl DynPlugin for ContextPreparationPlugin {
             });
             ctx.provide_at(self.publisher.clone(), publisher)?;
             let service = Arc::new(ContextPreparation {
+                lifetime: ctx.cancellation_token(),
                 projection: Mutex::new(None),
                 state: Mutex::new(PreparationState::default()),
                 usage: ctx.require_at(&self.usage)?,

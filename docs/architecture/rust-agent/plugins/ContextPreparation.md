@@ -5,6 +5,10 @@ and [context_policy.rs](../../../../crates/dim-agent-capabilities/src/context_po
 Prepares a fixed-source model request, enforces context policy and provides the
 atomic ConfigurationPublisher used by Prompt.
 
+The branch service exposes `prepare({source, projection?}, cancelled)` and
+`validate({requestId, request}, cancelled)`. Preparation accepts the projection
+at the source cutoff. Validation checks the final request against the model budget.
+
 An estimate above the input budget triggers compaction within preparation, before
 publishing a model call, under [ContextCompaction §5.3](../../../design/plugins/ContextCompaction.md#53-one-compaction-path-contextpolicy).
 Successful local budget recovery publishes no failed model result. A recovery that
@@ -98,6 +102,6 @@ nothing and no digest can be written
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareContextHost` |
-| 提供 | `B:ConfigurationPublisher`、`B:ContextPreparation` |
+| 提供 | `B:ConfigurationPublisher`、`B:ContextPreparation`、`B:dyn HostDispatch#contextPreparation` |
 | 被注入于 | `Loop`、`ModelProvider`、`Prompt` |
 <!-- /generated -->

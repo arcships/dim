@@ -173,7 +173,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `agentLoop` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
 | `loopState` | branch | Loop | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prompt` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
-| `contextPreparation` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
 | `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
