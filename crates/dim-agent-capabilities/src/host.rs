@@ -14,7 +14,13 @@ pub(crate) use dim_agent_runtime::panic_message;
 pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, HostError>> + Send + 'a>>;
 pub type ModelStream = Pin<Box<dyn Stream<Item = Result<ModelChunk, HostError>> + Send>>;
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "code",
+    content = "details",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum HostError {
     #[error("{message}")]
     Failed {
@@ -27,7 +33,8 @@ pub enum HostError {
     #[error("{0}")]
     Cancelled(String),
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelFailureFacts {
     /// Decided where the provider error is read; retry reads it.
     pub kind: ModelFailureKind,
@@ -74,7 +81,8 @@ impl ModelFailureFacts {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
 pub enum HostErrorKind {
     Other,
     Http {
@@ -291,7 +299,13 @@ impl LoadPrompt for EmptyPromptHost {
 }
 
 /// Host adapters validate external wire chunks before producing this type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "data",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ModelChunk {
     MessageStart {
         message_id: String,
@@ -326,7 +340,7 @@ pub enum ModelChunk {
     },
     Usage(Usage),
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelStopReason {
     EndTurn,
@@ -1224,6 +1238,10 @@ impl HostDispatch for ProviderService {
 }
 
 pub trait ModelDriver: Send + Sync + 'static {
+    fn closing(&self) -> Option<CancellationToken> {
+        None
+    }
+
     fn invoke(
         &self,
         request: Arc<ModelRequest>,
@@ -1233,6 +1251,9 @@ pub trait ModelDriver: Send + Sync + 'static {
 }
 pub struct ModelHost(pub Arc<dyn ModelDriver>);
 
+mod invocation_face;
+
+#[derive(Clone)]
 pub struct ModelInvocation {
     driver: Arc<ModelHost>,
     resolver: Option<Arc<ProviderConnectionResolver>>,
@@ -1250,6 +1271,16 @@ pub enum InvocationMode {
 }
 
 impl ModelInvocation {
+    pub fn provide(self, ctx: &Ctx) -> rutis::Result<()> {
+        let owner = Arc::new(self);
+        ctx.provide_as::<Self>(owner.clone())?;
+        ctx.provide_at(
+            rutis_bridge::session::host_key("modelHost"),
+            owner as Arc<dyn HostDispatch>,
+        )?;
+        Ok(())
+    }
+
     pub fn new(driver: Arc<ModelHost>, resolver: Option<Arc<ProviderConnectionResolver>>) -> Self {
         Self { driver, resolver }
     }

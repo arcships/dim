@@ -51,6 +51,8 @@ pub trait RetryObserver: Send {
 }
 
 /// One retry about to sleep, as the progress display shows it.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RetryWaiting<'a> {
     /// The attempt about to run, at least 2.
     pub attempt: u8,

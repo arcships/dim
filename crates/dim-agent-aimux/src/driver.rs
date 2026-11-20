@@ -567,6 +567,10 @@ impl AimuxDriver {
     }
 }
 impl ModelDriver for AimuxDriver {
+    fn closing(&self) -> Option<CancellationToken> {
+        Some(self.generation.clone())
+    }
+
     fn invoke(
         &self,
         request: Arc<ModelRequest>,

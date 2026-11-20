@@ -3400,7 +3400,13 @@ impl DynPlugin for ProviderPlugin {
                 rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
             })?;
             let resolver = Arc::new(ProductResolver(service.clone()));
-            ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
+            let connection = Arc::new(ProviderConnectionResolver(resolver.clone()));
+            dim_agent_capabilities::host::ModelInvocation::new(
+                host.clone(),
+                Some(connection.clone()),
+            )
+            .provide(ctx)?;
+            ctx.provide_as::<ProviderConnectionResolver>(connection)?;
             let selection = resolver.clone();
             let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
                 selection.resolve(explicit, cwd, cancel)
