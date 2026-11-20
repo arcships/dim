@@ -181,7 +181,7 @@ fn reachable(schema: &Value, pointer: &str) -> bool {
 }
 
 impl SettingsService {
-    fn declared(&self, source: &str, scope: SettingsScope) -> Result<(Arc<Declared>, FilePath)> {
+    fn declared(&self, source: &str, scope: SettingsScope) -> Result<(Arc<Declared>, PathBuf)> {
         let declared = self
             .sources
             .get(source)

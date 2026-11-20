@@ -8,7 +8,7 @@ pub use workflow_files::WorkflowFiles;
 pub(crate) use workflow_files::WorkflowPackages;
 
 use crate::storage::SqliteStorage;
-use dim_agent_capabilities::file_storage::{FilePath, FileStorage, FileStorageError};
+use dim_agent_capabilities::file_storage::{FileStorage, FileStorageError, FsHost, FsPermissions};
 use dim_agent_runtime::{Names, Registrations};
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use rutis::{Ctx, Event};
@@ -185,7 +185,8 @@ enum Kind {
 }
 
 pub struct SettingsService {
-    files: Arc<FileStorage>,
+    files: Arc<FsHost>,
+    roots: Arc<FileStorage>,
     database: Option<Arc<SqliteStorage>>,
     native_publication: tokio::sync::Mutex<()>,
     home_root: usize,
@@ -289,7 +290,7 @@ impl SettingsService {
             let owner = self.clone();
             let cancel = cancel.clone();
             self.updates.spawn(async move {
-                let root = owner.files.register_root(cwd.clone(), &cancel).await?;
+                let root = owner.roots.register_root(cwd.clone(), &cancel).await?;
                 let _guard = owner.gate.lock().unwrap();
                 owner.check_open(&cancel)?;
                 if owner.projects.lock().unwrap().insert(cwd.clone(), root) != Some(root) {
@@ -342,7 +343,7 @@ impl SettingsService {
             tracing::warn!(event = name, %error, "Settings change was not announced");
         }
     }
-    fn path<D: BusinessDocument>(&self, scope: SettingsScope) -> Result<FilePath> {
+    fn path<D: BusinessDocument>(&self, scope: SettingsScope) -> Result<PathBuf> {
         let Some(registered) = self.sources.get(D::NAMESPACE) else {
             return Err(SettingsError::UnknownSource);
         };
@@ -357,7 +358,7 @@ impl SettingsService {
         user_file: &str,
         project_file: Option<&str>,
         scope: SettingsScope,
-    ) -> Result<FilePath> {
+    ) -> Result<PathBuf> {
         let (root, file) = match scope {
             SettingsScope::User => (self.home_root, user_file),
             SettingsScope::Project(root) => {
@@ -368,7 +369,7 @@ impl SettingsService {
                 )
             }
         };
-        Ok(self.files.path(root, file)?)
+        Ok(self.roots.root_path(root)?.join(file))
     }
     fn check_open(&self, cancel: &CancellationToken) -> Result<()> {
         if self.stopping.is_cancelled() {
@@ -412,7 +413,7 @@ impl SettingsService {
     async fn read_source<F: Format>(
         &self,
         format: Arc<F>,
-        path: FilePath,
+        path: PathBuf,
         scope: SettingsScope,
         cancel: &CancellationToken,
     ) -> Result<SettingsSnapshot<F::Document>> {
@@ -422,7 +423,10 @@ impl SettingsService {
                 .await
                 .map(|(_, snapshot)| snapshot);
         }
-        snapshot(&*format, self.files.read(&path, cancel).await)
+        snapshot(
+            &*format,
+            self.files.read_bytes(&path, usize::MAX, None, cancel).await,
+        )
     }
     /// CAS on the revision. `check` sees the current and the new document
     /// under the file lease or at the expected native revision.
@@ -433,7 +437,7 @@ impl SettingsService {
     async fn replace<F: Format>(
         self: &Arc<Self>,
         format: Arc<F>,
-        path: FilePath,
+        path: PathBuf,
         scope: SettingsScope,
         expected: &str,
         document: F::Document,
@@ -452,38 +456,51 @@ impl SettingsService {
                         .native_replace(format, path, expected, document, check, &cancel)
                         .await;
                 }
-                let mut lease = owner.lease(&path, &cancel).await?;
-                let current = snapshot(&*format, lease.read(&cancel).await)?;
-                if current.revision != expected {
-                    return Err(SettingsError::Conflict);
-                }
-                check(&current.document, &document)?;
-                let mut bytes = serde_json::to_vec_pretty(&document)
-                    .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
-                bytes.push(b'\n');
-                let revision = revision(Some(&bytes));
-                match lease.replace(bytes, private_permissions(), &cancel).await {
-                    Ok(()) => {}
-                    Err(FileStorageError::Unsynced(error)) => {
-                        owner.publish(format.source(), scope, &revision);
-                        return Err(FileStorageError::Unsynced(error).into());
+                let lease = owner.lease(&path, &cancel).await?;
+                let result = async {
+                    let current = snapshot(
+                        &*format,
+                        owner
+                            .files
+                            .read_bytes(&path, usize::MAX, Some(lease), &cancel)
+                            .await,
+                    )?;
+                    if current.revision != expected {
+                        return Err(SettingsError::Conflict);
                     }
-                    Err(error) => return Err(error.into()),
+                    check(&current.document, &document)?;
+                    let mut bytes = serde_json::to_vec_pretty(&document)
+                        .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
+                    bytes.push(b'\n');
+                    let revision = revision(Some(&bytes));
+                    match owner
+                        .files
+                        .replace(&path, bytes, FsPermissions::Private, Some(lease), &cancel)
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(FileStorageError::Unsynced(error)) => {
+                            owner.publish(format.source(), scope, &revision);
+                            return Err(FileStorageError::Unsynced(error).into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    }
+                    owner.publish(format.source(), scope, &revision);
+                    Ok(SettingsSnapshot { revision, document })
                 }
-                owner.publish(format.source(), scope, &revision);
-                Ok(SettingsSnapshot { revision, document })
+                .await;
+                let released = owner.files.unlock(lease).await;
+                let snapshot = result?;
+                released?;
+                Ok(snapshot)
             })
         };
         task.await?
     }
-    async fn lease(
-        &self,
-        path: &FilePath,
-        cancel: &CancellationToken,
-    ) -> Result<dim_agent_capabilities::file_storage::FileLease> {
+    async fn lease(&self, path: &Path, cancel: &CancellationToken) -> Result<uuid::Uuid> {
         loop {
             self.check_open(cancel)?;
-            match self.files.lock(path, cancel).await {
+            match self.files.lock(None, path, cancel).await {
                 Ok(lease) => return Ok(lease),
                 Err(FileStorageError::Locked) => tokio::select! {
                     _ = self.stopping.cancelled() => return Err(SettingsError::Closed),
@@ -521,17 +538,6 @@ fn validate_file(value: &str) -> Result<()> {
     }
     Ok(())
 }
-fn private_permissions() -> Option<std::fs::Permissions> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        Some(std::fs::Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        None
-    }
-}
 fn revision(bytes: Option<&[u8]>) -> String {
     bytes.map_or_else(
         || "missing".into(),
@@ -558,7 +564,8 @@ pub struct SettingsPlugin {
     home_root: usize,
     project_roots: Vec<usize>,
     projects: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
-    files: Key<FileStorage>,
+    files: Key<FsHost>,
+    roots: Key<FileStorage>,
     /// SqliteStorage only for the native profile.
     database: Option<Key<SqliteStorage>>,
 }
@@ -573,6 +580,7 @@ impl SettingsPlugin {
             project_roots,
             projects: Arc::new(Mutex::new(BTreeMap::new())),
             files: names.key()?,
+            roots: names.key()?,
             database: None,
         })
     }
@@ -592,25 +600,27 @@ impl DynPlugin for SettingsPlugin {
         "Settings"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        let mut keys = vec![self.files.erase()];
+        let mut keys = vec![self.files.erase(), self.roots.erase()];
         keys.extend(self.database.as_ref().map(Key::erase));
         keys
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let files = ctx.require_at(&self.files)?;
+            let roots = ctx.require_at(&self.roots)?;
             let database = match &self.database {
                 Some(key) => Some(ctx.require_at(key)?),
                 None => None,
             };
             for root in &self.project_roots {
-                let path = files
+                let path = roots
                     .root_path(*root)
                     .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?;
                 self.projects.lock().unwrap().insert(path, *root);
             }
             let service = Arc::new(SettingsService {
                 files,
+                roots,
                 database,
                 native_publication: Default::default(),
                 home_root: self.home_root,
