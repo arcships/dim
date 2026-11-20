@@ -108,6 +108,13 @@ async fn confined(
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct TaskRequest {
+    #[serde(rename = "taskId")]
+    task_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RemoveOutputDirectory {
     path: PathBuf,
 }
@@ -240,12 +247,40 @@ impl Dispatch {
 
 impl HostDispatch for Dispatch {
     fn methods(&self) -> Option<serde_json::Value> {
-        Some(
-            serde_json::json!({"info":"async","confined":"async","configured":"async","removeOutputDirectory":"async"}),
-        )
+        Some(serde_json::json!({
+            "info":"async", "confined":"async", "configured":"async",
+            "removeOutputDirectory":"async", "retainOutput":"async", "tail":"async"
+        }))
     }
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if matches!(method, "retainOutput" | "tail") {
+            let TaskRequest { task_id } = port_faces::request("execHost", args)?;
+            let owner = self.owner.clone();
+            let retain = method == "retainOutput";
+            return Ok(Value::future(async move {
+                let result = if retain {
+                    owner
+                        .retain_output(&task_id)
+                        .await
+                        .map(|path| serde_json::json!({"outputPath": path}))
+                } else {
+                    owner
+                        .tail(&task_id)
+                        .await
+                        .map(|tail| serde_json::json!(tail))
+                };
+                result.map(Into::into).map_err(|error| {
+                    let code = match error {
+                        crate::workspace_tools::exec::CaptureError::Unknown => "task_unknown",
+                        crate::workspace_tools::exec::CaptureError::Unavailable(_) => {
+                            "output_unavailable"
+                        }
+                    };
+                    rutis_bridge::exports::failure("ExecHostError", code, error.to_string(), None)
+                })
+            }));
+        }
         if method == "configured" {
             let request = port_faces::request("execHost", args)?;
             return self.process(move |owner, cancel| configured(owner, request, cancel));

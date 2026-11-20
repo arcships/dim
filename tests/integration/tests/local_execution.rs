@@ -2858,13 +2858,17 @@ fn group_instance(diagnostics: &RuntimeDiagnostics, scope: &str) -> InstanceId {
 /// The call another language makes on `name` in `instance`.
 async fn face_call(
     ctx: &Ctx,
-    instance: InstanceId,
+    instance: impl Into<Option<InstanceId>>,
     name: &str,
     method: &str,
     args: Vec<BridgeValue>,
 ) -> Value {
+    let mut key = host_key(name);
+    if let Some(instance) = instance.into() {
+        key = key.instance(instance);
+    }
     let dispatch = ctx
-        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .get_at::<dyn HostDispatch>(&key)
         .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
     let reply = dispatch
         .invoke(method, BridgeValue::List(args))
@@ -2875,13 +2879,17 @@ async fn face_call(
 /// The error the call another language makes on `name` returns.
 async fn face_error(
     ctx: &Ctx,
-    instance: InstanceId,
+    instance: impl Into<Option<InstanceId>>,
     name: &str,
     method: &str,
     args: Vec<BridgeValue>,
 ) -> rutis_bridge::session::Error {
+    let mut key = host_key(name);
+    if let Some(instance) = instance.into() {
+        key = key.instance(instance);
+    }
     let dispatch = ctx
-        .get_at::<dyn HostDispatch>(&host_key(name).instance(instance))
+        .get_at::<dyn HostDispatch>(&key)
         .unwrap_or_else(|| panic!("{name} is not a face in this instance"));
     let reply = dispatch
         .invoke(method, BridgeValue::List(args))
@@ -2893,7 +2901,13 @@ async fn face_error(
 /// and errors for the task both callers name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn background_exec_face_answers_as_the_typed_service() {
-    let harness = Harness::new(platform(&[]).await, Hook::None).await;
+    let home = scratch("background-face");
+    let harness = Harness::with_platform(
+        configured_platform(home.clone()),
+        Hook::None,
+        scratch("cwd"),
+    )
+    .await;
     let session = harness.session().await;
     harness
         .run(
@@ -2925,6 +2939,49 @@ async fn background_exec_face_answers_as_the_typed_service() {
 
     let ctx = harness.seen.ctx("main");
     let instance = group_instance(&session.branch_diagnostics("main").unwrap(), "BranchScope");
+
+    let root = &harness.root;
+    let retained = face_call(
+        root,
+        None,
+        "execHost",
+        "retainOutput",
+        vec![json!({"taskId":task}).into()],
+    )
+    .await;
+    let path = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::ExecStarted(data) if data.task_id == task => Some(&data.output_path),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(retained, json!({"outputPath":path}));
+    assert_eq!(std::fs::read(path).unwrap(), b"face-output");
+    let tail = face_call(
+        root,
+        None,
+        "execHost",
+        "tail",
+        vec![json!({"taskId":task}).into()],
+    )
+    .await;
+    assert_eq!(
+        tail,
+        json!({"text":"face-output", "totalBytes":11, "truncated":false})
+    );
+    assert_eq!(
+        face_error(
+            root,
+            None,
+            "execHost",
+            "retainOutput",
+            vec![json!({"taskId":"missing"}).into()]
+        )
+        .await
+        .code(),
+        Some("task_unknown")
+    );
 
     let typed = background.output(task.clone()).await.unwrap();
     let wire = face_call(
@@ -3157,6 +3214,7 @@ async fn background_exec_face_answers_as_the_typed_service() {
     ));
     restored.close().await.unwrap();
     harness.shutdown().await;
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 /// The text of every tool result of a batch, in call order.

@@ -88,6 +88,7 @@ whether a call may run, or consults who is calling.
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
 | `start` | async | `{taskId, command, cwd, workspace, roots, outputDir}` | `{outputPath}` |
+| `retainOutput` | async | `{taskId}` | `{outputPath}` |
 | `wait` | async | `{taskId, timeoutMs?}` | terminal record (§3.2) |
 | `kill` | async | `{taskId}` | `{}` |
 | `settle` | async | `{taskId}` | `{}` |
@@ -118,7 +119,7 @@ to confirm a root: a directory outside the range does not become writable becaus
 it, because `cwd` sits in it, or because the model asked. The range is the caller's confirmed
 range, in the same trust position as the workspace list preparation already takes; the switches
 still decide enforcement, and the model cannot set either (§3.9). It builds the shell, argv and
-environment from its current shell preference, spawns, and creates the task's output file.
+environment from its current shell preference, spawns, and returns the planned output path. Short foreground output stays in memory. Crossing the existing inline limit creates the file. Before a background handoff the caller awaits `retainOutput`; the owner writes the captured bytes and keeps appending to that file. Repeated retention returns the same path.
 `taskId` is assigned by the caller (the control side allocates `exec-<uuid>` as it does today); a
 second `start` with an id the provider still holds is `task_exists` and starts nothing, so a
 retried call after a lost reply cannot run the command twice.

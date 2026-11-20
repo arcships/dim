@@ -1920,12 +1920,26 @@ pub trait OutputSink: Send + Sync {
     fn push(&self, text: &str) -> impl Future<Output = ()> + Send;
 }
 
-pub(super) struct Output {
+pub(crate) struct Output {
     capture: Mutex<Capture>,
     /// Cancelled when the capture failed; the command is then terminated.
     failed: CancellationToken,
 }
 impl Output {
+    async fn ensure_file(&self) -> Result<String, String> {
+        let mut capture = self.capture.lock().await;
+        if let Some(failure) = &capture.failure {
+            return Err(failure.clone());
+        }
+        match capture.create_file().await {
+            Ok(()) => Ok(capture.path.to_string_lossy().into_owned()),
+            Err(error) => {
+                let error = error.to_string();
+                capture.failure = Some(error.clone());
+                Err(error)
+            }
+        }
+    }
     pub(super) async fn preview(&self) -> String {
         truncate_preview(&self.capture.lock().await.preview)
     }
@@ -1934,6 +1948,48 @@ impl Output {
         self.capture.lock().await.truncated
     }
 }
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutputTail {
+    pub text: String,
+    pub total_bytes: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureError {
+    #[error("Unknown execution task")]
+    Unknown,
+    #[error("{0}")]
+    Unavailable(String),
+}
+
+impl HostPlatform {
+    fn capture(&self, task_id: &str) -> Result<Arc<Output>, CaptureError> {
+        self.captures
+            .lock()
+            .unwrap()
+            .get(task_id)
+            .cloned()
+            .ok_or(CaptureError::Unknown)
+    }
+    pub async fn retain_output(&self, task_id: &str) -> Result<String, CaptureError> {
+        self.capture(task_id)?
+            .ensure_file()
+            .await
+            .map_err(CaptureError::Unavailable)
+    }
+    pub async fn tail(&self, task_id: &str) -> Result<OutputTail, CaptureError> {
+        let output = self.capture(task_id)?;
+        let capture = output.capture.lock().await;
+        Ok(OutputTail {
+            text: truncate_preview(&capture.preview),
+            total_bytes: capture.output_bytes,
+            truncated: capture.truncated,
+        })
+    }
+}
+
 impl OutputSink for Output {
     async fn push(&self, text: &str) {
         if text.is_empty() {
@@ -2023,6 +2079,8 @@ impl Settled {
 /// A started command: its process tree, the pipe readers and the output.
 /// One owner at a time; moved from the handler to the supervising task.
 pub struct ExecProcess {
+    host: Arc<HostPlatform>,
+    task_id: String,
     tree: ProcessTree,
     pub(super) output: Arc<Output>,
     pumps: Vec<JoinHandle<()>>,
@@ -2031,6 +2089,11 @@ pub struct ExecProcess {
     deadline: Option<Instant>,
     /// Set when HostPlatform sandboxed the command.
     isolation: Option<Isolation>,
+}
+impl Drop for ExecProcess {
+    fn drop(&mut self) {
+        self.host.captures.lock().unwrap().remove(&self.task_id);
+    }
 }
 impl ExecProcess {
     /// Waits for the root exit, the total deadline or an output failure;
@@ -2047,20 +2110,6 @@ impl ExecProcess {
     }
     pub(super) async fn terminate(&mut self) -> io::Result<()> {
         self.tree.terminate().await
-    }
-    async fn ensure_file(&self) -> Result<String, String> {
-        let mut capture = self.output.capture.lock().await;
-        if let Some(failure) = &capture.failure {
-            return Err(failure.clone());
-        }
-        match capture.create_file().await {
-            Ok(()) => Ok(capture.path.to_string_lossy().into_owned()),
-            Err(error) => {
-                let error = error.to_string();
-                capture.failure = Some(error.clone());
-                Err(error)
-            }
-        }
     }
     /// Starts the bounded pipe drain and waits for output writes to finish.
     async fn close(&mut self) -> Settled {
@@ -2460,7 +2509,15 @@ async fn run_process(
         tokio::spawn(pump(tree.stdout(), output.clone(), stop_pumps.clone())),
         tokio::spawn(pump(tree.stderr(), output.clone(), stop_pumps.clone())),
     ];
+    tools
+        .platform
+        .captures
+        .lock()
+        .unwrap()
+        .insert(request.task_id.clone(), output.clone());
     let mut process = ExecProcess {
+        host: tools.platform.clone(),
+        task_id: request.task_id.clone(),
         tree,
         output,
         pumps,
@@ -2630,13 +2687,13 @@ async fn hand_off(
     immediate: bool,
     cancel: &CancellationToken,
 ) -> Result<(ToolResult, Option<ExitStatus>), HostError> {
-    let output_path = match process.ensure_file().await {
+    let output_path = match process.host.retain_output(&request.task_id).await {
         Ok(path) => path,
         Err(error) => {
             if let Err(result) = process.abandon().await {
                 return Ok((*result, None));
             }
-            return Ok((offload_failed(&error), None));
+            return Ok((offload_failed(&error.to_string()), None));
         }
     };
     if cancel.is_cancelled() {

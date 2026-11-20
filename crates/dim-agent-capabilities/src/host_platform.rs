@@ -245,6 +245,11 @@ pub struct HostPlatform {
     /// The fixed system roots, captured when the platform mounts. The sandbox
     /// and file-access facts read this one list.
     pub platform_roots: Vec<PathBuf>,
+    pub(crate) captures: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, Arc<crate::workspace_tools::exec::Output>>,
+        >,
+    >,
     shell: Arc<Mutex<ResolvedShell>>,
     shell_file: Option<(Arc<FileStorage>, usize, PathBuf)>,
     pub(crate) execution: Option<Arc<ExecutionSettingsHost>>,
@@ -369,6 +374,7 @@ impl HostPlatform {
             timezone: iana_time_zone::get_timezone().ok(),
             env,
             platform_roots: platform_roots(),
+            captures: Arc::default(),
             shell: Arc::new(Mutex::new(ResolvedShell {
                 config: Ok(None),
                 status: shell,
