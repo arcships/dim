@@ -107,10 +107,12 @@ struct IdleRequest {
     use_id: Option<uuid::Uuid>,
 }
 
+pub(crate) type GenerationEnd = Shared<BoxFuture<'static, SessionEnd>>;
+
 /// The process Session directory.
 pub struct Sessions(pub(crate) Ctx);
 impl Sessions {
-    pub(crate) fn generation_end(session: Session) -> Shared<BoxFuture<'static, SessionEnd>> {
+    pub(crate) fn generation_end(session: Session) -> GenerationEnd {
         async move {
             let _ = session.closed().await;
             if session.is_unloading() {
@@ -163,6 +165,35 @@ impl Sessions {
         cancelled: CancellationToken,
         on_end: impl FnOnce(SessionEnded) -> F + Send + 'static,
     ) -> Result<Option<ObservedSession>, SessionsError> {
+        let Some((observed, ended)) = self.observe_generation(id, generation)? else {
+            return Ok(None);
+        };
+        let session_id = id.to_owned();
+        let reply = observed.clone();
+        tokio::spawn(async move {
+            let notify = async {
+                let reason = ended.await;
+                on_end(SessionEnded {
+                    session_id,
+                    observed,
+                    reason,
+                })
+                .await;
+            };
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => {}
+                () = notify => {}
+            }
+        });
+        Ok(Some(reply))
+    }
+
+    pub(crate) fn observe_generation(
+        &self,
+        id: &str,
+        generation: Option<&str>,
+    ) -> Result<Option<(ObservedSession, GenerationEnd)>, SessionsError> {
         let index = self
             .0
             .get::<AgentIndex>()
@@ -181,25 +212,7 @@ impl Sessions {
             agent_id: host.agent_id.clone(),
             generation: instance,
         };
-        let reply = observed.clone();
-        tokio::spawn(async move {
-            let notify = async {
-                let session_id = session.id().to_owned();
-                let reason = Self::generation_end(session).await;
-                on_end(SessionEnded {
-                    session_id,
-                    observed,
-                    reason,
-                })
-                .await;
-            };
-            tokio::select! {
-                biased;
-                _ = cancelled.cancelled() => {}
-                () = notify => {}
-            }
-        });
-        Ok(Some(reply))
+        Ok(Some((observed, Self::generation_end(session))))
     }
 
     pub(crate) fn adopted_sources(session: &Session) -> Vec<StartupConnectionSource> {

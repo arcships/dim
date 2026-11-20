@@ -231,6 +231,7 @@ impl Plugin for CollaborationDirectoryPlugin {
 /// writes no Timeline; observes Sessions only via `closed()` and Agents'
 /// [`SessionRestored`] and [`UnloadedSessionDeleted`].
 pub struct Collaboration {
+    sessions: Arc<crate::agents::Sessions>,
     caller: Ctx,
     index: Arc<AgentIndex>,
     directory: Arc<CollaborationDirectory>,
@@ -456,11 +457,20 @@ impl Collaboration {
             {
                 return;
             }
+            let ended = generation
+                .as_ref()
+                .and_then(|generation| {
+                    self.sessions
+                        .observe_generation(session.id(), Some(&generation.to_string()))
+                        .ok()
+                        .flatten()
+                })
+                .map(|(_, ended)| ended);
             let watched = Arc::new(WatchedSession {
                 agent_id: agent_id.to_owned(),
                 session_id: session.id().to_owned(),
                 generation,
-                ended: crate::agents::Sessions::generation_end(session),
+                ended: ended.unwrap_or_else(|| crate::agents::Sessions::generation_end(session)),
             });
             entries.insert(watched.session_id.clone(), watched.clone());
             watched
@@ -740,6 +750,7 @@ pub(crate) struct CollaborationPlugin {
     /// The subagent model policy's source; local execution only, as Agents.
     settings: Option<Key<SettingsService>>,
     index: Key<AgentIndex>,
+    sessions: Key<crate::agents::Sessions>,
     directory: Key<CollaborationDirectory>,
     parts: Key<dim_agent_runtime::PartRegistry>,
 }
@@ -750,6 +761,7 @@ impl CollaborationPlugin {
                 .then(|| names.key::<SettingsService>())
                 .transpose()?,
             index: names.key()?,
+            sessions: Key::of(),
             directory: names.key()?,
             parts: names.key()?,
         })
@@ -763,6 +775,7 @@ impl DynPlugin for CollaborationPlugin {
         let mut injects: Vec<_> = self.settings.iter().map(Key::erase).collect();
         injects.extend([
             self.index.erase(),
+            self.sessions.erase(),
             self.directory.erase(),
             self.parts.erase(),
         ]);
@@ -779,6 +792,7 @@ impl DynPlugin for CollaborationPlugin {
             };
             let service = Arc::new(Collaboration {
                 caller: ctx.clone(),
+                sessions: ctx.require_at(&self.sessions)?,
                 index,
                 directory,
                 settings,
