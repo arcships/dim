@@ -1593,7 +1593,6 @@ async fn an_adapter_serving_no_provider_model_is_not_reported_as_missing() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn the_product_build_reports_image_operations_without_an_adapter() {
     let (server, home) = start(None, "dm-product").await;
     let mut client = Client::new_version(&server, false, 3).await;
@@ -1607,13 +1606,18 @@ async fn the_product_build_reports_image_operations_without_an_adapter() {
         .filter(|category| category["category"] != "image")
     {
         assert_eq!(category["available"], false, "{category}");
-        assert_eq!(category["reasons"][0]["dimension"], "build", "{category}");
+        let dimension = if category["category"] == "ocr" && !dim_ocr::apple_vision_available() {
+            "platform"
+        } else {
+            "build"
+        };
+        assert_eq!(category["reasons"][0]["dimension"], dimension, "{category}");
         assert!(
             category["operations"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .all(|operation| operation["reasons"][0]["dimension"] == "build"),
+                .all(|operation| operation["reasons"][0]["dimension"] == dimension),
             "{category}"
         );
     }
@@ -5340,7 +5344,6 @@ async fn queued_ocr_keeps_its_input_after_the_source_is_removed() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_is_absent_when_the_build_starts_no_helper() {
     let (server, _home) = start(None, "dm-ocr-nobuild").await;
     let mut client = Client::new_version(&server, false, 3).await;
@@ -5349,7 +5352,12 @@ async fn ocr_is_absent_when_the_build_starts_no_helper() {
     let recognize = operation_in(&snapshot, "ocr", "recognize");
     assert_eq!(recognize["available"], false);
     assert_eq!(recognize["options"], json!([]));
-    assert_eq!(recognize["reasons"][0]["dimension"], "build");
+    let dimension = if dim_ocr::apple_vision_available() {
+        "build"
+    } else {
+        "platform"
+    };
+    assert_eq!(recognize["reasons"][0]["dimension"], dimension);
     let refused = client
         .rpc(
             "modality.configure",
@@ -5375,8 +5383,12 @@ async fn ocr_is_absent_when_the_build_starts_no_helper() {
         .await;
     assert_eq!(
         app_error(&submit),
-        "modality_unavailable",
-        "a build reason names the code: {submit}"
+        if dimension == "build" {
+            "modality_unavailable"
+        } else {
+            "unavailable"
+        },
+        "{submit}"
     );
     let message = submit["error"]["message"].as_str().unwrap();
     assert_eq!(
@@ -5677,6 +5689,21 @@ fn plugin_ocr_submit(name: &str, mode: &str) -> Value {
     submit
 }
 
+fn assert_plugin_ocr_refused(reply: &Value, recognize: &Value, detail: &str) {
+    assert_eq!(app_error(reply), "unavailable");
+    let message = reply["error"]["message"].as_str().unwrap();
+    if recognize["available"] == true {
+        assert_eq!(message, detail);
+    } else {
+        let reason = format!("runtime: {detail}");
+        assert!(
+            message.starts_with("ocr.recognize is unavailable.\n"),
+            "{reply}"
+        );
+        assert!(message.lines().any(|line| line == reason), "{reply}");
+    }
+}
+
 async fn wait_for_path(path: &std::path::Path) {
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while !path.exists() {
@@ -5765,7 +5792,6 @@ async fn ocr_lists_a_plugin_target_and_runs_its_helper() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_target_is_absent_without_the_service() {
     let home = home("dm-ocr-plugin");
     let helper = fake_helper(&home);
@@ -5798,15 +5824,10 @@ async fn ocr_plugin_target_is_absent_without_the_service() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin is not running");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
     let home = home("dm-ocr-plugin");
     let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
@@ -5846,11 +5867,7 @@ async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin needs an update",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin needs an update");
     let configured = client
         .rpc(
             "modality.configure",
@@ -5894,11 +5911,7 @@ async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin is not running");
 }
 
 /// A service that declares `describe` sync is never called: it reads as
@@ -5906,7 +5919,6 @@ async fn ocr_plugin_target_with_an_older_contract_is_unavailable() {
 /// fails with that reason. The kind is checked before the call, so a package
 /// built against the old form cannot block a thread.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
     let home = home("dm-ocr-plugin");
     let plugin = plugin_copy(&home, "pp-ocr-plugin", "plugin-copy");
@@ -5943,11 +5955,7 @@ async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable", "{refused}");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin needs an update",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin needs an update");
     assert_eq!(
         fixture.describes(),
         0,
@@ -5956,7 +5964,6 @@ async fn ocr_plugin_target_declaring_describe_sync_needs_an_update() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[cfg_attr(not(target_os = "macos"), ignore = "expects a host with Apple Vision")]
 async fn ocr_plugin_removal_after_describe_keeps_the_admitted_task() {
     let home = home("dm-ocr-plugin");
     let plugin = plugin_copy(&home, "pp-ocr-plugin", "old-copy");
@@ -6001,11 +6008,7 @@ async fn ocr_plugin_removal_after_describe_keeps_the_admitted_task() {
             plugin_ocr_submit("scan.png", "text"),
         )
         .await;
-    assert_eq!(app_error(&refused), "unavailable");
-    assert_eq!(
-        refused["error"]["message"], "The PP-OCR plugin is not running",
-        "{refused}"
-    );
+    assert_plugin_ocr_refused(&refused, recognize, "The PP-OCR plugin is not running");
     std::fs::write(work.join("go"), b"go").unwrap();
     let done = wait_terminal(&mut client, &task_id).await;
     assert_eq!(state_of(&done), "succeeded", "{done}");
