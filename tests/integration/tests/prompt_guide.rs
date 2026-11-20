@@ -101,6 +101,11 @@ async fn platform_host(builder: &AgentBuilder, dirs: &Dirs) -> MinimalHost {
 }
 
 fn workspace(builder: &mut AgentBuilder, dirs: &Dirs) {
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     workspace_tools::install(
         builder,
         WorkspaceToolsConfig {

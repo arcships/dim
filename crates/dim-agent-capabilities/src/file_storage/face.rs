@@ -1,3 +1,4 @@
+use super::mentions::{MentionsReply, MentionsRequest, parse_limit};
 use super::{DirectoryEntry, FileReader, FileStorage, FileStorageError, Result};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rutis::Ctx;
@@ -5,7 +6,7 @@ use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::{OsStr, OsString},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
@@ -55,10 +56,10 @@ fn deserialize_name<'de, D: serde::Deserializer<'de>>(
 #[serde(untagged, deny_unknown_fields)]
 pub enum FsRemove {
     Path {
-        path: String,
+        path: PathBuf,
     },
     Entry {
-        parent: String,
+        parent: PathBuf,
         #[serde(deserialize_with = "deserialize_name")]
         name: OsString,
     },
@@ -99,6 +100,38 @@ pub struct FsHost(Arc<FileStorage>);
 impl FsHost {
     pub(super) fn new(owner: Arc<FileStorage>) -> Self {
         Self(owner)
+    }
+
+    pub async fn mentions(
+        &self,
+        request: MentionsRequest,
+        cancel: &CancellationToken,
+    ) -> Result<MentionsReply> {
+        let owner = self.0.clone();
+        if !request.path.is_absolute() {
+            return Err(FileStorageError::InvalidPath(
+                "expected an absolute search root",
+            ));
+        }
+        let operation = {
+            let mut state = owner.state.lock().unwrap();
+            owner.check(cancel)?;
+            state.active += 1;
+            super::Operation(owner.clone())
+        };
+        let cancel = cancel.child_token();
+        let _dropped = cancel.clone().drop_guard();
+        tokio::task::spawn_blocking(move || {
+            let _operation = operation;
+            let candidates = owner.mentions.search(
+                &request.path,
+                &request.query,
+                parse_limit(request.limit),
+                || owner.check(&cancel),
+            )?;
+            Ok(MentionsReply { candidates })
+        })
+        .await?
     }
 
     pub async fn lock(&self, caller: &Ctx, path: &str, cancel: &CancellationToken) -> Result<Uuid> {
@@ -264,10 +297,10 @@ impl FsHost {
 
     pub async fn list(
         &self,
-        path: &str,
+        path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<Vec<DirectoryEntry>> {
-        let path = self.0.resolve(Path::new(path))?;
+        let path = self.0.resolve(path.as_ref())?;
         self.0.list(&path, cancel).await
     }
 
@@ -292,10 +325,10 @@ impl FsHost {
     pub async fn open_read(
         &self,
         caller: &Ctx,
-        path: String,
+        path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<OpenRead> {
-        let path = self.0.resolve(Path::new(&path))?;
+        let path = self.0.resolve(path.as_ref())?;
         self.0.open_reader(caller, &path, cancel).await
     }
 
@@ -405,6 +438,7 @@ impl FileStorage {
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
 enum Request {
+    Mentions(MentionsRequest),
     Stat(PathRequest),
     Lock(PathRequest),
     Unlock(LeaseRequest),
@@ -468,7 +502,7 @@ struct Close {
 impl HostDispatch for FsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
+            serde_json::json!({"mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
         )
     }
 
@@ -487,6 +521,9 @@ impl HostDispatch for FsHost {
             let cancel = CancellationToken::new();
             let _dropped = cancel.clone().drop_guard();
             let reply = match request {
+                Request::Mentions(request) => {
+                    serde_json::json!(owner.mentions(request, &cancel).await.map_err(failure)?)
+                }
                 Request::Stat(request) => serde_json::json!(
                     owner
                         .stat(Path::new(&request.path), &cancel)

@@ -14,7 +14,7 @@
 //! row was deleted.
 use super::{SqliteStorage, sqlite::error};
 use dim_agent_capabilities::{
-    file_storage::{FileStorage, FileStorageError},
+    file_storage::{FileStorage, FileStorageError, FsHost, FsRemove},
     host::{SessionFileError, SessionFileErrorCode, SessionFilesService, StoredSessionFile},
     host_platform::HostPlatform,
 };
@@ -590,15 +590,8 @@ impl SessionFilesService for SessionFiles {
                     "Session file not found",
                 ));
             }
-            let storage = self
-                .0
-                .ctx
-                .get::<FileStorage>()
-                .ok_or_else(node_unavailable)?;
-            let relative = Path::new(&self.0.directory).join(file_id);
-            let directory = storage
-                .path(self.0.root, &relative)
-                .map_err(storage_failure)?;
+            let storage = self.0.ctx.get::<FsHost>().ok_or_else(node_unavailable)?;
+            let directory = self.session_files_directory().join(file_id);
             let entries = storage
                 .list(&directory, &cancel)
                 .await
@@ -609,16 +602,29 @@ impl SessionFilesService for SessionFiles {
                 .ok_or_else(|| {
                     file_error(SessionFileErrorCode::Storage, "Session file is missing")
                 })?;
-            let path = storage
-                .path(self.0.root, relative.join(entry.name))
-                .map_err(storage_failure)?;
-            let reader = storage
-                .open_read(&path, &cancel)
-                .await
-                .map_err(storage_failure)?;
-            reader
-                .read_at(offset, 64 * 1024, &cancel)
-                .await
+            let call = cancel.child_token();
+            let _dropped = call.clone().drop_guard();
+            let task = {
+                let _admission = self.0.admission.lock().unwrap();
+                if self.0.stopping.is_cancelled() {
+                    return Err(cancelled());
+                }
+                let ctx = self.0.ctx.clone();
+                self.0.tasks.spawn(async move {
+                    let reader = storage
+                        .open_read(&ctx, directory.join(entry.name), &call)
+                        .await?;
+                    let bytes = storage
+                        .read_at(reader.read_id.clone(), offset, 64 * 1024, &call)
+                        .await;
+                    let closed = storage.close_read(reader.read_id).await;
+                    let bytes = bytes?;
+                    closed?;
+                    Ok(bytes)
+                })
+            };
+            task.await
+                .map_err(|error| file_error(SessionFileErrorCode::Storage, error))?
                 .map_err(storage_failure)
         })
     }
@@ -811,10 +817,11 @@ impl Files {
     /// generation is unloading; the next sweep resumes. Rows and entries it
     /// cannot remove now are kept for the next sweep.
     async fn sweep(&self) -> bool {
-        let Some(storage) = self.ctx.get::<FileStorage>() else {
+        let Some(storage) = self.ctx.get::<FsHost>() else {
             return false;
         };
         let cancel = &self.stopping;
+        let directory = self.db.path.with_file_name(&self.directory);
         let rows = |sql: &'static str| {
             self.db.run_read(move |connection| {
                 connection
@@ -857,8 +864,7 @@ impl Files {
             }
         };
         for file_id in unowned {
-            if self
-                .remove(&storage, Path::new(&file_id), cancel)
+            if Self::remove(&storage, &directory, file_id.clone().into(), cancel)
                 .await
                 .is_break()
             {
@@ -881,10 +887,6 @@ impl Files {
             }
         }
 
-        let directory = match storage.path(self.root, &self.directory) {
-            Ok(directory) => directory,
-            Err(_) => return false,
-        };
         let entries = match storage.list(&directory, cancel).await {
             Ok(entries) => entries,
             Err(FileStorageError::Io(failure))
@@ -923,8 +925,7 @@ impl Files {
         };
         for (name, recorded) in names.into_iter().zip(recorded) {
             if !recorded
-                && self
-                    .remove(&storage, Path::new(&name), cancel)
+                && Self::remove(&storage, &directory, name, cancel)
                     .await
                     .is_break()
             {
@@ -939,20 +940,26 @@ impl Files {
     /// the generation is unloading. Other failures, such as `Locked`, keep the
     /// entry for the next sweep.
     async fn remove(
-        &self,
-        storage: &Arc<FileStorage>,
-        name: &Path,
+        storage: &FsHost,
+        directory: &Path,
+        name: OsString,
         cancel: &CancellationToken,
     ) -> ControlFlow<()> {
-        let removed = match storage.path(self.root, Path::new(&self.directory).join(name)) {
-            Ok(path) => storage.remove(&path, cancel).await,
-            Err(failure) => Err(failure),
-        };
+        let entry = directory.join(&name);
+        let removed = storage
+            .remove(
+                FsRemove::Entry {
+                    parent: directory.into(),
+                    name,
+                },
+                cancel,
+            )
+            .await;
         match removed {
             Ok(()) => ControlFlow::Continue(()),
             Err(FileStorageError::Closed | FileStorageError::Cancelled) => ControlFlow::Break(()),
             Err(failure) => {
-                tracing::warn!(entry = %name.display(), error = %failure, "Session file kept for the next sweep");
+                tracing::warn!(entry = %entry.display(), error = %failure, "Session file kept for the next sweep");
                 ControlFlow::Continue(())
             }
         }

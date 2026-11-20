@@ -4,13 +4,15 @@
 use crate::settings::{
     Settings, SettingsChanged, SettingsScope, SourceDeclaration, settings_changes,
 };
-use dim_agent_capabilities::file_storage::FileStorage;
 use dim_agent_runtime::Names;
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, ErrorKind, Key, TypeKey};
 use serde::Deserialize;
 use serde_json::json;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -40,19 +42,17 @@ struct Document {
 
 pub struct ModelLogPlugin {
     settings: Key<Settings>,
-    files: Key<FileStorage>,
-    home: usize,
+    directory: PathBuf,
     /// Serializes the read and the recorder swap, so an older document
     /// cannot be applied after a newer one.
     order: Arc<Mutex<()>>,
 }
 
 impl ModelLogPlugin {
-    pub fn new(names: &Names<'_>, home: usize) -> rutis::Result<Self> {
+    pub fn new(names: &Names<'_>, directory: PathBuf) -> rutis::Result<Self> {
         Ok(Self {
             settings: names.key()?,
-            files: names.key()?,
-            home,
+            directory,
             order: Arc::new(Mutex::new(())),
         })
     }
@@ -64,15 +64,14 @@ impl DynPlugin for ModelLogPlugin {
     }
 
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.settings.erase(), self.files.erase()]
+        vec![self.settings.erase()]
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
-            let files = ctx.require_at(&self.files)?;
             settings.register(ctx, source_declaration())?;
-            if let Err(error) = apply(&settings, &files, self.home, &self.order).await {
+            if let Err(error) = apply(&settings, &self.directory, &self.order).await {
                 return Err(rutis::Error::from(ErrorKind::PluginFailed(error)));
             }
             if let Err(error) = ctx.effect(|| async {
@@ -83,17 +82,16 @@ impl DynPlugin for ModelLogPlugin {
                 return Err(error);
             }
             let settings = settings.clone();
-            let files = files.clone();
             let order = self.order.clone();
-            let home = self.home;
+            let directory = self.directory.clone();
             ctx.listen::<SettingsChanged>()
                 .name(settings_changes(SOURCE))
                 .on(move |_, _| {
                     let settings = settings.clone();
-                    let files = files.clone();
+                    let directory = directory.clone();
                     let order = order.clone();
                     async move {
-                        if let Err(error) = apply(&settings, &files, home, &order).await {
+                        if let Err(error) = apply(&settings, &directory, &order).await {
                             tracing::warn!(%error, "model request recording was not updated");
                         }
                         Ok(None)
@@ -108,16 +106,13 @@ impl DynPlugin for ModelLogPlugin {
 /// is missing or disabled; the home root holds `model-log/recordings.jsonl`.
 async fn apply(
     settings: &Settings,
-    files: &FileStorage,
-    home: usize,
+    directory: &Path,
     order: &Mutex<()>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _order = order.lock().await;
-    let root = files.root_path(home)?;
     let cancel = CancellationToken::new();
     let snapshot = settings.read(SOURCE, SettingsScope::User, &cancel).await?;
     let document: Document = serde_json::from_value(snapshot.document)?;
-    let directory = document.enabled.then(|| root.join("model-log"));
-    dim_agent_aimux::recording::set_request_recording(directory.as_deref())?;
+    dim_agent_aimux::recording::set_request_recording(document.enabled.then_some(directory))?;
     Ok(())
 }

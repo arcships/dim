@@ -98,6 +98,29 @@ async fn streaming_reads_pin_files_and_end_with_storage() {
     let face = root
         .get::<dim_agent_capabilities::file_storage::FsHost>()
         .unwrap();
+    let wire = root
+        .get_at(&rutis_bridge::session::host_key("fsHost"))
+        .unwrap();
+    let matches = rutis_bridge::session::settle(
+        wire.invoke(
+            "mentions",
+            serde_json::json!([{
+                "path": authorized, "query": "media.bin"
+            }])
+            .into(),
+        )
+        .unwrap(),
+    )
+    .await
+    .unwrap()
+    .json()
+    .unwrap();
+    assert_eq!(
+        matches,
+        serde_json::json!({"candidates":[{
+            "relativePath":"media.bin", "absolutePath":source,"dir":false
+        }]})
+    );
     use dim_agent_capabilities::file_storage::testing;
     let native_id = testing::reader_id(&reader);
     assert!(matches!(
@@ -374,7 +397,7 @@ async fn directory_listing_and_removal_stay_inside_the_authorized_root() {
     let child_entry = entries.into_iter().next().unwrap();
     face.remove(
         FsRemove::Entry {
-            parent: nested.to_str().unwrap().to_owned(),
+            parent: nested.clone(),
             name: child_entry.name,
         },
         &cancel,

@@ -910,10 +910,16 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
                     )?))
                 },
             )?);
+            let log_directory = config.file_roots[home_root].join("model-log");
             rows.push(register_part(
                 &mut builtins,
                 builder.catalog(),
-                move |names| Ok(Box::new(model_log::ModelLogPlugin::new(names, home_root)?)),
+                move |names| {
+                    Ok(Box::new(model_log::ModelLogPlugin::new(
+                        names,
+                        log_directory.clone(),
+                    )?))
+                },
             )?);
         }
     }
@@ -1505,7 +1511,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("loopState", "hot-path"),
         // Session creation calls it directly; no leaf needs the service.
         ("managedWorktrees", "hot-path"),
-        ("mentionIndex", "host-resource"),
         ("modelHost", "owner-api"),
         ("openAICodexOAuthService", "secret"),
         ("pluginFileTransactions", "host-resource"),

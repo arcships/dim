@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 mod face;
+pub mod mentions;
 pub use face::{FsHost, FsPermissions, FsRemove, OpenRead};
 
 /// Read-only reader lifetime observations for filesystem flow tests.
@@ -159,6 +160,7 @@ struct ReaderEntry {
 }
 
 pub struct FileStorage {
+    mentions: mentions::MentionIndex,
     generation: Uuid,
     roots: Arc<Mutex<Vec<PathBuf>>>,
     state: Mutex<State>,
@@ -281,6 +283,7 @@ impl FileStorage {
             .map(|root| native::open_root(root))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
+            mentions: Default::default(),
             generation: Uuid::new_v4(),
             roots,
             state: Mutex::new(State {

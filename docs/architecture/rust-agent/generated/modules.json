@@ -682,6 +682,13 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::file_storage::mentions",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::file_storage",
+      "file": "crates/dim-agent-capabilities/src/file_storage/mentions.rs",
+      "unexpandedMacros": []
+    },
+    {
       "id": "dim_agent_capabilities::file_storage::native",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities::file_storage",
@@ -1754,15 +1761,6 @@
         "json",
         "matches",
         "vec"
-      ]
-    },
-    {
-      "id": "dim_agent_capabilities::workspace_tools::mentions",
-      "crate": "dim_agent_capabilities",
-      "parent": "dim_agent_capabilities::workspace_tools",
-      "file": "crates/dim-agent-capabilities/src/workspace_tools/mentions.rs",
-      "unexpandedMacros": [
-        "json"
       ]
     },
     {
@@ -4192,7 +4190,6 @@
       "parent": "dim_app_server",
       "file": "crates/dim-app-server/src/workspace_files.rs",
       "unexpandedMacros": [
-        "json",
         "vec"
       ]
     },
@@ -10028,13 +10025,6 @@
     },
     {
       "from": "dim_agent_capabilities",
-      "to": "dim_agent_capabilities::workspace_tools::mentions",
-      "references": [
-        "path workspace_tools::mentions::MentionIndex"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities",
       "to": "dim_agent_runtime::assembly",
       "references": [
         "path dim_agent_runtime::AgentBuilder"
@@ -12673,6 +12663,14 @@
     },
     {
       "from": "dim_agent_capabilities::file_storage",
+      "to": "dim_agent_capabilities::file_storage::mentions",
+      "references": [
+        "mod mentions",
+        "path mentions::MentionIndex"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::file_storage",
       "to": "dim_agent_capabilities::file_storage::native",
       "references": [
         "mod native",
@@ -12811,6 +12809,7 @@
         "path super::FilePath",
         "path super::FileStat",
         "path super::FileStat::Missing",
+        "path super::Operation",
         "path super::ReadLimitExceeded",
         "path super::ReplacementMode",
         "path super::ReplacementMode::Native",
@@ -12821,6 +12820,18 @@
         "use super::FileStorage",
         "use super::FileStorageError",
         "use super::Result"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::file_storage::face",
+      "to": "dim_agent_capabilities::file_storage::mentions",
+      "references": [
+        "path MentionsReply",
+        "path MentionsRequest",
+        "path parse_limit",
+        "use super::mentions::MentionsReply",
+        "use super::mentions::MentionsRequest",
+        "use super::mentions::parse_limit"
       ]
     },
     {
@@ -12845,6 +12856,14 @@
       "references": [
         "path super::native::file_stat",
         "path super::native::parent"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::file_storage::mentions",
+      "to": "dim_agent_capabilities::file_storage",
+      "references": [
+        "path FileStorageError",
+        "use super::FileStorageError"
       ]
     },
     {
@@ -19141,6 +19160,21 @@
     },
     {
       "from": "dim_agent_capabilities::workspace_tools",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path crate::file_storage::FsHost"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools",
+      "to": "dim_agent_capabilities::file_storage::mentions",
+      "references": [
+        "path MentionsRequest",
+        "use crate::file_storage::mentions::MentionsRequest"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::workspace_tools",
       "to": "dim_agent_capabilities::host",
       "references": [
         "path HostError",
@@ -19270,17 +19304,6 @@
         "use files::FileToolBoundary",
         "use files::FileTools",
         "use files::FileWriteCoordinator"
-      ]
-    },
-    {
-      "from": "dim_agent_capabilities::workspace_tools",
-      "to": "dim_agent_capabilities::workspace_tools::mentions",
-      "references": [
-        "mod mentions",
-        "path mentions",
-        "path mentions::MentionIndex",
-        "path mentions::MentionIndex::default",
-        "path mentions::parse_limit"
       ]
     },
     {
@@ -30564,14 +30587,6 @@
     },
     {
       "from": "dim_app_server::model_log",
-      "to": "dim_agent_capabilities::file_storage",
-      "references": [
-        "path FileStorage",
-        "use dim_agent_capabilities::file_storage::FileStorage"
-      ]
-    },
-    {
-      "from": "dim_app_server::model_log",
       "to": "dim_agent_capabilities::settings",
       "references": [
         "path SettingsChanged",
@@ -34729,6 +34744,16 @@
     },
     {
       "from": "dim_app_server::storage::files",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path FsHost",
+        "path FsRemove::Entry",
+        "use dim_agent_capabilities::file_storage::FsHost",
+        "use dim_agent_capabilities::file_storage::FsRemove"
+      ]
+    },
+    {
+      "from": "dim_app_server::storage::files",
       "to": "dim_agent_capabilities::host",
       "references": [
         "path SessionFileError",
@@ -36831,6 +36856,22 @@
     },
     {
       "from": "dim_app_server::workspace_files",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path FsHost",
+        "use dim_agent_capabilities::file_storage::FsHost"
+      ]
+    },
+    {
+      "from": "dim_app_server::workspace_files",
+      "to": "dim_agent_capabilities::file_storage::mentions",
+      "references": [
+        "path MentionsRequest",
+        "use dim_agent_capabilities::file_storage::mentions::MentionsRequest"
+      ]
+    },
+    {
+      "from": "dim_app_server::workspace_files",
       "to": "dim_agent_capabilities::methods",
       "references": [
         "path MethodCall",
@@ -36845,16 +36886,6 @@
         "use dim_agent_capabilities::methods::RpcError",
         "use dim_agent_capabilities::methods::params",
         "use dim_agent_capabilities::methods::reply"
-      ]
-    },
-    {
-      "from": "dim_app_server::workspace_files",
-      "to": "dim_agent_capabilities::workspace_tools::mentions",
-      "references": [
-        "path MentionIndex",
-        "path mentions::parse_limit",
-        "use dim_agent_capabilities::workspace_tools::mentions",
-        "use dim_agent_capabilities::workspace_tools::mentions::MentionIndex"
       ]
     },
     {

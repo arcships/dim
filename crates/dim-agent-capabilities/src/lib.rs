@@ -131,7 +131,6 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     catalog.register_shared(name_of::<host::ModelSelectionHost>());
     catalog.register_shared(name_of::<host::CredentialVariablesHost>());
     catalog.register_shared("sessionFiles");
-    register::<workspace_tools::mentions::MentionIndex>(catalog, None);
     register::<skill_settings::SkillSettingsHost>(catalog, None);
     catalog.register_shared(name_of::<environment_clients::SessionClientsHost>());
     catalog.register_shared(name_of::<execution_settings::ExecutionSettingsHost>());

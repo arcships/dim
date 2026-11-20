@@ -36,6 +36,8 @@ folding names would break case-sensitive directories and their aliases.
 authorized roots. They use the directory creation, listing and removal contracts above.
 Pass a listed name unchanged to `remove({parent, name})`. A Unicode name is a string. Other names carry the original Unix bytes (`{Unix: number[]}`) or Windows UTF-16 code units (`{Windows: number[]}`). The owner accepts a single component below the listed directory.
 
+`fsHost.mentions({path,query,limit?})` searches the resolved workspace directory using the process-wide mention index ([resource faces §4.4](../../../design/resource-faces.md#44-glob-grep-and-mentions)).
+
 `fsHost.stat({path})` returns the entry kind and the size of a regular file, without following links. An absent entry has kind `missing`.
 
 `fsHost.readBytes({path, limit, leaseId?})` returns base64 bytes and the length. A file over the limit fails with `too_large`. Hooks reads the authorized project settings path through this operation. `lock({path})` returns a lease ID for reads of that same file. `replace({path, bytes, permissions?, leaseId?})` accepts base64 bytes and atomically replaces the target under the supplied lease or a new lock. `backup({leaseId, suffix, permissions?})` creates an exclusive sibling copy under the same lease. Explicit `unlock({leaseId})` or caller unload releases the lease.
@@ -341,7 +343,7 @@ public API cannot produce reliably.
 | 作用域 | 进程 |
 | 注入 | — |
 | 提供 | `P:FileStorage`、`P:FsHost`、`P:dyn HostDispatch#fsHost` |
-| 被注入于 | `HostPlatform` |
+| 被注入于 | `HostPlatform`、`WorkspaceTools` |
 <!-- /generated -->
 
 ## Native streaming reads

@@ -4,8 +4,9 @@
 //! the same files in the same order. Only paths under the workspace root are
 //! offered; a query that names a path outside it finds nothing.
 
+use super::FileStorageError;
 use ignore::WalkBuilder;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -54,7 +55,8 @@ struct Entry {
 }
 
 /// One file or directory the query finds.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Candidate {
     /// Relative to the workspace root, `/`-separated, with no trailing `/` on a directory.
     pub relative_path: String,
@@ -65,9 +67,7 @@ pub struct Candidate {
 type Walked = HashMap<PathBuf, (Instant, Arc<Vec<Entry>>)>;
 
 /// The walked indexes of the workspace roots, each reused for [`INDEX_TTL`].
-/// The WorkspaceTools owner provides one instance at process scope, injected
-/// by every Session part and by `workspace.files.search`, so both entry
-/// points share one walk (WorkspaceTools §1).
+/// Both WorkspaceTools search entry points use the file owner’s index.
 pub struct MentionIndex {
     walked: Mutex<Walked>,
     ttl: Duration,
@@ -108,27 +108,38 @@ impl MentionIndex {
     /// call first drops the roots whose walk is past it, so an index that
     /// lives as long as the process keeps only the roots still being
     /// searched.
-    fn entries(&self, root: &Path) -> Arc<Vec<Entry>> {
+    fn entries(
+        &self,
+        root: &Path,
+        check: &impl Fn() -> Result<(), FileStorageError>,
+    ) -> Result<Arc<Vec<Entry>>, FileStorageError> {
         if let Ok(mut walked) = self.walked.lock() {
             walked.retain(|_, (at, _)| at.elapsed() < self.ttl);
             if let Some((_, entries)) = walked.get(root) {
-                return entries.clone();
+                return Ok(entries.clone());
             }
         }
-        let entries = Arc::new(walk(root));
+        let entries = Arc::new(walk(root, check)?);
         if let Ok(mut walked) = self.walked.lock() {
             walked.insert(root.to_path_buf(), (Instant::now(), entries.clone()));
         }
-        entries
+        Ok(entries)
     }
 
     /// The best `limit` matches of `query` under `root`, best first.
-    pub fn search(&self, root: &Path, query: &str, limit: usize) -> Vec<Candidate> {
+    pub fn search(
+        &self,
+        root: &Path,
+        query: &str,
+        limit: usize,
+        check: impl Fn() -> Result<(), FileStorageError>,
+    ) -> Result<Vec<Candidate>, FileStorageError> {
+        check()?;
         if query.starts_with('~')
             || query.starts_with('/')
             || query.split('/').any(|part| part == "..")
         {
-            return Vec::new();
+            return Ok(Vec::new());
         }
         let (prefix, name) = match query.rfind('/') {
             Some(at) => query.split_at(at + 1),
@@ -136,9 +147,10 @@ impl MentionIndex {
         };
         let (prefix, name) = (prefix.to_lowercase(), name.to_lowercase());
         let hidden = name.starts_with('.');
-        let entries = self.entries(root);
+        let entries = self.entries(root, &check)?;
         let mut ranked: Vec<(i64, &Entry)> = Vec::new();
         for entry in entries.iter() {
+            check()?;
             let Some(rest) = entry.lower.strip_prefix(prefix.as_str()) else {
                 continue;
             };
@@ -160,7 +172,7 @@ impl MentionIndex {
                 .then_with(|| y.dir.cmp(&x.dir))
                 .then_with(|| x.rel.cmp(&y.rel))
         });
-        ranked
+        Ok(ranked
             .into_iter()
             .take(limit)
             .map(|(_, entry)| Candidate {
@@ -168,7 +180,7 @@ impl MentionIndex {
                 absolute_path: root.join(&entry.rel),
                 dir: entry.dir,
             })
-            .collect()
+            .collect())
     }
 }
 
@@ -180,23 +192,25 @@ pub fn parse_limit(limit: Option<usize>) -> usize {
     limit.map_or(DEFAULT_LIMIT, |limit| limit.clamp(1, MAX_LIMIT))
 }
 
-/// The reply's `candidates` array, the one shape both entry points return.
-pub fn candidates(found: &[Candidate]) -> Vec<Value> {
-    found
-        .iter()
-        .map(|candidate| {
-            json!({
-                "relativePath": candidate.relative_path,
-                "absolutePath": candidate.absolute_path,
-                "dir": candidate.dir,
-            })
-        })
-        .collect()
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MentionsRequest {
+    pub path: PathBuf,
+    pub query: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct MentionsReply {
+    pub candidates: Vec<Candidate>,
 }
 
 /// Walks `root` breadth first, honouring ignore files, within the depth,
 /// entry and time budget.
-fn walk(root: &Path) -> Vec<Entry> {
+fn walk(
+    root: &Path,
+    check: &impl Fn() -> Result<(), FileStorageError>,
+) -> Result<Vec<Entry>, FileStorageError> {
     let started = Instant::now();
     let walker = WalkBuilder::new(root)
         .max_depth(Some(MAX_DEPTH))
@@ -217,6 +231,7 @@ fn walk(root: &Path) -> Vec<Entry> {
         .build();
     let mut entries = Vec::new();
     for entry in walker {
+        check()?;
         if started.elapsed() > WALK_BUDGET || entries.len() >= MAX_ENTRIES {
             break;
         }
@@ -236,7 +251,7 @@ fn walk(root: &Path) -> Vec<Entry> {
             depth: entry.depth(),
         });
     }
-    entries
+    Ok(entries)
 }
 
 /// How well `query` matches `candidate`, both lowercased: an exact match, a

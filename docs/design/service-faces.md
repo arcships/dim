@@ -202,7 +202,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | secret |
 | `uiHost` | process | UiHost | control |
 | `uiExtensions` | process | UiExtensions | control |
-| `mentionIndex` | process | WorkspaceToolsOwner | host-resource |
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |

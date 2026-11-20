@@ -13,11 +13,11 @@ pub mod background;
 pub mod exec;
 pub mod file_reads;
 pub mod files;
-pub mod mentions;
 mod pending;
 pub use pending::call_positions;
 
 use crate::{
+    file_storage::mentions::MentionsRequest,
     host::{HostError, HostFuture, SessionFiles, ToolDriver, ToolExecutionContext, ToolHost},
     host_platform::HostPlatform,
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply},
@@ -83,9 +83,7 @@ pub fn install(builder: &mut AgentBuilder, config: WorkspaceToolsConfig) {
 }
 
 /// The process plugin: it registers the Session part and both branch parts
-/// with the part registry, holds the file-write coordinator, and provides the
-/// one `MentionIndex` its Session parts read, so `session.files.search` and
-/// `workspace.files.search` share one walked index (WorkspaceTools §1).
+/// with the part registry, holds the file-write coordinator.
 struct WorkspaceToolsOwner {
     parts: Key<PartRegistry>,
     config: WorkspaceToolsConfig,
@@ -114,9 +112,6 @@ impl DynPlugin for WorkspaceToolsOwner {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let parts = ctx.require_at(&self.parts)?;
-            // One index per process, read by every Session part this owner
-            // serves and by the App Server's sessionless search.
-            ctx.provide_as::<mentions::MentionIndex>(Arc::new(mentions::MentionIndex::default()))?;
             let config = self.config.clone();
             let coordinator = self.coordinator.clone();
             parts.register(ctx, PartScope::Session, "WorkspaceTools", move |mount| {
@@ -326,7 +321,7 @@ struct WorkspaceToolsPlugin {
     tree: Key<TreeCommands>,
     methods: Key<SessionMethods>,
     /// The owner's one walked index, shared with `workspace.files.search`.
-    mentions: Key<mentions::MentionIndex>,
+    mentions: Key<crate::file_storage::FsHost>,
     config: WorkspaceToolsConfig,
     coordinator: Arc<FileWriteCoordinator>,
 }
@@ -424,7 +419,7 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 ctx,
                 FILES_NAMESPACE,
                 vec![MethodDecl::new(SEARCH_METHOD, false, Interruption::Report)],
-                Arc::new(move |call, _, _| {
+                Arc::new(move |call, cancel, _| {
                     let MethodCall { params: value, .. } = call;
                     let (mentions, root) = (mentions.clone(), search_root.clone());
                     Box::pin(async move {
@@ -443,15 +438,20 @@ impl DynPlugin for WorkspaceToolsPlugin {
                         if session_id.is_empty() {
                             return Err(RpcError::invalid("sessionId must not be empty"));
                         }
-                        let limit = mentions::parse_limit(limit);
-                        let found = tokio::task::spawn_blocking(move || {
-                            mentions.search(&root, &query, limit)
-                        })
-                        .await
-                        .map_err(|error| {
-                            RpcError::app(-32000, "session_files_failed", error.to_string())
-                        })?;
-                        reply(serde_json::json!({"candidates": mentions::candidates(&found)}))
+                        let found = mentions
+                            .mentions(
+                                MentionsRequest {
+                                    path: root,
+                                    query,
+                                    limit,
+                                },
+                                &cancel,
+                            )
+                            .await
+                            .map_err(|error| {
+                                RpcError::app(-32000, "session_files_failed", error.to_string())
+                            })?;
+                        reply(found)
                     })
                 }),
             )?;

@@ -8,20 +8,12 @@ Owner: [workspace_tools/mod.rs](../../../../crates/dim-agent-capabilities/src/wo
 The process plugin registers the Session part WorkspaceTools and the branch
 parts FileReads and BackgroundExec with the part registry, holds the
 file-write coordinator — one lock domain shared by every Session it serves,
-across their generations and its own — and provides the one process
-[`MentionIndex`](#shared-file-index) its Session parts inject.
-
-### Dependencies
-
-| Service | Purpose |
-| --- | --- |
-| `P:PartRegistry` | Register the Session part WorkspaceTools and the branch parts FileReads and BackgroundExec, each mounted into every instance of its scope. |
+across their generations and its own.
 
 ### Shared file index
 
-The owner provides one process `MentionIndex`, which every WorkspaceTools
-Session part injects. The App Server's `WorkspaceFiles` row injects the same
-service and registers the management namespace `workspace.files`
+Every WorkspaceTools Session part and the App Server's `WorkspaceFiles` row call
+`fsHost.mentions`. The App Server row registers the management namespace `workspace.files`
 ([management methods](../../../design/appserver/management-methods.md)); the
 row is assembled only where the profile requires the WorkspaceTools part. Its
 one method takes no Session:
@@ -61,15 +53,6 @@ registration, and the local-only admission.
 drives `the_mention_index_drops_roots_whose_walk_is_past_its_ttl` with a
 shortened test TTL.
 
-<!-- generated:plugin WorkspaceToolsOwner — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
-| 项 | 值 |
-| --- | --- |
-| 作用域 | 进程 |
-| 注入 | `P:PartRegistry` |
-| 提供 | `P:MentionIndex` |
-| 被注入于 | `WorkspaceTools` |
-<!-- /generated -->
-
 ## WorkspaceTools
 
 Owner: [workspace_tools/mod.rs](../../../../crates/dim-agent-capabilities/src/workspace_tools/mod.rs),
@@ -82,8 +65,8 @@ which pages the task's registered output file by byte cursor. It also registers
 the namespace `session.files`
 with `sessionMethods`: `session.files.search` returns the files of the Session's
 workspace an `@` mention offers, ranked as the TUI picker ranks them
-(`workspace_tools/mentions.rs`); a query that names a path outside the workspace
-finds nothing. Its index is the owner's process `MentionIndex`, and the
+(`file_storage/mentions.rs`); a query that names a path outside the workspace
+finds nothing. The file owner maintains the index, and the
 `limit` rule, the candidate shape and the eviction are the
 [shared file index's](#shared-file-index). The part receives the file-write
 coordinator from the owner: one per-path FIFO admission domain shared by write
@@ -100,7 +83,7 @@ enter.
 | `S:SessionConfig` | cwd and collaboration role. |
 | `S:SessionIdentity` | Session-specific output directory. |
 | `S:SessionMethods` | Register the `session.exec.output` namespace, until this part unloads. |
-| `P:MentionIndex` | The owner's walked index, shared with `workspace.files.search`. |
+| `P:FsHost` | Search workspace mentions using the file owner’s index. |
 
 Exec looks up the optional `S:FileAccessFacts` service when preparing a process,
 to recognize its resolved cwd and obtain confirmed additional workspace roots
@@ -470,7 +453,7 @@ empty live preview and unavailable historical captures.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`P:MentionIndex`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TreeCommands` |
+| 注入 | `P:FsHost`、`P:HostPlatform`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TreeCommands` |
 | 提供 | `S:ToolHost`、`S:dyn HostDispatch#toolHost` |
 | 被注入于 | `ToolRegistry` |
 <!-- /generated -->

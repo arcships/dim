@@ -307,6 +307,15 @@ async fn sweeps_remove_only_what_no_row_of_this_database_owns() {
         std::fs::create_dir(home.files().join(directory)).unwrap();
         std::fs::write(home.files().join(directory).join("paste.txt"), b"left").unwrap();
     }
+    #[cfg(target_os = "linux")]
+    let native_name = {
+        use std::os::unix::ffi::OsStrExt;
+        let path = home
+            .files()
+            .join(std::ffi::OsStr::from_bytes(b"stray-\xff"));
+        std::fs::write(&path, b"stray").unwrap();
+        path
+    };
     std::fs::write(home.files().join("stray"), b"stray").unwrap();
     let other = home
         .0
@@ -320,6 +329,8 @@ async fn sweeps_remove_only_what_no_row_of_this_database_owns() {
     let mut owned = vec![kept.file_id.clone(), fresh.file_id.clone()];
     owned.sort();
     let rows: Vec<_> = owned.iter().map(|id| format!("Text(\"{id}\")")).collect();
+    #[cfg(target_os = "linux")]
+    eventually(|| !native_name.exists()).await;
     eventually(|| {
         home.entries() == owned && home.rows("SELECT file_id FROM session_files") == rows
     })
@@ -387,6 +398,11 @@ async fn a_session_reads_its_own_file_without_an_approval_request() {
     builder.timeline_store(store.sessions.timeline_store());
     defaults::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     dim_agent_capabilities::workspace_tools::install(
         &mut builder,
         WorkspaceToolsConfig {
