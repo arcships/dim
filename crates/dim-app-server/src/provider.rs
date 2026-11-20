@@ -3286,7 +3286,7 @@ fn oauth_rejection(error: &HostError, phase: CredentialRecoveryPhase) -> Credent
 
 pub struct ProviderPlugin {
     db: Key<SqliteStorage>,
-    index: Option<Key<crate::agents::AgentIndex>>,
+    sessions: Option<Key<crate::agents::Sessions>>,
     oauth: Key<ManagedProviders>,
     codex: Key<OpenAICodexOAuthService>,
     grok: Key<GrokOAuthService>,
@@ -3310,7 +3310,7 @@ impl ProviderPlugin {
     fn keyed(names: &Names<'_>, secret_host: bool, lifecycle: bool) -> rutis::Result<Self> {
         Ok(Self {
             db: names.key()?,
-            index: lifecycle.then(|| names.key()).transpose()?,
+            sessions: lifecycle.then(Key::of),
             oauth: crate::managed_provider::owner_key(),
             codex: names.key()?,
             grok: names.key()?,
@@ -3333,15 +3333,15 @@ impl DynPlugin for ProviderPlugin {
             self.host.erase(),
             self.methods.erase(),
         ];
-        keys.extend(self.index.as_ref().map(Key::erase));
+        keys.extend(self.sessions.as_ref().map(Key::erase));
         keys.extend(self.secret_host.as_ref().map(Key::erase));
         keys
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
-            let index = self
-                .index
+            let sessions = self
+                .sessions
                 .as_ref()
                 .map(|key| ctx.require_at(key))
                 .transpose()?;
@@ -3381,12 +3381,10 @@ impl DynPlugin for ProviderPlugin {
                 *owner.startup.lock().unwrap() = startup::StartupBindings::default();
                 Ok(())
             })?;
-            if let Some(index) = index {
+            if let Some(sessions) = sessions {
                 let restored = service.clone();
                 ctx.on::<crate::agents::SessionRestored>(move |event, _| {
-                    if let Some(session) = event.session(&index) {
-                        restored.restore_startup(session);
-                    }
+                    restored.restore_startup(&sessions, &event);
                     async { Ok(None) }
                 })?;
             }

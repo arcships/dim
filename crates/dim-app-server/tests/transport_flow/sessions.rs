@@ -1846,6 +1846,57 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
     );
     let after = client.rpc("permissions.defaults", json!({})).await;
     assert_eq!(after["result"], defaults);
+    let mut expected_ends = Vec::new();
+    for reason in ["unloaded", "closed"] {
+        let target = launched(&sessions, &agent, json!({"preset":"read-only"})).await;
+        let generation = target.instance().unwrap().to_string();
+        let request = json!({"sessionId":target.id(), "generation":generation});
+        let stale = client
+            .rpc(
+                "permissions.observe",
+                json!({"sessionId":target.id(),"generation":"stale"}),
+            )
+            .await;
+        assert_ok(&stale);
+        assert_eq!(stale["result"], Value::Null);
+        let observed = client.rpc("permissions.observe", request.clone()).await;
+        assert_ok(&observed);
+        assert_eq!(observed["result"]["generation"], generation);
+        let agent_id = observed["result"]["agentId"].as_str().unwrap();
+        if reason == "unloaded" {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !target.unload_if_idle().await.unwrap() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+        } else {
+            assert_ok(
+                &client
+                    .rpc("session.close", json!({"sessionId":target.id()}))
+                    .await,
+            );
+        }
+        expected_ends.push(json!({"sessionId":target.id(),"agentId":agent_id,"generation":generation,"reason":reason}));
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let reply = client.rpc("permissions.ends", json!({})).await;
+                assert_ok(&reply);
+                let ends: Vec<Value> =
+                    serde_json::from_str(reply["result"].as_str().unwrap()).unwrap();
+                if ends.len() >= expected_ends.len() {
+                    assert_eq!(ends, expected_ends);
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        let gone = client.rpc("permissions.observe", request).await;
+        assert_ok(&gone);
+        assert_eq!(gone["result"], Value::Null);
+    }
     server.shutdown();
     server.join().await.unwrap();
 }

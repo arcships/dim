@@ -15,6 +15,8 @@ The stable directory serves `sessions.permission({sessionId, branchId})` and
 dispatched `PermissionState`. The second returns the current host bound. Both reads throw
 `SessionsError` on failure. `sessions.startupSources({sessionId,generation})` returns the adopted startup connection references from the loaded branches of that Session instance. A missing or replaced instance returns `session_closed`. The other directory operations use the reply envelope in §4.
 
+`sessions.observeCurrent({sessionId,generation?}, onEnd)` returns the matching loaded instance as `{agentId,generation}`, or null. Its callback receives `{sessionId,agentId,generation,reason}` once on unload or close. An observer ends when its calling row unloads and does not keep the Session loaded.
+
 Input ownership in §5, §6.2 and §8.3–8.4 follows the accepted
 [native access contract](../p6-p7-bindings.md#4-native-report-settlement): admitted
 input retains its own append/publication outcome, and the branch accepts each

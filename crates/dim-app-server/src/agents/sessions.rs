@@ -17,7 +17,7 @@ use dim_agent_types::{
 };
 use rutis::Ctx;
 use rutis::host::CtxHost;
-use rutis_bridge::session::{HostDispatch, Reply, Value, caller_row};
+use rutis_bridge::session::{Error as BridgeError, HostDispatch, Reply, Value, caller_row, settle};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{future::Future, sync::Arc, sync::atomic::Ordering};
@@ -38,9 +38,126 @@ struct SessionGeneration {
     generation: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ObserveCurrent {
+    session_id: String,
+    generation: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum SessionEnd {
+    Unloaded,
+    Closed,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ObservedSession {
+    agent_id: String,
+    generation: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SessionEnded {
+    pub(crate) session_id: String,
+    #[serde(flatten)]
+    observed: ObservedSession,
+    pub(crate) reason: SessionEnd,
+}
+
 /// The process Session directory.
 pub struct Sessions(pub(crate) Ctx);
 impl Sessions {
+    pub(crate) async fn session_end(session: &Session) -> SessionEnd {
+        let _ = session.closed().await;
+        if session.is_unloading() {
+            SessionEnd::Unloaded
+        } else {
+            SessionEnd::Closed
+        }
+    }
+
+    fn observe_wire(&self, args: Value) -> Reply {
+        let [request, callback] = args.list()?.try_into().map_err(|_| {
+            BridgeError::value("observeCurrent expects a request and an onEnd callback")
+        })?;
+        let request: ObserveCurrent = serde_json::from_value(request.json()?)
+            .map_err(|error| BridgeError::value(error.to_string()))?;
+        let callback = callback.reference()?;
+        if !callback.is_function() {
+            return Err(BridgeError::value("onEnd must be a function"));
+        }
+        let caller = caller_row()
+            .ok_or_else(|| BridgeError::value("observeCurrent needs the calling row"))?;
+        let cancelled = caller.ctx().cancellation_token();
+        let directory = Sessions(self.0.clone());
+        Ok(Value::future(async move {
+            let observed = directory
+                .observe_current(
+                    &request.session_id,
+                    request.generation.as_deref(),
+                    cancelled,
+                    move |ended| async move {
+                        let args = Value::List(vec![json!(ended).into()]);
+                        let notify = async { settle(callback.call_async(args).await?).await };
+                        if let Err(error) = notify.await {
+                            tracing::warn!(%error, "Session end listener failed");
+                        }
+                    },
+                )
+                .map_err(sessions_failure)?;
+            Ok(json!(observed).into())
+        }))
+    }
+
+    pub(crate) fn observe_current<F: Future<Output = ()> + Send>(
+        &self,
+        id: &str,
+        generation: Option<&str>,
+        cancelled: CancellationToken,
+        on_end: impl FnOnce(SessionEnded) -> F + Send + 'static,
+    ) -> Result<Option<ObservedSession>, SessionsError> {
+        let index = self
+            .0
+            .get::<AgentIndex>()
+            .ok_or_else(|| SessionsError::reloading("the Agents index"))?;
+        let Some((host, session)) = index.session(id) else {
+            return Ok(None);
+        };
+        let Ok(instance) = session.instance() else {
+            return Ok(None);
+        };
+        let instance = instance.to_string();
+        if generation.is_some_and(|expected| expected != instance) {
+            return Ok(None);
+        }
+        let observed = ObservedSession {
+            agent_id: host.agent_id.clone(),
+            generation: instance,
+        };
+        let reply = observed.clone();
+        tokio::spawn(async move {
+            let notify = async {
+                let reason = Self::session_end(&session).await;
+                on_end(SessionEnded {
+                    session_id: session.id().to_owned(),
+                    observed,
+                    reason,
+                })
+                .await;
+            };
+            tokio::select! {
+                biased;
+                _ = cancelled.cancelled() => {}
+                () = notify => {}
+            }
+        });
+        Ok(Some(reply))
+    }
+
     pub(crate) fn adopted_sources(session: &Session) -> Vec<StartupConnectionSource> {
         session
             .branches()
@@ -57,17 +174,18 @@ impl Sessions {
             .collect()
     }
 
-    fn startup_sources(
+    pub(crate) fn startup_sources(
         &self,
-        request: SessionGeneration,
+        session_id: &str,
+        generation: &str,
     ) -> Result<Vec<StartupConnectionSource>, SessionsError> {
         let index = self
             .0
             .get::<AgentIndex>()
             .ok_or_else(|| SessionsError::reloading("the Agents index"))?;
         let session = index
-            .session_generation(&request.session_id, &request.generation)
-            .ok_or_else(|| AgentError::Closed(request.session_id))?;
+            .session_generation(session_id, generation)
+            .ok_or_else(|| AgentError::Closed(session_id.to_owned()))?;
         Ok(Self::adopted_sources(&session))
     }
 
@@ -828,10 +946,13 @@ impl HostDispatch for Sessions {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async", "permission": "async", "permissionDefaults": "async", "startupSources": "async",
+            "delete": "async", "permission": "async", "permissionDefaults": "async", "startupSources": "async", "observeCurrent": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if method == "observeCurrent" {
+            return self.observe_wire(args);
+        }
         if matches!(
             method,
             "permission" | "permissionDefaults" | "startupSources"
@@ -842,7 +963,9 @@ impl HostDispatch for Sessions {
                 let args = args.json()?;
                 let result = if method == "startupSources" {
                     request(args)
-                        .and_then(|request| directory.startup_sources(request))
+                        .and_then(|request: SessionGeneration| {
+                            directory.startup_sources(&request.session_id, &request.generation)
+                        })
                         .and_then(reply)
                 } else if method == "permissionDefaults" {
                     match request(args) {
@@ -855,15 +978,7 @@ impl HostDispatch for Sessions {
                         Err(error) => Err(error),
                     }
                 };
-                result.map(Value::from).map_err(|error| {
-                    let data = json!(error);
-                    rutis_bridge::exports::failure(
-                        "SessionsError",
-                        data["code"].as_str().expect("SessionsError code"),
-                        error.to_string(),
-                        Some(data.clone()),
-                    )
-                })
+                result.map(Value::from).map_err(sessions_failure)
             }));
         }
         let row = (method == "input")
@@ -882,6 +997,16 @@ impl HostDispatch for Sessions {
         };
         Ok(Value::future(async move { Ok(envelope(operation.await)) }))
     }
+}
+
+fn sessions_failure(error: SessionsError) -> BridgeError {
+    let data = json!(error);
+    rutis_bridge::exports::failure(
+        "SessionsError",
+        data["code"].as_str().expect("SessionsError code"),
+        error.to_string(),
+        Some(data.clone()),
+    )
 }
 
 fn envelope(result: Result<serde_json::Value, SessionsError>) -> Value {

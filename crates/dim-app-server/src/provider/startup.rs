@@ -555,17 +555,8 @@ impl ProviderService {
                 .entry(source.id.clone())
                 .or_default()
                 .insert(session.id().to_owned());
-            for branch in session.branches() {
-                if let Ok(Some(state)) =
-                    session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
-                    && let Some(previous) = state
-                        .configuration
-                        .as_ref()
-                        .and_then(|model| model.metadata.as_ref())
-                        .and_then(|metadata| metadata.startup.as_ref())
-                        .and_then(|startup| startup.connection.as_ref())
-                    && same_destination(previous, source)
-                {
+            for previous in crate::agents::Sessions::adopted_sources(session) {
+                if same_destination(&previous, source) {
                     bindings
                         .connections
                         .entry(previous.id.clone())
@@ -585,17 +576,50 @@ impl ProviderService {
         Ok(())
     }
 
-    pub(super) fn restore_startup(self: &Arc<Self>, session: Session) {
+    pub(super) fn restore_startup(
+        self: &Arc<Self>,
+        sessions: &crate::agents::Sessions,
+        event: &crate::agents::SessionRestored,
+    ) {
         let mut bindings = self.startup.lock().unwrap();
-        for source in crate::agents::Sessions::adopted_sources(&session) {
+        let watch = uuid::Uuid::new_v4();
+        let owner = self.clone();
+        let stop = self.stop.child_token();
+        let observed = sessions.observe_current(
+            &event.session_id,
+            Some(&event.generation),
+            stop.clone(),
+            move |ended| async move {
+                owner
+                    .startup
+                    .lock()
+                    .unwrap()
+                    .end_watch(&ended.session_id, watch, ended.reason);
+            },
+        );
+        if !matches!(observed, Ok(Some(_))) {
+            return;
+        }
+        let Ok(sources) = sessions.startup_sources(&event.session_id, &event.generation) else {
+            stop.cancel();
+            return;
+        };
+        for source in sources {
             bindings
                 .owners
                 .entry(source.id)
                 .or_default()
-                .insert(session.id().to_owned());
+                .insert(event.session_id.clone());
         }
-        drop(bindings);
-        self.watch_startup(session);
+        if bindings
+            .owners
+            .values()
+            .any(|owners| owners.contains(&event.session_id))
+        {
+            bindings.watched.insert(event.session_id.clone(), watch);
+        } else {
+            stop.cancel();
+        }
     }
 
     pub(super) fn watch_startup(self: &Arc<Self>, session: Session) {
@@ -612,12 +636,8 @@ impl ProviderService {
         self.tasks.spawn(async move {
             tokio::select! {
                 _ = owner.stop.cancelled() => {}
-                _ = session.closed() => {
-                    let mut bindings = owner.startup.lock().unwrap();
-                    if bindings.watched.get(&id) == Some(&generation) {
-                        bindings.watched.remove(&id);
-                        if !session.is_unloading() { bindings.forget(&id); }
-                    }
+                reason = crate::agents::Sessions::session_end(&session) => {
+                    owner.startup.lock().unwrap().end_watch(&id, generation, reason);
                 }
             }
         });
@@ -631,6 +651,15 @@ impl ProviderService {
 }
 
 impl StartupBindings {
+    fn end_watch(&mut self, id: &str, watch: uuid::Uuid, reason: crate::agents::SessionEnd) {
+        if self.watched.get(id) == Some(&watch) {
+            self.watched.remove(id);
+            if reason == crate::agents::SessionEnd::Closed {
+                self.forget(id);
+            }
+        }
+    }
+
     fn forget(&mut self, session_id: &str) {
         self.owners.retain(|id, owners| {
             owners.remove(session_id);

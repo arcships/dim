@@ -1,5 +1,5 @@
 import { definePlugin } from '@arcships/rutis'
-import type { ManagementMethods, MethodReply, SessionsErrorThrown, SessionRef, Sessions } from '../../npm/plugin.js'
+import type { ManagementMethods, MethodReply, SessionEnded, SessionsErrorThrown, SessionRef, Sessions } from '../../npm/plugin.js'
 
 let generation = 0
 export default definePlugin({
@@ -8,15 +8,22 @@ export default definePlugin({
   provides: {},
   async apply(ctx) {
     const applied = ++generation
+    const ends: SessionEnded[] = []
     const sessions = ctx.use<Sessions>('sessions')
     await ctx.use<ManagementMethods>('managementMethods').register(
       'permissions',
-      ['branch', 'defaults', 'legacy', 'sources'].map(name => ({
+      ['branch', 'defaults', 'legacy', 'sources', 'observe', 'ends'].map(name => ({
         name: `permissions.${name}`, mutating: false, interruption: 'report', progress: false,
       })),
       async (call): Promise<MethodReply> => {
         try {
           const at = call.params as unknown as SessionRef
+          if (call.method === 'permissions.ends') return { kind: 'value', value: JSON.stringify(ends) }
+          if (call.method === 'permissions.observe') {
+            const request = call.params as unknown as Parameters<Sessions['observeCurrent']>[0]
+            const observed = await sessions.observeCurrent(request, end => { ends.push(end) })
+            return { kind: 'value', value: observed }
+          }
           if (call.method === 'permissions.sources') {
             const request = call.params as unknown as Parameters<Sessions['startupSources']>[0]
             return { kind: 'value', value: JSON.stringify(await sessions.startupSources(request)) }

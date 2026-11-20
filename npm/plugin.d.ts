@@ -279,9 +279,13 @@ export type SessionsErrorThrown = import('./branch-services.js').RustError<'Sess
 export interface SessionsError { code: SessionsErrorCode; message: string; retryable: boolean }
 export type SessionsResult<T> = { ok: true; value: T } | { ok: false; error: SessionsError };
 
+export type ObservedSession = { agentId: string; generation: string };
+export type SessionEnded = ObservedSession & { sessionId: string; reason: 'unloaded' | 'closed' };
+
 /** Process service `sessions`; these methods are not terminal RPC methods. */
 export interface Sessions {
   permission(request: SessionRef): Promise<PermissionState>;
+  observeCurrent(request: { sessionId: string; generation?: string }, onEnd: (end: SessionEnded) => void | Promise<void>): Promise<ObservedSession | null>;
   startupSources(request: { sessionId: string; generation: string }): Promise<import('./branch-services.js').StartupConnectionSource[]>;
   permissionDefaults(request: {}): Promise<PermissionPolicy>;
   launch(request: LaunchRequest): Promise<SessionsResult<LaunchReply>>;

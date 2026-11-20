@@ -4,6 +4,8 @@
 
 Agents 的稳定目录提供 `sessions.permission({sessionId, branchId})` 和 `sessions.permissionDefaults({})`。前者持有 Session 租约并返回分支当前的 `PermissionState`，后者返回宿主的权限上限。读取失败会抛出 `SessionsError`。`sessions.startupSources({sessionId,generation})` 返回该 Session 实例中各已加载分支采用的启动连接引用。实例缺失或已被替换时返回 `session_closed`。目录的其他操作使用原有回复信封。
 
+`sessions.observeCurrent({sessionId,generation?}, onEnd)` 返回匹配的已加载实例 `{agentId,generation}`，未匹配时返回 null。实例卸载或关闭后，回调收到一次 `{sessionId,agentId,generation,reason}`。观察随调用方卸载而结束，不阻止 Session 空闲卸载。
+
 §5、§6.2 与 §8.3–8.4 的输入所有权沿用已接受的[原生访问合同](../../../design/p6-p7-bindings.md#4-native-report-settlement)：已准入输入等待自身追加/发布结果，分支对每个 `submissionId` 只接受一次，因此回复丢失的调用方重新提交，而不等待旧写入者。
 
 ## 1. 概要

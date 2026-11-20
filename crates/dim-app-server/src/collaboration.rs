@@ -466,7 +466,7 @@ impl Collaboration {
         self.tasks.spawn(async move {
             tokio::select! {
                 _ = stop.cancelled() => {}
-                _ = watched.session.closed() => this.session_closed(watched).await,
+                reason = crate::agents::Sessions::session_end(&watched.session) => this.session_closed(watched, reason).await,
             }
         });
     }
@@ -475,7 +475,11 @@ impl Collaboration {
     /// process, whether or not a delete removed its rows, and relations are
     /// process memory. An unloaded Session keeps them until its restore
     /// watches it again or its delete ends it ([`UnloadedSessionDeleted`]).
-    async fn session_closed(self: &Arc<Self>, watched: Arc<WatchedSession>) {
+    async fn session_closed(
+        self: &Arc<Self>,
+        watched: Arc<WatchedSession>,
+        reason: crate::agents::SessionEnd,
+    ) {
         let id = watched.session.id();
         {
             let mut entries = self.directory.watched.lock().unwrap();
@@ -487,7 +491,7 @@ impl Collaboration {
             }
             entries.remove(id);
         }
-        if watched.session.is_unloading() {
+        if reason == crate::agents::SessionEnd::Unloaded {
             return;
         }
         self.session_ended(&watched.agent_id, id).await;
