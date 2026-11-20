@@ -550,10 +550,7 @@ impl ProviderService {
         &self,
         source: &StartupConnectionSource,
     ) -> Result<HttpModelConnection, HostError> {
-        self.startup.lock().unwrap().connections.get(&source.id)
-            .filter(|binding| binding.source == *source)
-            .map(|binding| binding.connection.clone())
-            .ok_or_else(|| failure("Temporary model connection is not bound; resume with the matching DIM_BASE_URL, DIM_API_FORMAT and credentials"))
+        self.startup.lock().unwrap().connection(source).cloned()
     }
 
     pub(super) async fn release_startup(&self, id: &str) -> Result<(), HostError> {
@@ -565,7 +562,7 @@ impl ProviderService {
     }
 
     pub(crate) fn check_startup(&self, source: &StartupConnectionSource) -> Result<(), HostError> {
-        self.startup_connection(source).map(drop)
+        self.startup.lock().unwrap().connection(source).map(|_| ())
     }
 
     pub(crate) fn retain_startup(
@@ -582,12 +579,12 @@ impl ProviderService {
         else {
             return Ok(());
         };
-        let connection = self.startup_connection(source)?;
         let sessions = self
             .sessions
             .as_ref()
             .ok_or_else(|| failure("Session directory unavailable"))?;
         let mut bindings = self.startup.lock().unwrap();
+        let connection = bindings.connection(source)?.clone();
         let watch = uuid::Uuid::new_v4();
         let stop = self.stop.child_token();
         let owner = self.clone();
@@ -690,6 +687,16 @@ impl ProviderService {
 }
 
 impl StartupBindings {
+    fn connection(
+        &self,
+        source: &StartupConnectionSource,
+    ) -> Result<&HttpModelConnection, HostError> {
+        self.connections.get(&source.id)
+            .filter(|binding| binding.source == *source)
+            .map(|binding| &binding.connection)
+            .ok_or_else(|| failure("Temporary model connection is not bound; resume with the matching DIM_BASE_URL, DIM_API_FORMAT and credentials"))
+    }
+
     fn end_watch(&mut self, id: &str, watch: uuid::Uuid, reason: crate::agents::SessionEnd) {
         if self.watched.get(id) == Some(&watch) {
             self.watched.remove(id);
