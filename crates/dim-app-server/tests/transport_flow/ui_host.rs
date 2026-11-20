@@ -588,6 +588,23 @@ async fn node_ui_operations_use_the_connected_client_and_extension_catalog() {
             .any(|error| error["pluginName"] == "ui-fixture");
         assert_eq!(refused, action == "detach");
     }
+    let mut leaf = FakeLeaf::start().await;
+    let opened = client
+        .rpc("ui.open", opening(&session, &leaf, json!({})))
+        .await;
+    assert_ok(&opened);
+    leaf.attach(&server, &session, &opened).await;
+    assert_ok(&client.rpc("ui.close", json!({"uiId": leaf.peer})).await);
+    leaf.closed(Duration::from_secs(10)).await;
+    let finished = leaf
+        .tui
+        .as_mut()
+        .unwrap()
+        .rpc("uifixture.finished", json!({"sessionId": session}))
+        .await;
+    assert_ok(&finished);
+    assert_eq!(finished["result"], true);
+    leaf.exit().await;
     server.shutdown();
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
