@@ -16,7 +16,7 @@ The publisher receives explicit adopted state instead of rebuilding history.
 
 | Service | Purpose |
 | --- | --- |
-| `B:ConfigurationPublisher` | Atomically publish configuration and final input content. |
+| `B:ContextPreparation` | Atomically publish configuration and final input content. |
 | `S:PromptHost` | Load named prompt sources. |
 | `S:InitialPromptConfiguration` | Initial source/model selection. |
 | `B:BranchLifecycle` | Coordinate opening and closing. |
@@ -31,7 +31,7 @@ The publisher receives explicit adopted state instead of rebuilding history.
 
 Consumes prompt configure-request/result/changed, `context/configured`, turn
 boundaries, branch start/resume, `context/scope`, `stop/interrupt`. Produces
-configure controls and, through ConfigurationPublisher, prompt changes,
+configure controls and, through ContextPreparation, prompt changes,
 context configuration and final adopted `input/message` content. Scope/turn
 changes can produce retirement inputs. A tracked adoption worker serializes
 loads and adoptions. Source handlers synchronously compute state and append required
@@ -67,7 +67,7 @@ owners, rule check and complete-candidate concurrency limit.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ConfigurationPublisher`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:GuideEntries`、`S:InitialPromptConfiguration`、`S:PromptHost` |
+| 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:FaultReporter`、`S:GuideEntries`、`S:InitialPromptConfiguration`、`S:PromptHost` |
 | 提供 | `B:Prompt`、`B:StateCell<PromptSnapshot>`、`B:dyn ConfigureControl`、`B:dyn HostDispatch#prompt` |
 | 被注入于 | `PromptSourcesBranch`、`SkillsBranch`、`ToolBinding` |
 <!-- /generated -->

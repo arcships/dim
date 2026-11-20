@@ -106,9 +106,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
 | `branchLine` | branch | BranchLine | data | `cursor` async, `ending` async, `resolved` async |
 | `branchOpening` | branch | BranchScope | internal(hot-path) | — |
-| `configurationPublisher` | branch | ContextPreparation | internal(hot-path) | — |
 | `configureControl` | branch | Prompt | internal(hot-path) | — |
-| `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |
+| `contextPreparation` | branch | ContextPreparation | data | `awaitPublished` async, `publish` async |
 | `contextUsage` | branch | ContextUsage | internal(hot-path) | — |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
 | `fileReads` | branch | FileReads | internal(hot-path) | — |

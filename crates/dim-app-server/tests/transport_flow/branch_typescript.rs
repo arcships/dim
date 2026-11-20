@@ -628,13 +628,53 @@ async fn node_prompt_adopts_frozen_content_in_the_native_snapshot() {
     assert_eq!(reply["result"]["outcome"], "adopted");
     assert_eq!(
         reply["result"]["modelId"],
-        json!(snapshot.configuration.map(|model| model.model_id))
+        json!(snapshot.configuration.as_ref().map(|model| &model.model_id))
     );
     assert!(
         snapshot
             .entries
             .values()
             .any(|entry| entry.source == "fixture" && entry.body == "frozen fixture content")
+    );
+    let session = agent.get_session(&id).unwrap();
+    let history = branch_events(&session, "main", ..).await.unwrap();
+    let configuration = history
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            dim_agent_types::EventKind::ContextConfigured(data) => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    let reply = client
+        .rpc(
+            "session.promptfixture.publish",
+            json!({
+                "sessionId": id,
+                "adopted": {"prompts": snapshot.checkpoint(), "configuration": configuration}
+            }),
+        )
+        .await;
+    assert_ok(&reply);
+    assert_eq!(reply["result"]["unchanged"], Value::Null);
+    let end: u64 = reply["result"]["published"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let published = branch_events(&session, "main", end - 1..=end)
+        .await
+        .unwrap();
+    let [change, delivery] = published.as_slice() else {
+        panic!("missing publication batch")
+    };
+    assert!(
+        matches!(&change.kind, dim_agent_types::EventKind::PromptChanged(data)
+        if data.inputs == [delivery.id.clone()] && data.previous == snapshot.revision)
+    );
+    assert!(
+        matches!(&delivery.kind, dim_agent_types::EventKind::InputMessage(input)
+        if matches!(input.blocks.as_slice(), [dim_agent_types::InputBlock::Raw { text, .. }] if text == "published content"))
     );
     server.shutdown();
     server.join().await.unwrap();

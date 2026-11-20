@@ -2,7 +2,7 @@ mod recovery;
 
 use crate::{
     context_block,
-    context_preparation::{ConfigurationPublisher, ToolSetAdoption},
+    context_preparation::{ContextPreparation, PublishedSequence, ToolSetAdoption},
     host::{HostError, PromptHost},
     prompt_guide::GuideEntries,
     prompt_state::PromptSnapshot,
@@ -135,7 +135,7 @@ pub struct Prompt {
     host: Arc<PromptHost>,
     /// Sources the Session delivers, and the model a new Session adopts.
     initial: Arc<InitialPromptConfiguration>,
-    publisher: Arc<ConfigurationPublisher>,
+    preparation: Arc<ContextPreparation>,
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
     faults: Arc<FaultReporter>,
@@ -511,7 +511,7 @@ impl Prompt {
                     projection.configuration.clone(),
                 )
             };
-            self.publisher
+            self.preparation
                 .adopt_guide(&snapshot, configuration.as_ref())
                 .await?;
             self.advance(self.timeline.sequence()).await
@@ -657,7 +657,7 @@ impl Prompt {
     ) -> Result<Option<u64>> {
         let sequence = {
             let projection = self.projection.lock().unwrap();
-            self.publisher.publish(
+            self.preparation.publish_registered(
                 (&projection.snapshot, projection.configuration.as_ref()),
                 changes,
                 model,
@@ -667,7 +667,9 @@ impl Prompt {
             )?
         };
         if let Some(sequence) = sequence {
-            self.publisher.await_published(sequence).await?;
+            self.preparation
+                .await_published(PublishedSequence { sequence })
+                .await?;
             self.advance(sequence).await?;
         }
         Ok(sequence)
@@ -729,7 +731,7 @@ pub struct PromptPlugin {
     dispatcher: rutis::host::Key<Dispatcher>,
     host: rutis::host::Key<PromptHost>,
     initial: rutis::host::Key<InitialPromptConfiguration>,
-    publisher: rutis::host::Key<ConfigurationPublisher>,
+    preparation: rutis::host::Key<ContextPreparation>,
     identity: rutis::host::Key<TimelineIdentity>,
     faults: rutis::host::Key<FaultReporter>,
     branch_phase: rutis::host::Key<BranchLifecycle>,
@@ -746,7 +748,7 @@ impl PromptPlugin {
             dispatcher: names.key()?,
             host: names.key()?,
             initial: names.key()?,
-            publisher: names.key()?,
+            preparation: names.key()?,
             identity: names.key()?,
             faults: names.key()?,
             branch_phase: names.key()?,
@@ -768,7 +770,7 @@ impl DynPlugin for PromptPlugin {
             self.dispatcher.erase(),
             self.host.erase(),
             self.initial.erase(),
-            self.publisher.erase(),
+            self.preparation.erase(),
             self.identity.erase(),
             self.faults.erase(),
             self.branch_phase.erase(),
@@ -782,7 +784,7 @@ impl DynPlugin for PromptPlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let host = ctx.require_at(&self.host)?;
             let initial = ctx.require_at(&self.initial)?;
-            let publisher = ctx.require_at(&self.publisher)?;
+            let preparation = ctx.require_at(&self.preparation)?;
             let identity = ctx.require_at(&self.identity)?;
             let faults = ctx.require_at(&self.faults)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
@@ -796,7 +798,7 @@ impl DynPlugin for PromptPlugin {
             let service = Arc::new(Prompt {
                 host,
                 initial,
-                publisher,
+                preparation,
                 timeline: timeline.clone(),
                 dispatcher: dispatcher.clone(),
                 faults,

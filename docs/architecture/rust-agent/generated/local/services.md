@@ -93,7 +93,7 @@ flowchart LR
   p44 -->|"dim_agent_capabilities::prompt_sources::SessionLanguage@session"| p75
   p60 -->|"dim_agent_runtime::config::BranchLifecycle@main"| p75
   p74 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::prompt_state::PromptSnapshot>@main"| p75
-  p66 -->|"dim_agent_capabilities::context_preparation::ConfigurationPublisher@main"| p74
+  p66 -->|"dim_agent_capabilities::context_preparation::ContextPreparation@main"| p74
   p43 -->|"dim_agent_capabilities::host::PromptHost@session"| p74
   p43 -->|"dim_agent_capabilities::prompt::InitialPromptConfiguration@session"| p74
   p42 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p74

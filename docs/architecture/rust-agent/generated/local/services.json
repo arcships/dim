@@ -600,7 +600,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "scope": null,
             "status": "Ready"
           },
@@ -652,7 +652,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "scope": null,
             "provider": 66,
             "generation": 1
@@ -714,7 +714,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
+            "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "provider": 66,
             "declared": true,
             "external": true
@@ -2021,12 +2021,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::context_preparation::ConfigurationPublisher@main",
-        "provider": 66,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
         "provider": 66,
         "generation": 1,
@@ -2197,6 +2191,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#branchLine@main",
         "provider": 65,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#contextPreparation@main",
+        "provider": 66,
         "generation": 1,
         "removing": false
       },
