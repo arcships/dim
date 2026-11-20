@@ -109,12 +109,12 @@ impl rutis_bridge::session::HostDispatch for CollaborationModelPolicy {
     ) -> rutis_bridge::session::Reply {
         use rutis_bridge::session::{Error, Value};
         if method != "read" {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "unknown collaborationModelPolicy method {method}"
             )));
         }
         let (_request,): (Empty,) = serde_json::from_value(args.json()?)
-            .map_err(|_| Error::Value("expected one empty request".into()))?;
+            .map_err(|_| Error::value("expected one empty request"))?;
         let owner = self.clone();
         Ok(Value::future(async move {
             let cancel = tokio_util::sync::CancellationToken::new();

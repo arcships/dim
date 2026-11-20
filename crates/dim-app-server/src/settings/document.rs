@@ -74,9 +74,8 @@ impl Format for Codec {
 
 pub(super) fn register(settings: Arc<SettingsService>, caller: &Ctx, args: Value) -> Reply {
     let invalid = || {
-        Error::Value(
-            "expected a settings source declaration and a codec with decode and validate functions"
-                .into(),
+        Error::value(
+            "expected a settings source declaration and a codec with decode and validate functions",
         )
     };
     let [declaration, Value::Reference(methods)]: [Value; 2] =
@@ -103,7 +102,7 @@ pub(super) fn register(settings: Arc<SettingsService>, caller: &Ctx, args: Value
                 .as_deref()
                 .map_or(Ok(()), validate_file)
         });
-    checked.map_err(|error| Error::Value(error.to_string()))?;
+    checked.map_err(|error| Error::value(error.to_string()))?;
     let registration = settings
         .insert(
             caller,
@@ -115,7 +114,7 @@ pub(super) fn register(settings: Arc<SettingsService>, caller: &Ctx, args: Value
                 kind: Kind::Custom,
             },
         )
-        .map_err(|error| Error::Value(error.to_string()))?;
+        .map_err(|error| Error::value(error.to_string()))?;
     let source = Arc::new(RegisteredDocument {
         settings,
         registration: Arc::downgrade(&registration),
@@ -124,7 +123,7 @@ pub(super) fn register(settings: Arc<SettingsService>, caller: &Ctx, args: Value
     let read = source.clone();
     let read = Value::callback(move |args| {
         let (scope,): (SettingsScope,) = serde_json::from_value(args.json()?)
-            .map_err(|_| Error::Value("expected a settings scope".into()))?;
+            .map_err(|_| Error::value("expected a settings scope"))?;
         let read = read.clone();
         Ok(Value::future(async move {
             let cancel = CancellationToken::new();
@@ -134,9 +133,8 @@ pub(super) fn register(settings: Arc<SettingsService>, caller: &Ctx, args: Value
     });
     let update = Value::callback(move |args| {
         let (scope, revision, document): (SettingsScope, String, Json) =
-            serde_json::from_value(args.json()?).map_err(|_| {
-                Error::Value("expected scope, expectedRevision and document".into())
-            })?;
+            serde_json::from_value(args.json()?)
+                .map_err(|_| Error::value("expected scope, expectedRevision and document"))?;
         let source = source.clone();
         Ok(Value::future(async move {
             let cancel = CancellationToken::new();
