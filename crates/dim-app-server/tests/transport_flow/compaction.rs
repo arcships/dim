@@ -643,7 +643,7 @@ async fn summary_reasoning_comes_from_factory_configuration() {
         let mut client = connect(&server).await;
         let capabilities = dim_agent_types::CatalogCapabilities {
             reasoning: true,
-            ..dim_agent_types::CatalogCapabilities::with_limits(4_000, 200)
+            ..dim_agent_types::CatalogCapabilities::with_limits(6_000, 200)
         };
         assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000005","displayName":"Reasoning","connection":{"driverKind":"openai-compatible","baseUrl":format!("http://{endpoint}/v1"),"auth":{"type":"anonymous"}},"models":[{"modelId":"thinking","displayName":"thinking","status":"active","capabilities":capabilities,"metadata":{"reasoning":{"supported":true,"effortOptions":["low","high"],"off":{"kind":"thinking_type","value":"disabled"}}}}],"enabled":true})).await);
         assert_ok(

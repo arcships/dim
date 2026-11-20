@@ -359,7 +359,7 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
         let (mut daemon, socket) = launch_product(&directory).await;
         let mut client = connect(&socket).await;
 
-        let capabilities = dim_agent_types::CatalogCapabilities::with_limits(4_400, 200);
+        let capabilities = dim_agent_types::CatalogCapabilities::with_limits(8_000, 200);
         assert_ok(&client.rpc("provider.create", json!({"providerId":"018ec73f-0000-7000-8000-000000000004","displayName":"Window","connection":{"driverKind":"openai-compatible","baseUrl":format!("http://{endpoint}/v1"),"auth":{"type":"bearer"},"credential":{"action":"set","value":CREDENTIAL}},"models":[{"modelId":"small","displayName":"small","status":"active","capabilities":capabilities}],"enabled":true})).await);
         assert_ok(
             &client
@@ -382,6 +382,16 @@ async fn timeline_export_reads_a_live_product_home_and_its_copies() {
         turn(&mut client, &sid, "main", "read the note").await;
         turn(&mut client, &sid, "main", &format!("large {}", "x".repeat(2400))).await;
         turn(&mut client, &sid, "main", "small").await;
+        let usage = client
+            .rpc("session.context.usage", json!({"sessionId":sid,"branchId":"main"}))
+            .await;
+        assert_ok(&usage);
+        let estimate = usage["result"]["estimatedInputTokens"].as_f64().unwrap();
+        let threshold = usage["result"]["thresholdTokens"].as_f64().unwrap();
+        assert!(
+            estimate < threshold,
+            "the manual compaction below is the first one: {usage}"
+        );
         let compacted = client
             .rpc("session.context.compact", json!({"sessionId":sid,"branchId":"main"}))
             .await;
