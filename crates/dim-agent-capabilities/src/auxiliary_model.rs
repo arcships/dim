@@ -150,7 +150,7 @@ impl HostDispatch for AuxiliaryModel {
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
         if method != "complete" {
-            return Err(Error::Value(format!(
+            return Err(Error::value(format!(
                 "unknown auxiliaryModel method {method}"
             )));
         }

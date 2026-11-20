@@ -829,6 +829,122 @@ const scenarios = [
     },
   },
   {
+    name: 'composer_borders_match_in_scrollback_and_fullscreen',
+    area: 'runs',
+    title: 'Scrollback and fullscreen share the same composer border layout at 100 and 60 columns',
+    async run(tui) {
+      const USAGE = /\d+(?:\.\d+)?[KM]?\s*\/\s*128K/;
+      await tui.setup({
+        respond: (request) => {
+          if ((request.tools ?? []).length === 0) return {text: ANSWER};
+          if (userText(request).includes('slow think')) {
+            return {
+              thinking: 'thinking about it '.repeat(60),
+              text: 'Thinking done.',
+              chunkSize: 4,
+              chunkDelayMs: 120,
+            };
+          }
+          return {text: ANSWER};
+        },
+      });
+
+      const composerChrome = (terminal) => {
+        const lines = terminal
+          .capture({join: false})
+          .split('\n')
+          .map((line) => line.trimEnd())
+          .filter(Boolean);
+        const top = [...lines].reverse().find((line) => line.includes('╭') && line.includes('╮')) ?? '';
+        const bottom = [...lines].reverse().find((line) => line.includes('╰') && line.includes('╯')) ?? '';
+        const footer = [...lines].reverse().find((line) => line.includes('Workspace write')) ?? '';
+        return {top, bottom, footer, lines};
+      };
+
+      const assertRunningChrome = (chrome, mode, cols) => {
+        const ctx = `${mode} ${cols} cols:\n${chrome.lines.join('\n')}`;
+        assert(chrome.top.includes('local / fixture-model'), `model on top border (${ctx})`);
+        assert(!chrome.top.includes('thinking…'), `status not on top border (${ctx})`);
+        assert(chrome.bottom.includes('thinking…'), `thinking status on bottom border (${ctx})`);
+        assert(chrome.bottom.includes('esc interrupt'), `esc interrupt on bottom border (${ctx})`);
+        assert(USAGE.test(chrome.bottom), `context usage on bottom border (${ctx})`);
+        assert(chrome.footer.includes('Workspace write'), `permission preset on footer (${ctx})`);
+        assert(!chrome.footer.includes('esc interrupt'), `no esc interrupt on footer (${ctx})`);
+        assert(!chrome.footer.includes('local / fixture-model'), `no model on footer (${ctx})`);
+        assert(!USAGE.test(chrome.footer), `no usage on footer (${ctx})`);
+      };
+
+      for (const [mode, args] of [
+        ['scrollback', []],
+        ['fullscreen', ['--fullscreen']],
+      ]) {
+        const terminal = await tui.launch(args, {cols: 100, rows: 24, waitForComposer: true});
+
+        // Complete one fast turn so the Session exists and context usage is shown.
+        await terminal.sendPrompt('seed usage');
+        await terminal.waitFor(ANSWER);
+        await terminal.waitFor(USAGE, {describe: `${mode} context usage reading`});
+
+        const idle = composerChrome(terminal);
+        assert(idle.top.includes('local / fixture-model'), `${mode} idle top border carries model:\n${idle.top}`);
+        assert(!idle.top.includes('thinking…') && !idle.top.includes('working…'), `${mode} idle top has no status`);
+        assert(!idle.bottom.includes('thinking…') && !idle.bottom.includes('esc interrupt'), `${mode} idle bottom has no run status`);
+        assert(USAGE.test(idle.bottom), `${mode} idle bottom carries context usage:\n${idle.bottom}`);
+        assert(!idle.footer.includes('local / fixture-model') && !USAGE.test(idle.footer), `${mode} idle footer keeps only permission:\n${idle.footer}`);
+
+        if (mode === 'scrollback') {
+          terminal.send('!');
+          await terminal.waitFor('! shell mode');
+          const shellChrome = composerChrome(terminal);
+          assert(
+            shellChrome.top.includes('! shell mode') && shellChrome.top.includes('local / fixture-model'),
+            `shell mode keeps top-border title beside model:\n${shellChrome.top}`,
+          );
+          terminal.key('BSpace');
+          await terminal.waitForAbsent('! shell mode');
+        }
+
+        terminal.send('slow think');
+        terminal.key('Enter');
+        await terminal.waitFor('thinking…');
+        await terminal.waitFor('esc interrupt');
+        assertRunningChrome(composerChrome(terminal), mode, 100);
+
+        // Shrink to 60 columns while the slow-thinking turn is running.
+        terminal.resize(60, 24);
+        const deadline = Date.now() + 20_000;
+        let narrow = null;
+        for (;;) {
+          const chrome = composerChrome(terminal);
+          const widest = Math.max(0, ...chrome.lines.map((line) => line.length));
+          if (
+            chrome.top.trimEnd().endsWith('╮') &&
+            chrome.bottom.trimEnd().endsWith('╯') &&
+            chrome.top.includes('local / fixture-model') &&
+            chrome.bottom.includes('thinking…') &&
+            chrome.bottom.includes('esc interrupt') &&
+            USAGE.test(chrome.bottom)
+          ) {
+            narrow = chrome;
+            break;
+          }
+          if (Date.now() >= deadline) {
+            throw new Error(
+              `${mode} did not repaint unified composer at 60 cols within 20000ms (widest ${widest})\n${chrome.lines.join('\n')}`,
+            );
+          }
+          await sleep(100);
+        }
+        assertRunningChrome(narrow, mode, 60);
+
+        terminal.key('Escape');
+        await terminal.waitFor('stopped');
+        await terminal.untilComposer();
+        await exitWith(terminal);
+      }
+    },
+  },
+  {
     name: 'queue_holds_steers_and_deletes',
     area: 'input-queue',
     title: 'Queued input is held during a run, deleted, and steered through the panel',
@@ -900,7 +1016,6 @@ const scenarios = [
       await terminal.waitFor('Permission required');
       await terminal.waitFor('echo fixture-ok');
       await terminal.waitFor('Allow once');
-      await terminal.waitFor('permission required');
       await terminal.waitForRaw((raw) => raw.includes('state=blocked:kind=permission'), {
         describe: 'the blocked status',
       });
@@ -954,7 +1069,14 @@ const scenarios = [
       terminal.key('Enter');
       await terminal.waitFor('Which fixture should I use?');
       await terminal.waitFor('Option A');
+      await terminal.waitForRaw((raw) => raw.includes('state=blocked:kind=question'), {
+        describe: 'the blocked question status',
+      });
+      // Opening `/` over a question restores the composer with `answer required` on its bottom border.
+      terminal.send('/');
       await terminal.waitFor('answer required');
+      terminal.key('Escape');
+      await terminal.waitFor('Option A');
 
       terminal.key('Down');
       terminal.key('Enter');
