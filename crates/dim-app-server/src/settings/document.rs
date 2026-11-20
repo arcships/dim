@@ -24,12 +24,16 @@ impl Codec {
         argument: Value,
         cancel: &CancellationToken,
     ) -> Result<Value> {
+        let invoke = async {
+            let args = Value::List(vec![argument]);
+            settle(self.methods.call_method_async(method, args).await?).await
+        };
         tokio::select! {
             biased;
             _ = self.owner.cancelled() => Err(SettingsError::UnknownSource),
             _ = self.service.cancelled() => Err(SettingsError::Closed),
             _ = cancel.cancelled() => Err(SettingsError::Cancelled),
-            result = async { settle(self.methods.call_method_async(method, Value::List(vec![argument])).await?).await } =>
+            result = invoke =>
                 result.map_err(|error| SettingsError::Document(error.to_string())),
         }
     }
