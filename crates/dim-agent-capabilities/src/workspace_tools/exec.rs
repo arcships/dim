@@ -1,7 +1,7 @@
 //! The `exec` tool, copied from TS `packages/agent/src/tool/builtin/exec/`
 //! (`tool.ts`, `process.ts`, `shell.ts`, `validate.ts`, `output.ts`). Only the
 //! differences in `docs/architecture/rust-agent/plugins/WorkspaceTools.md` apply:
-//! processes start through `HostPlatform::spawn`, and a command that moves to
+//! processes start through `ExecHost::spawn`, and a command that moves to
 //! the background is handed to this branch's `BackgroundExec`.
 use super::{
     WorkspaceTools,
