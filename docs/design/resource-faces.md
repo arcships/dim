@@ -262,8 +262,8 @@ reads no setting and grants no network. `outputLimit` gives the stdout and stder
 because an agent decided it (a Hooks handler,
 [Hooks A.6.3](plugins/Hooks.md#a63-process-start-with-an-initial-stdin)). It starts the command
 through the same shell spec as `start`, writes `stdin` (base64 bytes, if any) to the child's stdin
-and closes it, adds `env` entries to the spec environment, and answers the exit status and both
-streams within `limits: {stdout, stderr}`. It reads **no** isolation switch and prepares **no**
+and closes it, applies `env` entries (null removes the variable), and answers the exit status and both
+streams as base64 bytes within `limits: {stdout, stderr}`. It reads **no** isolation switch and prepares **no**
 sandbox: a configuration command runs outside the agent boundary, exactly as it does today
 ([ADR 003 D2](../adr/003-approval-scope.md)). It takes no task id, no output file and no
 background handoff; a cancelled call or `timeoutMs` kills the tree before the call answers. It is

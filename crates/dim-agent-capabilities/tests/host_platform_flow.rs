@@ -233,7 +233,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
                 execution: names.key().unwrap(),
                 toolchain: names.key().unwrap(),
                 exec_shell_file: Some((0, "exec-shell.json".into())),
-                home: None,
+                home: Some(home.clone()),
             },
         )
         .unwrap(),
@@ -282,6 +282,54 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     assert_eq!(reply["stderr"], "ZGVm");
     assert_eq!(reply["stdoutTruncated"], false);
     assert_eq!(reply["stderrTruncated"], false);
+    let configured = serde_json::json!([{
+        "command": r#"read -r line; printf '%s' "$line"; printf '%s' "$WIRE_ENV" >&2; exit 2"#,
+        "cwd": home,
+        "env": {"WIRE_ENV":"test"},
+        "stdin":"YWJjCg==",
+        "timeoutMs":10000,
+        "limits":{"stdout":3,"stderr":2}
+    }]);
+    let reply =
+        rutis_bridge::session::settle(face.invoke("configured", configured.into()).unwrap())
+            .await
+            .unwrap()
+            .json()
+            .unwrap();
+    assert_eq!(reply["status"], "exited");
+    assert_eq!(reply["exitCode"], 2);
+    assert_eq!(reply["stdout"], "YWJj");
+    assert_eq!(reply["stderr"], "dGU=");
+    assert_eq!(reply["stdoutTruncated"], false);
+    assert_eq!(reply["stderrTruncated"], true);
+    let output_root = platform.exec_root();
+    let branch_output = output_root.join("session/branch");
+    std::fs::create_dir_all(&branch_output).unwrap();
+    std::fs::write(branch_output.join("command.log"), "output").unwrap();
+    for path in [&output_root, &home, &output_root.join("../bin")] {
+        let request = serde_json::json!([{"path":path}]);
+        assert!(
+            rutis_bridge::session::settle(
+                face.invoke("removeOutputDirectory", request.into())
+                    .unwrap()
+            )
+            .await
+            .is_err()
+        );
+    }
+    let request = serde_json::json!([{"path":branch_output}]);
+    for _ in 0..2 {
+        let reply = rutis_bridge::session::settle(
+            face.invoke("removeOutputDirectory", request.clone().into())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .json()
+        .unwrap();
+        assert_eq!(reply, serde_json::json!({}));
+        assert!(!branch_output.exists());
+    }
 
     std::fs::remove_file(&shell).unwrap();
     let cloned = (*platform).clone();
@@ -314,7 +362,28 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         platform.exec_shell().await,
         ShellStatus::Available(_)
     ));
-    root.shutdown().await.unwrap();
+    let request = serde_json::json!([{
+        "command": "printf ready > started; exec /bin/sleep 60",
+        "cwd": home, "timeoutMs": 60000, "limits": {"stdout": 0, "stderr": 0}
+    }]);
+    let pending = tokio::spawn(rutis_bridge::session::settle(
+        face.invoke("configured", request.clone().into()).unwrap(),
+    ));
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !home.join("started").exists() {
+            tokio::task::yield_now().await;
+        }
+        root.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+    let stopped = pending.await.unwrap().unwrap().json().unwrap();
+    assert_eq!(stopped["status"], "cancelled");
+    assert!(
+        rutis_bridge::session::settle(face.invoke("configured", request.into()).unwrap())
+            .await
+            .is_err()
+    );
 }
 
 /// A start whose stdin carries the payload and then closes it.

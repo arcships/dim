@@ -835,6 +835,16 @@
       ]
     },
     {
+      "id": "dim_agent_capabilities::host_platform::configured",
+      "crate": "dim_agent_capabilities",
+      "parent": "dim_agent_capabilities::host_platform",
+      "file": "crates/dim-agent-capabilities/src/host_platform/configured.rs",
+      "unexpandedMacros": [
+        "tokio::select",
+        "write"
+      ]
+    },
+    {
       "id": "dim_agent_capabilities::host_platform::confined",
       "crate": "dim_agent_capabilities",
       "parent": "dim_agent_capabilities::host_platform",
@@ -13375,6 +13385,20 @@
     },
     {
       "from": "dim_agent_capabilities::hooks::runner",
+      "to": "dim_agent_capabilities::host_platform::configured",
+      "references": [
+        "path ConfiguredCommand",
+        "path ConfiguredEnd::Cancelled",
+        "path ConfiguredEnd::Exited",
+        "path ConfiguredEnd::TimedOut",
+        "path ConfiguredError::Unloaded",
+        "use crate::host_platform::ConfiguredCommand",
+        "use crate::host_platform::ConfiguredEnd",
+        "use crate::host_platform::ConfiguredError"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::hooks::runner",
       "to": "dim_agent_capabilities::input_queue",
       "references": [
         "path CheckSubmission",
@@ -13896,6 +13920,16 @@
     },
     {
       "from": "dim_agent_capabilities::host_platform",
+      "to": "dim_agent_capabilities::host_platform::configured",
+      "references": [
+        "mod configured",
+        "use configured::ConfiguredCommand",
+        "use configured::ConfiguredEnd",
+        "use configured::ConfiguredError"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform",
       "to": "dim_agent_capabilities::host_platform::confined",
       "references": [
         "mod confined",
@@ -13990,6 +14024,16 @@
       ]
     },
     {
+      "from": "dim_agent_capabilities::host_platform::configured",
+      "to": "dim_agent_capabilities::host_platform",
+      "references": [
+        "path HostPlatform",
+        "path ProcessSpecError",
+        "use super::HostPlatform",
+        "use super::ProcessSpecError"
+      ]
+    },
+    {
       "from": "dim_agent_capabilities::host_platform::confined",
       "to": "dim_agent_capabilities::host_platform",
       "references": [
@@ -14062,6 +14106,7 @@
         "path Os",
         "path SandboxBackend",
         "path ShellStatus",
+        "path super::signal_name",
         "use super::HostPlatform",
         "use super::Os",
         "use super::SandboxBackend",
@@ -14070,9 +14115,36 @@
     },
     {
       "from": "dim_agent_capabilities::host_platform::face",
+      "to": "dim_agent_capabilities::host_platform::configured",
+      "references": [
+        "path super::ConfiguredCommand"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::face",
+      "to": "dim_agent_capabilities::host_platform::confined",
+      "references": [
+        "path ConfinedError::Cancelled",
+        "path ConfinedError::Cleanup",
+        "path ConfinedError::InvalidPath",
+        "path ConfinedError::OutputLimit",
+        "path ConfinedError::Spawn",
+        "path ConfinedError::TimedOut",
+        "path ConfinedSpec",
+        "path Confinement",
+        "path SystemServices",
+        "use super::ConfinedError",
+        "use super::ConfinedSpec",
+        "use super::Confinement",
+        "use super::SystemServices"
+      ]
+    },
+    {
+      "from": "dim_agent_capabilities::host_platform::face",
       "to": "dim_agent_capabilities::port_faces",
       "references": [
         "path Empty",
+        "path port_faces::invalid",
         "path port_faces::request",
         "path port_faces::unknown_method",
         "use crate::port_faces",
@@ -16800,8 +16872,10 @@
       "references": [
         "path HostPlatform",
         "path ProcessTree",
+        "path signal_name",
         "use crate::host_platform::HostPlatform",
-        "use crate::host_platform::ProcessTree"
+        "use crate::host_platform::ProcessTree",
+        "use crate::host_platform::signal_name"
       ]
     },
     {
@@ -16867,14 +16941,12 @@
         "path capture_preview",
         "path pump",
         "path sanitize",
-        "path signal_name",
         "path tail_bytes",
         "use crate::workspace_tools::exec::OutputSink",
         "use crate::workspace_tools::exec::bounded_preview",
         "use crate::workspace_tools::exec::capture_preview",
         "use crate::workspace_tools::exec::pump",
         "use crate::workspace_tools::exec::sanitize",
-        "use crate::workspace_tools::exec::signal_name",
         "use crate::workspace_tools::exec::tail_bytes"
       ]
     },
@@ -19629,6 +19701,7 @@
         "path ShellEdition::Zsh",
         "path ShellKind::Posix",
         "path TemporaryDirectory",
+        "path signal_name",
         "use crate::host_platform::EXEC_SHELL_CONFIG_INVALID",
         "use crate::host_platform::EXEC_SHELL_UNAVAILABLE",
         "use crate::host_platform::HostPlatform",
@@ -19638,7 +19711,8 @@
         "use crate::host_platform::ProcessTree",
         "use crate::host_platform::ShellEdition",
         "use crate::host_platform::ShellKind",
-        "use crate::host_platform::TemporaryDirectory"
+        "use crate::host_platform::TemporaryDirectory",
+        "use crate::host_platform::signal_name"
       ]
     },
     {
@@ -56391,18 +56465,6 @@
       "path": "FILE_STANDARD_INFO::default"
     },
     {
-      "module": "dim_agent_capabilities::hooks::runner",
-      "path": "End::Cancelled"
-    },
-    {
-      "module": "dim_agent_capabilities::hooks::runner",
-      "path": "End::Done"
-    },
-    {
-      "module": "dim_agent_capabilities::hooks::runner",
-      "path": "End::TimedOut"
-    },
-    {
       "module": "dim_agent_capabilities::hooks::runner::tests",
       "path": "OutputEncoding::Utf8"
     },
@@ -56441,6 +56503,34 @@
     {
       "module": "dim_agent_capabilities::host_platform",
       "path": "S::Ok"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredEnd::Cancelled"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredEnd::Exited"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredEnd::TimedOut"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredError::Prepare"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredError::Spawn"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredError::Unloaded"
+    },
+    {
+      "module": "dim_agent_capabilities::host_platform::face",
+      "path": "ConfiguredError::Wait"
     },
     {
       "module": "dim_agent_capabilities::recall",

@@ -743,6 +743,11 @@ export interface TimelineStore {
 
 /** Host facts of the node that executes commands. */
 export interface ExecHost {
+  configured(request: {
+    command: string; cwd: string; env?: Record<string, string | null>; stdin?: string;
+    timeoutMs: number; limits: {stdout: number; stderr: number};
+  }): Promise<{status: 'exited' | 'signaled' | 'timed_out' | 'cancelled'; exitCode?: number; signal?: string; durationMs: number; stdout: string; stderr: string; stdoutTruncated: boolean; stderrTruncated: boolean}>;
+  removeOutputDirectory(request: {path: string}): Promise<Record<string, never>>;
   confined(request: {
     program: string; args: string[]; read: string[]; write: string[];
     env?: Record<string, string>; timeoutMs: number; outputLimit: {stdout: number; stderr: number};

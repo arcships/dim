@@ -11,7 +11,7 @@ use crate::{
     host::{HostError, ToolExecutionContext},
     host_platform::{
         EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, HostPlatform, ISOLATION_SUMMARY,
-        Isolation, Os, ProcessTree, ShellEdition, ShellKind, TemporaryDirectory,
+        Isolation, Os, ProcessTree, ShellEdition, ShellKind, TemporaryDirectory, signal_name,
     },
     tool_registry::definition,
 };
@@ -2218,36 +2218,6 @@ fn insert_exit(structured: &mut JsonObject, exit: Option<ExitStatus>) {
     if let Some(signal) = signal_name(status) {
         structured.insert("signal".into(), signal.into());
     }
-}
-
-/// The name of the signal that ended a process, as `exec` reports it.
-#[cfg(unix)]
-pub fn signal_name(status: ExitStatus) -> Option<String> {
-    use std::os::unix::process::ExitStatusExt;
-    let signal = status.signal()?;
-    let name = match signal {
-        libc::SIGHUP => "SIGHUP",
-        libc::SIGINT => "SIGINT",
-        libc::SIGQUIT => "SIGQUIT",
-        libc::SIGILL => "SIGILL",
-        libc::SIGTRAP => "SIGTRAP",
-        libc::SIGABRT => "SIGABRT",
-        libc::SIGBUS => "SIGBUS",
-        libc::SIGFPE => "SIGFPE",
-        libc::SIGKILL => "SIGKILL",
-        libc::SIGUSR1 => "SIGUSR1",
-        libc::SIGSEGV => "SIGSEGV",
-        libc::SIGUSR2 => "SIGUSR2",
-        libc::SIGPIPE => "SIGPIPE",
-        libc::SIGALRM => "SIGALRM",
-        libc::SIGTERM => "SIGTERM",
-        _ => return Some(format!("SIG{signal}")),
-    };
-    Some(name.into())
-}
-#[cfg(windows)]
-pub fn signal_name(_: ExitStatus) -> Option<String> {
-    None
 }
 
 fn exit_failure_summary(status: ExitStatus) -> String {

@@ -2,7 +2,7 @@
 
 Owner: [host_platform.rs](../../../../crates/dim-agent-capabilities/src/host_platform.rs).
 Resolves host home/environment and execution shell and supplies process spawning
-and tree-supervision primitives to local tools. The process service [`execHost.info`](../../../design/resource-faces.md#37-info-confined-and-configured) exposes host facts and the current execution shell.
+and tree-supervision primitives to local tools. The process service [`execHost.info`](../../../design/resource-faces.md#37-info-confined-and-configured) exposes host facts and the current execution shell. Hooks runs configured commands through `execHost.configured`, OCR runs helpers through `confined`, and SessionStore removes released shell output through `removeOutputDirectory`.
 
 ## Dependencies
 

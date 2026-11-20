@@ -24,7 +24,9 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod configured;
 mod confined;
+pub use configured::{ConfiguredCommand, ConfiguredEnd, ConfiguredError};
 mod face;
 pub use face::HostInfo;
 mod exec_shell_settings;
@@ -1078,10 +1080,20 @@ impl DynPlugin for HostPlatformPlugin {
             platform.toolchain = Some(toolchain.clone());
             platform.shell.lock().await.config = config;
             let platform = Arc::new(platform);
+            let calls = tokio_util::task::TaskTracker::new();
+            let dispatch = face::Dispatch {
+                owner: platform.clone(),
+                stopping: ctx.cancellation_token(),
+                calls: calls.clone(),
+            };
+            ctx.effect(move || async move {
+                calls.close();
+                calls.wait().await;
+                Ok(())
+            })?;
             ctx.provide_at(
                 rutis_bridge::session::host_key("execHost"),
-                Arc::new(face::Dispatch(platform.clone()))
-                    as Arc<dyn rutis_bridge::session::HostDispatch>,
+                Arc::new(dispatch) as Arc<dyn rutis_bridge::session::HostDispatch>,
             )?;
             ctx.provide_as::<HostPlatform>(platform)?;
             Ok(Effect::Done)
@@ -2310,13 +2322,37 @@ impl HostPlatform {
     /// [`exec_root`](Self::exec_root), and syncs its parent. An absent
     /// directory counts as removed. The caller has decided with the
     /// ownership rows that no Session still needs it (ADR 013 D4).
-    pub fn remove_exec_directory(&self, path: &Path) -> io::Result<()> {
+    pub async fn remove_output_directory(&self, path: PathBuf) -> io::Result<()> {
         let root = self.exec_root();
-        if path == root || !path.starts_with(&root) {
+        tokio::task::spawn_blocking(move || Self::remove_exec_directory(&root, &path))
+            .await
+            .map_err(io::Error::other)?
+    }
+
+    fn remove_exec_directory(root: &Path, path: &Path) -> io::Result<()> {
+        let relative = path.strip_prefix(root).ok();
+        if relative.is_none_or(|relative| {
+            relative.as_os_str().is_empty()
+                || relative
+                    .components()
+                    .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not a persistent shell output directory",
             ));
+        }
+        let parent = path.parent().expect("strict descendant of execRoot");
+        match std::fs::canonicalize(parent) {
+            Ok(canonical) if canonical != parent => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "not a persistent shell output directory",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+            Ok(_) => {}
         }
         match std::fs::remove_dir_all(path) {
             Ok(()) => {}
@@ -2329,6 +2365,36 @@ impl HostPlatform {
         }
         Ok(())
     }
+}
+
+/// The name of the signal that ended a process, as `exec` reports it.
+#[cfg(unix)]
+pub fn signal_name(status: ExitStatus) -> Option<String> {
+    use std::os::unix::process::ExitStatusExt;
+    let signal = status.signal()?;
+    let name = match signal {
+        libc::SIGHUP => "SIGHUP",
+        libc::SIGINT => "SIGINT",
+        libc::SIGQUIT => "SIGQUIT",
+        libc::SIGILL => "SIGILL",
+        libc::SIGTRAP => "SIGTRAP",
+        libc::SIGABRT => "SIGABRT",
+        libc::SIGBUS => "SIGBUS",
+        libc::SIGFPE => "SIGFPE",
+        libc::SIGKILL => "SIGKILL",
+        libc::SIGUSR1 => "SIGUSR1",
+        libc::SIGSEGV => "SIGSEGV",
+        libc::SIGUSR2 => "SIGUSR2",
+        libc::SIGPIPE => "SIGPIPE",
+        libc::SIGALRM => "SIGALRM",
+        libc::SIGTERM => "SIGTERM",
+        _ => return Some(format!("SIG{signal}")),
+    };
+    Some(name.into())
+}
+#[cfg(windows)]
+pub fn signal_name(_: ExitStatus) -> Option<String> {
+    None
 }
 
 fn find_executable(name: &str) -> Option<PathBuf> {
