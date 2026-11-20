@@ -80,7 +80,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `initialPromptConfiguration` | session | PromptRegistry | data | `get` async |
 | `mcpSession` | session | McpSession | data | `call` async, `refresh` async, `state` async, `widget` async |
 | `prepareContextHost` | session | SessionScope | internal(hot-path) | — |
-| `prepareModelHost` | session | PrepareModelHost | internal(hot-path) | — |
+| `prepareModelHost` | session | PrepareModelHost | data | `prepare` sync |
 | `promptHost` | session | PromptRegistry | data | `load` async |
 | `promptRegistry` | session | PromptRegistry | data | `names` sync, `register` async |
 | `sessionConfig` | session | SessionScope | data | `get` async |

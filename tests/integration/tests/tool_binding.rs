@@ -489,7 +489,7 @@ fn unconfigured_builder(prepare: Arc<dyn PrepareModel>) -> AgentBuilder {
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
-        .session_value(Arc::new(PrepareModelHost(prepare)));
+        .session_data_value(Arc::new(PrepareModelHost(prepare)));
     defaults::install(&mut builder);
     builder
 }

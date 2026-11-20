@@ -4167,6 +4167,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#prepareModelHost@session",
+        "provider": 41,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#promptHost@session",
         "provider": 43,
         "generation": 1,

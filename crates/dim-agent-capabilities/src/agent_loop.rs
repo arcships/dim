@@ -1258,7 +1258,6 @@ impl AgentLoop {
                             .prepare(&request_id, |tools| {
                                 owner
                                     .prepare
-                                    .0
                                     .prepare(&turn_id, &request_id, &history, tools)
                                     .map_err(|error| AgentError::fault("Loop", error.to_string()))
                             })?;

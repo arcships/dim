@@ -12,7 +12,7 @@ exposes loop state without itself executing model or tool effects.
 | `S:HistoryRenderer` | Render supported context history for requests. |
 | `S:ContextModelHost` | Window facts; with the strategy, context recovery and manual compaction are available. |
 | `S:CompactionStrategyHost` | The compaction strategy its manual step calls through ContextPolicy. |
-| `S:PrepareModelHost` | Prepare the request before context/model execution. |
+| `S:PrepareModelHost` | Call `prepare({turnId, requestId, history, availableTools})` with the fixed history and pinned tool order. The host returns the model settings; Loop supplies the messages. |
 | `B:ToolBinding` | Pin and release request tool handlers. |
 | `B:Dispatcher` | Hand off restored state to live step outcomes, inputs and interrupts. |
 | `B:Timeline` | Commit turn/step transitions. |

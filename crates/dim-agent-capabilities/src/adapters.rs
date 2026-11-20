@@ -249,13 +249,13 @@ impl PrepareModel for DefaultPrepareModel {
     }
 }
 pub struct DefaultPrepareModelPlugin {
-    host: Key<PrepareModelHost>,
+    session: rutis::host::InstanceId,
     config: Key<SessionConfig>,
 }
 impl DefaultPrepareModelPlugin {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            host: names.key()?,
+            session: names.instance(dim_agent_runtime::SESSION_GROUP)?,
             config: names.key()?,
         })
     }
@@ -270,10 +270,8 @@ impl DynPlugin for DefaultPrepareModelPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let config = ctx.require_at(&self.config)?;
-            ctx.provide_at(
-                self.host.clone(),
-                Arc::new(PrepareModelHost(Arc::new(DefaultPrepareModel { config }))),
-            )?;
+            PrepareModelHost(Arc::new(DefaultPrepareModel { config }))
+                .provide(ctx, self.session)?;
             Ok(Effect::Done)
         })
     }

@@ -184,7 +184,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
-| `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
 | `faultReporter` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |

@@ -117,14 +117,20 @@ impl HostError {
 }
 
 /// Request settings deliberately omit messages: the loop owns the fixed prefix.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelSettings {
     pub provider_id: String,
     pub model_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub capability_snapshot: Option<ModelCapabilitySnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<ToolDefinition>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<SystemPrompt>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<ModelConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<RequestMetadata>,
 }
 impl ModelSettings {
@@ -165,6 +171,59 @@ pub trait PrepareModel: Send + Sync + 'static {
     ) -> Result<ModelSettings, HostError>;
 }
 pub struct PrepareModelHost(pub Arc<dyn PrepareModel>);
+impl PrepareModelHost {
+    pub fn provide(self, ctx: &Ctx, session: rutis::host::InstanceId) -> rutis::Result<()> {
+        let owner = Arc::new(self);
+        ctx.provide_at(Key::of().instance(session), owner.clone())?;
+        ctx.provide_at::<dyn HostDispatch>(
+            rutis_bridge::session::host_key_in("prepareModelHost", session),
+            owner,
+        )?;
+        Ok(())
+    }
+
+    pub fn prepare(
+        &self,
+        turn_id: &str,
+        request_id: &str,
+        history: &[Arc<Message>],
+        available_tools: &[ToolDefinition],
+    ) -> Result<ModelSettings, HostError> {
+        self.0
+            .prepare(turn_id, request_id, history, available_tools)
+    }
+}
+
+impl HostDispatch for PrepareModelHost {
+    fn methods(&self) -> Option<serde_json::Value> {
+        Some(json!({"prepare":"sync"}))
+    }
+
+    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
+        const NAME: &str = "prepareModelHost";
+        if method != "prepare" {
+            return Err(crate::port_faces::unknown_method(NAME, method));
+        }
+        #[derive(serde::Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Request {
+            turn_id: String,
+            request_id: String,
+            history: Vec<Arc<Message>>,
+            available_tools: Vec<ToolDefinition>,
+        }
+        let request: Request = crate::port_faces::request(NAME, args)?;
+        let settings = self
+            .prepare(
+                &request.turn_id,
+                &request.request_id,
+                &request.history,
+                &request.available_tools,
+            )
+            .map_err(|error| crate::port_faces::failure(NAME, ModelPortError::from(error)))?;
+        rutis_bridge::session::arg(&settings)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct ContextSource {

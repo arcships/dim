@@ -3787,3 +3787,37 @@ async fn node_tool_source_observation_matches_native_watch_and_closes_a_pending_
     server.join().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_model_preparation_uses_the_session_model_and_preserves_pinned_tools() {
+    let mut parts = fixture();
+    parts.rows = vec![
+        json!({"id":"prepare-model","name":parts.anchor.parent().unwrap().join("fixtures/prepare-model.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("PrepareModelFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = new_session(&mut client, json!(["echo"])).await;
+    let reply = client
+        .rpc("session.preparefixture.read", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    let session = agent.get_session(&id).unwrap();
+    let model = &session.config().model;
+    assert_eq!(
+        reply["result"],
+        json!({"providerId":model.provider_id, "modelId":model.model_id})
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
