@@ -99,8 +99,9 @@ converted history record to 8 MiB. Invalid or oversized objects fail before Sess
 publication. Images that fit the message and effective-context record budgets stay
 inline; larger images remain complete managed Session files with readable path
 references and explicit inline-image omissions. Oversized original text is rejected
-without truncation. Source databases and committed WAL are copied through FileStorage;
-only the copy is opened by SQLite. Source files and authorized paths remain intact.
+without truncation. Migration reads authorized source files and writes target files through `fsHost`.
+Account and configuration edits hold the same file lease through read and replacement.
+SQLite opens the private copy of the source database and its committed WAL. Source files and authorized paths remain intact.
 
 ## Tasks and verification
 

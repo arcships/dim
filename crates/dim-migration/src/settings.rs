@@ -4,7 +4,7 @@ mod web;
 
 use crate::native::Native;
 use crate::{Error, Migration, ObjectResult, Outcome, Result, TaskState, source::Source};
-use dim_agent_capabilities::file_storage::FileStorageError;
+use dim_agent_capabilities::file_storage::{FileStorageError, FsPermissions};
 use serde_json::{Map, Value, json};
 
 async fn record(
@@ -97,101 +97,108 @@ async fn file_fill(
         .map(|value| serde_json::from_value(value.clone()).map_err(crate::native::failure))
         .transpose()?
         .unwrap_or_default();
-    let path = owner.files.path(0, name)?;
-    let mut lease = owner.files.lock(&path, &owner.stopping).await?;
-    let mut current: Value = match lease.read(&owner.stopping).await {
-        Ok(bytes) => match serde_json::from_slice(&bytes) {
-            Ok(document) => document,
-            Err(_) => {
-                return record(
-                    owner,
-                    task,
-                    name.into(),
-                    Outcome::Conflict,
-                    Some("Invalid target configuration is preserved".into()),
-                )
-                .await;
-            }
-        },
-        Err(FileStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            json!({})
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let Some(members) = current.as_object_mut() else {
-        return record(
-            owner,
-            task,
-            name.into(),
-            Outcome::Conflict,
-            Some("Non-object target configuration is preserved".into()),
-        )
-        .await;
-    };
-    let existed = !members.is_empty();
-    configured.extend(members.keys().cloned());
-    let mut changed = false;
-    let mut results = Vec::new();
-    for (field, value) in fields {
-        let outcome = match members.get(&field) {
-            Some(existing) if existing == &value => Outcome::AlreadyImported,
-            Some(_) => Outcome::Conflict,
-            None if configured.contains(&field) => {
-                if coverage
-                    .as_ref()
-                    .is_some_and(|value| value["complete"] == true)
-                {
-                    Outcome::Deleted
-                } else {
-                    Outcome::Conflict
+    let path = owner.ledger.home.join(name);
+    crate::ledger::while_locked(&owner.ledger.files, &path, &owner.stopping, async |lease| {
+        let mut current: Value = match owner
+            .ledger
+            .files
+            .read_bytes(&path, usize::MAX, Some(lease), &owner.stopping)
+            .await
+        {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(document) => document,
+                Err(_) => {
+                    return record(
+                        owner,
+                        task,
+                        name.into(),
+                        Outcome::Conflict,
+                        Some("Invalid target configuration is preserved".into()),
+                    )
+                    .await;
                 }
+            },
+            Err(FileStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                json!({})
             }
-            None if name == "exec-shell.json" && existed => Outcome::Conflict,
-            None => {
-                members.insert(field.clone(), value);
-                configured.insert(field.clone());
-                changed = true;
-                Outcome::Imported
-            }
+            Err(error) => return Err(error.into()),
         };
-        results.push((field, outcome));
-    }
-    if changed {
-        let bytes = serde_json::to_vec_pretty(&current)
-            .map_err(|_| Error::Target("Cannot encode client settings".into()))?;
-        #[cfg(unix)]
-        let permissions = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
-        #[cfg(not(unix))]
-        let permissions = None;
-        crate::engine::check(owner, &task.id).await?;
-        Native::save_document(
-            &target.db.lock().unwrap(),
-            &key,
-            &json!({"fields":configured,"complete":false}),
-        )?;
-        lease
-            .replace(
-                bytes,
-                permissions,
-                &tokio_util::sync::CancellationToken::new(),
+        let Some(members) = current.as_object_mut() else {
+            return record(
+                owner,
+                task,
+                name.into(),
+                Outcome::Conflict,
+                Some("Non-object target configuration is preserved".into()),
             )
-            .await?;
-    }
-    if changed
-        || coverage
-            .as_ref()
-            .is_none_or(|value| value["complete"] == true)
-    {
-        Native::save_document(
-            &target.db.lock().unwrap(),
-            &key,
-            &json!({"fields":configured,"complete":true}),
-        )?;
-    }
-    for (field, outcome) in results {
-        record(owner, task, format!("{name}.{field}"), outcome, None).await?;
-    }
-    Ok(())
+            .await;
+        };
+        let existed = !members.is_empty();
+        configured.extend(members.keys().cloned());
+        let mut changed = false;
+        let mut results = Vec::new();
+        for (field, value) in fields {
+            let outcome = match members.get(&field) {
+                Some(existing) if existing == &value => Outcome::AlreadyImported,
+                Some(_) => Outcome::Conflict,
+                None if configured.contains(&field) => {
+                    if coverage
+                        .as_ref()
+                        .is_some_and(|value| value["complete"] == true)
+                    {
+                        Outcome::Deleted
+                    } else {
+                        Outcome::Conflict
+                    }
+                }
+                None if name == "exec-shell.json" && existed => Outcome::Conflict,
+                None => {
+                    members.insert(field.clone(), value);
+                    configured.insert(field.clone());
+                    changed = true;
+                    Outcome::Imported
+                }
+            };
+            results.push((field, outcome));
+        }
+        if changed {
+            let bytes = serde_json::to_vec_pretty(&current)
+                .map_err(|_| Error::Target("Cannot encode client settings".into()))?;
+            crate::engine::check(owner, &task.id).await?;
+            Native::save_document(
+                &target.db.lock().unwrap(),
+                &key,
+                &json!({"fields":configured,"complete":false}),
+            )?;
+            owner
+                .ledger
+                .files
+                .replace(
+                    &path,
+                    bytes,
+                    FsPermissions::Private,
+                    Some(lease),
+                    &tokio_util::sync::CancellationToken::new(),
+                )
+                .await?;
+        }
+        if changed
+            || coverage
+                .as_ref()
+                .is_none_or(|value| value["complete"] == true)
+        {
+            Native::save_document(
+                &target.db.lock().unwrap(),
+                &key,
+                &json!({"fields":configured,"complete":true}),
+            )?;
+        }
+        for (field, outcome) in results {
+            record(owner, task, format!("{name}.{field}"), outcome, None).await?;
+        }
+        Ok(())
+    })
+    .await
 }
 
 pub(crate) async fn import(

@@ -139,6 +139,30 @@ fn reserved_name(name: &OsStr) -> bool {
     name.to_string_lossy().starts_with(RESOURCE_PREFIX) || name == "auth.json.lock"
 }
 
+/// Parses a relative path supplied by a storage client before joining it to an authorized root.
+pub fn relative_file_path(relative: &Path) -> Result<PathBuf> {
+    let mut path = PathBuf::new();
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(FileStorageError::InvalidPath(
+                "expected a relative file path",
+            ));
+        };
+        #[cfg(windows)]
+        native::validate_component(name)?;
+        if reserved_name(name) {
+            return Err(FileStorageError::InvalidPath(
+                "reserved storage resource name",
+            ));
+        }
+        path.push(name);
+    }
+    if path.as_os_str().is_empty() {
+        return Err(FileStorageError::InvalidPath("file name is required"));
+    }
+    Ok(path)
+}
+
 struct State {
     roots: Vec<File>,
     active: usize,
@@ -362,29 +386,10 @@ impl FileStorage {
                 return Err(FileStorageError::InvalidPath("unknown authorized root"));
             }
         }
-        let mut path = PathBuf::new();
-        for component in relative.as_ref().components() {
-            let Component::Normal(name) = component else {
-                return Err(FileStorageError::InvalidPath(
-                    "expected a relative file path",
-                ));
-            };
-            #[cfg(windows)]
-            native::validate_component(name)?;
-            if reserved_name(name) {
-                return Err(FileStorageError::InvalidPath(
-                    "reserved storage resource name",
-                ));
-            }
-            path.push(name);
-        }
-        if path.as_os_str().is_empty() {
-            return Err(FileStorageError::InvalidPath("file name is required"));
-        }
         Ok(FilePath {
             generation: self.generation,
             root,
-            relative: path,
+            relative: relative_file_path(relative.as_ref())?,
         })
     }
 

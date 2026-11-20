@@ -3,7 +3,7 @@ use crate::{
     native::Native,
     source::{Source, fingerprint},
 };
-use dim_agent_capabilities::file_storage::FileStorageError;
+use dim_agent_capabilities::file_storage::{FileStorageError, FsPermissions};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -15,43 +15,48 @@ async fn insert(
     fields: Map<String, Value>,
     cancel: &CancellationToken,
 ) -> Result<Outcome> {
-    let path = target.files.path(0, file)?;
-    let mut lease = target.files.lock(&path, cancel).await?;
-    let mut doc: Value = match lease.read(cancel).await {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|_| Error::Object("Invalid target account file is preserved".into()))?,
-        Err(FileStorageError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
-        Err(e) => return Err(e.into()),
-    };
-    let doc = doc
-        .as_object_mut()
-        .ok_or_else(|| Error::Object("Invalid target account file is preserved".into()))?;
-    let receipt = format!("migration:{id}");
-    let digest = fingerprint(&fields)?;
-    if let Some(previous) = doc.get(&receipt) {
-        return Ok(if previous == &digest {
-            Outcome::AlreadyImported
-        } else {
-            Outcome::Conflict
-        });
-    }
-    if fields.keys().any(|key| doc.contains_key(key)) {
-        return Ok(Outcome::Conflict);
-    }
-    doc.extend(fields);
-    doc.insert(receipt, Value::String(digest));
-    #[cfg(unix)]
-    let permissions = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
-    #[cfg(not(unix))]
-    let permissions = None;
-    lease
-        .replace(
-            serde_json::to_vec_pretty(doc).map_err(crate::native::failure)?,
-            permissions,
-            cancel,
-        )
-        .await?;
-    Ok(Outcome::Imported)
+    let path = target.home.join(file);
+    crate::ledger::while_locked(&target.files, &path, cancel, async |lease| {
+        let mut doc: Value = match target
+            .files
+            .read_bytes(&path, usize::MAX, Some(lease), cancel)
+            .await
+        {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Object("Invalid target account file is preserved".into()))?,
+            Err(FileStorageError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+            Err(e) => return Err(e.into()),
+        };
+        let doc = doc
+            .as_object_mut()
+            .ok_or_else(|| Error::Object("Invalid target account file is preserved".into()))?;
+        let receipt = format!("migration:{id}");
+        let digest = fingerprint(&fields)?;
+        if let Some(previous) = doc.get(&receipt) {
+            return Ok(if previous == &digest {
+                Outcome::AlreadyImported
+            } else {
+                Outcome::Conflict
+            });
+        }
+        if fields.keys().any(|key| doc.contains_key(key)) {
+            return Ok(Outcome::Conflict);
+        }
+        doc.extend(fields);
+        doc.insert(receipt, Value::String(digest));
+        target
+            .files
+            .replace(
+                &path,
+                serde_json::to_vec_pretty(doc).map_err(crate::native::failure)?,
+                FsPermissions::Private,
+                Some(lease),
+                cancel,
+            )
+            .await?;
+        Ok(Outcome::Imported)
+    })
+    .await
 }
 
 pub(crate) async fn import(
@@ -364,48 +369,53 @@ async fn import_mcp(
         .map(|scopes| scopes.split_whitespace().collect())
         .unwrap_or_else(|| scopes.clone());
     let record = json!({"serverId":id,"url":canonical,"resource":resource,"issuer":issuer,"tokenEndpoint":token,"client":{"clientId":client.client_id,"clientSecret":client.client_secret,"registration":registration,"redirectUri":redirect,"authMethod":method},"tokens":{"accessToken":tokens.access_token,"refreshToken":tokens.refresh_token,"expiresAt":tokens.expires_at,"scopes":scopes},"requestedScopes":requested_scopes});
-    let path = target.files.path(0, "mcp-oauth.json")?;
-    let mut lease = target.files.lock(&path, cancel).await?;
-    let mut doc: Value = match lease.read(cancel).await {
-        Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| unsupported())?,
-        Err(FileStorageError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
-            json!({"version":1,"credentials":[]})
+    let path = target.home.join("mcp-oauth.json");
+    crate::ledger::while_locked(&target.files, &path, cancel, async |lease| {
+        let mut doc: Value = match target
+            .files
+            .read_bytes(&path, usize::MAX, Some(lease), cancel)
+            .await
+        {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|_| unsupported())?,
+            Err(FileStorageError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                json!({"version":1,"credentials":[]})
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if doc["version"] != 1 {
+            return Err(unsupported());
         }
-        Err(e) => return Err(e.into()),
-    };
-    if doc["version"] != 1 {
-        return Err(unsupported());
-    }
-    let receipt = format!("migration:{id}");
-    let digest = fingerprint(entry)?;
-    if let Some(previous) = doc.get(&receipt) {
-        return Ok(if previous == &digest {
-            Outcome::AlreadyImported
-        } else {
-            Outcome::Conflict
-        });
-    }
-    let records = doc["credentials"].as_array_mut().ok_or_else(unsupported)?;
-    if records
-        .iter()
-        .any(|r| r["serverId"] == id && r["url"] == canonical)
-    {
-        return Ok(Outcome::Conflict);
-    }
-    records.push(record);
-    doc[receipt] = Value::String(digest);
-    #[cfg(unix)]
-    let permissions = Some(std::os::unix::fs::PermissionsExt::from_mode(0o600));
-    #[cfg(not(unix))]
-    let permissions = None;
-    lease
-        .replace(
-            serde_json::to_vec_pretty(&doc).map_err(crate::native::failure)?,
-            permissions,
-            cancel,
-        )
-        .await?;
-    Ok(Outcome::Imported)
+        let receipt = format!("migration:{id}");
+        let digest = fingerprint(entry)?;
+        if let Some(previous) = doc.get(&receipt) {
+            return Ok(if previous == &digest {
+                Outcome::AlreadyImported
+            } else {
+                Outcome::Conflict
+            });
+        }
+        let records = doc["credentials"].as_array_mut().ok_or_else(unsupported)?;
+        if records
+            .iter()
+            .any(|r| r["serverId"] == id && r["url"] == canonical)
+        {
+            return Ok(Outcome::Conflict);
+        }
+        records.push(record);
+        doc[receipt] = Value::String(digest);
+        target
+            .files
+            .replace(
+                &path,
+                serde_json::to_vec_pretty(&doc).map_err(crate::native::failure)?,
+                FsPermissions::Private,
+                Some(lease),
+                cancel,
+            )
+            .await?;
+        Ok(Outcome::Imported)
+    })
+    .await
 }
 
 #[derive(serde::Deserialize)]

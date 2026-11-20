@@ -66,7 +66,7 @@ pub(crate) async fn run(
 ) -> Result<TaskReport> {
     if let Some(previous_id) = retry.as_deref() {
         let path = owner.ledger.path(previous_id, "run")?;
-        let settlement = async {
+        let settlement = async |_| {
             let mut previous = owner.ledger.report(previous_id).await?.task;
             if previous.status == TaskStatus::Running {
                 previous.status = TaskStatus::Interrupted;
@@ -77,10 +77,13 @@ pub(crate) async fn run(
             }
             run_new(&owner, source_home, retry.clone()).await
         };
-        owner
-            .ledger
-            .while_locked(path, &CancellationToken::new(), settlement)
-            .await
+        crate::ledger::while_locked(
+            &owner.ledger.files,
+            &path,
+            &CancellationToken::new(),
+            settlement,
+        )
+        .await
     } else {
         run_new(&owner, source_home, None).await
     }
@@ -93,14 +96,13 @@ async fn run_new(
 ) -> Result<TaskReport> {
     let id = uuid::Uuid::new_v4().to_string();
     owner.ledger.create(&id).await?;
-    owner
-        .ledger
-        .while_locked(
-            owner.ledger.path(&id, "run")?,
-            &CancellationToken::new(),
-            run_task(owner, source_home, &id, retry),
-        )
-        .await
+    crate::ledger::while_locked(
+        &owner.ledger.files,
+        &owner.ledger.path(&id, "run")?,
+        &CancellationToken::new(),
+        async |_| run_task(owner, source_home, &id, retry).await,
+    )
+    .await
 }
 
 async fn run_task(
@@ -161,7 +163,12 @@ async fn run_task(
 }
 
 async fn execute(owner: &Migration, task: &mut TaskState) -> Result<()> {
-    let target = Native::open(owner.files.clone(), &owner.native_directory).await?;
+    let target = Native::open(
+        owner.ledger.files.clone(),
+        &owner.ledger.home,
+        &owner.native_directory,
+    )
+    .await?;
     Source::with_snapshot(owner, task.source_home.clone(), async |source| {
         execute_source(owner, task, source, &target).await
     })

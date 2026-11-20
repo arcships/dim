@@ -15,6 +15,18 @@ pub(crate) struct Ledger {
     progress: watch::Sender<Option<Progress>>,
 }
 
+pub(super) async fn while_locked<T>(
+    files: &FsHost,
+    path: &Path,
+    cancel: &CancellationToken,
+    work: impl AsyncFnOnce(uuid::Uuid) -> Result<T>,
+) -> Result<T> {
+    let lease = files.lock(None, path, cancel).await?;
+    let result = work(lease).await;
+    files.unlock(lease).await?;
+    result
+}
+
 impl Ledger {
     pub async fn open(
         files: Arc<FsHost>,
@@ -45,18 +57,6 @@ impl Ledger {
             .create_directory(directory.join("results"), &cancel)
             .await?;
         Ok(())
-    }
-
-    pub async fn while_locked<T>(
-        &self,
-        path: PathBuf,
-        cancel: &CancellationToken,
-        work: impl Future<Output = Result<T>>,
-    ) -> Result<T> {
-        let lease = self.files.lock(None, path, cancel).await?;
-        let result = work.await;
-        self.files.unlock(lease).await?;
-        result
     }
 
     pub async fn save(&self, task: &TaskState) -> Result<()> {
@@ -92,11 +92,13 @@ impl Ledger {
             ));
         }
         if task.status == TaskStatus::Running {
-            match self
-                .while_locked(self.path(id, "run")?, &CancellationToken::new(), async {
-                    Ok(())
-                })
-                .await
+            match while_locked(
+                &self.files,
+                &self.path(id, "run")?,
+                &CancellationToken::new(),
+                async |_| Ok(()),
+            )
+            .await
             {
                 Ok(()) => task.status = TaskStatus::Interrupted,
                 Err(Error::Storage(FileStorageError::Locked)) => {}

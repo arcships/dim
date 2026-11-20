@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 use dim_agent_capabilities::file_storage::{
-    DirectoryEntry, FileStorage, FileStorageError, FsHost, FsPermissions, FsRemove,
+    DirectoryEntry, FileStorageError, FsHost, FsPermissions, FsRemove, relative_file_path,
 };
 use dim_agent_types::{Message, MessageContent, MessagePart, ModelId, Role};
 use dim_app_server::protocol::SessionOrigin;
@@ -94,10 +94,8 @@ pub(crate) struct ScheduledJob {
 
 pub(crate) struct Source {
     pub home: PathBuf,
-    pub root: usize,
     pub snapshot: PathBuf,
     pub inventory: Inventory,
-    files: Arc<FileStorage>,
     host: Arc<FsHost>,
     directory: PathBuf,
     db: Mutex<Option<Connection>>,
@@ -234,15 +232,13 @@ impl Source {
     ) -> Result<T> {
         let home = validate_source_home(&home, &owner.ledger.home)?;
         let path = owner.ledger.home.join("migration/snapshot-run");
-        owner
-            .ledger
-            .while_locked(path, &owner.stopping, async {
-                let source = Self::open(owner, home, &owner.stopping).await?;
-                let result = work(&source).await;
-                let closed = source.close(&CancellationToken::new()).await;
-                result.and_then(|value| closed.map(|()| value))
-            })
-            .await
+        crate::ledger::while_locked(&owner.ledger.files, &path, &owner.stopping, async |_| {
+            let source = Self::open(owner, home, &owner.stopping).await?;
+            let result = work(&source).await;
+            let closed = source.close(&CancellationToken::new()).await;
+            result.and_then(|value| closed.map(|()| value))
+        })
+        .await
     }
 
     async fn open(
@@ -250,7 +246,6 @@ impl Source {
         home: PathBuf,
         cancel: &CancellationToken,
     ) -> Result<Self> {
-        let files = &owner.files;
         let host = &owner.ledger.files;
         let target = &owner.ledger.home;
         let snapshots = target.join("migration/snapshots");
@@ -264,7 +259,7 @@ impl Source {
             )
             .await?;
         }
-        let root = files.register_root(home.clone(), cancel).await?;
+        owner.files.register_root(home.clone(), cancel).await?;
         let names: Vec<_> = ["dimcode.sqlite", "dimglobal.sqlite"]
             .into_iter()
             .filter(|name| std::fs::symlink_metadata(home.join(name)).is_ok())
@@ -416,14 +411,12 @@ impl Source {
             };
             Ok(Self {
                 home,
-                root,
                 snapshot,
                 inventory: Inventory {
                     database: name.into(),
                     tables,
                     issues,
                 },
-                files: files.clone(),
                 host: host.clone(),
                 directory: directory.clone(),
                 db: Mutex::new(Some(db)),
@@ -1038,13 +1031,11 @@ impl Source {
         } else {
             path.to_owned()
         };
-        let path = self
-            .files
-            .path(self.root, relative)
+        let path = relative_file_path(&relative)
             .map_err(|_| Error::Object("Historical artifact has an unsafe source path".into()))?;
         match self
-            .files
-            .read_limited(&path, 16 * 1024 * 1024, cancel)
+            .host
+            .read_bytes(&self.home.join(path), 16 * 1024 * 1024, None, cancel)
             .await
         {
             Ok(bytes) => Ok(bytes),
@@ -1069,10 +1060,10 @@ impl Source {
     }
 
     pub async fn json(&self, name: &str, cancel: &CancellationToken) -> Result<Option<Value>> {
-        let path = self.files.path(self.root, name)?;
+        let path = self.home.join(relative_file_path(Path::new(name))?);
         match self
-            .files
-            .read_limited(&path, 8 * 1024 * 1024, cancel)
+            .host
+            .read_bytes(&path, 8 * 1024 * 1024, None, cancel)
             .await
         {
             Ok(bytes) => {
@@ -1109,8 +1100,8 @@ impl Source {
         cancel: &CancellationToken,
     ) -> Result<Vec<DirectoryEntry>> {
         match self
-            .files
-            .list(&self.files.path(self.root, path)?, cancel)
+            .host
+            .list(self.home.join(relative_file_path(Path::new(path))?), cancel)
             .await
         {
             Ok(entries) => Ok(entries),
@@ -1184,12 +1175,14 @@ impl Source {
                 } else {
                     Path::new("data").join(reference)
                 };
-                self.files
-                    .read_limited(
-                        &self.files.path(self.root, relative).map_err(|_| {
-                            Error::Object("Legacy attachment is outside its authorized root".into())
-                        })?,
+                let relative = relative_file_path(&relative).map_err(|_| {
+                    Error::Object("Legacy attachment is outside its authorized root".into())
+                })?;
+                self.host
+                    .read_bytes(
+                        &self.home.join(relative),
                         16 * 1024 * 1024,
+                        None,
                         cancel,
                     )
                     .await.map_err(|error| match error {FileStorageError::Cancelled=>Error::Cancelled,FileStorageError::Closed=>Error::Source("Legacy attachment storage is closed".into()),_=>Error::Object("Legacy attachment is missing, unreadable, or outside its authorized root".into())})?
