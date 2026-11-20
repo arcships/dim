@@ -97,6 +97,7 @@ impl FsPermissions {
 /// Filesystem operations on the existing storage generation.
 #[derive(Clone)]
 pub struct FsHost {
+    read_paths: Arc<std::sync::Mutex<std::collections::HashMap<PathBuf, usize>>>,
     node_home: Option<PathBuf>,
     pub(crate) writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     system_roots: Arc<Vec<PathBuf>>,
@@ -112,6 +113,7 @@ impl FsHost {
         node_home: Option<PathBuf>,
     ) -> Self {
         Self {
+            read_paths: Arc::default(),
             node_home,
             writes,
             system_roots: Arc::new(crate::host_platform::platform_roots()),
@@ -215,7 +217,95 @@ impl FsHost {
             .map_err(|_| FileStorageError::Closed)
     }
 
+    /// Authorizes reads of these exact configured files for the mounting row's lifetime.
+    pub(crate) fn register_read_paths(&self, ctx: &Ctx, paths: Vec<PathBuf>) -> rutis::Result<()> {
+        let registry = self.read_paths.clone();
+        let mut registered = self.read_paths.lock().unwrap();
+        let remove = paths.clone();
+        ctx.effect(move || async move {
+            let mut registered = registry.lock().unwrap();
+            for path in remove {
+                if let Some(count) = registered.get_mut(&path) {
+                    *count -= 1;
+                    if *count == 0 {
+                        registered.remove(&path);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        for path in paths {
+            *registered.entry(path).or_default() += 1;
+        }
+        Ok(())
+    }
+
+    async fn read_registered<T: Send + 'static>(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+        action: impl FnOnce(&Path, &FileStorage, &CancellationToken) -> Result<T> + Send + 'static,
+    ) -> Option<Result<T>> {
+        if !self.read_paths.lock().unwrap().contains_key(path) {
+            return None;
+        }
+        let owner = self.storage.clone();
+        let operation = {
+            let mut state = owner.state.lock().unwrap();
+            if let Err(error) = owner.check(cancel) {
+                return Some(Err(error));
+            }
+            state.active += 1;
+            super::Operation(owner.clone())
+        };
+        let path = path.to_owned();
+        let cancel = cancel.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                let _operation = operation;
+                owner.check(&cancel)?;
+                let result = action(&path, &owner, &cancel)?;
+                owner.check(&cancel)?;
+                Ok(result)
+            })
+            .await
+            .unwrap_or_else(|error| Err(error.into())),
+        )
+    }
+
     pub async fn stat(&self, path: &Path, cancel: &CancellationToken) -> Result<super::FileStat> {
+        Ok(self.stat_path(path, cancel).await?.0)
+    }
+
+    pub(crate) async fn stat_path(
+        &self,
+        path: &Path,
+        cancel: &CancellationToken,
+    ) -> Result<(super::FileStat, Option<PathBuf>)> {
+        if let Some(result) = self
+            .read_registered(path, cancel, |path, _, _| {
+                let metadata = match path.metadata() {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok((super::FileStat::Missing, None));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let kind = if metadata.is_file() {
+                    super::FileStat::File {
+                        size: metadata.len(),
+                    }
+                } else if metadata.is_dir() {
+                    super::FileStat::Directory
+                } else {
+                    super::FileStat::Other
+                };
+                Ok((kind, path.canonicalize().ok()))
+            })
+            .await
+        {
+            return result;
+        }
         let path = self.storage.resolve(path)?;
         let relative = path.relative.clone();
         self.storage
@@ -229,6 +319,7 @@ impl FsHost {
                 super::native::file_stat(&parent, &name)
             })
             .await
+            .map(|kind| (kind, None))
     }
 
     pub async fn read_bytes(
@@ -238,6 +329,15 @@ impl FsHost {
         lease_id: Option<Uuid>,
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>> {
+        if lease_id.is_none()
+            && let Some(result) = self
+                .read_registered(path, cancel, move |path, owner, cancel| {
+                    super::read_file(std::fs::File::open(path)?, owner, cancel, limit)
+                })
+                .await
+        {
+            return result;
+        }
         let path = self.storage.resolve(path)?;
         let Some(id) = lease_id else {
             return self.storage.read_limited(&path, limit, cancel).await;
@@ -755,12 +855,19 @@ impl HostDispatch for FsHost {
                 Request::Mentions(request) => {
                     serde_json::json!(owner.mentions(request, &cancel).await.map_err(failure)?)
                 }
-                Request::Stat(request) => serde_json::json!(
-                    owner
-                        .stat(Path::new(&request.path), &cancel)
+                Request::Stat(request) => {
+                    let (kind, canonical_path) = owner
+                        .stat_path(Path::new(&request.path), &cancel)
                         .await
-                        .map_err(failure)?
-                ),
+                        .map_err(failure)?;
+                    let mut reply = serde_json::json!(kind);
+                    if let Some(path) = canonical_path {
+                        reply["canonicalPath"] =
+                            serialize_name(path.as_os_str(), serde_json::value::Serializer)
+                                .map_err(|error| Error::value(error.to_string()))?;
+                    }
+                    reply
+                }
                 Request::Lock(request) => {
                     let caller =
                         caller.ok_or_else(|| Error::value("fsHost.lock requires a calling row"))?;

@@ -361,7 +361,7 @@ tool semantics: no line numbers, no images, no effects.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `stat` | async | `{path}` | `{kind: "file" \| "directory" \| "missing" \| "other", size?}` |
+| `stat` | async | `{path}` | `{kind: "file" \| "directory" \| "missing" \| "other", size?, canonicalPath?}` |
 | `readBytes` | async | `{path, limit, leaseId?}` | `{bytes, size}` |
 | `openRead` | async | `{path}` | `{readId, size}` |
 | `readAt` | async | `{readId, offset, limit}` | `{bytes}` |
@@ -853,6 +853,11 @@ The owners that read node files or start node processes, and the operations they
 | Migration ledger and snapshots | `createDirectory`, `list`, `remove`, `readBytes`, `replace`. A migration worker holds its `lock` on the task until it records settlement and calls `unlock`, including during unload. |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
+
+For the lifetime of PromptSources, its project and user rule filenames are registered individually for
+`stat` and unleased `readBytes`. Those reads follow links. When available, `stat.canonicalPath`
+lets the source identify the same file at both locations. Registration grants no directory,
+sibling-file, lease or write access.
 
 ## 7. Rule check
 

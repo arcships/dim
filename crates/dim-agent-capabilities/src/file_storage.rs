@@ -1039,7 +1039,15 @@ fn read(
     cancel: &CancellationToken,
     limit: usize,
 ) -> Result<Vec<u8>> {
-    let mut file = native::read_user_file(parent, name)?;
+    read_file(native::read_user_file(parent, name)?, owner, cancel, limit)
+}
+
+fn read_file(
+    mut file: File,
+    owner: &FileStorage,
+    cancel: &CancellationToken,
+    limit: usize,
+) -> Result<Vec<u8>> {
     if file.metadata()?.len() > limit as u64 {
         return Err(io::Error::new(io::ErrorKind::InvalidData, ReadLimitExceeded).into());
     }

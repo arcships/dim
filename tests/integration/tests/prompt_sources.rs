@@ -167,6 +167,29 @@ async fn user_instructions_appear_once_and_absent_files_produce_no_entry() {
     env.agent.close().await.unwrap();
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn linked_ancestor_and_home_rules_deliver_one_project_instruction() {
+    let dirs = Dirs::new();
+    let cwd = dirs.dir("workspace/project");
+    let rule = dirs.dir("rules").join("shared.md");
+    dirs.write(&rule, "SHARED-RULE");
+    let ancestor_rule = dirs.root.join("workspace/AGENTS.md");
+    std::os::unix::fs::symlink(&rule, &ancestor_rule).unwrap();
+    std::os::unix::fs::symlink(&rule, dirs.home.join("AGENTS.md")).unwrap();
+
+    let env = env(&dirs, Options::default()).await;
+    let session = env.session(&cwd, "").await.unwrap();
+    run(&session, "hello").await;
+    let text = request_text(&requests(&session).await[0]);
+    assert_eq!(text.matches("SHARED-RULE").count(), 1, "{text}");
+    assert!(text.contains(&format!(
+        "# Project instructions ({};",
+        ancestor_rule.display()
+    )));
+    env.agent.close().await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agents_md_changes_arrive_as_rules_from_the_periodic_check() {
     let dirs = Dirs::new();

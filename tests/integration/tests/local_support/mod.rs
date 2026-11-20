@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        ExecShellRuntime, ExecHost, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        ExecHost, ExecShellRuntime, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},
@@ -521,6 +521,11 @@ pub async fn env(dirs: &Dirs, options: Options) -> Env {
             }),
         );
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     let today = options.today.clone();
     prompt_sources::install_with_clock(
         &mut builder,

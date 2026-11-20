@@ -5,9 +5,10 @@
 //! changes.
 use crate::{
     context_block,
+    file_storage::{FileStat, FileStorageError, FsHost},
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     host_platform::{
-        ExecShellRuntime, HostInfo, ExecHost, Os, OutputEncoding, ShellEdition, ShellStatus,
+        ExecHost, ExecShellRuntime, HostInfo, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
     prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
@@ -271,45 +272,57 @@ fn environment(platform: &HostInfo<'_>, cwd: &str, policy: &PromptSourcesConfig)
     format!("\n{}\n", entries.join("\n"))
 }
 
-fn read_project_instructions(path: &Path) -> Result<String, HostError> {
-    let bytes = std::fs::read(path).map_err(|error| {
-        HostError::failed(format!(
-            "{PROJECT_INSTRUCTIONS}: AGENTS.md not readable: {}",
-            error.kind()
-        ))
-    })?;
-    String::from_utf8(bytes).map_err(|_| {
-        HostError::failed(format!("{PROJECT_INSTRUCTIONS}: AGENTS.md not valid UTF-8"))
-    })
-}
-
-fn read_instructions(cwd: &Path, home: &Path, project: bool) -> Result<Option<String>, HostError> {
-    let project_path = cwd
-        .ancestors()
-        .map(|dir| dir.join("AGENTS.md"))
-        .find(|candidate| candidate.exists());
-    if project {
-        return project_path
-            .map(|path| {
-                let content = read_project_instructions(&path)?;
-                Ok((!content.trim().is_empty()).then(|| {
-                    format!(
-                        "# Project instructions ({}; applies to this directory and below)\n{}",
-                        context_block::text(&path.display().to_string()),
-                        context_block::text(content.trim())
-                    )
-                }))
-            })
-            .transpose()
-            .map(Option::flatten);
+async fn load_instructions(
+    files: &FsHost,
+    cwd: &Path,
+    home: &Path,
+    project: bool,
+    cancel: &CancellationToken,
+) -> Result<Option<String>, HostError> {
+    let mut project_file = None;
+    for directory in cwd.ancestors() {
+        let path = directory.join("AGENTS.md");
+        match files.stat_path(&path, cancel).await {
+            Ok((FileStat::Missing, _)) | Err(FileStorageError::Io(_)) => continue,
+            Ok((_, canonical)) => {
+                project_file = Some((path, canonical));
+                break;
+            }
+            Err(error) => return Err(instruction_io_error(error)),
+        }
     }
-    let user_path = home.join("AGENTS.md");
-    if project_path.as_ref().is_some_and(
-        |path| matches!((path.canonicalize(), user_path.canonicalize()), (Ok(a), Ok(b)) if a == b),
-    ) {
+    if project {
+        let Some((path, _)) = project_file else {
+            return Ok(None);
+        };
+        let bytes = files
+            .read_bytes(&path, usize::MAX, None, cancel)
+            .await
+            .map_err(instruction_io_error)?;
+        let content = String::from_utf8(bytes).map_err(|_| {
+            HostError::failed(format!("{PROJECT_INSTRUCTIONS}: AGENTS.md not valid UTF-8"))
+        })?;
+        return Ok((!content.trim().is_empty()).then(|| {
+            format!(
+                "# Project instructions ({}; applies to this directory and below)\n{}",
+                context_block::text(&path.display().to_string()),
+                context_block::text(content.trim())
+            )
+        }));
+    }
+    let path = home.join("AGENTS.md");
+    if let Some((_, Some(project_path))) = project_file
+        && let Ok((_, Some(user_path))) = files.stat_path(&path, cancel).await
+        && user_path == project_path
+    {
         return Ok(None);
     }
-    Ok(std::fs::read_to_string(user_path)
+    let bytes = match files.read_bytes(&path, usize::MAX, None, cancel).await {
+        Ok(bytes) => bytes,
+        Err(FileStorageError::Io(_)) => return Ok(None),
+        Err(error) => return Err(instruction_io_error(error)),
+    };
+    Ok(String::from_utf8(bytes)
         .ok()
         .filter(|content| !content.trim().is_empty())
         .map(|content| {
@@ -320,15 +333,15 @@ fn read_instructions(cwd: &Path, home: &Path, project: bool) -> Result<Option<St
         }))
 }
 
-async fn load_instructions(
-    cwd: &str,
-    home: &Path,
-    project: bool,
-) -> Result<Option<String>, HostError> {
-    let (cwd, home) = (PathBuf::from(cwd), home.to_owned());
-    tokio::task::spawn_blocking(move || read_instructions(&cwd, &home, project))
-        .await
-        .map_err(|_| HostError::failed("AGENTS.md read task failed"))?
+fn instruction_io_error(error: FileStorageError) -> HostError {
+    match error {
+        FileStorageError::Io(error) => HostError::failed(format!(
+            "{PROJECT_INSTRUCTIONS}: AGENTS.md not readable: {}",
+            error.kind()
+        )),
+        FileStorageError::Cancelled => HostError::Cancelled("prompt source load cancelled".into()),
+        error => HostError::failed(error.to_string()),
+    }
 }
 
 /// Factory configuration of the sources' policy texts ([PromptSources §2]).
@@ -441,6 +454,7 @@ impl PromptSourcesBranch {
 }
 
 struct Sources {
+    files: Arc<FsHost>,
     home: PathBuf,
     platform: Arc<ExecHost>,
     config: Arc<SessionConfig>,
@@ -474,9 +488,11 @@ impl LoadPrompt for Sources {
                 ),
                 PROJECT_INSTRUCTIONS | USER_INSTRUCTIONS => {
                     let body = load_instructions(
-                        &self.config.cwd,
+                        &self.files,
+                        Path::new(&self.config.cwd),
                         &self.home,
                         target.source == PROJECT_INSTRUCTIONS,
+                        &cancel,
                     )
                     .await?;
                     let order = if target.source == PROJECT_INSTRUCTIONS {
@@ -529,6 +545,7 @@ impl LoadPrompt for Sources {
 
 /// Session part: registers each of its sources with the prompt registry.
 pub struct PromptSourcesPlugin {
+    files: Key<FsHost>,
     platform: Key<ExecHost>,
     config: Key<SessionConfig>,
     registry: Key<PromptRegistry>,
@@ -549,6 +566,7 @@ impl PromptSourcesPlugin {
         policy: PromptSourcesConfig,
     ) -> rutis::Result<Self> {
         Ok(Self {
+            files: names.key()?,
             platform: names.key()?,
             config: names.key()?,
             registry: names.key()?,
@@ -568,6 +586,7 @@ impl DynPlugin for PromptSourcesPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         vec![
+            self.files.erase(),
             self.platform.erase(),
             self.config.erase(),
             self.registry.erase(),
@@ -602,7 +621,17 @@ impl DynPlugin for PromptSourcesPlugin {
                     }
                 }
             }
+            let files = ctx.require_at(&self.files)?;
+            files.register_read_paths(
+                ctx,
+                Path::new(&config.cwd)
+                    .ancestors()
+                    .chain(std::iter::once(platform.facts().home))
+                    .map(|dir| dir.join("AGENTS.md"))
+                    .collect(),
+            )?;
             let sources: Arc<dyn LoadPrompt> = Arc::new(Sources {
+                files,
                 home: platform.facts().home.to_owned(),
                 platform,
                 config,
