@@ -528,7 +528,8 @@ pub struct PluginFiles(Arc<Files>);
 
 impl PluginFiles {
     /// Opens a caller-managed scope. Admitted work can retain it across a row
-    /// restart. All operations still end when the file service stops.
+    /// restart. Release the last scope reference after admitted work settles.
+    /// All operations still end when the file service stops.
     pub fn scope(&self, caller: Option<Ctx>) -> Arc<FileScope> {
         Arc::new(FileScope {
             caller,
