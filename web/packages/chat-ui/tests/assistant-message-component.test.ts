@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createApp, defineComponent, h, nextTick, type App, type Component } from 'vue'
+import { createApp, defineComponent, h, nextTick, ref, type App, type Component } from 'vue'
 import {
+  CHAT_UI_HOST,
   TimelineAssistantMessage,
+  chatUiEn,
+  type ChatUiHost,
   type ChatUiAssistantMessageBlock,
   type ChatUiAssistantMessageIcons,
   type ChatUiAssistantMessageLabels,
@@ -101,6 +104,53 @@ const ContextMenuItem = defineComponent({
   }, slots.default?.()),
 })
 
+function copyHost(copy: ChatUiHost['commands']['copy']): ChatUiHost {
+  return {
+    session: ref(null),
+    capabilities: ref({
+      interactive: true,
+      terminal: false,
+      browserPanel: false,
+      filePreview: false,
+      mcpApps: false,
+      notifications: false,
+      attachments: false,
+    }),
+    commands: {
+      send: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      retry: vi.fn(async () => undefined),
+      fork: vi.fn(async () => undefined),
+      branch: vi.fn(async () => undefined),
+      edit: vi.fn(async () => undefined),
+      approve: vi.fn(async () => undefined),
+      answer: vi.fn(async () => undefined),
+      openFile: vi.fn(),
+      copy,
+    },
+    i18n: { locale: ref('en'), t: key => chatUiEn[key] },
+  }
+}
+
+function stubClipboard() {
+  const writeText = vi.fn(async () => undefined)
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+  return writeText
+}
+
+const terminal: ChatUiTurnTerminalState = {
+  status: 'failed',
+  reason: 'provider_error',
+  sourceMessageId: 'message-1',
+  debugDetails: {
+    statusCode: 500,
+    code: 'E_PROVIDER',
+  },
+}
+
 const mounted: App[] = []
 
 afterEach(() => {
@@ -135,6 +185,7 @@ async function mountMessage(options: {
   terminalExplainText?: string
   toolCategories?: Record<string, ChatUiTimelineToolSummaryCategory>
   onViewPlan?: () => Promise<void>
+  chatUiHost?: ChatUiHost
 } = {}) {
   const host = document.createElement('div')
   document.body.appendChild(host)
@@ -145,6 +196,8 @@ async function mountMessage(options: {
     previewFile: vi.fn(),
     openAgent: vi.fn(),
     addSelection: vi.fn(),
+    copySuccess: vi.fn(),
+    copyError: vi.fn(),
   }
   const app = createApp({
     setup() {
@@ -199,9 +252,12 @@ async function mountMessage(options: {
         onPreviewFile: events.previewFile,
         onOpenAgent: events.openAgent,
         onAddSelectionReference: events.addSelection,
+        onCopySuccess: events.copySuccess,
+        onCopyError: events.copyError,
       })
     },
   })
+  if (options.chatUiHost !== undefined) app.provide(CHAT_UI_HOST, options.chatUiHost)
   mounted.push(app)
   app.mount(host)
   await nextTick()
@@ -270,5 +326,47 @@ describe('TimelineAssistantMessage', () => {
     plan.click()
     await nextTick()
     expect(onViewPlan).toHaveBeenCalledOnce()
+  })
+
+  it('copies the entire message through the host', async () => {
+    const writeText = stubClipboard()
+    const copy = vi.fn(async () => undefined)
+    const { host, events } = await mountMessage({
+      blocks: [block('text-1', 'text', { content: 'first' }), block('text-2', 'text', { content: 'second' })],
+      chatUiHost: copyHost(copy),
+    })
+
+    host.querySelector<HTMLButtonElement>('[data-testid="timeline-assistant-copy-entire-message"]')!.click()
+    await vi.waitFor(() => expect(events.copySuccess).toHaveBeenCalledOnce())
+    expect(copy).toHaveBeenCalledWith('first\n\nsecond')
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('copies terminal debug details through the host and reports a rejected copy', async () => {
+    const writeText = stubClipboard()
+    const copy = vi.fn(async () => undefined)
+    const { host, events } = await mountMessage({ terminal, chatUiHost: copyHost(copy) })
+    const button = () => host.querySelector<HTMLButtonElement>('[data-testid="timeline-terminal-debug-copy"]')!
+
+    button().click()
+    await vi.waitFor(() => expect(events.copySuccess).toHaveBeenCalledOnce())
+    expect(copy).toHaveBeenCalledWith('Status Code: 500\nCode: E_PROVIDER')
+    expect(writeText).not.toHaveBeenCalled()
+    await nextTick()
+    expect(button().querySelector('[data-testid="icon-check"]')).not.toBeNull()
+
+    copy.mockRejectedValueOnce(new Error('denied'))
+    button().click()
+    await vi.waitFor(() => expect(events.copyError).toHaveBeenCalledOnce())
+    expect(events.copySuccess).toHaveBeenCalledOnce()
+  })
+
+  it('falls back to navigator.clipboard without a host', async () => {
+    const writeText = stubClipboard()
+    const { host, events } = await mountMessage({ terminal })
+
+    host.querySelector<HTMLButtonElement>('[data-testid="timeline-terminal-debug-copy"]')!.click()
+    await vi.waitFor(() => expect(events.copySuccess).toHaveBeenCalledOnce())
+    expect(writeText).toHaveBeenCalledWith('Status Code: 500\nCode: E_PROVIDER')
   })
 })

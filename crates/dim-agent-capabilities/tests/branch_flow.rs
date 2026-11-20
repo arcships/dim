@@ -3507,17 +3507,35 @@ async fn until_events(
     panic!("timed out waiting for line {branch}");
 }
 fn line_block(events: &[Arc<AgentEvent>]) -> Option<(String, bool)> {
-    events.iter().rev().find_map(|event| match &event.kind {
-        EventKind::InputMessage(data) => data.blocks.iter().rev().find_map(|block| match block {
-            InputBlock::Raw {
-                text,
-                key: Some(key),
-                retire,
-            } if key == "branch:line" => Some((text.clone(), *retire)),
-            _ => None,
-        }),
-        _ => None,
-    })
+    keyed_block(events, "branch:line")
+}
+/// The latest block under the roster's own key, `branch:roster`.
+fn roster_block(events: &[Arc<AgentEvent>]) -> Option<(String, bool)> {
+    keyed_block(events, "branch:roster")
+}
+fn keyed_block(events: &[Arc<AgentEvent>], keyed: &str) -> Option<(String, bool)> {
+    keyed_blocks(events, keyed).last().cloned()
+}
+/// Every block under `keyed`, in commit order, with its retire flag.
+fn keyed_blocks(events: &[Arc<AgentEvent>], keyed: &str) -> Vec<(String, bool)> {
+    events
+        .iter()
+        .flat_map(|event| match &event.kind {
+            EventKind::InputMessage(data) => data
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    InputBlock::Raw {
+                        text,
+                        key: Some(key),
+                        retire,
+                    } if key == keyed => Some((text.clone(), *retire)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        })
+        .collect()
 }
 fn blocks_with(events: &[Arc<AgentEvent>], marker: &str) -> Vec<String> {
     events
@@ -3849,6 +3867,427 @@ async fn a_refused_branch_call_writes_nothing() {
     soon(agent.close()).await.unwrap();
 }
 
+/// The reach of the tool: a line messages and reads the line it was cut from
+/// and each tool line it opened, while a line the user opened is on no roster
+/// and under no coordination of the line it was cut from, which neither
+/// messages nor reads it (design §6, §20.1, §20.3a).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_messages_and_reads_its_parent_and_the_lines_it_opened() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let tool_line = open_line(&session, "opened with the tool").await;
+    let page = tool_call(
+        &session,
+        "main",
+        &format!(r#"{{"action":"read","branch":"{tool_line}"}}"#),
+    )
+    .await;
+    assert_eq!(
+        page.is_error, None,
+        "the opener reads the line it opened: {:?}",
+        page.content
+    );
+    let sent = tool_call(
+        &session,
+        "main",
+        &format!(r#"{{"action":"message","to":"{tool_line}","content":"FROM-THE-OPENER"}}"#),
+    )
+    .await;
+    assert_eq!(
+        sent.is_error, None,
+        "the opener messages it: {:?}",
+        sent.content
+    );
+    let sent = tool_call(
+        &session,
+        &tool_line,
+        r#"{"action":"message","to":"main","content":"FROM-THE-LINE"}"#,
+    )
+    .await;
+    assert_eq!(
+        sent.is_error, None,
+        "a line messages the line it was cut from: {:?}",
+        sent.content
+    );
+    let page =
+        page_of(&tool_call(&session, &tool_line, r#"{"action":"read","branch":"main"}"#).await);
+    assert!(
+        !page_sequences(&page).is_empty(),
+        "a line reads the line it was cut from: {page}"
+    );
+
+    // The user opens a line of its own at the root's head, which must end a
+    // committed batch rather than sit inside the root's answer to the line.
+    soon(session.idle("main")).await.unwrap();
+    let cut = session.sequence("main").unwrap();
+    let user = soon(session.branch(
+        "main".into(),
+        cut,
+        BranchOptions {
+            prompt: "the user opened this".into(),
+            source: BranchSource::User {
+                operation_id: "client-op".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    quiet(&session, &user).await;
+    let roster = blocks_with(&local_events(&session, "main").await, "<dim-branch-lines")
+        .last()
+        .cloned()
+        .expect("the root's roster");
+    assert!(roster.contains(&tool_line), "{roster}");
+    assert!(
+        !roster.contains(&user),
+        "a line the user opened is on no roster: {roster}"
+    );
+    let not_kin = (
+        "branch_not_kin".to_string(),
+        "You can message or read only the lines you opened and the line you were cut from."
+            .to_string(),
+    );
+    assert_eq!(
+        call(
+            &session,
+            "main",
+            &format!(r#"{{"action":"message","to":"{user}","content":"hello"}}"#)
+        )
+        .await,
+        not_kin,
+        "the line it was cut from sends it no message"
+    );
+    assert_eq!(
+        call(
+            &session,
+            "main",
+            &format!(r#"{{"action":"read","branch":"{user}"}}"#)
+        )
+        .await,
+        not_kin,
+        "the line it was cut from reads it no more"
+    );
+    let idle_notices = blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").len();
+    let ended_notices =
+        blocks_with(&local_events(&session, "main").await, "<dim-branch-ended").len();
+    soon(session.submit("WORK-ON".into(), InputMode::Queue, &user))
+        .await
+        .unwrap();
+    quiet(&session, &user).await;
+    assert_eq!(
+        blocks_with(&local_events(&session, "main").await, "<dim-branch-idle").len(),
+        idle_notices,
+        "the user's line tells the line it was cut from nothing"
+    );
+    assert_eq!(
+        blocks_with(&local_events(&session, "main").await, "<dim-branch-ended").len(),
+        ended_notices,
+        "and no ended notice either"
+    );
+    // A line the user opened messages the line it was cut from in both modes:
+    // an append rides its next request and starts no turn, a steer wakes it
+    // (design §6, §20.2).
+    let before = session.sequence("main").unwrap();
+    let sent = tool_call(
+        &session,
+        &user,
+        r#"{"action":"message","to":"main","content":"APPEND-FROM-THE-USERS-LINE"}"#,
+    )
+    .await;
+    assert_eq!(
+        sent.is_error, None,
+        "a line the user opened messages the line it was cut from: {:?}",
+        sent.content
+    );
+    let events = until_events(&session, "main", |events| {
+        message_at(events, "APPEND-FROM-THE-USERS-LINE").is_some()
+    })
+    .await;
+    let (appended, mode) =
+        message_at(&events, "APPEND-FROM-THE-USERS-LINE").expect("the append landed on main");
+    assert_eq!(mode, InputMode::Append);
+    assert!(appended > before);
+    let block = marked_message(&events, "APPEND-FROM-THE-USERS-LINE");
+    assert!(
+        block.starts_with(&format!("<dim-branch-message from=\"{user}\" to=\"main\">")),
+        "the receiver tells the message from the user's words by its marker: {block}"
+    );
+    let started = events
+        .iter()
+        .any(|event| matches!(event.kind, EventKind::TurnStart(_)) && event.sequence > appended);
+    assert!(
+        !started,
+        "an append from a line the user opened starts no turn on the line it was cut from"
+    );
+    let sent = tool_call(
+        &session,
+        &user,
+        r#"{"action":"message","to":"main","content":"STEER-FROM-THE-USERS-LINE","mode":"steer"}"#,
+    )
+    .await;
+    assert_eq!(sent.is_error, None, "{:?}", sent.content);
+    let events = until_events(&session, "main", |events| {
+        message_at(events, "STEER-FROM-THE-USERS-LINE").is_some()
+    })
+    .await;
+    let (steered, mode) =
+        message_at(&events, "STEER-FROM-THE-USERS-LINE").expect("the steer landed on main");
+    assert_eq!(mode, InputMode::Steer);
+    let block = marked_message(&events, "STEER-FROM-THE-USERS-LINE");
+    assert!(
+        block.starts_with(&format!("<dim-branch-message from=\"{user}\" to=\"main\">")),
+        "the steer carries the marker too: {block}"
+    );
+    until_events(&session, "main", |events| {
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TurnStart(_)) && event.sequence > steered)
+    })
+    .await;
+    soon(session.idle("main")).await.unwrap();
+    let page = page_of(&tool_call(&session, &user, r#"{"action":"read","branch":"main"}"#).await);
+    let sequences = page_sequences(&page);
+    assert!(!sequences.is_empty(), "{page}");
+    assert!(
+        sequences.iter().all(|sequence| *sequence > cut),
+        "a read of the line it was cut from starts at its cut {cut}: {sequences:?}"
+    );
+
+    // A plugin line's protocol is its creator's: it is never on a roster, and
+    // the line that opened it reaches it only to be told so (design §6).
+    let plugin = soon(session.branch(tool_line.clone(), 0, options("a plugin line")))
+        .await
+        .unwrap();
+    quiet(&session, &plugin).await;
+    assert!(
+        roster_block(&local_events(&session, &tool_line).await).is_none(),
+        "a line that opened no tool line keeps no roster"
+    );
+    let not_tool_line = (
+        "branch_not_tool_line".to_string(),
+        format!("Line {plugin} was not opened with this tool; it follows its own protocol."),
+    );
+    assert_eq!(
+        call(
+            &session,
+            &tool_line,
+            &format!(r#"{{"action":"read","branch":"{plugin}"}}"#)
+        )
+        .await,
+        not_tool_line.clone(),
+        "a line does not read a plugin line it opened"
+    );
+    assert_eq!(
+        call(
+            &session,
+            &tool_line,
+            &format!(r#"{{"action":"message","to":"{plugin}","content":"hello"}}"#)
+        )
+        .await,
+        not_tool_line,
+        "nor message it"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// A plugin line coordinates nothing through the tool, in either direction: it
+/// sends the line it was cut from no message, and the refusal names the caller
+/// as the line that was not opened with this tool, while a line's read of its
+/// opener still works (design §6, §20.3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_host_line_sends_the_line_it_was_cut_from_no_message() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let host = soon(session.branch("main".into(), 0, options("a plugin line")))
+        .await
+        .unwrap();
+    quiet(&session, &host).await;
+    let not_tool_line = (
+        "branch_not_tool_line".to_string(),
+        format!("Line {host} was not opened with this tool; it follows its own protocol."),
+    );
+    let written = blocks_with(&local_events(&session, "main").await, "<dim-branch-message").len();
+    assert_eq!(
+        call(
+            &session,
+            &host,
+            r#"{"action":"message","to":"main","content":"hello"}"#
+        )
+        .await,
+        not_tool_line.clone(),
+        "a plugin line sends its opener no message, and the refusal names the caller"
+    );
+    assert_eq!(
+        blocks_with(&local_events(&session, "main").await, "<dim-branch-message").len(),
+        written,
+        "the refused message writes nothing to the line it was cut from"
+    );
+    assert_eq!(
+        call(
+            &session,
+            "main",
+            &format!(r#"{{"action":"message","to":"{host}","content":"hello"}}"#)
+        )
+        .await,
+        not_tool_line,
+        "and the opener sends it none either"
+    );
+    let page = page_of(&tool_call(&session, &host, r#"{"action":"read","branch":"main"}"#).await);
+    assert!(
+        !page_sequences(&page).is_empty(),
+        "a plugin line still reads the line it was cut from: {page}"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// The message block carrying `content`, as its receiver stored it.
+fn marked_message(events: &[Arc<AgentEvent>], content: &str) -> String {
+    blocks_with(events, "<dim-branch-message")
+        .into_iter()
+        .find(|text| text.contains(content))
+        .expect("the message block")
+}
+
+/// The sequence of the input carrying the message `content`, and its mode.
+fn message_at(events: &[Arc<AgentEvent>], content: &str) -> Option<(u64, InputMode)> {
+    events.iter().find_map(|event| match &event.kind {
+        EventKind::InputMessage(data)
+            if blocks_with(std::slice::from_ref(event), "<dim-branch-message")
+                .iter()
+                .any(|text| text.contains(content)) =>
+        {
+            Some((event.sequence, data.effective_mode()))
+        }
+        _ => None,
+    })
+}
+
+/// How many message blocks each of `lines` holds in its own history.
+async fn messages_written(session: &Session, lines: &[&String]) -> Vec<usize> {
+    let mut counts = Vec::new();
+    for line in lines {
+        counts.push(blocks_with(&local_events(session, line).await, "<dim-branch-message").len());
+    }
+    counts
+}
+
+/// Siblings and a line's grandparent are refused `branch_not_kin` and write
+/// nothing: the pair the tool serves is one edge of the tree (design §6,
+/// §20.3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sibling_or_grandparent_is_refused_with_nothing_written() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let sibling = |prompt: &'static str| {
+        let session = session.clone();
+        async move {
+            soon(session.branch(
+                "main".into(),
+                0,
+                BranchOptions {
+                    prompt: prompt.into(),
+                    source: BranchSource::User {
+                        operation_id: format!("user:{prompt}"),
+                    },
+                },
+            ))
+            .await
+            .unwrap()
+        }
+    };
+    let first = sibling("first").await;
+    let second = sibling("second").await;
+    quiet(&session, &first).await;
+    quiet(&session, &second).await;
+    let grandchild = soon(session.branch(
+        first.clone(),
+        0,
+        BranchOptions {
+            prompt: "the child of the first line".into(),
+            source: BranchSource::User {
+                operation_id: "user:grandchild".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    quiet(&session, &grandchild).await;
+    let lines = [&first, &second, &grandchild];
+    let before = messages_written(&session, &lines).await;
+    let not_kin = (
+        "branch_not_kin".to_string(),
+        "You can message or read only the lines you opened and the line you were cut from."
+            .to_string(),
+    );
+    assert_eq!(
+        call(
+            &session,
+            &first,
+            &format!(r#"{{"action":"message","to":"{second}","content":"hello"}}"#)
+        )
+        .await,
+        not_kin.clone(),
+        "a sibling gets no message"
+    );
+    assert_eq!(
+        call(
+            &session,
+            &first,
+            &format!(r#"{{"action":"read","branch":"{second}"}}"#)
+        )
+        .await,
+        not_kin.clone(),
+        "and no read"
+    );
+    assert_eq!(
+        call(
+            &session,
+            &grandchild,
+            r#"{"action":"read","branch":"main"}"#
+        )
+        .await,
+        not_kin.clone(),
+        "a line does not read its grandparent"
+    );
+    assert_eq!(
+        call(
+            &session,
+            "main",
+            &format!(r#"{{"action":"read","branch":"{grandchild}"}}"#)
+        )
+        .await,
+        not_kin.clone(),
+        "and the grandparent does not read it"
+    );
+    assert_eq!(
+        messages_written(&session, &lines).await,
+        before,
+        "a refused call writes no message to any of the three lines"
+    );
+    let page = page_of(
+        &tool_call(
+            &session,
+            &grandchild,
+            &format!(r#"{{"action":"read","branch":"{first}"}}"#),
+        )
+        .await,
+    );
+    assert!(
+        !page_sequences(&page).is_empty(),
+        "a line still reads the line it was cut from: {page}"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_close_cancels_an_active_build_and_waits_for_rollback() {
     let probe = Arc::new(Probe::default());
@@ -3932,7 +4371,7 @@ async fn quiet(session: &Session, line: &str) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn main_lists_its_open_tool_lines_under_one_key() {
+async fn the_root_lists_its_open_tool_lines_under_the_roster_key() {
     let probe = Arc::new(Probe::default());
     let agent = setup(&probe).await;
     let session = soon(agent.create_session(SessionConfig::default()))
@@ -3941,11 +4380,18 @@ async fn main_lists_its_open_tool_lines_under_one_key() {
     let first = open_line(&session, "first purpose").await;
     let second = open_line(&session, "second purpose\nmore detail").await;
     let events = until_events(&session, "main", |events| {
-        line_block(events).is_some_and(|(text, retired)| !retired && text.contains(&second))
+        blocks_with(events, "<dim-branch-lines")
+            .last()
+            .is_some_and(|text| text.contains(&second))
     })
     .await;
-    let (text, retired) = line_block(&events).unwrap();
-    assert!(!retired);
+    assert!(
+        line_block(&events).is_none(),
+        "the roster is not the line's identity: {:?}",
+        line_block(&events)
+    );
+    let (text, retired) = roster_block(&events).expect("the roster is keyed `branch:roster`");
+    assert!(!retired, "the live roster is not retired");
     assert!(text.starts_with("<dim-branch-lines branch=\"main\">\n"));
     assert!(text.contains(&format!("\n- {first}: first purpose\n")));
     assert!(text.contains(&format!("\n- {second}: second purpose\n")));
@@ -3999,10 +4445,12 @@ async fn a_configured_roster_closing_reaches_the_roster() {
         .unwrap();
     let child = open_line(&session, "watch the tests").await;
     let events = until_events(&session, "main", |events| {
-        line_block(events).is_some_and(|(text, retired)| !retired && text.contains(&child))
+        blocks_with(events, "<dim-branch-lines")
+            .last()
+            .is_some_and(|text| text.contains(&child))
     })
     .await;
-    let (text, retired) = line_block(&events).unwrap();
+    let (text, retired) = roster_block(&events).expect("the roster is keyed `branch:roster`");
     assert!(!retired);
     assert!(
         text.ends_with(&format!("\n{closing}\n</dim-branch-lines>")),
@@ -4061,7 +4509,7 @@ async fn a_configured_description_reaches_the_request_declaration() {
 /// even where no branch part is loaded. `<dim-branch-lines>` stays with
 /// BranchLine, which writes the roster.
 const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
-const ROSTER_ENTRY: &str = r#"<dim-branch-lines branch="main">: on main, the runtime lists the lines you opened that are still open, each with the first line of its purpose. A later block of this name replaces the earlier one; it is state about the lines, not a request."#;
+const ROSTER_ENTRY: &str = r#"<dim-branch-lines branch="main">: the lines you opened, under the key `branch:roster` and apart from your own identity under `branch:line`: the runtime lists the tool lines you opened that are still open, each with the first line of its purpose. A later block of this name replaces the earlier one; it is state about the lines, not a request."#;
 /// #987: the parent block can arrive only on a line with a parent, so main's
 /// guide carries no entry for it.
 const PARENT_ENTRY: &str = r#"<dim-branch-parent branch="P" head="H" after="A">: on a line, the runtime reports that the line it was cut from has moved past where this line last read it, and where the next read starts. A later block of this name replaces the earlier one; it is state about that line, not a request."#;
@@ -4112,8 +4560,14 @@ async fn each_line_carries_the_entry_of_the_marker_its_part_writes() {
     assert_eq!(main.matches(ROSTER_ENTRY).count(), 1, "{main:?}");
     assert_eq!(main.matches(MESSAGE_ENTRY).count(), 1, "{main:?}");
     assert_eq!(main.matches(PARENT_ENTRY).count(), 1, "{main:?}");
-    let roster = line_block(&chain_events(&session, "main", ..).await.unwrap());
-    assert!(roster.is_some_and(|(text, _)| text.starts_with("<dim-branch-lines")));
+    let roster = roster_block(&chain_events(&session, "main", ..).await.unwrap())
+        .expect("the roster is keyed `branch:roster`");
+    assert!(roster.0.starts_with("<dim-branch-lines"));
+    let identity = line_block(&local_events(&session, "main").await);
+    assert!(
+        identity.is_none(),
+        "the root writes no identity: {identity:?}"
+    );
 
     // The line carries its identity marker, and the Session's writer
     // explains it there.
@@ -6635,7 +7089,7 @@ async fn a_tool_line_ends_itself_and_main_learns_it_from_the_roster() {
         "<dim-branch-lines branch=\"main\">\nAll lines you opened have ended.\n</dim-branch-lines>"
             .to_string();
     until_events(&session, "main", |events| {
-        line_block(events) == Some((retired.clone(), true))
+        roster_block(events) == Some((retired.clone(), true))
     })
     .await;
     let child_events = local_events(&session, &child).await;
@@ -6770,7 +7224,7 @@ async fn a_host_lines_end_says_nothing_to_main() {
         .await
         .unwrap();
     soon(session.idle(&host)).await.unwrap();
-    assert!(line_block(&local_events(&session, "main").await).is_none());
+    assert!(roster_block(&local_events(&session, "main").await).is_none());
     soon(session.end_branch(
         &host,
         BranchSource::Host {
@@ -6786,7 +7240,7 @@ async fn a_host_lines_end_says_nothing_to_main() {
     })
     .await;
     assert!(blocks_with(&events, "<dim-branch-ended").is_empty());
-    assert!(line_block(&events).is_none());
+    assert!(roster_block(&events).is_none());
     let tree = session.session_service::<TreeCommands>().unwrap();
     let facts = local_events(&session, &host).await;
     let head = facts.last().unwrap().sequence;
@@ -6968,7 +7422,7 @@ async fn an_end_from_outside_a_tool_line_wakes_main_with_a_notice() {
     };
     assert_eq!(data.effective_mode(), InputMode::Steer);
     assert!(data.blocks.iter().any(|block| matches!(block,
-        InputBlock::Raw { key: Some(key), retire: true, .. } if key == "branch:line")));
+        InputBlock::Raw { key: Some(key), retire: true, .. } if key == "branch:roster")));
     let child_events = local_events(&session, &child).await;
     assert!(
         child_events
@@ -7063,7 +7517,7 @@ fn baseline_message(events: &[Arc<AgentEvent>], key: &str) -> Option<Message> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_roster_and_the_identity_replay_after_a_compaction() {
+async fn a_roster_and_an_identity_replay_separately_after_a_compaction() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
@@ -7085,19 +7539,13 @@ async fn the_roster_and_the_identity_replay_after_a_compaction() {
     let session = soon(agent.create_session(SessionConfig::default()))
         .await
         .unwrap();
-    let child = open_line(&session, "compact my line").await;
-    for text in ["x".repeat(1500), "y".repeat(1500)] {
-        session
-            .submit(text, InputMode::Queue, "main")
-            .await
-            .unwrap();
-        soon(session.idle("main")).await.unwrap();
-    }
-    let message = baseline_message(
-        &chain_events(&session, "main", ..).await.unwrap(),
-        "branch:line",
-    )
-    .expect("main compacted and the roster replayed");
+    let first = open_line(&session, "compact my line").await;
+    wait_for_roster(&session, &first).await;
+    let second = open_line(&session, "compact me too").await;
+    compact_line(&session, "main").await;
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let message =
+        baseline_message(&events, "branch:roster").expect("main compacted and the roster replayed");
     let MessageContent::Text(text) = &message.content else {
         panic!("the roster is text: {message:?}");
     };
@@ -7105,27 +7553,115 @@ async fn the_roster_and_the_identity_replay_after_a_compaction() {
         text.starts_with("<dim-branch-lines branch=\"main\">"),
         "{text}"
     );
-    assert!(text.contains(&format!("- {child}: compact my line")));
-    for text in ["x".repeat(1500), "y".repeat(1500)] {
-        session
-            .submit(text, InputMode::Queue, &child)
-            .await
-            .unwrap();
-        soon(session.idle(&child)).await.unwrap();
-    }
-    let message = baseline_message(
-        &chain_events(&session, &child, ..).await.unwrap(),
-        "branch:line",
-    )
-    .expect("the child compacted and its identity replayed");
+    assert!(text.contains(&format!("- {first}: compact my line")));
+    assert!(text.contains(&format!("- {second}: compact me too")));
+    assert!(
+        baseline_message(&events, "branch:line").is_none(),
+        "the root keeps no identity under the roster's key"
+    );
+    compact_line(&session, &second).await;
+    let events = chain_events(&session, &second, ..).await.unwrap();
+    let message = baseline_message(&events, "branch:line")
+        .expect("the child compacted and its identity replayed");
     let MessageContent::Text(text) = &message.content else {
         panic!("the identity is text: {message:?}");
     };
     assert!(
         text.starts_with(&format!(
-            "<dim-branch-line branch=\"{child}\" parent=\"main\" source=\"tool\">"
+            "<dim-branch-line branch=\"{second}\" parent=\"main\" source=\"tool\">"
         )),
         "{text}"
+    );
+    assert!(
+        baseline_message(&events, "branch:roster").is_none(),
+        "the inherited roster was retired at the child's open and never replays"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// The compaction above and the child's replay need a line cut after its
+/// opener wrote a roster, so the inherited block is in the child's prefix.
+async fn wait_for_roster(session: &Session, line: &str) {
+    let events = until_events(session, "main", |events| {
+        blocks_with(events, "<dim-branch-lines")
+            .last()
+            .is_some_and(|text| text.contains(line))
+    })
+    .await;
+    let roster = roster_block(&events).expect("the roster is keyed `branch:roster`");
+    assert!(!roster.1, "the live roster is not retired: {roster:?}");
+}
+/// Two turns long enough to make the line compact.
+async fn compact_line(session: &Session, line: &str) {
+    for text in ["x".repeat(1500), "y".repeat(1500)] {
+        session.submit(text, InputMode::Queue, line).await.unwrap();
+        soon(session.idle(line)).await.unwrap();
+    }
+}
+
+/// Case 1a: a child cut after its opener wrote a roster inherits that block,
+/// and its opening input retires it; a child cut before the roster gets no
+/// such block, and its opening input is what it was. The retirement lives
+/// under the roster's key alone, so a status note on the same line leaves it
+/// standing (design §7.1, §20.1a).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_child_cut_after_a_roster_retires_it_and_one_cut_before_gets_nothing() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let before = open_line(&session, "cut before the roster").await;
+    let opening = opening_blocks(&local_events(&session, &before).await);
+    assert_eq!(
+        opening.len(),
+        1,
+        "a line cut before the roster carries its identity alone: {opening:?}"
+    );
+    assert_eq!(opening[0].0.as_deref(), Some("branch:line"));
+    wait_for_roster(&session, &before).await;
+    let after = open_line(&session, "cut after the roster").await;
+    let opening = opening_blocks(&local_events(&session, &after).await);
+    assert_eq!(
+        opening.len(),
+        2,
+        "the identity, then the block retiring the inherited roster: {opening:?}"
+    );
+    assert_eq!(opening[0].0.as_deref(), Some("branch:line"));
+    assert_eq!(opening[1].0.as_deref(), Some("branch:roster"));
+    assert!(opening[1].2, "the inherited roster is retired: {opening:?}");
+    assert_eq!(
+        opening[1].1,
+        format!(
+            "<dim-branch-lines branch=\"{after}\">\nThe list above belongs to line main and names the lines it opened. This line has opened none of its own, so it keeps no list.\n</dim-branch-lines>"
+        ),
+        "{opening:?}"
+    );
+    let rosters = keyed_blocks(&local_events(&session, &after).await, "branch:roster");
+    assert_eq!(
+        rosters,
+        vec![(opening[1].1.clone(), true)],
+        "the line writes no roster of its own"
+    );
+
+    soon(session.set_default_branch(
+        &after,
+        BranchSource::User {
+            operation_id: "switch".into(),
+        },
+    ))
+    .await
+    .unwrap();
+    let noted = until_events(&session, &after, |events| {
+        line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+    })
+    .await;
+    let note = line_block(&noted).expect("the note replaces the identity");
+    assert!(note.0.contains(r#"default="true""#), "{:?}", note.0);
+    assert_eq!(
+        keyed_blocks(&local_events(&session, &after).await, "branch:roster"),
+        rosters,
+        "the note is written under the identity's key and leaves the roster's block alone"
     );
     soon(agent.close()).await.unwrap();
 }
@@ -7450,7 +7986,7 @@ async fn copy_session(
     from: &MemoryTimelineStore,
     to: &MemoryTimelineStore,
     session: &str,
-    keep: impl Fn(&str, &[StoredEvent]) -> usize,
+    rewrite: impl Fn(&str, Vec<StoredEvent>) -> Vec<StoredEvent>,
 ) {
     to.create_session(session, &SessionConfig::default())
         .await
@@ -7475,9 +8011,8 @@ async fn copy_session(
             session_id: session.into(),
             branch_id: branch.info.id.clone(),
         };
-        let mut records = from.read(&key, 1..=branch.sequence).await.unwrap();
-        let kept = keep(&branch.info.id, &records);
-        records.truncate(kept);
+        let records = from.read(&key, 1..=branch.sequence).await.unwrap();
+        let records = rewrite(&branch.info.id, records);
         if records.is_empty() {
             continue;
         }
@@ -7522,15 +8057,17 @@ async fn a_turn_spanning_a_restart_after_a_steer_writes_no_idle_notice() {
 
     let second = Arc::new(MemoryTimelineStore::default());
     let line = child.clone();
-    copy_session(&first, &second, &id, |branch, records| {
+    copy_session(&first, &second, &id, |branch, mut records| {
         if branch != line {
-            return records.len();
+            return records;
         }
         let at = records
             .iter()
             .rposition(|record| matches!(&record.event.kind, EventKind::ToolResult(_)))
             .expect("the steer's result");
-        records[at].batch_end as usize
+        let end = records[at].batch_end as usize;
+        records.truncate(end);
+        records
     })
     .await;
     let probe = Arc::new(Probe::default());
@@ -9085,6 +9622,24 @@ async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
 /// A move appends one note at the end of the line's own history, so everything
 /// the line had before it is unchanged: that is what keeps the new default
 /// branch's cached request prefix intact (design §7.3).
+/// Whether the input carrying the latest `branch:line` block has its
+/// `input/applied`, so a page read after it holds both the write and its
+/// application.
+fn identity_block_applied(events: &[Arc<AgentEvent>]) -> bool {
+    let Some(at) = events.iter().rposition(|event| match &event.kind {
+        EventKind::InputMessage(data) => data.blocks.iter().any(
+            |block| matches!(block, InputBlock::Raw { key: Some(key), .. } if key == "branch:line"),
+        ),
+        _ => false,
+    }) else {
+        return false;
+    };
+    let id = &events[at].id;
+    events
+        .iter()
+        .any(|event| matches!(&event.kind, EventKind::InputApplied(data) if &data.input_id == id))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_move_leaves_the_new_default_branchs_prefix_unchanged() {
     let probe = Arc::new(Probe::default());
@@ -9106,6 +9661,7 @@ async fn a_move_leaves_the_new_default_branchs_prefix_unchanged() {
     .unwrap();
     let after = until_events(&session, &line, |events| {
         line_block(events).is_some_and(|(text, _)| text.contains("default=\"true\""))
+            && identity_block_applied(events)
     })
     .await;
     assert_eq!(
@@ -9132,6 +9688,86 @@ async fn a_move_leaves_the_new_default_branchs_prefix_unchanged() {
     );
     let note = line_block(&after).expect("the note is the latest block");
     assert!(note.0.contains("default=\"true\""), "{}", note.0);
+    soon(agent.close()).await.unwrap();
+}
+
+/// E2: a read of the line a caller was cut from, at each depth of a chain,
+/// before and after a compaction. Run with
+/// `--release --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn measure_e2_chained_reads_before_and_after_a_compaction() {
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
+            MemoryTimelineStore::default(),
+        )))
+        .session_value(Arc::new(HistoryRenderer::default()))
+        .process_value(Arc::new(ModelHost(Arc::new(FlowModel))))
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install(&mut builder);
+    let agent = MinimalHost::start(&builder).await.unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let mut chain = vec!["main".to_string()];
+    for depth in 1..=3 {
+        let parent = chain.last().cloned().unwrap();
+        let line = soon(session.branch(parent, 0, options(&format!("depth {depth}"))))
+            .await
+            .unwrap();
+        soon(session.idle(&line)).await.unwrap();
+        soon(session.submit("work".into(), InputMode::Queue, &line))
+            .await
+            .unwrap();
+        soon(session.idle(&line)).await.unwrap();
+        chain.push(line);
+    }
+    async fn reads(session: &Session, chain: &[String]) -> Vec<(usize, Duration)> {
+        let mut measured = Vec::new();
+        for (depth, line) in chain.iter().enumerate().skip(1) {
+            let parent = &chain[depth - 1];
+            let mut samples = Vec::new();
+            for _ in 0..5 {
+                let started = std::time::Instant::now();
+                let page = tool_call(
+                    session,
+                    line,
+                    &format!(r#"{{"action":"read","branch":"{parent}"}}"#),
+                )
+                .await;
+                assert_eq!(page.is_error, None, "{:?}", page.content);
+                samples.push(started.elapsed());
+            }
+            samples.sort();
+            measured.push((depth, samples[samples.len() / 2]));
+        }
+        measured
+    }
+    for (label, measured) in [
+        ("before", reads(&session, &chain).await),
+        ("after", {
+            for line in &chain[1..] {
+                compact_line(&session, line).await;
+            }
+            reads(&session, &chain).await
+        }),
+    ] {
+        for (depth, elapsed) in measured {
+            println!(
+                "E2 chained read at depth {depth} {label} compaction: median {:.2} ms",
+                elapsed.as_secs_f64() * 1e3
+            );
+        }
+    }
     soon(agent.close()).await.unwrap();
 }
 
@@ -10391,6 +11027,149 @@ async fn a_clean_restart_writes_no_status_note() {
         "a clean restart adds no status note"
     );
     soon(again.close()).await.unwrap();
+}
+
+/// A Session whose model compacts, over `store`, for a test that restarts it:
+/// the summary strategy [`Compact`] and the hosts the branch tool needs.
+fn compacting_builder(store: Arc<dyn TimelineStore>) -> AgentBuilder {
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder
+        .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store))
+        .session_value(Arc::new(HistoryRenderer::default()))
+        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
+        .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
+        .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compact)))))
+        .session_value(Arc::new(CompactionStrategyHost(Some(Arc::new(Compact)))))
+        .require_feature(
+            Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
+                Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
+            }),
+        );
+    defaults::install(&mut builder);
+    builder
+}
+
+/// A Session stored before the roster took its own key keeps the root's roster
+/// under `branch:line`; its first load under the new code retires that key,
+/// writes the roster under `branch:roster`, and a second load writes neither
+/// (design §7.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_roots_roster_from_before_the_key_split_is_retired_at_load() {
+    let first = Arc::new(MemoryTimelineStore::default());
+    let agent = MinimalHost::start(&compacting_builder(first.clone()))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let line = open_line(&session, "the purpose of the line").await;
+    until_events(&session, "main", |events| {
+        blocks_with(events, "<dim-branch-lines")
+            .last()
+            .is_some_and(|text| text.contains(&line))
+    })
+    .await;
+    let id = session.id().to_owned();
+    soon(session.close()).await.unwrap();
+    soon(agent.close()).await.unwrap();
+
+    // The stored Session as the code before the key split left it: `main`'s
+    // roster stands under `branch:line`, and no line holds `branch:roster`.
+    let second = Arc::new(MemoryTimelineStore::default());
+    copy_session(&first, &second, &id, |branch, mut records| {
+        for record in &mut records {
+            let event = Arc::make_mut(&mut record.event);
+            let EventKind::InputMessage(data) = &mut event.kind else {
+                continue;
+            };
+            if branch == "main" {
+                for block in &mut data.blocks {
+                    if let InputBlock::Raw { key: Some(key), .. } = block
+                        && key == "branch:roster"
+                    {
+                        *key = "branch:line".into();
+                    }
+                }
+            } else {
+                data.blocks.retain(|block| {
+                    !matches!(
+                        block,
+                        InputBlock::Raw { key: Some(key), .. } if key == "branch:roster"
+                    )
+                });
+            }
+        }
+        records
+    })
+    .await;
+
+    let again = MinimalHost::start(&compacting_builder(second.clone()))
+        .await
+        .unwrap();
+    let session = soon(again.restore_session(id.clone())).await.unwrap();
+    let mut events = local_events(&session, "main").await;
+    for _ in 0..500 {
+        if roster_block(&events).is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        events = local_events(&session, "main").await;
+    }
+    let (old, retired) = line_block(&events).expect("the root holds a `branch:line` block");
+    assert!(
+        retired,
+        "the roster stored under the root's identity key is retired: {old}"
+    );
+    assert!(
+        old.starts_with("<dim-branch-lines branch=\"main\">"),
+        "{old}"
+    );
+    let (roster, retired) = roster_block(&events).expect("the roster is keyed `branch:roster`");
+    assert!(!retired, "the roster is live: {roster}");
+    assert!(
+        roster.contains(&format!("- {line}: the purpose of the line")),
+        "{roster}"
+    );
+
+    compact_line(&session, "main").await;
+    let events = chain_events(&session, "main", ..).await.unwrap();
+    let replayed = baseline_message(&events, "branch:roster").expect("the root replays its roster");
+    let MessageContent::Text(text) = &replayed.content else {
+        panic!("the roster is text: {replayed:?}");
+    };
+    assert!(
+        text.contains(&format!("- {line}: the purpose of the line")),
+        "{text}"
+    );
+    assert!(
+        baseline_message(&events, "branch:line").is_none(),
+        "the retired pre-upgrade roster does not replay"
+    );
+
+    let local = local_events(&session, "main").await;
+    let before = (
+        keyed_blocks(&local, "branch:line").len(),
+        keyed_blocks(&local, "branch:roster").len(),
+    );
+    soon(session.close()).await.unwrap();
+    soon(again.close()).await.unwrap();
+
+    let third = MinimalHost::start(&compacting_builder(second))
+        .await
+        .unwrap();
+    let session = soon(third.restore_session(id.clone())).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let local = local_events(&session, "main").await;
+    assert_eq!(
+        (
+            keyed_blocks(&local, "branch:line").len(),
+            keyed_blocks(&local, "branch:roster").len(),
+        ),
+        before,
+        "a second load writes neither a roster nor a retirement"
+    );
+    soon(third.close()).await.unwrap();
 }
 
 /// §20.24a: a move that stopped between its fact and its notes is completed at

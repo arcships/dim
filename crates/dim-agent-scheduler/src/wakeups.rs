@@ -1,6 +1,6 @@
 //! The wakeup file `scheduler/wakeups.json`: one inner v1 JSON document
 //! inside the host's `{version, text}` envelope, kept by the same
-//! [`PluginFileTransactions`] withLock and replace transactions as the run
+//! [`FileScope`](dim_app_server::plugin_files::FileScope) withLock and replace transactions as the run
 //! history ([design §10, A.7]). A wakeup is a one-shot scheduled `input/message`
 //! into an existing Session: it captures no policy, launches nothing, has no
 //! deadline, and never appears in `schedule.list` or in the run history.
@@ -150,21 +150,21 @@ fn encode(wakeups: Vec<Wakeup>) -> String {
 /// Reads the records. A file that is not valid v1 is an error, not an empty
 /// list.
 pub async fn read(
-    files: &dim_app_server::plugin_files::PluginFileTransactions,
+    files: &dim_app_server::plugin_files::FileScope,
 ) -> Result<Vec<Wakeup>, SchedulerError> {
     files
-        .transact(WAKEUPS_FILE, |current| (None, decode(current)))
+        .with_lock(WAKEUPS_FILE, |current| (None, decode(current)))
         .await?
 }
 
 /// Applies `change` to the records under the file lock. `change` returns
 /// whether it modified them; an unmodified list is not written back.
 async fn update<R: Send + 'static>(
-    files: &dim_app_server::plugin_files::PluginFileTransactions,
+    files: &dim_app_server::plugin_files::FileScope,
     change: impl FnOnce(&mut Vec<Wakeup>) -> Result<(bool, R), SchedulerError> + Send + 'static,
 ) -> Result<R, SchedulerError> {
     files
-        .transact(WAKEUPS_FILE, move |current| {
+        .with_lock(WAKEUPS_FILE, move |current| {
             let mut wakeups = match decode(current) {
                 Ok(wakeups) => wakeups,
                 Err(error) => return (None, Err(error)),

@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
-    "test": "node --test \"tests/*.mjs\" \"**/*.test.mjs\"",
-    "typecheck": "vue-tsc --noEmit"
+    "build": "vue-tsc -p packages/chat-ui/tsconfig.build.json && vue-tsc --noEmit && vite build",
+    "test": "node --test \"tests/*.mjs\" \"**/*.test.mjs\" && vitest run",
+    "typecheck": "vue-tsc -p packages/chat-ui/tsconfig.build.json && vue-tsc --noEmit"
   },
   "dependencies": {
     "@dimcode/chat-ui": "0.1.0",
@@ -35,9 +35,11 @@
     "@tailwindcss/vite": "^4.3.0",
     "@types/node": "^24.12.4",
     "@vitejs/plugin-vue": "^5.2.4",
+    "jsdom": "^26.1.0",
     "tailwindcss": "^4.3.0",
     "typescript": "^5.9.3",
     "vite": "^6.4.3",
+    "vitest": "^4.1.8",
     "vue-tsc": "^2.2.12"
   },
   "workspaces": [

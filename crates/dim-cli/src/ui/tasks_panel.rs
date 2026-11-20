@@ -527,7 +527,9 @@ impl TasksPanel {
         let inner = width.saturating_sub(4).max(1);
         let mut content = Vec::new();
         let mut lines = Vec::new();
-        let mut hint = "Esc back";
+        let back =
+            |list: &'static str, card: &'static str| if self.from_card { card } else { list };
+        let mut hint = back("Esc back", "Esc close");
         let mut title = safe(&detail.task.label);
         if let Some(agent) = &detail.task.agent {
             title.push_str(&format!(" · {}", safe(agent)));
@@ -583,7 +585,7 @@ impl TasksPanel {
                         .map(|line| fg(&line, &p.text)),
                 );
                 if detail.task.finished.is_none() {
-                    hint = "x stop command · Esc back";
+                    hint = back("x stop command · Esc back", "x stop command · Esc close");
                 }
             }
             DetailBody::Member {
@@ -683,7 +685,7 @@ impl TasksPanel {
                 }
                 lines.extend(workflow_lines(view, inner, p));
                 if self.workflow_stoppable(view).is_ok() {
-                    hint = "x stop workflow · Esc back";
+                    hint = back("x stop workflow · Esc back", "x stop workflow · Esc close");
                 }
             }
             DetailBody::Result => {
