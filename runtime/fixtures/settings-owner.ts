@@ -16,10 +16,12 @@ export const part = definePlugin({
   inject: ['settings', 'sessionMethods'],
   async apply(ctx) {
     const settings = ctx.use<Settings>('settings')
+    let pauseDecode: (() => Promise<void>) | undefined
     const registerCustom = () => ctx.use<SettingsService>('settings').registerDocument(
-      { source: 'example-custom', userFile: 'example-custom.json' },
+      { source: 'example-custom', userFile: 'example-custom.json', projectFile: '.example-custom.json' },
       {
-        decode(bytes): { count: number } {
+        async decode(bytes): Promise<{ count: number }> {
+          await pauseDecode?.()
           return bytes === null ? { count: 3 } : JSON.parse(new TextDecoder().decode(bytes))
         },
         validate(document: { count: number }) {
@@ -34,7 +36,7 @@ export const part = definePlugin({
     }
     await ctx.use<SessionMethods>('sessionMethods').register(
       'session.example',
-      ['read', 'update', 'events', 'declared', 'custom_read', 'custom_update'].map(name => ({
+      ['read', 'update', 'events', 'declared', 'custom_read', 'custom_update', 'custom_concurrent'].map(name => ({
         name: `session.example.${name}`, mutating: false, interruption: 'report', progress: false,
       })),
       async (call: MethodCall) => {
@@ -42,6 +44,28 @@ export const part = definePlugin({
         if (call.method.endsWith('.custom_read')) {
           custom ??= await registerCustom()
           return { kind: 'value', value: await custom.read('user') }
+        }
+        if (call.method.endsWith('.custom_concurrent')) {
+          if (typeof request.root !== 'number') throw new Error('expected project root')
+          const scope = { project: request.root }
+          const original = await custom.read(scope)
+          if (!original.ok) throw new Error(original.error.message)
+          let entered!: () => void
+          let release!: () => void
+          const decoding = new Promise<void>(resolve => { entered = resolve })
+          const released = new Promise<void>(resolve => { release = resolve })
+          pauseDecode = () => { entered(); return released }
+          const reader = Promise.resolve(custom.read(scope))
+          try {
+            await decoding
+            const stale = await custom.update(scope, 'stale', { count: 7 })
+            const written = await custom.update(scope, original.value.revision, { count: 8 })
+            return { kind: 'value', value: { stale, written } }
+          } finally {
+            pauseDecode = undefined
+            release()
+            await reader
+          }
         }
         if (call.method.endsWith('.custom_update')) {
           if (typeof request.expectedRevision !== 'string' || typeof request.count !== 'number') throw new Error('expected revision and count')

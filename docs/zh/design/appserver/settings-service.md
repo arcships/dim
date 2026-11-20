@@ -16,7 +16,7 @@ Settings 为不是用 Rust 写的插件提供业务来源。这类插件在启�
 （[ADR 007](../../adr/007-plugin-configuration.md) D5）：来源名、文件、JSON Schema（含 `default` 值）和
 仅限用户的字段（§3.1）。随后 Settings 在 JSON 文档上提供三样东西：
 
-- 进程服务 `settings`，供所有者使用：`register`、`read`、`update`（按 revision 做 CAS）和 `projects`；
+- 进程服务 `settings` 用于来源登记、读写及项目授权（§4.2）；
 - 客户端管理方法 `settings.read`、`settings.update`、`settings.sources` 和 `settings.projects`；
 - 与 S8a 相同的 rutis 事件 `settings.changed` 和 `settings.project_authorized`。它们的载荷改为
   可序列化。没有 `subscribe(source)`。
@@ -275,13 +275,12 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 ### 4.5 Rust 绑定
 
 `Settings` 绑定公开公共 `settings` 数据面的 owner 操作，提供
-`register(ctx, declaration)`、`read(source, scope, cancel)`、
-`update(source, scope, expected, document, cancel)` 和 `projects()`。
+声明式来源的 `register`、`declared_by`、`read` 和 `update`，自定义来源的 `register_document` 及其绑定的读写操作，以及项目授权与枚举的 `authorize_project` 和 `projects`。
 Dispatcher 调用这些相同操作；原生消费者直接调用，无需 JSON 转换。登记仍绑定调用者生命周期，
 更新仍是不能修改 user-only 字段的 owner 写入。来源注册、校验和持久化仍由同一个 Settings owner 承担。
 
 `SettingsService` 保留下述原生 `BusinessDocument` 和客户端管理路径。
-PluginManager 的声明式来源工具也通过它读取并进行 owner 写入。此绑定不使声明式操作可见
+PluginManager 的声明式来源工具通过公共 `Settings` 绑定读取并写入。此绑定不使声明式操作可见
 原生来源，也不改变 §4.3 和 §7 的本地客户端边界。
 
 在 `dim-app-server::settings` 中（S8a 的类型，只在注明处改动）：

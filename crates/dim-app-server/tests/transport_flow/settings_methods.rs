@@ -364,6 +364,30 @@ async fn node_settings_typescript_owner_reads_and_writes() {
     let mut other = create(json!([]));
     other["cwd"] = json!(project);
     assert_ok(&client.rpc("session.create", other).await);
+    let roots = client.rpc("settings.projects", json!({})).await;
+    let root = roots["result"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["cwd"] == json!(project.canonicalize().unwrap()))
+        .unwrap()["root"]
+        .clone();
+    let parallel = tokio::time::timeout(
+        Duration::from_secs(10),
+        owner(
+            &mut client,
+            &session,
+            "custom_concurrent",
+            json!({"root": root}),
+        ),
+    )
+    .await
+    .expect("a suspended decoder must not block writers");
+    assert_eq!(parallel["stale"]["error"]["code"], "conflict", "{parallel}");
+    assert_eq!(
+        parallel["written"]["value"]["document"]["count"], 8,
+        "{parallel}"
+    );
     let events = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let events = owner(&mut client, &session, "events", json!({})).await;

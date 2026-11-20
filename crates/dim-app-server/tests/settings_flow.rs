@@ -871,6 +871,26 @@ async fn sources_appear_while_registered_and_names_are_exclusive() {
             .await
             .is_err()
     );
+    let files = root.get::<FileStorage>().unwrap();
+    let mut notices = listen::<SettingsChanged>(&root, &settings_changes("example"));
+    let held = files
+        .lock(&files.path(0, "example.json").unwrap(), &cancel)
+        .await
+        .unwrap();
+    let pending = first.get().unwrap().update(
+        SettingsScope::User,
+        &saved.revision,
+        Document {
+            value: "obsolete".into(),
+        },
+        &cancel,
+    );
+    tokio::pin!(pending);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(75), &mut pending)
+            .await
+            .is_err()
+    );
     source.dispose().await.unwrap();
     assert!(matches!(
         settings
@@ -888,6 +908,8 @@ async fn sources_appear_while_registered_and_names_are_exclusive() {
         .unwrap()
         .register_document::<Document>(&root)
         .unwrap();
+    drop(held);
+    assert!(matches!(pending.await, Err(SettingsError::UnknownSource)));
     assert!(matches!(
         first
             .get()
@@ -906,6 +928,28 @@ async fn sources_appear_while_registered_and_names_are_exclusive() {
             .await
             .unwrap(),
         saved
+    );
+    let committed = next
+        .update(
+            SettingsScope::User,
+            &saved.revision,
+            Document {
+                value: "current".into(),
+            },
+            &cancel,
+        )
+        .await
+        .unwrap();
+    saw(
+        &mut notices,
+        change(SettingsScope::User, &committed.revision),
+    )
+    .await;
+    assert!(
+        notices
+            .borrow()
+            .iter()
+            .all(|event| event.revision == saved.revision || event.revision == committed.revision)
     );
     root.shutdown().await.unwrap();
     fs::remove_dir_all(home).unwrap();

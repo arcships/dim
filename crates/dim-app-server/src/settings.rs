@@ -208,6 +208,25 @@ enum Kind {
     Declared(Arc<Declared>),
 }
 
+type CompareDocument<D> = Box<dyn FnOnce(&D, &D) -> Result<()> + Send>;
+
+enum WriteCheck<D> {
+    Registered(Weak<Registration<Source>>),
+    Compare(CompareDocument<D>),
+}
+
+fn current_registration(
+    settings: &SettingsService,
+    name: &str,
+    registration: &Weak<Registration<Source>>,
+) -> Result<Arc<Registration<Source>>> {
+    settings
+        .sources
+        .get(name)
+        .filter(|entry| registration.ptr_eq(&Arc::downgrade(entry)))
+        .ok_or(SettingsError::UnknownSource)
+}
+
 /// A custom source registered by one plugin generation.
 pub struct RegisteredDocument<D> {
     settings: Arc<SettingsService>,
@@ -217,14 +236,7 @@ pub struct RegisteredDocument<D> {
 
 impl<D: Serialize + Send + Sync + 'static> RegisteredDocument<D> {
     fn path(&self, scope: SettingsScope) -> Result<FilePath> {
-        let entry = self
-            .settings
-            .sources
-            .get(self.format.source())
-            .ok_or(SettingsError::UnknownSource)?;
-        if !self.registration.ptr_eq(&Arc::downgrade(&entry)) {
-            return Err(SettingsError::UnknownSource);
-        }
+        let entry = current_registration(&self.settings, self.format.source(), &self.registration)?;
         self.settings.locate(
             &entry.value.user_file,
             entry.value.project_file.as_deref(),
@@ -257,7 +269,7 @@ impl<D: Serialize + Send + Sync + 'static> RegisteredDocument<D> {
                 scope,
                 expected,
                 document,
-                |_, _| Ok(()),
+                WriteCheck::Registered(self.registration.clone()),
                 cancel,
             )
             .await
@@ -495,7 +507,7 @@ impl SettingsService {
             scope,
             expected,
             document,
-            |_, _| Ok(()),
+            WriteCheck::Compare(Box::new(|_, _| Ok(()))),
             cancel,
         )
         .await
@@ -528,7 +540,7 @@ impl SettingsService {
         scope: SettingsScope,
         expected: &str,
         document: F::Document,
-        check: impl FnOnce(&F::Document, &F::Document) -> Result<()> + Send + 'static,
+        check: WriteCheck<F::Document>,
         cancel: &CancellationToken,
     ) -> Result<SettingsSnapshot<F::Document>> {
         let task = {
@@ -544,11 +556,25 @@ impl SettingsService {
                         .await;
                 }
                 let mut lease = owner.lease(&path, &cancel).await?;
-                let current = snapshot(&*format, lease.read(&cancel).await, &cancel).await?;
-                if current.revision != expected {
-                    return Err(SettingsError::Conflict);
+                let stored = stored_bytes(lease.read(&cancel).await)?;
+                match check {
+                    WriteCheck::Registered(registration) => {
+                        let source = current_registration(&owner, format.source(), &registration)?;
+                        if matches!(source.value.kind, Kind::Rust(_)) {
+                            format.decode(stored.as_deref(), &cancel).await?;
+                        }
+                        if revision(stored.as_deref()) != expected {
+                            return Err(SettingsError::Conflict);
+                        }
+                    }
+                    WriteCheck::Compare(compare) => {
+                        let current = format.decode(stored.as_deref(), &cancel).await?;
+                        if revision(stored.as_deref()) != expected {
+                            return Err(SettingsError::Conflict);
+                        }
+                        compare(&current, &document)?;
+                    }
                 }
-                check(&current.document, &document)?;
                 let mut bytes = serde_json::to_vec_pretty(&document)
                     .map_err(|_| SettingsError::Invalid("cannot encode settings"))?;
                 bytes.push(b'\n');
@@ -629,16 +655,21 @@ fn revision(bytes: Option<&[u8]>) -> String {
         |bytes| format!("{:x}", Sha256::digest(bytes)),
     )
 }
+fn stored_bytes(read: std::result::Result<Vec<u8>, FileStorageError>) -> Result<Option<Vec<u8>>> {
+    match read {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(FileStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
 async fn snapshot<F: Format + ?Sized>(
     format: &F,
     read: std::result::Result<Vec<u8>, FileStorageError>,
     cancel: &CancellationToken,
 ) -> Result<SettingsSnapshot<F::Document>> {
-    let bytes = match read {
-        Ok(bytes) => Some(bytes),
-        Err(FileStorageError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.into()),
-    };
+    let bytes = stored_bytes(read)?;
     Ok(SettingsSnapshot {
         document: format.decode(bytes.as_deref(), cancel).await?,
         revision: revision(bytes.as_deref()),

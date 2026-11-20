@@ -85,7 +85,7 @@ impl SettingsService {
         path: FilePath,
         expected: String,
         document: F::Document,
-        check: impl FnOnce(&F::Document, &F::Document) -> Result<()> + Send + 'static,
+        check: WriteCheck<F::Document>,
         cancel: &CancellationToken,
     ) -> Result<SettingsSnapshot<F::Document>> {
         let (version, current) = self.native_read(format.clone(), path, cancel).await?;
@@ -94,7 +94,13 @@ impl SettingsService {
         if current.revision != expected {
             return Err(SettingsError::Conflict);
         }
-        let decision = match check(&current.document, &document) {
+        let checked = match check {
+            WriteCheck::Registered(registration) => {
+                current_registration(self, format.source(), &registration).map(|_| ())
+            }
+            WriteCheck::Compare(compare) => compare(&current.document, &document),
+        };
+        let decision = match checked {
             Ok(()) => UserDecision::Write {
                 document: serde_json::to_string(&document)
                     .map_err(|_| SettingsError::Invalid("cannot encode settings"))?,

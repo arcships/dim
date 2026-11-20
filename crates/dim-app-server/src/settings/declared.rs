@@ -256,10 +256,10 @@ impl SettingsService {
             scope,
             expected,
             document,
-            move |current, next| match writer {
+            WriteCheck::Compare(Box::new(move |current, next| match writer {
                 Writer::Client => Ok(()),
                 Writer::Owner => rules.user_only(current, next),
-            },
+            })),
             cancel,
         )
         .await

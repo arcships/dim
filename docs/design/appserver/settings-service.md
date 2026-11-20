@@ -17,8 +17,7 @@ each source with Settings when it starts ([ADR 007](../../adr/007-plugin-configu
 the source name, its files, a JSON Schema (with `default` values) and its user-only fields
 (§3.1). Settings then offers three things over JSON documents:
 
-- the process service `settings`, which the owner uses: `register`, `read`, `update` (CAS on
-  the revision) and `projects`;
+- the process service `settings` for source registration, reads, writes and project admission (§4.2);
 - the client management methods `settings.read`, `settings.update`, `settings.sources` and
   `settings.projects`;
 - the same rutis events as S8a, `settings.changed` and `settings.project_authorized`. Their
@@ -315,15 +314,16 @@ Permission does).
 ### 4.5 Rust binding
 
 The `Settings` binding exposes the owner operations of the public `settings` data face.
-It provides `register(ctx, declaration)`, `read(source, scope, cancel)`,
-`update(source, scope, expected, document, cancel)` and `projects()`.
+Declared sources use `register`, `declared_by`, `read` and `update`. Custom sources use
+`register_document` and its bound read/update operations. Project admission and listing use
+`authorize_project` and `projects`.
 The dispatcher calls these same operations, and native consumers call them directly
 without JSON conversion. Registration retains the caller's lifetime; updates are owner
 writes and preserve user-only fields. The existing Settings owner still supplies the
 source registry, validation and persistence.
 
 `SettingsService` retains the native `BusinessDocument` and client management paths below.
-PluginManager's declared-source tools also use it for reads and owner writes.
+PluginManager reads and updates its declared sources through the public `Settings` binding.
 This binding does not make native sources visible through declared-source operations or
 change the local-client boundary in §4.3 and §7.
 
