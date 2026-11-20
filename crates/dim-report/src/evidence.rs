@@ -1,9 +1,11 @@
 use dim_agent_capabilities::{
-    methods::RpcError, prompt_state::PromptSnapshot, timeline_tree::TimelineTree,
+    methods::RpcError,
+    prompt_state::PromptSnapshot,
+    timeline_tree::{DirectoryReply, DirectoryRequest, TimelineTree},
 };
 use dim_agent_runtime::{
-    AgentError, Branch, QueryEvent, QueryFilter, QueryOperand, QueryOutput, QueryPage, QuerySelect,
-    QuerySpec, TimelineQuery, TimelineQueryScope,
+    AgentError, Branch, BranchDirectoryState, QueryEvent, QueryFilter, QueryOperand, QueryOutput,
+    QueryPage, QuerySelect, QuerySpec, TimelineQuery, TimelineQueryScope,
 };
 use dim_agent_types::{
     AgentEvent, BranchCreateFailedData, ContentBlock, DEFAULT_BRANCH_ID, EventKind, FinishReason,
@@ -192,7 +194,14 @@ pub(super) struct Snapshot {
 impl Snapshot {
     pub(super) async fn capture_session(tree: &TimelineTree) -> (Self, Option<ModelId>) {
         let branch = tree.get(DEFAULT_BRANCH_ID).ok();
-        let conversation_through = branch.as_ref().map(Branch::sequence);
+        let conversation_through = match tree.directory(DirectoryRequest {
+            id: Some(DEFAULT_BRANCH_ID.to_owned()),
+        }) {
+            Ok(DirectoryReply::One(entry)) if entry.state != BranchDirectoryState::Ended => {
+                Some(entry.head)
+            }
+            _ => None,
+        };
         let timeline = match conversation_through {
             Some(through) => read_window(tree, DEFAULT_BRANCH_ID, through, ACTIVITY_KINDS)
                 .await
