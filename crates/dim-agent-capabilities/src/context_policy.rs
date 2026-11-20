@@ -1,8 +1,8 @@
 use crate::{
     context_usage::Estimate,
     history::{
-        HistoryEntry, HistoryRenderer, chain_by_id, context_compaction, context_configuration,
-        digest_message, truncate_middle, user_message,
+        HistoryEntry, chain_by_id, context_compaction, context_configuration, digest_message,
+        face::HistoryFace, truncate_middle, user_message,
     },
     host::*,
 };
@@ -106,7 +106,7 @@ pub(crate) struct ContextPolicy {
     pub timeline: Arc<Timeline>,
     pub resolver: Arc<ContextModelHost>,
     pub strategy: Arc<CompactionStrategyHost>,
-    pub history: Arc<HistoryRenderer>,
+    pub history: Arc<HistoryFace>,
 }
 
 /// The caller of a compaction step and its reason; the ids and `through`
@@ -426,7 +426,7 @@ impl ContextPolicy {
         timeline: &Arc<Timeline>,
         model: &Arc<ContextModelHost>,
         strategy: &Arc<CompactionStrategyHost>,
-        history: &Arc<HistoryRenderer>,
+        history: &Arc<HistoryFace>,
     ) -> Result<Option<Self>, String> {
         match (model.is_bound(), strategy.is_bound()) {
             (true, true) => Ok(Some(Self {
@@ -1131,7 +1131,7 @@ impl ContextPolicy {
             Some(projection) => projection,
             None => self
                 .history
-                .rendered_stream(&self.timeline, source.through, 256)
+                .rendered_stream(&self.timeline.branch_id(), source.through, 256)
                 .await
                 .map_err(|error| HostError::failed(error.to_string()))?,
         };
@@ -1708,7 +1708,12 @@ impl ContextPolicy {
                     None => {
                         let checkpoint = self
                             .history
-                            .stream_checkpoint(&self.timeline, view.through, retain_from, 256)
+                            .stream_checkpoint(
+                                &self.timeline.branch_id(),
+                                view.through,
+                                retain_from,
+                                256,
+                            )
                             .await
                             .map_err(|error| error.to_string())?;
                         Some(self.history.snapshot_from_checkpoint(&checkpoint, &fact)?)
