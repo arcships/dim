@@ -525,7 +525,7 @@ impl HostDispatch for Store {
             .await;
             result.map(Value::from).map_err(|error| {
                 if association {
-                    rutis_bridge::exports::failure("StoreError", "failed", error.to_string(), None)
+                    association_failure(error)
                 } else {
                     failure(error)
                 }
@@ -533,7 +533,11 @@ impl HostDispatch for Store {
         }))
     }
 }
-fn failure(error: AgentError) -> Error {
+pub(super) fn association_failure(error: AgentError) -> Error {
+    rutis_bridge::exports::failure("StoreError", "failed", error.to_string(), None)
+}
+
+pub(super) fn failure(error: AgentError) -> Error {
     let code = match &error {
         AgentError::InvalidInput(_) => "invalid",
         AgentError::Closed(_) => "closed",

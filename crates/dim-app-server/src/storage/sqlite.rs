@@ -2923,14 +2923,14 @@ impl HostDispatch for SqliteDispatch {
                     serde_json::json!(
                         db.catalog(p.request, p.agent, p.version, p.hosts, p.closed, cancel)
                             .await
-                            .map_err(storage_failure)?
+                            .map_err(super::face::failure)?
                     )
                 }
                 Request::Fork(p) => {
                     let _ownership = db.ownership.lock().await;
                     db.fork_session(&p.source_session_id, &p.session_id, p.at, &p.config_text)
                         .await
-                        .map_err(storage_failure)?;
+                        .map_err(super::face::failure)?;
                     serde_json::json!({})
                 }
                 Request::CreateOwnedSession(p) => {
@@ -2945,13 +2945,13 @@ impl HostDispatch for SqliteDispatch {
                         p.worktree.map(Into::into),
                     )
                     .await
-                    .map_err(storage_failure)?;
+                    .map_err(super::face::failure)?;
                     serde_json::json!({})
                 }
                 Request::AssociateWorktree(p) => {
                     db.associate_worktree(&p.session_id, p.directory(), p.subtree.into())
                         .await
-                        .map_err(storage_failure)?;
+                        .map_err(super::face::association_failure)?;
                     serde_json::json!({})
                 }
                 Request::RemoveWorktreeDirectory(p) => {
@@ -2962,7 +2962,7 @@ impl HostDispatch for SqliteDispatch {
                             root: p.root.into(),
                         })
                         .await
-                        .map_err(storage_failure)?;
+                        .map_err(super::face::failure)?;
                     serde_json::json!({"removed": removed})
                 }
                 Request::RemovableOutputDirectories(p) => {
@@ -2974,7 +2974,7 @@ impl HostDispatch for SqliteDispatch {
                         .map_err(storage_failure)?;
                     serde_json::json!({})
                 }
-                Request::Rows(rows) => rows.execute(&db).await.map_err(storage_failure)?,
+                Request::Rows(rows) => rows.execute(&db).await.map_err(super::face::failure)?,
                 Request::ReleaseStaleFileWriters { generation } => serde_json::json!(
                     db.release_stale_file_writers(generation)
                         .await

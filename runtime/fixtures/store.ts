@@ -191,8 +191,10 @@ export default definePlugin({
         const association = { sessionId, repository: directory.repository, root: directory.root, subtree: directory.root }
         assert.deepEqual(await store.associateWorktree(association), {})
         assert.deepEqual(await sqlite.associateWorktree(association), {})
-        await assert.rejects(() => store.associateWorktree({ ...association, sessionId: 'missing' }),
-          (error: unknown) => error instanceof Error && 'code' in error && error.code === 'failed' && error.message.includes('missing'))
+        for (const repository of [store, sqlite]) {
+          await assert.rejects(() => repository.associateWorktree({ ...association, sessionId: 'missing' }),
+            (error: unknown) => error instanceof Error && 'code' in error && error.code === 'failed' && error.message.includes('missing'))
+        }
         assert.deepEqual(await sqlite.worktreeUsages({ repository: directory.repository, root: directory.root }),
           await store.worktreeUsages({ repository: directory.repository, root: directory.root }))
         assert.deepEqual(await store.sessionsUnderWorkspace({ root: directory.root }), { sessionIds: [sessionId] })
@@ -234,6 +236,14 @@ export default definePlugin({
         } catch (error) {
           if (!(error instanceof Error) || !('code' in error) || typeof error.code !== 'string') throw error
           missing = { code: error.code, message: error.message }
+        }
+        assert.ok(missing)
+        await assert.rejects(() => sqlite.setSessionLanguage({ sessionId: 'wire-missing', language: null }),
+          { code: missing.code, message: missing.message })
+        for (const repository of [store, sqlite]) {
+          await assert.rejects(() => repository.addGrant({ sessionId: 'wire-missing', path: grant, kind: 'dir', mode: 'read' }),
+            { code: 'storage' })
+          await repository.removeGrant({ sessionId: 'wire-missing', path: grant })
         }
         return { kind: 'value', value: { grants, config, fork, removed, absent, origin, owner, missing, catalog } }
       },
