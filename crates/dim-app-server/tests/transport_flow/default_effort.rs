@@ -1257,6 +1257,28 @@ fn summarising(model_id: &str, default: Option<&str>, options: &[&str]) -> Value
     value
 }
 
+async fn baseline_turn(client: &mut Client, session_id: &Value) {
+    let at = json!({"sessionId":session_id,"branchId":"main"});
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let pending = client.rpc("session.input.pending", at.clone()).await;
+            assert_ok(&pending);
+            let inputs = pending["result"]["inputs"].as_array().unwrap();
+            if inputs
+                .iter()
+                .filter(|input| input["applied"] == true)
+                .count()
+                == 4
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("four startup inputs reach the branch before the baseline request");
+    turn(client, session_id, "hello").await;
+}
+
 /// The request body with the prompt replaced by its message roles. Every
 /// fixture sends the same session prompt and none of these tests is about it,
 /// but every other field is compared exactly as sent.
@@ -1500,7 +1522,7 @@ async fn a_summary_declaration_with_no_effort_sends_nothing() {
             .await;
         assert_ok(&created);
         let session_id = created["result"]["sessionId"].clone();
-        turn(&mut client, &session_id, "hello").await;
+        baseline_turn(&mut client, &session_id).await;
         let wire = last_body(&capture);
         assert!(wire.get("reasoning").is_none(), "{wire}");
         // The baseline body captured at 1efbd75df for this fixture.
@@ -1619,7 +1641,7 @@ async fn a_model_that_declares_no_summary_sends_the_baseline_body() {
             .await;
         assert_ok(&created);
         let session_id = created["result"]["sessionId"].clone();
-        turn(&mut client, &session_id, "hello").await;
+        baseline_turn(&mut client, &session_id).await;
         let wire = last_body(&capture);
         // Baseline at 1efbd75df: the adapter's own default already sends
         // `detailed` beside a concrete effort, so the body is unchanged.

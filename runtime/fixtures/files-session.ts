@@ -13,7 +13,7 @@ export const part = definePlugin({
     ctx.effect(() => scope.close())
     await ctx.use<SessionMethods>('sessionMethods').register(
       'session.files',
-      ['read', 'write', 'hold'].map(name => ({
+      ['read', 'write', 'hold', 'too_large'].map(name => ({
         name: `session.files.${name}`, mutating: name !== 'read',
         interruption: 'drain', progress: false,
       })),
@@ -32,6 +32,18 @@ export const part = definePlugin({
           })
           await connected
           return { kind: 'value', value: null }
+        }
+        if (call.method === 'session.files.too_large') {
+          try {
+            await scope.withLock('public-files/state.json', async file =>
+              await file.replace('x'.repeat(16 * 1024 * 1024)))
+            return { kind: 'value', value: { ok: true } }
+          } catch (error) {
+            const failure = error as { name?: string; code?: string; message?: string }
+            return { kind: 'value', value: {
+              ok: false, name: failure.name ?? '', code: failure.code ?? '', message: String(failure.message ?? error),
+            } }
+          }
         }
         const result = await scope.withLock('public-files/state.json', async file =>
           call.method === 'session.files.write'

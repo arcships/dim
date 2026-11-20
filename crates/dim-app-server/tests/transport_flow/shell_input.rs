@@ -974,6 +974,13 @@ async fn reloading_workspace_tools_answers_the_page_method_with_service_reloadin
     .expect("the page method answers service_reloading while WorkspaceTools reloads");
     drop(hold);
     restart.await.unwrap().unwrap();
+    loop {
+        let notice = shell.client.notice("session.event").await;
+        let event = &notice["params"]["event"];
+        if event["type"] == "exec" && event["name"] == "ended" {
+            break;
+        }
+    }
     assert_ok(
         &shell
             .client

@@ -642,7 +642,7 @@ impl Owner {
                 )?;
                 let data = settle(reply).await?.json()?;
                 serde_json::from_value::<GenerateTitleReply>(data)
-                    .map_err(|error| rutis_bridge::session::Error::Value(error.to_string()))
+                    .map_err(|error| rutis_bridge::session::Error::value(error.to_string()))
             }
             .await;
             if cancel.is_cancelled() {

@@ -262,7 +262,7 @@ Since rutis 0.15.1 there is one flat bus per root.
 How Dim's parts consume bus events and which public bus events Dim defines are in the
 [plugin contract §5.3](plugin-contract.md#53-bus-events).
 
-*Today:* Dim is on rutis 0.19.3, and this section holds. The bus spans every rutis session: each end
+*Today:* Dim is on rutis 0.23.0, and this section holds. The bus spans every rutis session: each end
 announces its listener names, an event reaches the listeners of its name at either end, and every
 emit of a language runtime goes through the host.
 

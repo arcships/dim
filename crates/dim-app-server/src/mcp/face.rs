@@ -145,7 +145,7 @@ impl HostDispatch for McpService {
                 let Plugin { plugin } = request(args)?;
                 arg(&self.plugin_refusal(&plugin))
             }
-            _ => Err(Error::Value(format!("mcpService has no method {method}"))),
+            _ => Err(Error::value(format!("mcpService has no method {method}"))),
         }
     }
 }

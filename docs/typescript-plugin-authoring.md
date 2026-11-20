@@ -6,14 +6,14 @@ state the rules in any language; this guide shows how to write them today. Dim i
 shapes change with the phase that needs them, together with this guide.
 
 Dim loads trusted JavaScript/TypeScript plugins through rutis. Match `@arcships/rutis`
-to the host's pinned runtime: main uses 0.19.3.
+to the host's pinned runtime: main uses 0.23.0.
 Use type-only imports from `dimcode/plugin` for Dim's implemented named services.
 These declarations add no runtime wrapper or service.
 The source declaration is [npm/plugin.d.ts](../npm/plugin.d.ts). The types of the services Dim's
 Rust types serve to other languages are generated into
 [npm/branch-services.d.ts](../npm/branch-services.d.ts) and re-exported through the same entry
 point as `Services`.
-The pinned rutis 0.19.3 declarations pass `tsc --strict` without `skipLibCheck`.
+The pinned rutis 0.23.0 declarations pass `tsc --strict` without `skipLibCheck`.
 This does not disable checking a plugin's calls against the service interfaces.
 
 `BridgeJsonValue` and `BridgeJsonObject` describe JSON-compatible data carried by the
@@ -328,10 +328,11 @@ a present file returns its size and a pinned reader ID for `fsHost.readAt` and
 `fsHost.closeRead`. The opening row's unload closes outstanding readers.
 `scope.writeStream(name, next)` pulls chunks until null and preserves the old file
 on failure or cancellation. `scope.directory(name)` creates the work directory
-and returns its node-local path. A buffer large enough that its call message would exceed the runtime's
-16 MiB frame fails that call before it is sent, as a `RangeError` coded
-`bad-value`; the row and the file store are unaffected, and the same holds for
-any call argument, a large text `replace` included.
+and returns its node-local path. A text `replace` whose serialized record would
+exceed the runtime's 16 MiB frame fails that call with a `BindingError` coded
+`bad-value`; the file is unchanged. rutis 0.23 chunks a larger call frame up to
+the deployment's `max_transfer`, so the runtime no longer refuses a call at the
+16 MiB boundary; limits that a Dim face does not enforce are not guaranteed.
 
 Native storage locking and durability do not make remote side effects atomic.
 After an uncertain external outcome, use that system's reconciliation contract

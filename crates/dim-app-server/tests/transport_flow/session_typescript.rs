@@ -1877,8 +1877,8 @@ impl rutis::host::DynPlugin for ControlledGate {
 struct GateValue;
 impl rutis_bridge::session::HostDispatch for GateValue {
     fn invoke(&self, _: &str, _: rutis_bridge::session::Value) -> rutis_bridge::session::Reply {
-        Err(rutis_bridge::session::Error::Value(
-            "fixture dependency is not a tool".into(),
+        Err(rutis_bridge::session::Error::value(
+            "fixture dependency is not a tool",
         ))
     }
     fn methods(&self) -> Option<Value> {
@@ -2937,12 +2937,9 @@ async fn node_session_typescript_call_channel_checks_the_call_and_the_connection
 }
 
 /// A.2: an oversized notification from another language writes nothing and
-/// keeps the connection open. The bridge that carries the payload already
-/// refuses any message over 16 MiB, the same limit as the notification
-/// frame, so the refusal a foreign provider can actually observe is the
-/// bridge's (`bad-value`), not `too_large`: a request the App Server would
-/// encode past its frame limit cannot reach it. `too_large` itself is
-/// covered by the Rust binding's flow test.
+/// keeps the connection open. rutis 0.23 chunks frames over 16 MiB, so the
+/// bridge delivers the payload; the refusal a foreign provider observes is the
+/// App Server's own frame limit (`too_large`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_session_typescript_oversized_notification_writes_nothing_and_keeps_the_connection() {
@@ -2972,11 +2969,11 @@ async fn node_session_typescript_oversized_notification_writes_nothing_and_keeps
             json!({"sessionId": session}),
         )
         .await;
-    assert_eq!(reply["result"]["code"], "bad-value", "{reply}");
+    assert_eq!(reply["result"]["code"], "too_large", "{reply}");
     assert!(
         reply["result"]["message"]
             .as_str()
-            .is_some_and(|message| message.contains("16 MiB")),
+            .is_some_and(|message| message.contains("exceeds the frame limit")),
         "{reply}"
     );
     assert_ok(&client.rpc("daemon.ping", json!({})).await);

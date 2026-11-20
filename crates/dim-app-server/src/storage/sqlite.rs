@@ -2552,10 +2552,10 @@ impl HostDispatch for SqliteDispatch {
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         let [request]: [serde_json::Value; 1] = serde_json::from_value(args.json()?)
-            .map_err(|error| BridgeError::Value(error.to_string()))?;
+            .map_err(|error| BridgeError::value(error.to_string()))?;
         if !request.is_object() {
-            return Err(BridgeError::Value(
-                "sqliteStorage request must be an object".into(),
+            return Err(BridgeError::value(
+                "sqliteStorage request must be an object",
             ));
         }
         #[derive(Deserialize)]
@@ -2660,7 +2660,7 @@ impl HostDispatch for SqliteDispatch {
         }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
-                .map_err(|error| BridgeError::Value(error.to_string()))?;
+                .map_err(|error| BridgeError::value(error.to_string()))?;
         let db = self.0.clone();
         Ok(BridgeValue::cancellable_future(async move {
             let value = match request {

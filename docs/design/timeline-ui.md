@@ -250,7 +250,7 @@ The composer's bottom border shows how many other lines have unread reply text. 
 
 The Session worker derives the indicator from nonblank assistant text in live `session.event` records. Text in the shown transcript or open side panel is already seen. The badge counts lines and stays until each is opened. History pages and repeated events leave the indicator alone. The worker keeps reply and acknowledgment positions for the current attachment. A fresh attachment starts without unread marks and presents existing replies as history. The position used here concerns what the user saw in that line's transcript.
 
-The notification shares the existing bottom border in both TUI modes. Narrow widths favor the notification over the directory label. It shortens to `/lines (N)`, then `/lines`, then `*` as the room decreases. The existing left status in fullscreen keeps priority.
+The notification shares the existing bottom border in both TUI modes. Narrow widths favor the notification over the directory label. It shortens to `/lines (N)`, then `/lines`, then `*` as the room decreases. The left status on the bottom border keeps priority in both modes.
 
 ## 7. Client data
 
@@ -285,8 +285,8 @@ The notification shares the existing bottom border in both TUI modes. Narrow wid
 
 ## Proposed current activity in the composer
 
-[CLI current activity](cli-current-activity.md) uses the existing live composer
-status at the top of the scrollback composer and in the fullscreen lower dock.
+[CLI current activity](cli-current-activity.md) uses the live composer status on
+the bottom border in both TUI modes.
 The bottom-border place and unread label keep their existing priorities.
 Committed tool history keeps its existing detail and scrolling behavior. The
 background task strip continues to show task lifetimes independently of the
