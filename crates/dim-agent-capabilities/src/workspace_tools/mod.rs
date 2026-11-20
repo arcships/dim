@@ -153,6 +153,7 @@ pub(crate) struct WorkspaceTools {
     member: bool,
     tree: Arc<TreeCommands>,
     files: FileTools,
+    fs_host: Arc<crate::file_storage::FsHost>,
     /// Cancelled on unload: new calls settle as reloading, running ones stop.
     lifecycle: CancellationToken,
     /// Calls in flight, including a command being handed to BackgroundExec.
@@ -198,7 +199,26 @@ impl WorkspaceTools {
                 let reads = branch
                     .service::<FileReads>()
                     .map_err(HostError::from_agent)?;
-                self.files.execute(&call, &reads, combined.clone()).await
+                match call.name.as_str() {
+                    "glob" | "grep" => {
+                        let kind = if call.name == "glob" {
+                            files::search::SearchKind::Glob
+                        } else {
+                            files::search::SearchKind::Grep
+                        };
+                        self.fs_host
+                            .workspace_search(
+                                kind,
+                                &self.cwd,
+                                self.files.home(),
+                                self.files.boundary.as_ref(),
+                                &call.input,
+                                &combined,
+                            )
+                            .await
+                    }
+                    _ => self.files.execute(&call, &reads, combined.clone()).await,
+                }
             } else {
                 Ok(ToolResult::error(format!("Unknown tool: {}", call.name)))
             }
@@ -384,7 +404,9 @@ impl DynPlugin for WorkspaceToolsPlugin {
                 .boundary
                 .as_ref()
                 .map_or(platform.home.clone(), |boundary| boundary.home.clone());
+            let mentions = ctx.require_at(&self.mentions)?;
             let tools = Arc::new(WorkspaceTools {
+                fs_host: mentions.clone(),
                 ctx: ctx.clone(),
                 facts: self.facts.clone(),
                 files: FileTools::with_coordinator(
@@ -413,7 +435,6 @@ impl DynPlugin for WorkspaceToolsPlugin {
             })?;
             // The owner's one searched index, shared with
             // `workspace.files.search`.
-            let mentions = ctx.require_at(&self.mentions)?;
             let search_root = tools.cwd.clone();
             methods.register(
                 ctx,

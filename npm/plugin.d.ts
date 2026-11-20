@@ -744,6 +744,8 @@ export interface TimelineStore {
 export type FsEntryName = string | { Unix: number[] } | { Windows: number[] };
 /** Directory operations and pinned reads on the filesystem owner; see resource-faces §4.1. */
 export interface FsHost {
+  glob(request: {path: string; pattern: string; limit?: number}): Promise<{result: ToolResult}>;
+  grep(request: {path: string; pattern: string; include?: string; outputMode?: 'files' | 'content'; lineNumbers?: boolean; context?: number; beforeContext?: number; afterContext?: number; limit?: number; multiline?: boolean; literal?: boolean; timeoutMs?: number}): Promise<{result: ToolResult}>;
   mentions(request: {path: string; query: string; limit?: number}): Promise<{candidates: {relativePath: string; absolutePath: string; dir: boolean}[]}>;
   stat(request: { path: string }): Promise<{ kind: 'file'; size: number } | { kind: 'directory' | 'other' | 'missing' }>;
   replace(request: { path: string; bytes: string; permissions?: 'preserve' | 'private' | 'privateReadOnly'; leaseId?: string }): Promise<Record<string, never>>;

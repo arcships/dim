@@ -1,5 +1,6 @@
 use super::mentions::{MentionsReply, MentionsRequest, parse_limit};
 use super::{DirectoryEntry, FileReader, FileStorage, FileStorageError, Result};
+use crate::workspace_tools::files::search::SearchKind;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use rutis::Ctx;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
@@ -106,6 +107,22 @@ impl FsHost {
             storage: owner,
             generation: ctx,
         }
+    }
+
+    pub(crate) fn begin_search(
+        &self,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<(impl Send + use<>, CancellationToken), crate::host::HostError> {
+        let mut state = self.storage.state.lock().unwrap();
+        self.storage.check(cancel).map_err(|error| match error {
+            FileStorageError::Cancelled => crate::host::HostError::Cancelled(error.to_string()),
+            error => crate::host::HostError::failed(error.to_string()),
+        })?;
+        state.active += 1;
+        Ok((
+            super::Operation(self.storage.clone()),
+            self.storage.stopping.child_token(),
+        ))
     }
 
     pub async fn mentions(
@@ -481,6 +498,8 @@ impl FileStorage {
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
 enum Request {
+    Glob(dim_agent_types::JsonObject),
+    Grep(dim_agent_types::JsonObject),
     Mentions(MentionsRequest),
     Stat(PathRequest),
     Lock(PathRequest),
@@ -554,7 +573,7 @@ struct Close {
 impl HostDispatch for FsHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
+            serde_json::json!({"glob":"async","grep":"async","mentions":"async","stat":"async","replace":"async","backup":"async","lock":"async", "unlock":"async", "readBytes":"async", "openRead":"async", "readAt":"async", "closeRead":"async", "createDirectory":"async", "list":"async", "remove":"async"}),
         )
     }
 
@@ -573,6 +592,41 @@ impl HostDispatch for FsHost {
             let cancel = CancellationToken::new();
             let _dropped = cancel.clone().drop_guard();
             let reply = match request {
+                request @ (Request::Glob(_) | Request::Grep(_)) => {
+                    let (kind, input) = match request {
+                        Request::Glob(input) => (SearchKind::Glob, input),
+                        Request::Grep(input) => (SearchKind::Grep, input),
+                        _ => unreachable!(),
+                    };
+                    let path = input
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .map(Path::new)
+                        .filter(|path| path.is_absolute())
+                        .ok_or_else(|| {
+                            failure(FileStorageError::InvalidPath(
+                                "expected an absolute search root",
+                            ))
+                        })?;
+                    let home = std::env::home_dir()
+                        .ok_or_else(|| failure(FileStorageError::Unsupported))?;
+                    let result = owner
+                        .workspace_search(kind, path, &home, None, &input, &cancel)
+                        .await
+                        .map_err(|error| {
+                            let code = match &error {
+                                crate::host::HostError::Cancelled(_) => "cancelled",
+                                _ => "io",
+                            };
+                            rutis_bridge::exports::failure(
+                                "FileStorageError",
+                                code,
+                                error.to_string(),
+                                None,
+                            )
+                        })?;
+                    serde_json::json!({"result":result})
+                }
                 Request::Mentions(request) => {
                     serde_json::json!(owner.mentions(request, &cancel).await.map_err(failure)?)
                 }

@@ -31,6 +31,44 @@ use tokio_util::sync::CancellationToken;
 #[cfg(not(test))]
 type SearchHook = std::convert::Infallible;
 
+#[derive(Clone, Copy)]
+pub(crate) enum SearchKind {
+    Glob,
+    Grep,
+}
+
+impl crate::file_storage::FsHost {
+    pub(crate) async fn workspace_search(
+        &self,
+        kind: SearchKind,
+        cwd: &Path,
+        home: &Path,
+        boundary: Option<&super::FileToolBoundary>,
+        input: &JsonObject,
+        cancel: &CancellationToken,
+    ) -> Result<ToolResult, HostError> {
+        let (operation, stopping) = self.begin_search(cancel)?;
+        let _stop = stopping.clone().drop_guard();
+        let cwd = cwd.to_owned();
+        let home = home.to_owned();
+        let boundary = boundary.cloned();
+        let input = input.clone();
+        let worker = stopping.clone();
+        let search = run(move || {
+            let _operation = operation;
+            match kind {
+                SearchKind::Glob => run_glob(&cwd, &home, boundary.as_ref(), &input, worker),
+                SearchKind::Grep => run_grep(&cwd, &home, boundary.as_ref(), &input, worker, None),
+            }
+        });
+        tokio::select! {
+            result = search => result,
+            _ = cancel.cancelled() => Err(cancelled()),
+            _ = stopping.cancelled() => Err(cancelled()),
+        }
+    }
+}
+
 const SEARCH_RESULT_BYTE_LIMIT: usize = 2 * 1024 * 1024;
 const SEARCH_MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 const SEARCH_MAX_RESULTS: u64 = 100;

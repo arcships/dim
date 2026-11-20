@@ -12,7 +12,7 @@
 mod codec;
 mod edit;
 mod read;
-mod search;
+pub(crate) mod search;
 mod write;
 
 use super::file_reads::FileReads;
@@ -41,7 +41,7 @@ pub struct FileTools {
     output_dir: PathBuf,
     /// The root boundary a host configured for this session's file tools;
     /// `None` keeps the unbounded behaviour.
-    boundary: Option<FileToolBoundary>,
+    pub(super) boundary: Option<FileToolBoundary>,
     locks: Arc<FileWriteCoordinator>,
     #[cfg(test)]
     /// Runs after a mutation's target resolved and before the per-path
