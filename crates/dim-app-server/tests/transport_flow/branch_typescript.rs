@@ -588,6 +588,12 @@ async fn node_tool_binding_transfers_pinned_handlers_in_the_native_owner() {
     assert_eq!(reply["result"]["echo"], echo.description);
     assert_eq!(reply["result"]["current"], reply["result"]["transferred"]);
     assert_eq!(reply["result"]["empty"], 0);
+    assert!(
+        reply["result"]["collision"]
+            .as_str()
+            .unwrap()
+            .contains("request fixture-empty is already bound")
+    );
     server.shutdown();
     server.join().await.unwrap();
 }
@@ -668,7 +674,7 @@ async fn node_file_reads_round_trips_a_native_binding_used_by_write() {
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
 async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch() {
     use dim_agent_capabilities::host::{HostFuture, ToolExecutionContext};
-    use dim_agent_types::{ToolCall, ToolDefinition, ToolResult};
+    use dim_agent_types::{ToolCall, ToolDefinition, ToolEffect, ToolResult};
 
     struct Tools(tokio::sync::mpsc::UnboundedSender<(String, ToolExecutionContext)>);
     impl ToolDriver for Tools {
@@ -684,6 +690,15 @@ async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch(
             if call.name == "wait" {
                 self.0.send((call.id.clone(), context.clone())).unwrap();
             }
+            if call.name == "echo" {
+                return Box::pin(async move {
+                    let mut result = MockTools.execute(call, context, cancel).await?;
+                    result.effects = Some(vec![ToolEffect::FileWritten {
+                        path: "/fixture".into(),
+                    }]);
+                    Ok(result)
+                });
+            }
             MockTools.execute(call, context, cancel)
         }
     }
@@ -693,7 +708,7 @@ async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch(
     parts.rows = vec![
         json!({"id":"tool-executor","name":parts.anchor.parent().unwrap().join("fixtures/tool-executor.ts"),"provides":{}}),
     ];
-    let (server, _agent) = launch_with(
+    let (server, agent) = launch_with(
         Arc::new(Tools(started)),
         ServerConfig {
             session_typescript: Some(parts),
@@ -718,16 +733,77 @@ async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch(
         .await
         .unwrap()
         .unwrap();
-    let response = client.rpc("session.nestedfixture.run", json!({"sessionId":id,"parentCallId":parent,"turnId":context.turn_id,"requestId":context.request_id,"branchId":context.branch_id})).await;
+    let mut control = Client::new_version(&server, false, 4).await;
+    let (response, ()) = tokio::join!(
+        client.rpc(
+            "session.nestedfixture.run",
+            json!({
+                "sessionId":id,"parentCallId":parent,"turnId":context.turn_id,
+                "requestId":context.request_id,"branchId":context.branch_id
+            })
+        ),
+        async {
+            let (child, _) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(child, "nested-wait");
+            assert_ok(
+                &control
+                    .rpc("session.nestedfixture.cancel", json!({"sessionId":id,"parentCallId":child,"turnId":context.turn_id,"requestId":context.request_id,"branchId":context.branch_id}))
+                    .await,
+            );
+        }
+    );
     assert_ok(&response);
     assert_eq!(
         response["result"],
-        json!({"output":"from node","effectCount":0})
+        json!({"output":"from node","effectCount":1})
     );
     assert_ok(
         &client
             .rpc("session.stop", json!({"sessionId":id,"branchId":"main"}))
             .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let session = agent.get_session(&id).unwrap();
+    let events = branch_events(&session, "main", ..).await.unwrap();
+    let child_calls = events
+        .iter()
+        .filter(|event| {
+            event.parent_call_id.as_deref() == Some(&parent)
+                && matches!(event.kind, dim_agent_types::EventKind::ToolCall(_))
+        })
+        .count();
+    assert_eq!(child_calls, 2);
+    assert!(events.iter().any(
+        |event| event.parent_call_id.as_deref() == Some("nested-wait")
+            && matches!(event.kind, dim_agent_types::EventKind::ToolCall(_))
+    ));
+    let parent_result = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            dim_agent_types::EventKind::ToolResult(data) if event.parent_call_id.is_none() => {
+                data.results.iter().find(|item| item.call_id == parent)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        parent_result.result.effects.as_deref(),
+        Some(
+            vec![
+                ToolEffect::FileWritten {
+                    path: "/fixture".into()
+                };
+                2
+            ]
+            .as_slice()
+        )
     );
     server.shutdown();
     server.join().await.unwrap();

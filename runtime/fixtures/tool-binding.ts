@@ -12,6 +12,12 @@ const part = definePlugin({
     ], async () => {
       const declared = binding.bindCurrent({ requestId: 'fixture-current' })
       binding.bind({ requestId: 'fixture-empty', through: 0n, tools: [], toolSources: [] })
+      let collision = ''
+      try {
+        binding.transfer({ from: 'fixture-current', to: 'fixture-empty' })
+      } catch (error) {
+        collision = String(error)
+      }
       const empty = binding.definitions({ requestId: 'fixture-empty' })
       binding.release({ requestId: 'fixture-empty' })
       binding.transfer({ from: 'fixture-current', to: 'fixture-transferred' })
@@ -25,7 +31,7 @@ const part = definePlugin({
         current: declared.map(tool => tool.name).sort(),
         transferred: transferred.map(tool => tool.name),
         echo: transferred.find(tool => tool.name === 'echo')?.description ?? null,
-        empty: empty.length,
+        empty: empty.length, collision,
       } }
     })
   },

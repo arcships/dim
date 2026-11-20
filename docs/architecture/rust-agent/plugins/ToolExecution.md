@@ -165,7 +165,7 @@ declarations on it travel on that fact
 ([session boundary A.6](../../../design/contracts/session-boundary.md#a6-tool-effects));
 a call it settles without a tool result carries none. Calls in a batch settle
 before the correlated batch result.
-The branch `toolExecutor.open({parentCallId, context}, cancelled)` returns a gate ID for the current batch.
+The branch `toolExecutor.open({parentCallId, context}, cancelled)` returns a gate ID for a running parent in the current batch. A child ID must be unique within that batch. A cancelled gate refuses further calls. The parent collects confirmed child effects when it settles, including effects from gates its handler left open.
 `invoke({gateId, call})` executes the pinned tool and returns its result.
 `close({gateId})` closes admission, joins child tasks and returns their effects in invocation order.
 

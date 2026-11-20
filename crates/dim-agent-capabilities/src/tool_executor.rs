@@ -17,24 +17,26 @@ use futures_util::FutureExt;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis::{Ctx, Error};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     num::NonZeroU64,
     panic::AssertUnwindSafe,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     sync::{oneshot, watch},
-    time::timeout,
+    time::{Instant, timeout_at},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Default)]
 struct ToolState {
     current: Option<CancellationToken>,
+    running_parents: BTreeMap<String, CancellationToken>,
+    call_ids: HashSet<String>,
     gates: BTreeMap<String, Arc<NestedGate>>,
     /// The context of the current top-level batch. A nested gate opens only
     /// for this context.
@@ -55,56 +57,77 @@ pub struct ToolExecutor {
 }
 
 struct NestedGate {
-    timeline: Arc<Timeline>,
-    binding: Arc<ToolBinding>,
-    approval: Arc<Approval>,
     parent_call_id: String,
     context: ToolExecutionContext,
     cancel: CancellationToken,
     tasks: TaskTracker,
-    closing: Mutex<bool>,
-    next: AtomicU64,
+    closing: Mutex<Option<Instant>>,
     effects: Mutex<Vec<(u64, Vec<ToolEffect>)>>,
 }
 
 impl NestedGate {
-    async fn invoke(self: &Arc<Self>, call: ToolCall) -> Result<ToolResult, HostError> {
+    fn start(
+        self: &Arc<Self>,
+        call: ToolCall,
+        ids: &mut HashSet<String>,
+        owner: Arc<ToolExecutor>,
+    ) -> Result<oneshot::Receiver<Result<ToolResult, HostError>>, HostError> {
         let (sender, receiver) = oneshot::channel();
         {
             let closing = self.closing.lock().unwrap();
-            if *closing {
+            if closing.is_some() {
                 return Err(HostError::failed("the Code Mode child gate is closed"));
             }
-            let sequence = self.next.fetch_add(1, Ordering::SeqCst);
+            if self.cancel.is_cancelled() {
+                return Err(HostError::Cancelled(
+                    "the Code Mode child gate was cancelled".into(),
+                ));
+            }
+            if !ids.insert(call.id.clone()) {
+                return Err(HostError::failed(format!(
+                    "tool call {} already exists in this batch",
+                    call.id
+                )));
+            }
             let gate = self.clone();
-            self.tasks.spawn(async move {
-                let _ = sender.send(gate.run_child(call, sequence).await);
-            });
+            let tracker = owner.tasks.clone();
+            self.tasks.spawn(tracker.track_future(async move {
+                let _ = sender.send(gate.run_child(&owner, call).await);
+            }));
         }
-        receiver
-            .await
-            .unwrap_or_else(|_| Err(HostError::failed("a Code Mode child task ended")))
+        Ok(receiver)
+    }
+
+    fn stop(&self) -> (Instant, bool) {
+        let mut closing = self.closing.lock().unwrap();
+        let first = closing.is_none();
+        let deadline = *closing.get_or_insert_with(|| Instant::now() + Duration::from_secs(5));
+        self.cancel.cancel();
+        self.tasks.close();
+        (deadline, first)
     }
 
     async fn close(&self) {
-        *self.closing.lock().unwrap() = true;
-        self.cancel.cancel();
-        self.tasks.close();
-        let _ = timeout(Duration::from_secs(5), self.tasks.wait()).await;
+        let (deadline, _) = self.stop();
+        let _ = timeout_at(deadline, self.tasks.wait()).await;
     }
 
     fn effects(&self) -> Vec<ToolEffect> {
-        let mut collected = std::mem::take(&mut *self.effects.lock().unwrap());
+        let mut collected = self.effects.lock().unwrap().clone();
         collected.sort_by_key(|(sequence, _)| *sequence);
         collected
             .into_iter()
             .flat_map(|(_, effects)| effects)
             .collect()
     }
-    async fn run_child(&self, call: ToolCall, sequence: u64) -> Result<ToolResult, HostError> {
+    async fn run_child(
+        &self,
+        owner: &ToolExecutor,
+        call: ToolCall,
+    ) -> Result<ToolResult, HostError> {
         let context = &self.context;
         let parent_call_id = &self.parent_call_id;
-        let batch = self
+        let batch = owner
             .timeline
             .append(
                 EventDraft::from(EventKind::ToolCall(ToolCallData {
@@ -119,14 +142,19 @@ impl NestedGate {
         let outcome = AssertUnwindSafe(dim_agent_runtime::core::with_parent_call_id(
             child_call_id,
             async {
-                execute(
-                    &self.binding,
-                    &self.approval,
+                let admitted = admit(
+                    &owner.binding,
+                    &owner.approval,
                     call.clone(),
-                    context.clone(),
+                    context,
                     self.cancel.clone(),
                 )
-                .await
+                .await?;
+                let mut errors = Vec::new();
+                let (result, _) = owner
+                    .run_parent(admitted, context.clone(), self.cancel.clone(), &mut errors)
+                    .await;
+                Ok::<_, HostError>(result)
             },
         ))
         .catch_unwind()
@@ -136,10 +164,8 @@ impl NestedGate {
             Ok(Err(error)) => ToolResult::error(error.to_string()),
             Err(panic) => ToolResult::error(panic_message(panic)),
         };
-        if let Some(child_effects) = result.effects.clone() {
-            self.effects.lock().unwrap().push((sequence, child_effects));
-        }
-        self.timeline
+        owner
+            .timeline
             .append(
                 EventDraft::from(EventKind::ToolResult(ToolResultData {
                     turn_id: context.turn_id.clone(),
@@ -153,10 +179,71 @@ impl NestedGate {
                 .with_parent_call_id(parent_call_id.clone()),
             )
             .map_err(|error| HostError::failed(error.to_string()))?;
+        if let Some(child_effects) = result.effects.clone() {
+            self.effects
+                .lock()
+                .unwrap()
+                .push((batch.sequence, child_effects));
+        }
         Ok(result)
     }
 }
 impl ToolExecutor {
+    async fn run_parent(
+        &self,
+        admitted: Admitted,
+        context: ToolExecutionContext,
+        cancel: CancellationToken,
+        errors: &mut Vec<AgentError>,
+    ) -> (ToolResult, &'static str) {
+        let id = admitted.call.id.clone();
+        {
+            let mut state = self.state.lock().unwrap();
+            if cancel.is_cancelled() || state.current_context.as_ref() != Some(&context) {
+                return (
+                    ToolResult::error("Tool cancelled before execution"),
+                    "interrupted",
+                );
+            }
+            state.running_parents.insert(id.clone(), cancel.clone());
+        }
+        let outcome = AssertUnwindSafe(run(admitted, context.clone(), cancel.clone()))
+            .catch_unwind()
+            .await;
+        let gates = {
+            let mut state = self.state.lock().unwrap();
+            if state.current_context.as_ref() == Some(&context) {
+                state.running_parents.remove(&id);
+            }
+            state
+                .gates
+                .extract_if(.., |_, gate| {
+                    gate.parent_call_id == id && gate.context == context
+                })
+                .map(|(_, gate)| gate)
+                .collect::<Vec<_>>()
+        };
+        let (mut result, label) = settled(outcome, cancel.is_cancelled(), errors);
+        if gates.is_empty() {
+            return (result, label);
+        }
+        futures_util::future::join_all(gates.iter().map(|gate| gate.close())).await;
+        let mut confirmed = Vec::new();
+        for gate in gates {
+            confirmed.extend(gate.effects.lock().unwrap().iter().cloned());
+        }
+        confirmed.sort_by_key(|(sequence, _)| *sequence);
+        let mut reported = result.effects.clone().unwrap_or_default();
+        for effect in confirmed.into_iter().flat_map(|(_, effects)| effects) {
+            if let Some(index) = reported.iter().position(|item| item == &effect) {
+                reported.swap_remove(index);
+            } else {
+                result.effects.get_or_insert_with(Vec::new).push(effect);
+            }
+        }
+        (result, label)
+    }
+
     /// Opens the child-call gate for the current top-level batch. A gate
     /// exists only while its context matches the current batch; a closed or
     /// interrupted executor refuses.
@@ -184,41 +271,51 @@ impl ToolExecutor {
                 "ToolExecutor is interrupted: {reason}"
             )));
         }
-        let Some(batch) = state
-            .current
-            .as_ref()
+        let Some(parent) = state
+            .running_parents
+            .get(&parent_call_id)
             .filter(|_| state.current_context.as_ref() == Some(&context))
         else {
             return Err(HostError::failed(
                 "no current tool batch accepts a Code Mode child",
             ));
         };
+        let cancel = cancellation(parent);
+        if parent.is_cancelled() || cancel.is_cancelled() {
+            return Err(HostError::Cancelled(
+                "the Code Mode child gate was cancelled".into(),
+            ));
+        }
         let id = uuid::Uuid::new_v4().to_string();
         let gate = Arc::new(NestedGate {
-            binding: self.binding.clone(),
-            approval: self.approval.clone(),
-            timeline: self.timeline.clone(),
             parent_call_id,
             context,
-            cancel: cancellation(batch),
+            cancel,
             tasks: TaskTracker::new(),
-            closing: Mutex::new(false),
-            next: AtomicU64::new(0),
+            closing: Mutex::new(None),
             effects: Mutex::default(),
         });
         state.gates.insert(id.clone(), gate.clone());
         Ok((id, gate))
     }
-    pub async fn invoke(&self, gate_id: &str, call: ToolCall) -> Result<ToolResult, HostError> {
-        let gate = self
-            .state
-            .lock()
-            .unwrap()
-            .gates
-            .get(gate_id)
-            .cloned()
-            .ok_or_else(|| HostError::failed("the Code Mode child gate is closed"))?;
-        gate.invoke(call).await
+    pub async fn invoke(
+        self: &Arc<Self>,
+        gate_id: &str,
+        call: ToolCall,
+    ) -> Result<ToolResult, HostError> {
+        let receiver = {
+            let mut state = self.state.lock().unwrap();
+            let gate = state
+                .gates
+                .get(gate_id)
+                .filter(|gate| state.running_parents.contains_key(&gate.parent_call_id))
+                .cloned()
+                .ok_or_else(|| HostError::failed("the Code Mode child gate is closed"))?;
+            gate.start(call, &mut state.call_ids, self.clone())?
+        };
+        receiver
+            .await
+            .unwrap_or_else(|_| Err(HostError::failed("a Code Mode child task ended")))
     }
 
     pub async fn close(&self, gate_id: &str) -> Result<Vec<ToolEffect>, HostError> {
@@ -227,9 +324,14 @@ impl ToolExecutor {
             .lock()
             .unwrap()
             .gates
-            .remove(gate_id)
+            .get(gate_id)
+            .cloned()
             .ok_or_else(|| HostError::failed("the Code Mode child gate is closed"))?;
-        gate.close().await;
+        let (deadline, first) = gate.stop();
+        if !first {
+            return Err(HostError::failed("the Code Mode child gate is closed"));
+        }
+        let _ = timeout_at(deadline, gate.tasks.wait()).await;
         Ok(gate.effects())
     }
 }
@@ -382,6 +484,7 @@ impl DynPlugin for ToolExecutorPlugin {
                         let cancel = lifecycle.child_token();
                         let generation = lifecycle.clone();
                         state.current = Some(cancel.clone());
+                        state.call_ids = batch.calls.iter().map(|call| call.id.clone()).collect();
                         state.current_context = Some(ToolExecutionContext {
                             turn_id: batch.turn_id.clone(),
                             request_id: batch.request_id.clone(),
@@ -414,6 +517,7 @@ impl DynPlugin for ToolExecutorPlugin {
                                 let (turn, segment_of, mut waiters) = Turn::new(classes, count);
                                 let calls = batch.calls.iter().cloned().enumerate().map(
                                     |(index, call)| {
+                                    let worker = worker.clone();
                                     let binding = binding.clone();
                                     let approval = approval.clone();
                                     let timeline = timeline.clone();
@@ -467,7 +571,6 @@ impl DynPlugin for ToolExecutorPlugin {
                                             );
                                         }
                                         let span = tracing::info_span!("tool.execute", session_id = %session_id, branch_id = %context.branch_id, turn_id = %context.turn_id, request_id = %context.request_id, call_id = %call.id, outcome = tracing::field::Empty);
-                                        let interrupt = cancel.clone();
                                         let (result, outcome) = if cancel.is_cancelled() {
                                             (ToolResult::error("Tool cancelled before execution"), "interrupted")
                                         } else {
@@ -486,42 +589,26 @@ impl DynPlugin for ToolExecutorPlugin {
                                                     // its own admission is done and every
                                                     // earlier step settled. A sibling's
                                                     // admission is not one of them.
-                                                    let mut settle = |outcome| {
-                                                        settled(
-                                                            outcome,
-                                                            interrupt.is_cancelled(),
-                                                            &mut errors,
-                                                        )
-                                                    };
-                                                    let ahead = |head: &usize| *head >= segment;
-                                                    if segment > 0 {
-                                                        let waited = barrier.wait_for(ahead);
-                                                        let ready = tokio::select! {
+                                                    let ready = if segment == 0 {
+                                                        true
+                                                    } else {
+                                                        let ahead = |head: &usize| *head >= segment;
+                                                        let wait = barrier.wait_for(ahead);
+                                                        tokio::select! {
                                                             biased;
                                                             _ = cancel.cancelled() => false,
-                                                            waited = waited => waited.is_ok(),
-                                                        };
-                                                        if !ready {
-                                                            (ToolResult::error("Tool cancelled before execution"), "interrupted")
-                                                        } else {
-                                                            let outcome = AssertUnwindSafe(run(
-                                                                admitted,
-                                                                context.clone(),
-                                                                cancel.clone(),
-                                                            ))
-                                                            .catch_unwind()
-                                                            .await;
-                                                            settle(outcome)
+                                                            r = wait => r.is_ok(),
                                                         }
-                                                    } else {
-                                                        let outcome = AssertUnwindSafe(run(
+                                                    };
+                                                    if ready {
+                                                        worker.run_parent(
                                                             admitted,
                                                             context.clone(),
                                                             cancel.clone(),
-                                                        ))
-                                                        .catch_unwind()
-                                                        .await;
-                                                        settle(outcome)
+                                                            &mut errors,
+                                                        ).await
+                                                    } else {
+                                                        (ToolResult::error("Tool cancelled before execution"), "interrupted")
                                                     }
                                                 }
                                                 Ok(Err(error)) => {
@@ -588,9 +675,13 @@ impl DynPlugin for ToolExecutorPlugin {
                                 let mut state = worker.state.lock().unwrap();
                                 state.current = None;
                                 state.current_context = None;
-                                (state.closed || generation.is_cancelled(), std::mem::take(&mut state.gates))
+                                state.call_ids.clear();
+                                state.running_parents.clear();
+                                let unloading = state.closed || generation.is_cancelled();
+                                (unloading, std::mem::take(&mut state.gates))
                             };
-                            futures_util::future::join_all(gates.values().map(|gate| gate.close())).await;
+                            let closing = gates.values().map(|gate| gate.close());
+                            futures_util::future::join_all(closing).await;
                             let (mut results, mut errors) = match outcome {
                                 Ok(settled) => settled,
                                 Err(error) => {
@@ -738,18 +829,6 @@ async fn run(
                 .await
         }
     }
-}
-
-/// Admits one call through Approval, then runs its handler.
-async fn execute(
-    binding: &ToolBinding,
-    approval: &Approval,
-    call: ToolCall,
-    context: ToolExecutionContext,
-    cancel: CancellationToken,
-) -> Result<ToolResult, HostError> {
-    let admitted = admit(binding, approval, call, &context, cancel.clone()).await?;
-    run(admitted, context, cancel).await
 }
 
 /// The steps of one batch and the barrier between them.

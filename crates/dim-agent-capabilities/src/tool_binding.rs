@@ -212,6 +212,9 @@ impl ToolBinding {
     /// Moves a request's snapshot to its budget recovery request.
     pub fn transfer(&self, from: &str, to: &str) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
+        if from != to && state.snapshots.contains_key(to) && state.snapshots.contains_key(from) {
+            return Err(format!("request {to} is already bound"));
+        }
         let snapshot = state
             .snapshots
             .remove(from)
