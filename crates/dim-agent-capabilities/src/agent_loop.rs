@@ -549,15 +549,17 @@ impl AgentLoop {
             })
             .into()
         }));
-        events.push(
+        self.claimed.lock().unwrap().extend(consumed);
+        if !events.is_empty() {
+            self.timeline.append_batch_registered(events, |_| Ok(()))?;
+        }
+        self.timeline.append(
             EventKind::ModelStart(ModelStartData {
                 turn_id: turn.id.clone(),
                 request_id: id.clone(),
             })
             .into(),
-        );
-        self.claimed.lock().unwrap().extend(consumed);
-        self.timeline.append_batch_registered(events, |_| Ok(()))?;
+        )?;
         turn.request = Some(Request {
             id,
             stage: Stage::Preparing,

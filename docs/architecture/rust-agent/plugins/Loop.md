@@ -56,13 +56,15 @@ what it is doing. The check runs when the Loop starts a request in an open
 turn: at least one top-level `step/tool-use` since the later of the turn's
 start, its last non-empty `step/text` and its last reminder, and that anchor at
 least `LoopConfig::reminder_after` old (60 seconds by default). A due reminder
-is written in the same atomic batch as the request's `input/consumed` events
-and `step/model-start`, after every pending input, so the request consumes
-`<dim-progress-reminder seconds="N">` at once as its last model message. The
-reminder therefore never waits for `input/applied`, never drives a turn and
-cannot outlive the turn it was written for. Writing the reminder starts a new
-stretch, so the next one needs another tool call and another full threshold;
-text also resets the stretch. A non-interactive Session registers neither the
+is written in the same atomic batch as the request's `input/consumed` events,
+after every pending input, so the request consumes
+`<dim-progress-reminder seconds="N">` at once as its last model message; the
+batch ends on that consumption and `step/model-start` follows in its own
+append, so the branch tool's cut immediately before a request stays on a batch
+boundary. The reminder therefore never waits for `input/applied`, never drives
+a turn and cannot outlive the turn it was written for. Writing the reminder
+starts a new stretch, so the next one needs another tool call and another full
+threshold; text also resets the stretch. A non-interactive Session registers neither the
 reminder nor its guide entry.
 
 A restored open turn ends Failed and starts no request, so reload never decides
