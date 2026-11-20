@@ -130,9 +130,64 @@ pub struct OutputPage {
     pub truncated: bool,
 }
 
+pub(crate) fn decode_page(
+    buffer: &[u8],
+    cursor: u64,
+    limit: usize,
+    truncated: bool,
+) -> Result<OutputPage, OutputPageError> {
+    // The file holds the pipe decoder's output, so its bytes are valid
+    // UTF-8; every completed write ends on a character boundary, though a
+    // reader can catch a write while it is in progress and see the file
+    // end inside a character. The page ends at the last character
+    // boundary at or before `limit`, so a character the limit splits is
+    // served whole: at the start of the next page when the cut falls
+    // after other characters, and whole in this page when the budget cuts
+    // the very first character. A page therefore consumes at least one
+    // character while the file holds one, and can carry up to `limit`
+    // plus three bytes. Complete characters before a trailing partial one
+    // are served normally; only a cursor opening inside a character, or a
+    // file ending inside the first character at the cursor, leaves the
+    // page with nothing whole to serve, and it stays empty for that call.
+    let read = buffer.len();
+    let budget = read.min(limit);
+    let mut end = std::str::from_utf8(&buffer[..budget]).map_or_else(|e| e.valid_up_to(), str::len);
+    if end == 0 && read > 0 {
+        let whole = match buffer[0] {
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => 0,
+        };
+        // Only a character the read completed is served whole; one the
+        // read cut short stays for the next call, which sees the write
+        // finish.
+        if whole <= read {
+            end = whole;
+        }
+    }
+    // The writer appends only valid UTF-8, and the loop above ends the slice on a boundary.
+    let text =
+        sanitize(std::str::from_utf8(&buffer[..end]).map_err(|_| OutputPageError::Unavailable)?);
+    // A read that reached the page budget found at least `limit` bytes,
+    // so `nextCursor` lets the client continue immediately; a shorter
+    // read ended at the file's current length, which a running task may
+    // extend later, so the client advances by `bytes` and asks again.
+    // The read length decides it: the file's size races with the
+    // appender. An empty page (caught up, ended, or a client cursor
+    // inside a character) carries no `nextCursor`.
+    let next_cursor = (read >= limit && end > 0).then_some(cursor + end as u64);
+    Ok(OutputPage {
+        text,
+        bytes: end as u64,
+        next_cursor,
+        truncated,
+    })
+}
+
 /// How far a page may exceed its budget to hold a whole character: a UTF-8
 /// character is at most four bytes, so at most three lie past the limit.
-const PAGE_CHAR_TRAILING_BYTES: usize = 3;
+pub(crate) const PAGE_CHAR_TRAILING_BYTES: usize = 3;
 
 struct Task {
     description: String,
@@ -394,48 +449,6 @@ impl BackgroundExec {
                 Err(_) => return Err(OutputPageError::Unavailable),
             }
         }
-        // The file holds the pipe decoder's output, so its bytes are valid
-        // UTF-8; every completed write ends on a character boundary, though a
-        // reader can catch a write while it is in progress and see the file
-        // end inside a character. The page ends at the last character
-        // boundary at or before `limit`, so a character the limit splits is
-        // served whole: at the start of the next page when the cut falls
-        // after other characters, and whole in this page when the budget cuts
-        // the very first character. A page therefore consumes at least one
-        // character while the file holds one, and can carry up to `limit`
-        // plus three bytes. Complete characters before a trailing partial one
-        // are served normally; only a cursor opening inside a character, or a
-        // file ending inside the first character at the cursor, leaves the
-        // page with nothing whole to serve, and it stays empty for that call.
-        let mut end = read.min(limit);
-        while end > 0 && std::str::from_utf8(&buffer[..end]).is_err() {
-            end -= 1;
-        }
-        if end == 0 && read > 0 {
-            let whole = match buffer[0] {
-                0xc2..=0xdf => 2,
-                0xe0..=0xef => 3,
-                0xf0..=0xf4 => 4,
-                _ => 0,
-            };
-            // Only a character the read completed is served whole; one the
-            // read cut short stays for the next call, which sees the write
-            // finish.
-            if whole <= read {
-                end = whole;
-            }
-        }
-        // The writer appends only valid UTF-8, and the loop above ends the slice on a boundary.
-        let text =
-            sanitize(std::str::from_utf8(&buffer[..end]).expect("the page ends on a boundary"));
-        // A read that reached the page budget found at least `limit` bytes,
-        // so `nextCursor` lets the client continue immediately; a shorter
-        // read ended at the file's current length, which a running task may
-        // extend later, so the client advances by `bytes` and asks again.
-        // The read length decides it: the file's size races with the
-        // appender. An empty page (caught up, ended, or a client cursor
-        // inside a character) carries no `nextCursor`.
-        let next_cursor = (read >= limit && end > 0).then_some(cursor + end as u64);
         let truncated = match ended
             .as_ref()
             .and_then(|data| output_truncated(&data.result))
@@ -452,12 +465,7 @@ impl BackgroundExec {
                     .unwrap_or(false),
             },
         };
-        Ok(OutputPage {
-            text,
-            bytes: end as u64,
-            next_cursor,
-            truncated,
-        })
+        decode_page(&buffer[..read], cursor, limit, truncated)
     }
 
     /// Waits until the task ends, or `timeout_ms` elapses: what

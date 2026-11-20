@@ -42,7 +42,7 @@ const OUTPUT_PREVIEW_MAX_BYTES: usize = 50 * 1024;
 const PREVIEW_BUFFER_HEADROOM_BYTES: usize = OUTPUT_PREVIEW_MAX_BYTES * 2;
 /// Maximum bytes written to one exec output file. Read by the paged output
 /// read (`BackgroundExec::output_page`) as the file-level truncation signal.
-pub(super) const OUTPUT_FILE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+pub(crate) const OUTPUT_FILE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
 /// Pipe reading continues this long after the root process exits.
 pub const EXIT_STDIO_GRACE: Duration = Duration::from_millis(100);
 const DESCRIPTION_CHARS: usize = 200;
@@ -2266,6 +2266,39 @@ impl RunningCommand {
     }
 }
 impl CommandTask {
+    pub(crate) async fn page(
+        &self,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<super::background::OutputPage, super::background::OutputPageError> {
+        use super::background::{OutputPageError, PAGE_CHAR_TRAILING_BYTES, decode_page};
+        use tokio::io::AsyncSeekExt;
+        let capture = self.output.capture.lock().await;
+        let truncated = capture.truncated;
+        let budget = limit + PAGE_CHAR_TRAILING_BYTES;
+        if capture.file.is_none() {
+            let bytes = capture.inline.as_bytes();
+            let start = usize::try_from(cursor)
+                .unwrap_or(usize::MAX)
+                .min(bytes.len());
+            let end = start.saturating_add(budget).min(bytes.len());
+            return decode_page(&bytes[start..end], cursor, limit, truncated);
+        }
+        drop(capture);
+        let mut file = tokio::fs::File::open(&self.path)
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        file.seek(io::SeekFrom::Start(cursor))
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        let mut bytes = Vec::new();
+        file.take(budget as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| OutputPageError::Unavailable)?;
+        decode_page(&bytes, cursor, limit, truncated)
+    }
+
     async fn completion(&self) -> Arc<CommandTerminal> {
         let mut done = self.terminal.clone();
         done.wait_for(Option::is_some)

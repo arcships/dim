@@ -136,6 +136,20 @@ fn exec_error(code: &str, message: impl Into<String>) -> rutis_bridge::session::
 }
 
 #[derive(Deserialize)]
+#[serde(untagged, rename_all_fields = "camelCase", deny_unknown_fields)]
+enum OutputRequest {
+    Task {
+        task_id: String,
+        cursor: Option<u64>,
+        limit: Option<u64>,
+    },
+    File {
+        output_path: PathBuf,
+        cursor: Option<u64>,
+        limit: Option<u64>,
+    },
+}
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RemoveOutputDirectory {
     path: PathBuf,
@@ -270,13 +284,105 @@ impl Dispatch {
 impl HostDispatch for Dispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
-            "start":"async", "wait":"async", "kill":"async", "settle":"async",
+            "output":"async", "start":"async", "wait":"async", "kill":"async", "settle":"async",
             "info":"async", "confined":"async", "configured":"async",
             "removeOutputDirectory":"async", "retainOutput":"async", "tail":"async"
         }))
     }
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if method == "output" {
+            use crate::workspace_tools::background::{
+                OUTPUT_PAGE_BYTES, OUTPUT_PAGE_BYTES_MAX, PAGE_CHAR_TRAILING_BYTES, decode_page,
+            };
+            let request: OutputRequest = port_faces::request("execHost", args)?;
+            let owner = self.owner.clone();
+            return Ok(Value::cancellable_future(async move {
+                let (task, path, cursor, limit) = match request {
+                    OutputRequest::Task {
+                        task_id,
+                        cursor,
+                        limit,
+                    } => (
+                        Some(
+                            owner
+                                .command(&task_id)
+                                .map_err(|e| exec_error("task_unknown", e.to_string()))?,
+                        ),
+                        None,
+                        cursor,
+                        limit,
+                    ),
+                    OutputRequest::File {
+                        output_path,
+                        cursor,
+                        limit,
+                    } => (None, Some(output_path), cursor, limit),
+                };
+                let cursor = cursor.unwrap_or(0);
+                let limit = limit
+                    .unwrap_or(OUTPUT_PAGE_BYTES)
+                    .min(OUTPUT_PAGE_BYTES_MAX) as usize;
+                if limit == 0 {
+                    return Err(exec_error("invalid", "limit must be at least 1"));
+                }
+                let page = if let Some(task) = task {
+                    task.page(cursor, limit)
+                        .await
+                        .map_err(|e| exec_error("output_unavailable", e.to_string()))?
+                } else {
+                    let path = path.expect("file request");
+                    let (files, root, directory) =
+                        owner.command_files.as_ref().ok_or_else(|| {
+                            exec_error(
+                                "output_unavailable",
+                                "Command output storage is unavailable",
+                            )
+                        })?;
+                    let base = files
+                        .root_path(*root)
+                        .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
+                    let relative = path.strip_prefix(base.join(directory)).map_err(|_| {
+                        exec_error("invalid", "Path is outside command output storage")
+                    })?;
+                    let file = files
+                        .path(*root, directory.join(relative))
+                        .map_err(|e| exec_error("invalid", e.to_string()))?;
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    let reader = files
+                        .open_read(&file, &cancel)
+                        .await
+                        .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
+                    let size = reader
+                        .len()
+                        .saturating_sub(cursor)
+                        .min((limit + PAGE_CHAR_TRAILING_BYTES) as u64)
+                        as usize;
+                    let mut bytes = Vec::with_capacity(size);
+                    while bytes.len() < size {
+                        let chunk = reader
+                            .read_at(cursor + bytes.len() as u64, size - bytes.len(), &cancel)
+                            .await
+                            .map_err(|e| exec_error("output_unavailable", e.to_string()))?;
+                        if chunk.is_empty() {
+                            break;
+                        }
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    decode_page(
+                        &bytes,
+                        cursor,
+                        limit,
+                        reader.len() >= crate::workspace_tools::exec::OUTPUT_FILE_BYTE_LIMIT,
+                    )
+                    .map_err(|e| exec_error("output_unavailable", e.to_string()))?
+                };
+                let mut reply = serde_json::json!(page);
+                reply["retainedFrom"] = 0.into();
+                rutis_bridge::session::arg(&reply)
+            }));
+        }
         if method == "start" {
             let request: StartCommand = port_faces::request("execHost", args)?;
             let owner = self.owner.clone();

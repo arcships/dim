@@ -232,6 +232,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             HostPlatformConfig {
                 execution: names.key().unwrap(),
                 toolchain: names.key().unwrap(),
+                command_files: Some((0, "command-output".into())),
                 exec_shell_file: Some((0, "exec-shell.json".into())),
                 home: Some(home.clone()),
             },
@@ -316,6 +317,16 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     assert_eq!(terminal["outputBytes"], 8);
     assert_eq!(terminal["outputPath"], output["outputPath"]);
     assert!(!std::path::Path::new(output["outputPath"].as_str().unwrap()).exists());
+    let page = invoke(
+        "output",
+        serde_json::json!({"taskId":"short-command", "limit":3}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        page,
+        serde_json::json!({"text":"ret","bytes":3,"nextCursor":3,"truncated":false,"retainedFrom":0})
+    );
     assert!(invoke("start", start).await.is_err());
     assert_eq!(invoke("retainOutput", task.clone()).await.unwrap(), output);
     assert_eq!(
@@ -326,6 +337,21 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
     assert_eq!(invoke("wait", task.clone()).await.unwrap(), terminal);
     invoke("settle", task.clone()).await.unwrap();
     assert!(invoke("wait", task).await.is_err());
+    let retained = invoke(
+        "output",
+        serde_json::json!({"outputPath":output["outputPath"],"cursor":3}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(retained["text"], "ained");
+    assert!(
+        invoke(
+            "output",
+            serde_json::json!({"outputPath":home.join("exec-shell.json")})
+        )
+        .await
+        .is_err()
+    );
     let output_root = platform.exec_root();
     let branch_output = output_root.join("session/branch");
     std::fs::create_dir_all(&branch_output).unwrap();
