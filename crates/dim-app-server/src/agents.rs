@@ -113,8 +113,7 @@ pub(crate) struct SessionRestored {
 
 impl SessionRestored {
     pub(crate) fn session(&self, index: &AgentIndex) -> Option<Session> {
-        let (_, session) = index.session(&self.session_id)?;
-        (session.instance().ok()?.to_string() == self.generation).then_some(session)
+        index.session_generation(&self.session_id, &self.generation)
     }
 }
 
@@ -594,6 +593,11 @@ impl AgentIndex {
             .get(id)
             .cloned()
     }
+    fn session_generation(&self, id: &str, generation: &str) -> Option<Session> {
+        let (_, session) = self.session(id)?;
+        (session.instance().ok()?.to_string() == generation).then_some(session)
+    }
+
     /// Session ids are UUIDs, unique across every Agent of the process.
     pub fn session(&self, session_id: &str) -> Option<(Arc<AgentHost>, Session)> {
         let inner = self.directory.inner.lock().expect("agent index");

@@ -1720,6 +1720,28 @@ async fn node_session_permissions_reads_live_policy_and_survives_index_reload() 
     .expect("client presence and execution settings inputs are published")
     .unwrap();
     let before = starter.sequence("main").unwrap();
+    let sources = client
+        .rpc(
+            "permissions.sources",
+            json!({
+                "sessionId": starter.id(), "generation": starter.instance().unwrap().to_string()
+            }),
+        )
+        .await;
+    assert_ok(&sources);
+    assert_eq!(sources["result"], "[]");
+    let stale = client
+        .rpc(
+            "permissions.sources",
+            json!({
+                "sessionId": starter.id(), "generation": "old"
+            }),
+        )
+        .await;
+    assert_eq!(
+        stale["result"]["error"]["code"], "session_closed",
+        "{stale}"
+    );
     let initial = client.rpc("permissions.branch", at.clone()).await;
     assert_ok(&initial);
     assert_eq!(initial["result"]["version"], "0");

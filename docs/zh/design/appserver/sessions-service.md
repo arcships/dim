@@ -2,7 +2,7 @@
 
 状态：已在 S2 实现（[#98](https://github.com/arcships/dim/pull/98)）；`sessions.delete`（§6.8）在 S5c（[#97](https://github.com/arcships/dim/pull/97)）合入后加入。依据 spike 结论（§2）；实现过程中的设计变更见 §17。路线图工作项 S2（[#62](https://github.com/arcships/dim/issues/62)），在 C2（[#48](https://github.com/arcships/dim/issues/48)，已合入）与 S1（[#58](https://github.com/arcships/dim/issues/58)，已在 [#94](https://github.com/arcships/dim/pull/94) 合入）之后。合同：[Session 访问 A.1](../contracts/session-access.md#a1-sessions-服务)。总览：[附录 B.2](../overview.md#b2-app-server-进程插件) Agents 行。作用域：[ADR 002](../../adr/002-plugin-scope.md) 的进程作用域，放在现有的 Agents 插件内。使用方：[Scheduler](../plugins/Scheduler.md)（P6）与 [Workflow](../plugins/Workflow.md)（P7），都用 TypeScript。
 
-Agents 的稳定目录提供 `sessions.permission({sessionId, branchId})` 和 `sessions.permissionDefaults({})`。前者持有 Session 租约并返回分支当前的 `PermissionState`，后者返回宿主的权限上限。读取失败会抛出 `SessionsError`。目录的其他操作使用原有回复信封。
+Agents 的稳定目录提供 `sessions.permission({sessionId, branchId})` 和 `sessions.permissionDefaults({})`。前者持有 Session 租约并返回分支当前的 `PermissionState`，后者返回宿主的权限上限。读取失败会抛出 `SessionsError`。`sessions.startupSources({sessionId,generation})` 返回该 Session 实例中各已加载分支采用的启动连接引用。实例缺失或已被替换时返回 `session_closed`。目录的其他操作使用原有回复信封。
 
 §5、§6.2 与 §8.3–8.4 的输入所有权沿用已接受的[原生访问合同](../../../design/p6-p7-bindings.md#4-native-report-settlement)：已准入输入等待自身追加/发布结果，分支对每个 `submissionId` 只接受一次，因此回复丢失的调用方重新提交，而不等待旧写入者。
 

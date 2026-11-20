@@ -282,6 +282,7 @@ export type SessionsResult<T> = { ok: true; value: T } | { ok: false; error: Ses
 /** Process service `sessions`; these methods are not terminal RPC methods. */
 export interface Sessions {
   permission(request: SessionRef): Promise<PermissionState>;
+  startupSources(request: { sessionId: string; generation: string }): Promise<import('./branch-services.js').StartupConnectionSource[]>;
   permissionDefaults(request: {}): Promise<PermissionPolicy>;
   launch(request: LaunchRequest): Promise<SessionsResult<LaunchReply>>;
   input(request: InputWrite): Promise<SessionsResult<InputReceipt>>;

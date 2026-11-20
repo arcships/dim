@@ -13,7 +13,7 @@ process scope, inside the existing Agents plugin. Consumers: [Scheduler](../plug
 The stable directory serves `sessions.permission({sessionId, branchId})` and
 `sessions.permissionDefaults({})`. The first holds a Session lease and returns the branch's
 dispatched `PermissionState`. The second returns the current host bound. Both reads throw
-`SessionsError` on failure. The other directory operations use the reply envelope in §4.
+`SessionsError` on failure. `sessions.startupSources({sessionId,generation})` returns the adopted startup connection references from the loaded branches of that Session instance. A missing or replaced instance returns `session_closed`. The other directory operations use the reply envelope in §4.
 
 Input ownership in §5, §6.2 and §8.3–8.4 follows the accepted
 [native access contract](../p6-p7-bindings.md#4-native-report-settlement): admitted

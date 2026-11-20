@@ -10,10 +10,10 @@ use dim_agent_capabilities::{
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
 };
-use dim_agent_runtime::{AgentError, Publication};
+use dim_agent_runtime::{AgentError, Publication, Session};
 use dim_agent_types::{
     AgentEvent, ContentBlock, InputBlock, InputMessageData, InputMode, InputWithdrawData, ModelId,
-    ModelSelection, PermissionPolicy, UserInput,
+    ModelSelection, PermissionPolicy, StartupConnectionSource, UserInput,
 };
 use rutis::Ctx;
 use rutis::host::CtxHost;
@@ -31,9 +31,46 @@ pub struct SessionRef {
     pub branch_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SessionGeneration {
+    session_id: String,
+    generation: String,
+}
+
 /// The process Session directory.
 pub struct Sessions(pub(crate) Ctx);
 impl Sessions {
+    pub(crate) fn adopted_sources(session: &Session) -> Vec<StartupConnectionSource> {
+        session
+            .branches()
+            .into_iter()
+            .filter_map(|branch| {
+                session
+                    .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
+                    .ok()??
+                    .configuration?
+                    .metadata?
+                    .startup?
+                    .connection
+            })
+            .collect()
+    }
+
+    fn startup_sources(
+        &self,
+        request: SessionGeneration,
+    ) -> Result<Vec<StartupConnectionSource>, SessionsError> {
+        let index = self
+            .0
+            .get::<AgentIndex>()
+            .ok_or_else(|| SessionsError::reloading("the Agents index"))?;
+        let session = index
+            .session_generation(&request.session_id, &request.generation)
+            .ok_or_else(|| AgentError::Closed(request.session_id))?;
+        Ok(Self::adopted_sources(&session))
+    }
+
     /// Reads the branch's dispatched policy while holding its Session lease.
     pub async fn permission(
         &self,
@@ -791,16 +828,23 @@ impl HostDispatch for Sessions {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async", "permission": "async", "permissionDefaults": "async",
+            "delete": "async", "permission": "async", "permissionDefaults": "async", "startupSources": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
-        if matches!(method, "permission" | "permissionDefaults") {
+        if matches!(
+            method,
+            "permission" | "permissionDefaults" | "startupSources"
+        ) {
             let directory = Sessions(self.0.clone());
-            let defaults = method == "permissionDefaults";
+            let method = method.to_owned();
             return Ok(Value::future(async move {
                 let args = args.json()?;
-                let result = if defaults {
+                let result = if method == "startupSources" {
+                    request(args)
+                        .and_then(|request| directory.startup_sources(request))
+                        .and_then(reply)
+                } else if method == "permissionDefaults" {
                     match request(args) {
                         Ok(request) => directory.permission_defaults(request).await.and_then(reply),
                         Err(error) => Err(error),

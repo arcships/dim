@@ -587,22 +587,12 @@ impl ProviderService {
 
     pub(super) fn restore_startup(self: &Arc<Self>, session: Session) {
         let mut bindings = self.startup.lock().unwrap();
-        for branch in session.branches() {
-            if let Ok(Some(state)) =
-                session.get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&branch.id)
-                && let Some(source) = state
-                    .configuration
-                    .as_ref()
-                    .and_then(|model| model.metadata.as_ref())
-                    .and_then(|metadata| metadata.startup.as_ref())
-                    .and_then(|startup| startup.connection.as_ref())
-            {
-                bindings
-                    .owners
-                    .entry(source.id.clone())
-                    .or_default()
-                    .insert(session.id().to_owned());
-            }
+        for source in crate::agents::Sessions::adopted_sources(&session) {
+            bindings
+                .owners
+                .entry(source.id)
+                .or_default()
+                .insert(session.id().to_owned());
         }
         drop(bindings);
         self.watch_startup(session);

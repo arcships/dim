@@ -11,12 +11,16 @@ export default definePlugin({
     const sessions = ctx.use<Sessions>('sessions')
     await ctx.use<ManagementMethods>('managementMethods').register(
       'permissions',
-      ['branch', 'defaults', 'legacy'].map(name => ({
+      ['branch', 'defaults', 'legacy', 'sources'].map(name => ({
         name: `permissions.${name}`, mutating: false, interruption: 'report', progress: false,
       })),
       async (call): Promise<MethodReply> => {
         try {
           const at = call.params as unknown as SessionRef
+          if (call.method === 'permissions.sources') {
+            const request = call.params as unknown as Parameters<Sessions['startupSources']>[0]
+            return { kind: 'value', value: JSON.stringify(await sessions.startupSources(request)) }
+          }
           if (call.method === 'permissions.legacy') return { kind: 'value', value: JSON.stringify(await sessions.idle(at)) }
           if (call.method === 'permissions.defaults') {
             const policy = await sessions.permissionDefaults({})
