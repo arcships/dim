@@ -320,7 +320,7 @@ PluginManager 不是 Capability：它没有 Timeline 状态，不写 Timeline �
 
 ## 9. 向机制所有者提出的需求
 
-没有向 rutis 提出的需求：用到的每个 loader 操作在 rutis-loader 0.19.3 中都已存在。
+没有向 rutis 提出的需求：用到的每个 loader 操作在 rutis-loader 0.23.0 中都已存在。
 
 **R1. Settings：在运行时登记来源（M1）。**
 

@@ -62,7 +62,7 @@ impl HostDispatch for AuxiliaryModel {
                         .map_err(ModelPortError::from)
                 })
             }
-            _ => Err(Error::Value(format!("{NAME} has no method {method}"))),
+            _ => Err(Error::value(format!("{NAME} has no method {method}"))),
         }
     }
 }

@@ -114,7 +114,7 @@ impl HostDispatch for SessionHost {
                 self.1.fetch_add(1, Ordering::SeqCst);
                 Ok(Value::Undefined)
             }
-            _ => Err(rutis_bridge::session::Error::Value(format!(
+            _ => Err(rutis_bridge::session::Error::value(format!(
                 "unknown method {method}"
             ))),
         }
