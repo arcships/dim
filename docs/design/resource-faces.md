@@ -849,7 +849,7 @@ The owners that read node files or start node processes, and the operations they
 | Hooks project file (`.dimcode/hooks.json`) | `stat`, `readBytes` |
 | PromptSources (environment, project and user rule files) | `execHost.info` (`os`, `home`, `timezone`, `execShell`), `stat`, `readBytes` |
 | UI extension resources | `stat`, `openRead`, `readAt`, `closeRead` |
-| Migration ledger and snapshots | `createDirectory`, `list`, `remove` |
+| Migration ledger and snapshots | `createDirectory`, `list`, `remove`, `readBytes`, `replace`. A migration worker holds its `lock` on the task until it records settlement and calls `unlock`, including during unload. |
 | Hooks configuration commands | `execHost.configured` |
 | Worktree association | `store.associateWorktree` |
 

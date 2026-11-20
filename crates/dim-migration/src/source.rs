@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 use dim_agent_capabilities::file_storage::{
-    DirectoryEntry, FileLease, FilePath, FileStorage, FileStorageError,
+    DirectoryEntry, FileStorage, FileStorageError, FsHost, FsPermissions, FsRemove,
 };
 use dim_agent_types::{Message, MessageContent, MessagePart, ModelId, Role};
 use dim_app_server::protocol::SessionOrigin;
@@ -98,10 +98,10 @@ pub(crate) struct Source {
     pub snapshot: PathBuf,
     pub inventory: Inventory,
     files: Arc<FileStorage>,
-    directory: FilePath,
+    host: Arc<FsHost>,
+    directory: PathBuf,
     db: Mutex<Option<Connection>>,
     terminal: Mutex<Option<Connection>>,
-    _lease: FileLease,
 }
 
 #[derive(Deserialize)]
@@ -227,30 +227,42 @@ fn excluded_from_context(metadata: &Value) -> bool {
 }
 
 impl Source {
-    pub async fn open(
-        files: Arc<FileStorage>,
+    pub async fn with_snapshot<T>(
+        owner: &crate::Migration,
         home: PathBuf,
-        target_root: usize,
+        work: impl AsyncFnOnce(&Self) -> Result<T>,
+    ) -> Result<T> {
+        let home = validate_source_home(&home, &owner.ledger.home)?;
+        let path = owner.ledger.home.join("migration/snapshot-run");
+        owner
+            .ledger
+            .while_locked(path, &owner.stopping, async {
+                let source = Self::open(owner, home, &owner.stopping).await?;
+                let result = work(&source).await;
+                let closed = source.close(&CancellationToken::new()).await;
+                result.and_then(|value| closed.map(|()| value))
+            })
+            .await
+    }
+
+    async fn open(
+        owner: &crate::Migration,
+        home: PathBuf,
         cancel: &CancellationToken,
     ) -> Result<Self> {
-        let target = files.root_path(target_root)?;
-        let home = validate_source_home(&home, &target)?;
-        let lease = files
-            .lock(&files.path(target_root, "migration/snapshot-run")?, cancel)
+        let files = &owner.files;
+        let host = &owner.ledger.files;
+        let target = &owner.ledger.home;
+        let snapshots = target.join("migration/snapshots");
+        for entry in host.list(&snapshots, cancel).await? {
+            host.remove(
+                FsRemove::Entry {
+                    parent: snapshots.clone(),
+                    name: entry.name,
+                },
+                cancel,
+            )
             .await?;
-        for entry in files
-            .list(&files.path(target_root, "migration/snapshots")?, cancel)
-            .await?
-        {
-            files
-                .remove(
-                    &files.path(
-                        target_root,
-                        Path::new("migration/snapshots").join(entry.name),
-                    )?,
-                    cancel,
-                )
-                .await?;
         }
         let root = files.register_root(home.clone(), cancel).await?;
         let names: Vec<_> = ["dimcode.sqlite", "dimglobal.sqlite"]
@@ -263,17 +275,15 @@ impl Source {
             ));
         }
         let name = names[0];
-        let relative = PathBuf::from("migration/snapshots").join(uuid::Uuid::new_v4().to_string());
-        let directory = files.path(target_root, &relative)?;
-        files.create_directory(&directory, cancel).await?;
+        let directory = snapshots.join(uuid::Uuid::new_v4().to_string());
+        host.create_directory(&directory, cancel).await?;
         let result = async {
-            let copied = files.path(target_root, relative.join("legacy.sqlite"))?;
-            copy_snapshot(&files, &files.path(root, name)?, &copied, cancel).await?;
-            let wal = files.path(root, format!("{name}-wal"))?;
+            let snapshot = directory.join("legacy.sqlite");
+            copy_snapshot(host, &home.join(name), &snapshot, cancel).await?;
             match copy_snapshot(
-                &files,
-                &wal,
-                &files.path(target_root, relative.join("legacy.sqlite-wal"))?,
+                host,
+                &home.join(format!("{name}-wal")),
+                &directory.join("legacy.sqlite-wal"),
                 cancel,
             )
             .await
@@ -283,7 +293,6 @@ impl Source {
                     if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
-            let snapshot = target.join(&relative).join("legacy.sqlite");
             let path = snapshot.clone();
             let (db, mut tables) = tokio::task::spawn_blocking(move || -> Result<_> {
                 let (connection, tables) = read_database(path)?;
@@ -358,9 +367,9 @@ impl Source {
             let terminal_path = snapshot.with_file_name("terminal.sqlite");
             let mut issues = Vec::new();
             let terminal = match copy_snapshot(
-                &files,
-                &files.path(root, "schedule-tui.sqlite")?,
-                &files.path(target_root, relative.join("terminal.sqlite"))?,
+                host,
+                &home.join("schedule-tui.sqlite"),
+                &directory.join("terminal.sqlite"),
                 cancel,
             )
             .await
@@ -373,9 +382,9 @@ impl Source {
                 Err(error) => return Err(error.into()),
                 Ok(_) => {
                     match copy_snapshot(
-                        &files,
-                        &files.path(root, "schedule-tui.sqlite-wal")?,
-                        &files.path(target_root, relative.join("terminal.sqlite-wal"))?,
+                        host,
+                        &home.join("schedule-tui.sqlite-wal"),
+                        &directory.join("terminal.sqlite-wal"),
                         cancel,
                     )
                     .await
@@ -415,15 +424,19 @@ impl Source {
                     issues,
                 },
                 files: files.clone(),
+                host: host.clone(),
                 directory: directory.clone(),
                 db: Mutex::new(Some(db)),
                 terminal: Mutex::new(terminal),
-                _lease: lease,
             })
         }
         .await;
         if result.is_err() {
-            files.remove(&directory, &CancellationToken::new()).await?;
+            host.remove(
+                FsRemove::Path { path: directory },
+                &CancellationToken::new(),
+            )
+            .await?;
         }
         result
     }
@@ -1202,7 +1215,14 @@ impl Source {
     pub async fn close(self, cancel: &CancellationToken) -> Result<()> {
         drop(self.db.lock().unwrap().take());
         drop(self.terminal.lock().unwrap().take());
-        self.files.remove(&self.directory, cancel).await?;
+        self.host
+            .remove(
+                FsRemove::Path {
+                    path: self.directory,
+                },
+                cancel,
+            )
+            .await?;
         Ok(())
     }
 }
@@ -1251,13 +1271,15 @@ fn read_database(path: PathBuf) -> Result<(Connection, BTreeMap<String, u64>)> {
 }
 
 async fn copy_snapshot(
-    files: &Arc<FileStorage>,
-    source: &FilePath,
-    destination: &FilePath,
+    files: &FsHost,
+    source: &Path,
+    destination: &Path,
     cancel: &CancellationToken,
 ) -> std::result::Result<(), FileStorageError> {
-    let bytes = files.read(source, cancel).await?;
-    files.replace(destination, bytes, None, cancel).await
+    let bytes = files.read_bytes(source, usize::MAX, None, cancel).await?;
+    files
+        .replace(destination, bytes, FsPermissions::Preserve, None, cancel)
+        .await
 }
 
 fn validate_context(records: &[RecordedMessage]) -> Result<()> {

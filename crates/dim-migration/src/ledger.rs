@@ -1,55 +1,62 @@
 use crate::{Error, ObjectResult, Progress, Result, TaskReport, TaskState, TaskStatus};
-use dim_agent_capabilities::file_storage::{FileLease, FilePath, FileStorage, FileStorageError};
+use dim_agent_capabilities::file_storage::{FileStorageError, FsHost, FsPermissions};
 use serde::de::DeserializeOwned;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub(crate) struct Ledger {
-    pub files: Arc<FileStorage>,
+    pub(super) files: Arc<FsHost>,
+    pub home: PathBuf,
     progress: watch::Sender<Option<Progress>>,
 }
 
 impl Ledger {
     pub async fn open(
-        files: Arc<FileStorage>,
+        files: Arc<FsHost>,
+        home: PathBuf,
         progress: watch::Sender<Option<Progress>>,
     ) -> Result<Self> {
         let cancel = CancellationToken::new();
         for path in ["migration", "migration/tasks", "migration/snapshots"] {
-            files
-                .create_directory(&files.path(0, path)?, &cancel)
-                .await?;
+            files.create_directory(home.join(path), &cancel).await?;
         }
-        Ok(Self { files, progress })
+        Ok(Self {
+            files,
+            home,
+            progress,
+        })
     }
 
-    fn path(&self, id: &str, name: &str) -> Result<FilePath> {
+    pub(super) fn path(&self, id: &str, name: &str) -> Result<PathBuf> {
         uuid::Uuid::parse_str(id).map_err(|_| Error::Object("Task id must be a UUID".into()))?;
-        Ok(self.files.path(0, format!("migration/tasks/{id}/{name}"))?)
+        Ok(self.home.join("migration/tasks").join(id).join(name))
     }
 
     pub async fn create(&self, id: &str) -> Result<()> {
-        uuid::Uuid::parse_str(id).map_err(|_| Error::Object("Task id must be a UUID".into()))?;
+        let directory = self.path(id, "")?;
         let cancel = CancellationToken::new();
+        self.files.create_directory(&directory, &cancel).await?;
         self.files
-            .create_directory(
-                &self.files.path(0, format!("migration/tasks/{id}"))?,
-                &cancel,
-            )
-            .await?;
-        self.files
-            .create_directory(&self.path(id, "results")?, &cancel)
+            .create_directory(directory.join("results"), &cancel)
             .await?;
         Ok(())
     }
 
-    pub async fn lock(&self, id: &str) -> Result<FileLease> {
-        Ok(self
-            .files
-            .lock(&self.path(id, "run")?, &CancellationToken::new())
-            .await?)
+    pub async fn while_locked<T>(
+        &self,
+        path: PathBuf,
+        cancel: &CancellationToken,
+        work: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let lease = self.files.lock(None, path, cancel).await?;
+        let result = work.await;
+        self.files.unlock(lease).await?;
+        result
     }
 
     pub async fn save(&self, task: &TaskState) -> Result<()> {
@@ -59,6 +66,7 @@ impl Ledger {
             .replace(
                 &self.path(&task.id, "state.json")?,
                 bytes,
+                FsPermissions::Preserve,
                 None,
                 &CancellationToken::new(),
             )
@@ -66,10 +74,10 @@ impl Ledger {
         Ok(())
     }
 
-    async fn read<T: DeserializeOwned>(&self, path: &FilePath) -> Result<T> {
+    async fn read<T: DeserializeOwned>(&self, path: &Path) -> Result<T> {
         let bytes = self
             .files
-            .read_limited(path, 16 * 1024 * 1024, &CancellationToken::new())
+            .read_bytes(path, 16 * 1024 * 1024, None, &CancellationToken::new())
             .await?;
         serde_json::from_slice(&bytes).map_err(|_| {
             Error::Source("Migration record has an unsupported or damaged format".into())
@@ -84,8 +92,13 @@ impl Ledger {
             ));
         }
         if task.status == TaskStatus::Running {
-            match self.lock(id).await {
-                Ok(_lease) => task.status = TaskStatus::Interrupted,
+            match self
+                .while_locked(self.path(id, "run")?, &CancellationToken::new(), async {
+                    Ok(())
+                })
+                .await
+            {
+                Ok(()) => task.status = TaskStatus::Interrupted,
                 Err(Error::Storage(FileStorageError::Locked)) => {}
                 Err(error) => return Err(error),
             }
@@ -101,6 +114,7 @@ impl Ledger {
                 &path,
                 serde_json::to_vec(result)
                     .map_err(|_| Error::Source("Object result cannot be encoded".into()))?,
+                FsPermissions::Preserve,
                 None,
                 &CancellationToken::new(),
             )
@@ -146,10 +160,7 @@ impl Ledger {
         let mut tasks = Vec::new();
         for entry in self
             .files
-            .list(
-                &self.files.path(0, "migration/tasks")?,
-                &CancellationToken::new(),
-            )
+            .list(self.home.join("migration/tasks"), &CancellationToken::new())
             .await?
         {
             let id = entry
@@ -189,6 +200,7 @@ impl Ledger {
             .replace(
                 &self.path(id, "cancel")?,
                 b"true".to_vec(),
+                FsPermissions::Preserve,
                 None,
                 &CancellationToken::new(),
             )
@@ -199,7 +211,12 @@ impl Ledger {
     pub async fn cancelled(&self, id: &str) -> Result<bool> {
         match self
             .files
-            .read_limited(&self.path(id, "cancel")?, 16, &CancellationToken::new())
+            .read_bytes(
+                &self.path(id, "cancel")?,
+                16,
+                None,
+                &CancellationToken::new(),
+            )
             .await
         {
             Ok(value) if value == b"true" => Ok(true),

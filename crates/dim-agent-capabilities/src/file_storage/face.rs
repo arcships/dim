@@ -95,11 +95,17 @@ impl FsPermissions {
 
 /// Filesystem operations on the existing storage generation.
 #[derive(Clone)]
-pub struct FsHost(Arc<FileStorage>);
+pub struct FsHost {
+    storage: Arc<FileStorage>,
+    generation: Ctx,
+}
 
 impl FsHost {
-    pub(super) fn new(owner: Arc<FileStorage>) -> Self {
-        Self(owner)
+    pub(super) fn new(owner: Arc<FileStorage>, ctx: Ctx) -> Self {
+        Self {
+            storage: owner,
+            generation: ctx,
+        }
     }
 
     pub async fn mentions(
@@ -107,7 +113,7 @@ impl FsHost {
         request: MentionsRequest,
         cancel: &CancellationToken,
     ) -> Result<MentionsReply> {
-        let owner = self.0.clone();
+        let owner = self.storage.clone();
         if !request.path.is_absolute() {
             return Err(FileStorageError::InvalidPath(
                 "expected an absolute search root",
@@ -134,20 +140,28 @@ impl FsHost {
         .await?
     }
 
-    pub async fn lock(&self, caller: &Ctx, path: &str, cancel: &CancellationToken) -> Result<Uuid> {
-        let path = self.0.resolve(Path::new(path))?;
-        let lease = self.0.lock(&path, cancel).await?;
+    /// A caller-bound lease closes on row unload. A caller managing its own
+    /// settlement can bind to the file owner and explicitly unlock after settlement.
+    pub async fn lock(
+        &self,
+        caller: Option<&Ctx>,
+        path: impl AsRef<Path>,
+        cancel: &CancellationToken,
+    ) -> Result<Uuid> {
+        let path = self.storage.resolve(path.as_ref())?;
+        let lease = self.storage.lock(&path, cancel).await?;
         let id = lease.0.as_ref().expect("new file lease").id;
         let held = Arc::new(super::SharedLease::new(Some(lease)));
         let cleanup = held.clone();
         let release = caller
+            .unwrap_or(&self.generation)
             .effect(move || async move {
                 cleanup.lock().await.take();
                 Ok(())
             })
             .map_err(|_| FileStorageError::Closed)?;
         {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.storage.state.lock().unwrap();
             if let Some(entry) = state.leases.get_mut(&id) {
                 entry.binding = Some((Arc::downgrade(&held), release));
                 return Ok(id);
@@ -159,7 +173,7 @@ impl FsHost {
 
     pub async fn unlock(&self, id: Uuid) -> Result<()> {
         let release = {
-            let mut state = self.0.state.lock().unwrap();
+            let mut state = self.storage.state.lock().unwrap();
             let (_, release) = state
                 .leases
                 .get_mut(&id)
@@ -174,9 +188,9 @@ impl FsHost {
     }
 
     pub async fn stat(&self, path: &Path, cancel: &CancellationToken) -> Result<super::FileStat> {
-        let path = self.0.resolve(path)?;
+        let path = self.storage.resolve(path)?;
         let relative = path.relative.clone();
-        self.0
+        self.storage
             .run(&path, cancel, move |root, _, _| {
                 let (parent, name) = match super::native::parent(root, &relative) {
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -196,9 +210,9 @@ impl FsHost {
         lease_id: Option<Uuid>,
         cancel: &CancellationToken,
     ) -> Result<Vec<u8>> {
-        let path = self.0.resolve(path)?;
+        let path = self.storage.resolve(path)?;
         let Some(id) = lease_id else {
-            return self.0.read_limited(&path, limit, cancel).await;
+            return self.storage.read_limited(&path, limit, cancel).await;
         };
         self.held_lease(id, Some(&path), cancel)
             .await?
@@ -214,7 +228,7 @@ impl FsHost {
     ) -> Result<tokio::sync::OwnedMappedMutexGuard<Option<super::FileLease>, super::FileLease>>
     {
         let held = {
-            let state = self.0.state.lock().unwrap();
+            let state = self.storage.state.lock().unwrap();
             state
                 .leases
                 .get(&id)
@@ -244,7 +258,7 @@ impl FsHost {
         lease_id: Option<Uuid>,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let path = self.0.resolve(path)?;
+        let path = self.storage.resolve(path)?;
         let mode = permissions.mode();
         match lease_id {
             Some(id) => {
@@ -254,7 +268,7 @@ impl FsHost {
                     .await
             }
             None => {
-                self.0
+                self.storage
                     .lock(&path, cancel)
                     .await?
                     .replace_with(bytes, mode, cancel)
@@ -295,8 +309,8 @@ impl FsHost {
         path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<()> {
-        let path = self.0.resolve(path.as_ref())?;
-        self.0.create_directory(&path, cancel).await
+        let path = self.storage.resolve(path.as_ref())?;
+        self.storage.create_directory(&path, cancel).await
     }
 
     pub async fn list(
@@ -304,13 +318,13 @@ impl FsHost {
         path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<Vec<DirectoryEntry>> {
-        let path = self.0.resolve(path.as_ref())?;
-        self.0.list(&path, cancel).await
+        let path = self.storage.resolve(path.as_ref())?;
+        self.storage.list(&path, cancel).await
     }
 
     pub async fn remove(&self, request: FsRemove, cancel: &CancellationToken) -> Result<()> {
         let path = match request {
-            FsRemove::Path { path } => self.0.resolve(Path::new(&path))?,
+            FsRemove::Path { path } => self.storage.resolve(Path::new(&path))?,
             FsRemove::Entry { parent, name } => {
                 if Path::new(&name).components().next() != Some(Component::Normal(name.as_os_str()))
                 {
@@ -318,11 +332,11 @@ impl FsHost {
                         "expected a single directory entry name",
                     ));
                 }
-                let parent = self.0.resolve(Path::new(&parent))?;
-                self.0.path(parent.root, parent.relative.join(name))?
+                let parent = self.storage.resolve(Path::new(&parent))?;
+                self.storage.path(parent.root, parent.relative.join(name))?
             }
         };
-        self.0.remove(&path, cancel).await
+        self.storage.remove(&path, cancel).await
     }
 
     /// Pins a file until close or the calling row's unload.
@@ -332,8 +346,8 @@ impl FsHost {
         path: impl AsRef<Path>,
         cancel: &CancellationToken,
     ) -> Result<OpenRead> {
-        let path = self.0.resolve(path.as_ref())?;
-        self.0.open_reader(caller, &path, cancel).await
+        let path = self.storage.resolve(path.as_ref())?;
+        self.storage.open_reader(caller, &path, cancel).await
     }
 
     /// Reads the same pinned file, capped by the owner's existing 64 KiB limit.
@@ -344,12 +358,12 @@ impl FsHost {
         limit: usize,
         cancel: &'a CancellationToken,
     ) -> impl Future<Output = Result<Vec<u8>>> + Send + 'a {
-        self.0.read_at_id(read_id, offset, limit, cancel)
+        self.storage.read_at_id(read_id, offset, limit, cancel)
     }
 
     /// Releases the reader id; already accepted reads settle normally.
     pub fn close_read(&self, read_id: String) -> impl Future<Output = Result<()>> + Send + '_ {
-        self.0.close_reader(read_id)
+        self.storage.close_reader(read_id)
     }
 }
 
@@ -538,7 +552,7 @@ impl HostDispatch for FsHost {
                     let caller = caller
                         .ok_or_else(|| Error::Value("fsHost.lock requires a calling row".into()))?;
                     let id = owner
-                        .lock(&caller, &request.path, &cancel)
+                        .lock(Some(&caller), &request.path, &cancel)
                         .await
                         .map_err(failure)?;
                     serde_json::json!({"leaseId":id})

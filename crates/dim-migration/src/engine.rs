@@ -64,27 +64,54 @@ pub(crate) async fn run(
     source_home: PathBuf,
     retry: Option<String>,
 ) -> Result<TaskReport> {
-    let _previous = if let Some(id) = &retry {
-        let lease = owner.ledger.lock(id).await?;
-        let mut previous = owner.ledger.report(id).await?.task;
-        if previous.status == TaskStatus::Running {
-            previous.status = TaskStatus::Interrupted;
-            previous.error = Some(
-                "Previous process ended before final settlement; retry reconciles owner receipts"
-                    .into(),
-            );
-            owner.ledger.save(&previous).await?;
-        }
-        Some(lease)
+    if let Some(previous_id) = retry.as_deref() {
+        let path = owner.ledger.path(previous_id, "run")?;
+        let settlement = async {
+            let mut previous = owner.ledger.report(previous_id).await?.task;
+            if previous.status == TaskStatus::Running {
+                previous.status = TaskStatus::Interrupted;
+                previous.error = Some(
+                    "Previous process ended before final settlement; retry reconciles owner receipts".into(),
+                );
+                owner.ledger.save(&previous).await?;
+            }
+            run_new(&owner, source_home, retry.clone()).await
+        };
+        owner
+            .ledger
+            .while_locked(path, &CancellationToken::new(), settlement)
+            .await
     } else {
-        None
-    };
+        run_new(&owner, source_home, None).await
+    }
+}
+
+async fn run_new(
+    owner: &Migration,
+    source_home: PathBuf,
+    retry: Option<String>,
+) -> Result<TaskReport> {
     let id = uuid::Uuid::new_v4().to_string();
     owner.ledger.create(&id).await?;
-    let _lease = owner.ledger.lock(&id).await?;
+    owner
+        .ledger
+        .while_locked(
+            owner.ledger.path(&id, "run")?,
+            &CancellationToken::new(),
+            run_task(owner, source_home, &id, retry),
+        )
+        .await
+}
+
+async fn run_task(
+    owner: &Migration,
+    source_home: PathBuf,
+    id: &str,
+    retry: Option<String>,
+) -> Result<TaskReport> {
     let mut task = TaskState {
         format: 1,
-        id: id.clone(),
+        id: id.to_owned(),
         retry_of: retry,
         source_home,
         status: TaskStatus::Running,
@@ -94,11 +121,11 @@ pub(crate) async fn run(
         current: None,
         error: None,
     };
-    publish(&owner, &task).await?;
-    let outcome = execute(&owner, &mut task).await;
+    publish(owner, &task).await?;
+    let outcome = execute(owner, &mut task).await;
     match outcome {
         Ok(()) => {
-            let report = owner.ledger.report(&id).await?;
+            let report = owner.ledger.report(id).await?;
             task.processed = report.objects.len() as u64;
             task.total = Some(task.processed);
             task.status = if report.objects.iter().any(|item| {
@@ -129,22 +156,16 @@ pub(crate) async fn run(
         }
     }
     task.current = None;
-    publish(&owner, &task).await?;
-    owner.ledger.report(&id).await
+    publish(owner, &task).await?;
+    owner.ledger.report(id).await
 }
 
 async fn execute(owner: &Migration, task: &mut TaskState) -> Result<()> {
-    let target = Native::open(owner.ledger.files.clone(), &owner.native_directory).await?;
-    let source = Source::open(
-        owner.ledger.files.clone(),
-        task.source_home.clone(),
-        0,
-        &owner.stopping,
-    )
-    .await?;
-    let result = execute_source(owner, task, &source, &target).await;
-    let cleanup = source.close(&CancellationToken::new()).await;
-    result.and(cleanup)
+    let target = Native::open(owner.files.clone(), &owner.native_directory).await?;
+    Source::with_snapshot(owner, task.source_home.clone(), async |source| {
+        execute_source(owner, task, source, &target).await
+    })
+    .await
 }
 
 async fn execute_source(

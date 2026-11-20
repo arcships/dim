@@ -34747,8 +34747,11 @@
       "to": "dim_agent_capabilities::file_storage::face",
       "references": [
         "path FsHost",
+        "path FsPermissions::PrivateReadOnly",
         "path FsRemove::Entry",
+        "path FsRemove::Path",
         "use dim_agent_capabilities::file_storage::FsHost",
+        "use dim_agent_capabilities::file_storage::FsPermissions",
         "use dim_agent_capabilities::file_storage::FsRemove"
       ]
     },
@@ -53693,6 +53696,14 @@
     },
     {
       "from": "dim_migration",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path FsHost",
+        "use dim_agent_capabilities::file_storage::FsHost"
+      ]
+    },
+    {
+      "from": "dim_migration",
       "to": "dim_migration::accounts",
       "references": [
         "mod accounts"
@@ -53717,8 +53728,7 @@
       "from": "dim_migration",
       "to": "dim_migration::inventory",
       "references": [
-        "mod inventory",
-        "path inventory"
+        "mod inventory"
       ]
     },
     {
@@ -53766,7 +53776,7 @@
         "mod source",
         "path Inventory",
         "path source",
-        "path source::Source::open",
+        "path source::Source::with_snapshot",
         "path validate_source_home",
         "use source::Inventory",
         "use source::validate_source_home"
@@ -53986,7 +53996,7 @@
         "path RecordedMessage",
         "path SessionData",
         "path Source",
-        "path Source::open",
+        "path Source::with_snapshot",
         "path crate::source::Blob",
         "path fingerprint",
         "use crate::source::RecordedMessage",
@@ -54041,15 +54051,19 @@
       "from": "dim_migration::ledger",
       "to": "dim_agent_capabilities::file_storage",
       "references": [
-        "path FileLease",
-        "path FilePath",
-        "path FileStorage",
         "path FileStorageError::Io",
         "path FileStorageError::Locked",
-        "use dim_agent_capabilities::file_storage::FileLease",
-        "use dim_agent_capabilities::file_storage::FilePath",
-        "use dim_agent_capabilities::file_storage::FileStorage",
         "use dim_agent_capabilities::file_storage::FileStorageError"
+      ]
+    },
+    {
+      "from": "dim_migration::ledger",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path FsHost",
+        "path FsPermissions::Preserve",
+        "use dim_agent_capabilities::file_storage::FsHost",
+        "use dim_agent_capabilities::file_storage::FsPermissions"
       ]
     },
     {
@@ -54721,8 +54735,6 @@
       "to": "dim_agent_capabilities::file_storage",
       "references": [
         "path DirectoryEntry",
-        "path FileLease",
-        "path FilePath",
         "path FileStorage",
         "path FileStorageError",
         "path FileStorageError::Cancelled",
@@ -54730,10 +54742,21 @@
         "path FileStorageError::InvalidPath",
         "path FileStorageError::Io",
         "use dim_agent_capabilities::file_storage::DirectoryEntry",
-        "use dim_agent_capabilities::file_storage::FileLease",
-        "use dim_agent_capabilities::file_storage::FilePath",
         "use dim_agent_capabilities::file_storage::FileStorage",
         "use dim_agent_capabilities::file_storage::FileStorageError"
+      ]
+    },
+    {
+      "from": "dim_migration::source",
+      "to": "dim_agent_capabilities::file_storage::face",
+      "references": [
+        "path FsHost",
+        "path FsPermissions::Preserve",
+        "path FsRemove::Entry",
+        "path FsRemove::Path",
+        "use dim_agent_capabilities::file_storage::FsHost",
+        "use dim_agent_capabilities::file_storage::FsPermissions",
+        "use dim_agent_capabilities::file_storage::FsRemove"
       ]
     },
     {
@@ -54787,6 +54810,7 @@
         "path Error::Source",
         "path Error::Target",
         "path Result",
+        "path crate::Migration",
         "use crate::Error",
         "use crate::Result"
       ]

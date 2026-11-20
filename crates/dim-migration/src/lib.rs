@@ -10,7 +10,9 @@ mod settings;
 mod source;
 pub mod terminal;
 
-use dim_agent_capabilities::file_storage::{FileStorage, FileStorageError, FileStoragePlugin};
+use dim_agent_capabilities::file_storage::{
+    FileStorage, FileStorageError, FileStoragePlugin, FsHost,
+};
 use rutis::host::ErrorKind;
 use rutis::{Ctx, Plugin};
 use serde::{Deserialize, Serialize};
@@ -142,7 +144,7 @@ impl Plugin for MigrationPlugin {
         let home = std::fs::canonicalize(&self.home).map_err(|error| {
             rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
         })?;
-        let storage = ctx.plugin(FileStoragePlugin::new(vec![home]));
+        let storage = ctx.plugin(FileStoragePlugin::new(vec![home.clone()]));
         (&storage).await.map_err(|error| {
             rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
         })?;
@@ -152,13 +154,19 @@ impl Plugin for MigrationPlugin {
             ))
         })?;
         let (progress, _) = watch::channel(None);
-        let ledger = ledger::Ledger::open(files, progress.clone())
+        let host = ctx.get::<FsHost>().ok_or_else(|| {
+            rutis::Error::from(ErrorKind::PluginFailed(
+                "Migration fsHost is unavailable".into(),
+            ))
+        })?;
+        let ledger = ledger::Ledger::open(host, home, progress.clone())
             .await
             .map_err(|error| {
                 rutis::Error::from(ErrorKind::PluginFailed(error.to_string().into()))
             })?;
         let service = Arc::new(Migration {
             ledger,
+            files,
             stopping: CancellationToken::new(),
             tasks: TaskTracker::new(),
             progress,
@@ -183,6 +191,7 @@ impl Plugin for MigrationPlugin {
 
 pub struct Migration {
     ledger: ledger::Ledger,
+    files: Arc<FileStorage>,
     stopping: CancellationToken,
     tasks: TaskTracker,
     progress: watch::Sender<Option<Progress>>,
@@ -210,7 +219,7 @@ impl Migration {
                 "Exit legacy CLI and Desktop using this home, then pass --source-stopped".into(),
             ));
         }
-        let source_home = validate_source_home(&source_home, &self.ledger.files.root_path(0)?)?;
+        let source_home = validate_source_home(&source_home, &self.ledger.home)?;
         let task = {
             let _guard = self.admission.lock().unwrap();
             if self.stopping.is_cancelled() {
@@ -256,16 +265,10 @@ impl Migration {
             }
             let owner = self.clone();
             self.tasks.spawn(async move {
-                let source = source::Source::open(
-                    owner.ledger.files.clone(),
-                    source_home,
-                    0,
-                    &owner.stopping,
-                )
-                .await?;
-                let inventory = source.inventory.clone();
-                source.close(&CancellationToken::new()).await?;
-                Ok(inventory)
+                source::Source::with_snapshot(&owner, source_home, async |source| {
+                    Ok(source.inventory.clone())
+                })
+                .await
             })
         };
         task.await.map_err(|_| {

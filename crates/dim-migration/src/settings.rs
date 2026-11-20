@@ -97,8 +97,8 @@ async fn file_fill(
         .map(|value| serde_json::from_value(value.clone()).map_err(crate::native::failure))
         .transpose()?
         .unwrap_or_default();
-    let path = owner.ledger.files.path(0, name)?;
-    let mut lease = owner.ledger.files.lock(&path, &owner.stopping).await?;
+    let path = owner.files.path(0, name)?;
+    let mut lease = owner.files.lock(&path, &owner.stopping).await?;
     let mut current: Value = match lease.read(&owner.stopping).await {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
             Ok(document) => document,

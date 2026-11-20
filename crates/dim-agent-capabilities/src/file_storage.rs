@@ -1562,7 +1562,7 @@ impl Plugin for FileStoragePlugin {
                 .await
                 .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))
         })?;
-        let binding = Arc::new(FsHost::new(storage.clone()));
+        let binding = Arc::new(FsHost::new(storage.clone(), ctx.clone()));
         ctx.provide_as::<FsHost>(binding.clone())?;
         ctx.provide_at(
             rutis_bridge::session::host_key("fsHost"),
