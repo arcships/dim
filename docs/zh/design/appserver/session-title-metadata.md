@@ -24,7 +24,7 @@ SessionStore 为每个 Session 保存一个标题和一个按 Session 计数的�
  ----------------------------           --------------------------------------------------------------
  SessionTitle（Session 部分）           SessionStore（既有插件）
    inject 'store'               store（HostDispatch）
-     read -------------------------->       read     -> metadata()   ------------------+
+     readMetadata ------------------>       readMetadata -> read_metadata() -----------+
      setTitle ---------------------->       setTitle -> set_title()                    |
                                                           |                            v
                                           标题写入者：一次一个写入 -----------> SqliteStorage

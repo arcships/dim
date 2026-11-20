@@ -41,7 +41,7 @@ protocol version.
  ----------------------------           --------------------------------------------------------------
  SessionTitle (Session part)          SessionStore (existing plugin)
    inject 'store'               store (HostDispatch)
-     read -------------------------->       read     -> metadata()   ------------------+
+     readMetadata ------------------>       readMetadata -> read_metadata() -----------+
      setTitle ---------------------->       setTitle -> set_title()                    |
                                                           |                            v
                                           title writer: one write at a time ---> SqliteStorage
