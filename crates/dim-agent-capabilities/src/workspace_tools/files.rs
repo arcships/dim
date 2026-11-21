@@ -732,12 +732,16 @@ impl Parent {
         open_relative(&self.dir, &self.name, libc::O_WRONLY, 0).map_err(classify)
     }
 
-    fn create_staged(&self, name: &std::ffi::OsStr) -> Result<std::fs::File, TargetError> {
+    fn create_staged(
+        &self,
+        name: &std::ffi::OsStr,
+        existing: bool,
+    ) -> Result<std::fs::File, TargetError> {
         open_relative(
             &self.dir,
             name,
             libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-            0o600,
+            if existing { 0o600 } else { 0o666 },
         )
         .map_err(classify)
     }
@@ -928,10 +932,19 @@ impl Target {
         }
     }
 
+    /// Creates the staged sibling with `O_EXCL`. A new target's sibling takes
+    /// `0o666`, so the process umask decides the installed file's mode; a
+    /// replaced target restores the original's owner, group and mode after
+    /// preparation, so its sibling stays private until then.
     pub(crate) fn create_staged(
         &self,
         name: &std::ffi::OsStr,
+        existing: bool,
     ) -> Result<std::fs::File, TargetError> {
+        // Windows installs the directory entry it created, which already
+        // inherits the parent's permissions; only a unix mode needs the kind.
+        #[cfg(windows)]
+        let _ = existing;
         match self {
             Self::Path(path) => {
                 #[cfg(windows)]
@@ -960,14 +973,17 @@ impl Target {
                     let mut options = open_options();
                     options.write(true).create_new(true);
                     #[cfg(unix)]
-                    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+                    std::os::unix::fs::OpenOptionsExt::mode(
+                        &mut options,
+                        if existing { 0o600 } else { 0o666 },
+                    );
                     options
                         .open(path.with_file_name(name))
                         .map_err(TargetError::Io)
                 }
             }
             #[cfg(unix)]
-            Self::Handle(parent) => parent.create_staged(name),
+            Self::Handle(parent) => parent.create_staged(name, existing),
         }
     }
 

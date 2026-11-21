@@ -347,7 +347,7 @@ pub(super) fn write_target(
         }
     }
     let staged = std::ffi::OsString::from(format!(".dim-write-{}", uuid::Uuid::new_v4()));
-    let file = match target.create_staged(&staged) {
+    let file = match target.create_staged(&staged, original.is_some()) {
         Ok(file) => file,
         Err(TargetError::Refused) => return Ok(Err(refused(path))),
         Err(TargetError::Io(error)) => return Ok(Err(write_failure(&error, display, false))),

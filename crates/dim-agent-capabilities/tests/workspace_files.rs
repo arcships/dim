@@ -266,32 +266,62 @@ async fn coordinated_sessions_reject_stale_mutations() {
 #[tokio::test]
 async fn replacement_preserves_permissions_and_open_original() {
     use std::{io::Read, os::unix::fs::PermissionsExt};
+    for mode in [0o600, 0o644] {
+        let workspace = Workspace::new();
+        workspace.put("private", b"before\r\n");
+        fs::set_permissions(workspace.path("private"), fs::Permissions::from_mode(mode)).unwrap();
+        let mut original = fs::File::open(workspace.path("private")).unwrap();
+        let reads = branch();
+        workspace.read(&reads, "private").await;
+        ok(&workspace
+            .call(
+                &reads,
+                "write",
+                json!({"path": "private", "content": "after\n"}),
+            )
+            .await);
+        let mut old = Vec::new();
+        original.read_to_end(&mut old).unwrap();
+        assert_eq!(old, b"before\r\n");
+        assert_eq!(workspace.bytes("private"), b"after\r\n");
+        assert_eq!(
+            fs::metadata(workspace.path("private"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            mode,
+            "a replaced {mode:o} file keeps its mode"
+        );
+        assert_eq!(fs::read_dir(&workspace.root).unwrap().count(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_new_file_takes_the_umask_default_permissions() {
+    use std::os::unix::fs::PermissionsExt;
     let workspace = Workspace::new();
-    workspace.put("private", b"before\r\n");
-    fs::set_permissions(workspace.path("private"), fs::Permissions::from_mode(0o600)).unwrap();
-    let mut original = fs::File::open(workspace.path("private")).unwrap();
+    // A file this test creates directly takes `0o666 & !umask`; `write` must
+    // create a new file with that same mode instead of a private one.
+    let control = workspace.path("control");
+    fs::write(&control, b"control\n").unwrap();
+    let expected = fs::metadata(&control).unwrap().permissions().mode() & 0o777;
     let reads = branch();
-    workspace.read(&reads, "private").await;
     ok(&workspace
-        .call(
-            &reads,
-            "write",
-            json!({"path": "private", "content": "after\n"}),
-        )
+        .call(&reads, "write", json!({"path": "new", "content": "text\n"}))
         .await);
-    let mut old = Vec::new();
-    original.read_to_end(&mut old).unwrap();
-    assert_eq!(old, b"before\r\n");
-    assert_eq!(workspace.bytes("private"), b"after\r\n");
+    assert_eq!(workspace.bytes("new"), b"text\n");
     assert_eq!(
-        fs::metadata(workspace.path("private"))
+        fs::metadata(workspace.path("new"))
             .unwrap()
             .permissions()
             .mode()
             & 0o777,
-        0o600
+        expected,
+        "a new file takes the mode a directly created file takes"
     );
-    assert_eq!(fs::read_dir(&workspace.root).unwrap().count(), 1);
+    assert_eq!(fs::read_dir(&workspace.root).unwrap().count(), 2);
 }
 
 #[test]
