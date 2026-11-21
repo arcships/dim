@@ -1100,7 +1100,7 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
     ) -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
 
-/// Model selection and completion provided by the active model catalog.
+/// Configuration and preference updates supported by the managed provider.
 pub trait ConfigureModel: Send + Sync {
     fn configuration(
         self: Arc<Self>,
@@ -1121,6 +1121,7 @@ pub trait ConfigureModel: Send + Sync {
     fn dispatch_release_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
 }
 
+/// Model selection and completion provided by the active model catalog.
 #[derive(Clone)]
 pub struct ProviderService {
     selection: ModelSelectionHost,
