@@ -497,11 +497,10 @@ impl ProviderService {
             );
             let db = self.db.clone();
             let id = provider_id.clone();
-            let bundled = self.bundled.clone();
             let record = self
                 .owned(cancel, move |cancel| {
                     Box::pin(async move {
-                        db.patch_header(id, expected_version, patch, reply, bundled, cancel)
+                        db.patch_header(id, expected_version, patch, reply, cancel)
                             .await
                     })
                 })
@@ -626,9 +625,9 @@ impl SqliteStorage {
         expected_version: u32,
         patch: ProviderPatch,
         reply: UpdateReplyKind,
-        bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> Result<StaticProviderRecord, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         self.run(move |connection| {
             Ok((|| -> Result<_, ProviderError> {
                 let tx = connection.transaction()?;
@@ -733,8 +732,8 @@ impl SqliteStorage {
         self: &Arc<Self>,
         provider_id: String,
         expected_version: u32,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<(), ProviderError> {
+        let bundled = BundledCatalog::shipped();
         self.run(move |connection| {
             Ok((|| -> Result<_, ProviderError> {
                 let tx = connection.transaction()?;

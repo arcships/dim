@@ -30,7 +30,7 @@ pub use legacy::{
     legacy_omitted_fields, read_legacy_source,
 };
 pub use models::PreferencesPatch;
-pub(crate) use models::{ModelAccount, validate_model_edit};
+pub(crate) use models::{AdmittedModelEdit, ModelAccount};
 use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
 pub use startup::{StartupInput, StartupSelection};
@@ -347,8 +347,8 @@ impl SqliteStorage {
     pub(crate) async fn candidate_providers(
         self: &Arc<Self>,
         model_id: Option<String>,
-        bundled: Arc<BundledCatalog>,
     ) -> dim_agent_runtime::Result<Vec<String>> {
+        let bundled = BundledCatalog::shipped();
         self.run_read(move |connection| {
             let tx = connection.transaction().map_err(storage)?;
             let mut selected = Vec::new();
@@ -379,8 +379,8 @@ impl SqliteStorage {
     pub(crate) async fn candidate_models(
         self: &Arc<Self>,
         providers: Vec<String>,
-        bundled: Arc<BundledCatalog>,
     ) -> dim_agent_runtime::Result<Vec<ModelId>> {
+        let bundled = BundledCatalog::shipped();
         self.run_read(move |connection| {
             let tx = connection.transaction().map_err(storage)?;
             let mut result = Vec::new();
@@ -403,8 +403,8 @@ impl SqliteStorage {
         provider: String,
         after: Option<persistence::OrderedModel>,
         limit: usize,
-        bundled: Arc<BundledCatalog>,
     ) -> dim_agent_runtime::Result<Vec<persistence::OrderedModel>> {
+        let bundled = BundledCatalog::shipped();
         self.run_read(move |connection| {
             let tx = connection.transaction().map_err(storage)?;
             persistence::ordered_models(&tx, &bundled, &provider, after.as_ref(), limit)
@@ -479,8 +479,8 @@ impl SqliteStorage {
     }
     pub(crate) async fn list_providers(
         self: &Arc<Self>,
-        bundled: Arc<BundledCatalog>,
     ) -> dim_agent_runtime::Result<ProviderList> {
+        let bundled = BundledCatalog::shipped();
         self.run_read(move |connection| {
             let tx = connection.transaction().map_err(storage)?;
             let mut result = ProviderList {
@@ -509,9 +509,9 @@ impl SqliteStorage {
         id: String,
         revision: impl AsRef<str> + Send + 'static,
         facts: Option<persistence::AdoptionFacts>,
-        bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<()> {
+        let bundled = BundledCatalog::shipped();
         self.run(move |connection| {
             let tx = connection.transaction().map_err(storage)?;
             persistence::adopt_source(&tx, &id, &bundled, revision.as_ref(), facts, &cancel)?;
@@ -2060,7 +2060,6 @@ impl ProviderService {
                         Some(model_id.clone()),
                         None,
                         false,
-                        bundled.clone(),
                         cancel,
                     )
                     .await
@@ -2111,7 +2110,7 @@ impl ProviderService {
         let bundled = self.bundled.clone();
         self.owned(cancel, move |cancel| {
             Box::pin(async move {
-                db.adopt_provider(id, bundled.revision(), None, bundled, cancel)
+                db.adopt_provider(id, bundled.revision(), None, cancel)
                     .await
                     .map_err(failure)
             })
@@ -2124,10 +2123,9 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<ProviderList, HostError> {
         let db = self.db.clone();
-        let bundled = self.bundled.clone();
         let mut list = self
             .owned(cancel, move |_| {
-                Box::pin(async move { db.list_providers(bundled).await.map_err(failure) })
+                Box::pin(async move { db.list_providers().await.map_err(failure) })
             })
             .await?;
         for provider in &mut list.providers {
@@ -2239,12 +2237,8 @@ impl ProviderService {
             ));
         }
         let db = self.db.clone();
-        let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
-            Box::pin(async move {
-                db.delete_record(provider_id, expected_version, bundled)
-                    .await
-            })
+            Box::pin(async move { db.delete_record(provider_id, expected_version).await })
         })
         .await
     }
@@ -2460,13 +2454,8 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<Vec<String>, HostError> {
         let db = self.db.clone();
-        let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
-            Box::pin(async move {
-                db.candidate_providers(model_id, bundled)
-                    .await
-                    .map_err(failure)
-            })
+            Box::pin(async move { db.candidate_providers(model_id).await.map_err(failure) })
         })
         .await
     }
@@ -2477,13 +2466,8 @@ impl ProviderService {
     ) -> Result<Vec<ModelId>, HostError> {
         let providers = self.candidate_provider_ids(None, cancel).await?;
         let db = self.db.clone();
-        let bundled = self.bundled.clone();
         self.owned(cancel, move |_| {
-            Box::pin(async move {
-                db.candidate_models(providers, bundled)
-                    .await
-                    .map_err(failure)
-            })
+            Box::pin(async move { db.candidate_models(providers).await.map_err(failure) })
         })
         .await
     }
@@ -2539,12 +2523,11 @@ impl ProviderService {
                 };
                 self.adopt_provider(&id, cancel).await?;
                 let db = self.db.clone();
-                let bundled = self.bundled.clone();
                 let provider = id.clone();
                 let rows = self
                     .owned(cancel, move |_| {
                         Box::pin(async move {
-                            db.ordered_models(provider, after, 32, bundled)
+                            db.ordered_models(provider, after, 32)
                                 .await
                                 .map_err(failure)
                         })
@@ -3405,22 +3388,19 @@ impl DynPlugin for ProviderPlugin {
             };
             let host = ctx.require_at(&self.host)?;
             let methods = ctx.require_at(&self.methods)?;
-            let service =
-                Arc::new(ProviderService {
-                    db,
-                    oauth,
-                    codex,
-                    grok,
-                    secret_host,
-                    bundled: Arc::new(BundledCatalog::load().map_err(|error| {
-                        rutis::Error::from(ErrorKind::PluginFailed(error.into()))
-                    })?),
-                    client: OnceCell::new(),
-                    stop: CancellationToken::new(),
-                    tasks: TaskTracker::new(),
-                    admission: Mutex::new(()),
-                    startup: Mutex::new(startup::StartupBindings::default()),
-                });
+            let service = Arc::new(ProviderService {
+                db,
+                oauth,
+                codex,
+                grok,
+                secret_host,
+                bundled: BundledCatalog::shipped(),
+                client: OnceCell::new(),
+                stop: CancellationToken::new(),
+                tasks: TaskTracker::new(),
+                admission: Mutex::new(()),
+                startup: Mutex::new(startup::StartupBindings::default()),
+            });
             let owner = service.clone();
             ctx.effect(move || async move {
                 {

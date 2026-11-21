@@ -87,12 +87,11 @@ impl ProviderService {
         if !self.oauth.contains(&provider_id, cancel).await? {
             self.adopt_provider(&provider_id, cancel).await?;
             let id = provider_id.clone();
-            let bundled = self.bundled.clone();
             let db = self.db.clone();
             let record = self
                 .owned(cancel, move |_| {
                     Box::pin(async move {
-                        db.static_preferences(id, expected_version, model_id, patch, bundled)
+                        db.static_preferences(id, expected_version, model_id, patch)
                             .await
                     })
                 })
@@ -110,7 +109,6 @@ impl ProviderService {
         let owner = self.clone();
         let current = account.clone();
         let bundled = self.bundled.clone();
-        let catalog_bundled = bundled.clone();
         let record = self
             .owned(cancel, move |_| {
                 Box::pin(async move {
@@ -122,7 +120,6 @@ impl ProviderService {
                             model_id,
                             patch,
                             current,
-                            catalog_bundled,
                         )
                         .await
                 })
@@ -148,12 +145,11 @@ impl ProviderService {
                 "Account catalogs do not accept user models".into(),
             ));
         }
-        let bundled = self.bundled.clone();
         self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.create_model_record(provider_id, expected_version, model, bundled)
+                db.create_model_record(provider_id, expected_version, model)
                     .await
             })
         })
@@ -172,12 +168,11 @@ impl ProviderService {
                 "Account catalogs do not own user models".into(),
             ));
         }
-        let bundled = self.bundled.clone();
         self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.delete_model_record(provider_id, expected_version, model_id, bundled)
+                db.delete_model_record(provider_id, expected_version, model_id)
                     .await
             })
         })
@@ -192,8 +187,7 @@ impl ProviderService {
         edit: Option<ModelEdit>,
         cancel: &CancellationToken,
     ) -> Result<ProviderCatalog, ProviderError> {
-        validate_model_edit(edit.as_ref())?;
-        let bundled = self.bundled.clone();
+        let edit = AdmittedModelEdit::new(edit)?;
         let db = self.db.clone();
         if !self.oauth.contains(&provider_id, cancel).await? {
             let available = self.account_available(&provider_id, cancel).await?;
@@ -210,14 +204,13 @@ impl ProviderService {
                                 available,
                                 account: None,
                             },
-                            bundled,
                         )
                         .await
                     })
                 })
                 .await;
         }
-        if edit.as_ref().is_some_and(|e| e.endpoint.is_some()) {
+        if edit.0.as_ref().is_some_and(|e| e.endpoint.is_some()) {
             return Err(ProviderError::Unsupported(
                 "Account catalogs do not accept endpoint edits".into(),
             ));
@@ -235,7 +228,6 @@ impl ProviderService {
                         available: true,
                         account: Some(account),
                     },
-                    bundled,
                 )
                 .await
             })
@@ -258,20 +250,12 @@ impl ProviderService {
             None
         };
         let available = self.account_available(&provider_id, cancel).await?;
-        let bundled = self.bundled.clone();
         let db = self.db.clone();
         let state = ModelAccount { available, account };
         self.owned(cancel, move |_| {
             Box::pin(async move {
-                db.enable_model(
-                    provider_id,
-                    expected_version,
-                    model_id,
-                    enabled,
-                    state,
-                    bundled,
-                )
-                .await
+                db.enable_model(provider_id, expected_version, model_id, enabled, state)
+                    .await
             })
         })
         .await
@@ -285,7 +269,6 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<ProviderCatalog, ProviderError> {
         self.check(cancel)?;
-        let bundled = self.bundled.clone();
         let db = self.db.clone();
         if !self.oauth.contains(&provider_id, cancel).await? {
             let available = self.account_available(&provider_id, cancel).await?;
@@ -297,7 +280,7 @@ impl ProviderService {
             return self
                 .owned(cancel, move |_| {
                     Box::pin(async move {
-                        db.enable_models(provider_id, expected_version, ids, state, bundled)
+                        db.enable_models(provider_id, expected_version, ids, state)
                             .await
                     })
                 })
@@ -311,7 +294,7 @@ impl ProviderService {
                     available: true,
                     account: Some(account),
                 };
-                db.enable_models(provider_id, expected_version, ids, state, bundled)
+                db.enable_models(provider_id, expected_version, ids, state)
                     .await
             })
         })
@@ -369,8 +352,8 @@ impl SqliteStorage {
         provider_id: String,
         expected_version: u32,
         mut model: ModelEntry,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<ProviderCatalog, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         let id = provider_id.clone();
         let record = self
             .mutate_static(provider_id, expected_version, move |record, _| {
@@ -413,8 +396,8 @@ impl SqliteStorage {
         provider_id: String,
         expected_version: u32,
         model_id: String,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<ProviderCatalog, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         let id = provider_id.clone();
         let record = self
             .mutate_static(provider_id.clone(), expected_version, move |record, tx| {
@@ -461,8 +444,8 @@ impl SqliteStorage {
         model_id: String,
         enabled: bool,
         state: ModelAccount,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<u32, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         let ModelAccount { available, account } = state;
         self.run(move |connection| {
                 Ok((|| -> Result<_, ProviderError> {
@@ -527,8 +510,8 @@ impl SqliteStorage {
         expected_version: u32,
         ids: Vec<String>,
         state: ModelAccount,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<ProviderCatalog, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         let Some(account) = state.account else {
             let available = state.available;
             let scoped = provider_id.clone();
@@ -604,44 +587,48 @@ impl SqliteStorage {
     }
 }
 
-pub(crate) fn validate_model_edit(edit: Option<&ModelEdit>) -> Result<(), ProviderError> {
-    if edit
-        .as_ref()
-        .and_then(|edit| edit.display_name.as_ref())
-        .is_some_and(|name| name.trim().is_empty())
-    {
-        return Err(ProviderError::InvalidConfig(
-            "Model display name must not be empty".into(),
-        ));
-    }
-    if edit.as_ref().is_some_and(|edit| {
-        [edit.context_window, edit.max_output_tokens]
-            .into_iter()
-            .flatten()
-            .any(|limit| !limit_valid(limit.get()))
-    }) {
-        return Err(ProviderError::InvalidConfig(
-            "Model limits must be positive safe JSON integers".into(),
-        ));
-    }
-    if edit
-        .as_ref()
-        .and_then(|edit| edit.reasoning.as_ref())
-        .and_then(|reasoning| reasoning.effort_options.as_ref())
-        .is_some_and(|options| {
-            options.iter().any(|option| {
-                !matches!(
-                    option.as_str(),
-                    "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-                )
+pub(crate) struct AdmittedModelEdit(Option<ModelEdit>);
+
+impl AdmittedModelEdit {
+    pub(crate) fn new(edit: Option<ModelEdit>) -> Result<Self, ProviderError> {
+        if edit
+            .as_ref()
+            .and_then(|edit| edit.display_name.as_ref())
+            .is_some_and(|name| name.trim().is_empty())
+        {
+            return Err(ProviderError::InvalidConfig(
+                "Model display name must not be empty".into(),
+            ));
+        }
+        if edit.as_ref().is_some_and(|edit| {
+            [edit.context_window, edit.max_output_tokens]
+                .into_iter()
+                .flatten()
+                .any(|limit| !limit_valid(limit.get()))
+        }) {
+            return Err(ProviderError::InvalidConfig(
+                "Model limits must be positive safe JSON integers".into(),
+            ));
+        }
+        if edit
+            .as_ref()
+            .and_then(|edit| edit.reasoning.as_ref())
+            .and_then(|reasoning| reasoning.effort_options.as_ref())
+            .is_some_and(|options| {
+                options.iter().any(|option| {
+                    !matches!(
+                        option.as_str(),
+                        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                    )
+                })
             })
-        })
-    {
-        return Err(ProviderError::InvalidConfig(
-            "Invalid reasoning effort option".into(),
-        ));
+        {
+            return Err(ProviderError::InvalidConfig(
+                "Invalid reasoning effort option".into(),
+            ));
+        }
+        Ok(Self(edit))
     }
-    Ok(())
 }
 
 impl SqliteStorage {
@@ -650,10 +637,10 @@ impl SqliteStorage {
         provider_id: String,
         expected_version: u32,
         model_id: String,
-        mut edit: Option<ModelEdit>,
+        AdmittedModelEdit(mut edit): AdmittedModelEdit,
         state: ModelAccount,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<ProviderCatalog, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         let endpoint = edit.as_mut().and_then(|edit| edit.endpoint.take());
         // An alias is the provider's statement about its ids, so it is written
         // to the record's map rather than to a descriptor override: an edit
@@ -843,8 +830,8 @@ impl SqliteStorage {
         expected_version: u32,
         model_id: String,
         patch: PreferencesPatch,
-        bundled: Arc<BundledCatalog>,
     ) -> Result<StaticProviderRecord, ProviderError> {
+        let bundled = BundledCatalog::shipped();
         let id = provider_id.clone();
         self.mutate_static(provider_id, expected_version, move |record, _| {
             let model = static_models(&bundled, &id, record, true)
@@ -875,8 +862,8 @@ impl SqliteStorage {
         model_id: String,
         patch: PreferencesPatch,
         current: AccountSnapshot,
-        catalog_bundled: Arc<BundledCatalog>,
     ) -> Result<ProviderRecord, ProviderError> {
+        let catalog_bundled = BundledCatalog::shipped();
         self.run(move |connection| {
             Ok((|| -> Result<_, ProviderError> {
                 let tx = connection.transaction()?;

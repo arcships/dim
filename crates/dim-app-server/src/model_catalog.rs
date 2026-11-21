@@ -354,12 +354,22 @@ pub struct BundledCatalog {
 impl BundledCatalog {
     /// The catalog the bundled files describe, as every projection reads it.
     pub fn load() -> Result<Self, ProjectionError> {
-        Ok(Self {
+        Ok(Self::shipped_view())
+    }
+
+    pub(crate) fn shipped() -> std::sync::Arc<Self> {
+        static SHIPPED: std::sync::LazyLock<std::sync::Arc<BundledCatalog>> =
+            std::sync::LazyLock::new(|| std::sync::Arc::new(BundledCatalog::shipped_view()));
+        SHIPPED.clone()
+    }
+
+    fn shipped_view() -> Self {
+        Self {
             data: Some(&DATA),
             providers: Vec::new(),
             by_provider: HashMap::new(),
             ids: id::IdIndex::new(&[]),
-        })
+        }
     }
 
     /// The same catalog `load` builds, from a parsed catalog file. A caller

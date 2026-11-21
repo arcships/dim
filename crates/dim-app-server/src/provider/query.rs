@@ -77,7 +77,6 @@ impl ProviderService {
             }
         }
         let db = self.db.clone();
-        let bundled = self.bundled.clone();
         self.owned(cancel, move |cancel| {
             Box::pin(async move {
                 db.query_models(
@@ -88,7 +87,6 @@ impl ProviderService {
                         accounts,
                         native,
                     },
-                    bundled,
                     cancel,
                 )
                 .await
@@ -125,9 +123,9 @@ impl SqliteStorage {
         input: ModelQuery,
         limit: usize,
         facts: ModelQueryAccounts,
-        bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<ModelPage> {
+        let bundled = BundledCatalog::shipped();
         let ModelQueryAccounts {
             descriptors,
             accounts,

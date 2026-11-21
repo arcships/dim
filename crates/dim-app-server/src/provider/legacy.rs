@@ -626,10 +626,9 @@ impl ProviderService {
                 .await
                 .map_err(|_| failure("Legacy reader failed"))??;
                 owner.check(&cancel)?;
-                let bundled = owner.bundled.clone();
                 owner
                     .db
-                    .import_legacy(snapshot, bundled, cancel)
+                    .import_legacy(snapshot, cancel)
                     .await
                     .map_err(failure)
             })
@@ -642,9 +641,9 @@ impl SqliteStorage {
     pub(crate) async fn import_legacy(
         self: &Arc<Self>,
         snapshot: LegacySnapshot,
-        bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<ImportResult> {
+        let bundled = BundledCatalog::shipped();
         self.run(move |connection| {
                 if cancel.is_cancelled() { return Err(storage("Provider import cancelled")); }
                 let tx = connection.transaction().map_err(storage)?;

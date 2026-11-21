@@ -449,7 +449,6 @@ impl ProviderService {
         let db = self.db.clone();
         let id = provider_id.clone();
         let target = model_id.clone();
-        let bundled = self.bundled.clone();
         let ManagementWindow {
             record,
             target_name,
@@ -459,7 +458,7 @@ impl ProviderService {
         } = self
             .owned(cancel, move |cancel| {
                 Box::pin(async move {
-                    db.management_window(id, target, page, true, bundled, cancel)
+                    db.management_window(id, target, page, true, cancel)
                         .await
                         .map_err(ProviderError::from)
                 })
@@ -557,7 +556,6 @@ impl ProviderService {
             self.adopt_provider(id, cancel).await?;
         }
         let db = self.db.clone();
-        let bundled = self.bundled.clone();
         let targeted = request.provider_id.is_some();
         let account_ids: BTreeMap<_, _> = descriptors
             .iter()
@@ -566,7 +564,7 @@ impl ProviderService {
         let (records, next) = self
             .owned(cancel, move |cancel| {
                 Box::pin(async move {
-                    db.management_page(request, limit, account_ids, bundled, cancel)
+                    db.management_page(request, limit, account_ids, cancel)
                         .await
                         .map_err(ProviderError::from)
                 })
@@ -669,9 +667,9 @@ impl SqliteStorage {
         request: ManagementPageRequest,
         limit: u32,
         account_ids: BTreeMap<String, String>,
-        bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<(ManagementRows, Option<String>)> {
+        let bundled = BundledCatalog::shipped();
         let target = request.provider_id;
         let after = request.after;
         let accounts_only = request.accounts_only;
@@ -784,9 +782,9 @@ impl SqliteStorage {
         target: Option<String>,
         page: Option<ManagementModelPage>,
         include_pending: bool,
-        bundled: Arc<BundledCatalog>,
         cancel: CancellationToken,
     ) -> dim_agent_runtime::Result<ManagementWindow> {
+        let bundled = BundledCatalog::shipped();
         self.run_read(move |connection| {
                         let tx=connection.transaction().map_err(storage)?;
                         let pending = include_pending && tx

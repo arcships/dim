@@ -157,11 +157,6 @@ impl ProviderOperation {
         self,
         db: &Arc<SqliteStorage>,
     ) -> Result<serde_json::Value, BridgeError> {
-        let loaded_bundle = || {
-            crate::model_catalog::BundledCatalog::load()
-                .map(Arc::new)
-                .map_err(|e| BridgeError::value(e.to_string()))
-        };
         Ok(match self {
             Self::CommitEdit { provider_id, edit } => {
                 let reply = match *edit {
@@ -170,80 +165,51 @@ impl ProviderOperation {
                         model_id,
                         enabled,
                         state,
-                    } => {
-                        let bundled = loaded_bundle()?;
-                        db.enable_model(
-                            provider_id,
-                            expected_version,
-                            model_id,
-                            enabled,
-                            state,
-                            bundled,
-                        )
+                    } => db
+                        .enable_model(provider_id, expected_version, model_id, enabled, state)
                         .await
-                        .map(|v| serde_json::json!(v))
-                    }
+                        .map(|v| serde_json::json!(v)),
                     ProviderEdit::EnableModels {
                         expected_version,
                         model_ids,
                         state,
-                    } => {
-                        let bundled = loaded_bundle()?;
-                        db.enable_models(provider_id, expected_version, model_ids, state, bundled)
-                            .await
-                            .map(|v| serde_json::json!(v))
-                    }
+                    } => db
+                        .enable_models(provider_id, expected_version, model_ids, state)
+                        .await
+                        .map(|v| serde_json::json!(v)),
                     ProviderEdit::EditModel {
                         expected_version,
                         model_id,
                         edit,
                         state,
                     } => {
-                        crate::provider::validate_model_edit(edit.as_ref())
+                        let edit = crate::provider::AdmittedModelEdit::new(edit)
                             .map_err(provider_failure)?;
-                        let bundled = loaded_bundle()?;
-                        db.edit_model(
-                            provider_id,
-                            expected_version,
-                            model_id,
-                            edit,
-                            state,
-                            bundled,
-                        )
-                        .await
-                        .map(|r| serde_json::json!(r))
+                        db.edit_model(provider_id, expected_version, model_id, edit, state)
+                            .await
+                            .map(|r| serde_json::json!(r))
                     }
                     ProviderEdit::Preferences {
                         expected_version,
                         model_id,
                         patch,
                         account,
-                    } => {
-                        let bundled = loaded_bundle()?;
-                        match account {
-                            Some(current) => db
-                                .managed_preferences(
-                                    provider_id,
-                                    expected_version,
-                                    model_id,
-                                    patch,
-                                    current,
-                                    bundled,
-                                )
-                                .await
-                                .map(|r| serde_json::json!(r)),
-                            None => db
-                                .static_preferences(
-                                    provider_id,
-                                    expected_version,
-                                    model_id,
-                                    patch,
-                                    bundled,
-                                )
-                                .await
-                                .map(|r| serde_json::json!(r)),
-                        }
-                    }
+                    } => match account {
+                        Some(current) => db
+                            .managed_preferences(
+                                provider_id,
+                                expected_version,
+                                model_id,
+                                patch,
+                                current,
+                            )
+                            .await
+                            .map(|r| serde_json::json!(r)),
+                        None => db
+                            .static_preferences(provider_id, expected_version, model_id, patch)
+                            .await
+                            .map(|r| serde_json::json!(r)),
+                    },
                     ProviderEdit::RefreshManaged {
                         expected_version,
                         catalog,
@@ -263,42 +229,24 @@ impl ProviderOperation {
                         patch,
                         reply,
                     } => {
-                        let bundled = loaded_bundle()?;
                         let cancel = CancellationToken::new();
                         let _guard = cancel.clone().drop_guard();
-                        db.patch_header(
-                            provider_id,
-                            expected_version,
-                            patch,
-                            reply,
-                            bundled,
-                            cancel,
-                        )
-                        .await
-                        .map(|r| serde_json::json!(r))
+                        db.patch_header(provider_id, expected_version, patch, reply, cancel)
+                            .await
+                            .map(|r| serde_json::json!(r))
                     }
                     ProviderEdit::CreateModel {
                         expected_version,
                         model,
                     } => db
-                        .create_model_record(
-                            provider_id,
-                            expected_version,
-                            *model,
-                            loaded_bundle()?,
-                        )
+                        .create_model_record(provider_id, expected_version, *model)
                         .await
                         .map(|r| serde_json::json!(r)),
                     ProviderEdit::DeleteModel {
                         expected_version,
                         model_id,
                     } => db
-                        .delete_model_record(
-                            provider_id,
-                            expected_version,
-                            model_id,
-                            loaded_bundle()?,
-                        )
+                        .delete_model_record(provider_id, expected_version, model_id)
                         .await
                         .map(|r| serde_json::json!(r)),
                     ProviderEdit::Create { mut record } => {
@@ -322,12 +270,10 @@ impl ProviderOperation {
                             .await
                             .map(|r| serde_json::json!(r))
                     }
-                    ProviderEdit::Delete { expected_version } => {
-                        let bundled = loaded_bundle()?;
-                        db.delete_record(provider_id, expected_version, bundled)
-                            .await
-                            .map(|()| serde_json::json!({}))
-                    }
+                    ProviderEdit::Delete { expected_version } => db
+                        .delete_record(provider_id, expected_version)
+                        .await
+                        .map(|()| serde_json::json!({})),
                 };
                 reply.map_err(provider_failure)?
             }
@@ -342,7 +288,6 @@ impl ProviderOperation {
                     page.as_ref(),
                 )
                 .map_err(provider_failure)?;
-                let bundled = loaded_bundle()?;
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
                 serde_json::json!(
@@ -351,7 +296,6 @@ impl ProviderOperation {
                         model_id,
                         page,
                         include_pending.unwrap_or(true),
-                        bundled,
                         cancel
                     )
                     .await
@@ -360,11 +304,10 @@ impl ProviderOperation {
             }
             Self::ManagementPage(ManagementRead::Providers { page, accounts }) => {
                 let limit = page.page_limit().map_err(provider_failure)?;
-                let bundled = loaded_bundle()?;
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
                 let (records, next) = db
-                    .management_page(page, limit, accounts, bundled, cancel)
+                    .management_page(page, limit, accounts, cancel)
                     .await
                     .map_err(storage_failure)?;
                 let records: Vec<_> = records
@@ -378,39 +321,35 @@ impl ProviderOperation {
                     .collect();
                 serde_json::json!({"records":records,"next":next})
             }
-            Self::FindCandidates(request) => {
-                let bundled = loaded_bundle()?;
-                match request {
-                    Candidates::Providers { model_id } => serde_json::json!(
-                        db.candidate_providers(model_id, bundled)
-                            .await
-                            .map_err(storage_failure)?
-                    ),
-                    Candidates::Models { providers } => serde_json::json!(
-                        db.candidate_models(providers, bundled)
-                            .await
-                            .map_err(storage_failure)?
-                    ),
-                    Candidates::Ordered {
-                        provider_id,
-                        after,
-                        limit,
-                    } => serde_json::json!(
-                        db.ordered_models(provider_id, after, limit, bundled)
-                            .await
-                            .map_err(storage_failure)?
-                    ),
-                }
-            }
+            Self::FindCandidates(request) => match request {
+                Candidates::Providers { model_id } => serde_json::json!(
+                    db.candidate_providers(model_id)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Candidates::Models { providers } => serde_json::json!(
+                    db.candidate_models(providers)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Candidates::Ordered {
+                    provider_id,
+                    after,
+                    limit,
+                } => serde_json::json!(
+                    db.ordered_models(provider_id, after, limit)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+            },
             Self::QueryModels { page, accounts } => {
                 let limit = page
                     .page_limit()
                     .map_err(|e| BridgeError::value(e.to_string()))?;
-                let bundled = loaded_bundle()?;
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
                 serde_json::json!(
-                    db.query_models(page, limit, accounts, bundled, cancel)
+                    db.query_models(page, limit, accounts, cancel)
                         .await
                         .map_err(storage_failure)?
                 )
@@ -418,16 +357,14 @@ impl ProviderOperation {
             Self::ImportLegacy { batch } => {
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
-                let bundled = loaded_bundle()?;
                 serde_json::json!(
-                    db.import_legacy(batch, bundled, cancel)
+                    db.import_legacy(batch, cancel)
                         .await
                         .map_err(storage_failure)?
                 )
             }
             Self::ListProviders {} => {
-                let bundled = loaded_bundle()?;
-                serde_json::json!(db.list_providers(bundled).await.map_err(storage_failure)?)
+                serde_json::json!(db.list_providers().await.map_err(storage_failure)?)
             }
             Self::ReadRecord {
                 provider_id,
@@ -450,10 +387,9 @@ impl ProviderOperation {
                 revision,
                 base_facts,
             } => {
-                let bundled = loaded_bundle()?;
                 let cancel = CancellationToken::new();
                 let _guard = cancel.clone().drop_guard();
-                db.adopt_provider(id, revision, Some(*base_facts), bundled, cancel)
+                db.adopt_provider(id, revision, Some(*base_facts), cancel)
                     .await
                     .map_err(storage_failure)?;
                 serde_json::json!({})
