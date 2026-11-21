@@ -2,7 +2,7 @@ mod operations;
 pub(crate) use operations::ProviderOperation;
 
 use super::*;
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 
 type Result<T> = dim_agent_runtime::Result<T>;
 
@@ -1131,7 +1131,7 @@ pub(crate) fn refresh_managed(
     catalog: crate::managed_provider::ManagedCatalog,
     current: &AccountSnapshot,
 ) -> std::result::Result<
-    impl std::future::Future<Output = std::result::Result<ProviderRecord, ProviderError>> + Send + use<>,
+    impl Future<Output = std::result::Result<ProviderRecord, ProviderError>> + Send + use<>,
     ProviderError,
 > {
     if !same_account(current, &catalog.account) {
