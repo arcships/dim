@@ -1,5 +1,4 @@
-#[path = "local_support/task_store.rs"]
-mod task_store;
+use crate::task_store;
 use dim_agent_capabilities::{
     prompt_guide::GuideEntries,
     timeline_tree::{TimelineTreePlugin, TreeTimelinePlugin},

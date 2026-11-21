@@ -230,6 +230,7 @@ pub async fn serve_home(
         dim_agent_capabilities::timeline_tree::BranchToolConfig {
             description: run.overrides.branch_description.clone(),
             roster_closing: run.overrides.roster_closing.clone(),
+            max_open_lines: None,
         },
     );
     dim_app_server::permission_rules::install(&mut builder);

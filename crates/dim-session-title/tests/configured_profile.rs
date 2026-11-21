@@ -2,8 +2,7 @@
 //! auxiliary model, the SessionTitle part injects it, and the request reaches
 //! the configured model ([AuxiliaryModel](../../../docs/design/appserver/auxiliary-model.md)
 //! §11.8, [SessionTitle](../../../docs/design/plugins/SessionTitle.md)).
-#![cfg(unix)]
-mod support;
+use crate::support;
 use axum::{Router, routing::post};
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
 use dim_agent_capabilities::{

@@ -106,7 +106,12 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$STAMP" == true ]]; then node scripts/alpha-version.mjs "$RELEASE_VERSION"; fi
-          cargo install cargo-about --version 0.9.3 --features cli --locked
+          cargo_about_archive="cargo-about-0.9.3-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$cargo_about_archive" \
+            "https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/$cargo_about_archive"
+          echo "3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4  $RUNNER_TEMP/$cargo_about_archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$cargo_about_archive" -C "$RUNNER_TEMP" cargo-about-0.9.3-x86_64-unknown-linux-musl/cargo-about
+          export PATH="$RUNNER_TEMP/cargo-about-0.9.3-x86_64-unknown-linux-musl:$PATH"
           cargo fetch --locked
           mkdir -p staging
           node scripts/rust-notices.mjs staging/rust-notices.txt

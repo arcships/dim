@@ -385,6 +385,11 @@ impl Job {
                 }
                 let step = i64::from(every.every_minutes) * 60;
                 let k = now.duration_since(anchor).as_secs() / step;
+                // The first window is one interval after the anchor (A.4), so
+                // none has come due yet before then.
+                if k == 0 {
+                    return Ok(None);
+                }
                 let offset = k.checked_mul(step).ok_or("window overflow")?;
                 anchor
                     .checked_add(SignedDuration::from_secs(offset))
@@ -449,17 +454,20 @@ impl Schedule {
             Self::Every(every) => {
                 let anchor = anchor.ok_or("an every schedule needs enabled_at")?;
                 let step = i64::from(every.every_minutes) * 60;
-                let first = if anchor > after {
-                    anchor
+                // Windows are `anchor + k·n` for k >= 1: a saved job delivers
+                // nothing at its anchor, and re-enabling resets the anchor the
+                // same way (A.4).
+                let k = if after > anchor {
+                    after.duration_since(anchor).as_secs() / step + 1
                 } else {
-                    let elapsed = after.duration_since(anchor);
-                    let k = elapsed.as_secs() / step + 1;
-                    let offset = k.checked_mul(step).ok_or("window overflow")?;
+                    1
+                };
+                let offset = k.checked_mul(step).ok_or("window overflow")?;
+                Ok(Some(
                     anchor
                         .checked_add(SignedDuration::from_secs(offset))
-                        .map_err(|_| "window overflow".to_owned())?
-                };
-                Ok(Some(first))
+                        .map_err(|_| "window overflow".to_owned())?,
+                ))
             }
             Self::Cron(cron) => {
                 let parsed = cron_for(cron).map_err(|error| error.to_string())?;

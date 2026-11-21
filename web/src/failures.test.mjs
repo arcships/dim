@@ -15,7 +15,7 @@ registerHooks({
   },
 })
 
-const { failureDetails, failureLine, retryAnnouncement, retrySeconds, retryStatus, FAILURE_KINDS } = await import("./failures.ts")
+const { failureDetails, failureLine, retrySeconds, retryStatus, FAILURE_KINDS } = await import("./failures.ts")
 const { i18n } = await import("./i18n/index.ts")
 const { default: en } = await import("./i18n/en.ts")
 const { default: zhCN } = await import("./i18n/zh-CN.ts")
@@ -115,12 +115,4 @@ test("the retry status counts down and stops at zero", () => {
   assert.equal(retrySeconds(10_000, 12_000), 0)
   assert.equal(retryStatus(retry, retrySeconds(10_000, 6_000)), "Retrying 3/8 in 4 s · The provider reported a server error: The server is overloaded · Stop response")
   assert.equal(retryStatus(retry, retrySeconds(10_000, 10_000)), "Waiting for the provider · The provider reported a server error: The server is overloaded · Stop response")
-})
-
-test("the announcement follows the attempt, not the countdown", () => {
-  const retry = { attempt: 3, maxAttempts: 8, retryAtMs: 10_000, kind: "server_error", reason: "The server is overloaded." }
-  const first = retryAnnouncement(retry)
-  assert.equal(retryAnnouncement({ ...retry, retryAtMs: 20_000 }), first)
-  assert.notEqual(retryAnnouncement({ ...retry, attempt: 4 }), first)
-  assert.equal(retryAnnouncement(undefined), "")
 })

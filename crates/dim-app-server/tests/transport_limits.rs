@@ -1,4 +1,3 @@
-#![cfg(unix)]
 use dim_agent_capabilities::{adapters::MockTools, defaults};
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature, Names, SessionIdentity};
 use dim_app_server::{RunningServer, ServerConfig, serve};

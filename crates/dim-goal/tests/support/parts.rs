@@ -2,9 +2,9 @@
 //! TimelineTree, SessionMethods, ToolRegistry, PromptGuide, storage and
 //! Settings, with only the parts Goal needs. The facts the Loop, InputQueue
 //! and TimelineTree would write are the test's.
-#![expect(
+#![allow(
     dead_code,
-    reason = "each test binary uses the helpers it needs; the rest are shared"
+    reason = "shared Goal part fixture keeps unused helper hooks"
 )]
 use dim_agent_capabilities::host::ToolExecutionContext;
 use dim_agent_capabilities::methods::RpcError;

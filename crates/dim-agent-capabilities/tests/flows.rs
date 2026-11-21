@@ -1,3 +1,4 @@
+use crate::support;
 use dim_agent_capabilities::prompt::SessionPrompt as _;
 use dim_agent_capabilities::{defaults, history::project_messages};
 use dim_agent_runtime::testing::MinimalHost;
@@ -5,7 +6,6 @@ use dim_agent_runtime::testing::{branch_events, chain_events};
 use dim_agent_runtime::*;
 use dim_agent_types::*;
 use std::time::Duration;
-mod support;
 use support::Events;
 
 async fn agent() -> MinimalHost {

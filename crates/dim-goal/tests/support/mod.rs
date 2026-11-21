@@ -1,6 +1,6 @@
-#![expect(
+#![allow(
     dead_code,
-    reason = "each test binary uses the helpers it needs; the rest are shared"
+    reason = "shared Goal test fixture keeps unused helper hooks"
 )]
 pub mod parts;
 pub mod texts;

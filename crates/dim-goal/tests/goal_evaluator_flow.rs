@@ -1,7 +1,7 @@
 //! The `goal.test.mjs` Pursuit cases: the evaluator judge, its line, its
 //! conclusions and the ends it records. The part harness supplies every fact
 //! the Loop and TimelineTree would write; expectations are Goal's inputs.
-mod support;
+use crate::support;
 
 use std::time::Duration;
 

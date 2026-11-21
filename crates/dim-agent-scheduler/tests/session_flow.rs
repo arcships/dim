@@ -2,7 +2,7 @@
 //! A.1, A.6): one input per window on the target branch, the delivery
 //! vocabulary, bounded lookup settling, overlap skips, legacy mapping and
 //! retention.
-mod support;
+use crate::support;
 use dim_agent_scheduler::testing::retention;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -2738,4 +2738,212 @@ async fn a_later_save_of_a_retargeted_job_releases_nothing_again() {
     drop(client);
     server.shutdown();
     server.join().await.unwrap();
+}
+
+/// The job's row in `schedule.list`.
+async fn job_row(client: &mut dim_client::Client, job_id: &str) -> Value {
+    let listed: Value = client.typed("schedule.list", json!({})).await.unwrap();
+    listed["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == json!(job_id))
+        .unwrap_or_else(|| panic!("job {job_id} is listed: {listed}"))
+        .clone()
+}
+
+/// One timestamp field of a job row.
+fn stamp_of(row: &Value, field: &str) -> jiff::Timestamp {
+    row[field]
+        .as_str()
+        .unwrap_or_else(|| panic!("{field} is set: {row}"))
+        .parse()
+        .unwrap()
+}
+
+/// An instant as a delivery window spells it.
+fn window(at: jiff::Timestamp) -> String {
+    at.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
+}
+
+/// The job's delivered windows, oldest first, once `count` of them settled.
+async fn delivered_windows(
+    client: &mut dim_client::Client,
+    job_id: &str,
+    count: usize,
+) -> Vec<String> {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let history: Value = client
+                .typed("schedule.history", json!({"job_id": job_id, "limit": 50}))
+                .await
+                .unwrap();
+            let mut windows: Vec<String> = history["runs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|run| run["state"] == json!("delivered"))
+                .filter_map(|run| run["window"].as_str().map(str::to_owned))
+                .collect();
+            windows.sort();
+            if windows.len() >= count {
+                return windows;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the job's deliveries settle")
+}
+
+/// A new `every_minutes` job's first window is one interval after the save:
+/// nothing at the save, the first delivery at save + 30 min, the second at
+/// save + 60, and `run_now` still delivers at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_every_job_delivers_one_interval_after_it_is_saved() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+
+    let job = save_session_job(
+        &mut client,
+        "inbox",
+        &session,
+        None,
+        json!({"every_minutes": 30}),
+    )
+    .await;
+    let row = job_row(&mut client, &job).await;
+    let anchor = stamp_of(&row, "enabled_at");
+    let first = stamp_of(&row, "next_window");
+    let interval = jiff::SignedDuration::from_secs(30 * 60);
+    assert_eq!(
+        first.duration_since(anchor),
+        interval,
+        "the first window is one interval after the anchor: {row}"
+    );
+
+    let manual = clock(home.path());
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "a saved job delivers nothing at its save"
+    );
+    manual.advance_to(first - jiff::SignedDuration::from_secs(2));
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "nothing is delivered before the first window"
+    );
+
+    manual.advance_to(first);
+    let windows = delivered_windows(&mut client, &job, 1).await;
+    assert_eq!(
+        windows,
+        vec![window(first)],
+        "the first window delivers at its instant"
+    );
+
+    let second = first + interval;
+    manual.advance_to(second);
+    let windows = delivered_windows(&mut client, &job, 2).await;
+    assert_eq!(
+        windows,
+        vec![window(first), window(second)],
+        "the second window is one interval after the first"
+    );
+
+    // `run_now` is still the immediate run.
+    let run: Value = client
+        .typed("schedule.run_now", json!({"job_id": job}))
+        .await
+        .unwrap();
+    assert_eq!(run["window"], "manual");
+    let run = settled(&mut client, &job, run["run_id"].as_str().unwrap()).await;
+    assert_eq!(run["state"], "delivered", "{run}");
+    assert_eq!(
+        scheduled_inputs(&mut client, &session).await.len(),
+        3,
+        "the manual run wrote its own input"
+    );
+
+    // A re-enabled job's first window is one interval after its new anchor.
+    client
+        .typed::<Value>(
+            "schedule.set_enabled",
+            json!({"job_id": job, "enabled": false}),
+        )
+        .await
+        .unwrap();
+    manual.advance(jiff::SignedDuration::from_secs(5));
+    client
+        .typed::<Value>(
+            "schedule.set_enabled",
+            json!({"job_id": job, "enabled": true}),
+        )
+        .await
+        .unwrap();
+    let row = job_row(&mut client, &job).await;
+    let anchor = stamp_of(&row, "enabled_at");
+    let re_enabled = stamp_of(&row, "next_window");
+    assert_eq!(
+        re_enabled.duration_since(anchor),
+        interval,
+        "a re-enabled job waits one interval from its new anchor: {row}"
+    );
+}
+
+/// A new `every_minutes` job keeps its first window across a restart: the
+/// restart delivers nothing, and the window still fires at its anchor + one
+/// interval.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_every_job_keeps_its_first_window_across_a_restart() {
+    let home = home();
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let session = create_session(&mut client, home.path(), true).await;
+
+    let job = save_session_job(
+        &mut client,
+        "inbox",
+        &session,
+        None,
+        json!({"every_minutes": 30}),
+    )
+    .await;
+    let row = job_row(&mut client, &job).await;
+    let anchor = stamp_of(&row, "enabled_at");
+    let first = stamp_of(&row, "next_window");
+    assert_eq!(
+        first.duration_since(anchor),
+        jiff::SignedDuration::from_secs(30 * 60),
+        "the first window is one interval after the anchor: {row}"
+    );
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = support::connect(&server).await;
+    let manual = clock(home.path());
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "a restart before the first window writes nothing"
+    );
+    manual.advance_to(first - jiff::SignedDuration::from_secs(2));
+    step(home.path(), 1).await;
+    assert!(
+        scheduled_inputs(&mut client, &session).await.is_empty(),
+        "the restart does not fire the first window early"
+    );
+
+    manual.advance_to(first);
+    let windows = delivered_windows(&mut client, &job, 1).await;
+    assert_eq!(
+        windows,
+        vec![window(first)],
+        "the restored job delivers its first window at the anchor + one interval"
+    );
 }

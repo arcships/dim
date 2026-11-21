@@ -1,4 +1,4 @@
-mod support;
+use crate::support;
 
 use dim_agent_types::*;
 use dim_app_server::storage::{SqliteStorage, SqliteTimelineStore};

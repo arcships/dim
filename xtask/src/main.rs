@@ -1,16 +1,11 @@
 mod allocation;
 mod app_server;
 mod catalog;
-mod comment_links;
-mod literal_main;
-mod modules;
-mod npm;
 mod plugins;
 mod prompt_eval;
 mod rule;
 mod scenario_eval;
 mod summary_eval;
-mod types;
 #[global_allocator]
 static ALLOCATOR: allocation::MeasuredAllocator = allocation::MeasuredAllocator;
 use dim_agent_runtime::{testing::MinimalHost, *};
@@ -66,14 +61,10 @@ async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
         Some("scenario-eval-serve") => scenario_eval::serve_entry(std::env::args().nth(2)).await?,
         Some("prompt-eval") => prompt_eval::run().await?,
         Some("check") => {
-            boundaries(false)?;
+            xtask_check::check_all(&root())?;
             catalog::check(&root()).await?;
-            types::check(&root())?;
-            npm::check(&root())?;
-            comment_links::check(&root())?;
-            literal_main::check(&root())?;
         }
-        Some("types") => types::write(&root())?,
+        Some("types") => xtask_check::types::write(&root())?,
         _ => {
             return Err(
                 "usage: cargo run -p xtask -- graph|module-graph DIR|measure [--model-config PATH]|context-replay|restore-replay DB SESSION|context-breakdown DB SESSION|migrate-prompt-references DB SESSION BRANCH|summary-eval [OPTIONS]|scenario-eval [OPTIONS]|check|types"
@@ -93,7 +84,7 @@ fn module_graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
     let out = PathBuf::from(out);
     std::fs::create_dir_all(&out)?;
-    for (name, text) in modules::generate(&root())? {
+    for (name, text) in xtask_check::modules::generate(&root())? {
         std::fs::write(out.join(name), text)?;
     }
     println!("generated {}", out.display());
@@ -360,76 +351,8 @@ async fn graph() -> std::result::Result<(), Box<dyn std::error::Error>> {
         app_server::write(&root(), app_server::graph().await?)?;
         catalog::write(&root()).await?;
     }
-    boundaries(true)?;
+    xtask_check::boundaries::write(&root())?;
     println!("generated {}", out.display());
-    Ok(())
-}
-/// `graph` writes the generated architecture files; `check` renders them again and fails when the committed bytes differ.
-fn boundaries(write: bool) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("cargo")
-        .args(["metadata", "--no-deps", "--format-version", "1"])
-        .current_dir(root())
-        .output()?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy_owned(output.stderr).into());
-    }
-    let metadata: Value = serde_json::from_slice(&output.stdout)?;
-    let mut edges = vec![];
-    let mut graph = String::from("%% Generated from cargo metadata; do not edit.\nflowchart LR\n");
-    for p in metadata["packages"].as_array().unwrap() {
-        let name = p["name"].as_str().unwrap();
-        for d in p["dependencies"].as_array().unwrap() {
-            let dep = d["name"].as_str().unwrap();
-            if name == "dim-agent-types" && !modules::TYPES_VALUE_DEPENDENCIES.contains(&dep) {
-                return Err("types must not depend on runtime/capabilities".into());
-            }
-            if name == "dim-agent-runtime"
-                && (dep == "dim-agent-capabilities" || dep == "dim-app-server")
-            {
-                return Err("runtime must not depend on capabilities/server".into());
-            }
-            if name == "dim-agent-capabilities" && dep == "dim-app-server" {
-                return Err("capabilities must not depend on server".into());
-            }
-            if dep.starts_with("dim-") || dep == "rutis" {
-                edges.push(json!({"from":name,"to":dep}));
-                graph += &format!(
-                    "  {}[\"{name}\"] --> {}[\"{dep}\"]\n",
-                    name.replace('-', "_"),
-                    dep.replace('-', "_")
-                );
-            }
-        }
-    }
-    let out = root().join("docs/architecture/rust-agent/generated");
-    let files = [
-        ("crates.json", serde_json::to_string_pretty(&edges)? + "\n"),
-        ("crates.mmd", graph),
-    ];
-    modules::check(&root())?;
-    if write {
-        std::fs::create_dir_all(&out)?;
-        for (name, text) in &files {
-            std::fs::write(out.join(name), text)?;
-        }
-    } else {
-        let stale: Vec<_> = files
-            .iter()
-            .filter(|(name, text)| {
-                std::fs::read_to_string(out.join(name)).ok().as_ref() != Some(text)
-            })
-            .map(|(name, _)| out.join(name).display().to_string())
-            .collect();
-        if !stale.is_empty() {
-            return Err(format!(
-                "generated architecture files are stale: {}; run `cargo run -p xtask -- graph`",
-                stale.join(", ")
-            )
-            .into());
-        }
-    }
-    println!("crate and module boundaries passed");
-    plugins::check(&root())?;
     Ok(())
 }
 async fn measure() -> std::result::Result<(), Box<dyn std::error::Error>> {

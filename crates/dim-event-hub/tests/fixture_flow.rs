@@ -4,7 +4,7 @@
 //! source's row lifetime, an EventHub reload, a producer that applied first,
 //! the subscribe/unsubscribe race, and a host without `sessionFiles` (design
 //! Appendix D items 3–5, 7–8, 12).
-mod support;
+use crate::support;
 
 use dim_agent_types::InputMode;
 use dim_event_hub::{DeclareRequest, PublishRequest, ToTarget, TypeDeclaration};
