@@ -114,7 +114,11 @@ background exec transfers ownership to BackgroundExec, which commits ends and
 wakes. Per-call lookups obtain FileReads/BackgroundExec on the caller's branch.
 Generation cancellation rejects new calls and stops accepted calls; cleanup
 waits for tracked calls, including handoff. File mutations stage complete bytes
-and retain coordinator admission through I/O/publication. Foreground commands
+and retain coordinator admission through I/O/publication. A new target's staged
+sibling is created with mode `0o666`, so the process umask decides the installed
+file's mode as it does for any new file; a replaced target is staged `0o600` and
+takes the original's owner, group and mode before installation. Windows installs
+a directory entry that inherits the parent's permissions. Foreground commands
 release their process trees before returning; collaboration members do not
 background commands. Output files are not deleted simply by plugin unload.
 A result that carries `outputPath` registers that path with `sessionFiles` before
@@ -445,6 +449,13 @@ drives `edit` over its replacement list:
 `edit_reads_a_recorded_single_pair_and_refuses_two_shapes_at_once` and
 `the_replacement_list_is_bounded_by_one_total`. [local_product.rs](../../../../tests/integration/tests/local_product.rs)
 asserts the declaration the model reads.
+
+[workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
+also covers the mode of the file a mutation installs:
+`a_new_file_takes_the_umask_default_permissions` compares a new file against
+one the test creates directly, and
+`replacement_preserves_permissions_and_open_original` replaces a `0600` and a
+`0644` file and keeps each mode and the open original's bytes.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of
