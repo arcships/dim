@@ -1974,7 +1974,7 @@ async fn the_mcp_client_declares_the_build_the_process_reports() {
         json!(dim_agent_capabilities::build::current()),
         "the MCP client declares the label its own process reports"
     );
-    if !dim_agent_capabilities::build::RELEASE {
+    if !dim_agent_capabilities::build::release() {
         assert_ne!(
             received[0]["version"],
             json!(env!("CARGO_PKG_VERSION")),

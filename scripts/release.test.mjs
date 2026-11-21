@@ -122,12 +122,25 @@ test('the release workflow writes a build stamp only when generation succeeds',{
 });
 
 test('workflow actions use immutable commits',()=>{
+  const files=[];
   const workflows=path.join(root,'.github/workflows');
   for (const file of readdirSync(workflows).filter(file=>/\.ya?ml(?:\.disabled)?$/.test(file))) {
-    const source=readFileSync(path.join(workflows,file),'utf8');
+    files.push({label:file,fullPath:path.join(workflows,file)});
+  }
+  const actions=path.join(root,'.github/actions');
+  if (existsSync(actions)) {
+    for (const entry of readdirSync(actions,{recursive:true,withFileTypes:true})) {
+      if (entry.isFile() && /^action\.ya?ml$/.test(entry.name)) {
+        const fullPath=path.join(entry.parentPath,entry.name);
+        files.push({label:path.relative(path.join(root,'.github'),fullPath),fullPath});
+      }
+    }
+  }
+  for (const {label,fullPath} of files) {
+    const source=readFileSync(fullPath,'utf8');
     for (const [,action] of source.matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)) {
       if (action.startsWith('./')) continue;
-      assert.match(action,/^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/,`${file}: ${action} must use a full commit SHA`);
+      assert.match(action,/^[\w.-]+\/[\w./-]+@[a-f0-9]{40}$/,`${label}: ${action} must use a full commit SHA`);
     }
   }
 });

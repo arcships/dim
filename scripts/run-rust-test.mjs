@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {spawn,spawnSync} from 'node:child_process';
 import {once} from 'node:events';
 import {readFileSync} from 'node:fs';
+import {availableParallelism} from 'node:os';
 import {dirname} from 'node:path';
 
 const [artifacts,target,...args]=process.argv.slice(2);
@@ -9,11 +10,27 @@ assert(artifacts&&target,'Usage: node scripts/run-rust-test.mjs ARTIFACTS TARGET
 const workspace=target==='--workspace';
 const timeout=Number(process.env.DIM_TEST_TIMEOUT_MS??600_000);
 assert(Number.isSafeInteger(timeout)&&timeout>0,'DIM_TEST_TIMEOUT_MS must be a positive integer');
+const defaultJobs=Math.max(3,Math.min(8,Math.floor(availableParallelism()/3)));
+const jobs=workspace?Number(process.env.DIM_TEST_JOBS??defaultJobs):1;
+assert(Number.isSafeInteger(jobs)&&jobs>0,'DIM_TEST_JOBS must be a positive integer');
 const matches=readFileSync(artifacts,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line))
   .filter(record=>record.reason==='compiler-artifact'&&record.profile.test&&record.executable&&(workspace||record.target.name===target));
 if(workspace){
   assert(matches.length,'Expected compiled workspace test targets');
-  const longTargets=new Set(['transport_flow','cli_flow','cli_tui_flow','cli_session_flow','cli_daemon_flow']);
+  const longTargets=new Set([
+    'cli_flow',
+    'cli_tui_flow',
+    'cli_daemon_flow',
+    'cli_session_flow',
+    'transport_flow',
+    'app_server_flow',
+    'storage_flow',
+    'xtask',
+    'model_catalog_flow',
+    'modality_flow',
+    'capabilities_flow',
+    'integration_flow',
+  ]);
   matches.sort((a,b)=>Number(longTargets.has(b.target.name))-Number(longTargets.has(a.target.name)));
 }else{
   assert.equal(matches.length,1,`Expected one compiled test target named ${target}`);
@@ -51,7 +68,7 @@ for(const [signal,code] of [['SIGINT',130],['SIGTERM',143]]){
     for(const child of active) terminate(child);
   });
 }
-await Promise.all(Array.from({length:workspace?3:1},async()=>{
+await Promise.all(Array.from({length:Math.min(jobs,matches.length)},async()=>{
   while(matches.length&&!stopping){
     const record=matches.shift();
     const started=performance.now();

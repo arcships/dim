@@ -379,12 +379,7 @@ fn project_hooks_start_disabled_and_the_user_enables_them() {
     let binary = std::env::var("DIM_TEST_APP_SERVER").unwrap();
     let home = Home::new();
     let _daemon = OwnedDaemon(home.0.join("rust/daemon.sock"));
-    let config = home.0.join("model.json");
-    fs::write(
-        &config,
-        include_str!("../../../dim-agent-aimux/examples/offline.json"),
-    )
-    .unwrap();
+    let (config, model) = rejecting_model_config(&home, 2);
     let project = home.0.join("work");
     fs::create_dir_all(project.join(".dimcode")).unwrap();
     fs::write(
@@ -493,10 +488,10 @@ fn project_hooks_start_disabled_and_the_user_enables_them() {
         "{listed}"
     );
     // The next hook point runs the document the CLI wrote. SessionStart
-    // fires before the model is asked, so the offline configuration's dead
-    // endpoint does not keep it from running; that configuration never
-    // finishes a turn, so `Stop` is not reachable here. A turn's own failure
-    // is expected and not this test's subject.
+    // fires before the model is asked, so the rejecting fixture endpoint
+    // does not keep it from running; that endpoint fails the turn
+    // immediately without retrying, so `Stop` is not reachable here. A
+    // turn's own failure is expected and not this test's subject.
     let marker = project.join("user-ran.txt");
     let _ = run(&["exec", "-p", "go"]);
     assert_eq!(
@@ -522,6 +517,7 @@ fn project_hooks_start_disabled_and_the_user_enables_them() {
         "user-two",
         "the replacement did not reach the next hook point"
     );
+    model.join().unwrap();
     assert!(run(&["daemon", "stop"]).status.success());
 }
 

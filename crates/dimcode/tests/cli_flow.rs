@@ -774,6 +774,77 @@ fn configured_api_key_model_uses_production_tools_and_restores_the_same_session(
     model.join().unwrap();
 }
 
+/// Loopback model endpoint that answers each request with HTTP 400 so
+/// `exec` fails immediately instead of sleeping through transport retries.
+fn rejecting_model_config(home: &Home, requests: usize) -> (PathBuf, thread::JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = thread::spawn(move || {
+        let body = r#"{"error":{"message":"stub offline model"}}"#;
+        let response = format!(
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        for index in 0..requests {
+            let deadline = Instant::now() + PATIENCE;
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "Rejecting model request {index} was not made"
+                        );
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(PATIENCE)).unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    length = value.trim().parse::<usize>().unwrap();
+                }
+            }
+            if length > 0 {
+                let mut discard = vec![0; length];
+                let _ = reader.read_exact(&mut discard);
+            }
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    let config = home.0.join("model.json");
+    fs::write(
+        &config,
+        json!({
+            "defaultModel": { "providerId": "local", "modelId": "diagram-model" },
+            "providers": [{
+                "id": "local",
+                "kind": "openai-compatible",
+                "baseUrl": format!("http://{address}/v1"),
+                "models": [{
+                    "id": "diagram-model",
+                    "contextWindow": 128000,
+                    "maxOutputTokens": 4096,
+                    "config": { "maxTokens": 4096 }
+                }]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    (config, server)
+}
+
 /// `dimcode export` (Timeline export design §7, §13 item 6): the sibling
 /// App Server's read-only export, live and after stop, without a daemon.
 #[test]
@@ -793,12 +864,7 @@ fn export_writes_the_timeline_without_starting_a_daemon() {
             .output()
             .unwrap()
     };
-    let config = home.0.join("model.json");
-    fs::write(
-        &config,
-        include_str!("../../dim-agent-aimux/examples/offline.json"),
-    )
-    .unwrap();
+    let (config, model) = rejecting_model_config(&home, 1);
     let exec = run(&[
         "--model-config",
         config.to_str().unwrap(),
@@ -806,6 +872,7 @@ fn export_writes_the_timeline_without_starting_a_daemon() {
         "-p",
         "hello",
     ]);
+    model.join().unwrap();
     let stderr = String::from_utf8(exec.stderr).unwrap();
     let session = stderr
         .lines()

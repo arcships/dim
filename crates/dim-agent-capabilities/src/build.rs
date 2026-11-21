@@ -8,16 +8,6 @@ use std::sync::OnceLock;
 /// The workspace version; the release flow sets it for the builds it produces.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Whether the release flow produced this build, which it marks with
-/// `DIM_RELEASE_BUILD`. CI exports an unset variable as empty, so an empty
-/// mark is no mark.
-pub const RELEASE: bool = stamped(option_env!("DIM_RELEASE_BUILD"));
-
-/// Whether `value` marks the build: an empty value is no mark.
-const fn stamped(value: Option<&'static str>) -> bool {
-    matches!(value, Some(value) if !value.is_empty())
-}
-
 /// The marker of a build the release flow did not produce.
 const SOURCE: &str = "-source";
 
@@ -29,15 +19,20 @@ static COMMIT: OnceLock<Option<&'static str>> = OnceLock::new();
 /// than the source; `None` when the build left none.
 static BUILD_ID: OnceLock<Option<String>> = OnceLock::new();
 
-/// Hands this build the commit and the artifact stamp the final binary crate
-/// read at build time. The binary calls this once before it serves either
-/// role, so every label in the process — the client's, the daemon's reports
-/// and its MCP identity — names the commit it runs. Nothing in this crate reads
-/// git or a build environment, so a new commit never recompiles it. The first
-/// call wins.
-pub fn install(commit: Option<&'static str>, build_id: Option<&'static str>) {
+/// Whether the release flow produced this build, installed by the final binary
+/// crate.
+static RELEASE: OnceLock<bool> = OnceLock::new();
+
+/// Hands this build the commit, artifact stamp and release mark the final
+/// binary crate read at build time. The binary calls this once before it serves
+/// either role, so every label in the process — the client's, the daemon's
+/// reports and its MCP identity — names one build. Nothing in this crate reads
+/// git or a build environment, so a new commit or release flag never recompiles
+/// it. The first call wins.
+pub fn install(commit: Option<&'static str>, build_id: Option<&'static str>, release: bool) {
     let _ = COMMIT.set(commit);
     let _ = BUILD_ID.set(stamp(build_id));
+    let _ = RELEASE.set(release_flag(release));
 }
 
 /// The stamp this build carries. A debug build takes `DIM_TEST_BUILD_ID`
@@ -52,6 +47,27 @@ fn stamp(build_id: Option<&'static str>) -> Option<String> {
             .filter(|value| !value.is_empty());
     }
     build_id.map(str::to_owned)
+}
+
+/// Whether this build behaves as a released build. A debug build takes
+/// `DIM_TEST_RELEASE_BUILD` instead, so a flow can exercise release-gated
+/// behavior without recompiling with `DIM_RELEASE_BUILD=1`; an empty value or
+/// `"0"` means a source build. A release build ignores the variable.
+fn release_flag(release: bool) -> bool {
+    #[cfg(debug_assertions)]
+    if let Some(value) = std::env::var_os("DIM_TEST_RELEASE_BUILD") {
+        return value
+            .to_str()
+            .is_some_and(|value| !value.is_empty() && value != "0");
+    }
+    release
+}
+
+/// Whether this process behaves as a released build: the compiled release mark
+/// installed by the binary crate, or in debug builds the `DIM_TEST_RELEASE_BUILD`
+/// override read during [`install`]. A release build ignores the override.
+pub fn release() -> bool {
+    RELEASE.get().copied().unwrap_or(false)
 }
 
 /// The artifact stamp this build reported, or `None` when its build left
@@ -72,7 +88,7 @@ pub fn label(version: &str, release: bool, commit: Option<&str>) -> String {
 
 /// What this build reports.
 pub fn current() -> String {
-    label(VERSION, RELEASE, COMMIT.get().copied().flatten())
+    label(VERSION, release(), COMMIT.get().copied().flatten())
 }
 
 #[cfg(test)]
@@ -96,12 +112,5 @@ mod tests {
             "0.1.0-alpha.8-source+02ebd4a1"
         );
         assert_eq!(label("0.1.0-alpha.8", false, None), "0.1.0-alpha.8-source");
-    }
-
-    #[test]
-    fn an_empty_release_mark_is_no_mark() {
-        assert!(stamped(Some("1")));
-        assert!(!stamped(Some("")));
-        assert!(!stamped(None));
     }
 }

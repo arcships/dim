@@ -11,6 +11,7 @@ use dim_agent_capabilities::{
         ToolExecutionContext, ToolHost,
     },
     timeline_tree::{BranchToolConfig, TreeCommands},
+    tool_registry::ToolRegistry,
     workspace_tools::{file_reads::FileReads, files::FileTools},
 };
 use dim_agent_runtime::testing::MinimalHost;
@@ -156,6 +157,8 @@ struct Probe {
     child_builds: AtomicUsize,
     child_cleanups: Arc<AtomicUsize>,
     commands: Mutex<Option<Arc<TreeCommands>>>,
+    /// The Session's tool registry, so a test can call the `branch` tool itself.
+    tool_registry: Mutex<Option<Arc<ToolRegistry>>>,
     /// main's Timeline as its capabilities receive it, for direct writes.
     main_timeline: Mutex<Option<Arc<Timeline>>>,
     /// A line's own Timeline: the binding its file tools keep reads in.
@@ -194,6 +197,7 @@ struct ProbePlugin {
     dispatcher: Key<Dispatcher>,
     identity: Key<TimelineIdentity>,
     commands: Key<TreeCommands>,
+    registry: Key<ToolRegistry>,
 }
 impl ProbePlugin {
     fn new(names: &Names<'_>, probe: Arc<Probe>) -> rutis::Result<Self> {
@@ -203,6 +207,7 @@ impl ProbePlugin {
             dispatcher: names.key()?,
             identity: names.key()?,
             commands: names.key()?,
+            registry: names.key()?,
         })
     }
 }
@@ -216,6 +221,7 @@ impl DynPlugin for ProbePlugin {
             self.dispatcher.erase(),
             self.identity.erase(),
             self.commands.erase(),
+            self.registry.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -224,8 +230,10 @@ impl DynPlugin for ProbePlugin {
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let identity = ctx.require_at(&self.identity)?;
             let commands = ctx.require_at(&self.commands)?;
+            let registry = ctx.require_at(&self.registry)?;
             let probe = self.probe.clone();
             *probe.commands.lock().unwrap() = Some(commands);
+            *probe.tool_registry.lock().unwrap() = Some(registry);
             if identity.branch_id == "main" {
                 *probe.main_timeline.lock().unwrap() = Some(timeline.clone());
                 if probe.read_while_opening.load(Ordering::SeqCst) {
@@ -579,6 +587,20 @@ fn builder_with_store(probe: &Arc<Probe>, store: Arc<dyn TimelineStore>) -> Agen
     builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     mock_hosts(&mut builder);
     defaults::install(&mut builder);
+    probe_features(&mut builder, probe);
+    builder
+}
+/// [`builder_with_store`](builder_with_store) with the branch texts at a
+/// candidate's factory configuration.
+fn builder_with_store_config(
+    probe: &Arc<Probe>,
+    store: Arc<dyn TimelineStore>,
+    config: BranchToolConfig,
+) -> AgentBuilder {
+    let mut builder = AgentBuilder::new(AgentConfig::default());
+    builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
+    mock_hosts(&mut builder);
+    defaults::install_with_branch_config(&mut builder, config);
     probe_features(&mut builder, probe);
     builder
 }
@@ -3708,8 +3730,9 @@ async fn a_refused_branch_call_writes_nothing() {
         )
         .await,
         (
-            "branch_not_main".into(),
-            "Only main opens lines. Tell main if more parallel work is needed.".into()
+            "branch_not_opener".into(),
+            "Only the root and the default branch open lines. Tell one of them if more parallel work is needed."
+                .into()
         )
     );
     assert!(
@@ -3840,14 +3863,14 @@ async fn a_refused_branch_call_writes_nothing() {
         call(&session, "main", r#"{"action":"end","content":"done"}"#).await,
         (
             "branch_cannot_end".into(),
-            "Only a line opened with create can end itself.".into()
+            "Only a line opened with create can end itself, and not while it or a line below it is the default branch.".into()
         )
     );
     assert_eq!(
         call(&session, &host, r#"{"action":"end","content":"done"}"#).await,
         (
             "branch_cannot_end".into(),
-            "Only a line opened with create can end itself.".into()
+            "Only a line opened with create can end itself, and not while it or a line below it is the default branch.".into()
         )
     );
     assert!(
@@ -4309,14 +4332,30 @@ async fn session_close_cancels_an_active_build_and_waits_for_rollback() {
 }
 
 async fn open_line(session: &Session, purpose: &str) -> String {
-    let before: std::collections::BTreeSet<String> = session
+    open_line_from(session, "main", purpose).await
+}
+
+/// Opens a tool line from `opener`, which must be the root or the current
+/// default branch, and waits until it is idle.
+async fn open_line_from(session: &Session, opener: &str, purpose: &str) -> String {
+    let before = line_ids(session);
+    let call = serde_json::json!({"action": "create", "prompt": purpose}).to_string();
+    let result = tool_call(session, opener, &call).await;
+    assert_eq!(result.is_error, None, "{:?}", result.content);
+    wait_new_line(session, &before).await
+}
+
+/// The open lines' ids at this moment.
+fn line_ids(session: &Session) -> std::collections::BTreeSet<String> {
+    session
         .branches()
         .iter()
         .map(|info| info.id.clone())
-        .collect();
-    let call = serde_json::json!({"action": "create", "prompt": purpose}).to_string();
-    let result = tool_call(session, "main", &call).await;
-    assert_eq!(result.is_error, None, "{:?}", result.content);
+        .collect()
+}
+
+/// Waits until a line outside `before` is listed and idle, and answers its id.
+async fn wait_new_line(session: &Session, before: &std::collections::BTreeSet<String>) -> String {
     let child = soon(async {
         loop {
             let opened = session
@@ -4508,7 +4547,7 @@ async fn a_configured_description_reaches_the_request_declaration() {
 /// its guide entry is registered there, at the Session, and a line carries it
 /// even where no branch part is loaded. `<dim-branch-lines>` stays with
 /// BranchLine, which writes the roster.
-const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
+const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; a block carrying `default` is the note a move writes. Both are state about the line, not requests."#;
 const ROSTER_ENTRY: &str = r#"<dim-branch-lines branch="main">: the lines you opened, under the key `branch:roster` and apart from your own identity under `branch:line`: the runtime lists the tool lines you opened that are still open, each with the first line of its purpose. A later block of this name replaces the earlier one; it is state about the lines, not a request."#;
 /// #987: the parent block can arrive only on a line with a parent, so main's
 /// guide carries no entry for it.
@@ -4765,7 +4804,7 @@ async fn the_branch_tool_declares_its_actions_and_modes() {
         serde_json::json!(200)
     );
     for sentence in [
-        "- create (main only): open a line to work on prompt in parallel.",
+        "- create (the root and the current default branch only): open a line to work on prompt in parallel.",
         "- message: send content to a line you opened, or to the line that opened you.",
         "Mode \"append\" (default) reaches the receiver at its next step without interrupting it and does not wake an idle line.",
         "- read: show a page of the activity of the line you were cut from, or of a line you opened, also after it ended.",
@@ -4774,7 +4813,7 @@ async fn the_branch_tool_declares_its_actions_and_modes() {
         "- end: on a line opened with create, end your own line.",
         "Returns the line's id.",
         "It is your last action.",
-        "A line reads the line it was cut from; main reads the lines it opened. Messages pass only between main and the lines it opened.",
+        "A line messages and reads the line it was cut from and the lines it opened. The end action ends the calling line only.",
     ] {
         assert!(
             branch.description.contains(sentence),
@@ -5949,7 +5988,7 @@ async fn a_nested_line_is_told_its_own_parent_at_open() {
             .submit(text, InputMode::Queue, &inner)
             .await
             .unwrap();
-        soon(session.idle(&inner)).await.unwrap();
+        patient(session.idle(&inner)).await.unwrap();
     }
     let message = baseline_message(&local_events(&session, &inner).await, "branch:parent")
         .expect("the line compacted and its parent block replayed");
@@ -6419,7 +6458,7 @@ async fn the_parent_block_replays_after_a_compaction() {
             .submit(text, InputMode::Queue, &child)
             .await
             .unwrap();
-        soon(session.idle(&child)).await.unwrap();
+        patient(session.idle(&child)).await.unwrap();
     }
     let message = baseline_message(&local_events(&session, &child).await, "branch:parent")
         .expect("the line compacted and its parent block replayed");
@@ -7595,7 +7634,7 @@ async fn wait_for_roster(session: &Session, line: &str) {
 async fn compact_line(session: &Session, line: &str) {
     for text in ["x".repeat(1500), "y".repeat(1500)] {
         session.submit(text, InputMode::Queue, line).await.unwrap();
-        soon(session.idle(line)).await.unwrap();
+        patient(session.idle(line)).await.unwrap();
     }
 }
 
@@ -9525,7 +9564,7 @@ async fn a_switched_line_keeps_its_identity_after_a_compaction() {
     .unwrap();
     for text in ["x".repeat(1500), "y".repeat(1500)] {
         session.submit(text, InputMode::Queue, &line).await.unwrap();
-        soon(session.idle(&line)).await.unwrap();
+        patient(session.idle(&line)).await.unwrap();
     }
     let note = line_block(&chain_events(&session, &line, ..).await.unwrap())
         .expect("the note is the latest block of the key");
@@ -9606,7 +9645,7 @@ async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
     );
     for text in ["x".repeat(1500), "y".repeat(1500)] {
         session.submit(text, InputMode::Queue, &line).await.unwrap();
-        soon(session.idle(&line)).await.unwrap();
+        patient(session.idle(&line)).await.unwrap();
     }
     let note = line_block(&chain_events(&session, &line, ..).await.unwrap())
         .expect("the note is still the latest block of the key");
@@ -10456,6 +10495,10 @@ async fn a_former_default_branch_keeps_no_stale_instruction_and_ends_after_a_mov
         line_block(events).is_some_and(|(text, _)| text.contains(r#"default="false""#))
     })
     .await;
+    until_events(&session, &nested, |events| {
+        line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+    })
+    .await;
     assert_eq!(
         default_notes(&session, &["main", &a, &nested]).await,
         [("main".to_owned(), 0), (a.clone(), 2), (nested.clone(), 1)],
@@ -11027,6 +11070,202 @@ async fn a_clean_restart_writes_no_status_note() {
         "a clean restart adds no status note"
     );
     soon(again.close()).await.unwrap();
+}
+
+/// The `<dim-branch-line>` note origin/main (fc46080) wrote when a tool line
+/// became the default branch, rendered by its own `status_note` and
+/// `tool_line_body`: the birth bullet forbids opening lines, and the change
+/// names no right to open one. `{line}`, `{parent}` and `{prompt}` stand where
+/// that code substituted them.
+const OLD_TOOL_NOTE: &str = r#"<dim-branch-line branch="{line}" parent="{parent}" source="tool" default="true">
+You are line {line} of this session. Line {parent} opened you at this point of its history to work in parallel with it. You are the same agent as {parent}: everything above is your own history, and you continue from here on your own line. {parent} keeps working on its line; you can read its work after this point, and it can read yours. Messages above that were addressed to {parent}, such as its list of open lines, are {parent}'s, not yours.
+
+Your purpose, as {parent} wrote it:
+{prompt}
+
+How you work with {parent}:
+- Work on this purpose only. You cannot open lines; if more parallel work is needed, tell {parent}.
+- Read {parent} with the branch tool (action read, branch "{parent}") when what {parent} did or decided since your cut changes your work; the parent block reports when {parent} has moved. Message {parent} only for what it must act on: a decision that changes its work, a blocker only the user can settle, a conflict with another line, or a change to your purpose. Use mode "steer" for what {parent} must act on now, "append" for what {parent} should see at its next step. Do not send {parent} a progress report it can read, and do not page through {parent}'s whole stream: read the page that answers your question, then act.
+- You share the workspace with {parent} and its other lines. Change only the files {parent} gave you; before changing any other file, tell {parent} which. If edit or write fails because the file was modified after it was last read, another line may have changed the file: read it again and tell {parent} before you continue.
+- The user can talk to you directly. Answer the user, and ask with ask_user when only the user can decide.
+- When your purpose is done, or cannot be done, call the branch tool with action "end" and content saying what you found, did, changed and left undone. If you already told {parent} that in a message, your end content carries only what is new. Read {parent} once more before you end if the parent block says {parent} has moved, so your last word still holds. That is your last action; {parent} receives it.
+
+This line is now the session's default branch, switched from line {parent}. While this block is your latest one: answer the user here; you send no automatic idle notice to {parent}; you cannot call end on yourself. Line {parent} stays open and keeps the lines it opened.
+</dim-branch-line>"#;
+
+/// The same for a line the user opened.
+const OLD_USER_NOTE: &str = r#"<dim-branch-line branch="{line}" parent="{parent}" source="user" default="true">
+You are line {line} of this session, opened by the user from line {parent} at this point of its history. You are the same agent as {parent}: everything above is your own history, and you continue from here on your own line, in parallel with {parent}. You can read {parent}'s work after this point. Unless the user makes this line the default branch, you cannot call end on yourself. Messages above that were addressed to {parent} are {parent}'s, not yours. The message after this one is from the user for this line.
+
+The user has now made this line the session's default branch, switched from line {parent}. While this block is your latest one: answer the user here; you cannot call end on yourself; the user ends this line. Line {parent} stays open and keeps the lines it opened.
+</dim-branch-line>"#;
+
+/// §5: a Session that moved its default branch under the older rule keeps that
+/// note on the line, and the tool admits its `create` while the note still
+/// forbids it. The load replaces it once, before the line's first request, and a
+/// second load writes nothing.
+async fn a_stale_note_is_replaced_once(old: &str, user: bool) {
+    let purpose = "the purpose of B";
+    let first = Arc::new(MemoryTimelineStore::default());
+    let agent = MinimalHost::start(&builder_with_store(
+        &Arc::new(Probe::default()),
+        first.clone(),
+    ))
+    .await
+    .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let b = if user {
+        let cut = session.sequence("main").unwrap();
+        soon(session.branch(
+            "main".into(),
+            cut,
+            BranchOptions {
+                prompt: purpose.into(),
+                source: BranchSource::User {
+                    operation_id: "client".into(),
+                },
+            },
+        ))
+        .await
+        .unwrap()
+    } else {
+        open_line(&session, purpose).await
+    };
+    quiet(&session, &b).await;
+    switch(&session, &b).await;
+    owed_notes(&session, &b, 1).await;
+    let id = session.id().to_owned();
+    soon(session.close()).await.unwrap();
+    soon(agent.close()).await.unwrap();
+
+    // The store now holds the Session as the older code left it: B's latest
+    // note is the one that code wrote, byte for byte.
+    let old = old
+        .replace("{line}", &b)
+        .replace("{parent}", "main")
+        .replace("{prompt}", purpose);
+    let second = Arc::new(MemoryTimelineStore::default());
+    copy_session(&first, &second, &id, |branch, mut records| {
+        if branch == b {
+            for record in &mut records {
+                let event = Arc::make_mut(&mut record.event);
+                let EventKind::InputMessage(data) = &mut event.kind else {
+                    continue;
+                };
+                for block in &mut data.blocks {
+                    if let InputBlock::Raw { text, key, retire } = block
+                        && key.as_deref() == Some("branch:line")
+                        && !*retire
+                        && text.contains(" default=\"")
+                    {
+                        *text = old.clone();
+                    }
+                }
+            }
+        }
+        records
+    })
+    .await;
+
+    // The writer is held, so only the load can write the note it owes, and the
+    // line's first request still carries it.
+    let mut held = dim_agent_capabilities::timeline_tree::testing::hold_writers(&id);
+    let agent = MinimalHost::start(&builder_with_store(
+        &Arc::new(Probe::default()),
+        second.clone(),
+    ))
+    .await
+    .unwrap();
+    let session = soon(agent.restore_session(id.clone())).await.unwrap();
+    assert_eq!(session.default_branch().unwrap(), b, "the fact stands");
+    let stopped = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if held.arrived().await == b {
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        stopped.is_ok(),
+        "line {b}'s writer never stopped at the test seam"
+    );
+    soon(session.submit("next request".into(), InputMode::Queue, &b))
+        .await
+        .unwrap();
+    let events = until_events(&session, &b, |events| {
+        request_after_resume(events).is_some()
+    })
+    .await;
+    let (at, request) = request_after_resume(&events).expect("B's first request exists");
+    let before: Vec<_> = events
+        .iter()
+        .filter(|event| event.sequence < at)
+        .cloned()
+        .collect();
+    let notes = status_notes(&before);
+    assert_eq!(
+        notes.len(),
+        2,
+        "the load replaced the stale note exactly once: {notes:?}"
+    );
+    assert_eq!(
+        notes[0], old,
+        "the stored note is the one older rules wrote"
+    );
+    let note = &notes[1];
+    assert!(note.contains(r#"default="true""#), "{note}");
+    assert!(
+        note.contains("you can open lines with create"),
+        "the replacement states the rule the tool applies: {note}"
+    );
+    assert!(
+        note.contains(match user {
+            true => "opened by the user from line main",
+            false => "this block does not make it one: a status note would",
+        }),
+        "the replacement restates the current birth identity: {note}"
+    );
+    assert!(
+        request
+            .request
+            .messages
+            .iter()
+            .any(|message| said(message).contains(note)),
+        "the first request carries the note the load wrote"
+    );
+    held.release();
+    drop(held);
+    soon(session.close()).await.unwrap();
+    soon(agent.close()).await.unwrap();
+
+    let third = MinimalHost::start(&builder_with_store(&Arc::new(Probe::default()), second))
+        .await
+        .unwrap();
+    let session = soon(third.restore_session(id)).await.unwrap();
+    soon(session.idle(&b)).await.unwrap();
+    assert_eq!(
+        status_notes(&local_events(&session, &b).await).len(),
+        2,
+        "a second load finds the note it writes and adds none"
+    );
+    soon(third.close()).await.unwrap();
+}
+
+/// §5: the reviewer's case. A tool line was made the default branch under the
+/// older rule, so its stored note forbids the `create` the tool now admits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tool_lines_note_from_older_rules_is_replaced_once_at_load() {
+    a_stale_note_is_replaced_once(OLD_TOOL_NOTE, false).await;
+}
+
+/// §5: the same for a line the user opened and made the default branch under
+/// the older rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_lines_note_from_older_rules_is_replaced_once_at_load() {
+    a_stale_note_is_replaced_once(OLD_USER_NOTE, true).await;
 }
 
 /// A Session whose model compacts, over `store`, for a test that restarts it:
@@ -11871,4 +12110,1010 @@ async fn restore_default(store: &Arc<TestStore>, id: &str) -> String {
     soon(session.close()).await.unwrap();
     soon(restored.close()).await.unwrap();
     default
+}
+
+/// The branch tool's configuration with a Session cap, as the design's cap
+/// cases state it.
+fn capped(max_open_lines: usize) -> BranchToolConfig {
+    BranchToolConfig {
+        max_open_lines: Some(max_open_lines),
+        ..BranchToolConfig::default()
+    }
+}
+
+/// Moves the Session's conversation to `line` and answers once the move is
+/// durable; a participant's note may still be on its way.
+async fn switch(session: &Session, line: &str) {
+    soon(session.set_default_branch(
+        line,
+        BranchSource::User {
+            operation_id: "switch".into(),
+        },
+    ))
+    .await
+    .unwrap();
+}
+
+/// The head of `line` while it is idle: a committed boundary, so a turn that
+/// starts afterwards cannot leave the position inside an unfinished model
+/// output.
+async fn idle_cut(session: &Session, line: &str) -> u64 {
+    soon(session.idle(line)).await.unwrap();
+    session.sequence(line).unwrap()
+}
+
+const NOT_OPENER: &str = "Only the root and the default branch open lines. Tell one of them if more parallel work is needed.";
+const LIMIT_REACHED: &str = "This Session holds its limit of open lines. Continue on this line, or end one of its open lines first.";
+
+/// The branch tool's own `create`, called as a tool call so a test can hold the
+/// tree and stop the call at its admission, or let it answer there.
+async fn open_with_tool(
+    probe: &Probe,
+    opener: &str,
+    at: u64,
+    prompt: &str,
+) -> std::result::Result<ToolResult, HostError> {
+    let registry = probe
+        .tool_registry
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the Session registers its tools");
+    // A read takes in what is registered now, so the tool is in the snapshot.
+    registry.definitions();
+    let tool = registry.contributed("branch").expect("the branch tool");
+    tool.handler
+        .execute(
+            ToolCall {
+                id: "call".into(),
+                name: "branch".into(),
+                input: serde_json::json!({"action": "create", "prompt": prompt, "at": at})
+                    .as_object()
+                    .cloned()
+                    .unwrap_or_default(),
+            },
+            ToolExecutionContext {
+                turn_id: "turn".into(),
+                request_id: "request".into(),
+                branch_id: opener.into(),
+            },
+            CancellationToken::new(),
+        )
+        .await
+}
+
+/// The refusal a tool call answers, as the tool's structured error.
+fn tool_refusal(result: &ToolResult) -> (String, String) {
+    let structured = result.structured_content.clone().unwrap_or_default();
+    let field = |name: &str| {
+        structured
+            .get(name)
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    (field("error"), field("message"))
+}
+
+/// The `branch/create` facts a line holds.
+fn creates(events: &[Arc<AgentEvent>]) -> usize {
+    events
+        .iter()
+        .filter(|event| matches!(event.kind, EventKind::BranchCreate(_)))
+        .count()
+}
+
+/// §20.29: the root opens a line while another line is the default branch, so
+/// the new line starts from the root's history at the cut the root names,
+/// reports to the root, and the default branch hears nothing about it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_root_opens_a_line_while_another_line_is_default() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    // C inherits the root's history through a completed turn: the cut ends a
+    // committed batch, so no later turn can split it.
+    soon(session.submit("first turn".into(), InputMode::Queue, "main"))
+        .await
+        .unwrap();
+    let cut = idle_cut(&session, "main").await;
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    let note = line_block(
+        &until_events(&session, &b, |events| {
+            line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+        })
+        .await,
+    )
+    .expect("the move wrote its note");
+    assert!(
+        note.0.contains("you can open lines with create"),
+        "the default branch holds the right the root keeps: {}",
+        note.0
+    );
+    let before = line_ids(&session);
+    let result = tool_call(
+        &session,
+        "main",
+        &format!(r#"{{"action":"create","prompt":"c","at":{cut}}}"#),
+    )
+    .await;
+    assert_eq!(result.is_error, None, "{:?}", result.content);
+    let c = wait_new_line(&session, &before).await;
+    let info = session
+        .branches()
+        .into_iter()
+        .find(|info| info.id == c)
+        .expect("the root opened C");
+    assert_eq!(
+        info.parent.as_deref(),
+        Some("main"),
+        "C is cut from the root"
+    );
+    assert_eq!(
+        info.branch_point,
+        Some(cut),
+        "C starts where the root's own history stood"
+    );
+    let prefix = chain_events(&session, &c, ..=cut).await.unwrap();
+    assert_eq!(prefix[0].sequence, 1, "C inherits the root's history");
+    let own = prefix
+        .iter()
+        .rposition(|event| matches!(event.kind, EventKind::BranchStart(_)))
+        .expect("C's own branch/start follows the inherited prefix");
+    assert_eq!(
+        prefix[own - 1].sequence,
+        cut,
+        "C inherits the root's history through its cut and not past it"
+    );
+    let roster = until_events(&session, "main", |events| {
+        roster_block(events).is_some_and(|(text, retired)| !retired && text.contains(&c))
+    })
+    .await;
+    assert!(
+        roster_block(&roster)
+            .expect("the roster is live")
+            .0
+            .contains(&format!("- {c}: c")),
+        "the root lists C under its purpose: {roster:?}"
+    );
+    let ended = tool_call(
+        &session,
+        &c,
+        r#"{"action":"end","content":"c is finished"}"#,
+    )
+    .await;
+    assert_eq!(ended.is_error, None, "{:?}", ended.content);
+    until_events(&session, "main", |events| {
+        blocks_with(events, "<dim-branch-message")
+            .iter()
+            .any(|text| text.contains("final=\"true\"") && text.contains("c is finished"))
+    })
+    .await;
+    let about_c = |events: &[Arc<AgentEvent>]| {
+        events.iter().any(|event| {
+            matches!(&event.kind, EventKind::InputMessage(data)
+                if data.blocks.iter().any(|block| matches!(block,
+                    InputBlock::Raw { text, .. } if text.contains(&c) || text.contains("c is finished"))))
+        })
+    };
+    assert!(
+        !about_c(&local_events(&session, &b).await),
+        "the default branch hears nothing about the root's line, neither its open nor its end"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.23: the current default branch opens a line of its own, which reports to
+/// it and not to the root. The note a move writes on it states the rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_default_branch_opens_a_line() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    let note = line_block(
+        &until_events(&session, &b, |events| {
+            line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+        })
+        .await,
+    )
+    .expect("the move wrote its note");
+    assert!(
+        note.0.contains("you can open lines with create"),
+        "the note states the rule the tool applies: {}",
+        note.0
+    );
+    let c = open_line_from(&session, &b, "c").await;
+    let info = session
+        .branches()
+        .into_iter()
+        .find(|info| info.id == c)
+        .expect("B opened C");
+    assert_eq!(info.parent.as_deref(), Some(b.as_str()));
+    let roster = until_events(&session, &b, |events| {
+        roster_block(events).is_some_and(|(text, retired)| !retired && text.contains(&c))
+    })
+    .await;
+    assert!(
+        roster_block(&roster)
+            .expect("B holds its own roster")
+            .0
+            .contains(&format!("- {c}: c")),
+        "the opener lists the line it opened: {roster:?}"
+    );
+    assert!(
+        !blocks_with(&local_events(&session, "main").await, "<dim-branch-lines")
+            .iter()
+            .any(|text| text.contains(&c)),
+        "coordination follows the edge, not the Session"
+    );
+    let opening = opening_blocks(&local_events(&session, &c).await);
+    assert!(
+        opening[0].1.starts_with(&format!(
+            "<dim-branch-line branch=\"{c}\" parent=\"{b}\" source=\"tool\">"
+        )),
+        "{:?}",
+        opening[0]
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.32: every line but the two openers is refused `create` and writes
+/// nothing. A former default branch keeps its lines, messages and reads them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_former_default_branch_keeps_its_lines_and_opens_none() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    switch(&session, &a).await;
+    until_events(&session, &a, |events| {
+        line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+    })
+    .await;
+    let t = open_line_from(&session, &a, "t").await;
+    assert!(
+        roster_block(&local_events(&session, &a).await)
+            .is_some_and(|(text, retired)| !retired && text.contains(&t)),
+        "A coordinates T while it holds the role"
+    );
+    switch(&session, "main").await;
+    let note = line_block(
+        &until_events(&session, &a, |events| {
+            line_block(events).is_some_and(|(text, _)| text.contains(r#"default="false""#))
+        })
+        .await,
+    )
+    .expect("the move back wrote A's note");
+    assert!(
+        note.0.contains("it can no longer open lines with create"),
+        "the note says what A lost: {}",
+        note.0
+    );
+    let before = line_ids(&session);
+    let creates = |events: Vec<Arc<AgentEvent>>| {
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::BranchCreate(_)))
+            .count()
+    };
+    let written = creates(local_events(&session, &a).await);
+    assert_eq!(
+        call(&session, &a, r#"{"action":"create","prompt":"grandchild"}"#).await,
+        ("branch_not_opener".into(), NOT_OPENER.into())
+    );
+    assert_eq!(line_ids(&session), before, "the refusal created no line");
+    assert_eq!(
+        creates(local_events(&session, &a).await),
+        written,
+        "the refusal wrote nothing on A"
+    );
+    let sent = tool_call(
+        &session,
+        &a,
+        &format!(r#"{{"action":"message","to":"{t}","content":"keep going"}}"#),
+    )
+    .await;
+    assert_eq!(sent.is_error, None, "{:?}", sent.content);
+    let page = page_of(
+        &tool_call(
+            &session,
+            &a,
+            &format!(r#"{{"action":"read","branch":"{t}"}}"#),
+        )
+        .await,
+    );
+    assert!(
+        !page_sequences(&page).is_empty(),
+        "A still reads the line it opened: {page:?}"
+    );
+    assert!(
+        roster_block(&local_events(&session, &a).await)
+            .is_some_and(|(text, retired)| !retired && text.contains(&format!("- {t}: t"))),
+        "A keeps its roster after losing the role"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.32: a plugin line is never an opener, whatever it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_plugin_line_never_opens_a_line() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let host = open_host_line(&session, "main", "a plugin line").await;
+    let before = line_ids(&session);
+    assert_eq!(
+        call(&session, &host, r#"{"action":"create","prompt":"child"}"#).await,
+        ("branch_not_opener".into(), NOT_OPENER.into())
+    );
+    assert_eq!(line_ids(&session), before);
+    assert!(
+        !local_events(&session, &host)
+            .await
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::BranchCreate(_))),
+        "the refusal wrote nothing"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.3, §20.32: a tool line that is not the default branch is refused and
+/// writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_line_still_cannot_open_a_line() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    let before = line_ids(&session);
+    assert_eq!(
+        call(&session, &a, r#"{"action":"create","prompt":"child"}"#).await,
+        ("branch_not_opener".into(), NOT_OPENER.into())
+    );
+    assert_eq!(line_ids(&session), before);
+    assert!(
+        !local_events(&session, &a)
+            .await
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::BranchCreate(_))),
+        "the refusal wrote nothing"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.30: continuing on tool children does not fill the cap, because the
+/// default branch and its ancestors do not count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cap_does_not_count_the_default_branch_or_its_ancestors() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    let c = open_line_from(&session, &b, "c").await;
+    switch(&session, &c).await;
+    let d = open_line_from(&session, &c, "d").await;
+    switch(&session, &d).await;
+    let info = session
+        .branches()
+        .into_iter()
+        .find(|info| info.id == d)
+        .expect("the chain reached D");
+    assert_eq!(info.parent.as_deref(), Some(c.as_str()));
+    let e = open_line(&session, "e").await;
+    let f = open_line(&session, "f").await;
+    let open = line_ids(&session);
+    assert!(open.contains(&b) && open.contains(&e) && open.contains(&f));
+    assert_eq!(
+        call(&session, "main", r#"{"action":"create","prompt":"g"}"#).await,
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "B, C and D spent no slot: E and F filled the two"
+    );
+    assert_eq!(session.branches().len(), 6, "the refusal closed nothing");
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.31: a switch that leaves the Session over the cap refuses new opens and
+/// closes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_switch_over_the_cap_closes_nothing() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    switch(&session, &a).await;
+    let b = open_line_from(&session, &a, "b").await;
+    switch(&session, "main").await;
+    let before = line_ids(&session);
+    assert!(before.contains(&a) && before.contains(&b));
+    assert_eq!(
+        call(&session, "main", r#"{"action":"create","prompt":"c"}"#).await,
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "A and B count again, which is the cap"
+    );
+    assert_eq!(line_ids(&session), before, "the switch closed no line");
+    assert_eq!(
+        session.branches().len(),
+        3,
+        "every line open before the switch is open after it"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.34: a switch that frees a slot admits the next open, and nothing is
+/// closed to free it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_switch_that_frees_a_slot_admits_the_next_open() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    let x = open_line(&session, "x").await;
+    assert_eq!(
+        call(&session, "main", r#"{"action":"create","prompt":"y"}"#).await,
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "A and X fill the cap while the root holds the role"
+    );
+    switch(&session, &a).await;
+    let y = open_line(&session, "y").await;
+    let open = line_ids(&session);
+    assert!(
+        open.contains(&a) && open.contains(&x) && open.contains(&y),
+        "A stopped counting, so Y fitted; no line was closed"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.33 and §20.35: the cap is charged where the line is reserved, so the
+/// last slot admits one open only, and a reservation holds a slot before its
+/// line publishes and frees it when the creation fails.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_cap_is_refused_under_the_tree_lock() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    let b = open_line(&session, "b").await;
+    assert_eq!(
+        call(&session, "main", r#"{"action":"create","prompt":"c"}"#).await,
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "the last slot was spent by B"
+    );
+    assert!(
+        !session
+            .branches()
+            .iter()
+            .any(|info| info.parent.as_deref() == Some(b.as_str())),
+        "the refusal opened nothing"
+    );
+    let _ = (a, b);
+    soon(agent.close()).await.unwrap();
+
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    probe.delay_child.store(true, Ordering::SeqCst);
+    let builds = probe.child_builds.load(Ordering::SeqCst);
+    session
+        .submit(
+            r#"tool:branch {"action":"create","prompt":"held"}"#.into(),
+            InputMode::Queue,
+            "main",
+        )
+        .await
+        .unwrap();
+    soon(async {
+        while probe.child_builds.load(Ordering::SeqCst) == builds {
+            probe.child_entered.notified().await;
+        }
+    })
+    .await;
+    soon(session.stop("main", "user stop".into()))
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&session, &b, r#"{"action":"create","prompt":"later"}"#).await,
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "the held reservation is charged with A, so B finds no room"
+    );
+    assert!(
+        !local_events(&session, &b)
+            .await
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::BranchCreate(_))),
+        "the refusal wrote nothing on B"
+    );
+    probe.delay_child.store(false, Ordering::SeqCst);
+    probe.child_release.notify_one();
+    soon(async {
+        loop {
+            let failed = local_events(&session, "main")
+                .await
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::BranchCreateFailed(_)));
+            if failed {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let later = open_line_from(&session, &b, "later").await;
+    assert_eq!(
+        session
+            .branches()
+            .into_iter()
+            .find(|info| info.id == later)
+            .expect("the freed slot admitted the open")
+            .parent
+            .as_deref(),
+        Some(b.as_str())
+    );
+    let _ = a;
+    soon(agent.close()).await.unwrap();
+}
+
+/// §6.1, §14: an open decides in one order with every move and end. The root's
+/// `create` is called while `A → main` holds the tree lock, before its fact is
+/// published: the open waits, and then counts A as off the protected path, so
+/// the cap refuses it. The refusal writes nothing and adds no line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_after_a_move_waits_and_counts_the_moves_result() {
+    let store = Arc::new(TestStore::default());
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_store_config(&probe, store.clone(), capped(1)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let cut = idle_cut(&session, "main").await;
+    let a = open_line(&session, "a").await;
+    switch(&session, &a).await;
+    let tree = session.session_service::<TreeCommands>().unwrap();
+
+    store.hold_next_default("main");
+    let mut moved = Box::pin(tree.set_default_branch(
+        "main".into(),
+        BranchSource::User {
+            operation_id: "move".into(),
+        },
+    ));
+    tokio::select! {
+        result = &mut moved => panic!("the move answered before its fact committed: {result:?}"),
+        _ = store.wait_holding() => {}
+    }
+    let before = line_ids(&session);
+    let written = creates(&local_events(&session, "main").await);
+    let mut created = Box::pin(open_with_tool(&probe, "main", cut, "b"));
+    assert!(
+        futures_util::poll!(created.as_mut()).is_pending(),
+        "the open waits for the move's admission"
+    );
+    assert_eq!(
+        line_ids(&session),
+        before,
+        "no line is reserved while the move settles"
+    );
+    store.release();
+    assert_eq!(soon(&mut moved).await.unwrap(), "main");
+    let created = soon(&mut created)
+        .await
+        .expect("the open answers a refusal");
+    assert_eq!(
+        tool_refusal(&created),
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "A counts once the move is in force, which is the cap: {:?}",
+        created.content
+    );
+    assert_eq!(line_ids(&session), before, "the refusal opened no line");
+    assert_eq!(
+        creates(&local_events(&session, "main").await),
+        written,
+        "the refusal wrote nothing on the root"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §6.1, §14: the same order for the opener. `B` holds the role and opens a line
+/// while `B → main` holds the tree lock: once the move settles, `B` is no longer
+/// an opener, and the refusal writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_from_the_moving_line_is_refused_once_the_move_settles() {
+    let store = Arc::new(TestStore::default());
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_store(&probe, store.clone()))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    let tree = session.session_service::<TreeCommands>().unwrap();
+
+    store.hold_next_default("main");
+    let mut moved = Box::pin(tree.set_default_branch(
+        "main".into(),
+        BranchSource::User {
+            operation_id: "move".into(),
+        },
+    ));
+    tokio::select! {
+        result = &mut moved => panic!("the move answered before its fact committed: {result:?}"),
+        _ = store.wait_holding() => {}
+    }
+    let cut = session.sequence(&b).unwrap();
+    let before = line_ids(&session);
+    let mut created = Box::pin(open_with_tool(&probe, &b, cut, "c"));
+    assert!(
+        futures_util::poll!(created.as_mut()).is_pending(),
+        "the open waits for the move's admission"
+    );
+    assert_eq!(
+        line_ids(&session),
+        before,
+        "no line is reserved while the move settles"
+    );
+    store.release();
+    assert_eq!(soon(&mut moved).await.unwrap(), "main");
+    let created = soon(&mut created)
+        .await
+        .expect("the open answers a refusal");
+    assert_eq!(
+        tool_refusal(&created),
+        ("branch_not_opener".into(), NOT_OPENER.into()),
+        "B opens lines only while it holds the role: {:?}",
+        created.content
+    );
+    assert_eq!(line_ids(&session), before, "the refusal opened no line");
+    assert!(
+        !local_events(&session, &b)
+            .await
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::BranchCreate(_))),
+        "the refusal wrote nothing on B"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §6.1, §14: the guard covers the admission only. A child whose build is paused
+/// after its reservation does not keep a later move from settling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_paused_build_does_not_hold_the_tree_lock() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let cut = idle_cut(&session, "main").await;
+    let a = open_line(&session, "a").await;
+    probe.delay_child.store(true, Ordering::SeqCst);
+    let builds = probe.child_builds.load(Ordering::SeqCst);
+    let mut created = Box::pin(open_with_tool(&probe, "main", cut, "held"));
+    tokio::select! {
+        result = &mut created => panic!("the paused build answered: {result:?}"),
+        _ = async {
+            while probe.child_builds.load(Ordering::SeqCst) == builds {
+                probe.child_entered.notified().await;
+            }
+        } => {}
+    }
+    switch(&session, &a).await;
+    assert_eq!(
+        session.default_branch().unwrap(),
+        a,
+        "the move settled while the child's build was paused"
+    );
+    probe.delay_child.store(false, Ordering::SeqCst);
+    probe.child_release.notify_one();
+    let failed = patient(&mut created).await;
+    assert!(
+        failed.is_err(),
+        "the held child's build fails, as its apply does: {failed:?}"
+    );
+    until_events(&session, "main", |events| {
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::BranchCreateFailed(_)))
+    })
+    .await;
+    soon(agent.close()).await.unwrap();
+}
+
+/// §6.1, §20.31: an open admitted before a move stands. It counts after the
+/// move, which can leave the Session over the cap, and the next open is what
+/// refuses.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_admitted_before_a_move_still_stands() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(1)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let a = open_line(&session, "a").await;
+    switch(&session, &a).await;
+    let b = open_line(&session, "b").await;
+    switch(&session, "main").await;
+    let open = line_ids(&session);
+    assert!(
+        open.contains(&a) && open.contains(&b),
+        "the move closed neither line: {open:?}"
+    );
+    assert_eq!(
+        tool_refusal(&tool_call(&session, "main", r#"{"action":"create","prompt":"c"}"#).await),
+        ("branch_limit_reached".into(), LIMIT_REACHED.into()),
+        "A counts again with B, which is over the cap of one"
+    );
+    assert_eq!(line_ids(&session), open, "the refusal closed nothing");
+    soon(agent.close()).await.unwrap();
+}
+
+/// The opener's two keys stay apart: a line that is not the root keeps the
+/// identity its move wrote and the roster of the lines it opened.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_opener_that_is_not_the_root_keeps_its_identity_and_its_roster() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    let identity = line_block(
+        &until_events(&session, &b, |events| {
+            line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+        })
+        .await,
+    )
+    .expect("B's note");
+    let t = open_line_from(&session, &b, "t").await;
+    let events = until_events(&session, &b, |events| {
+        roster_block(events).is_some_and(|(text, retired)| !retired && text.contains(&t))
+    })
+    .await;
+    let roster = roster_block(&events).expect("the roster is under its own key");
+    assert!(!roster.1, "the roster is live: {roster:?}");
+    assert!(
+        roster
+            .0
+            .starts_with(&format!("<dim-branch-lines branch=\"{b}\">")),
+        "{}",
+        roster.0
+    );
+    assert!(
+        roster.0.contains(&format!("- {t}: t")),
+        "the roster lists the line B opened: {}",
+        roster.0
+    );
+    assert_eq!(
+        line_block(&events).expect("B's identity"),
+        identity,
+        "the roster write leaves the identity's latest block alone"
+    );
+    let opening = opening_blocks(&local_events(&session, &t).await);
+    assert!(
+        opening[0].1.starts_with(&format!(
+            "<dim-branch-line branch=\"{t}\" parent=\"{b}\" source=\"tool\">"
+        )),
+        "{:?}",
+        opening[0]
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// §20.3a, second half: a line the user opened that becomes the default branch
+/// opens a tool line, lists it, messages and reads it, and its notices reach it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_user_opened_default_branch_coordinates_the_line_it_opens() {
+    let probe = Arc::new(Probe::default());
+    let agent = setup(&probe).await;
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let cut = session.sequence("main").unwrap();
+    let u = soon(session.branch(
+        "main".into(),
+        cut,
+        BranchOptions {
+            prompt: "the user's line".into(),
+            source: BranchSource::User {
+                operation_id: "client".into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    quiet(&session, &u).await;
+    switch(&session, &u).await;
+    let t = open_line_from(&session, &u, "t").await;
+    let roster = until_events(&session, &u, |events| {
+        roster_block(events).is_some_and(|(text, retired)| !retired && text.contains(&t))
+    })
+    .await;
+    assert!(
+        roster_block(&roster)
+            .expect("U holds a roster")
+            .0
+            .contains(&format!("- {t}: t")),
+        "{roster:?}"
+    );
+    let sent = tool_call(
+        &session,
+        &u,
+        &format!(r#"{{"action":"message","to":"{t}","content":"go on"}}"#),
+    )
+    .await;
+    assert_eq!(sent.is_error, None, "{:?}", sent.content);
+    let page = page_of(
+        &tool_call(
+            &session,
+            &u,
+            &format!(r#"{{"action":"read","branch":"{t}"}}"#),
+        )
+        .await,
+    );
+    assert!(!page_sequences(&page).is_empty(), "{page:?}");
+    until_events(&session, &u, |events| {
+        blocks_with(events, "<dim-branch-idle")
+            .iter()
+            .any(|text| text.contains(&t))
+    })
+    .await;
+    soon(agent.close()).await.unwrap();
+}
+
+/// The status note and the roster are two keys: neither block retires the
+/// other, on the way into the role and on the way out (design §7.1).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_status_note_and_a_live_roster_do_not_retire_each_other() {
+    let probe = Arc::new(Probe::default());
+    let agent = MinimalHost::start(&builder_with_branch_config(&probe, capped(2)))
+        .await
+        .unwrap();
+    let session = soon(agent.create_session(SessionConfig::default()))
+        .await
+        .unwrap();
+    let b = open_line(&session, "b").await;
+    switch(&session, &b).await;
+    let t = open_line_from(&session, &b, "t").await;
+    until_events(&session, &b, |events| {
+        roster_block(events).is_some_and(|(text, retired)| !retired && text.contains(&t))
+    })
+    .await;
+    let note = line_block(
+        &until_events(&session, &b, |events| {
+            line_block(events).is_some_and(|(text, _)| text.contains(r#"default="true""#))
+        })
+        .await,
+    )
+    .expect("the move in wrote B's note");
+    assert!(
+        note.0.starts_with(&format!(
+            "<dim-branch-line branch=\"{b}\" parent=\"main\" source=\"tool\" default=\"true\">"
+        )),
+        "{}",
+        note.0
+    );
+    let roster = roster_block(&local_events(&session, &b).await).expect("B's roster");
+    assert!(
+        !roster.1 && roster.0.contains(&format!("- {t}: t")),
+        "the note left the roster alone: {roster:?}"
+    );
+    switch(&session, "main").await;
+    let note = line_block(
+        &until_events(&session, &b, |events| {
+            line_block(events).is_some_and(|(text, _)| text.contains(r#"default="false""#))
+        })
+        .await,
+    )
+    .expect("the move out wrote B's note");
+    assert!(
+        note.0.contains("it can no longer open lines with create"),
+        "{}",
+        note.0
+    );
+    let roster = roster_block(&local_events(&session, &b).await).expect("B's roster");
+    assert!(
+        !roster.1 && roster.0.contains(&format!("- {t}: t")),
+        "the second note left the roster alone: {roster:?}"
+    );
+    soon(agent.close()).await.unwrap();
+}
+
+/// E3: cold restore with two openers, the root and the default branch, each
+/// holding open tool lines. Run with `--release --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn measure_e3_cold_restore_with_two_openers() {
+    async fn tool_line(session: &Session, opener: &str, purpose: &str) -> String {
+        let cut = session.sequence(opener).unwrap();
+        let turn = format!("turn-{purpose}");
+        let id = soon(session.branch(
+            opener.into(),
+            cut,
+            BranchOptions {
+                prompt: purpose.into(),
+                source: BranchSource::Tool {
+                    turn_id: turn.clone(),
+                    request_id: format!("request-{purpose}"),
+                    call_id: format!("call-{purpose}"),
+                },
+            },
+        ))
+        .await
+        .unwrap();
+        soon(session.idle(&id)).await.unwrap();
+        id
+    }
+    let mut elapsed = Vec::new();
+    for _ in 0..5 {
+        let probe = Arc::new(Probe::default());
+        let agent = setup(&probe).await;
+        let session = soon(agent.create_session(SessionConfig::default()))
+            .await
+            .unwrap();
+        let opener = tool_line(&session, "main", "the default branch").await;
+        switch(&session, &opener).await;
+        for index in 0..2 {
+            tool_line(&session, &opener, &format!("default {index}")).await;
+        }
+        for index in 0..2 {
+            tool_line(&session, "main", &format!("root {index}")).await;
+        }
+        let id = session.id();
+        soon(session.close()).await.unwrap();
+        let started = std::time::Instant::now();
+        let restored = soon(agent.restore_session(id.into())).await.unwrap();
+        soon(restored.idle("main")).await.unwrap();
+        elapsed.push(started.elapsed());
+        soon(agent.close()).await.unwrap();
+    }
+    elapsed.sort();
+    println!(
+        "E3 cold restore with two openers and four open lines: median {:.1} ms",
+        elapsed[elapsed.len() / 2].as_secs_f64() * 1e3
+    );
 }

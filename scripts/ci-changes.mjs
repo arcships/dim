@@ -1,19 +1,20 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
+export const groups=['rust','windows','static','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 const documentation=/^docs\/|^[^/]+\.md$/;
 
 const rules=[
   [/^benchmarks\/baselines\/[^/]+\.json$/,[]],
-  [/^docs\/architecture\/rust-agent\/(plugins|generated)\//,['xtask']],
+  [/^docs\/architecture\/rust-agent\/generated\/catalog\.md$/,['xtask']],
+  [/^docs\/architecture\/rust-agent\/(plugins|generated)\//,['static']],
   [/^docs\/design\/appserver\/native-storage-format\.md$/,['rust']],
   // The ADR check runs in the changes job; docs alone need no build group.
   [documentation,[]],
   [/^deny\.toml$|^LICENSE$/,['dependencies']],
   [/^web\/src\/features\/chat\/quote-cases\.json$/,['web','rust','windows']],
-  [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','xtask']],
+  [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','static']],
   [/^web\//,['web']],
   [/^scripts\/run-rust-test\.mjs$/,groups],
   [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts','web']],
@@ -26,6 +27,7 @@ const rules=[
   [/^crates\/dimcode\//,['rust']],
   [/^crates\/dim-agent-capabilities\/src\/(background_exec|workspace_tools\/exec|host_platform)/,['rust','node','execution']],
   [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],
+  [/^xtask\/check\//,['static','xtask']],
   [/^xtask\//,['rust','node','eval']],
   [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
