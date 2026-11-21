@@ -628,8 +628,8 @@ const TEXTS: &[(&str, TextMember)] = &[
 pub async fn run() -> Result<()> {
     let options = Options::parse()?;
     let report = match (&options.rejudge, options.pool.is_empty()) {
-        (Some(source), _) => rejudge(&options, source, |_| {}).await?,
-        (None, false) => pooled(&options, |_| {}).await?,
+        (Some(source), _) => rejudge(&options, source, None).await?,
+        (None, false) => pooled(&options, None).await?,
         (None, true) => evaluate(&options).await?,
     };
     println!("{report}");
@@ -751,11 +751,7 @@ async fn evaluate(options: &Options) -> Result<String> {
 /// and is not judged again; every other run keeps its own outcome — `stop`,
 /// `turns`, `error` — and gains the judge's part afresh. The source is never
 /// written to.
-async fn rejudge(
-    options: &Options,
-    source: &Path,
-    observe: impl Fn(&mut AgentBuilder),
-) -> Result<String> {
+async fn rejudge(options: &Options, source: &Path, platform_home: Option<&Path>) -> Result<String> {
     let source = std::fs::canonicalize(source)
         .map_err(|error| format!("--rejudge {}: {error}", source.display()))?;
     let saved = read_saved_runs(&source)?;
@@ -776,7 +772,7 @@ async fn rejudge(
         plan.push((run, index));
     }
     let cancel = CancellationToken::new();
-    let server = served(options, observe).await?;
+    let server = served(options, platform_home).await?;
     let outcome = rejudge_with(options, &source, &server, &scenarios, &plan, &cancel).await;
     server.shutdown();
     server.join().await?;
@@ -793,7 +789,7 @@ async fn rejudge(
 /// source's `runs.jsonl` is read as it stands, in the order given; the
 /// sources are never written to, and nothing is re-judged. A pooled set
 /// keeps the sources' run numbers, which may repeat between them.
-async fn pooled(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Result<String> {
+async fn pooled(options: &Options, platform_home: Option<&Path>) -> Result<String> {
     let scenarios = read_scenarios(&options.scenarios)?;
     let mut records = Vec::new();
     let mut directories = Vec::new();
@@ -805,7 +801,7 @@ async fn pooled(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Resul
         records.extend(read);
     }
     let cancel = CancellationToken::new();
-    let server = served(options, observe).await?;
+    let server = served(options, platform_home).await?;
     let resolved = async {
         let model = selection(&server, &options.model, &options.out, &cancel).await?;
         let judge = selection(&server, &options.judge, &options.out, &cancel).await?;
@@ -826,7 +822,7 @@ async fn pooled(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Resul
 /// The profile a re-judge or a pool resolves the judge in: the model
 /// configuration under a fresh home beside the output. No Session is created
 /// and no model turn runs.
-async fn served(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Result<RunningServer> {
+async fn served(options: &Options, platform_home: Option<&Path>) -> Result<RunningServer> {
     let home = options.out.join("home");
     private_directory(&home)?;
     app_server::serve_home(
@@ -835,9 +831,10 @@ async fn served(options: &Options, observe: impl Fn(&mut AgentBuilder)) -> Resul
         options.out.join("command-output"),
         RunSettings {
             model_config: options.model_config.clone(),
+            platform_home: platform_home.map(Path::to_owned),
             ..Default::default()
         },
-        observe,
+        |_| {},
     )
     .await
 }
@@ -2408,6 +2405,7 @@ async fn child_outcome(params: &ChildParams, preflight: &Arc<Provider>) -> Child
         js_runtime: params.js_runtime.clone(),
         boundary: params.boundary.clone(),
         plugin_tools: false,
+        platform_home: None,
     };
     // The scenario's event producers run in the child, whose process
     // publishes what the run's Session subscribes to (EventHub design A.1).
@@ -2471,6 +2469,7 @@ fn native_probe_settings(
         js_runtime: None,
         boundary,
         plugin_tools: false,
+        platform_home: None,
     }
 }
 
@@ -6795,7 +6794,6 @@ mod tests {
         HostFuture, ModelConnection, ModelDriver, ModelStopReason, ResolveModelConnection,
         ResolvedModelConnection,
     };
-    use dim_agent_capabilities::host_platform::{ExecHost, resolve_shell};
     use std::sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -9491,7 +9489,7 @@ mod tests {
         /// The process facts a flow's runs see: the ones this process has,
         /// with `home` pointed at the fixture's own empty directory, so a run
         /// never reads the developer's `~/AGENTS.md`, Skills list or `<home>`.
-        platform: ExecHost,
+        platform_home: PathBuf,
     }
     impl Fixture {
         /// `scenario` is the scenario file's content and `workspace` the
@@ -9591,21 +9589,13 @@ mod tests {
             .unwrap();
             let platform_home = directory.join("platform-home");
             std::fs::create_dir_all(&platform_home).unwrap();
-            let env: Vec<_> = std::env::vars_os().collect();
-            let shell = resolve_shell(Ok(None), &env).await;
-            let mut platform = ExecHost::current(shell).unwrap().with_execution_settings(
-                dim_agent_capabilities::execution_settings::ExecutionSettingsHost::fixed(
-                    Default::default(),
-                ),
-            );
-            platform.home = platform_home;
             Self {
                 directory,
                 provider,
                 http,
                 models,
                 scenarios,
-                platform,
+                platform_home,
             }
         }
         /// [`evaluate`] over this fixture's runs, whose process facts point at
@@ -9621,19 +9611,14 @@ mod tests {
             rejudge(
                 options,
                 options.rejudge.as_deref().expect("a rejudge source"),
-                |builder| {
-                    builder.process_value(Arc::new(self.platform.clone()));
-                },
+                Some(&self.platform_home),
             )
             .await
         }
         /// [`pooled`] over this fixture's provider, with the same process
         /// facts as [`evaluate`](Self::evaluate).
         async fn pooled(&self, options: &Options) -> Result<String> {
-            pooled(options, |builder| {
-                builder.process_value(Arc::new(self.platform.clone()));
-            })
-            .await
+            pooled(options, Some(&self.platform_home)).await
         }
         /// The options of one run per arm over this fixture, with `out`.
         fn options(&self, out: PathBuf) -> Options {

@@ -31,7 +31,7 @@ pub struct HostInfo<'a> {
 }
 
 impl ExecHost {
-    pub(crate) async fn registered_output_page(
+    pub(crate) async fn retained_output_page(
         &self,
         path: &std::path::Path,
         cursor: u64,
@@ -46,10 +46,9 @@ impl ExecHost {
         };
         use std::io::SeekFrom;
         use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        if let Some((files, directory)) = &self.command_files {
-            if !path.starts_with(directory) {
-                return Err(OutputPageError::Unavailable);
-            }
+        if let Some((files, directory)) = &self.command_files
+            && path.starts_with(directory)
+        {
             let cancel = CancellationToken::new();
             let _guard = cancel.clone().drop_guard();
             let reader = files
@@ -468,7 +467,7 @@ impl HostDispatch for Dispatch {
                         ));
                     }
                     owner
-                        .registered_output_page(&path, cursor, limit)
+                        .retained_output_page(&path, cursor, limit)
                         .await
                         .map_err(|e| exec_error("output_unavailable", e.to_string()))?
                 };

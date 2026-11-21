@@ -433,7 +433,7 @@ impl BackgroundExec {
         };
         let mut page = self
             .platform
-            .registered_output_page(std::path::Path::new(&output_path), cursor, limit)
+            .retained_output_page(std::path::Path::new(&output_path), cursor, limit)
             .await?;
         if let Some(truncated) = ended
             .as_ref()
