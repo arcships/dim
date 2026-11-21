@@ -12,7 +12,7 @@ use crate::hooks_settings::HooksService;
 use crate::mcp::{McpError, McpServiceBinding};
 use crate::methods::ManagementMethods;
 use crate::settings::{Settings, SettingsError, SourceDeclaration};
-use crate::ui_extensions::UiExtensions;
+use crate::ui_extensions::{UiExtensionPlugin, UiExtensionRegistration, UiExtensions};
 use acquire::PluginsDir;
 use dim_agent_capabilities::methods::{Interruption, MethodCall, MethodDecl, Progress, RpcError};
 use dim_agent_capabilities::skills::{SkillIssue, SkillsCatalogBinding};
@@ -836,7 +836,7 @@ impl Owners {
         if kinds.contains(&Kind::Ui)
             && let Some(ui) = self.ctx.get_at(&self.ui)
         {
-            held.extend(ui.plugins());
+            held.extend(ui.plugins(crate::protocol::Empty {}));
         }
         held
     }
@@ -857,7 +857,16 @@ impl Owners {
             match self.ctx.get_at(&self.ui) {
                 Some(ui) => {
                     if let Err(error) = ui
-                        .register(plugin, &manifest.name, manifest.ui.as_ref())
+                        .register(UiExtensionRegistration {
+                            plugin: plugin.into(),
+                            name: manifest.name.clone(),
+                            package: manifest.ui.clone().map(|manifest| {
+                                crate::ui_extensions::UiPackage {
+                                    directory: dir.to_path_buf(),
+                                    manifest,
+                                }
+                            }),
+                        })
                         .await
                     {
                         outcome.refused.push(refused(Kind::Ui, error));
@@ -963,7 +972,10 @@ impl Owners {
         if kinds.contains(&Kind::Ui)
             && let Some(ui) = self.ctx.get_at(&self.ui)
         {
-            ui.withdraw(plugin).await;
+            ui.withdraw(UiExtensionPlugin {
+                plugin: plugin.into(),
+            })
+            .await;
         }
         for kind in kinds {
             self.clear_refusal(plugin, *kind);
@@ -1014,7 +1026,9 @@ impl Owners {
     async fn refused(&self, plugin: &str, manifest: &Manifest) -> Vec<Refusal> {
         let mut found = Vec::new();
         if let Some(ui) = self.ctx.get_at(&self.ui)
-            && let Some(error) = ui.plugin_refusal(plugin)
+            && let Some(error) = ui.refusal(UiExtensionPlugin {
+                plugin: plugin.into(),
+            })
         {
             found.push(refused(Kind::Ui, error));
         }

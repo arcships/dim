@@ -40,11 +40,11 @@ pub struct Panel {
     pub methods: Vec<Method>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Package {
     Supported { root: PathBuf, panels: Vec<Panel> },
     Unsupported { version: u64 },
-    Rejected { message: String },
 }
 
 #[derive(Deserialize)]

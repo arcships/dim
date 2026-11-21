@@ -546,3 +546,66 @@ async fn a_leaf_that_never_attaches_is_closed_after_its_start_bound() {
         leaf.exit().await;
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_ui_operations_use_the_connected_client_and_extension_catalog() {
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![json!({
+        "id":"ui-owner", "name":parts.anchor.parent().unwrap().join("fixtures/ui-owner.ts"),
+        "provides":{}
+    })];
+    let home = std::env::temp_dir().join(format!("dm-ui-{}", uuid::Uuid::new_v4()));
+    let (server, _, _) = super::session_typescript::start(ServerConfig {
+        target_home: Some(home.join("rust")),
+        session_typescript: Some(parts),
+        ..Default::default()
+    })
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let session = attached_session(&mut client).await;
+    for action in ["detach", "release"] {
+        assert_ok(
+            &client
+                .rpc("ui.attach", json!({"sessionId":session,"kind":"tui"}))
+                .await,
+        );
+        let result = super::process_typescript::files_available(
+            &mut client,
+            &format!("uifixture.{action}"),
+            json!({"sessionId":session}),
+        )
+        .await;
+        assert_eq!(result, true);
+        let status = client.rpc("ui.status", json!({})).await;
+        assert_eq!(status["result"]["instances"], json!([]));
+        let catalog = client.rpc("ui.extensions.list", json!({})).await;
+        assert_ok(&catalog);
+        let refused = catalog["result"]["errors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|error| error["pluginName"] == "ui-fixture");
+        assert_eq!(refused, action == "detach");
+    }
+    let mut leaf = FakeLeaf::start().await;
+    let opened = client
+        .rpc("ui.open", opening(&session, &leaf, json!({})))
+        .await;
+    assert_ok(&opened);
+    leaf.attach(&server, &session, &opened).await;
+    assert_ok(&client.rpc("ui.close", json!({"uiId": leaf.peer})).await);
+    leaf.closed(Duration::from_secs(10)).await;
+    let finished = leaf
+        .tui
+        .as_mut()
+        .unwrap()
+        .rpc("uifixture.finished", json!({"sessionId": session}))
+        .await;
+    assert_ok(&finished);
+    assert_eq!(finished["result"], true);
+    leaf.exit().await;
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(home).unwrap();
+}

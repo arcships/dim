@@ -70,7 +70,7 @@ struct Catalog {
 
 pub(crate) struct Configuration {
     cache: PathBuf,
-    sources: Mutex<BTreeMap<String, (String, Package)>>,
+    sources: Mutex<BTreeMap<String, (String, UiPackage)>>,
     revision: AtomicU64,
 }
 impl Configuration {
@@ -95,6 +95,118 @@ pub struct UiExtensions {
     updating: tokio::sync::Mutex<()>,
     reads: Reads,
 }
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiExtensionPlugin {
+    pub plugin: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiExtensionRegistration {
+    pub plugin: String,
+    pub name: String,
+    pub package: Option<UiPackage>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UiPackage {
+    pub directory: PathBuf,
+    pub manifest: serde_json::Value,
+}
+
+#[rutis::service(name = "uiExtensions")]
+impl UiExtensions {
+    pub fn plugins(&self, _request: crate::protocol::Empty) -> Vec<String> {
+        let catalog = self.catalog.lock().unwrap();
+        catalog
+            .entries
+            .keys()
+            .chain(catalog.errors.keys())
+            .cloned()
+            .collect()
+    }
+    pub fn refusal(&self, request: UiExtensionPlugin) -> Option<String> {
+        self.catalog
+            .lock()
+            .unwrap()
+            .errors
+            .get(&request.plugin)
+            .map(|error| error.message.clone())
+    }
+    pub async fn register(&self, request: UiExtensionRegistration) -> Result<(), ResourceError> {
+        let UiExtensionRegistration {
+            plugin,
+            name,
+            package,
+        } = request;
+        let Some(package) = package else {
+            self.withdraw(UiExtensionPlugin { plugin }).await;
+            return Ok(());
+        };
+        let _update = self.updating.lock().await;
+        let _operation = self.reads.enter()?;
+        self.configuration
+            .sources
+            .lock()
+            .unwrap()
+            .insert(plugin.clone(), (name.clone(), package.clone()));
+        let prepared = match Package::read(&package.directory, package.manifest) {
+            Ok(Package::Supported { root, panels }) => self
+                .prepare(&name, &root, &panels)
+                .await
+                .map_err(file_error),
+            Ok(Package::Unsupported { version }) => Err(ResourceError::invalid(&format!(
+                "Unsupported UI version {version}"
+            ))),
+            Err(message) => Err(ResourceError::invalid(&message)),
+        };
+        let old = {
+            let mut catalog = self.catalog.lock().unwrap();
+            let old = catalog.entries.remove(&plugin);
+            catalog.errors.remove(&plugin);
+            match &prepared {
+                Ok(snapshot) => {
+                    catalog.entries.insert(plugin, snapshot.clone());
+                }
+                Err(message) => {
+                    catalog.errors.insert(
+                        plugin,
+                        Unavailable {
+                            plugin_name: name,
+                            message: message.message.clone(),
+                        },
+                    );
+                }
+            }
+            self.changed();
+            old
+        };
+        if let Some(old) = old {
+            self.remove(old).await;
+        }
+        prepared.map(|_| ())
+    }
+    pub async fn withdraw(&self, request: UiExtensionPlugin) {
+        let plugin = request.plugin;
+        let _update = self.updating.lock().await;
+        self.configuration.sources.lock().unwrap().remove(&plugin);
+        let old = {
+            let mut catalog = self.catalog.lock().unwrap();
+            let old = catalog.entries.remove(&plugin);
+            let error = catalog.errors.remove(&plugin);
+            if old.is_some() || error.is_some() {
+                self.changed();
+            }
+            old
+        };
+        if let Some(old) = old {
+            self.remove(old).await;
+        }
+    }
+}
+
 impl UiExtensions {
     pub fn directory(&self) -> Directory {
         let catalog = self.catalog.lock().unwrap();
@@ -111,89 +223,8 @@ impl UiExtensions {
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changes.subscribe()
     }
-    pub fn plugins(&self) -> Vec<String> {
-        let catalog = self.catalog.lock().unwrap();
-        catalog
-            .entries
-            .keys()
-            .chain(catalog.errors.keys())
-            .cloned()
-            .collect()
-    }
-    pub fn plugin_refusal(&self, plugin: &str) -> Option<String> {
-        self.catalog
-            .lock()
-            .unwrap()
-            .errors
-            .get(plugin)
-            .map(|error| error.message.clone())
-    }
     fn changed(&self) {
         self.changes.send_replace(self.configuration.revision());
-    }
-    pub async fn register(
-        &self,
-        plugin: &str,
-        name: &str,
-        package: Option<&Package>,
-    ) -> Result<(), String> {
-        let Some(package) = package else {
-            self.withdraw(plugin).await;
-            return Ok(());
-        };
-        let _update = self.updating.lock().await;
-        let _operation = self.reads.enter().map_err(|error| error.message)?;
-        self.configuration
-            .sources
-            .lock()
-            .unwrap()
-            .insert(plugin.into(), (name.into(), package.clone()));
-        let prepared = match package {
-            Package::Supported { root, panels } => self.prepare(name, root, panels).await,
-            Package::Unsupported { version } => Err(format!("Unsupported UI version {version}")),
-            Package::Rejected { message } => Err(message.clone()),
-        };
-        let old = {
-            let mut catalog = self.catalog.lock().unwrap();
-            let old = catalog.entries.remove(plugin);
-            catalog.errors.remove(plugin);
-            match &prepared {
-                Ok(snapshot) => {
-                    catalog.entries.insert(plugin.into(), snapshot.clone());
-                }
-                Err(message) => {
-                    catalog.errors.insert(
-                        plugin.into(),
-                        Unavailable {
-                            plugin_name: name.into(),
-                            message: message.clone(),
-                        },
-                    );
-                }
-            }
-            self.changed();
-            old
-        };
-        if let Some(old) = old {
-            self.remove(old).await;
-        }
-        prepared.map(|_| ())
-    }
-    pub async fn withdraw(&self, plugin: &str) {
-        let _update = self.updating.lock().await;
-        self.configuration.sources.lock().unwrap().remove(plugin);
-        let old = {
-            let mut catalog = self.catalog.lock().unwrap();
-            let old = catalog.entries.remove(plugin);
-            let error = catalog.errors.remove(plugin);
-            if old.is_some() || error.is_some() {
-                self.changed();
-            }
-            old
-        };
-        if let Some(old) = old {
-            self.remove(old).await;
-        }
     }
     async fn prepare(
         &self,
@@ -495,7 +526,14 @@ impl DynPlugin for UiExtensionsPlugin {
                 .map_err(|error| ErrorKind::PluginFailed(error.into()))?;
             let sources = self.configuration.sources.lock().unwrap().clone();
             for (plugin, (name, package)) in sources {
-                if let Err(error) = service.register(&plugin, &name, Some(&package)).await {
+                if let Err(error) = service
+                    .register(UiExtensionRegistration {
+                        plugin: plugin.clone(),
+                        name,
+                        package: Some(package),
+                    })
+                    .await
+                {
                     tracing::warn!(%plugin, %error, "UI content restore refused");
                 }
             }

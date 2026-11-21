@@ -15,7 +15,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `basePromptSettingsHost` | process | PromptSettings | data | `base` async |
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
-| `connectionHub` | process | Connection | internal(control) | — |
 | `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |
 | `eventSubscriptions` | process | eventhub | data | `list` sync, `sources` sync, `subscribe` async, `unsubscribe` async |
@@ -48,7 +47,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
 | `scheduleJobs` | process | Scheduler | data | `call` async |
 | `selectableModelsHost` | process | Provider | data | `selectableForModality` async, `selectableModels` async |
-| `serverControl` | process | ServerControl | internal(control) | — |
 | `sessionClientsHost` | process | Connection | data | `presences` async |
 | `sessionFiles` | process | SessionStore | data | `import` async, `owned_paths` async, `owns` async, `put` async, `read` async, `register` async |
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
@@ -63,8 +61,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `store` | process | SessionStore | data | `addGrant` async, `catalog` async, `createOwnedSession` async, `creationRecord` async, `delete` async, `fork` async, `grants` async, `hasRecords` async, `owner` async, `query` async, `removeGrant` async, `removeWorktree` async, `removeWorktreeDirectory` async, `sessionConfig` async, `sessionConfigText` async, `sessionsUnderWorkspace` async, `setSessionLanguage` async, `worktreeDirectories` async, `worktreeUsages` async |
 | `summaryPromptSettingsHost` | process | PromptSettings | data | `systemPrompt` async |
 | `toolchainSourceHost` | process | ToolchainSource | data | `list` sync |
-| `uiExtensions` | process | UiExtensions | internal(control) | — |
-| `uiHost` | process | UiHost | internal(control) | — |
+| `uiExtensions` | process | UiExtensions | data | `plugins` async, `refusal` async, `register` async, `withdraw` async |
+| `uiHost` | process | UiHost | data | `detach` sync, `finished` sync, `release` sync |
 | `wakeups` | process | Scheduler | data | `cancel` async, `create` async, `list` async |
 | `workflowFiles` | process | Settings | data | `createDirectory` async, `list` async, `read` async, `replace` async |
 | `worktreeAssociations` | process | SessionStore | data | `associate` async |

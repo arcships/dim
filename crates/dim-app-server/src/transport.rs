@@ -330,8 +330,8 @@ impl TransportPlugin {
     /// The database lock is a dependency only with native storage.
     pub fn new(names: &Names<'_>, config: Arc<ServerConfig>) -> rutis::Result<Self> {
         Ok(Self {
-            hub: names.key()?,
-            control: names.key()?,
+            hub: Key::of(),
+            control: Key::of(),
             storage: config
                 .database_path
                 .is_some()

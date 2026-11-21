@@ -3949,6 +3949,18 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#uiExtensions",
+        "provider": 36,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#uiHost",
+        "provider": 42,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#wakeups",
         "provider": 72,
         "generation": 1,

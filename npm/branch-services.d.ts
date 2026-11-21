@@ -1264,6 +1264,34 @@ export interface ListenAddresses {
   read(): Promise<BoundAddresses>
 }
 
+export type UiExtensionPlugin = {
+  plugin: string
+}
+
+export type UiPackage = {
+  directory: string
+  manifest: import('./plugin.js').BridgeJsonValue
+}
+
+export type UiExtensionRegistration = {
+  plugin: string
+  name: string
+  package?: UiPackage | null
+}
+
+export type ResourceError = {
+  code: string
+  message: string
+}
+
+export interface UiExtensions {
+  plugins(request: Empty): Promise<string[]>
+  refusal(request: UiExtensionPlugin): Promise<string | null>
+  /** @throws {ResourceErrorThrown} */
+  register(request: UiExtensionRegistration): Promise<void>
+  withdraw(request: UiExtensionPlugin): Promise<void>
+}
+
 export type PublishFile = {
   /** Absolute host path inside an already authorized FileStorage root. */
   path: string
@@ -1273,11 +1301,6 @@ export type PublishFile = {
 export type ResourceRef = {
   sessionId: string
   id: string
-}
-
-export type ResourceError = {
-  code: string
-  message: string
 }
 
 export interface UiResources {
@@ -1324,6 +1347,8 @@ export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceErr
 
 /** What a method returning `Err(SessionsError)` throws. */
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
+
+/** What a method returning `Err(String)` throws. */
 
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
@@ -1373,5 +1398,6 @@ export interface Services {
   mcpSession: McpSession
   workflowFiles: WorkflowFiles
   listenAddresses: ListenAddresses
+  uiExtensions: UiExtensions
   uiResources: UiResources
 }

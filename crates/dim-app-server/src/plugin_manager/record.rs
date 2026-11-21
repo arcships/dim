@@ -300,7 +300,7 @@ pub struct Manifest {
     pub skills: Option<PathBuf>,
     pub mcp: Option<PathBuf>,
     pub hooks: Option<PathBuf>,
-    pub ui: Option<crate::ui_extensions::manifest::Package>,
+    pub ui: Option<Value>,
 }
 
 /// The rutis row fields of a plugin's code, with `entry` resolved.
@@ -417,11 +417,7 @@ impl Manifest {
             skills: path(file.skills, "skills")?,
             mcp: path(file.mcp, "mcp")?,
             hooks: path(file.hooks, "hooks")?,
-            ui: file.ui.map(|value| {
-                crate::ui_extensions::manifest::Package::read(dir, value).unwrap_or_else(
-                    |message| crate::ui_extensions::manifest::Package::Rejected { message },
-                )
-            }),
+            ui: file.ui,
         })
     }
 
