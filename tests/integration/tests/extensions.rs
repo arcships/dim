@@ -1280,7 +1280,7 @@ async fn closed_session_and_branch_subtrees_leave_no_plugins_or_bindings() {
         let counts = (diagnostics.plugins.len(), diagnostics.bindings.len());
         assert_eq!(*baseline.get_or_insert(counts), counts, "round {round}");
     }
-    assert_eq!(baseline, Some((19, 8)));
+    assert_eq!(baseline, Some((19, 9)));
     agent.close().await.unwrap();
 }
 

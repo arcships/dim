@@ -2724,27 +2724,26 @@ impl CollaborationSession {
                 } else {
                     None
                 };
-                let session = request.usage.clone();
-                let stopping = input
-                    .as_ref()
-                    .map(|_| Stopping::mark(self, &mut state, &member));
-                (session, input.map(|input| (input, stopping)))
+                let session = request.session.clone();
+                let start = input.map(|input| (request.usage.clone(), input));
+                let start = start.map(|(usage, input)| {
+                    (usage, input, Stopping::mark(self, &mut state, &member))
+                });
+                (session, start)
             };
             if closing {
-                if let Some((input, Some(stopping))) = start {
+                if let Some((usage, input, stopping)) = start {
                     // Its own task on Collaboration's tracker, so teardown
                     // does not wait on the member either.
                     let stops = self.clone();
                     self.collaboration.tasks.spawn(async move {
                         let _ = stops
-                            .carry_out_stop(&session, &input, INTERRUPTED, stopping)
+                            .carry_out_stop(&usage, &input, INTERRUPTED, stopping)
                             .await;
                     });
                 }
             } else {
-                if let Ok(session) = session.session() {
-                    let _ = session.interrupt(ROOT_BRANCH_ID, INTERRUPTED.into());
-                }
+                let _ = session.interrupt(ROOT_BRANCH_ID, INTERRUPTED.into());
             }
             self.settle(branch_id, &member, None).await;
         }
