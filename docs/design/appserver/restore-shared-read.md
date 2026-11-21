@@ -102,7 +102,7 @@ rows):
 | Permission | `history(Some(0))`, `local(..=S)` | ancestry, own `1..=S` | apply, wave 1 |
 | ModelProvider | `local(..=S)` | own `1..=S` | apply, wave 2 (needs ContextPreparation) |
 | Approval | `local(..=S)` | own `1..=S` | apply, wave 2 (needs Permission) |
-| Prompt | `read_context(committed())` | ancestry and own `1..=S`, or from a checkpoint's `resume` | apply, wave 2 (needs ContextPreparation's `ConfigurationPublisher`) |
+| Prompt | `read_context(committed())` | ancestry and own `1..=S`, or from a checkpoint's `resume` | apply, wave 2 (needs `ContextPreparation`) |
 | ToolBinding | `read_context(sequence())` | as Prompt | apply, wave 3 (needs Prompt) |
 | Loop | `local(..=S)` | own `1..=S` | apply, wave 4 (needs ToolBinding) |
 | ToolExecutor | `local(..=S)` | own `1..=S` | apply, wave 4 (needs ToolBinding, Approval) |
