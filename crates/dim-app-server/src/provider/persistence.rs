@@ -1123,3 +1123,79 @@ pub(super) fn adopt_source(
         .map_err(storage)?;
     Ok(())
 }
+
+pub(crate) fn refresh_managed(
+    db: Arc<SqliteStorage>,
+    provider_id: String,
+    expected_version: Option<u32>,
+    catalog: crate::managed_provider::ManagedCatalog,
+    current: &AccountSnapshot,
+) -> std::result::Result<
+    impl std::future::Future<Output = std::result::Result<ProviderRecord, ProviderError>> + Send + use<>,
+    ProviderError,
+> {
+    if !same_account(current, &catalog.account) {
+        return Err(ProviderError::AccountChanged);
+    }
+    Ok(async move {
+        db.run(move |connection| {
+            Ok((|| -> std::result::Result<_, ProviderError> {
+                let tx = connection.transaction()?;
+                let old = read_catalog(&tx, &provider_id)?;
+                if old.as_ref().map(|record| record.version) != expected_version {
+                    return Err(ProviderError::Conflict("Provider version changed".into()));
+                }
+                let version = old
+                    .as_ref()
+                    .map_or(0, |record| record.version)
+                    .checked_add(1)
+                    .ok_or(ProviderError::Failed)?;
+                let old = old.filter(|record| same_account(&record.account, &catalog.account));
+                let (
+                    disabled_model_ids,
+                    model_config_overrides,
+                    model_preferences,
+                    glued_prefix,
+                    model_aliases,
+                ) = old.map_or_else(
+                    || {
+                        (
+                            Vec::new(),
+                            Vec::new(),
+                            BTreeMap::new(),
+                            None,
+                            BTreeMap::new(),
+                        )
+                    },
+                    |record| {
+                        (
+                            record.disabled_model_ids,
+                            record.model_config_overrides,
+                            record.model_preferences,
+                            // A refresh rewrites the account's
+                            // listings, not the user's own
+                            // statements about their ids.
+                            record.glued_prefix,
+                            record.model_aliases,
+                        )
+                    },
+                );
+                let record = ProviderRecord {
+                    kind: ManagedRecordKind::Managed,
+                    account: catalog.account,
+                    models: catalog.models,
+                    disabled_model_ids,
+                    model_config_overrides,
+                    model_preferences,
+                    glued_prefix,
+                    model_aliases,
+                    version,
+                };
+                save_catalog(&tx, &provider_id, &record)?;
+                tx.commit()?;
+                Ok(record)
+            })())
+        })
+        .await?
+    })
+}

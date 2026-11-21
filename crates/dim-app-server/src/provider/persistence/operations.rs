@@ -214,16 +214,16 @@ impl ProviderOperation {
                         expected_version,
                         catalog,
                         current,
-                    } => {
-                        if !crate::provider::same_account(&current, &catalog.account) {
-                            return Err(provider_failure(
-                                crate::provider::ProviderError::AccountChanged,
-                            ));
-                        }
-                        db.refresh_managed(provider_id, expected_version, catalog)
-                            .await
-                            .map(|r| serde_json::json!(r))
-                    }
+                    } => super::refresh_managed(
+                        db.clone(),
+                        provider_id,
+                        expected_version,
+                        catalog,
+                        &current,
+                    )
+                    .map_err(provider_failure)?
+                    .await
+                    .map(|r| serde_json::json!(r)),
                     ProviderEdit::PatchHeader {
                         expected_version,
                         patch,

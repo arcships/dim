@@ -411,72 +411,6 @@ impl SqliteStorage {
         })
         .await
     }
-    pub(crate) async fn refresh_managed(
-        self: &Arc<Self>,
-        provider_id: String,
-        expected_version: Option<u32>,
-        catalog: crate::managed_provider::ManagedCatalog,
-    ) -> Result<ProviderRecord, ProviderError> {
-        self.run(move |connection| {
-            Ok((|| -> Result<_, ProviderError> {
-                let tx = connection.transaction()?;
-                let old = read_catalog(&tx, &provider_id)?;
-                if old.as_ref().map(|record| record.version) != expected_version {
-                    return Err(ProviderError::Conflict("Provider version changed".into()));
-                }
-                let version = old
-                    .as_ref()
-                    .map_or(0, |record| record.version)
-                    .checked_add(1)
-                    .ok_or(ProviderError::Failed)?;
-                let old = old.filter(|record| same_account(&record.account, &catalog.account));
-                let (
-                    disabled_model_ids,
-                    model_config_overrides,
-                    model_preferences,
-                    glued_prefix,
-                    model_aliases,
-                ) = old.map_or_else(
-                    || {
-                        (
-                            Vec::new(),
-                            Vec::new(),
-                            BTreeMap::new(),
-                            None,
-                            BTreeMap::new(),
-                        )
-                    },
-                    |record| {
-                        (
-                            record.disabled_model_ids,
-                            record.model_config_overrides,
-                            record.model_preferences,
-                            // A refresh rewrites the account's
-                            // listings, not the user's own
-                            // statements about their ids.
-                            record.glued_prefix,
-                            record.model_aliases,
-                        )
-                    },
-                );
-                let record = ProviderRecord {
-                    kind: ManagedRecordKind::Managed,
-                    account: catalog.account,
-                    models: catalog.models,
-                    disabled_model_ids,
-                    model_config_overrides,
-                    model_preferences,
-                    glued_prefix,
-                    model_aliases,
-                    version,
-                };
-                save_catalog(&tx, &provider_id, &record)?;
-                tx.commit()?;
-                Ok(record)
-            })())
-        })
-        .await?
-    }
     pub(crate) async fn list_providers(
         self: &Arc<Self>,
     ) -> dim_agent_runtime::Result<ProviderList> {
@@ -2334,19 +2268,18 @@ impl ProviderService {
             .await?;
         let catalog = self.oauth.catalog(&provider_id, cancel).await?;
         let current = self.oauth.status(&provider_id, cancel).await?;
-        if !same_account(&current, &catalog.account) {
-            return Err(ProviderError::AccountChanged);
-        }
-        let db = self.db.clone();
-        let bundled = self.bundled.clone();
         let id = provider_id.clone();
+        let refresh = persistence::refresh_managed(
+            self.db.clone(),
+            provider_id,
+            expected_version,
+            catalog,
+            &current,
+        )?;
+        let bundled = self.bundled.clone();
         let result = self
             .owned(cancel, move |_| {
-                Box::pin(async move {
-                    db.refresh_managed(provider_id, expected_version, catalog)
-                        .await
-                        .map(|record| record.catalog(&bundled))
-                })
+                Box::pin(async move { refresh.await.map(|record| record.catalog(&bundled)) })
             })
             .await?;
         let settled = self.oauth.status(&id, cancel).await?;
