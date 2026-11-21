@@ -30,7 +30,7 @@ pub use legacy::{
     legacy_omitted_fields, read_legacy_source,
 };
 pub use models::PreferencesPatch;
-pub(crate) use models::{AdmittedModelEdit, ModelAccount};
+pub(crate) use models::{ModelAccount, validate_model_edit};
 use secrets::StaticCredential;
 pub use secrets::{ProviderSecret, ProviderSecretHost, ResolveProviderSecret};
 pub use startup::{StartupInput, StartupSelection};

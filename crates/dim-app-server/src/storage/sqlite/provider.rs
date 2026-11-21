@@ -183,7 +183,7 @@ impl ProviderOperation {
                         edit,
                         state,
                     } => {
-                        let edit = crate::provider::AdmittedModelEdit::new(edit)
+                        crate::provider::validate_model_edit(edit.as_ref())
                             .map_err(provider_failure)?;
                         db.edit_model(provider_id, expected_version, model_id, edit, state)
                             .await

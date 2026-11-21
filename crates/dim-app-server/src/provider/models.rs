@@ -187,7 +187,7 @@ impl ProviderService {
         edit: Option<ModelEdit>,
         cancel: &CancellationToken,
     ) -> Result<ProviderCatalog, ProviderError> {
-        let edit = AdmittedModelEdit::new(edit)?;
+        validate_model_edit(edit.as_ref())?;
         let db = self.db.clone();
         if !self.oauth.contains(&provider_id, cancel).await? {
             let available = self.account_available(&provider_id, cancel).await?;
@@ -210,7 +210,7 @@ impl ProviderService {
                 })
                 .await;
         }
-        if edit.0.as_ref().is_some_and(|e| e.endpoint.is_some()) {
+        if edit.as_ref().is_some_and(|e| e.endpoint.is_some()) {
             return Err(ProviderError::Unsupported(
                 "Account catalogs do not accept endpoint edits".into(),
             ));
@@ -587,48 +587,44 @@ impl SqliteStorage {
     }
 }
 
-pub(crate) struct AdmittedModelEdit(Option<ModelEdit>);
-
-impl AdmittedModelEdit {
-    pub(crate) fn new(edit: Option<ModelEdit>) -> Result<Self, ProviderError> {
-        if edit
-            .as_ref()
-            .and_then(|edit| edit.display_name.as_ref())
-            .is_some_and(|name| name.trim().is_empty())
-        {
-            return Err(ProviderError::InvalidConfig(
-                "Model display name must not be empty".into(),
-            ));
-        }
-        if edit.as_ref().is_some_and(|edit| {
-            [edit.context_window, edit.max_output_tokens]
-                .into_iter()
-                .flatten()
-                .any(|limit| !limit_valid(limit.get()))
-        }) {
-            return Err(ProviderError::InvalidConfig(
-                "Model limits must be positive safe JSON integers".into(),
-            ));
-        }
-        if edit
-            .as_ref()
-            .and_then(|edit| edit.reasoning.as_ref())
-            .and_then(|reasoning| reasoning.effort_options.as_ref())
-            .is_some_and(|options| {
-                options.iter().any(|option| {
-                    !matches!(
-                        option.as_str(),
-                        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-                    )
-                })
-            })
-        {
-            return Err(ProviderError::InvalidConfig(
-                "Invalid reasoning effort option".into(),
-            ));
-        }
-        Ok(Self(edit))
+pub(crate) fn validate_model_edit(edit: Option<&ModelEdit>) -> Result<(), ProviderError> {
+    if edit
+        .as_ref()
+        .and_then(|edit| edit.display_name.as_ref())
+        .is_some_and(|name| name.trim().is_empty())
+    {
+        return Err(ProviderError::InvalidConfig(
+            "Model display name must not be empty".into(),
+        ));
     }
+    if edit.as_ref().is_some_and(|edit| {
+        [edit.context_window, edit.max_output_tokens]
+            .into_iter()
+            .flatten()
+            .any(|limit| !limit_valid(limit.get()))
+    }) {
+        return Err(ProviderError::InvalidConfig(
+            "Model limits must be positive safe JSON integers".into(),
+        ));
+    }
+    if edit
+        .as_ref()
+        .and_then(|edit| edit.reasoning.as_ref())
+        .and_then(|reasoning| reasoning.effort_options.as_ref())
+        .is_some_and(|options| {
+            options.iter().any(|option| {
+                !matches!(
+                    option.as_str(),
+                    "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
+                )
+            })
+        })
+    {
+        return Err(ProviderError::InvalidConfig(
+            "Invalid reasoning effort option".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl SqliteStorage {
@@ -637,7 +633,7 @@ impl SqliteStorage {
         provider_id: String,
         expected_version: u32,
         model_id: String,
-        AdmittedModelEdit(mut edit): AdmittedModelEdit,
+        mut edit: Option<ModelEdit>,
         state: ModelAccount,
     ) -> Result<ProviderCatalog, ProviderError> {
         let bundled = BundledCatalog::shipped();
