@@ -1839,7 +1839,7 @@ async fn selectable_models_match_execution_and_hide_unavailable_models() {
         .await
         .unwrap();
     let provider = root.get::<ProviderService>().unwrap();
-    let selectable = root.get::<ModelProviderService>().unwrap();
+    let selectable = root.get::<dyn ModelProviderService>().unwrap();
     let cancel = CancellationToken::new();
     let bundled = BundledCatalog::load().unwrap();
     const MINE: &str = "00000000-0000-4000-8000-000000000030";
@@ -2169,7 +2169,7 @@ async fn selectable_modality_models_carry_declared_operations_without_chat_rules
         .await
         .unwrap();
     let provider = root.get::<ProviderService>().unwrap();
-    let selectable = root.get::<ModelProviderService>().unwrap();
+    let selectable = root.get::<dyn ModelProviderService>().unwrap();
     let cancel = CancellationToken::new();
     const MINE: &str = "00000000-0000-4000-8000-000000000040";
     const OFF: &str = "00000000-0000-4000-8000-000000000041";
@@ -2463,7 +2463,7 @@ async fn modality_connection_resolution_reaches_the_stub_and_refuses_unselectabl
         "the credential-bearing connection is a private typed binding, not a catalog service"
     );
     let modality = root.get::<ModalityConnectionHost>().unwrap();
-    let selectable = root.get::<ModelProviderService>().unwrap();
+    let selectable = root.get::<dyn ModelProviderService>().unwrap();
     let cancel = CancellationToken::new();
     const MINE: &str = "00000000-0000-4000-8000-000000000050";
     const UNKNOWN: &str = "00000000-0000-4000-8000-000000000051";
@@ -8034,7 +8034,7 @@ async fn auxiliary_model_calls_the_given_model_once_without_tools_or_fallback() 
     let view = root.plugin(provider_part(ProviderPlugin::new));
     active(&view).await;
     let provider = root.get::<ProviderService>().unwrap();
-    let auxiliary = root.get::<ModelProviderService>().unwrap();
+    let auxiliary = root.get::<dyn ModelProviderService>().unwrap();
     let cancel = CancellationToken::new();
     let saved = provider
         .create(

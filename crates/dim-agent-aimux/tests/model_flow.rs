@@ -295,7 +295,7 @@ async fn model_agent(models: Arc<AimuxModels>, custom: Option<AgentBuilder>) -> 
 async fn the_configured_profile_resolves_no_modality_connection() {
     let server = TestServer::start().await;
     let host = model_agent(server.models(), None).await;
-    let selectable = host.root().get::<ProviderService>().unwrap();
+    let selectable = host.root().get::<dyn ProviderService>().unwrap();
     assert!(
         selectable
             .selectable_for_modality(CancellationToken::new())

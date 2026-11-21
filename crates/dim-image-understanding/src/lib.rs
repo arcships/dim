@@ -82,7 +82,7 @@ struct ImageUnderstanding {
     files: Arc<SessionFiles>,
     identity: Arc<SessionIdentity>,
     targets: Arc<ModalityTargets>,
-    auxiliary: Arc<ProviderService>,
+    auxiliary: Arc<dyn ProviderService>,
     indexes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<history::Index>>>>,
     flights: Mutex<HashMap<(String, ReuseKey), Weak<Flight>>>,
     stop: CancellationToken,
@@ -281,7 +281,7 @@ pub struct ImageUnderstandingPlugin {
     files: Key<SessionFiles>,
     identity: Key<SessionIdentity>,
     targets: Key<ModalityTargets>,
-    auxiliary: Key<ProviderService>,
+    auxiliary: Key<dyn ProviderService>,
     guide: Key<GuideEntries>,
 }
 

@@ -1407,6 +1407,8 @@ fn reseed_candidate(
 }
 
 pub struct ProviderService {
+    mounted: std::sync::Weak<Self>,
+    driver: Arc<ModelDriverHost>,
     db: Arc<SqliteStorage>,
     oauth: Arc<ManagedProviders>,
     codex: Arc<OpenAICodexOAuthService>,
@@ -3100,16 +3102,16 @@ impl ResolveModelConnection for ProductResolver {
         })
     }
 }
-impl ProductResolver {
+impl dim_agent_capabilities::host::ProviderService for ProviderService {
     /// The model one request resolves to, resolved once. A caller's token
     /// reaches the owner's read: dropping the call cancels it.
-    pub(crate) fn resolve(
+    fn resolve_target(
         &self,
         explicit: Option<ModelId>,
         cwd: Option<std::path::PathBuf>,
         cancel: CancellationToken,
     ) -> HostFuture<'static, ModelSelection> {
-        let owner = self.0.clone();
+        let owner = self.mounted.upgrade().expect("mounted Provider");
         Box::pin(async move {
             owner
                 .configuration_at_defaults(explicit, cwd.as_deref(), &cancel)
@@ -3118,24 +3120,37 @@ impl ProductResolver {
     }
 
     /// Every model execution would accept, read under the caller's token.
-    pub(crate) fn selectable(
+    fn list_models(
         &self,
         cancel: CancellationToken,
     ) -> HostFuture<'static, Vec<ModelCapabilitySnapshot>> {
-        let owner = self.0.clone();
+        let owner = self.mounted.upgrade().expect("mounted Provider");
         Box::pin(async move { owner.selectable_models(&cancel).await })
     }
 
     /// Every model a non-conversational use could select.
-    pub(crate) fn selectable_for_modality(
+    fn list_modality_models(
         &self,
         cancel: CancellationToken,
     ) -> HostFuture<'static, Vec<ModalityModelSnapshot>> {
-        let owner = self.0.clone();
+        let owner = self.mounted.upgrade().expect("mounted Provider");
         Box::pin(async move { owner.selectable_modality_models(&cancel).await })
     }
 }
 
+impl rutis_bridge::session::HostDispatch for ProviderService {
+    fn methods(&self) -> Option<serde_json::Value> {
+        provider_methods(true)
+    }
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        let owner = self.mounted.upgrade().expect("mounted Provider");
+        dispatch_provider(owner.clone(), Some(owner), method, args)
+    }
+}
 impl ResolveModalityConnection for ProductResolver {
     fn resolve_for_modality(
         &self,
@@ -3397,22 +3412,25 @@ impl DynPlugin for ProviderPlugin {
             };
             let host = ctx.require_at(&self.host)?;
             let methods = ctx.require_at(&self.methods)?;
-            let service =
-                Arc::new(ProviderService {
-                    db,
-                    oauth,
-                    codex,
-                    grok,
-                    secret_host,
-                    bundled: Arc::new(BundledCatalog::load().map_err(|error| {
-                        rutis::Error::from(ErrorKind::PluginFailed(error.into()))
-                    })?),
-                    client: OnceCell::new(),
-                    stop: CancellationToken::new(),
-                    tasks: TaskTracker::new(),
-                    admission: Mutex::new(()),
-                    startup: Mutex::new(startup::StartupBindings::default()),
-                });
+            let bundled = Arc::new(
+                BundledCatalog::load()
+                    .map_err(|error| rutis::Error::from(ErrorKind::PluginFailed(error.into())))?,
+            );
+            let service = Arc::new_cyclic(|mounted| ProviderService {
+                mounted: mounted.clone(),
+                driver: host.clone(),
+                db,
+                oauth,
+                codex,
+                grok,
+                secret_host,
+                bundled,
+                client: OnceCell::new(),
+                stop: CancellationToken::new(),
+                tasks: TaskTracker::new(),
+                admission: Mutex::new(()),
+                startup: Mutex::new(startup::StartupBindings::default()),
+            });
             let owner = service.clone();
             ctx.effect(move || async move {
                 {
@@ -3444,30 +3462,9 @@ impl DynPlugin for ProviderPlugin {
             let resolver = Arc::new(ProductResolver(service.clone()));
             dim_agent_capabilities::host::ModelHost::new(host.clone(), Some(resolver.clone()))
                 .provide(ctx)?;
-            let selection = resolver.clone();
-            let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
-                selection.resolve(explicit, cwd, cancel)
-            }));
-            ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-            let selectable = resolver.clone();
-            let modalities = resolver;
-            let selectable_host = SelectableModelsHost::new(
-                Arc::new(move |cancel| selectable.selectable(cancel)),
-                Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
-            );
-            let auxiliary = Arc::new(auxiliary::AuxiliaryModel {
-                owner: service.clone(),
-                host,
-            });
-
+            ctx.provide(ModalityConnectionHost(resolver))?;
             management::provide(ctx, &methods, service.clone())?;
-            dim_agent_capabilities::host::ProviderService::provide(
-                ctx,
-                selection_host,
-                selectable_host,
-                auxiliary,
-                Some(service.clone()),
-            )?;
+            provide_model_catalog(ctx, service.clone())?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)
         })

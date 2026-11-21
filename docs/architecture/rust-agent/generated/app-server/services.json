@@ -485,11 +485,6 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::host::ProviderService",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "status": "Ready"
@@ -501,6 +496,11 @@
           },
           {
             "service": "dim_app_server::settings::SettingsService",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dyn dim_agent_capabilities::host::ProviderService",
             "scope": null,
             "status": "Ready"
           }
@@ -513,12 +513,6 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::host::ProviderService",
-            "scope": null,
-            "provider": 17,
-            "generation": 1
-          },
-          {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "provider": 10,
@@ -534,6 +528,12 @@
             "service": "dim_app_server::settings::SettingsService",
             "scope": null,
             "provider": 18,
+            "generation": 1
+          },
+          {
+            "service": "dyn dim_agent_capabilities::host::ProviderService",
+            "scope": null,
+            "provider": 17,
             "generation": 1
           }
         ],
@@ -545,12 +545,6 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::host::ProviderService",
-            "provider": 17,
-            "declared": true,
-            "external": true
-          },
-          {
             "service": "dim_app_server::methods::ManagementMethods",
             "provider": 10,
             "declared": true,
@@ -565,6 +559,12 @@
           {
             "service": "dim_app_server::settings::SettingsService",
             "provider": 18,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dyn dim_agent_capabilities::host::ProviderService",
+            "provider": 17,
             "declared": true,
             "external": true
           }
@@ -3368,12 +3368,6 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host::ProviderService",
-        "provider": 17,
-        "generation": 1,
-        "removing": false
-      },
-      {
         "service": "dim_agent_capabilities::host::SessionFiles",
         "provider": 8,
         "generation": 1,
@@ -3676,6 +3670,12 @@
       {
         "service": "dim_modality::targets::ModalityTargets",
         "provider": 68,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn dim_agent_capabilities::host::ProviderService",
+        "provider": 17,
         "generation": 1,
         "removing": false
       },

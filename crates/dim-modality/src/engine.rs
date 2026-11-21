@@ -467,7 +467,7 @@ pub(crate) struct Shared {
     pub(crate) files: Arc<FileScope>,
     fs: Arc<FsHost>,
     pub(crate) settings: Arc<SettingsService>,
-    pub(crate) provider: Arc<ProviderService>,
+    pub(crate) provider: Arc<dyn ProviderService>,
     pub(crate) ctx: Ctx,
     /// The generation's stop signal; running work and the scheduler stop with
     /// it.
@@ -492,7 +492,7 @@ impl Shared {
         files: Arc<FileScope>,
         fs: Arc<FsHost>,
         settings: Arc<SettingsService>,
-        provider: Arc<ProviderService>,
+        provider: Arc<dyn ProviderService>,
         ctx: Ctx,
         clock: Arc<dyn Clock>,
         ocr_helper: Option<PathBuf>,
@@ -952,7 +952,7 @@ impl ModalityTasks {
         }
         let (_, evaluation) = crate::evaluate(
             &shared.settings,
-            &shared.provider,
+            shared.provider.as_ref(),
             &shared.ctx,
             shared.ocr_helper.as_deref(),
             cancel,

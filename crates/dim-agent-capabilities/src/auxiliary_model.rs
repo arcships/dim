@@ -126,61 +126,58 @@ struct ModelInput {
     model_id: String,
 }
 
-impl ProviderService {
-    pub(crate) fn dispatch_complete(&self, args: Value) -> Reply {
-        let mut args = args
-            .list()
-            .map_err(|_| failure(invalid("Invalid providerService.complete arguments")))?
-            .into_iter();
-        let request = args
-            .next()
-            .ok_or_else(|| failure(invalid("Missing providerService.complete request")))?;
-        let CompleteRequest { model, request } = request
-            .json()
-            .ok()
-            .and_then(|request| serde_json::from_value(request).ok())
-            .ok_or_else(|| failure(invalid("Invalid providerService.complete request")))?;
-        let model = ModelId {
-            provider_id: model.provider_id,
-            model_id: model.model_id,
-        };
-        let cancelled = match args.next() {
-            None | Some(Value::Undefined) => None,
-            Some(Value::Reference(reference)) if reference.is_function() => Some(reference),
-            Some(_) => {
-                return Err(failure(invalid(
-                    "Invalid providerService.complete cancellation",
-                )));
-            }
-        };
-        if args.next().is_some() {
+pub(crate) fn dispatch_complete(operation: Arc<dyn ProviderService>, args: Value) -> Reply {
+    let mut args = args
+        .list()
+        .map_err(|_| failure(invalid("Invalid providerService.complete arguments")))?
+        .into_iter();
+    let request = args
+        .next()
+        .ok_or_else(|| failure(invalid("Missing providerService.complete request")))?;
+    let CompleteRequest { model, request } = request
+        .json()
+        .ok()
+        .and_then(|request| serde_json::from_value(request).ok())
+        .ok_or_else(|| failure(invalid("Invalid providerService.complete request")))?;
+    let model = ModelId {
+        provider_id: model.provider_id,
+        model_id: model.model_id,
+    };
+    let cancelled = match args.next() {
+        None | Some(Value::Undefined) => None,
+        Some(Value::Reference(reference)) if reference.is_function() => Some(reference),
+        Some(_) => {
             return Err(failure(invalid(
-                "Too many providerService.complete arguments",
+                "Invalid providerService.complete cancellation",
             )));
         }
-        let operation = self.clone();
-        Ok(Value::future(async move {
-            let cancel = CancellationToken::new();
-            let call = operation.complete(model, request, cancel.clone());
-            tokio::pin!(call);
-            let reply = if let Some(cancelled) = cancelled {
-                tokio::select! {
-                    result = &mut call => result,
-                    _ = async {
-                        let returned = cancelled.call_async(Value::List(vec![])).await?;
-                        rutis_bridge::session::settle(returned).await
-                    } => {
-                        cancel.cancel();
-                        call.await
-                    }
-                }
-            } else {
-                call.await
-            }
-            .map_err(failure)?;
-            rutis_bridge::session::arg(&reply)
-        }))
+    };
+    if args.next().is_some() {
+        return Err(failure(invalid(
+            "Too many providerService.complete arguments",
+        )));
     }
+    Ok(Value::future(async move {
+        let cancel = CancellationToken::new();
+        let call = operation.complete(model, request, cancel.clone());
+        tokio::pin!(call);
+        let reply = if let Some(cancelled) = cancelled {
+            tokio::select! {
+                result = &mut call => result,
+                _ = async {
+                    let returned = cancelled.call_async(Value::List(vec![])).await?;
+                    rutis_bridge::session::settle(returned).await
+                } => {
+                    cancel.cancel();
+                    call.await
+                }
+            }
+        } else {
+            call.await
+        }
+        .map_err(failure)?;
+        rutis_bridge::session::arg(&reply)
+    }))
 }
 
 fn failure(error: AuxiliaryError) -> Error {

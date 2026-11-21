@@ -1043,7 +1043,7 @@ pub(crate) enum OcrLookup {
 
 pub(crate) async fn evaluate(
     settings: &SettingsService,
-    provider: &ProviderService,
+    provider: &dyn ProviderService,
     ctx: &Ctx,
     ocr_helper: Option<&std::path::Path>,
     cancel: &CancellationToken,
@@ -1193,7 +1193,7 @@ fn selection_refusal(
 pub struct ModalityPlugin {
     settings: Key<SettingsService>,
     methods: Key<ManagementMethods>,
-    provider: Key<ProviderService>,
+    provider: Key<dyn ProviderService>,
     files: Key<dim_app_server::plugin_files::PluginFiles>,
     fs: Key<dim_agent_capabilities::file_storage::FsHost>,
     options: InstallOptions,
@@ -1310,7 +1310,7 @@ impl DynPlugin for ModalityPlugin {
                                 let _: Empty = params(value)?;
                                 let (revision, evaluation) = evaluate(
                                     &settings,
-                                    &provider,
+                                    provider.as_ref(),
                                     &context,
                                     ocr_helper.as_deref(),
                                     &stopping,
@@ -1331,7 +1331,7 @@ impl DynPlugin for ModalityPlugin {
                                 };
                                 let (_, mut evaluation) = evaluate(
                                     &settings,
-                                    &provider,
+                                    provider.as_ref(),
                                     &context,
                                     ocr_helper.as_deref(),
                                     &stopping,

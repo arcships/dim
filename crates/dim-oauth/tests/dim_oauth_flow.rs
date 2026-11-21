@@ -1419,7 +1419,7 @@ async fn managed_media_model_leases_for_modality_and_chat_refuses_it() {
         .await
         .unwrap();
     let operations = root
-        .get::<ModelProviderService>()
+        .get::<dyn ModelProviderService>()
         .unwrap()
         .selectable_for_modality(cancel())
         .await
@@ -1520,7 +1520,7 @@ async fn a_stored_unavailable_media_model_is_excluded_from_every_use() {
     drop(database);
 
     let listed = root
-        .get::<ModelProviderService>()
+        .get::<dyn ModelProviderService>()
         .unwrap()
         .selectable_for_modality(cancel())
         .await

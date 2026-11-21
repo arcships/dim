@@ -494,9 +494,9 @@ impl AgentIndex {
     /// the product profile Provider supplies it, and an inactive or reloading
     /// management owner must not keep Agents, and so Rpc, from loading
     /// (methods contract §3.2). `None` while its provider is not active.
-    pub(crate) fn model_selection(&self) -> Option<Arc<ProviderService>> {
+    pub(crate) fn model_selection(&self) -> Option<Arc<dyn ProviderService>> {
         self.selects_models
-            .then(|| self.ctx.get()?.get::<ProviderService>())
+            .then(|| self.ctx.get()?.get::<dyn ProviderService>())
             .flatten()
     }
     /// How many `input/message` facts a session summary's preview scan keeps.
