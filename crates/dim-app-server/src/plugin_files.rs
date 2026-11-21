@@ -296,14 +296,13 @@ impl FileScope {
         let acquisition = CancellationToken::new();
         let cancel_waiter = acquisition.clone().drop_guard();
         let cancelled = async move {
-            tokio::select! {
-                _ = acquisition.cancelled() => (),
-                _ = async { match cancelled {
-                Some(reference) => {
-                    let _ = reference.wait_async().await;
+            if let Some(reference) = cancelled {
+                tokio::select! {
+                    _ = acquisition.cancelled() => (),
+                    _ = reference.wait_async() => (),
                 }
-                None => std::future::pending::<()>().await,
-                }} => (),
+            } else {
+                acquisition.cancelled().await
             }
         };
         let tasks = self.tasks.clone();
