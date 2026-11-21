@@ -542,6 +542,7 @@ pub(crate) struct Stat {
 }
 
 /// Why an operation on an admitted target failed.
+#[derive(Debug)]
 pub(crate) enum TargetError {
     /// A component met at I/O time is a symlink or not a directory: the path
     /// changed after admission, so the call fails closed.
@@ -702,8 +703,17 @@ mod acl {
             }
         }
 
+        /// Removes `file`'s extended ACL when it carries one and confirms no
+        /// entry is left.
+        pub(super) fn clear_if_present(file: &std::fs::File) -> std::io::Result<()> {
+            match Self::of(file)? {
+                Some(acl) if acl.entries()? => Self::clear(file),
+                _ => Ok(()),
+            }
+        }
+
         /// Removes `file`'s extended ACL and confirms no entry is left.
-        pub(super) fn clear(file: &std::fs::File) -> std::io::Result<()> {
+        fn clear(file: &std::fs::File) -> std::io::Result<()> {
             // SAFETY: `acl_init` allocates an ACL the wrapper frees.
             let empty = unsafe { acl_init(0) };
             if empty.is_null() {
@@ -744,7 +754,9 @@ struct StagingDirectory {
     acl: Option<acl::Acl>,
 }
 
-/// Creates the private staging directory `name` below `parent` with mode 0700.
+/// Creates the private staging directory `name` below `parent` with mode 0700,
+/// then sets that mode again without following a symlink, so a umask that
+/// masks owner bits cannot take away the access the checked open needs.
 #[cfg(unix)]
 fn create_staging_directory(
     parent: &std::fs::File,
@@ -755,6 +767,20 @@ fn create_staging_directory(
     // SAFETY: `parent` is an open directory handle and `name` a live
     // NUL-terminated string for the call.
     if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(classify(std::io::Error::last_os_error()));
+    }
+    // SAFETY: `parent` is an open directory handle and `name` a live
+    // NUL-terminated string for the call; `AT_SYMLINK_NOFOLLOW` keeps a name
+    // swapped after creation from redirecting the mode change.
+    if unsafe {
+        libc::fchmodat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            0o700,
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
         return Err(classify(std::io::Error::last_os_error()));
     }
     Ok(())
@@ -786,32 +812,38 @@ fn open_staging_directory(
 }
 
 /// Creates the staged file inside the private directory `name` below `parent`,
-/// which is checked before the file exists. A failed creation removes the empty
-/// staging directory it was made for. On macOS, when `parent` carries an
-/// extended ACL, the directory's inherited ACL is cleared and read back before
-/// the file exists, the ACL the target inherits is read from an empty template,
-/// and the file is confirmed to carry no entry.
+/// which is checked before the file exists. On macOS, an ACL the opened
+/// directory carries is cleared and read back before the file exists, the ACL
+/// the target inherits is read from an empty template, and the opened file is
+/// confirmed to carry no entry. A failure after the directory was opened
+/// removes the directory; a directory that cannot be opened is left in place,
+/// because the name cannot be shown to be the one this call created.
 #[cfg(unix)]
 fn create_staged_file(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
 ) -> Result<(std::fs::File, StagingDirectory), TargetError> {
+    create_staged_file_observed(parent, name, || {})
+}
+
+/// [`create_staged_file`] with `observed` run after the parent's ACL was read
+/// and before the private directory is created, so a test can change the
+/// parent between those two observations.
+#[cfg(unix)]
+fn create_staged_file_observed(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    observed: impl FnOnce(),
+) -> Result<(std::fs::File, StagingDirectory), TargetError> {
     let parent = parent.try_clone().map_err(classify)?;
     #[cfg(target_os = "macos")]
     let inherited = inherited_file_acl(&parent, name)?;
+    observed();
     create_staging_directory(&parent, name)?;
-    let directory = match open_staging_directory(&parent, name) {
-        Ok(directory) => directory,
-        Err(error) => {
-            remove_staging_entry(&parent, name);
-            return Err(error);
-        }
-    };
+    let directory = open_staging_directory(&parent, name)?;
     #[cfg(target_os = "macos")]
-    if inherited.present
-        && let Err(error) = acl::Acl::clear(&directory)
-    {
-        remove_staging_entry(&parent, name);
+    if let Err(error) = acl::Acl::clear_if_present(&directory) {
+        remove_staging_directory(&parent, name, &directory);
         return Err(classify(error));
     }
     let created = open_relative(
@@ -826,35 +858,21 @@ fn create_staged_file(
                 parent,
                 dir: directory,
                 #[cfg(target_os = "macos")]
-                acl: inherited.file,
+                acl: inherited,
             };
             #[cfg(target_os = "macos")]
-            if inherited.present
-                && let Err(error) = require_no_acl(&file)
-            {
+            if let Err(error) = require_no_acl(&file) {
                 let _ = remove_file_entry(&staging.dir, std::ffi::OsStr::new(STAGED_FILE));
-                remove_staging_entry(&staging.parent, name);
+                remove_staging_directory(&staging.parent, name, &staging.dir);
                 return Err(classify(error));
             }
             Ok((file, staging))
         }
         Err(error) => {
-            remove_staging_entry(&parent, name);
+            remove_staging_directory(&parent, name, &directory);
             Err(classify(error))
         }
     }
-}
-
-/// What a parent directory's extended ACL means for a new target: whether it
-/// carries entries at all, and the ACL a file created directly in it would
-/// inherit.
-#[cfg(target_os = "macos")]
-struct ParentAcl {
-    /// Whether the parent carries at least one entry, so a directory created in
-    /// it may inherit entries the mode bits do not show.
-    present: bool,
-    /// The ACL a file created directly in the parent would inherit.
-    file: Option<acl::Acl>,
 }
 
 /// Reads the extended ACL a file created directly in `parent` would inherit,
@@ -864,22 +882,14 @@ struct ParentAcl {
 fn inherited_file_acl(
     parent: &std::fs::File,
     staging: &std::ffi::OsStr,
-) -> Result<ParentAcl, TargetError> {
+) -> Result<Option<acl::Acl>, TargetError> {
     match acl::Acl::of(parent).map_err(TargetError::Io)? {
         Some(acl) => {
             if !acl.entries().map_err(TargetError::Io)? {
-                return Ok(ParentAcl {
-                    present: false,
-                    file: None,
-                });
+                return Ok(None);
             }
         }
-        None => {
-            return Ok(ParentAcl {
-                present: false,
-                file: None,
-            });
-        }
+        None => return Ok(None),
     }
     let mut name = staging.to_owned();
     name.push(".acl");
@@ -894,10 +904,7 @@ fn inherited_file_acl(
     let removed = remove_file_entry(parent, &name).map_err(TargetError::Io);
     let file = file?;
     removed?;
-    Ok(ParentAcl {
-        present: true,
-        file,
-    })
+    Ok(file)
 }
 
 /// Confirms `file` carries no extended ACL entry.
@@ -911,13 +918,71 @@ fn require_no_acl(file: &std::fs::File) -> std::io::Result<()> {
     }
 }
 
-/// Removes the empty staging directory entry `name` below `parent`. A name
-/// swapped after creation makes this fail or remove another empty directory;
-/// nothing below it is removed recursively, and the failure is not reported,
-/// because the call may already have installed the target.
+/// The directory entry `name` below `dir`, statted without following a
+/// symlink.
 #[cfg(unix)]
-fn remove_staging_entry(parent: &std::fs::File, name: &std::ffi::OsStr) {
+fn entry_stat(dir: &std::fs::File, name: &std::ffi::OsStr) -> Option<libc::stat> {
     use std::os::fd::AsRawFd;
+    let name = c_name(name).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `dir` and the NUL-terminated name are live for the call, and
+    // `stat` is a valid uninitialized `libc::stat` buffer.
+    let result = unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result < 0 {
+        return None;
+    }
+    // SAFETY: `fstatat` returned 0 (checked above), so it initialized the
+    // struct.
+    Some(unsafe { stat.assume_init() })
+}
+
+/// The device and inode `stat` names.
+#[cfg(unix)]
+fn device_inode(stat: &libc::stat) -> (u64, u64) {
+    #[expect(
+        clippy::unnecessary_cast,
+        reason = "`st_dev` is 32-bit on macOS and 64-bit on Linux, so its cast is needed on one and lints on the other; `st_ino` is 64-bit on both"
+    )]
+    let identity = (stat.st_dev as u64, stat.st_ino as u64);
+    identity
+}
+
+/// Whether the entry `name` below `parent` is still the directory `dir`, by
+/// device and inode, checked without following a symlink.
+#[cfg(unix)]
+fn staging_directory_owned_in(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    dir: &std::fs::File,
+) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(metadata), Some(stat)) = (dir.metadata(), entry_stat(parent, name)) else {
+        return false;
+    };
+    stat.st_mode & libc::S_IFMT == libc::S_IFDIR
+        && device_inode(&stat) == (metadata.dev(), metadata.ino())
+}
+
+/// Removes the empty staging directory entry `name` below `parent` when it is
+/// still the directory `dir` this call opened. A name swapped after the
+/// directory was opened is left in place rather than removing another entry;
+/// nothing below the entry is removed, and a failure is not reported, because
+/// the call may already have installed the target. The entry can be replaced
+/// again between the ownership check and the unlink, which can remove another
+/// empty directory; a non-empty or non-directory entry fails instead.
+#[cfg(unix)]
+fn remove_staging_directory(parent: &std::fs::File, name: &std::ffi::OsStr, dir: &std::fs::File) {
+    use std::os::fd::AsRawFd;
+    if !staging_directory_owned_in(parent, name, dir) {
+        return;
+    }
     if let Ok(name) = c_name(name) {
         // SAFETY: `parent` is an open directory handle and `name` a live
         // NUL-terminated string for the call.
@@ -944,35 +1009,12 @@ fn remove_file_entry(parent: &std::fs::File, name: &std::ffi::OsStr) -> std::io:
 /// following a symlink and by device and inode.
 #[cfg(unix)]
 fn staged_owned_in(dir: &std::fs::File, name: &std::ffi::OsStr, file: &std::fs::File) -> bool {
-    use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
-    let (Ok(metadata), Ok(name)) = (file.metadata(), c_name(name)) else {
+    let (Ok(metadata), Some(stat)) = (file.metadata(), entry_stat(dir, name)) else {
         return false;
     };
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: the handle and the NUL-terminated name are live for the call,
-    // and `stat` is a valid uninitialized `libc::stat` buffer.
-    let result = unsafe {
-        libc::fstatat(
-            dir.as_raw_fd(),
-            name.as_ptr(),
-            stat.as_mut_ptr(),
-            libc::AT_SYMLINK_NOFOLLOW,
-        )
-    };
-    if result < 0 {
-        return false;
-    }
-    // SAFETY: `fstatat` returned 0 (checked above), so it initialized the
-    // struct.
-    let stat = unsafe { stat.assume_init() };
-    #[expect(
-        clippy::unnecessary_cast,
-        reason = "`st_dev` is 32-bit on macOS and 64-bit on Linux, so its cast is needed on one and lints on the other; `st_ino` is 64-bit on both"
-    )]
-    let (device, inode) = (stat.st_dev as u64, stat.st_ino as u64);
     stat.st_mode & libc::S_IFMT == libc::S_IFREG
-        && (device, inode) == (metadata.dev(), metadata.ino())
+        && device_inode(&stat) == (metadata.dev(), metadata.ino())
 }
 
 /// Applies the ACL the target inherits from its parent to the staged file and
@@ -1426,7 +1468,7 @@ impl Target {
         #[cfg(unix)]
         if let Some(staging) = &staged.staging {
             let _ = remove_file_entry(&staging.dir, std::ffi::OsStr::new(STAGED_FILE));
-            return remove_staging_entry(&staging.parent, &staged.name);
+            return remove_staging_directory(&staging.parent, &staged.name, &staging.dir);
         }
         match self {
             Self::Path(path) => {
@@ -1908,12 +1950,16 @@ mod mutation_tests {
                 "the original directory's staged file was removed"
             );
             assert!(
+                moved.is_dir(),
+                "the original empty directory is left under its new name"
+            );
+            assert!(
                 !replacement.join(STAGED_FILE).exists(),
                 "the directory that took the name received nothing"
             );
             assert!(
-                !replacement.exists(),
-                "the empty replacement directory was removed by its name"
+                replacement.is_dir(),
+                "the empty replacement directory is not removed by its name"
             );
             std::fs::remove_dir_all(root).unwrap();
         }
@@ -2235,6 +2281,14 @@ mod acl_tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    /// Whether `file` carries no extended ACL entry.
+    fn no_acl(file: &std::fs::File) -> bool {
+        match acl::Acl::of(file).unwrap() {
+            Some(acl) => !acl.entries().unwrap(),
+            None => true,
+        }
+    }
+
     /// The private staging directory and its file carry no ACL entry, and the
     /// installed file carries the ACL and mode a file created directly in the
     /// same parent would, for each kind of inheritable parent entry.
@@ -2297,6 +2351,30 @@ mod acl_tests {
             );
             std::fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    /// A parent ACL added after the probe is not part of the snapshot used to
+    /// derive the installed file's ACL; the opened private directory and the
+    /// staged file are still checked and cleared before writing.
+    #[test]
+    fn a_parent_acl_added_after_the_probe_does_not_reach_the_staged_file() {
+        let root = std::env::temp_dir().join(format!("dim-acl-probe-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let parent = std::fs::File::open(&root).unwrap();
+        let name = std::ffi::OsStr::new(".dim-write-probe");
+        let (file, staging) = create_staged_file_observed(&parent, name, || {
+            inheritable(
+                &root,
+                "allow list,search,add_file,delete_child,file_inherit,directory_inherit",
+            );
+        })
+        .unwrap();
+        assert!(no_acl(&staging.dir), "the private directory carries no ACL");
+        assert!(no_acl(&file), "the staged file carries no ACL");
+        drop(file);
+        drop(staging);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// Cancellation and a failed publication remove the private directory, the

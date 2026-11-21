@@ -116,12 +116,15 @@ Generation cancellation rejects new calls and stops accepted calls; cleanup
 waits for tracked calls, including handoff. File mutations stage complete bytes
 and retain coordinator admission through I/O/publication. A new target is staged
 as `staged` with mode `0o666` inside a private directory created for it in the
-target's parent (mode `0o700`, named for the staged entry), so the process umask
-decides the installed file's mode while nobody else can read or change the
-staged bytes. On macOS an inheritable parent ACL is stored beside the mode bits:
-the directory's inherited ACL is cleared at the checked open, the ACL a file
-created in the parent would inherit is read through an empty template in the
-parent, and that ACL is applied to the staged file immediately before
+target's parent (mode `0o700`, set again after creation without following a
+symlink so a umask that masks owner bits cannot make it unusable, named for the
+staged entry), so the process umask decides the installed file's mode while
+nobody else can read or change the staged bytes. On macOS an inheritable parent
+ACL is stored beside the mode bits: an ACL the opened directory carries is
+cleared and read back before the staged file exists, whether or not the earlier
+parent probe saw one, the opened staged file is confirmed to carry no entry, the
+ACL a file created in the parent would inherit is read through an empty template
+in the parent, and that ACL is applied to the staged file immediately before
 installation, so the installed file matches a file created directly at the
 target. The directory is opened without following a symlink and checked to be a
 directory the effective user owns with no group or other permission, and the
@@ -129,7 +132,9 @@ staged file is created, verified, linked and removed relative to that handle, so
 a directory name swapped after creation cannot receive the bytes or redirect the
 installation; installation links the file at the target without replacing an
 entry, and the private directory is removed on every failure, cancellation and
-installation path. A replaced target stages its sibling `0o600` directly in the
+installation path whose name still resolves to the directory this call opened;
+a name swapped after the open is left in place rather than removing another
+entry. A replaced target stages its sibling `0o600` directly in the
 parent, takes the original's owner, group and mode before installation, and is
 renamed over it; on macOS that sibling also inherits the parent's ACL, as it did
 before. Windows installs a directory entry that inherits the parent's

@@ -303,18 +303,35 @@ async fn replacement_preserves_permissions_and_open_original() {
 #[cfg(unix)]
 const CHILD_UMASK: &str = "DIM_TEST_NEW_FILE_UMASK";
 
+/// A workspace whose directories are private to its owner, created one level at
+/// a time so a umask that masks owner bits cannot stop the setup.
+#[cfg(unix)]
+fn private_workspace() -> Workspace {
+    use std::os::unix::fs::PermissionsExt;
+    let base = std::env::temp_dir().join(format!("dim-workspace-files-{}", uuid::Uuid::new_v4()));
+    fs::create_dir(&base).unwrap();
+    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    let root = base.join("work");
+    fs::create_dir(&root).unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let tools = FileTools::new(root.clone(), base.clone(), base.join("outputs"));
+    Workspace { root, tools }
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_new_file_takes_the_process_umask() {
     use std::os::unix::fs::PermissionsExt;
     if let Some(umask) = std::env::var_os(CHILD_UMASK) {
         let umask = u32::from_str_radix(umask.to_str().unwrap(), 8).unwrap();
-        let workspace = Workspace::new();
+        let workspace = private_workspace();
         let reads = branch();
         ok(&workspace
             .call(&reads, "write", json!({"path": "new", "content": "text\n"}))
             .await);
-        assert_eq!(workspace.bytes("new"), b"text\n");
+        if umask & 0o400 == 0 {
+            assert_eq!(workspace.bytes("new"), b"text\n");
+        }
         let leftovers: Vec<_> = fs::read_dir(&workspace.root)
             .unwrap()
             .map(Result::unwrap)
@@ -340,10 +357,17 @@ async fn a_new_file_takes_the_process_umask() {
             0o666 & !umask,
             "a new file created under umask {umask:03o}"
         );
+        let control = workspace.root.join("control");
+        fs::File::create(&control).unwrap();
+        let control_mode = fs::metadata(&control).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, control_mode,
+            "a file created directly under umask {umask:03o}"
+        );
         return;
     }
     let binary = std::env::current_exe().unwrap();
-    for umask in ["022", "002"] {
+    for umask in ["022", "002", "700"] {
         let child = std::process::Command::new("sh")
             .args([
                 "-c",
