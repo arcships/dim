@@ -360,6 +360,19 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         .await
         .is_err()
     );
+    let deadline = serde_json::json!({"taskId":"deadline"});
+    invoke(
+        "start",
+        serde_json::json!({"taskId":"deadline","command":"sleep 5","cwd":home,
+        "workspace":home,"roots":[],"outputDir":home,"timeoutMs":25}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        invoke("wait", deadline.clone()).await.unwrap()["status"],
+        "timed_out"
+    );
+    invoke("settle", deadline).await.unwrap();
     let shell_id = serde_json::json!({"taskId":"interactive"});
     invoke("shell",serde_json::json!({"taskId":"interactive","cwd":home,"workspace":home,"roots":[],"outputDir":platform.exec_root().join("session/branch"),"cols":80,"rows":24})).await.unwrap();
     invoke(

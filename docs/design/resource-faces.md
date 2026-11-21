@@ -87,7 +87,7 @@ whether a call may run, or consults who is calling.
 
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
-| `start` | async | `{taskId, command, cwd, workspace, roots, outputDir}` | `{outputPath}` |
+| `start` | async | `{taskId, command, cwd, workspace, roots, outputDir, timeoutMs?}` | `{outputPath}` |
 | `retainOutput` | async | `{taskId}` | `{outputPath}` |
 | `wait` | async | `{taskId, timeoutMs?}` | terminal record (§3.2) |
 | `kill` | async | `{taskId}` | `{}` |
@@ -104,7 +104,7 @@ whether a call may run, or consults who is calling.
 
 ### 3.2 `start` and `wait`
 
-`start` accepts only `{taskId, command, cwd, workspace, roots, outputDir}`. `cwd` is a resolved working
+`start` accepts only `{taskId, command, cwd, workspace, roots, outputDir, timeoutMs?}`. `cwd` is a resolved working
 directory — the control side obtains it from `fsHost.resolve`, which is also what triggers
 [worktree recognition](#421-session-scoped-recognition-and-association) for a cwd outside the
 known range; an absent `cwd` is `workspace`. `workspace` is the Session's workspace root and
@@ -119,7 +119,7 @@ to confirm a root: a directory outside the range does not become writable becaus
 it, because `cwd` sits in it, or because the model asked. The range is the caller's confirmed
 range, in the same trust position as the workspace list preparation already takes; the switches
 still decide enforcement, and the model cannot set either (§3.9). It builds the shell, argv and
-environment from its current shell preference, spawns, and returns the planned output path. Short foreground output stays in memory. Crossing the existing inline limit creates the file. Before a background handoff the caller awaits `retainOutput`; the owner writes the captured bytes and keeps appending to that file. Repeated retention returns the same path.
+environment from its current shell preference, spawns, and returns the planned output path. If supplied, `timeoutMs` starts at spawn and terminates the command when it expires, even before a caller waits. Short foreground output stays in memory. Crossing the existing inline limit creates the file. Before a background handoff the caller awaits `retainOutput`; the owner writes the captured bytes and keeps appending to that file. Repeated retention returns the same path.
 `taskId` is assigned by the caller (the control side allocates `exec-<uuid>` as it does today); a
 second `start` with an id the provider still holds is `task_exists` and starts nothing, so a
 retried call after a lost reply cannot run the command twice.

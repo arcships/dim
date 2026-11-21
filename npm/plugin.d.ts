@@ -749,7 +749,7 @@ export interface ExecHost {
   output(request: ({taskId: string} | {outputPath: string}) & {cursor?: number; limit?: number}): Promise<{
     text: string; bytes: number; nextCursor?: number; truncated: boolean; retainedFrom: number; reset?: boolean;
   }>;
-  start(request: {taskId: string; command: string; cwd: string; workspace: string; roots: string[]; outputDir: string}): Promise<{outputPath: string}>;
+  start(request: {taskId: string; command: string; cwd: string; workspace: string; roots: string[]; outputDir: string; timeoutMs?: number}): Promise<{outputPath: string}>;
   wait(request: {taskId: string; timeoutMs?: number}): Promise<{
     status: 'exited' | 'signaled' | 'timed_out' | 'cancelled' | 'failed';
     exitCode?: number; signal?: string; durationMs: number; outputPath: string;

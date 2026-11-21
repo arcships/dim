@@ -204,6 +204,7 @@ struct TaskRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct StartCommand {
+    timeout_ms: Option<u64>,
     task_id: String,
     command: String,
     cwd: PathBuf,
@@ -520,7 +521,7 @@ impl HostDispatch for ExecHost {
         }
         if matches!(method, "start" | "shell") {
             enum Launch {
-                Command(String),
+                Command(String, Option<u64>),
                 Shell(super::PtySize),
             }
             let (task_id, cwd, workspace, mut roots, output_dir, launch) = if method == "shell" {
@@ -549,6 +550,7 @@ impl HostDispatch for ExecHost {
                     roots,
                     output_dir,
                     command,
+                    timeout_ms,
                 } = port_faces::request("execHost", args)?;
                 (
                     task_id,
@@ -556,7 +558,7 @@ impl HostDispatch for ExecHost {
                     workspace,
                     roots,
                     output_dir,
-                    Launch::Command(command),
+                    Launch::Command(command, timeout_ms),
                 )
             };
             return Ok(Value::cancellable_future(async move {
@@ -586,13 +588,13 @@ impl HostDispatch for ExecHost {
                     roots.push(workspace);
                 }
                 let path = match launch {
-                    Launch::Command(command) => {
+                    Launch::Command(command, timeout_ms) => {
                         let (spec, _) = owner
                             .build_process_spec(&command, &cwd)
                             .await
                             .map_err(|e| exec_error(e.code, e.reason))?;
                         owner
-                            .start_command(&task_id, spec, &roots, &output_dir, None)
+                            .start_command(&task_id, spec, &roots, &output_dir, timeout_ms)
                             .await
                             .map_err(|e| exec_error(e.code, e.reason))?
                             .retain_task()
