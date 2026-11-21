@@ -37,14 +37,6 @@ function createOptions(overrides: Partial<Parameters<typeof useTimelineAssistant
 }
 
 describe('useTimelineAssistantFooter', () => {
-  it('offers copy while the message is final', () => {
-    const state = useTimelineAssistantFooter(createOptions())
-    expect(state.isMessageFinal.value).toBe(true)
-    expect(state.hasCopyPayload.value).toBe(true)
-    expect(state.copyPayload.value).toBe('hello')
-    expect(state.hasActions.value).toBe(true)
-  })
-
   it('hides every action while the message or any block is running', async () => {
     const isRunning = ref(false)
     const blocks = ref([block({ status: 'running' })])

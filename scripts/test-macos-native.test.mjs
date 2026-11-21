@@ -45,3 +45,39 @@ fn engine_case() {}
   const tests = output.trim().split('\n').flatMap(row => row.split(': ')[1].split(', '));
   assert.deepEqual(tests.sort(), ['engine_case', 'native_assertion', 'nested_case', 'vision']);
 });
+
+test('macOS discovery follows consolidated autotests = false entry roots and #[path] submodules', t => {
+  const cwd = mkdtempSync(join(tmpdir(), 'dim-native-consolidated-'));
+  t.after(() => rmSync(cwd, {recursive: true, force: true}));
+  for (const dir of ['src', 'scripts', 'tests/sub']) mkdirSync(join(cwd, dir), {recursive: true});
+  cpSync(new URL(script, import.meta.url), join(cwd, 'scripts', script));
+  writeFileSync(join(cwd, 'Cargo.toml'), [
+    '[package]',
+    'name = "native-consolidated"',
+    'version = "0.1.0"',
+    'edition = "2024"',
+    'autotests = false',
+    '',
+    '[[test]]',
+    'name = "suite"',
+    'path = "tests/suite.rs"',
+    '',
+  ].join('\n'));
+  writeFileSync(join(cwd, 'src/lib.rs'), '');
+  writeFileSync(join(cwd, 'tests/suite.rs'), `
+#[cfg(target_os = "macos")]
+mod engine;
+#[path = "sub/guarded.rs"]
+mod guarded;
+`);
+  writeFileSync(join(cwd, 'tests/engine.rs'), '#[test]\nfn engine_case() {}\n');
+  writeFileSync(join(cwd, 'tests/sub/guarded.rs'), `
+#[cfg(target_os = "macos")]
+#[test]
+fn path_case() {}
+`);
+  execFileSync('git', ['init', '--quiet'], {cwd});
+  execFileSync('git', ['add', '--', 'Cargo.toml', 'src', 'tests'], {cwd});
+  const output = execFileSync(process.execPath, [join(cwd, 'scripts', script), '--list'], {cwd, encoding: 'utf8'});
+  assert.equal(output.trim(), 'native-consolidated suite: engine_case, path_case');
+});

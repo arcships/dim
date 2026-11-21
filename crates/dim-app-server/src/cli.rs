@@ -350,6 +350,13 @@ pub fn run_with(
         websocket_address: Some(([127, 0, 0, 1], 8787).into()),
         ..Default::default()
     };
+    #[cfg(debug_assertions)]
+    if let Some(timeout) = std::env::var("DIM_TEST_APP_SERVER_STARTUP_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        config.startup_timeout = std::time::Duration::from_millis(timeout);
+    }
     let mut threads = 2usize;
     let mut model_config = None;
     let mut mock_model = false;

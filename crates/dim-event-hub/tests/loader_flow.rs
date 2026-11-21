@@ -5,7 +5,7 @@
 //! from the declaration current at the write, the install's shared delivery
 //! budget, and the contract's field bounds (design §2.1, §2.4, §2.5, §3.2,
 //! §3.3, A.1 to A.3, A.5).
-mod support;
+use crate::support;
 
 use dim_agent_types::InputMode;
 use dim_event_hub::{DeclareRequest, PublishRequest, ToTarget, TypeDeclaration};

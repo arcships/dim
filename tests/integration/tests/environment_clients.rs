@@ -1,4 +1,4 @@
-mod local_support;
+use crate::local_support;
 
 use dim_agent_capabilities::environment_clients::{
     ClientChannel, ClientPresence, ClientsChanged, SessionPresences, clients_changes,
