@@ -822,22 +822,21 @@ fn create_staged_file(
     );
     match created {
         Ok(file) => {
+            let staging = StagingDirectory {
+                parent,
+                dir: directory,
+                #[cfg(target_os = "macos")]
+                acl: inherited.file,
+            };
             #[cfg(target_os = "macos")]
             if inherited.present
                 && let Err(error) = require_no_acl(&file)
             {
-                remove_staging_entry(&parent, name);
+                let _ = remove_file_entry(&staging.dir, std::ffi::OsStr::new(STAGED_FILE));
+                remove_staging_entry(&staging.parent, name);
                 return Err(classify(error));
             }
-            Ok((
-                file,
-                StagingDirectory {
-                    parent,
-                    dir: directory,
-                    #[cfg(target_os = "macos")]
-                    acl: inherited.file,
-                },
-            ))
+            Ok((file, staging))
         }
         Err(error) => {
             remove_staging_entry(&parent, name);
@@ -926,7 +925,8 @@ fn remove_staging_entry(parent: &std::fs::File, name: &std::ffi::OsStr) {
     }
 }
 
-/// Removes the file entry `name` below `parent`.
+/// Removes the file entry `name` below `parent`. Cleanup callers ignore a
+/// failure, because the entry may already be gone.
 #[cfg(unix)]
 fn remove_file_entry(parent: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
@@ -937,17 +937,6 @@ fn remove_file_entry(parent: &std::fs::File, name: &std::ffi::OsStr) -> std::io:
         Ok(())
     } else {
         Err(std::io::Error::last_os_error())
-    }
-}
-
-/// Removes the staged file inside a checked staging directory.
-#[cfg(unix)]
-fn remove_staged_file(staging: &StagingDirectory) {
-    use std::os::fd::AsRawFd;
-    if let Ok(name) = c_name(std::ffi::OsStr::new(STAGED_FILE)) {
-        // SAFETY: the directory handle and the NUL-terminated name are live
-        // for the call.
-        unsafe { libc::unlinkat(staging.dir.as_raw_fd(), name.as_ptr(), 0) };
     }
 }
 
@@ -1436,7 +1425,7 @@ impl Target {
     fn remove_staged(&self, staged: &Staged) {
         #[cfg(unix)]
         if let Some(staging) = &staged.staging {
-            remove_staged_file(staging);
+            let _ = remove_file_entry(&staging.dir, std::ffi::OsStr::new(STAGED_FILE));
             return remove_staging_entry(&staging.parent, &staged.name);
         }
         match self {
