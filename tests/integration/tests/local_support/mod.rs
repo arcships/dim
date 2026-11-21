@@ -12,7 +12,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        ExecShellRuntime, ExecHost, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        ExecHost, ExecShellRuntime, Os, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     model_provider::ModelProviderPlugin,
     permission::{CommandRules, NoCommandRules},

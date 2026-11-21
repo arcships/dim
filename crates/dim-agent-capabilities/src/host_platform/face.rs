@@ -435,7 +435,7 @@ impl HostDispatch for Dispatch {
                     } => (
                         Some(
                             owner
-                                .command(&task_id)
+                                .command_task(&task_id)
                                 .map_err(|e| exec_error("task_unknown", e.to_string()))?,
                         ),
                         None,
@@ -631,7 +631,7 @@ impl HostDispatch for Dispatch {
             }
             let task = self
                 .owner
-                .command(&task_id)
+                .command_task(&task_id)
                 .map_err(|e| exec_error("task_unknown", e.to_string()))?;
             return Ok(Value::cancellable_future(async move {
                 rutis_bridge::session::arg(&task.wait(timeout_ms).await)
@@ -657,7 +657,7 @@ impl HostDispatch for Dispatch {
                 }));
             }
             let task = owner
-                .command(&task_id)
+                .command_task(&task_id)
                 .map_err(|e| exec_error("task_unknown", e.to_string()))?;
             let kill = method == "kill";
             return Ok(Value::future(async move {

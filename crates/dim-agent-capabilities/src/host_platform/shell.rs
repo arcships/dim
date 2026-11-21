@@ -1,5 +1,5 @@
 use super::{
-    ExecShellRuntime, ExecHost, ProcessSpec, ProcessSpecError, PtyProcessTree, PtySize,
+    ExecHost, ExecShellRuntime, ProcessSpec, ProcessSpecError, PtyProcessTree, PtySize,
     ShellEdition, ShellStatus,
 };
 use crate::workspace_tools::{
@@ -282,7 +282,14 @@ impl ShellTask {
     }
     pub(crate) async fn wait(&self, ms: Option<u64>) -> Value {
         let end = if let Some(ms) = ms {
-            tokio::select! {biased; end=self.done()=>end,_=tokio::time::sleep(Duration::from_millis(ms))=>{self.timeout.cancel(); self.done().await}}
+            tokio::select! {
+                biased;
+                end = self.done() => end,
+                _ = tokio::time::sleep(Duration::from_millis(ms)) => {
+                    self.timeout.cancel();
+                    self.done().await
+                }
+            }
         } else {
             self.done().await
         };

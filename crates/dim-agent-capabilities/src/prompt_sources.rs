@@ -7,7 +7,7 @@ use crate::{
     context_block,
     host::{HostError, HostFuture, LoadPrompt, PromptHost},
     host_platform::{
-        ExecShellRuntime, HostInfo, ExecHost, Os, OutputEncoding, ShellEdition, ShellStatus,
+        ExecHost, ExecShellRuntime, HostInfo, Os, OutputEncoding, ShellEdition, ShellStatus,
     },
     prompt::Prompt,
     prompt_registry::{PromptRegistry, PromptRegistryPlugin, targets},
