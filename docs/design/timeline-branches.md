@@ -674,6 +674,19 @@ branch is an error. This read writes no facts and does not reopen an ended line.
 have no own history; its fixed directory end identity remains even when the
 `end` detail is unavailable.
 
+`session.model.get {sessionId, branchId, through?}` (v3, listed in `hello.features` with the
+other Session methods under `session.attach`'s admission) reads one line's adopted configuration at
+that line's own cutoff: `{branchId, through, configuration: {model: {providerId, modelId},
+capabilitySnapshot?, modelPreferences?} | null}`. The returned `through` is always the requested
+line's committed cutoff, never the sequence of an ancestor's adoption, so a client applies only
+that line's `Configuration` events whose `sequence > through` and refreshes by calling again without
+`through`. An open line reads from its owner at the committed head, waiting for the Dispatcher, so
+an adoption committed just before the call is included rather than missed. An ended line reads at
+its fixed head through the ancestor chain and is not reopened; an explicit `through` reads the same
+chain at that cutoff, and a value past the line's head is refused as a future sequence. An unknown
+line is an error. Old servers do not advertise the method: a client then uses the attach reply for
+the root or the line attach names, and does not present the root's configuration as another line's.
+
 Three rules about `head` decide what a client may do with it:
 
 - An `ended` line's `head` and `endEvent` are fixed. The client passes `head` as `through` to `session.history` to
@@ -719,7 +732,8 @@ New public content:
 - the `branch_changed` reason a PromptSuggestion clearing notice and refusal carry;
 - a `BranchSource` kind for a line the user opened;
 - the roster's key, `branch:roster`, announced to the model through the `<dim-branch-lines>` guide entry;
-- two refusal codes, `branch_not_opener` and `branch_limit_reached`.
+- two refusal codes, `branch_not_opener` and `branch_limit_reached`;
+- one branch-qualified read, `session.model.get`, which answers a line's adopted configuration at that line's own committed cutoff.
 
 BranchLine's service is read only by the tool, inside the same plugin. The turn-end signal is crate-internal, beside `TreeCommands.page` and `head`: it is not exported, and the TypeScript binding does not change.
 

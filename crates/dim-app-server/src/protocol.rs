@@ -128,6 +128,7 @@ pub enum Call {
     PermissionUpdate(UpdatePermission),
     ExecStop(StopExec),
     SessionSkills(BranchRequest),
+    ModelGet(GetModel),
     ModelUpdate(UpdateModel),
     PromptRefresh(PromptRefresh),
     SessionMcp(SessionId),
@@ -372,6 +373,16 @@ pub struct BranchRequest {
     pub session_id: String,
     pub branch_id: String,
 }
+/// `session.model.get`: one line's adopted configuration at that line's own
+/// cutoff. `through` fixes an earlier committed cutoff; absent reads the head.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetModel {
+    pub session_id: String,
+    pub branch_id: String,
+    #[serde(default, deserialize_with = "optional_non_null")]
+    pub through: Option<u64>,
+}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdatePermission {
@@ -503,6 +514,26 @@ pub struct ConfigurationResult {
 pub struct ModelUpdateResult {
     pub model: ModelId,
     pub outcome: &'static str,
+}
+/// One line's adopted configuration as `session.model.get` answers it: the
+/// same values its `context/configured` event carries, at the requested
+/// line's own cutoff.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelGetResult {
+    pub branch_id: String,
+    /// The requested line's committed cutoff, never an ancestor's sequence.
+    pub through: u64,
+    pub configuration: Option<ModelConfigurationView>,
+}
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelConfigurationView {
+    pub model: ModelId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capability_snapshot: Option<Box<dim_agent_types::ModelCapabilitySnapshot>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_preferences: Option<dim_agent_types::ModelPreferences>,
 }
 /// The `session.methods` reply: the declared methods of the namespaces the
 /// Session lists whose providers are active, each `{name, mutating}`.
@@ -903,7 +934,7 @@ pub struct BranchCreate {
 /// Methods still decoded by the built-in protocol cannot be shadowed by
 /// runtime contributions. Session-looking names not listed here remain valid
 /// contributed names (for example `session.shell`).
-const BUILTIN_METHODS: [&str; 41] = [
+const BUILTIN_METHODS: [&str; 42] = [
     "hello",
     "daemon.ping",
     "daemon.shutdown",
@@ -919,6 +950,7 @@ const BUILTIN_METHODS: [&str; 41] = [
     "ui.replace",
     "session.create",
     "session.model.preview",
+    "session.model.get",
     "session.summaries",
     "session.catalog",
     "session.catalog.cancel",
@@ -999,6 +1031,7 @@ pub fn decode(bytes: &[u8]) -> Result<Request, (Option<RequestId>, RpcError)> {
             "daemon.shutdown" => Call::Shutdown(params(raw_params)?),
             "session.create" => Call::Create(Box::new(params(raw_params)?)),
             "session.model.preview" => Call::ModelPreview(params(raw_params)?),
+            "session.model.get" => Call::ModelGet(params(raw_params)?),
             "session.summaries" => Call::Summaries(params(raw_params)?),
             "session.catalog" => Call::Catalog(params(raw_params)?),
             "session.catalog.cancel" => Call::CatalogCancel(params(raw_params)?),
@@ -1464,6 +1497,7 @@ pub enum Reply {
     Permission(PermissionResult),
     ExecEnded(dim_agent_types::ExecEndedData),
     SessionSkills(SessionSkillsResult),
+    ModelGet(ModelGetResult),
     ModelUpdate(ModelUpdateResult),
     Configuration(ConfigurationResult),
     McpState(McpStateResult),

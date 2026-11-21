@@ -170,7 +170,7 @@ absence from a missing start event in the window:
 
 | State | Required read and merge |
 | --- | --- |
-| Adopted model and preferences | The attach reply; a `context/configured` in the window is historical display, not a substitute for the current adopted value. |
+| Adopted model and preferences | `session.model.get {sessionId, branchId, through?}`: the line's own adopted configuration at its own committed cutoff. Apply only that line's `Configuration` events whose `sequence > through`, and refresh by calling again without `through`. An ended line answers at its fixed head without reopening; an unknown line is an error. The attach reply carries the root's configuration and the configured conversation's `defaultBranch`; a `context/configured` in the window is historical display, not a substitute. Without the feature, a client uses the attach reply for the root and for the line attach names; for any other line it reports the limitation instead of showing the root's configuration. |
 | Permission | `session.permission.get`; later policy notices update it. |
 | Active turn and output | Current running/turn/request state and output block identities; a window without `turn/start` cannot prove the branch idle. |
 | Pending questions | `session.question.pending` ([Questions §3.5](plugins/Questions.md#35-pending-question-read)); join later tool results by call identity. |

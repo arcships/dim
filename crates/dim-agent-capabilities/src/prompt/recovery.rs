@@ -951,12 +951,7 @@ impl Projection {
         let mut state = Self::default();
         if let Some(row) = last(
             timeline,
-            request(
-                TimelineQueryScope::Chain,
-                through,
-                &["context/configured"],
-                &["data"],
-            ),
+            crate::timeline_tree::read::configuration_query(Some(through)),
         )
         .await?
         {

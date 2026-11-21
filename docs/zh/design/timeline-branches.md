@@ -559,6 +559,8 @@ WorkspaceTools 不变。
 
 目录读取不访问历史，显示字段为空或省略。`session.branch.get {sessionId, branchId}`（v3，在 `hello.features` 单独声明）读取一条线的目录记录和显示详情：`purpose` 为创建提示的首行；`cutMessages` 为该分叉点继承的用户输入数，排除截止位置前已删除的输入；`end` 为可用的 `BranchEndData`。main 的前两项为空，没有可读结束事实时 `end` 为空。该读取由 TimelineTree 完成点查与固定前缀计数；未知分支和读取失败在本次详情调用中报错，不阻断目录列举，不写事实，也不重新打开结束的线。CLI 在选中一条线时才读取详情。
 
+`session.model.get {sessionId, branchId, through?}`（v3，与其他 Session 方法一起列在 `hello.features`，准入与 `session.attach` 相同）读取一条线在它自己截止位上的已采纳配置：`{branchId, through, configuration: {model: {providerId, modelId}, capabilitySnapshot?, modelPreferences?} | null}`。返回的 `through` 永远是所请求这条线自己的已提交截止位，绝不是祖先某次采纳的序号，所以客户端只应用这条线上 `sequence > through` 的 `Configuration` 事件，刷新时不传 `through` 再调一次。打开的线由它的 owner 在已提交头上读取，先等 Dispatcher 追平，所以刚提交的采纳也会包含在内，不会被漏掉。已结束的线按它固定的头经祖先链读取，不会被重新打开；传入 `through` 时按同一规则读那个截止位，超过这条线头的值按未来序号拒绝。不存在的线报错。旧服务器不宣告这个方法：客户端对根线或 attach 命名的线继续用 attach 回复，绝不把根线的配置当成另一条线的。
+
 
 `head` 有三条规则，决定客户端能用它做什么：
 
@@ -620,7 +622,8 @@ WorkspaceTools 不变。
 - PromptSuggestion 清除通知与拒绝携带的 `branch_changed` 原因；
 - 一个 `BranchSource` 变体，表示用户开的线；
 - 名册的 key `branch:roster`，经 `<dim-branch-lines>` 指南条目告知模型；
-- 两个拒绝码，`branch_not_opener` 与 `branch_limit_reached`。
+- 两个拒绝码，`branch_not_opener` 与 `branch_limit_reached`；
+- 一个按分支读取的接口，`session.model.get`，回答一条线在它自己已提交截止位上的已采纳配置。
 
 BranchLine 的服务只由同一插件里的工具读取。轮次结束信号是 crate 内部的，与 `TreeCommands.page`、`head` 并列：它不导出，TypeScript 绑定不变。
 

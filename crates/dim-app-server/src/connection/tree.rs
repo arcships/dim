@@ -3,9 +3,10 @@ use crate::tree_protocol as wire;
 use dim_agent_capabilities::input_queue::{
     CheckInterrupted, SubmitCheckRequest, SubmitChecks, SubmitDecision, SubmitEntry, append_blocks,
 };
+use dim_agent_capabilities::prompt::Prompt;
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_runtime::{
-    BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
+    AgentError, BranchOptions, InputCommit, QueryComparison, QueryFilter, QueryOperand, QueryOrder,
     QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue,
     TimelineQuery,
 };
@@ -579,6 +580,64 @@ impl Connection {
         entry.cut_messages = read.cut_messages;
         entry.end = read.end;
         Ok(Reply::BranchGet(entry))
+    }
+
+    /// `session.model.get`: the configuration the requested line adopted at
+    /// that line's own cutoff. An open line answers from its owner; an ended
+    /// line or an explicit earlier cutoff reads the tree's chain at its fixed
+    /// or requested head. The App Server owns none of the answer.
+    pub(super) async fn model_get(
+        &self,
+        rpc: &RpcService,
+        params: GetModel,
+    ) -> Result<Reply, RpcError> {
+        let session = self.session(rpc, &params.session_id)?;
+        let branch = params.branch_id;
+        let tree = session
+            .session_service::<TreeCommands>()
+            .map_err(RpcError::from)?;
+        let read = match params.through {
+            Some(through) => {
+                tree.adopted_configuration(branch.clone(), Some(through))
+                    .await
+            }
+            None => match session.service::<Prompt>(&branch) {
+                Ok(prompt) => match prompt.adopted_configuration().await {
+                    // The line ended or began closing after it was published:
+                    // its own facts still answer at its fixed head.
+                    Err(AgentError::BranchEnded(_))
+                    | Err(AgentError::Cancelled(_))
+                    | Err(AgentError::Closed(_)) => {
+                        tree.adopted_configuration(branch.clone(), None).await
+                    }
+                    read => read,
+                },
+                Err(AgentError::BranchEnded(_)) => {
+                    tree.adopted_configuration(branch.clone(), None).await
+                }
+                Err(error) => Err(error),
+            },
+        }
+        .map_err(RpcError::from)?;
+        let (configuration, through) = read;
+        Ok(Reply::ModelGet(ModelGetResult {
+            branch_id: branch,
+            through,
+            configuration: configuration.map(|settings| {
+                let model_preferences = crate::provider::adopted_selection_preferences(
+                    settings.config.as_ref(),
+                    settings.metadata.as_ref(),
+                );
+                ModelConfigurationView {
+                    model: dim_agent_types::ModelId {
+                        provider_id: settings.provider_id,
+                        model_id: settings.model_id,
+                    },
+                    capability_snapshot: settings.capability_snapshot.map(Box::new),
+                    model_preferences,
+                }
+            }),
+        }))
     }
 
     pub(super) async fn end_branch(

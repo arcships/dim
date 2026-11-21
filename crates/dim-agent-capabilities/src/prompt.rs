@@ -1063,6 +1063,24 @@ impl DynPlugin for PromptPlugin {
     }
 }
 impl Prompt {
+    /// The configuration this line adopted at its committed head, with that
+    /// cutoff. The read waits for the Dispatcher to reach the committed
+    /// sequence first, so a `context/configured` that committed just before
+    /// the call is included instead of being missed between an old snapshot
+    /// and a newer head.
+    pub async fn adopted_configuration(&self) -> Result<(Option<ModelConfiguration>, u64)> {
+        let through = self.timeline.committed();
+        self.advance(through).await?;
+        let configuration = self
+            .projection
+            .lock()
+            .unwrap()
+            .configuration
+            .as_ref()
+            .map(|data| (*data.settings).clone());
+        Ok((configuration, through))
+    }
+
     pub(crate) async fn initial_completion(&self) -> Result<()> {
         let mut opened = self.opened.subscribe();
         loop {
