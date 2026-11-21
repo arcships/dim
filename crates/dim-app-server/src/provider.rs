@@ -3,7 +3,6 @@
 mod auxiliary;
 mod drivers;
 mod editing;
-mod face;
 mod legacy;
 pub(crate) mod management;
 mod models;
@@ -1687,6 +1686,38 @@ enum Saved {
     Apply,
     /// Resolve at the model's declared defaults alone.
     Withhold,
+}
+
+impl dim_agent_capabilities::host::ConfigureModel for ProviderService {
+    fn configuration(
+        self: Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<String>,
+        preferences: ModelPreferences,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ModelSelection> {
+        Box::pin(async move {
+            ProviderService::configuration(
+                &self,
+                explicit,
+                cwd.as_deref().map(Path::new),
+                preferences,
+                &cancel,
+            )
+            .await
+        })
+    }
+
+    fn apply_preferences(
+        self: Arc<Self>,
+        current: dim_agent_types::ModelConfiguration,
+        update: dim_agent_types::ModelPreferenceUpdate,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ModelSelection> {
+        Box::pin(async move {
+            ProviderService::apply_preferences(&self, &current, &update, &cancel).await
+        })
+    }
 }
 
 impl ProviderService {
@@ -3434,8 +3465,8 @@ impl DynPlugin for ProviderPlugin {
                 ctx,
                 selection_host,
                 selectable_host,
-                auxiliary.clone(),
-                Some(auxiliary),
+                auxiliary,
+                Some(service.clone()),
             )?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)
