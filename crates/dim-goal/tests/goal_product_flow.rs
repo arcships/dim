@@ -1361,11 +1361,15 @@ async fn goal_evaluator_asks_again_and_continues() {
 
     // The first evaluator turn ends without a conclusion: Goal asks again on
     // the evaluator's own line.
-    wait_goal(&session, &child, r#"kind="evaluate-again""#).await;
-    let first_end = turn_ends(&session, &child).await[0];
+    let (follow_up, history) =
+        wait_goal_with_history(&session, &child, r#"kind="evaluate-again""#).await;
+    let first_end = history
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::TurnEnd(_)))
+        .expect("the evaluator's first turn ended before its follow-up");
     assert_eq!(
-        goal_block(&session, &child, r#"kind="evaluate-again""#).await,
-        texts::evaluate_again(&child, first_end),
+        follow_up.text,
+        texts::evaluate_again(&child, first_end.sequence),
         "the evaluator's follow-up"
     );
 
