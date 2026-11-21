@@ -166,62 +166,6 @@ impl ManagedWorktrees {
         branch: Option<&str>,
         cancel: &CancellationToken,
     ) -> Result<CreatedWorktree, WorktreeError> {
-        let source = source.to_owned();
-        let base = base.map(str::to_owned);
-        let branch = branch.map(str::to_owned);
-        let cancel = cancel.clone();
-        let admission = self.preparing.token();
-        if self.closing.is_cancelled() {
-            return Err(WorktreeError::Store("worktree owner is closing".into()));
-        }
-        let (offer, delivery) = tokio::sync::oneshot::channel();
-        let (accept, mut accepted) = tokio::sync::oneshot::channel();
-        let owner = self.clone();
-        self.preparing.spawn(async move {
-            let created = match owner
-                .checkout(&source, base.as_deref(), branch.as_deref(), &cancel)
-                .await
-            {
-                Ok(created) => created,
-                Err(error) => {
-                    let _ = offer.send(Err(error));
-                    return;
-                }
-            };
-            owner
-                .preparations
-                .lock()
-                .unwrap()
-                .insert(created.task_id.clone(), created.clone());
-            let handed = offer.send(Ok(created.clone())).is_ok()
-                && tokio::select! {
-                    delivered = &mut accepted => delivered.is_ok(),
-                    _ = owner.closing.cancelled() => {
-                        accepted.close();
-                        accepted.try_recv().is_ok()
-                    }
-                };
-            if !handed {
-                let _ = owner.discard(&created.reply()).await;
-            }
-        });
-        drop(admission);
-        let created = delivery
-            .await
-            .map_err(|error| WorktreeError::Store(error.to_string()))??;
-        accept
-            .send(())
-            .map_err(|_| WorktreeError::Store("worktree preparation stopped".into()))?;
-        Ok(created)
-    }
-
-    async fn checkout(
-        &self,
-        source: &Path,
-        base: Option<&str>,
-        branch: Option<&str>,
-        cancel: &CancellationToken,
-    ) -> Result<CreatedWorktree, WorktreeError> {
         let source = existing_directory(source).await?;
         let bare = self
             .git(&source, &["rev-parse", "--is-bare-repository"], cancel)
@@ -450,31 +394,11 @@ impl ManagedWorktrees {
             .await;
     }
 
-    pub(crate) fn adopted(&self, created: CreatedWorktree) -> CreatedWorktreeReply {
-        self.preparations.lock().unwrap().remove(&created.task_id);
-        created.reply()
-    }
-
     /// Removes what a failed creation made: the worktree and the branch this
     /// call created. A failure leaves both for the operator, reported by the
     /// caller; a retry never reuses the task id. A Session using the root or
     /// a subtree prevents removal under the store's ownership exclusion.
-    pub async fn discard(&self, reply: &CreatedWorktreeReply) -> Result<(), WorktreeError> {
-        let created = {
-            let mut pending = self.preparations.lock().unwrap();
-            match pending.entry(reply.task_id.clone()) {
-                std::collections::hash_map::Entry::Occupied(entry)
-                    if entry.get().reply() == *reply =>
-                {
-                    entry.remove()
-                }
-                _ => {
-                    return Err(WorktreeError::Invalid(
-                        "unknown worktree preparation".into(),
-                    ));
-                }
-            }
-        };
+    pub async fn discard(&self, created: &CreatedWorktree, _cancel: &CancellationToken) {
         self.rollback_add(
             &created.prepared.directory.repository,
             &created.prepared.directory.root,
@@ -482,7 +406,6 @@ impl ManagedWorktrees {
             &created.base,
         )
         .await;
-        Ok(())
     }
 
     /// Lists the recorded directories under the managed root, joined with Git

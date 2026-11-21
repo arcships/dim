@@ -1836,6 +1836,7 @@ impl Connection {
                 ));
             }
         };
+        let managed = rpc.ctx.get::<crate::worktrees::ManagedWorktrees>();
         let (session, worktree) = rpc
             .index
             .create_with_worktree(
@@ -1862,8 +1863,8 @@ impl Connection {
                     .delete(session.id())
                     .await
                     .map_err(RpcError::from)?;
-                if let Some((managed, created)) = &worktree {
-                    let _ = managed.discard(&created.reply()).await;
+                if let (Some(created), Some(managed)) = (&worktree, &managed) {
+                    managed.discard(created, &self.closed).await;
                 }
                 return Err(error);
             }
@@ -1880,7 +1881,7 @@ impl Connection {
                 session.config().model.metadata.as_ref(),
             ),
             sequence: session.sequence(ROOT_BRANCH_ID).map_err(RpcError::from)?,
-            worktree: worktree.map(|(managed, created)| managed.adopted(created)),
+            worktree: worktree.as_ref().map(|created| created.reply()),
         }))
     }
 
