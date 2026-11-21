@@ -911,23 +911,6 @@ impl ModelSelectionHost {
 
 const PROVIDER_SERVICE: &str = "providerService";
 
-impl HostDispatch for ModelSelectionHost {
-    fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({"resolve": "async"}))
-    }
-
-    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
-        if method != "resolve" {
-            return Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
-        }
-        let request: ModelSelectionRequest = crate::port_faces::request(PROVIDER_SERVICE, args)?;
-        let host = self.clone();
-        crate::port_faces::serving(PROVIDER_SERVICE, async move {
-            host.resolve(request, CancellationToken::new()).await
-        })
-    }
-}
-
 /// The environment variable names the owner reads credentials from, bound as
 /// the face's one operation. It answers from the owner's current state on
 /// every call, so a later owner can add a name without a consumer change.
@@ -1052,29 +1035,6 @@ impl SelectableModelsHost {
     }
 }
 
-impl HostDispatch for SelectableModelsHost {
-    fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({"selectableModels": "async", "selectableForModality": "async"}))
-    }
-
-    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
-        if !matches!(method, "selectableModels" | "selectableForModality") {
-            return Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
-        }
-        let crate::port_faces::Empty {} = crate::port_faces::request(PROVIDER_SERVICE, args)?;
-        let host = self.clone();
-        if method == "selectableModels" {
-            crate::port_faces::serving(PROVIDER_SERVICE, async move {
-                host.selectable_models(CancellationToken::new()).await
-            })
-        } else {
-            crate::port_faces::serving(PROVIDER_SERVICE, async move {
-                host.selectable_for_modality(CancellationToken::new()).await
-            })
-        }
-    }
-}
-
 /// One non-streaming request outside any Session: no tools, no Timeline.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1139,15 +1099,13 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-#[derive(Clone)]
-pub(crate) struct AuxiliaryModel(pub(crate) Arc<dyn CompleteAuxiliary>);
 
 /// Model selection and completion provided by the active model catalog.
 #[derive(Clone)]
 pub struct ProviderService {
     selection: ModelSelectionHost,
     selectable: SelectableModelsHost,
-    auxiliary: AuxiliaryModel,
+    auxiliary: Arc<dyn CompleteAuxiliary>,
     configuration: Option<Arc<dyn HostDispatch>>,
 }
 
@@ -1170,7 +1128,7 @@ impl ProviderService {
         let owner = Arc::new(Self {
             selection,
             selectable,
-            auxiliary: AuxiliaryModel(auxiliary),
+            auxiliary,
             configuration,
         });
         ctx.provide_as::<Self>(owner.clone())?;
@@ -1209,7 +1167,7 @@ impl ProviderService {
         request: AuxiliaryRequest,
         cancel: CancellationToken,
     ) -> Result<AuxiliaryReply, AuxiliaryError> {
-        self.auxiliary.0.complete(model, request, cancel).await
+        self.auxiliary.complete(model, request, cancel).await
     }
 }
 
@@ -1225,9 +1183,29 @@ impl HostDispatch for ProviderService {
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         match method {
-            "resolve" => self.selection.invoke(method, args),
-            "selectableModels" | "selectableForModality" => self.selectable.invoke(method, args),
-            "complete" => self.auxiliary.invoke(method, args),
+            "resolve" => {
+                let request: ModelSelectionRequest =
+                    crate::port_faces::request(PROVIDER_SERVICE, args)?;
+                let host = self.clone();
+                crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                    host.resolve(request, CancellationToken::new()).await
+                })
+            }
+            "selectableModels" | "selectableForModality" => {
+                let crate::port_faces::Empty {} =
+                    crate::port_faces::request(PROVIDER_SERVICE, args)?;
+                let host = self.clone();
+                if method == "selectableModels" {
+                    crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                        host.selectable_models(CancellationToken::new()).await
+                    })
+                } else {
+                    crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                        host.selectable_for_modality(CancellationToken::new()).await
+                    })
+                }
+            }
+            "complete" => self.dispatch_complete(args),
             _ => match &self.configuration {
                 Some(owner) => owner.invoke(method, args),
                 None => Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method)),
