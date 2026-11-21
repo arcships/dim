@@ -1,4 +1,4 @@
-use super::{PreparedWorktree, SessionStore, WorktreeDirectory};
+use super::{PreparedWorktree, Store, WorktreeDirectory};
 use crate::protocol::SessionOrigin;
 use dim_agent_runtime::{AgentError, ReplyLanguage, SessionConfig};
 use dim_agent_types::grant::{GrantKind, GrantMode};
@@ -6,159 +6,8 @@ use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{WorktreeDirectoryRecord, WorktreeUsage};
-use dim_agent_runtime::{QueryPage, QueryResult, QuerySpec, Result, TimelineReadScope};
-use dim_agent_types::grant::SessionGrant;
-use rutis::host::BoxFuture;
-use std::{path::PathBuf, sync::Arc};
-use tokio_util::sync::CancellationToken;
-
-/// The Session repository operations of the public `store` face.
-#[derive(Clone)]
-pub struct Store(pub(super) Arc<SessionStore>);
-
-impl Store {
-    pub(crate) fn bind_timeline(&self, builder: &mut dim_agent_runtime::AgentBuilder) {
-        builder.timeline_store(self.0.timeline_store());
-    }
-
-    pub fn session_config(
-        &self,
-        session_id: &str,
-    ) -> impl Future<Output = Result<Option<SessionConfig>>> {
-        self.0.session_config(session_id)
-    }
-    pub fn query(
-        &self,
-        scope: &TimelineReadScope,
-        query: &QuerySpec,
-        page: Option<&QueryPage>,
-    ) -> impl Future<Output = Result<QueryResult>> {
-        self.0.query(scope, query, page)
-    }
-    pub fn catalog(
-        &self,
-        request: crate::protocol::Catalog,
-        agent: Option<String>,
-        version: u32,
-        hosts: Vec<String>,
-        closed: Vec<String>,
-        cancel: CancellationToken,
-    ) -> impl Future<Output = Result<crate::protocol::CatalogResult>> {
-        self.0
-            .catalog(request, agent, version, hosts, closed, cancel)
-    }
-    pub fn add_grant(
-        &self,
-        session_id: &str,
-        path: PathBuf,
-        kind: GrantKind,
-        mode: GrantMode,
-    ) -> impl Future<Output = Result<()>> {
-        self.0.add_grant(session_id, path, kind, mode)
-    }
-    pub fn remove_grant(
-        &self,
-        session_id: &str,
-        path: PathBuf,
-    ) -> impl Future<Output = Result<()>> {
-        self.0.remove_grant(session_id, path)
-    }
-    pub fn grants(&self, session_id: &str) -> impl Future<Output = Result<Vec<SessionGrant>>> {
-        self.0.grants(session_id)
-    }
-    pub fn set_session_language(
-        &self,
-        session_id: &str,
-        language: Option<ReplyLanguage>,
-    ) -> impl Future<Output = Result<()>> {
-        self.0.set_session_language(session_id, language)
-    }
-    pub fn creation_record(
-        &self,
-        session_id: &str,
-    ) -> impl Future<Output = Result<(SessionOrigin, Option<String>)>> {
-        self.0.creation_record(session_id)
-    }
-    pub fn owner(&self, id: &str) -> impl Future<Output = Result<Option<String>>> {
-        self.0.owner(id)
-    }
-    pub fn has_records(&self, id: &str) -> impl Future<Output = Result<bool>> {
-        self.0.has_records(id)
-    }
-    pub fn delete_session(&self, id: &str) -> impl Future<Output = Result<bool>> {
-        self.0.delete_session(id)
-    }
-    pub fn fork_session(
-        &self,
-        source: &str,
-        fork: &str,
-        at: u64,
-        config: &str,
-    ) -> impl Future<Output = Result<()>> {
-        self.0.fork_session(source, fork, at, config)
-    }
-    pub fn session_config_text(
-        &self,
-        session_id: &str,
-    ) -> impl Future<Output = Result<Option<String>>> {
-        self.0.session_config_text(session_id)
-    }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the face mirrors the owner's signature, one parameter per field the Session is created with"
-    )]
-    pub fn create_owned_session(
-        &self,
-        session_id: &str,
-        config: &SessionConfig,
-        agent_id: &str,
-        protocol_version: u32,
-        leader: Option<&str>,
-        origin: SessionOrigin,
-        worktree: Option<PreparedWorktree>,
-    ) -> impl Future<Output = Result<()>> {
-        self.0.create_owned_session(
-            session_id,
-            config,
-            agent_id,
-            protocol_version,
-            leader,
-            origin,
-            worktree,
-        )
-    }
-    pub fn worktree_directories(
-        &self,
-    ) -> impl Future<Output = Result<Vec<WorktreeDirectoryRecord>>> {
-        self.0.worktree_directories()
-    }
-    pub fn sessions_under_workspace(
-        &self,
-        root: &std::path::Path,
-    ) -> impl Future<Output = Result<Vec<String>>> {
-        self.0.sessions_under_workspace(root)
-    }
-    pub fn remove_worktree_directory(
-        &self,
-        directory: WorktreeDirectory,
-    ) -> impl Future<Output = Result<bool>> {
-        self.0.remove_worktree_directory(directory)
-    }
-    pub fn worktree_usages(
-        &self,
-        directory: WorktreeDirectory,
-    ) -> impl Future<Output = Result<Vec<WorktreeUsage>>> {
-        self.0.worktree_usages(directory)
-    }
-    pub fn remove_worktree(
-        &self,
-        directory: WorktreeDirectory,
-        remove: impl FnOnce(PathBuf) -> BoxFuture<'static, Result<()>>,
-    ) -> impl Future<Output = Result<bool>> {
-        self.0.remove_worktree(directory, remove)
-    }
-}
+use dim_agent_runtime::Result;
+use std::sync::Arc;
 
 #[derive(Deserialize)]
 #[serde(tag = "method", content = "request", rename_all = "camelCase")]
@@ -348,7 +197,11 @@ pub(super) struct Catalog {
     pub(super) closed: Vec<String>,
 }
 
-impl SessionStore {
+impl Store {
+    pub(crate) fn bind_timeline(&self, builder: &mut dim_agent_runtime::AgentBuilder) {
+        builder.timeline_store(self.timeline_store());
+    }
+
     pub async fn session_config(
         &self,
         session_id: &str,
@@ -505,7 +358,6 @@ impl HostDispatch for Store {
                     }
                     Request::AssociateWorktree(p) => {
                         owner
-                            .0
                             .associate_worktree(&p.session_id, p.directory(), p.subtree.into())
                             .await?;
                         json!({})
@@ -519,7 +371,7 @@ impl HostDispatch for Store {
                             .await?;
                         json!({"removed":removed})
                     }
-                    Request::Rows(rows) => rows.execute(&owner.0.timeline.db).await?,
+                    Request::Rows(rows) => rows.execute(&owner.timeline.db).await?,
                 })
             }
             .await;

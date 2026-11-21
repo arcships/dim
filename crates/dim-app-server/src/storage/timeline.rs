@@ -1303,7 +1303,7 @@ pub struct TurnWindow {
 
 /// Session directory service; Agent hosting owns the profile and owner meaning.
 #[derive(Clone)]
-pub struct SessionStore {
+pub struct Store {
     pub(super) timeline: Arc<SqliteTimelineStore>,
     binding: Arc<TimelineStoreBinding>,
     /// The file steps on the Session's resource node: Session files and the
@@ -1338,7 +1338,7 @@ pub struct PreparedWorktree {
     pub subtree: PathBuf,
 }
 
-impl SessionStore {
+impl Store {
     /// `ctx` is SessionStore's own context, from which each file step reads
     /// the node's FileStorage; `files_root` is the FileStorage root of the
     /// database directory.
@@ -1660,7 +1660,7 @@ impl DynPlugin for SessionStorePlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let db = ctx.require_at(&self.db)?;
-            let store = Arc::new(SessionStore::new(db, ctx.clone(), self.files_root));
+            let store = Arc::new(Store::new(db, ctx.clone(), self.files_root));
             let files = store.files.clone();
             let (timeline, owned_files, titles) =
                 (store.timeline.clone(), files.clone(), store.titles.clone());
@@ -1670,11 +1670,8 @@ impl DynPlugin for SessionStorePlugin {
                 timeline.close().await.map_err(Into::into)
             })?;
             files.start();
-            #[cfg(feature = "testing")]
-            ctx.provide_as::<SessionStore>(store.clone())?;
-            let binding = Arc::new(super::Store(store));
-            ctx.provide_as::<super::Store>(binding.clone())?;
-            ctx.provide_at(host_key("store"), binding as Arc<dyn HostDispatch>)?;
+            ctx.provide_as::<Store>(store.clone())?;
+            ctx.provide_at(host_key("store"), store as Arc<dyn HostDispatch>)?;
             let binding = Arc::new(SessionFiles(Arc::new(files)));
             ctx.provide_at(
                 host_key("sessionFiles"),

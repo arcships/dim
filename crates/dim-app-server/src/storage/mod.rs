@@ -23,7 +23,6 @@ pub(crate) use catalog::{ACTIVITY_KINDS, truncate_preview};
 pub use codec::NodeLoads;
 pub use dim_agent_capabilities::file_access::WorktreeDirectory;
 pub use export::export_timeline;
-pub use face::Store;
 pub use identities::initialize_session_output_id_index;
 pub use members::initialize_session_member_index;
 #[cfg(feature = "testing")]
@@ -42,6 +41,7 @@ pub use sqlite::{
 };
 pub(crate) use sqlite::{ImportUser, ReplaceUser, UserDecision, UserDocument, UserWriteError};
 pub use text::initialize_session_text_index;
+pub use timeline::Store as SessionStore;
 /// Derives every text candidate from the stored rows, in order: what an upgrade
 /// from a format before the index ran. A flow test compares a per-row rebuild
 /// against it. Feature `testing` only.
@@ -50,7 +50,7 @@ pub fn rebuild_text_index(connection: &rusqlite::Connection) -> dim_agent_runtim
     text::backfill(connection)
 }
 pub use timeline::{
-    PreparedWorktree, SessionStore, SessionStorePlugin, SqliteTimelineStore, TurnWindow,
+    PreparedWorktree, SessionStorePlugin, SqliteTimelineStore, Store, TurnWindow,
     WorktreeDirectoryRecord, WorktreeUsage,
 };
 

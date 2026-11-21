@@ -342,18 +342,9 @@ pub(super) fn envelope(result: Result<impl Serialize, MetadataError>) -> Value {
 impl super::Store {
     /// Reads committed title metadata without loading the Session.
     pub async fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError> {
-        self.0.metadata(session_id).await
+        self.metadata(session_id).await
     }
 
-    /// Admits the write when called; dropping the returned wait never cancels the write.
-    pub fn set_title(
-        &self,
-        session_id: &str,
-        expected_revision: u64,
-        title: Option<Title>,
-    ) -> impl Future<Output = Result<u64, MetadataError>> + Send + 'static {
-        self.0.set_title(session_id, expected_revision, title)
-    }
     pub(super) fn title_operation(&self, method: &str, args: RpcValue) -> Reply {
         match method {
             "readMetadata" => {

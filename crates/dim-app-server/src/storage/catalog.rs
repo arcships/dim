@@ -224,7 +224,7 @@ pub(super) fn backfill(connection: &Connection) -> Result<()> {
 }
 
 impl SessionStore {
-    pub(crate) async fn catalog(
+    pub async fn catalog(
         &self,
         request: Catalog,
         agent: Option<String>,
