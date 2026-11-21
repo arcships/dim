@@ -527,7 +527,7 @@ impl DynPlugin for PromptSuggestionPlugin {
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let methods = ctx.require_at(&self.methods)?;
             let tree = ctx.require_at(&self.tree)?;
-            let model = ModelHost::from_scope(ctx)?;
+            let model = ModelHost::from_scope(ctx, &self.model)?;
             let settings = match &self.settings {
                 Some(key) => ctx.get_at(key),
                 None => None,

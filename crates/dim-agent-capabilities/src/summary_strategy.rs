@@ -182,7 +182,7 @@ impl DynPlugin for ProductSummaryStrategyPlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let host = ModelHost::from_scope(ctx)?;
+            let host = ModelHost::from_scope(ctx, &self.model)?;
             let guide = ctx.require_at(&self.guide)?;
             guide.register(
                 ctx,

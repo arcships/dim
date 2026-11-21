@@ -1270,13 +1270,19 @@ pub enum InvocationMode {
 }
 
 impl ModelHost {
-    pub(crate) fn from_scope(ctx: &Ctx) -> rutis::Result<Arc<Self>> {
-        let wire = rutis_bridge::session::host_key("modelHost");
-        let native = rutis::host::Key::<Self>::of();
-        let scope = ctx
-            .isolate_label(&wire.erase())
-            .map_or_else(|| ctx.clone(), |label| ctx.isolate(native.erase(), &label));
-        Ok(scope.require_at(&native)?)
+    pub(crate) fn from_scope(
+        ctx: &Ctx,
+        key: &rutis::host::Key<dyn HostDispatch>,
+    ) -> rutis::Result<Arc<Self>> {
+        let face = ctx.require_at(key)?;
+        face.as_any()
+            .and_then(|owner| owner.downcast_ref::<Self>())
+            .cloned()
+            .map(Arc::new)
+            .ok_or_else(|| {
+                rutis::host::ErrorKind::PluginFailed("modelHost has no native binding".into())
+                    .into()
+            })
     }
 
     pub fn local(driver: Arc<dyn ModelDriver>) -> Self {
