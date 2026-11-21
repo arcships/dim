@@ -1,14 +1,12 @@
 //! Serialized host authority for source selection and cross-Session retirement.
 //! Connection resources and disposal belong exclusively to loader instances.
-use super::config::{
-    self, McpPluginServers, McpProjectEnablement, McpSecrets, McpServerSettings, McpSettings,
-};
+use super::config::{self, McpProjectEnablement, McpSecrets, McpServerSettings};
 use super::{
-    McpAuth, McpConnection, McpError, McpSource, Result, daemon_environment,
+    McpAuth, McpConnection, McpDocuments, McpError, McpSource, Result, daemon_environment,
     server::{McpRuntime, McpServer, McpServerError, McpServerPlugin, McpServerState},
     source_revision, sources_in_precedence,
 };
-use crate::settings::{SettingsScope, SettingsService};
+use crate::settings::{ProjectAuthorized, Settings, SettingsScope};
 use dim_agent_capabilities::host::CredentialVariablesHost;
 use dim_agent_runtime::{
     Modules, Names, SessionLifecycle, SessionLoader, SessionPhase, StateCell,
@@ -136,6 +134,7 @@ enum Command {
     Settle { reply: oneshot::Sender<Result<()>> },
 }
 pub struct Publication {
+    pub(super) documents: std::sync::Mutex<Option<Arc<McpDocuments>>>,
     commands: mpsc::Sender<Command>,
     released: watch::Sender<()>,
     applications: StateCell<BTreeMap<McpSource, McpApplication>>,
@@ -218,7 +217,7 @@ impl Publication {
 }
 
 pub struct McpPublication {
-    settings: Key<SettingsService>,
+    authority: Key<Settings>,
     credentials: Key<CredentialVariablesHost>,
 }
 struct Worker {
@@ -231,7 +230,7 @@ struct Worker {
 impl McpPublication {
     pub fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
-            settings: names.key()?,
+            authority: names.key()?,
             credentials: names.key()?,
         })
     }
@@ -258,7 +257,7 @@ impl McpPublication {
     }
 }
 impl Worker {
-    async fn run(mut self, settings: Arc<SettingsService>, stop: CancellationToken) -> Result<()> {
+    async fn run(mut self, stop: CancellationToken) -> Result<()> {
         let mut projection = Projection {
             port: self.port.clone(),
             credentials: self.credentials.clone(),
@@ -278,7 +277,10 @@ impl Worker {
                 _ = self.released.changed() => None,
                 _ = changes.changed() => None,
             };
-            projection.refresh(&settings, &operation).await;
+            let settings = self.port.documents.lock().unwrap().clone();
+            if let Some(settings) = &settings {
+                projection.refresh(settings, &operation).await;
+            }
             match command {
                 Some(Command::Acquire {
                     owner,
@@ -289,9 +291,14 @@ impl Worker {
                     if reply.is_closed() {
                         continue;
                     }
-                    let result = projection
-                        .acquire(&settings, owner, project, id, &operation)
-                        .await;
+                    let result = match &settings {
+                        Some(settings) => {
+                            projection
+                                .acquire(settings, owner, project, id, &operation)
+                                .await
+                        }
+                        None => Err(McpError::Closed),
+                    };
                     if let Err(Ok(lease)) = reply.send(result) {
                         let references = projection
                             .generations
@@ -343,15 +350,15 @@ impl DynPlugin for McpPublication {
         "McpPublication"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.settings.erase(), self.credentials.erase()]
+        vec![self.authority.erase(), self.credentials.erase()]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let settings = ctx.require_at(&self.settings)?;
             let credentials = ctx.require_at(&self.credentials)?;
             let (commands, receiver) = mpsc::channel(64);
             let (released, releases) = watch::channel(());
             let port = Arc::new(Publication {
+                documents: Default::default(),
                 commands,
                 released,
                 applications: StateCell::new(BTreeMap::new()),
@@ -366,7 +373,7 @@ impl DynPlugin for McpPublication {
             ctx.provide_as::<Publication>(port)?;
             let stop = ctx.cancellation_token();
             ctx.effect(move || {
-                let task = tokio::spawn(worker.run(settings, stop.clone()));
+                let task = tokio::spawn(worker.run(stop.clone()));
                 async move {
                     stop.cancel();
                     Ok(task.await??)
@@ -417,16 +424,17 @@ impl Projection {
     fn withdrawn(
         &self,
         generation: &Generation,
-        projects: &[(usize, std::path::PathBuf)],
+        projects: &[ProjectAuthorized],
         enablement: &McpProjectEnablement,
     ) -> bool {
         // A project entry runs only while the user's record names it, and that
         // record is readable whenever the disable is: the source may be
         // unreadable, so its last `current` state is not consulted here.
         if let McpSource::Project(root) = generation.source
-            && !projects.iter().any(|(project, workspace)| {
-                *project == root
-                    && workspace
+            && !projects.iter().any(|project| {
+                project.root == root
+                    && project
+                        .cwd
                         .to_str()
                         .is_some_and(|workspace| enablement.contains(workspace, &generation.id))
             })
@@ -440,13 +448,14 @@ impl Projection {
             }
         })
     }
-    async fn refresh(&mut self, settings: &SettingsService, cancel: &CancellationToken) {
-        let projects = settings.project_sources();
+    async fn refresh(&mut self, settings: &McpDocuments, cancel: &CancellationToken) {
+        let projects = settings.authority.projects();
         let enablement = if projects.is_empty() {
             Ok(McpProjectEnablement::default())
         } else {
             settings
-                .read::<McpProjectEnablement>(SettingsScope::User, cancel)
+                .enablement
+                .read(SettingsScope::User, cancel)
                 .await
                 .map(|snapshot| snapshot.document)
         };
@@ -456,15 +465,20 @@ impl Projection {
             Ok(McpSecrets::default())
         } else {
             settings
-                .read::<McpSecrets>(SettingsScope::User, cancel)
+                .secrets
+                .read(SettingsScope::User, cancel)
                 .await
                 .map(|snapshot| snapshot.document)
         };
         let secrets_unreadable = secrets.is_err();
         let secrets = secrets.unwrap_or_default();
-        for source in [McpSource::User, McpSource::Plugins]
+        for (source, workspace) in [(McpSource::User, None), (McpSource::Plugins, None)]
             .into_iter()
-            .chain(projects.iter().map(|(root, _)| McpSource::Project(*root)))
+            .chain(
+                projects
+                    .iter()
+                    .map(|project| (McpSource::Project(project.root), project.cwd.to_str())),
+            )
         {
             if secrets_unreadable && matches!(source, McpSource::Project(_)) {
                 let intent = self.sources.entry(source).or_insert_with(|| Source {
@@ -479,11 +493,13 @@ impl Projection {
             }
             let read = match source.scope() {
                 Some(scope) => settings
-                    .read::<McpSettings>(scope, cancel)
+                    .servers
+                    .read(scope, cancel)
                     .await
                     .map(|snapshot| (snapshot.revision, snapshot.document.into_parts().0)),
                 None => settings
-                    .read::<McpPluginServers>(SettingsScope::User, cancel)
+                    .plugins
+                    .read(SettingsScope::User, cancel)
                     .await
                     .map(|snapshot| (snapshot.revision, snapshot.document.entries())),
             };
@@ -498,25 +514,18 @@ impl Projection {
                         degraded: None,
                     });
                     intent.error = Some("MCP source could not be read");
-                    if let McpSource::Project(root) = source {
-                        let workspace =
-                            config::workspace(settings, SettingsScope::Project(root)).ok();
+                    if matches!(source, McpSource::Project(_)) {
                         for (id, config) in &mut intent.current {
                             let (McpServerSettings::Stdio { enabled, .. }
                             | McpServerSettings::Remote { enabled, .. }) = config;
                             *enabled = Some(
                                 workspace
-                                    .as_deref()
                                     .is_some_and(|workspace| enablement.contains(workspace, id)),
                             );
                         }
                     }
                     continue;
                 }
-            };
-            let workspace = match source.scope() {
-                Some(scope @ SettingsScope::Project(_)) => config::workspace(settings, scope).ok(),
-                _ => None,
             };
             // A project source is served from `.mcp.json` and the workspace's
             // withheld records, so its applied token names both (D5, D23). An
@@ -554,10 +563,9 @@ impl Projection {
                     McpSource::Project(_) => config::Origin::Workspace { overlay: secret },
                 };
                 let expansion = config::connected(
-                    settings,
                     config,
                     config::Connection {
-                        scope: source.scope(),
+                        workspace,
                         id: &id,
                         secret,
                         origin,
@@ -665,7 +673,7 @@ impl Projection {
     }
     async fn acquire(
         &mut self,
-        settings: &SettingsService,
+        settings: &McpDocuments,
         owner: McpOwner,
         project: Option<usize>,
         id: String,

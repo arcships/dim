@@ -40,7 +40,7 @@ impl Capture {
         Ok(Self {
             services,
             mcp: dim_app_server::mcp::owner_key(),
-            settings: names.key()?,
+            settings: Key::of(),
             files: names.key()?,
         })
     }

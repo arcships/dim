@@ -51,7 +51,7 @@ use dim_agent_types::{ModalityModelSnapshot, ModelCapabilitySnapshot, ModelId};
 use dim_app_server::{
     methods::ManagementMethods,
     protocol::Empty,
-    settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
+    settings::{BusinessDocument, RegisteredDocument, Settings, SettingsError, SettingsScope},
 };
 pub use engine::{
     ArtifactHook, Clock, DEFAULT_LIST_LIMIT, MAX_INLINE_BYTES, MAX_LIST_LIMIT, MAX_RESULT_BYTES,
@@ -1045,7 +1045,7 @@ pub(crate) enum OcrLookup {
 }
 
 pub(crate) async fn evaluate(
-    settings: &SettingsService,
+    settings: &RegisteredDocument<ModalitySettings>,
     selectable: &SelectableModelsHost,
     selection: &ModelSelectionHost,
     ctx: &Ctx,
@@ -1054,7 +1054,7 @@ pub(crate) async fn evaluate(
     ocr: OcrLookup,
 ) -> Result<(String, Evaluation), RpcError> {
     let snapshot = settings
-        .read::<ModalitySettings>(SettingsScope::User, cancel)
+        .read(SettingsScope::User, cancel)
         .await
         .map_err(settings_error)?;
     let selectable_models = selectable
@@ -1195,7 +1195,7 @@ fn selection_refusal(
 /// Process owner of the `modality` Settings source and the `modality.*`
 /// management namespace (Modality §1, A.3).
 pub struct ModalityPlugin {
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     methods: Key<ManagementMethods>,
     selection: Key<ModelSelectionHost>,
     selectable: Key<SelectableModelsHost>,
@@ -1237,7 +1237,7 @@ impl DynPlugin for ModalityPlugin {
             let selection = ctx.require_at(&self.selection)?;
             let selectable = ctx.require_at(&self.selectable)?;
             let files = ctx.require_at(&self.files)?.open(ctx)?;
-            settings.register::<ModalitySettings>(ctx)?;
+            let settings = settings.register_document::<ModalitySettings>(ctx)?;
             // The task layer: one state for the methods, the scheduler and
             // `modalityTasks` (A.3, A.6).
             let shared = Arc::new(engine::Shared::new(
@@ -1397,7 +1397,7 @@ impl DynPlugin for ModalityPlugin {
                                     }
                                 }
                                 let updated = settings
-                                    .update::<ModalitySettings>(
+                                    .update(
                                         SettingsScope::User,
                                         &params.expected_revision,
                                         document,

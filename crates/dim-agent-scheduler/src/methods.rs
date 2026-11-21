@@ -19,7 +19,7 @@ use dim_app_server::{
     ProcessActivity,
     methods::ManagementMethods,
     plugin_files::FileScope,
-    settings::{BusinessDocument, SettingsError, SettingsService},
+    settings::{BusinessDocument, RegisteredDocument, Settings, SettingsError},
 };
 use jiff::{SignedDuration, Timestamp};
 use rutis::Ctx;
@@ -43,7 +43,7 @@ pub(crate) type DeliveryHolds =
 pub struct SchedulerPlugin {
     activity: Key<ProcessActivity>,
     pub(crate) deliveries: DeliveryHolds,
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     files: Key<dim_app_server::plugin_files::PluginFiles>,
     methods: Key<ManagementMethods>,
     sessions: Key<dyn HostDispatch>,
@@ -113,7 +113,7 @@ impl DynPlugin for SchedulerPlugin {
             let files = ctx.require_at(&self.files)?.open(ctx)?;
             let methods = ctx.require_at(&self.methods)?;
             let sessions = ctx.require_at(&self.sessions)?;
-            settings.register::<crate::document::ScheduleDocument>(ctx)?;
+            let settings = settings.register_document::<crate::document::ScheduleDocument>(ctx)?;
             let shared = Arc::new(Shared {
                 ctx: ctx.clone(),
                 activity,
@@ -352,7 +352,7 @@ pub(crate) struct Shared {
     pub(crate) clock: Arc<dyn Clock>,
     pub(crate) deliveries: DeliveryHolds,
     pub(crate) sessions: Arc<dyn HostDispatch>,
-    pub(crate) settings: Arc<SettingsService>,
+    pub(crate) settings: Arc<RegisteredDocument<crate::document::ScheduleDocument>>,
     pub(crate) files: Arc<FileScope>,
     /// Serializes retention passes, so a pass never deletes what another reads.
     pub(crate) pruning: tokio::sync::Mutex<()>,
@@ -527,7 +527,7 @@ pub(crate) async fn read_document(
 > {
     shared
         .settings
-        .read::<crate::document::ScheduleDocument>(SettingsScope::User, cancel)
+        .read(SettingsScope::User, cancel)
         .await
         .map_err(read_failure)
 }

@@ -11,7 +11,7 @@ directly. The rutis binding dispatches its data arguments and returns its result
 | `fileStorage`, `mentionIndex` | File tools and workspace completion use [fsHost §4](../resource-faces.md#4-fshost), including mentions. Storage clients use the owner's file and lease operations. An opened reader uses openRead/readAt/closeRead. |
 | `sessionStore` | Session repository, metadata, attachments, Timeline and worktree associations use store, store.readMetadata/setTitle, sessionFiles, timelineStore and store.associateWorktree respectively. Session construction binds the existing Session-scoped timelineStore. Path import and fileId reads use the [Session files contract](../appserver/session-files.md). |
 | `pluginFiles` | Scheduler uses pluginFiles.open(). EventHub retains a caller-managed scope through settlement of admitted publishes across row restarts. Both use scope.withLock and lease.read/replace for the same atomic text update. Scope.list/remove and lease.readBytes/replaceBytes have their existing contracts. |
-| `settingsService` | Declared sources use settings.register/read/update/projects. PluginManager uses the owner-write form for CAS edits and applies its existing writeOnly redaction. SettingsMethods retains the local client-write path. [Settings contract](../appserver/settings-service.md#42-service-settings-owner-path). |
+| `settings` | Declared sources use settings.register/read/update/projects. PluginManager uses the owner-write form for CAS edits and applies its existing writeOnly redaction. SettingsMethods retains the local client-write path. [Settings contract](../appserver/settings-service.md#42-service-settings-owner-path). |
 | Permission, PromptSources, Skills catalog/management and execution/shell Settings → resource owners | Use the node facts and file operations in the [resource caller matrix](../resource-faces.md#6-provider-binding-and-the-owners-that-use-each-operation), including execHost.info and fsHost resolution and reads. |
 
 ## Additional public bindings
@@ -134,7 +134,7 @@ serves declared sources and excludes the native `mcp-secrets` document.
 | Caller → Settings | Current operation and contract |
 | --- | --- |
 | PluginManager; declared-source consumers | Filter declarations by live loader instance using declaredBy above. Reuse settings.read/update/projects for owner edits and reads. SettingsMethods uses its client path and lists only declared sources. |
-| Agents create/restore, Hooks and MCP management | authorize_project(cwd,cancelled) → root registers the authorized root and publishes the existing notice. It is a write performed at trusted admission. project_root/path/sources are reads covered by settings.projects. |
+| Agents create/restore, Hooks and MCP management | `settings.authorizeProject({cwd}) → SettingsResult<root>` registers the authorized root and publishes the existing notice. It is a write performed at trusted admission. project_root/path/sources are reads covered by settings.projects. |
 | PermissionRules and CommandRules; CollaborationModelPolicy and optional Collaboration runtime | User permission and collaboration policy reads/writes. Expose the existing commandRules.read projection to rule consumers; use the policy owner's read returning {revision,policy} for Collaboration. Preserve absent-profile fallback. |
 | HooksSettings and HookSources | hooks, hooks-projects and hooks-plugins. The runtime consumes sources(cwd,cancelled) → HookSourcesSnapshot. Source resolution, revisions and enablement belong to Hooks. |
 | Mcp and McpPublication | mcp, mcp-projects, mcp-plugins and mcp-secrets. Publication reads effective server configuration and constructs live connections. Keep partial decoding of individual server entries and credential use at the MCP owner. |
@@ -148,4 +148,4 @@ existing decoder for stored bytes, its default for absence, and validates the re
 `validate(document) → void` applies BusinessDocument write validation before admitting a
 replacement. Settings performs serialization, version checks and persistence. Both calls
 propagate the original Settings error and end with the registration generation. Foreign codec
-calls occur outside SQLite transactions. Declared-schema sources reuse their existing codec.
+calls occur outside SQLite transactions and exclusive file leases. Declared-schema sources reuse their existing codec.

@@ -165,7 +165,7 @@ impl Permission {
 | --- | --- |
 | `defaults::install`、`install_with_prompt`、`install_with_process_model`（App Server mock 配置与测试宿主） | `install_profile` 用 `session_data_value` 绑定固定的空宿主 `NoCommandRules`，与它已绑定的 `EmptyPromptHost` 并列。现有测试不变 |
 | `install_with_prompt_capability`、`install_local_execution`、`install_minimal_execution` | 与 `PromptHost` 一样不绑定：由安装它们的宿主绑定端口。只用 capabilities 的宿主（集成测试、`xtask` 本地图）绑定 `CommandRules(Arc::new(NoCommandRules))` |
-| App Server 产品配置（`main.rs` 中的 `install_local_execution`、其测试与 `xtask` App Server 图） | 配置调用 `permission_rules::install(&mut builder)`，加入功能 `CommandRules` 并要求它的 Session 部分 `CommandRules`（`require_feature`，Deps `Keyed<SettingsService>`），它提供的 `CommandRules` 每次调用都读取 `SettingsService::read::<PermissionSettings>(User)`。`serve` 在本地执行时注册进程部分 `PermissionRulesPlugin`（`register_part`，Deps `Keyed<SettingsService>` 与 `Keyed<ManagementMethods>`，所有者行 `permission`），与 `mcp`、`skills` 并列，由它提供管理方法。两者与文档类型 `PermissionSettings`（`NAMESPACE = "permission"`、`USER_FILE = "permission.json"`、无 `PROJECT_FILE`）同在 `dim-app-server/src/permission_rules.rs` |
+| App Server 产品配置（`main.rs` 中的 `install_local_execution`、其测试与 `xtask` App Server 图） | 配置调用 `permission_rules::install(&mut builder)`，加入功能 `CommandRules` 并要求它的 Session 部分 `CommandRules`（`require_feature`，Deps `Keyed<Settings>`），它提供的 `CommandRules` 每次调用都读取 `RegisteredDocument<PermissionSettings>::read(User)`。`serve` 在本地执行时注册进程部分 `PermissionRulesPlugin`（`register_part`，Deps `Keyed<Settings>` 与 `Keyed<ManagementMethods>`，所有者行 `permission`），与 `mcp`、`skills` 并列，由它提供管理方法。两者与文档类型 `PermissionSettings`（`NAMESPACE = "permission"`、`USER_FILE = "permission.json"`、无 `PROJECT_FILE`）同在 `dim-app-server/src/permission_rules.rs` |
 
 ## 5. 流程
 

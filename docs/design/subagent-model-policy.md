@@ -53,7 +53,7 @@ decision by an LLM. `agent` means the existing request/profile selection behavio
 | Identify the requesting branch | `CollaborationSession::request` already receives `branch_id`; pass it within Collaboration, without changing an event or tool request |
 | Read the adopted leader model | `Session::get<PromptSnapshot>(branch_id)` while consuming `collaboration/request`, before starting its delivery task |
 | Resolve an explicit model | The existing `AgentIndex` model-selection host and configured/non-catalog profile paths |
-| Persist and edit policy | Native `BusinessDocument`, `SettingsService::read/update`, source CAS and owner management methods, as used by `permission_rules.rs` |
+| Persist and edit policy | Native `BusinessDocument`, source-bound `read/update`, source CAS and owner management methods, as used by `permission_rules.rs` |
 | Start/restore and retain members | Existing Agents/Collaboration Session creation, usage holds and cleanup, including idle unloading |
 
 Do not use `leader.config().model` or `session.summaries` as the adopted leader model:
@@ -126,7 +126,7 @@ serve Rust `BusinessDocument` sources.
 A dedicated `CollaborationModelPolicyPlugin` process owner row provides these
 methods by registering namespace `collaboration` with the process
 `ManagementMethods` table. It owns the native document's read/validation/CAS
-operations and depends on `Keyed<SettingsService>` and `Keyed<ManagementMethods>`.
+operations and depends on `Keyed<Settings>` and `Keyed<ManagementMethods>`.
 It is not the Collaboration plugin that Rpc already reaches through a Gate: the
 management owner must reload independently without unloading Rpc, per the methods
 contract §3.2.
@@ -135,6 +135,8 @@ contract §3.2.
 | --- | --- | --- | --- | --- |
 | `collaboration.model_policy` | `{}` | `{revision: string, policy: Policy}` | false | `Report` |
 | `collaboration.set_model_policy` | `{expectedRevision: string, policy: Policy}` | `{revision: string}` | true | `Report` |
+
+The process data face `collaborationModelPolicy.read({})` and the local management read return the same `{revision, policy}`. Collaboration reads the owner when selecting a new member’s model.
 
 `Policy` is exactly the tagged source type above. Use the existing local v3
 management authorization; a paired device has no access. Invalid request shape
@@ -147,11 +149,8 @@ before another CAS, without automatically replacing the user's selection.
 
 App Server configurations without `local_execution()` continue
 using existing `agent` behavior and expose no policy management methods.
-Collaboration must not gain an unconditional Settings dependency: declare the
-dependency as `When<Keyed<SettingsService>>`, with keys from
-`names.when::<Keyed<SettingsService>>(local_execution())`, the same predicate Agents
-uses. Obtain it from `Deps`. In those hosts Collaboration already
-reaches Settings through AgentIndex; account-only roots do not add a wait. The
+The local execution profile gates Collaboration on Settings. At member creation,
+Collaboration reads the current policy through `collaborationModelPolicy.read({})`. The
 composition root reserves the native source and registers its dedicated management
 owner only under that predicate. The owner's `apply` registers its methods with
 `methods.register(ctx, "collaboration", ...)`.

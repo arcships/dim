@@ -66,9 +66,24 @@ export interface Settings {
    * home when the row unloads. Rejects (failing the caller's apply) when the declaration is
    * invalid or its name or a file is registered already. Call it from a row's own `apply`. */
   register(declaration: SourceDeclaration): Promise<void>;
+  registerDocument<D extends JsonObject>(
+    declaration: { source: string; userFile: string; projectFile?: string },
+    codec: { decode(bytes: Uint8Array | null): D | Promise<D>; validate(document: D): void | Promise<void> }
+  ): Promise<{
+    read(scope: SettingsScope): Promise<SettingsResult<{ revision: string; document: D }>>;
+    update(scope: SettingsScope, expectedRevision: string, document: D): Promise<SettingsResult<{ revision: string; document: D }>>;
+  }>;
   read(request: { source: string; scope: SettingsScope }): Promise<SettingsResult<SettingsSnapshot>>;
   update(request: { source: string; scope: SettingsScope; expectedRevision: string; document: JsonObject }): Promise<SettingsResult<SettingsSnapshot>>;
+  authorizeProject(request: { cwd: string }): Promise<SettingsResult<number>>;
   projects(request: Record<string, never>): SettingsResult<{ projects: { root: number; cwd: string }[] }>;
+}
+
+export interface CollaborationModelPolicy {
+  read(request: Record<string, never>): Promise<{
+    revision: string;
+    policy: { mode: "agent" } | { mode: "inherit" } | { mode: "fixed"; model: ModelId };
+  }>;
 }
 
 export type TitleSource = 'auto' | 'manual';
@@ -811,6 +826,13 @@ export interface SummaryPromptSettingsHost {
 
 /** Hooks-owned plugin content registration; see Hooks A.2. */
 export interface HooksService {
+  sources(request: { cwd: string }): Promise<{ sources: {
+    id: "user" | "project" | `plugin:${string}`;
+    path: string | null;
+    enabled: boolean;
+    state: "ok" | "missing" | { invalid: string };
+    document: { hooks: Record<string, JsonObject[]>; disableAllHooks: boolean } | null;
+  }[] }>;
   register(request: { plugin: string; dir: string; document: JsonValue }): Promise<null>;
   withdraw(request: { plugin: string }): Promise<null>;
   plugins(request: Record<string, never>): Promise<string[]>;

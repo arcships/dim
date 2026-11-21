@@ -7,7 +7,7 @@ use crate::{
         acquire::{self, Staging},
     },
     protocol::{canonical_cwd, optional_non_null},
-    settings::{BusinessDocument, SettingsError, SettingsScope, SettingsService},
+    settings::{BusinessDocument, RegisteredDocument, Settings, SettingsError, SettingsScope},
 };
 use dim_agent_capabilities::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, params, reply,
@@ -107,7 +107,7 @@ impl BusinessDocument for SkillDocument {
 /// Adapts the owner's business document to the reusable Skill catalog port.
 /// Settings announces its writes; the catalog listens to them itself.
 struct SkillStorage {
-    settings: Arc<SettingsService>,
+    settings: Arc<RegisteredDocument<SkillDocument>>,
 }
 impl SkillSettings for SkillStorage {
     fn skills(
@@ -115,10 +115,7 @@ impl SkillSettings for SkillStorage {
         cancel: CancellationToken,
     ) -> BoxFuture<'_, Result<SkillSettingsSnapshot, SkillSettingsError>> {
         Box::pin(async move {
-            let snapshot = self
-                .settings
-                .read::<SkillDocument>(SettingsScope::User, &cancel)
-                .await?;
+            let snapshot = self.settings.read(SettingsScope::User, &cancel).await?;
             Ok(SkillSettingsSnapshot {
                 version: snapshot.revision,
                 disabled: snapshot.document.disabled_skill_ids.into_iter().collect(),
@@ -138,10 +135,7 @@ impl SkillSettings for SkillStorage {
             if id.trim().is_empty() {
                 return Err(SkillSettingsError::Invalid("empty Skill id".into()));
             }
-            let current = self
-                .settings
-                .read::<SkillDocument>(SettingsScope::User, &cancel)
-                .await?;
+            let current = self.settings.read(SettingsScope::User, &cancel).await?;
             if current.revision != expected {
                 return Err(SkillSettingsError::Conflict);
             }
@@ -188,10 +182,7 @@ impl SkillStorage {
         cancel: CancellationToken,
     ) -> Result<SettingsVersion, SkillSettingsError> {
         loop {
-            let current = self
-                .settings
-                .read::<SkillDocument>(SettingsScope::User, &cancel)
-                .await?;
+            let current = self.settings.read(SettingsScope::User, &cancel).await?;
             let mut document = current.document;
             let unchanged = match &root {
                 Some(root) => document.plugin_skills.get(&plugin) == Some(root),
@@ -223,10 +214,7 @@ impl SkillStorage {
         cancel: CancellationToken,
     ) -> Result<SettingsVersion, SkillSettingsError> {
         loop {
-            let current = self
-                .settings
-                .read::<SkillDocument>(SettingsScope::User, &cancel)
-                .await?;
+            let current = self.settings.read(SettingsScope::User, &cancel).await?;
             let mut document = current.document;
             let unchanged = match &installation {
                 Some(installation) => document.installations.get(&id) == Some(installation),
@@ -597,7 +585,7 @@ fn recorded(source: &SkillInstallSource) -> SourceParams {
 
 pub struct SkillsCatalogPlugin {
     platform: Key<HostPlatform>,
-    settings: Key<SettingsService>,
+    settings: Key<Settings>,
     methods: Key<ManagementMethods>,
     parts: Key<dim_agent_runtime::PartRegistry>,
 }
@@ -631,7 +619,7 @@ impl DynPlugin for SkillsCatalogPlugin {
             let parts = ctx.require_at(&self.parts)?;
             let home = platform.home.clone();
             clean_staging(&home);
-            settings.register::<SkillDocument>(ctx)?;
+            let settings = settings.register_document::<SkillDocument>(ctx)?;
             let settings = Arc::new(SkillSettingsHost(Arc::new(SkillStorage { settings })));
             let catalog = dim_agent_capabilities::skills::SkillsCatalogPlugin::mount(
                 ctx,

@@ -542,6 +542,7 @@ async fn launch_held_team(
 }
 
 struct CaptureMemberConfig {
+    context: Arc<std::sync::OnceLock<rutis::Ctx>>,
     configs: Arc<std::sync::Mutex<Vec<Arc<dim_agent_runtime::SessionConfig>>>>,
 
     config: rutis::host::Key<dim_agent_runtime::SessionConfig>,
@@ -550,9 +551,11 @@ impl CaptureMemberConfig {
     fn new(
         names: &dim_agent_runtime::Names<'_>,
         configs: Arc<std::sync::Mutex<Vec<Arc<dim_agent_runtime::SessionConfig>>>>,
+        context: Arc<std::sync::OnceLock<rutis::Ctx>>,
     ) -> rutis::Result<Self> {
         Ok(Self {
             configs,
+            context,
             config: names.key()?,
         })
     }
@@ -570,6 +573,7 @@ impl rutis::host::DynPlugin for CaptureMemberConfig {
     ) -> rutis::host::BoxFuture<'a, rutis::Result<rutis::host::Effect>> {
         Box::pin(async move {
             let config = ctx.require_at(&self.config)?;
+            self.context.get_or_init(|| ctx.clone());
             self.configs.lock().unwrap().push(config);
             Ok(rutis::host::Effect::Done)
         })
@@ -583,6 +587,8 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
         std::fs::create_dir_all(&home).unwrap();
         let configs = Arc::new(std::sync::Mutex::new(Vec::new()));
         let observed = configs.clone();
+        let context = Arc::new(std::sync::OnceLock::new());
+        let captured = context.clone();
         let (server, agent) = launch_with(Arc::new(MockTools), ServerConfig {
             product_home: Some(home.clone()),
             target_home: Some(home.join("rust")),
@@ -590,7 +596,10 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
         }, move |builder| {
             builder.require_feature(Feature::new("capture-member-config").session(
                 "capture-member-config",
-                move |names| Ok(Box::new(CaptureMemberConfig::new(names, observed.clone())?)),
+                move |names| {
+                    let part = CaptureMemberConfig::new(names, observed.clone(), captured.clone())?;
+                    Ok(Box::new(part))
+                },
             ));
         }).await;
         let mut client = Client::new_version(&server, false, 4).await;
@@ -627,6 +636,12 @@ async fn product_collaboration_adopts_profile_and_default_capabilities() {
         let mut remote = Client::new_version(&server, true, 4).await;
         assert_eq!(remote.rpc("collaboration.model_policy", json!({})).await["error"]["data"]["appError"], "local_transport_required");
         let read = client.rpc("collaboration.model_policy", json!({})).await;
+        let policy = context.get().unwrap().get_at::<dyn rutis_bridge::session::HostDispatch>(
+            &rutis_bridge::session::host_key("collaborationModelPolicy"),
+        ).unwrap();
+        let wire = policy.invoke("read", json!([{}]).into()).unwrap();
+        let wire = rutis_bridge::session::settle(wire).await.unwrap().json().unwrap();
+        assert_eq!(wire, read["result"]);
         assert_eq!(read["result"]["policy"], json!({"mode":"agent"}));
         let initial = read["result"]["revision"].as_str().unwrap().to_owned();
         for invalid in [

@@ -417,6 +417,8 @@ AcpGateway 自己的设计把 Hooks 对 `session.submit` 的 `input_blocked` 拒
 `hooksService` 是现有插件内容操作的进程数据面，与 A.7 的本地客户端管理入口分开。
 每个操作只接受一个 JSON 对象；位置参数数组和标量请求无效。
 
+Session 的 Hook 执行器通过 `hooksService.sources({cwd})` 获取生效的来源文档，返回 `{sources: [{id, path, enabled, state, document}]}`。只有工作目录已获授权时，读取才包含项目来源。
+
 | 操作 | 请求 | 回复 |
 | --- | --- | --- |
 | `register`（异步） | `{plugin, dir, document}`；插件 ID 和目录为字符串 | `null` |
@@ -690,7 +692,7 @@ Codex 的 `apply_patch` 没有别名：它的输入是补丁，而 Dim 的 `writ
 | `Approval.respond` | 经 `Keyed<Approval>` 调用 `Approval::respond(approval_id, ApprovalDecision)` |
 | `HookSources` | Session 端口 `HookSourcesHost(Arc<dyn ReadHookSources>)`，由 App Server 绑定，如同 `CommandRules` 与 `SkillSettingsHost` |
 | `hooks`、`hooks-projects`、`hooks-plugins` | App Server 中的 `BusinessDocument` 类型（`hooks`：`USER_FILE` 为 `hooks.json`，没有 `PROJECT_FILE`；`hooks-projects`：`USER_FILE` 为 `hooks-projects.json`；`hooks-plugins`：`USER_FILE` 为 `hooks-plugins.json`，每个插件 id 一条 `{dir, hooks}`，如同 `mcp/config.rs` 中的 `McpPluginServers`） |
-| `.dimcode/hooks.json` | 由 `HooksSettings` 经 `FileStorage::path(root, ".dimcode/hooks.json")` 与 `read_limited` 读取，`root` 来自 `SettingsService::project_root(cwd)`，解析为 `hooks` 文档类型 |
+| `.dimcode/hooks.json` | 由 `HooksSettings` 经 `FileStorage::path(root, ".dimcode/hooks.json")` 与 `read_limited` 读取，`root` 来自 `settings.projects({})`，解析为 `hooks` 文档类型 |
 | `register`、`withdraw`、`plugins()` | `HooksService::register_plugin(plugin: String, dir: PathBuf, document: serde_json::Value, cancel: &CancellationToken) -> Result<()>`、`withdraw_plugin(plugin: String, cancel: &CancellationToken) -> Result<()>`、`plugins(cancel: &CancellationToken) -> Result<Vec<String>>` 与 `plugin_refusal(&self, plugin: &str) -> Option<(String, Option<&'static str>)>`，如同 `McpService` 的（`crates/dim-app-server/src/mcp.rs`）：被拒绝的文档不留条目，`plugin_refusal` 报告其错误文本以及原因携带的静态 reason，两者在同一把锁下读取；PluginManager 在其 `Owners` 中经 `names.key()` 读取该服务，`Kind::Hooks` 加入 `OWNERS` 与 `CONTENT`（[PluginManager §3.7](PluginManager.md#37-内容登记)） |
 | `hooks.*` | `Keyed<ManagementMethods>`；`methods.register(ctx, "hooks", …)` |
 | 执行器 | Session 服务 `HooksRuntime`，Hooks 私有；进程来自 `HostPlatform::build_process_spec` 与 `spawn`，事件的 stdin 对象（A.3）作为初始 stdin（A.6.3），由 `ctx.effect` 持有 |

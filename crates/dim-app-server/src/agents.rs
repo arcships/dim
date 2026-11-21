@@ -1,7 +1,7 @@
 use crate::{
     ProcessActivity, ProcessHold, ServerConfig,
     protocol::{AgentInfo, CreateWorktree, SessionOrigin},
-    settings::SettingsService,
+    settings::Settings,
     storage::{PreparedWorktree, SessionMetadataService, SessionStore, SqliteStorage, Store},
     worktrees::{CreatedWorktree, ManagedWorktrees, WorktreeError},
 };
@@ -393,7 +393,7 @@ pub struct AgentIndex {
     records: Option<Arc<SqliteStorage>>,
     session_store: Option<Arc<Store>>,
     session_metadata: Option<Arc<SessionMetadataService>>,
-    settings: Option<Arc<SettingsService>>,
+    settings: Option<Arc<Settings>>,
     stopping: CancellationToken,
     /// Notified once an `idle` call on this generation is admitted and
     /// waiting on its branch. Feature `testing` only.
@@ -2142,7 +2142,7 @@ pub(crate) struct AgentsPlugin {
     /// Native storage only with a database.
     stored: Option<StoredKeys>,
     /// Settings only with local execution.
-    settings: Option<Key<SettingsService>>,
+    settings: Option<Key<Settings>>,
     loader: Key<Loader>,
     directory: Key<AgentDirectory>,
     activity: Key<ProcessActivity>,
@@ -2163,7 +2163,7 @@ impl AgentsPlugin {
                 .transpose()?,
             settings: config
                 .local_execution()
-                .then(|| names.key::<SettingsService>())
+                .then(|| names.key::<Settings>())
                 .transpose()?,
             loader: names.key()?,
             directory: Key::of(),

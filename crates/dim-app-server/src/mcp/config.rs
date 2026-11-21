@@ -1,5 +1,5 @@
 //! Typed MCP documents and the effective configuration of each entry.
-use crate::settings::{BusinessDocument, Result, SettingsError, SettingsScope, SettingsService};
+use crate::settings::{BusinessDocument, Result, Settings, SettingsError, SettingsScope};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
@@ -1801,12 +1801,16 @@ fn literal_scheme(value: &str) -> Option<&str> {
 
 /// The canonical workspace of an authorized project source, as the
 /// enablement key.
-pub(crate) fn workspace(settings: &SettingsService, scope: SettingsScope) -> Result<String> {
+pub(crate) fn workspace(settings: &Settings, scope: SettingsScope) -> Result<String> {
     let SettingsScope::Project(root) = scope else {
         return Err(SettingsError::Invalid("not a project MCP source"));
     };
     settings
-        .project_path(root)?
+        .projects()
+        .into_iter()
+        .find(|project| project.root == root)
+        .ok_or(SettingsError::Invalid("unauthorized project"))?
+        .cwd
         .to_str()
         .map(str::to_owned)
         .ok_or(SettingsError::Invalid("project cwd must be UTF-8"))
@@ -1816,7 +1820,7 @@ pub(crate) fn workspace(settings: &SettingsService, scope: SettingsScope) -> Res
 /// source it belongs to, the overlay to merge, who wrote each member, the
 /// user's project enablement, and the environment to expand from.
 pub(crate) struct Connection<'a> {
-    pub scope: Option<SettingsScope>,
+    pub workspace: Option<&'a str>,
     pub id: &'a str,
     pub secret: Option<&'a McpSecretEntry>,
     pub origin: Origin<'a>,
@@ -1830,12 +1834,11 @@ pub(crate) struct Connection<'a> {
 /// `cwd` and enablement. Every caller uses this one order, so a probe and a
 /// published connection see the same values.
 pub(crate) fn connected(
-    settings: &SettingsService,
     configuration: McpServerSettings,
     connection: Connection<'_>,
 ) -> Result<Expanded> {
     let Connection {
-        scope,
+        workspace,
         id,
         secret,
         origin,
@@ -1848,10 +1851,7 @@ pub(crate) fn connected(
         merge_secret(&mut configuration, secret)?;
     }
     let expansion = expand(&configuration, origin, environment, protected);
-    let configuration = match scope {
-        Some(scope) => effective(settings, scope, id, expansion.configuration, enablement)?,
-        None => expansion.configuration,
-    };
+    let configuration = effective(workspace, id, expansion.configuration, enablement)?;
     Ok(Expanded {
         configuration,
         referenced: expansion.referenced,
@@ -1863,8 +1863,7 @@ pub(crate) fn connected(
 /// the project workspace `cwd` joined, with references kept as written so a
 /// client can edit them.
 pub(crate) fn viewed(
-    settings: &SettingsService,
-    scope: Option<SettingsScope>,
+    workspace: Option<&str>,
     id: &str,
     configuration: McpServerSettings,
     secret: Option<&McpSecretEntry>,
@@ -1874,29 +1873,24 @@ pub(crate) fn viewed(
     if let Some(secret) = secret {
         merge_secret(&mut configuration, secret)?;
     }
-    match scope {
-        Some(scope) => effective(settings, scope, id, configuration, enablement),
-        None => Ok(configuration),
-    }
+    effective(workspace, id, configuration, enablement)
 }
 
 /// The configuration an entry runs with. A project entry resolves its stdio
 /// cwd against the workspace and takes its enablement only from the user's
 /// record; its own `enabled` field is ignored.
 pub(crate) fn effective(
-    settings: &SettingsService,
-    scope: SettingsScope,
+    workspace: Option<&str>,
     id: &str,
     mut config: McpServerSettings,
     enablement: &McpProjectEnablement,
 ) -> Result<McpServerSettings> {
-    if matches!(scope, SettingsScope::Project(_)) {
-        let workspace = workspace(settings, scope)?;
+    if let Some(workspace) = workspace {
         let (McpServerSettings::Stdio { enabled, .. } | McpServerSettings::Remote { enabled, .. }) =
             &mut config;
-        *enabled = Some(enablement.contains(&workspace, id));
+        *enabled = Some(enablement.contains(workspace, id));
         if let McpServerSettings::Stdio { cwd, .. } = &mut config {
-            let workspace = PathBuf::from(&workspace);
+            let workspace = PathBuf::from(workspace);
             let path = cwd
                 .as_ref()
                 .map_or(workspace.clone(), |cwd| workspace.join(cwd));

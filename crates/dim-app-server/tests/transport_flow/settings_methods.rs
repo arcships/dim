@@ -6,7 +6,7 @@ use super::*;
 use dim_agent_runtime::Names;
 use dim_app_server::{
     session_typescript::SessionTypeScriptConfig,
-    settings::{SettingsChanged, SettingsService, SourceDeclaration, settings_changes},
+    settings::{Settings, SettingsChanged, SourceDeclaration, settings_changes},
 };
 use rutis::Ctx;
 use rutis::host::{BoxFuture, DynPlugin, Effect, Key, TypeKey};
@@ -100,7 +100,7 @@ fn configured_models() -> Arc<dim_agent_aimux::AimuxModels> {
 
 /// Registers a declared source with project scope, the way a C4 owner row does
 /// (§3.1): `settings.read`/`settings.update` need one to take `{project: root}`.
-struct ProjectSource(Key<SettingsService>);
+struct ProjectSource(Key<Settings>);
 impl ProjectSource {
     fn new(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self(names.key()?))
@@ -115,7 +115,7 @@ impl DynPlugin for ProjectSource {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            ctx.require_at(&self.0)?.register_declared(
+            ctx.require_at(&self.0)?.register(
                 ctx,
                 SourceDeclaration {
                     source: "example".into(),
@@ -225,6 +225,24 @@ async fn node_settings_typescript_owner_reads_and_writes() {
     let created = client.rpc("session.create", create(json!([]))).await;
     assert_ok(&created);
     let session = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let custom = owner(&mut client, &session, "custom_read", json!({})).await;
+    assert_eq!(custom["value"]["document"], json!({"count":3}), "{custom}");
+    let revision = &custom["value"]["revision"];
+    let update = |count| json!({"expectedRevision":revision, "count":count});
+    let rejected = owner(&mut client, &session, "custom_update", update(-1)).await;
+    assert_eq!(rejected["error"]["code"], "invalid_document", "{rejected}");
+    let written = owner(&mut client, &session, "custom_update", update(6)).await;
+    assert_eq!(
+        written["value"]["document"],
+        json!({"count":6}),
+        "{written}"
+    );
+    assert_eq!(
+        owner(&mut client, &session, "custom_read", json!({})).await,
+        written
+    );
+    let stale = owner(&mut client, &session, "custom_update", update(5)).await;
+    assert_eq!(stale["error"]["code"], "conflict", "{stale}");
     let user = json!({"source":"example","scope":"user"});
     let mut changes = log.0.subscribe();
 
@@ -346,6 +364,30 @@ async fn node_settings_typescript_owner_reads_and_writes() {
     let mut other = create(json!([]));
     other["cwd"] = json!(project);
     assert_ok(&client.rpc("session.create", other).await);
+    let roots = client.rpc("settings.projects", json!({})).await;
+    let root = roots["result"]["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["cwd"] == json!(project.canonicalize().unwrap()))
+        .unwrap()["root"]
+        .clone();
+    let parallel = tokio::time::timeout(
+        Duration::from_secs(10),
+        owner(
+            &mut client,
+            &session,
+            "custom_concurrent",
+            json!({"root": root}),
+        ),
+    )
+    .await
+    .expect("a suspended decoder must not block writers");
+    assert_eq!(parallel["stale"]["error"]["code"], "conflict", "{parallel}");
+    assert_eq!(
+        parallel["written"]["value"]["document"]["count"], 8,
+        "{parallel}"
+    );
     let events = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let events = owner(&mut client, &session, "events", json!({})).await;

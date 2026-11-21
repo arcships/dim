@@ -1444,8 +1444,8 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
     register::<ui_host::UiHost>(catalog, None);
     register::<ui_extensions::UiExtensions>(catalog, None);
     register::<ui_extensions::UiResources>(catalog, Some(SESSION_GROUP));
-    register::<settings::SettingsService>(catalog, None);
     register::<settings::Settings>(catalog, None);
+    register::<collaboration_model_policy::CollaborationModelPolicy>(catalog, None);
     register::<storage::SessionMetadataService>(catalog, None);
     register::<managed_provider::ManagedSearch>(catalog, None);
     register::<dyn managed_provider::ManagedProvider>(catalog, None);
@@ -1474,6 +1474,7 @@ pub(crate) fn register_names(catalog: &mut dim_agent_runtime::names::ServiceCata
         "managedSearch",
         "auxiliaryModel",
         "settings",
+        "collaborationModelPolicy",
         "ocrHelper",
     ] {
         catalog.register_shared(name);
@@ -1515,7 +1516,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("serverControl", "control"),
         ("sessionLoader", "control"),
         ("sessionStore", "owner-api"),
-        ("settingsService", "owner-api"),
         ("submitChecks", "hot-path"),
         ("timelineFactory", "control"),
         ("timelineTree", "owner-api"),

@@ -35,7 +35,8 @@ impl serde::Serialize for HookSourceId {
 }
 
 /// Whether a source's document was read, absent or refused.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub enum HookSourceState {
     Ok,
     Missing,
@@ -43,7 +44,7 @@ pub enum HookSourceState {
 }
 
 /// One source as the port returns it.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct HookSourceSnapshot {
     pub id: HookSourceId,
     /// Where the document lives: the user file, the project file, or a
@@ -57,7 +58,7 @@ pub struct HookSourceSnapshot {
 }
 
 /// Every effective source of one working directory, in catalog order.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct HookSourcesSnapshot {
     pub sources: Vec<HookSourceSnapshot>,
 }

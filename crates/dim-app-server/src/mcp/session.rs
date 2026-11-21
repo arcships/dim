@@ -475,7 +475,13 @@ impl DynPlugin for McpSessionPlugin {
             let loader = ctx.require_at(&self.loader)?;
             let session = ctx.require_at(&self.lifecycle)?;
             let tools = ctx.require_at(&self.tools)?;
-            let project = directory.settings.project_root(Path::new(&config.cwd));
+            let project = directory
+                .settings
+                .authority
+                .projects()
+                .into_iter()
+                .find(|project| project.cwd == Path::new(&config.cwd))
+                .map(|project| project.root);
             let settings = super::config::settings_changes(ctx)?;
             let applied = directory.publication.applied();
             let stopped = ctx.cancellation_token();

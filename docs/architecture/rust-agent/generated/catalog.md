@@ -15,6 +15,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `basePromptSettingsHost` | process | PromptSettings | data | `base` async |
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
+| `collaborationModelPolicy` | process | CollaborationModelPolicy | data | `read` async |
 | `connectionHub` | process | Connection | internal(control) | — |
 | `credentialVariablesHost` | process | root | data | `variables` async |
 | `eventHub` | process | eventhub | data | `declare` async, `publish` async |
@@ -23,7 +24,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `fsHost` | process | FileStorage | data | `backup` async, `closeRead` async, `createDirectory` async, `list` async, `lock` async, `openRead` async, `readAt` async, `readBytes` async, `remove` async, `replace` async, `stat` async, `unlock` async |
 | `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
-| `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
+| `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `sources` async, `withdraw` async |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
 | `listenAddresses` | process | Transport | data | `read` async |
 | `loader` | process | rutis-loader | internal(owner-api) | — |
@@ -55,8 +56,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionPermissions` | process | AgentDirectory | data | `permission` async, `permissionDefaults` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
 | `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `pending` async, `stop` async, `withdraw` async |
-| `settings` | process | Settings | data | `declaredBy` sync, `projects` sync, `read` async, `register` async, `update` async |
-| `settingsService` | process | Settings | internal(owner-api) | — |
+| `settings` | process | Settings | data | `authorizeProject` async, `declaredBy` sync, `projects` sync, `read` async, `register` async, `registerDocument` async, `update` async |
 | `skillsCatalog` | process | SkillsCatalog | data | `issues` async, `plugins` async, `register` async, `withdraw` async |
 | `skillsInstructionsSettingsHost` | process | PromptSettings | data | `instructions` async |
 | `sqliteStorage` | process | SqliteStorage | data | `abandonFile` async, `agentOwner` async, `agents` async, `batchEnd` async, `batchEndAt` async, `branches` async, `commitFile` async, `commitTimelineRound` async, `createSession` async, `delete` async, `head` async, `importUserIfAbsent` async, `ledMembers` async, `memberSessions` async, `members` async, `ownedAgents` async, `ownedPaths` async, `owners` async, `ownsFile` async, `ownsOutput` async, `readPreferences` async, `readSelection` async, `readUser` async, `registerOutput` async, `replaceUser` async, `reserveFile` async, `save` async, `sessionConfig` async, `storageReport` async, `unfinishedOwned` async, `writeSelection` async |

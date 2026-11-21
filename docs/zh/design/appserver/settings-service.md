@@ -16,7 +16,7 @@ Settings 为不是用 Rust 写的插件提供业务来源。这类插件在启�
 （[ADR 007](../../adr/007-plugin-configuration.md) D5）：来源名、文件、JSON Schema（含 `default` 值）和
 仅限用户的字段（§3.1）。随后 Settings 在 JSON 文档上提供三样东西：
 
-- 进程服务 `settings`，供所有者使用：`register`、`read`、`update`（按 revision 做 CAS）和 `projects`；
+- 进程服务 `settings` 用于来源登记、读写及项目授权（§4.2）；
 - 客户端管理方法 `settings.read`、`settings.update`、`settings.sources` 和 `settings.projects`；
 - 与 S8a 相同的 rutis 事件 `settings.changed` 和 `settings.project_authorized`。它们的载荷改为
   可序列化。没有 `subscribe(source)`。
@@ -103,7 +103,7 @@ Settings 不赋予任何字段特殊含义，只有一个例外：schema 带 JSO
 
 每个所有者，不论是内置 Rust 还是 TypeScript，都在自己进程行的 `apply` 中登记来源。声明式来源
 通过对应语言绑定调用 `settings.register(declaration)`（§4.2、§4.5）；原生 `BusinessDocument` 来源
-使用 `SettingsService::register::<D>`（§4.5）。
+使用 `Settings::register_document::<D>`（§4.5）。
 App Server 的装配和 PluginManager 都不声明来源。登记属于发起它的插件，在该插件卸载（关闭、移除或
 重载）时撤回；重载时由新一代重新登记。不论来源是否已登记，存储的文档都留在 home 中：未登记的来源
 在所有路径上都是 `unknown_source`，有所有者登记它后，其文档重新可用。
@@ -191,6 +191,8 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 | 方法 | 模式 | 请求 | 回复 |
 | --- | --- | --- | --- |
 | `register` | async | 一份声明（§3.1） | 无；被拒绝时 reject |
+| `registerDocument` | 异步 | `({source, userFile, projectFile?}, codec)` | 返回本次登记的 `read(scope)` 和 `update(scope, expectedRevision, document)`，两者都返回含快照的 Settings 结果。所有者提供 `decode(bytes 或 null)` 和 `validate(document)`。所有者卸载时登记结束。 |
+| `authorizeProject` | 异步 | `{cwd}` | 返回含已授权根目录编号的 Settings 结果。首次授权会发布 §4.4 的项目授权通知。 |
 | `read` | async | `{source, scope: Scope}` | `Snapshot` |
 | `update` | async | `{source, scope: Scope, expectedRevision, document}` | `Snapshot`（保存后的文档） |
 | `declaredBy` | sync | `{instanceId: string}`，加载器实例 ID 的十进制字符串 | 该实例已注册且仍有效的 JSON Schema 声明，按来源名称排序。无有效声明时返回空数组。 |
@@ -206,7 +208,7 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 - `read`、`update` 和 `projects` 的错误（§6）：`unknown_source`、`invalid_scope`、`invalid_document`、
   `user_only_field`、`conflict`、`unsynced`、`failed`、`closed`、`cancelled`。
 
-只有 `register` 使用调用方身份，以便随调用行撤回登记。所有权来自登记它的行：每个来源只有一个所有者，
+两种登记方法都使用调用方身份，以便随调用行撤回登记。所有权来自登记它的行：每个来源只有一个所有者，
 只有那个包针对它编写。这是进程内
 插件的信任模型（AGENTS.md 规则 11）：依赖声明不是沙箱。
 
@@ -233,7 +235,7 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
   agent 侧的对应物仍是 `plugin` 工具的 `config` 命令，它额外返回用户文档，并把 `writeOnly`
   成员去掉后列在 `writeOnlySet` 里（PluginManager §6）。
 - `schedule` 不是声明的来源。`ScheduleDocument` 是 Rust 的 `BusinessDocument`，经
-  `settings.register::<ScheduleDocument>` 登记，由它自己的 `validate()` 校验，由 `schedule.*`
+  `settings.register_document::<ScheduleDocument>` 登记，由它自己的 `validate()` 校验，由 `schedule.*`
   提供，在所有 `settings.*` 路径上都是 `settings_unknown_source`。Rust 来源保留自己类型化的
   方法，不属于 schema 驱动的表面；`settings.sources` 只列声明的来源，因此从不列出它。
 - `settings.sources` 从不提供给已配对设备（§4.3 开头），也不在 Web 入口的允许清单里，因此
@@ -273,13 +275,12 @@ Settings 在内存中保存已登记的来源（声明已编译），各自保�
 ### 4.5 Rust 绑定
 
 `Settings` 绑定公开公共 `settings` 数据面的 owner 操作，提供
-`register(ctx, declaration)`、`read(source, scope, cancel)`、
-`update(source, scope, expected, document, cancel)` 和 `projects()`。
+声明式来源的 `register`、`declared_by`、`read` 和 `update`，原生 `BusinessDocument` 来源的 `register_document` 及其绑定的读写操作，以及项目授权与枚举的 `authorize_project` 和 `projects`。
 Dispatcher 调用这些相同操作；原生消费者直接调用，无需 JSON 转换。登记仍绑定调用者生命周期，
 更新仍是不能修改 user-only 字段的 owner 写入。来源注册、校验和持久化仍由同一个 Settings owner 承担。
 
 `SettingsService` 保留下述原生 `BusinessDocument` 和客户端管理路径。
-PluginManager 的声明式来源工具也通过它读取并进行 owner 写入。此绑定不使声明式操作可见
+PluginManager 的声明式来源工具通过公共 `Settings` 绑定读取并写入。此绑定不使声明式操作可见
 原生来源，也不改变 §4.3 和 §7 的本地客户端边界。
 
 在 `dim-app-server::settings` 中（S8a 的类型，只在注明处改动）：

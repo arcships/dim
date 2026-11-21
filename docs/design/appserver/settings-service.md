@@ -17,8 +17,7 @@ each source with Settings when it starts ([ADR 007](../../adr/007-plugin-configu
 the source name, its files, a JSON Schema (with `default` values) and its user-only fields
 (§3.1). Settings then offers three things over JSON documents:
 
-- the process service `settings`, which the owner uses: `register`, `read`, `update` (CAS on
-  the revision) and `projects`;
+- the process service `settings` for source registration, reads, writes and project admission (§4.2);
 - the client management methods `settings.read`, `settings.update`, `settings.sources` and
   `settings.projects`;
 - the same rutis events as S8a, `settings.changed` and `settings.project_authorized`. Their
@@ -119,7 +118,7 @@ owner depends on `settings`.
 
 Every owner, built-in Rust and TypeScript alike, registers its sources from its own process row's
 `apply`. Declared sources use `settings.register(declaration)` through their language binding
-(§4.2, §4.5); native `BusinessDocument` sources use `SettingsService::register::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
+(§4.2, §4.5); native `BusinessDocument` sources use `Settings::register_document::<D>` (§4.5). Neither the App Server's assembly nor PluginManager
 declares sources. A registration belongs to the plugin that made it and is withdrawn when that
 plugin unloads (turned off, removed or reloaded); a reload registers again from the new
 generation. The stored documents stay in the home whether or not their source is registered: an
@@ -212,6 +211,8 @@ Process scope, no instance key, provided by Settings.
 | Method | Mode | Request | Reply |
 | --- | --- | --- | --- |
 | `register` | async | a declaration (§3.1) | nothing; rejects when refused |
+| `registerDocument` | async | `({source, userFile, projectFile?}, codec)` | Source-bound `read(scope)` and `update(scope, expectedRevision, document)`, each returning the Settings result with a snapshot. The owner supplies `decode(bytes or null)` and `validate(document)`. The registration ends on owner unload. |
+| `authorizeProject` | async | `{cwd}` | Settings result with the authorized root number. A newly admitted root emits the project authorization notice (§4.4). |
 | `read` | async | `{source, scope: Scope}` | `Snapshot` |
 | `update` | async | `{source, scope: Scope, expectedRevision, document}` | `Snapshot` (the stored document) |
 | `declaredBy` | sync | `{instanceId: string}` (the live loader instance ID in decimal) | The JSON Schema declarations registered by that instance, ordered by source name. An instance with no live declarations returns an empty array. |
@@ -230,7 +231,7 @@ Process scope, no instance key, provided by Settings.
 - Errors of `read`, `update` and `projects` (§6): `unknown_source`, `invalid_scope`,
   `invalid_document`, `user_only_field`, `conflict`, `unsynced`, `failed`, `closed`, `cancelled`.
 
-Only `register` uses the caller's identity, to withdraw the registration with the calling row.
+Both registration methods use the caller's identity, to withdraw the registration with the calling row.
 Ownership comes from the registering row: each source has one owner, and only that package is
 written against it. This is the trust model of in-process plugins
 (AGENTS.md rule 11): dependency declarations are not a sandbox.
@@ -262,7 +263,7 @@ with `managementMethods` (§4.5). They are never served to paired devices (overv
   the `plugin` tool's `config` command, which additionally returns the user document with
   `writeOnly` members redacted and listed in `writeOnlySet` (PluginManager §6).
 - `schedule` is not a declared source. `ScheduleDocument` is a Rust `BusinessDocument`,
-  registered with `settings.register::<ScheduleDocument>`, validated by its own `validate()`,
+  registered with `settings.register_document::<ScheduleDocument>`, validated by its own `validate()`,
   served by `schedule.*`, and `settings_unknown_source` on every `settings.*` path. A Rust
   source keeps its own typed methods and is out of a schema-driven surface; `settings.sources`
   lists declared sources only and therefore never lists it.
@@ -313,15 +314,16 @@ Permission does).
 ### 4.5 Rust binding
 
 The `Settings` binding exposes the owner operations of the public `settings` data face.
-It provides `register(ctx, declaration)`, `read(source, scope, cancel)`,
-`update(source, scope, expected, document, cancel)` and `projects()`.
+Declared sources use `register`, `declared_by`, `read` and `update`. Native `BusinessDocument` sources use
+`register_document` and its bound read/update operations. Project admission and listing use
+`authorize_project` and `projects`.
 The dispatcher calls these same operations, and native consumers call them directly
 without JSON conversion. Registration retains the caller's lifetime; updates are owner
 writes and preserve user-only fields. The existing Settings owner still supplies the
 source registry, validation and persistence.
 
 `SettingsService` retains the native `BusinessDocument` and client management paths below.
-PluginManager's declared-source tools also use it for reads and owner writes.
+PluginManager reads and updates its declared sources through the public `Settings` binding.
 This binding does not make native sources visible through declared-source operations or
 change the local-client boundary in §4.3 and §7.
 
