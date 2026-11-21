@@ -1303,6 +1303,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::agents::sessions::Sessions",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::collaboration::Collaboration",
             "scope": null,
             "status": "Ready"
@@ -1339,6 +1344,12 @@
             "service": "dim_app_server::agents::AgentIndex",
             "scope": null,
             "provider": 40,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::agents::sessions::Sessions",
+            "scope": null,
+            "provider": 38,
             "generation": 1
           },
           {
@@ -1382,6 +1393,12 @@
           {
             "service": "dim_app_server::agents::AgentIndex",
             "provider": 40,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::agents::sessions::Sessions",
+            "provider": 38,
             "declared": true,
             "external": true
           },
@@ -1503,6 +1520,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::agents::sessions::Sessions",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::collaboration::CollaborationDirectory",
             "scope": null,
             "status": "Ready"
@@ -1524,6 +1546,12 @@
             "service": "dim_app_server::agents::AgentIndex",
             "scope": null,
             "provider": 40,
+            "generation": 1
+          },
+          {
+            "service": "dim_app_server::agents::sessions::Sessions",
+            "scope": null,
+            "provider": 38,
             "generation": 1
           },
           {
@@ -1549,6 +1577,12 @@
           {
             "service": "dim_app_server::agents::AgentIndex",
             "provider": 40,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::agents::sessions::Sessions",
+            "provider": 38,
             "declared": true,
             "external": true
           },
@@ -2782,7 +2816,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
+            "service": "dim_agent_capabilities::host::ModelDriverHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2819,7 +2853,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
+            "service": "dim_agent_capabilities::host::ModelDriverHost",
             "scope": null,
             "provider": 5,
             "generation": 1
@@ -2863,7 +2897,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
+            "service": "dim_agent_capabilities::host::ModelDriverHost",
             "provider": 5,
             "declared": true,
             "external": true
@@ -3356,13 +3390,13 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host::ModelHost",
+        "service": "dim_agent_capabilities::host::ModelDriverHost",
         "provider": 5,
         "generation": 1,
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host::ProviderConnectionResolver",
+        "service": "dim_agent_capabilities::host::ModelHost",
         "provider": 17,
         "generation": 1,
         "removing": false
@@ -3784,6 +3818,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#modalityTargets",
         "provider": 68,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+        "provider": 17,
         "generation": 1,
         "removing": false
       },

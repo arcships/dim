@@ -10,7 +10,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 
 | Name | Group | Provider | Face | Methods |
 | --- | --- | --- | --- | --- |
-| `agentIndex` | process | Agents | internal(owner-api) | — |
 | `basePromptSettingsHost` | process | PromptSettings | data | `base` async |
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
@@ -21,7 +20,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `executionSettingsHost` | process | ExecutionSettings | data | `read` async |
 | `fileStorage` | process | FileStorage | internal(object) | — |
 | `fsHost` | process | FileStorage | data | `backup` async, `closeRead` async, `createDirectory` async, `list` async, `lock` async, `openRead` async, `readAt` async, `readBytes` async, `remove` async, `replace` async, `stat` async, `unlock` async |
-| `grokOAuthService` | process | GrokOAuth | internal(secret) | — |
 | `hooksService` | process | HooksSettings | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
 | `hostPlatform` | process | HostPlatform | internal(object) | — |
 | `listenAddresses` | process | Transport | data | `read` async |
@@ -34,13 +32,11 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `mcpService` | process | Mcp | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
 | `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
 | `modalityTargets` | process | Modality | data | `resolve` async |
-| `modelHost` | process | Aimux | internal(owner-api) | — |
-| `openAICodexOAuthService` | process | OpenAICodexOAuth | internal(secret) | — |
+| `modelHost` | process | Provider | data | `invoke` async |
 | `partRegistry` | process | PartRegistry | data | `registerDefinition` async |
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `processActivity` | process | ServerControl | data | `activated` async, `hold` async, `release` async |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | data | `read` async |
-| `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
 | `providerService` | process | Provider | data | `applyPreferences` async, `complete` async, `configuration` async, `resolve` async, `selectableForModality` async, `selectableModels` async |
 | `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
@@ -50,7 +46,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `sessionFiles` | process | SessionStore | data | `import` async, `owned_paths` async, `owns` async, `put` async, `read` async, `register` async |
 | `sessionMetadata` | process | SessionStore | data | `read` async, `setTitle` async |
 | `sessionStore` | process | SessionStore | internal(owner-api) | — |
-| `sessions` | process | AgentDirectory | data | `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `observeCurrent` async, `pending` async, `permission` async, `permissionDefaults` async, `startupSources` async, `stop` async, `withdraw` async |
+| `sessions` | process | AgentDirectory | data | `acquireUse` async, `delete` async, `exists` async, `history` async, `idle` async, `input` async, `launch` async, `lookup` async, `observeCurrent` async, `pending` async, `permission` async, `permissionDefaults` async, `releaseUse` async, `startupSources` async, `state` async, `stop` async, `withdraw` async |
 | `settings` | process | Settings | data | `declaredBy` sync, `projects` sync, `read` async, `register` async, `update` async |
 | `settingsService` | process | Settings | internal(owner-api) | — |
 | `skillsCatalog` | process | SkillsCatalog | data | `issues` async, `plugins` async, `register` async, `withdraw` async |

@@ -33,7 +33,7 @@ owner shutdown releases the waiters. Provider-specific limits still apply.
 | Service | Purpose |
 | --- | --- |
 | `B:ContextPreparation` | Validate budget and access prepared context. |
-| `P:ModelHost` | The process model driver; scripted in this local graph. |
+| `P:dyn HostDispatch#modelHost` | The process model driver; scripted in this local graph. |
 | `P:sessionFiles` (optional) | Resolve durable images through the [SessionStore data face](../../../design/appserver/session-files.md#9-interface) before request adaptation. Read at load without a gate; standalone hosts need no file service for text or inline-image requests. |
 | `B:Dispatcher` | Replay unsettled calls, receive calls/steers/interrupts and report faults. |
 | `B:Timeline` | Commit output. |
@@ -149,7 +149,7 @@ a continuation declines it.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`P:ModelHost` |
+| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`P:dyn HostDispatch#modelHost` |
 | 提供 | `B:StateCell<ModelProgress>` |
 | 被注入于 | — |
 <!-- /generated -->

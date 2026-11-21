@@ -131,6 +131,7 @@ flowchart LR
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p45
   p12 -->|"dim_agent_capabilities::methods::Callers"| p44
   p40 -->|"dim_app_server::agents::AgentIndex"| p44
+  p38 -->|"dim_app_server::agents::sessions::Sessions"| p44
   p41 -->|"dim_app_server::collaboration::Collaboration"| p44
   p43 -->|"dim_app_server::connection::ConnectionHub"| p44
   p3 -->|"dim_app_server::control::ServerControl"| p44
@@ -141,6 +142,7 @@ flowchart LR
   p42 -->|"dim_app_server::ui_host::UiHost"| p43
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p41
   p40 -->|"dim_app_server::agents::AgentIndex"| p41
+  p38 -->|"dim_app_server::agents::sessions::Sessions"| p41
   p39 -->|"dim_app_server::collaboration::CollaborationDirectory"| p41
   p18 -->|"dim_app_server::settings::SettingsService"| p41
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p40
@@ -197,7 +199,7 @@ flowchart LR
   p18 -->|"dim_app_server::settings::SettingsService"| p19
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p18
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p18
-  p5 -->|"dim_agent_capabilities::host::ModelHost"| p17
+  p5 -->|"dim_agent_capabilities::host::ModelDriverHost"| p17
   p38 -->|"dim_app_server::agents::sessions::Sessions"| p17
   p15 -->|"dim_app_server::codex_oauth::OpenAICodexOAuthService"| p17
   p16 -->|"dim_app_server::grok_oauth::GrokOAuthService"| p17
