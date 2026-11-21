@@ -1583,6 +1583,7 @@ dependencies = [
  "dim-agent-types",
  "dim-app-server",
  "dim-cli",
+ "dim-client",
  "dim-event-hub",
  "dim-goal",
  "dim-image-understanding",

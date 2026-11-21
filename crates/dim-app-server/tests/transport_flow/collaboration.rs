@@ -1266,6 +1266,30 @@ fn agent_results(events: &[Arc<AgentEvent>]) -> Vec<String> {
         .collect()
 }
 
+/// The page's business events, without the environment state inputs that can
+/// land between two reads when a client attaches, detaches or unloads.
+fn business_events(events: &Value) -> Vec<Value> {
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            !(event["type"] == "input"
+                && event["name"] == "message"
+                && event["data"]["user"].is_null()
+                && event["data"]["blocks"].as_array().is_some_and(|blocks| {
+                    !blocks.is_empty()
+                        && blocks.iter().all(|block| {
+                            block["text"].as_str().is_some_and(|text| {
+                                text.starts_with("<dim-state source=\"dim/environment/")
+                            })
+                        })
+                }))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Each operation event has exactly one later `delivered`; each delivered
 /// request exactly one later `result`. Collaboration facts stay out of the
 /// model context.
@@ -3179,7 +3203,10 @@ async fn member_work(mut config: ServerConfig) {
             .get_session(&member)
             .expect("the authorized read acquires its peer");
         let read = last_ok(&events(&lead_session).await);
-        assert_eq!(read["events"], full["events"]);
+        assert_eq!(
+            business_events(&read["events"]),
+            business_events(&full["events"])
+        );
         assert!(
             (full["nextCursor"].as_u64().unwrap()..=restored.sequence("main").unwrap())
                 .contains(&read["nextCursor"].as_u64().unwrap())

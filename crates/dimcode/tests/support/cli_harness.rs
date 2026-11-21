@@ -906,6 +906,11 @@ impl Terminal {
             let mut bytes = [0u8; 4096];
             let size = match self.master.as_mut().unwrap().read(&mut bytes) {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(error)
+                    if cfg!(target_os = "linux") && error.raw_os_error() == Some(libc::EIO) =>
+                {
+                    0
+                }
                 result => result.unwrap(),
             };
             assert!(

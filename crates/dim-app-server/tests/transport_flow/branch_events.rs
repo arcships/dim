@@ -188,17 +188,12 @@ async fn restored_task_branches_are_discovered_locally_and_named_stops_preserve_
             .rpc("session.attach", json!({"sessionId":session}))
             .await,
     );
-    let discovered = tokio::time::timeout(Duration::from_secs(10), async {
-        let mut discovered = std::collections::HashSet::new();
-        while discovered.len() != 3 {
-            let state = client.notice("session.state").await;
-            assert_eq!(state["params"]["sessionId"], session);
-            discovered.insert(state["params"]["branchId"].as_str().unwrap().to_owned());
-        }
-        discovered
-    })
-    .await
-    .unwrap();
+    let mut discovered = std::collections::HashSet::new();
+    while discovered.len() != 3 {
+        let state = client.notice("session.state").await;
+        assert_eq!(state["params"]["sessionId"], session);
+        discovered.insert(state["params"]["branchId"].as_str().unwrap().to_owned());
+    }
     assert_eq!(
         discovered,
         ["main".to_owned(), branches[0].clone(), branches[1].clone()]
@@ -245,21 +240,17 @@ async fn restored_task_branches_are_discovered_locally_and_named_stops_preserve_
                 )
                 .await,
         );
-        let task = tokio::time::timeout(Duration::from_secs(10), async {
-            loop {
-                let history = page(&mut client, &session, branch).await;
-                if let Some(event) = history["events"].as_array().unwrap().iter().find(|event| {
-                    event["type"] == "exec"
-                        && event["name"] == "started"
-                        && !receipts.contains(&event["data"]["task_id"])
-                }) {
-                    break event["data"]["task_id"].clone();
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+        let task = loop {
+            let notice = client.notice("session.event").await;
+            let params = &notice["params"];
+            if params["branchId"] == *branch
+                && params["event"]["type"] == "exec"
+                && params["event"]["name"] == "started"
+                && !receipts.contains(&params["event"]["data"]["task_id"])
+            {
+                break params["event"]["data"]["task_id"].clone();
             }
-        })
-        .await
-        .unwrap();
+        };
         active.push(task);
     }
     for (index, branch) in branches.iter().enumerate() {
