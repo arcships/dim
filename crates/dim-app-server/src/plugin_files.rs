@@ -293,59 +293,40 @@ impl FileScope {
         {
             return Err(invalid());
         }
-        let path = match self.files.storage.path(self.files.root, name) {
-            Ok(path) => path,
-            Err(error) => return Ok(Value::future(async move { Ok(failure(error)) })),
-        };
-        let _admission = self.files.admission.lock().unwrap();
-        if self.stopping.is_cancelled() {
-            return Ok(Value::future(async {
-                Ok(failure(FileStorageError::Closed))
-            }));
-        }
-        let scope = self.clone();
         let acquisition = self.stopping.child_token();
         let cancel_waiter = acquisition.clone().drop_guard();
-        let owner = self.files.tasks.token();
-        let task = self.tasks.spawn(async move {
-            let _owner = owner;
-            let acquire = acquire(&scope.files.storage, &path, &acquisition);
-            let cancelled = async {
-                match cancelled {
-                    Some(reference) => {
-                        let _ = reference.wait_async().await;
-                    }
-                    None => std::future::pending::<()>().await,
+        let cancelled = async move {
+            match cancelled {
+                Some(reference) => {
+                    let _ = reference.wait_async().await;
                 }
-            };
-            let lease = tokio::select! {
-                _ = cancelled => {
-                    acquisition.cancel();
-                    return Ok(failure(FileStorageError::Closed));
-                }
-                result = acquire => match result {
-                    Ok(lease) => lease,
-                    Err(error) => return Ok(failure(error)),
-                }
-            };
-            let lease = Arc::new(tokio::sync::Mutex::new(Some(lease)));
-            let result = match callback
-                .call_async(Value::List(vec![lease_value(
-                    lease.clone(),
-                    scope.tasks.clone(),
-                )]))
-                .await
-            {
-                Ok(value) => resolve(value).await,
-                Err(error) => Err(error),
-            };
-            lease.lock().await.take();
-            result.map(success)
-        });
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let tasks = self.tasks.clone();
+        let task =
+            self.with_file_lease(&name, acquisition, cancelled, move |lease, _| async move {
+                let lease = Arc::new(tokio::sync::Mutex::new(Some(lease)));
+                let result = match callback
+                    .call_async(Value::List(vec![lease_value(lease.clone(), tasks)]))
+                    .await
+                {
+                    Ok(value) => resolve(value).await,
+                    Err(error) => Err(error),
+                };
+                lease.lock().await.take();
+                result.map(success)
+            });
         Ok(Value::future(async move {
             let _cancel_waiter = cancel_waiter;
-            task.await
-                .unwrap_or_else(|error| Ok(failure(FileStorageError::Worker(error))))
+            match task {
+                Ok(task) => match task.await {
+                    Ok(Ok(reply)) => reply,
+                    Ok(Err(error)) => Ok(failure(error)),
+                    Err(error) => Ok(failure(FileStorageError::Worker(error))),
+                },
+                Err(error) => Ok(failure(error)),
+            }
         }))
     }
 }
@@ -580,10 +561,16 @@ impl FileScope {
         name: &str,
         change: impl FnOnce(Option<&str>) -> (Option<String>, R) + Send + 'static,
     ) -> Result<R, PluginFileError> {
-        self.run(name, move |storage, path, stopping| {
-            Box::pin(transact_file(storage, path, stopping, change))
-        })
+        self.with_file_lease(
+            name,
+            self.stopping.child_token(),
+            std::future::pending(),
+            move |lease, stopping| transact_file(lease, stopping, change),
+        )
+        .map_err(file_error)?
         .await
+        .map_err(|error| PluginFileError::Io(error.to_string()))?
+        .map_err(file_error)?
     }
 
     /// The bytes of `name`, or `None` when it is absent. A binary file is its
@@ -705,6 +692,34 @@ impl FileScope {
         .await
     }
 
+    fn with_file_lease<R: Send + 'static, RFuture>(
+        &self,
+        name: &str,
+        stopping: CancellationToken,
+        cancelled: impl Future<Output = ()> + Send + 'static,
+        action: impl FnOnce(FileLease, CancellationToken) -> RFuture + Send + 'static,
+    ) -> Result<tokio::task::JoinHandle<Result<R, FileStorageError>>, FileStorageError>
+    where
+        RFuture: Future<Output = R> + Send + 'static,
+    {
+        let files = &self.files;
+        let path = files.storage.path(files.root, name)?;
+        let _admission = files.admission.lock().unwrap();
+        if self.stopping.is_cancelled() {
+            return Err(FileStorageError::Closed);
+        }
+        let storage = files.storage.clone();
+        let owner = files.tasks.token();
+        Ok(self.tasks.spawn(async move {
+            let _owner = owner;
+            let lease = tokio::select! {
+                _ = cancelled => { stopping.cancel(); return Err(FileStorageError::Closed); }
+                result = acquire(&storage, &path, &stopping) => result?,
+            };
+            Ok(action(lease, stopping).await)
+        }))
+    }
+
     async fn run<R: Send + 'static>(
         &self,
         name: &str,
@@ -739,14 +754,10 @@ impl FileScope {
 }
 
 async fn transact_file<R>(
-    storage: Arc<FileStorage>,
-    path: FilePath,
+    mut lease: FileLease,
     stopping: CancellationToken,
     change: impl FnOnce(Option<&str>) -> (Option<String>, R),
 ) -> Result<R, PluginFileError> {
-    let mut lease = acquire(&storage, &path, &stopping)
-        .await
-        .map_err(file_error)?;
     let current = read_text(&mut lease, &stopping).await.map_err(file_error)?;
     let (next, result) = change(current.as_deref());
     if let Some(text) = next {
