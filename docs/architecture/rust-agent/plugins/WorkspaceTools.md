@@ -481,7 +481,15 @@ through a `0700` staging directory, that a replaced target's staged file is
 a `0755` directory are refused while a `0700` directory is opened, and
 `a_swapped_staging_directory_name_receives_nothing` replaces the directory's
 name after the handle exists and checks that only the original directory's bytes
-are installed.
+are installed. On macOS, `a_new_file_takes_the_parents_acl_on_macos` sets an
+inheritable parent entry for the current group, checks in the `before_commit`
+hook that the private directory and the staged file carry no ACL, and compares
+the installed file's ACL and mode with a control file created directly in the
+parent for entries inherited by files and directories, by files only and by
+directories only;
+`a_cancelled_or_failed_new_file_leaves_no_staging_entry_on_macos` checks that
+cancellation and a failed publication leave no staging entry, including the ACL
+template.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of
