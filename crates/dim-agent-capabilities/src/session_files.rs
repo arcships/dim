@@ -191,10 +191,13 @@ pub async fn store_result(
                 HostError::classified(HostErrorKind::InvalidRequest, "Image data is missing")
             })?;
             if data.len() as u64 > crate::images::base64_len(16 * 1024 * 1024) {
-                return Err(HostError::classified(
-                    HostErrorKind::InvalidRequest,
-                    "Tool image exceeds 16 MiB",
-                ));
+                *block = ContentBlock::Text {
+                    text: format!(
+                        "[Image omitted: the tool image is {} bytes, above the 16 MiB limit.]",
+                        decoded_len(data)
+                    ),
+                };
+                continue;
             }
             let bytes = STANDARD
                 .decode(data)
@@ -230,6 +233,18 @@ pub async fn store_result(
         }
     }
     Ok(())
+}
+
+/// The bytes base64 `data` decodes to, without decoding it: three quarters of
+/// its length, less its `=` padding.
+fn decoded_len(data: &str) -> u64 {
+    let padding = data
+        .bytes()
+        .rev()
+        .take(2)
+        .filter(|byte| *byte == b'=')
+        .count() as u64;
+    (data.len() as u64 / 4 * 3).saturating_sub(padding)
 }
 
 impl rutis_bridge::session::HostDispatch for SessionFiles {

@@ -4652,6 +4652,47 @@ async fn stored_attachment_and_tool_images_share_a_reference_without_changing_fi
 }
 
 #[tokio::test]
+async fn store_result_replaces_an_oversized_tool_image_with_its_size_and_limit() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+
+    let files = Arc::new(StoredImages::default());
+    let oversized = STANDARD.encode(vec![0u8; 17 * 1024 * 1024]);
+    let mut result = ToolResult {
+        content: ToolContent::Blocks(vec![
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            image("image/png", Some(&oversized), None),
+        ]),
+        ..Default::default()
+    };
+    dim_agent_capabilities::session_files::store_result(
+        &SessionFiles(files.clone()),
+        "session",
+        &mut result,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    let ToolContent::Blocks(blocks) = &result.content else {
+        panic!("a blocks result stays blocks")
+    };
+    assert_eq!(
+        blocks.as_slice(),
+        [
+            ContentBlock::Text {
+                text: "screenshot".into(),
+            },
+            ContentBlock::Text {
+                text: "[Image omitted: the tool image is 17825792 bytes, above the 16 MiB limit.]"
+                    .into(),
+            },
+        ]
+    );
+    assert_eq!(result.is_error, None);
+}
+
+#[tokio::test]
 async fn replacing_a_tool_image_preserves_other_messages_and_the_stored_result() {
     for vision in [false, true] {
         let requests = Arc::new(Mutex::new(Vec::new()));
