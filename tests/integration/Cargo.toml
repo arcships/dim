@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
+autotests = false
+
+[[test]]
+name = "integration_flow"
+path = "tests/integration_flow.rs"
 [dev-dependencies]
 dim-agent-runtime = { workspace = true, features = ["testing"] }
 dim-agent-capabilities = { workspace = true, features = ["testing"] }

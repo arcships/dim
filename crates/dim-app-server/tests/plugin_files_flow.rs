@@ -1,4 +1,3 @@
-#![cfg(any(unix, windows))]
 use dim_agent_capabilities::file_storage::{EntryKind, FileStorage, FileStoragePlugin};
 use dim_agent_runtime::Names;
 use dim_app_server::plugin_files::{

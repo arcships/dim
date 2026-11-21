@@ -18,8 +18,9 @@ function macOSGuard(attributes) {
   });
 }
 
-function nativeTests(file, source, gatedModules) {
-  const fileGated = macOSGuard(source.match(/^#!\[cfg\([^\]]+\]/gm)?.join('\n') ?? '') ||
+function nativeTests(file, source, gatedFiles, gatedModules) {
+  const fileGated = gatedFiles.has(file) ||
+    macOSGuard(source.match(/^#!\[cfg\([^\]]+\]/gm)?.join('\n') ?? '') ||
     gatedModules.some(directory => file === `${directory}.rs` || file.startsWith(`${directory}/`));
   const modules = [];
   const names = [];
@@ -55,7 +56,47 @@ const targets = metadata.packages.flatMap(pkg => pkg.targets.filter(t => t.test 
 })));
 const files = execFileSync('git', ['ls-files', '-z', '--', '*.rs'], {encoding: 'utf8'}).split('\0').filter(Boolean);
 const sources = new Map(files.map(file => [file, readFileSync(file, 'utf8')]));
+const owners = new Map();
+const gatedFiles = new Set();
 const gatedModules = [];
+
+function walkTargetModules(target, file, baseDir, gated, visited) {
+  if (visited.has(file)) return;
+  visited.add(file);
+  if (!owners.has(file)) owners.set(file, target);
+  if (gated) gatedFiles.add(file);
+  const source = sources.get(file);
+  if (!source) return;
+  const selfGated = gated || macOSGuard(source.match(/^#!\[cfg\([^\]]+\]/gm)?.join('\n') ?? '');
+  if (selfGated) gatedFiles.add(file);
+  for (const [, attributes, name] of source.matchAll(/^\s*((?:#\[[^\]]+\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/gm)) {
+    const childGated = selfGated || macOSGuard(attributes);
+    const pathMatch = attributes.match(/#\[path\s*=\s*"([^"]+)"\]/);
+    let childFile;
+    let childBaseDir;
+    if (pathMatch) {
+      childFile = posix.normalize(posix.join(baseDir, pathMatch[1]));
+      childBaseDir = posix.dirname(childFile);
+    } else {
+      const sibling = posix.join(baseDir, `${name}.rs`);
+      const nested = posix.join(baseDir, name, 'mod.rs');
+      if (sources.has(sibling)) {
+        childFile = sibling;
+        childBaseDir = posix.join(baseDir, name);
+      } else if (sources.has(nested)) {
+        childFile = nested;
+        childBaseDir = posix.join(baseDir, name);
+      } else {
+        continue;
+      }
+    }
+    walkTargetModules(target, childFile, childBaseDir, childGated, visited);
+  }
+}
+
+for (const target of targets) {
+  walkTargetModules(target, target.src, posix.dirname(target.src), false, new Set());
+}
 for (const [file, source] of sources) {
   for (const [, attributes, name] of source.matchAll(/^\s*((?:#\[[^\]]+\]\s*)+)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/gm)) {
     if (!macOSGuard(attributes)) continue;
@@ -64,9 +105,9 @@ for (const [file, source] of sources) {
   }
 }
 for (const [file, source] of sources) {
-  const names = nativeTests(file, source, gatedModules);
+  const names = nativeTests(file, source, gatedFiles, gatedModules);
   if (!names.length) continue;
-  const target = targets.find(t => t.src === file) ?? targets.find(t => file.startsWith(`${t.src.slice(0, -3)}/`)) ??
+  const target = owners.get(file) ?? targets.find(t => t.src === file) ?? targets.find(t => file.startsWith(`${t.src.slice(0, -3)}/`)) ??
     targets.find(t => /\/(lib|main)\.rs$/.test(t.src) && file.startsWith(`${posix.dirname(t.src)}/`));
   assert(target, `No Cargo test target owns ${file}`);
   for (const name of names) target.tests.add(name);

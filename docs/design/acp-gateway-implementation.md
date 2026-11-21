@@ -107,7 +107,7 @@ Zed 保持原有启动入口：npm 包的 `dim` 与 `dimcode` 别名指向同一
 
 必需：`hello`、`session.create`、`session.attach`、`session.detach`、`session.submit`、`session.input_lookup`、`session.history`、`session.stop`。先验证协议 v3 及执行 profile 的 create/history/input_lookup flags；缺失时 initialize 失败。hello.features 不是完整方法目录：attach/detach/submit/stop/list/close 属于已协商 v3 的基础调用，没有逐项重复列出，不能据其未列出而判断不支持。可选管理方法和新能力仍按实际 flags / Session methods 判断。
 
-可选：`session.list` / `session.summaries`、`session.close`、`session.delete`、`session.fork`、`session.permission.get/update`、`approval.respond`；临时 MCP 使用 `mcp.temporary.capabilities`、`session.mcp_temporary.attach/renew/detach`；每 Session 用 `session.methods` 发现 `session.input.withdraw`、`session.question.respond`、`session.context.usage` 和 `attachment.put`。缺少撤回时取消直接走现有 `session.stop`，并披露已接收输入可能保留的限制。
+可选：`session.list` / `session.summaries`、`session.close`、`session.delete`、`session.fork`、`session.permission.get/update`、`approval.respond`；临时 MCP 使用 `mcp.temporary.capabilities`、`session.mcp_temporary.attach/renew/detach`；每 Session 用 `session.methods` 发现 `session.input.withdraw`、`session.question.respond`、`session.context.usage` 和 `attachment.put`；`attachment.import` 和 `attachment.read` 由 Gateway 直接调用，调用前不查 `session.methods`。缺少撤回时取消直接走现有 `session.stop`，并披露已接收输入可能保留的限制。
 
 模型选择通过 `provider.models.query` 的 `selectableOnly:true` 获取可用模型页，按 `next` 继续读取，组成 ACP 要求的完整选项列表；过滤条件由 Provider 拥有方执行。Provider 管理已有独立插件和公开读写接口，接线及尚未满足的 ACP 合同见 §4.5；首版不通过这些接口写入共享产品配置。账户认证只允许 §4.4 列出的 `account.providers/status` 和属于当前连接的 login attempt 调用；§4.7 的 `/usage` 额外允许当前模型 provider 的 `account.usage` 安全读取。不开放 `account.*` 代理、recover/logout、settings、持久 MCP 配置、插件管理或凭据接口。也不把 ACP 方法名直接转成原生 RPC 方法名。
 
@@ -169,7 +169,7 @@ new/load/resume/fork 通过独立的 [TemporaryMcp](plugins/TemporaryMcp.md) Ses
 | `mcp/message` | 不支持 | 没有现成 MCP-over-ACP 入口 |
 | `session/set_model`、`document/didOpen`、`document/didChange`、`document/didClose`、`document/didSave`、`document/didFocus` | 不支持 | 历史 SDK 的入口不在固定稳定方法表；模型走 config options，文档通知不伪装成已维护 buffer |
 | `text` / `resource_link` | 可接 | 映射到 UserInput text；resource_link 为 `@<uri>` 引用，不自行下载或赋予路径访问权 |
-| `image` | 可接 | 在 ACP 输入边界检查 MIME/base64，再映射现有 image ContentBlock，经 `session.submit.user` 发送；是否为模型支持由 ModelProvider 决定，不走 attachment.put |
+| `image` | 可接 | 在 ACP 输入边界检查 MIME 和 base64，解码后写入临时文件，调 `attachment.import {sessionId,path,image:true}`，把返回的文件引用作为 image block 随 `session.submit.user` 提交；是否为模型支持由 ModelProvider 决定。导入时的图片校验与缩放见 [Attachments](plugins/Attachments.md) |
 | 文本 embedded `resource` | 条件可接 | UTF-8 ≤32 KiB 作为 `<uri>\n<text>`；更大文本调用 `attachment.put {sessionId,name?,text}`，再提交返回路径的引用。最大 10 MiB 且须满足完整 JSON frame 16 MiB；多项提交前逐项预检，避免无效 prompt 已上传部分文件 |
 | `audio`、二进制 resource、超限 frame | 不支持 | 写入前报 `unsupported_content` / 参数或大小错误；不把二进制当文本，不绕过上限 |
 | ACP v2 / HTTP / WebSocket transport | 不支持 | 不用默认生产 WS endpoint 执行；首版只有 stdio 和现有本地 RPC transport |
@@ -349,7 +349,7 @@ native reply、事件和 live progress 可以先后任意到达。先登记 subm
 
 ### 5.3 提交不确定性
 
-`submissionId` 是查询关联键，不是服务端的 exactly-once 保证。不得自动重发已送出的 create、fork、delete、attachment.put、configuration update 或 approval response。
+`submissionId` 是查询关联键，不是服务端的 exactly-once 保证。不得自动重发已送出的 create、fork、delete、attachment.put、attachment.import、configuration update 或 approval response；重发 import 会多存一份文件。
 
 submit 的拒绝/不确定性遵循 [现有提交合同](../../crates/dim-app-server/README.md#session-submission-errors)：明确保证未提交的错误才是 rejection；其他错误、断线和 `submission_unknown` 都不能报告“未发送”。重连后 `session.input_lookup {sessionId,branchId:"main",submissionId}` 返回 accepted 时继续关联同一个 input；unknown 时可能原调用仍未完成，不立即重发。恢复窗口内继续查询提交标识；已接受的输入通过现有 session.turn.get 的 inputId 定位消费轮次和终态，不从历史页推断。仍无证据则返回 `submission_unknown`，提示客户端 load 检查，禁止自动生成新 submissionId 重试。
 
@@ -419,11 +419,11 @@ cancel 到达 submit reply 之前时保留 cancel 标志，等拿到 input id �
 | 原生数据 | ACP 输出 / 首版处理 |
 | --- | --- |
 | main `session.model.progress` 与 `step/text` / `step/thinking` | agent message/thought chunks；每 request 维护已发 Unicode scalar 区间。committed delta 是事实，progress 是可替换预览；重放、重连及 emoji 不重复、不截断。每个 chunk 带 `messageId`：assistant 文本/思考用产生它的 model request id，实时流与 `session/load` 重放同一条消息得到同一个 id |
-| main `input/message` + applied/consumed/deleted | 有效 user message chunks；raw-only inputs 不显示，deleted 输入不进入有效回放；自己发出的 prompt 不重复 echo。chunk 的 `messageId` 是该输入自己的 Timeline event id，加载的 Skill 那一行属于操作者的这条消息 |
+| main `input/message` + applied/consumed/deleted | 有效 user message chunks；raw-only inputs 不显示，deleted 输入不进入有效回放；自己发出的 prompt 不重复 echo。chunk 的 `messageId` 是该输入自己的 Timeline event id，加载的 Skill 那一行属于操作者的这条消息；输入里的 image block 也投影为 image chunk：带 `fileId` 或内联 `data` 的图片才投影，只有 URL 的图片省略，引用附件的图片由 Gateway 调 `attachment.read` 逐张读取字节填入 `data`，每张解码后最多 16 MiB |
 | Gateway 自己产生的文本（submit check 的拒绝、命令失败） | 仍是 agent message chunk，`messageId` 由产生它的那次操作决定，放在 `gateway` 命名空间下，因此不可能是 model request id 或 input event id：拒绝用 `["gateway","refusal",<submissionId>]`，命令失败用 `["gateway","command",<commandId>]`。这两条都不是某个模型答复的延续，id 只承诺同一操作稳定、不同操作不同，客户端据此把提示归到发起它的操作 |
 | `step/tool-use-start`、`step/tool-use`、`step/tool-call`、`step/tool-start` | tool_call / tool_call_update，真实工具名、输入、位置和 pending/in_progress；ACP toolCallId 由 `(branchId,requestId,callId)` 确定性编码，避免模型在后续 request 重用 callId。native 回答仍用原始身份，显示 id 不充当 task id。title 命名工具作用的对象而非工具名：`read`/`write`/`edit` 用路径（`read` 给了范围时带行区间），`glob`/`grep` 用模式加被搜索路径，`web_fetch` 用 URL，`exec` 用模型自己的 `title` 或压成一行的命令，`web_search` 用其 `query`；kind 按工具映射到 `ToolKind`；带路径调用输出 `locations`，`read` 带起始行。Dim 在模型开始写调用时就发 `tool-use-start`，此时参数未知，因此第一条消息只命名工具，携带 `rawInput` 的那条消息才带 title/kind/locations |
 | `step/tool-completed` | 工具已执行的预览；不能提前宣称 tool batch 已提交到上下文 |
-| `step/tool-result` | 对应 tool_call_update completed/failed；编辑类工具的文件变更作为 `ToolCallContent::Diff` 前置：`edit` 每个替换各一条，带它自己的 `oldText`/`newText`；`write` 只有 `newText`（整文件写没有旧文本），失败结果不带 diff；随后只读 ToolResult.content 作为文本，最多 16 KiB；保留失败标记，不把 structuredContent 当模型结果 |
+| `step/tool-result` | 对应 tool_call_update completed/failed；编辑类工具的文件变更作为 `ToolCallContent::Diff` 前置：`edit` 每个替换各一条，带它自己的 `oldText`/`newText`；`write` 只有 `newText`（整文件写没有旧文本），失败结果不带 diff；随后按块投影 `ToolResult.content`：每个文本块最多 16 KiB 的 UTF-8 文本前缀，截断标记另计；引用 Session 附件的图片由 Gateway 调 `attachment.read` 按 offset 逐次读取字节填入 `data`，每张解码后最多 16 MiB，读完后去掉 `_meta.fileId`；无附件引用但带内联 `data` 的图片按 MIME 和 `data` 投影；既无附件引用也无内联 `data` 的图片（只有 URL）被省略；保留失败标记，不把 structuredContent 当模型结果 |
 | `approval.request`、`approval.resolved`、`approval.cancelled` | permission 请求和本地 waiter 结算；all branches 的审批均转交。显式保留 branchId/requestId，不能用 callId 单独关联 |
 | `SessionStore` title notice / native list metadata | 标准 session_info_update；按 revision 更新。manual 可映射 explicit；auto 不足以区分 generated/fallback，省略不可靠的 titleSource |
 | `session.context.usage` | 有值时 `usage_update {used:ceil(estimatedInputTokens),size:floor(contextWindow)}`，两个字段按 ACP 的 `u64` 输出 JSON 整数。这是估算上下文量。缺数据时不发送，未知 cost 省略，不能写 cost:0。不要把累计 token 消耗当上下文占用 |

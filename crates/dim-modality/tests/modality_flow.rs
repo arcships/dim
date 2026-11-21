@@ -1,6 +1,5 @@
 //! Modality image slice through the management methods: the owner's snapshot,
 //! resolution order and CAS, with a fixture adapter in the process.
-#![cfg(unix)]
 use dim_agent_capabilities::file_storage::{FileStorage, FileStoragePlugin};
 use dim_agent_capabilities::host::ModalityConnection;
 use dim_agent_capabilities::{adapters::MockTools, defaults, host::ToolDriver};

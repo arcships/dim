@@ -1,0 +1,40 @@
+name: Set up Windows native code layout toolchain
+description: Install the pinned MSVC Rust host toolchain, configure MSVC build tools, and locate lld-link.
+inputs:
+  target:
+    description: Native Rust target triple (x86_64-pc-windows-msvc or aarch64-pc-windows-msvc)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Select native MSVC Rust toolchain
+      shell: powershell
+      env:
+        DIM_LAYOUT_TARGET: ${{ inputs.target }}
+      run: |
+        $channel = python -c "import tomllib; print(tomllib.load(open('rust-toolchain.toml', 'rb'))['toolchain']['channel'])"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        $toolchain = "$channel-$env:DIM_LAYOUT_TARGET"
+        rustup toolchain install $toolchain --profile minimal
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        "RUSTUP_TOOLCHAIN=$toolchain" >> $env:GITHUB_ENV
+    - name: Configure Windows C/C++ toolchain
+      uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+      with:
+        arch: ${{ runner.arch == 'ARM64' && 'arm64' || 'amd64' }}
+    - name: Locate lld-link
+      shell: powershell
+      run: |
+        $linker = Get-Command lld-link -ErrorAction SilentlyContinue
+        if (!$linker) {
+          $linker = Get-ChildItem -Recurse -Filter lld-link.exe -ErrorAction SilentlyContinue `
+            -Path "$env:ProgramFiles\LLVM\bin", "$env:ProgramFiles\Microsoft Visual Studio\2022\*\VC\Tools\Llvm\*\bin" |
+            Select-Object -First 1
+        }
+        if ($linker) {
+          $path = if ($linker -is [System.Management.Automation.ApplicationInfo]) { $linker.Source } else { $linker.FullName }
+          Split-Path $path >> $env:GITHUB_PATH
+          Write-Output "Using $path"
+        } else {
+          Write-Output 'lld-link is not on PATH; the build will use the Rust toolchain rust-lld'
+        }

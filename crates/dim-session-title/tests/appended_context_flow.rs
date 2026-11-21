@@ -1,8 +1,7 @@
 //! The context a capability appends to an operator input does not title the
 //! Session: Hooks A.6.2 and Skills §9 add their blocks after the operator's
 //! own, and the title is generated from the operator's words alone (#1378).
-#![cfg(unix)]
-mod support;
+use crate::support;
 
 use axum::{Router, routing::post};
 use dim_agent_capabilities::{adapters::MockTools, defaults};

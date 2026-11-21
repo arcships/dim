@@ -25,41 +25,64 @@ const runSelector=(cwd,event,before='')=>{
   }));
 };
 
-test('documentation-only changes need no build group',()=>{
+test('documentation and non-code repository metadata need no build group',()=>{
   assert.deepEqual(classify(['docs/adr/006-plugin-contract.md','docs/zh/INDEX.md']),only());
   assert.deepEqual(classify(['README.md','AGENTS.md']),only());
   assert.deepEqual(classify(['benchmarks/baselines/result.json']),only());
+  assert.deepEqual(classify([
+    '.agents/skills/dim-release/SKILL.md',
+    'skills/dim-alpha-release/SKILL.md',
+    '.github/ISSUE_TEMPLATE/bug.yml',
+    '.github/pull_request_template.md',
+    '.github/PULL_REQUEST_TEMPLATE.md',
+  ]),only());
 });
 
 test('documents that code reads keep their checks',()=>{
-  assert.deepEqual(classify(['docs/architecture/rust-agent/plugins/goal.md']),only('xtask'));
+  assert.deepEqual(classify(['docs/architecture/rust-agent/plugins/goal.md']),only('static'));
+  assert.deepEqual(classify(['docs/architecture/rust-agent/generated/crates.mmd']),only('static'));
+  assert.deepEqual(classify(['docs/architecture/rust-agent/generated/catalog.md']),only('xtask'));
   assert.deepEqual(classify(['docs/design/appserver/native-storage-format.md']),only('rust'));
+  assert.deepEqual(classify(['docs/architecture/tui-e2e.md']),only('scripts'));
+  assert.deepEqual(classify(['docs/design/plugins/EventHub.md']),only('rust'));
+  assert.deepEqual(classify(['docs/typescript-plugin-authoring.md']),only('rust','node'));
 });
 
-test('Web sources that xtask reads keep its check',()=>{
+test('Web sources that static checks read avoid the heavy xtask build',()=>{
   for (const file of ['web/src/main.ts','web/src/chat-ui/WebChatTimeline.vue','web/src/rpc/protocol.ts','web/src/a.mjs','web/src/a.js'])
-    assert.deepEqual(classify([file]),only('web','xtask'),file);
+    assert.deepEqual(classify([file]),only('web','static'),file);
 });
 
-test('dependency policy changes select the scan without compiling the workspace',()=>{
+test('dependency checks follow Cargo manifests, lockfile and policy files',()=>{
   assert.deepEqual(classify(['deny.toml','LICENSE']),only('dependencies'));
+  assert.deepEqual(classify(['crates/dim-cli/Cargo.toml']),only('rust','windows','dependencies'));
+  assert.deepEqual(classify(['crates/dim-app-server/Cargo.toml']),only('rust','node','dependencies'));
+  assert.deepEqual(classify(['xtask/Cargo.toml']),only('rust','node','eval','dependencies'));
+  assert.deepEqual(classify(['Cargo.toml']),only(...groups));
+  assert.deepEqual(classify(['Cargo.lock']),only(...groups));
 });
 
 test('source areas select their groups',()=>{
   assert.deepEqual(classify(['web/package.json','web/src/styles/base.css']),only('web'));
   assert.deepEqual(classify(['web/src/features/chat/quote-cases.json']),only('web','rust','windows'));
   assert.deepEqual(classify(['scripts/stage-web.mjs']),only('scripts','web'));
+  assert.deepEqual(classify(['scripts/check-acp-registry.mjs']),only('scripts'));
   assert.deepEqual(classify(['docker/Dockerfile']),only('scripts'));
   assert.deepEqual(classify(['crates/dim-app-server/src/lib.rs','runtime/fixtures/session-part.json']),only('rust','node'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/protocol.rs']),only('rust','node','web','scripts'));
+  assert.deepEqual(classify(['crates/dim-app-server/src/storage/sqlite.rs']),only('rust','node','scripts','macos_scripts'));
+  assert.deepEqual(classify(['crates/dim-app-server/resources/default-catalog.json']),only('rust','node','scripts'));
   assert.deepEqual(classify(['crates/dim-cli/src/main.rs']),only('rust','windows'));
+  assert.deepEqual(classify(['crates/dim-client/src/lib.rs']),only('rust','windows','node'));
+  assert.deepEqual(classify(['vendor/grok-build/xai-ratatui-textarea/src/lib.rs']),only('rust','windows','node'));
   assert.deepEqual(classify(['docs/notes.md','crates/dim-cli/src/notes.rs']),only('rust','windows'));
 });
 
 test('native macOS CI follows its runner, packaging and Mach-O layout sources',()=>{
-  assert.deepEqual(classify(['scripts/test-macos-native.mjs']),only('rust','scripts','web'));
+  assert.deepEqual(classify(['scripts/test-macos-native.mjs']),only('rust','scripts'));
   for (const name of ['release.test.mjs','stage-release.mjs','pack-release.mjs','native-binary.mjs','store-formats.mjs',
     'code-layout-darwin.test.mjs','code-layout/macho.py','code-layout/link_capture.rs']) {
-    assert.deepEqual(classify([`scripts/${name}`]),only('scripts','web','macos_scripts'),name);
+    assert.deepEqual(classify([`scripts/${name}`]),only('scripts','macos_scripts'),name);
   }
 });
 
@@ -67,6 +90,7 @@ test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
   assert.deepEqual(classify(['crates/dim-cli/src/ui/tui.rs']),only('rust','windows'));
   assert.deepEqual(classify(['crates/dimcode/tests/cli_flow/models.rs']),only('rust'));
   assert.deepEqual(classify(['crates/dim-agent-types/src/tool.rs']),only('rust','windows','node'));
+  assert.deepEqual(classify(['xtask/check/src/literal_main.rs']),only('static','xtask'));
   assert.deepEqual(classify(['xtask/src/scenario_eval.rs']),only('rust','node','eval'));
   assert.deepEqual(classify(['xtask/scenario-eval/case.json']),only('rust','node','eval'));
   assert.deepEqual(classify(['crates/dim-agent-capabilities/src/workspace_tools/exec.rs']),only('rust','node','execution'));
@@ -76,7 +100,7 @@ test('bridge, evaluation and wall-clock flows follow their owning paths',()=>{
 });
 
 test('workspace, toolchain, workflow and unknown paths run everything',()=>{
-  for (const file of ['Cargo.lock','rust-toolchain.toml','.github/workflows/ci.yml','.node-version','dev','skills/x/SKILL.md','benchmarks/runner/main.py'])
+  for (const file of ['Cargo.lock','rust-toolchain.toml','.github/workflows/ci.yml','.node-version','dev','benchmarks/runner/main.py'])
     assert.deepEqual(classify([file]),only(...groups),file);
 });
 
@@ -121,15 +145,33 @@ test('main push checks use the whole push range in a shallow checkout',{skip:!ha
   assert.notEqual(spawnSync('git',['cat-file','-e',docsBase],{cwd:checkout}).status,0);
 
   assert.deepEqual(runSelector(checkout,'push',docsBase),only(),'a docs-only range skips all build groups');
-  assert.deepEqual(runSelector(checkout,'push',initial),only(...groups),'an earlier code commit keeps the full run');
+  assert.deepEqual(runSelector(checkout,'push',initial),only(...groups),'an earlier root Cargo.toml commit keeps the full run');
   assert.deepEqual(runSelector(checkout,'push','f'.repeat(40)),only(...groups),'an unavailable base keeps the full run');
+  assert.deepEqual(runSelector(checkout,'schedule',docsBase),only(...groups),'scheduled sweeps stay full');
   assert.deepEqual(runSelector(checkout,'workflow_dispatch',docsBase),only(...groups),'manual runs stay full');
 
   const head=git(checkout,'rev-parse','HEAD').trim();
+  const skills=path.join(checkout,'.agents/skills/demo');
+  mkdirSync(skills,{recursive:true});
+  writeFileSync(path.join(skills,'SKILL.md'),'# Demo skill\n');
+  git(checkout,'add','-A');
+  git(checkout,'commit','-q','-m','skill doc');
+  assert.deepEqual(runSelector(checkout,'push',head),only(),'non-code metadata pushes skip all build groups');
+
+  const generatedBase=git(checkout,'rev-parse','HEAD').trim();
   const generated=path.join(checkout,'docs/architecture/rust-agent/generated');
   mkdirSync(generated,{recursive:true});
   writeFileSync(path.join(generated,'catalog.md'),'# Catalog\n');
   git(checkout,'add','-A');
   git(checkout,'commit','-q','-m','generated architecture');
-  assert.deepEqual(runSelector(checkout,'push',head),only(...groups),'architecture documents keep the full main run');
+  assert.deepEqual(runSelector(checkout,'push',generatedBase),only(...groups),'checked architecture documents keep the full main run');
+
+  const clientBase=git(checkout,'rev-parse','HEAD').trim();
+  mkdirSync(path.join(checkout,'crates/dim-client/src'),{recursive:true});
+  writeFileSync(path.join(checkout,'crates/dim-client/src/lib.rs'),'pub fn connect() {}\n');
+  git(checkout,'add','-A');
+  git(checkout,'commit','-q','-m','windows client transport');
+  const clientPush=runSelector(checkout,'push',clientBase);
+  assert.equal(clientPush.windows,true,'a push changing crates/dim-client/src/lib.rs keeps Windows verification');
+  assert.deepEqual(clientPush,only(...groups),'code pushes keep the full main run until the scheduled sweep is verified');
 });
