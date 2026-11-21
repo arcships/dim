@@ -50,7 +50,7 @@ every instance of that group; a row gets the nearest enclosing instance. Its met
 | --- | --- | --- | --- |
 | `treeCommands` | `session` | `TreeCommands` | `list()`, `info(id)`, `input(id, input)`, `create(parent, at, options, cancelled)`, `end(id, source)`, `page(id, after, limit)` |
 | `dispatcher` | `branch` | `Dispatcher` | `consume(name, keys, rebuild, handler)`, `listen(name, keys, handler)`, `committed()`, `notify()`, `sequence()`, `changed()` |
-| `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()` |
+| `branchLifecycle` | `branch` | `BranchLifecycle` | `activated()`, `closing()`. `registerOpening` registers work that branch opening waits for. |
 | `timeline` | `branch` | `Timeline` | `append({type, name, data, tags?})` → the committed event; `query(query)` (the one bounded read, `include_publishing` for the branch's not-yet-published facts), `ancestors()`, `sequence()`, `committed()`, `hasPending()` |
 | `timelineIdentity` | `branch` | `TimelineIdentity` | `get()` → `{sessionId, branchId}` |
 

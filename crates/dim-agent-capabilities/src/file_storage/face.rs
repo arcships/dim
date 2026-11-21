@@ -4,7 +4,7 @@ use rutis::Ctx;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::{Deserialize, Serialize};
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsString,
     path::{Component, Path},
     sync::Arc,
 };
@@ -18,39 +18,6 @@ pub struct OpenRead {
     pub size: u64,
 }
 
-pub(super) fn serialize_name<S: serde::Serializer>(
-    name: &OsStr,
-    serializer: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    match name.to_str() {
-        Some(text) => serializer.serialize_str(text),
-        #[cfg(any(unix, windows))]
-        None => name.serialize(serializer),
-        #[cfg(not(any(unix, windows)))]
-        None => Err(serde::ser::Error::custom(
-            "unsupported filesystem name encoding",
-        )),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum EntryName {
-    Text(String),
-    #[cfg(any(unix, windows))]
-    Native(OsString),
-}
-
-fn deserialize_name<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> std::result::Result<OsString, D::Error> {
-    Ok(match EntryName::deserialize(deserializer)? {
-        EntryName::Text(text) => text.into(),
-        #[cfg(any(unix, windows))]
-        EntryName::Native(name) => name,
-    })
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum FsRemove {
@@ -59,7 +26,7 @@ pub enum FsRemove {
     },
     Entry {
         parent: String,
-        #[serde(deserialize_with = "deserialize_name")]
+        #[serde(deserialize_with = "crate::os_string::deserialize")]
         name: OsString,
     },
 }

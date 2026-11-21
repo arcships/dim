@@ -683,6 +683,11 @@ impl AgentBuilder {
                 session: required_session.clone(),
                 branch: required_branch.clone(),
             };
+            let extension_groups: Arc<[String]> = assembly
+                .extensions
+                .iter()
+                .map(|(group, _)| group.clone())
+                .collect();
             builtins.register(session_scope_module, move |build| {
                 let owner = build.value::<Arc<SessionAssembly>>().ok_or_else(|| {
                     rutis::Error::from(ErrorKind::PluginFailed(
@@ -692,12 +697,14 @@ impl AgentBuilder {
                 let scope = session_scope(build)?;
                 *owner.instance.lock().unwrap() = Some(scope.instance);
                 let required = required_session.clone();
+                let extension_groups = extension_groups.clone();
                 let build = build.clone();
                 Factory::new(move || {
                     Box::new(SessionScopePlugin {
                         owner: (*owner).clone(),
                         scope,
                         build: build.clone(),
+                        extension_groups: extension_groups.clone(),
                         required: required.clone(),
                     }) as Box<dyn DynPlugin>
                 })
@@ -1072,7 +1079,6 @@ pub(crate) struct SessionAssembly {
     pub id: String,
     pub restored: bool,
     pub unloading: CancellationToken,
-    pub faults: FaultReporter,
     pub closing: CancellationToken,
     pub lifecycle: SessionLifecycle,
     pub loaded: Mutex<Option<Arc<Loaded<SessionScope>>>>,
@@ -1099,6 +1105,7 @@ struct SessionScopePlugin {
     /// The names of this copy's instances, for the mounters it builds.
     build: Build,
     required: Arc<[String]>,
+    extension_groups: Arc<[String]>,
 }
 impl DynPlugin for SessionScopePlugin {
     fn name(&self) -> &str {
@@ -1109,7 +1116,12 @@ impl DynPlugin for SessionScopePlugin {
             let (owner, scope) = (&self.owner, self.scope);
             ctx.provide_at(
                 scope.key::<crate::SessionLoader>(),
-                Arc::new(crate::SessionLoader::new(owner.loader.clone(), ctx.clone())),
+                Arc::new(crate::SessionLoader::new(
+                    owner.loader.clone(),
+                    ctx.clone(),
+                    Some(SESSION_GROUP),
+                    self.extension_groups.clone(),
+                )),
             )?;
             ctx.provide_at(scope.key::<SessionConfig>(), Arc::new(owner.config.clone()))?;
             ctx.provide_at(
@@ -1140,7 +1152,6 @@ impl DynPlugin for SessionScopePlugin {
                 rutis_bridge::session::host_key("timelineStore").instance(scope.instance),
                 owner.assembly.store.clone(),
             )?;
-            ctx.provide_at(scope.key::<FaultReporter>(), Arc::new(owner.faults.clone()))?;
             for provide in &owner.assembly.values {
                 provide(ctx, &scope)?;
             }
@@ -1268,7 +1279,6 @@ struct LoadedBranch {
     timeline: Timeline,
     dispatcher: Dispatcher,
     lifecycle: BranchLifecycle,
-    opening: Arc<BranchOpening>,
 }
 struct BranchScopePlugin {
     owner: Arc<BranchAssembly>,
@@ -1298,15 +1308,13 @@ impl DynPlugin for BranchScopePlugin {
                 ancestors,
                 session.assembly.store.clone(),
                 owner.sequence,
-                session.faults.clone(),
+                session.lifecycle.faults.clone(),
             );
             let dispatcher = Dispatcher::new(scope.instance, owner.sequence, timeline.clone());
             ctx.provide_at(scope.key::<Timeline>(), Arc::new(timeline.clone()))?;
             ctx.provide_at(scope.key::<Dispatcher>(), Arc::new(dispatcher.clone()))?;
             let lifecycle = BranchLifecycle::new();
             ctx.provide_at(scope.key::<BranchLifecycle>(), Arc::new(lifecycle.clone()))?;
-            let opening = Arc::new(BranchOpening::new());
-            ctx.provide_at(scope.key::<BranchOpening>(), opening.clone())?;
             ctx.provide_at(
                 scope.key::<TimelineIdentity>(),
                 Arc::new(TimelineIdentity {
@@ -1325,7 +1333,6 @@ impl DynPlugin for BranchScopePlugin {
                 timeline,
                 dispatcher,
                 lifecycle,
-                opening,
             }));
             let site = Arc::new(crate::parts::MountSite {
                 scope: crate::PartScope::Branch,
@@ -1458,8 +1465,7 @@ impl TimelineFactory {
                     branch.timeline.clone(),
                     branch.dispatcher.clone(),
                     branch.lifecycle.clone(),
-                    branch.opening.clone(),
-                    parent.faults.clone(),
+                    parent.lifecycle.faults.clone(),
                     parent.assembly.catalog.clone(),
                 ))
             })
@@ -1820,7 +1826,6 @@ pub(crate) async fn build_session(
         config,
         id,
         restored: matches!(initialization, SessionInitialization::Restore(_)),
-        faults: FaultReporter::default(),
         unloading: CancellationToken::new(),
         lifecycle: SessionLifecycle::new(closing.clone()),
         closing,

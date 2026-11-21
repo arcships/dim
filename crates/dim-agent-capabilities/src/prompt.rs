@@ -128,11 +128,10 @@ pub struct Prompt {
     publisher: Arc<ConfigurationPublisher>,
     timeline: Arc<Timeline>,
     dispatcher: Arc<Dispatcher>,
-    faults: Arc<FaultReporter>,
+    session_lifecycle: Arc<SessionLifecycle>,
     identity: Arc<TimelineIdentity>,
     lifecycle: CancellationToken,
     branch_phase: Arc<BranchLifecycle>,
-    opening: Arc<BranchOpening>,
     opened: tokio::sync::watch::Sender<Option<Result<()>>>,
     /// The Session's guide entries: the composition the listener adopts.
     guide: Arc<GuideEntries>,
@@ -284,7 +283,7 @@ impl Prompt {
 
     fn report_panic(&self, panic: Box<dyn std::any::Any + Send>) -> AgentError {
         let error = AgentError::fault("Prompt", panic_message(panic));
-        self.faults.report(error.clone());
+        self.session_lifecycle.report_native_fault(error.clone());
         error
     }
 
@@ -721,9 +720,8 @@ pub struct PromptPlugin {
     initial: rutis::host::Key<InitialPromptConfiguration>,
     publisher: rutis::host::Key<ConfigurationPublisher>,
     identity: rutis::host::Key<TimelineIdentity>,
-    faults: rutis::host::Key<FaultReporter>,
+    session_lifecycle: rutis::host::Key<SessionLifecycle>,
     branch_phase: rutis::host::Key<BranchLifecycle>,
-    opening: rutis::host::Key<BranchOpening>,
     guide: rutis::host::Key<GuideEntries>,
     state: rutis::host::Key<StateCell<PromptSnapshot>>,
     prompt: rutis::host::Key<Prompt>,
@@ -738,9 +736,8 @@ impl PromptPlugin {
             initial: names.key()?,
             publisher: names.key()?,
             identity: names.key()?,
-            faults: names.key()?,
+            session_lifecycle: names.key()?,
             branch_phase: names.key()?,
-            opening: names.key()?,
             guide: names.key()?,
             state: names.state_cell()?,
             prompt: names.key()?,
@@ -760,9 +757,8 @@ impl DynPlugin for PromptPlugin {
             self.initial.erase(),
             self.publisher.erase(),
             self.identity.erase(),
-            self.faults.erase(),
+            self.session_lifecycle.erase(),
             self.branch_phase.erase(),
-            self.opening.erase(),
             self.guide.erase(),
         ]
     }
@@ -774,9 +770,8 @@ impl DynPlugin for PromptPlugin {
             let initial = ctx.require_at(&self.initial)?;
             let publisher = ctx.require_at(&self.publisher)?;
             let identity = ctx.require_at(&self.identity)?;
-            let faults = ctx.require_at(&self.faults)?;
+            let session_lifecycle = ctx.require_at(&self.session_lifecycle)?;
             let branch_phase = ctx.require_at(&self.branch_phase)?;
-            let opening = ctx.require_at(&self.opening)?;
             let guide = ctx.require_at(&self.guide)?;
             if ctx.cancellation_token().is_cancelled() {
                 return Ok(Effect::Done);
@@ -789,11 +784,10 @@ impl DynPlugin for PromptPlugin {
                 publisher,
                 timeline: timeline.clone(),
                 dispatcher: dispatcher.clone(),
-                faults,
+                session_lifecycle,
                 identity,
                 lifecycle: ctx.cancellation_token(),
                 branch_phase,
-                opening,
                 opened: tokio::sync::watch::channel(None).0,
                 guide,
                 tasks: TaskTracker::new(),
@@ -947,7 +941,7 @@ impl DynPlugin for PromptPlugin {
                         };
                         if let Some(snapshot) = opening {
                             let (reply, opened) = oneshot::channel();
-                            prompt.opening.register(Box::pin(async move {
+                            prompt.branch_phase.admit_opening(Box::pin(async move {
                                 opened
                                     .await
                                     .map_err(|_| AgentError::Closed("Prompt".into()))?
@@ -1049,7 +1043,7 @@ impl DynPlugin for PromptPlugin {
                                 | AgentError::InvalidInput(_)
                         )
                     {
-                        owner.faults.report(error);
+                        owner.session_lifecycle.report_native_fault(error);
                         break;
                     }
                 }

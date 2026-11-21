@@ -198,16 +198,11 @@ text when it is absent or fails; the factory `SkillsConfig` outranks it
 
 ### Content instances
 
-`SkillContentInstances` is an instanced Session extension template. Each enabled,
-active catalog definition creates a `SkillContent` leaf with an immutable private
-definition and a unique scoped contribution key passed through
-`create_instance().with(...)`. Definitions and bodies are not loader row options.
-The leaf provides its content service and adds the same service to the
-collection of ready content that Skills holds for its generation and hands to
-each leaf in its instance value; disposal withdraws it. The collection is no
-service, so a leaf does not wait for Skills, which waits for its leaves: no
-apply-time dependency cycle and no undeclared dynamic read. Each Skills
-generation closes its leaves with itself and starts a new collection.
+`SkillContentInstances` is an instanced Session extension template. Skills calls
+`sessionLoader.create` with the Skill id as `definitionId` and the immutable
+definition as `instanceData`. SkillContent publishes the definition at its
+private Session-scoped key. Skills reads the contributions of the instances
+it owns and releases them through `sessionLoader.remove`.
 
 The catalog still owns source precedence, shadowing and enablement. Skills owns
 selection and reconciliation, not a second lifecycle tree. Unchanged definitions
@@ -239,8 +234,7 @@ replacement task and shuts down every content fiber; tool handlers reject work a
 generation cancellation. Initial creation also runs in a tracked task, so dropping
 apply cannot abandon it. Creation is awaited to settlement even if cancelled,
 then an unusable instance is shut down. Failed updates drain partial/current
-instances and publish an unavailable view. `FiberView::shutdown` and its retained
-error preserve cleanup failures; no lock-taking loader mutation runs in apply or
+instances and publish an unavailable view. `sessionLoader.remove` propagates cleanup failures; no lock-taking loader mutation runs in apply or
 dispose. Content lifecycle failures use the existing public `SkillsError::Closed`
 state, with details logged; disposer failures propagate to Session shutdown.
 Catalog errors retain their existing public variants. Closing one Session cannot
@@ -340,7 +334,7 @@ The instanced loader group containing one [SkillContent](Skills.md#skillcontent)
 
 ### Dependencies
 
-None on the group itself. The leaf declares its Session contribution dependency.
+None on the group itself.
 
 ### Events and lifetime
 
@@ -374,11 +368,8 @@ None: its instance value carries what it needs.
 
 ### Events and lifetime
 
-No Timeline events or external execution. Private instance values contain the
-definition, the scoped service key and the Skills generation's collection of
-ready content; loader options never contain the Skill body. The leaf provides
-its definition and adds that same service to the collection. Its effect withdraws the contribution. Skills coordinates selection;
-rutis owns the instance lifecycle. See [Skills](Skills.md) for update and failure rules.
+The leaf publishes its immutable definition under the private key derived from
+`definitionId` in its Session. Unloading the leaf withdraws that binding. See [Skills](Skills.md) for update and failure rules.
 
 ### Tests
 

@@ -1,6 +1,6 @@
 use crate::*;
 use rutis::Ctx;
-use rutis::host::{InstanceId, Key};
+use rutis::host::{CtxHost, InstanceId, Key};
 
 /// Explicit opt-in for services that are safe to obtain from a public Session handle.
 ///
@@ -45,23 +45,114 @@ use rutis::host::{InstanceId, Key};
 /// ```
 pub trait PublicService: Send + Sync + 'static {}
 
-/// The loader that owns this Session's subtree. Not publicly accessible.
-/// Only lock-free instance creation is exposed to Session capabilities.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionInstanceDefinition {
+    pub group: String,
+    pub definition_id: String,
+    pub instance_data: serde_json::Value,
+}
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionInstance {
+    pub instance_id: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionInstanceError {
+    #[error("{0}")]
+    Create(String),
+    #[error("{0}")]
+    NotReady(String),
+    #[error("{0}")]
+    Cleanup(String),
+}
+
+/// The loader anchored in this Session's subtree.
 pub struct SessionLoader {
     loader: rutis_loader::Loader,
-    /// A running loader row of the instance new instances go in: the loader
-    /// places an instance from a row's context, and a mounted part is not a
-    /// row ([`crate::PartRegistry`]).
     anchor: Ctx,
+    parent_group: Option<&'static str>,
+    extension_groups: std::sync::Arc<[String]>,
+    instances: std::sync::Mutex<std::collections::HashMap<u64, rutis::host::FiberView>>,
 }
+#[rutis::service]
 impl SessionLoader {
-    pub fn new(loader: rutis_loader::Loader, anchor: Ctx) -> Self {
-        Self { loader, anchor }
+    pub fn new(
+        loader: rutis_loader::Loader,
+        anchor: Ctx,
+        parent_group: Option<&'static str>,
+        extension_groups: std::sync::Arc<[String]>,
+    ) -> Self {
+        Self {
+            loader,
+            anchor,
+            parent_group,
+            extension_groups,
+            instances: Default::default(),
+        }
     }
-    /// Creates an instance of `group` where the configuration tree puts it
-    /// inside this loader's instance.
-    pub fn create_instance(&self, group: &str) -> rutis_loader::edit::CreateInstance<'_> {
-        self.loader.create_instance(&self.anchor, group)
+
+    pub async fn create(
+        &self,
+        definition: SessionInstanceDefinition,
+    ) -> std::result::Result<SessionInstance, SessionInstanceError> {
+        let group = definition.group.clone();
+        if self
+            .loader
+            .get(&group)
+            .is_some_and(|row| row.parent.as_deref() != self.parent_group)
+        {
+            return Err(SessionInstanceError::Create(format!(
+                "instance group {group} is outside the loader scope"
+            )));
+        }
+        let created = self
+            .loader
+            .create_instance(&self.anchor, &group)
+            .with(self.anchor.instance())
+            .with(definition)
+            .await
+            .map_err(|error| SessionInstanceError::Create(error.to_string()))?;
+        let instance = SessionInstance {
+            instance_id: created.plugin.0,
+        };
+        self.instances
+            .lock()
+            .unwrap()
+            .insert(instance.instance_id, created.view);
+        if self.extension_groups.contains(&group)
+            && let Some((row, state)) = created
+                .report
+                .iter()
+                .find(|(_, state)| !matches!(state, rutis_loader::edit::InstanceResult::Active))
+        {
+            self.remove(instance).await?;
+            return Err(SessionInstanceError::NotReady(format!("{row}: {state:?}")));
+        }
+        Ok(instance)
+    }
+
+    pub async fn remove(
+        &self,
+        instance: SessionInstance,
+    ) -> std::result::Result<(), SessionInstanceError> {
+        let view = self
+            .instances
+            .lock()
+            .unwrap()
+            .get(&instance.instance_id)
+            .cloned();
+        if let Some(view) = view {
+            let result = view.shutdown().await;
+            self.instances.lock().unwrap().remove(&instance.instance_id);
+            result.map_err(|error| SessionInstanceError::Cleanup(error.to_string()))?;
+            if let Some(error) = view.state().error {
+                return Err(SessionInstanceError::Cleanup(error.to_string()));
+            }
+        }
+        Ok(())
     }
 }
 /// Identity of one Session subtree, which the runtime builds keys from.

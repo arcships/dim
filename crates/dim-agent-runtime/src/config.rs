@@ -307,32 +307,83 @@ impl<P: Copy + Ord + Default + Send + Sync + 'static> Phases<P> {
 /// branch's [`crate::TimelineContext`]. Capabilities that spawn background
 /// work in `apply` wait for [`Self::activated`] before doing it.
 #[derive(Clone)]
-pub struct BranchLifecycle(Phases<BranchPhase>);
+pub struct BranchLifecycle {
+    phases: Phases<BranchPhase>,
+    opening: Arc<Mutex<Option<Vec<OpeningReceipt>>>>,
+}
+type OpeningReceipt = rutis::host::BoxFuture<'static, crate::Result<()>>;
+
 #[service]
 impl BranchLifecycle {
     pub(crate) fn new() -> Self {
-        Self(Phases::new())
+        Self {
+            phases: Phases::new(),
+            opening: Arc::new(Mutex::new(Some(Vec::new()))),
+        }
     }
+    /// Registers a completion for the current branch opening. Once opening seals,
+    /// registration fails. A failed completion fails the opening.
+    pub fn register_opening(
+        &self,
+        completion: Arc<
+            dyn Fn() -> rutis::host::BoxFuture<'static, std::result::Result<(), rutis::Error>>
+                + Send
+                + Sync,
+        >,
+    ) -> std::result::Result<(), crate::AgentError> {
+        self.admit_opening(Box::pin(async move { Ok(completion().await?) }))
+    }
+
     #[service(skip)]
     pub fn phase(&self) -> BranchPhase {
-        self.0.get()
+        self.phases.get()
     }
     #[service(skip)]
     pub fn watch(&self) -> tokio::sync::watch::Receiver<BranchPhase> {
-        self.0.watch()
+        self.phases.watch()
     }
     /// Waits until the branch leaves `Loading`: true when it became Active,
     /// false when it closes without ever starting.
     pub async fn activated(&self) -> bool {
-        self.0.reach(|phase| *phase != BranchPhase::Loading).await == Some(BranchPhase::Active)
+        self.phases
+            .reach(|phase| *phase != BranchPhase::Loading)
+            .await
+            == Some(BranchPhase::Active)
     }
     /// Waits until the branch starts closing; background work ends then,
     /// without waiting for its capability to unload.
     pub async fn closing(&self) {
-        self.0.reach(|phase| *phase >= BranchPhase::Closing).await;
+        self.phases
+            .reach(|phase| *phase >= BranchPhase::Closing)
+            .await;
     }
     pub(crate) fn advance(&self, next: BranchPhase) {
-        self.0.advance(next);
+        self.phases.advance(next);
+    }
+}
+
+impl BranchLifecycle {
+    pub fn admit_opening(&self, receipt: OpeningReceipt) -> crate::Result<()> {
+        let mut receipts = self.opening.lock().unwrap();
+        receipts
+            .as_mut()
+            .ok_or_else(|| crate::AgentError::Closed("branch opening".into()))?
+            .push(receipt);
+        Ok(())
+    }
+    pub(crate) async fn finish_opening(
+        &self,
+        ctx: &rutis::Ctx,
+        scope: rutis::host::PluginId,
+    ) -> crate::Result<()> {
+        use futures_util::{StreamExt, stream::FuturesUnordered};
+        let receipts = self.opening.lock().unwrap().take().unwrap_or_default();
+        let mut pending: FuturesUnordered<_> = receipts.into_iter().collect();
+        while let Some(result) = pending.next().await {
+            result?;
+            ctx.emit(crate::assembly::OpeningAdvanced(scope))?;
+        }
+        Ok(())
     }
 }
 
@@ -353,20 +404,26 @@ impl BranchLifecycle {
 /// parts in other languages use [`Self::hold`].
 #[derive(Clone)]
 pub struct SessionLifecycle {
+    pub(crate) faults: crate::FaultReporter,
     phases: Phases<SessionPhase>,
     closing: tokio_util::sync::CancellationToken,
     /// Live holds, with [`RELEASING`] set once an idle release is decided.
     holds: Arc<AtomicUsize>,
-    /// The holds parts in other languages took, by id ([`Self::hold`]).
-    foreign: Arc<Mutex<ForeignHolds>>,
+    foreign: Arc<Mutex<ForeignResources>>,
 }
-/// Each hold is also a cleanup of the row that took it: the row's unload
-/// runs it, or [`SessionLifecycle::release`] runs it early.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FaultQuery {}
 #[derive(Default)]
-struct ForeignHolds {
+struct ForeignResources {
     next: u64,
-    held: std::collections::HashMap<u64, (SessionHold, rutis::Disposer)>,
+    entries: std::collections::HashMap<u64, rutis::Disposer>,
 }
+type FaultListener = Arc<
+    dyn Fn(Option<crate::SessionFault>) -> rutis::host::BoxFuture<'static, Result<(), rutis::Error>>
+        + Send
+        + Sync,
+>;
 /// Set in the hold count by the idle release decision; no hold follows it.
 const RELEASING: usize = 1 << (usize::BITS - 1);
 #[service]
@@ -374,10 +431,17 @@ impl SessionLifecycle {
     pub(crate) fn new(closing: tokio_util::sync::CancellationToken) -> Self {
         Self {
             phases: Phases::new(),
+            faults: crate::FaultReporter::default(),
             closing,
             holds: Arc::default(),
             foreign: Arc::default(),
         }
+    }
+    pub fn report_fault(&self, error: crate::SessionFault) {
+        self.faults.report(error.into());
+    }
+    pub fn failure(&self, _request: FaultQuery) -> Option<crate::SessionFault> {
+        self.faults.failure().map(crate::SessionFault::from)
     }
     #[service(skip)]
     pub fn phase(&self) -> SessionPhase {
@@ -435,30 +499,39 @@ impl SessionLifecycle {
     /// TypeScript) once the Session is closing or its idle release is
     /// decided.
     pub fn hold(&self, ctx: &rutis::Ctx) -> Option<u64> {
-        let hold = self.take_hold()?;
-        let mut foreign = self.foreign.lock().unwrap();
-        foreign.next += 1;
-        let id = foreign.next;
-        let holds = Arc::downgrade(&self.foreign);
-        let disposer = ctx
-            .effect(move || async move {
-                if let Some(holds) = holds.upgrade() {
-                    holds.lock().unwrap().held.remove(&id);
-                }
-                Ok(())
-            })
-            .ok()?;
-        foreign.held.insert(id, (hold, disposer));
-        Some(id)
+        self.own(ctx, self.take_hold()?).ok()
     }
-    /// Releases the hold `id` took and ends its cleanup in the row that
-    /// took it: true when it was held, false when it was released already
-    /// or by its row's unload.
+
+    /// Observes the current failure and subsequent reports until release or caller unload.
+    pub fn observe_fault(
+        &self,
+        ctx: &rutis::Ctx,
+        listener: FaultListener,
+    ) -> Result<u64, rutis::Error> {
+        let stop = tokio_util::sync::CancellationToken::new();
+        let id = self.own(ctx, stop.clone().drop_guard())?;
+        let mut faults = self.faults.watch();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = stop.cancelled() => {}
+                _ = async {
+                    loop {
+                        let current = faults.borrow_and_update().clone().map(Into::into);
+                        if listener(current).await.is_err() || faults.changed().await.is_err() {
+                            return;
+                        }
+                    }
+                } => {}
+            }
+        });
+        Ok(id)
+    }
+
+    /// Releases a hold or fault observation. The caller's unload also releases it.
     pub async fn release(&self, id: u64) -> std::result::Result<bool, crate::AgentError> {
-        let Some((hold, disposer)) = self.foreign.lock().unwrap().held.remove(&id) else {
+        let Some(disposer) = self.foreign.lock().unwrap().entries.remove(&id) else {
             return Ok(false);
         };
-        drop(hold);
         disposer
             .dispose()
             .await
@@ -482,6 +555,26 @@ impl SessionLifecycle {
     }
 }
 
+impl SessionLifecycle {
+    pub fn report_native_fault(&self, error: crate::AgentError) {
+        self.faults.report(error);
+    }
+    fn own<T: Send + 'static>(&self, ctx: &rutis::Ctx, resource: T) -> Result<u64, rutis::Error> {
+        let mut foreign = self.foreign.lock().unwrap();
+        foreign.next += 1;
+        let id = foreign.next;
+        let resources = Arc::downgrade(&self.foreign);
+        let disposer = ctx.effect(move || async move {
+            drop(resource);
+            if let Some(resources) = resources.upgrade() {
+                resources.lock().unwrap().entries.remove(&id);
+            }
+            Ok(())
+        })?;
+        foreign.entries.insert(id, disposer);
+        Ok(id)
+    }
+}
 /// An activity hold from [`SessionLifecycle::take_hold`]; dropping it releases it.
 /// It carries no identity, result or cancellation.
 pub struct SessionHold(Arc<AtomicUsize>);

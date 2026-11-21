@@ -1516,7 +1516,11 @@ impl DynPlugin for LateNestedInstances {
             self.entered.notify_one();
             self.release.notified().await;
             loader
-                .create_instance("late-nested")
+                .create(dim_agent_runtime::SessionInstanceDefinition {
+                    group: "late-nested".into(),
+                    definition_id: "late-nested".into(),
+                    instance_data: serde_json::Value::Null,
+                })
                 .await
                 .map_err(|error| {
                     rutis::Error::from(rutis::host::ErrorKind::PluginFailed(

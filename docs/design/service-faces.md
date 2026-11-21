@@ -177,17 +177,14 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `contextUsage` | branch | ContextUsage | hot-path | 本地请求计数器、请求引用与按序统计；`session.context.usage` 是 App Server RPC。按 #1292 确认是否需要独立插件操作。 |
 | `toolBinding` | branch | ToolBinding | hot-path | 待迁移；按 #1292 定义操作面 |
 | `toolExecutor` | branch | ToolExecutor | hot-path | 待迁移；按 #1292 定义操作面 |
-| `branchOpening` | branch | BranchScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configurationPublisher` | branch | ContextPreparation | hot-path | 待迁移；按 #1292 定义操作面 |
 | `configureControl` | branch | Prompt | hot-path | 待迁移；按 #1292 定义操作面 |
 | `fileReads` | branch | FileReads | hot-path | 待迁移；按 #1292 定义操作面 |
-| `submitChecks` | session | InputMethods | hot-path | 待迁移；按 #1292 定义操作面 |
 | `historyRenderer` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `contextModelHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareModelHost` | session | PrepareModelHost | hot-path | 待迁移；按 #1292 定义操作面 |
 | `prepareContextHost` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 | `compactionStrategyHost` | session | ProductSummaryStrategy | hot-path | 待迁移；按 #1292 定义操作面 |
-| `faultReporter` | session | SessionScope | hot-path | 待迁移；按 #1292 定义操作面 |
 
 ### 3.6 入口、凭据与宿主资源
 
@@ -206,7 +203,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
 | `providerConnectionResolver` | process | Provider | host-resource |
-| `sessionLoader` | session | SessionScope | control |
 | `timelineFactory` | session | SessionScope | control |
 
 ## 4. 批次契约（#1292）

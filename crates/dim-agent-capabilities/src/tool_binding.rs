@@ -13,8 +13,8 @@ use crate::{
     tool_registry::{ToolClaim, ToolContribution, ToolRegistry, ToolSourceSet},
 };
 use dim_agent_runtime::{
-    AgentError, BranchLifecycle, BranchOpening, Dispatcher, Names, QueryFilter, QueryOperand,
-    QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline, TimelineQuery,
+    AgentError, BranchLifecycle, Dispatcher, Names, QueryFilter, QueryOperand, QueryOutput,
+    QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue, Timeline, TimelineQuery,
     TimelineQueryScope,
 };
 use dim_agent_types::*;
@@ -405,7 +405,6 @@ pub struct ToolBindingPlugin {
     timeline: Key<Timeline>,
     phase: Key<BranchLifecycle>,
     dispatcher: Key<Dispatcher>,
-    opening: Key<BranchOpening>,
 }
 impl ToolBindingPlugin {
     pub fn new(names: &Names<'_>) -> std::result::Result<Self, Error> {
@@ -416,7 +415,6 @@ impl ToolBindingPlugin {
             timeline: names.key()?,
             phase: names.key()?,
             dispatcher: names.key()?,
-            opening: names.key()?,
         })
     }
 }
@@ -431,7 +429,6 @@ impl DynPlugin for ToolBindingPlugin {
             self.timeline.erase(),
             self.phase.erase(),
             self.dispatcher.erase(),
-            self.opening.erase(),
         ]
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
@@ -441,7 +438,7 @@ impl DynPlugin for ToolBindingPlugin {
             let timeline = ctx.require_at(&self.timeline)?;
             let phase = ctx.require_at(&self.phase)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
-            let opening = ctx.require_at(&self.opening)?;
+            let opening = phase.clone();
             let binding = Arc::new(ToolBinding {
                 registry: registry.clone(),
                 state: Mutex::default(),
@@ -481,7 +478,7 @@ impl DynPlugin for ToolBindingPlugin {
                         opening_cancel.clone(),
                     );
                     let (reply, receipt) = tokio::sync::oneshot::channel();
-                    let registered = opening.register(Box::pin(async move {
+                    let registered = opening.admit_opening(Box::pin(async move {
                         receipt
                             .await
                             .map_err(|_| AgentError::Closed("ToolBinding".into()))?
