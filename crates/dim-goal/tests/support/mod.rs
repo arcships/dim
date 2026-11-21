@@ -515,6 +515,14 @@ pub async fn goal_writes(session: &Session, branch: &str) -> Vec<Block> {
 
 /// Waits until a Goal write on `branch` contains `needle`; returns it.
 pub async fn wait_goal(session: &Session, branch: &str, needle: &str) -> Block {
+    wait_goal_with_history(session, branch, needle).await.0
+}
+
+pub async fn wait_goal_with_history(
+    session: &Session,
+    branch: &str,
+    needle: &str,
+) -> (Block, Vec<Arc<dim_agent_types::AgentEvent>>) {
     tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             if let Ok(events) = branch_events(session, branch, ..).await
@@ -523,7 +531,7 @@ pub async fn wait_goal(session: &Session, branch: &str, needle: &str) -> Block {
                     .filter_map(|event| block_of(event))
                     .find(|block| block.text.contains(needle))
             {
-                return block;
+                return (block, events);
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
