@@ -48,6 +48,7 @@ struct ToolState {
     closed: bool,
 }
 pub struct ToolExecutor {
+    this: std::sync::Weak<Self>,
     state: Mutex<ToolState>,
     tasks: TaskTracker,
     errors: Mutex<Vec<AgentError>>,
@@ -384,7 +385,8 @@ impl DynPlugin for ToolExecutorPlugin {
             let approval = ctx.require_at(&self.approval)?;
             let identity = ctx.require_at(&self.identity)?;
             let emit_progress = self.emit_progress;
-            let service = Arc::new(ToolExecutor {
+            let service = Arc::new_cyclic(|this| ToolExecutor {
+                this: this.clone(),
                 state: Mutex::new(ToolState::default()),
                 tasks: TaskTracker::new(),
                 errors: Mutex::new(Vec::new()),
@@ -759,7 +761,7 @@ impl DynPlugin for ToolExecutorPlugin {
                     &dim_agent_runtime::names::name_of::<ToolExecutor>(),
                     self.instance,
                 ),
-                Arc::new(face::Face(service.clone())),
+                service.clone(),
             )?;
             ctx.provide_at(self.executor.clone(), service)?;
             Ok(Effect::Done)
