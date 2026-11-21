@@ -20,14 +20,14 @@ const SKILL: &str = "<dim-skill name=\"check\">\nSkill: check\nDescription: D\nF
 /// answers as its additional context.
 const HOOK_CONTEXT: &str = "Read src/parser.rs before answering.";
 
-fn builder(home: &std::path::Path) -> AgentBuilder {
+fn builder() -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     dim_session_title::install(&mut builder);
     defaults::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
     defaults::tool_host(&mut builder, Arc::new(MockTools));
     dim_app_server::collaboration::install(&mut builder);
-    dim_app_server::hooks_settings::install(&mut builder, Some(home.to_owned()));
+    dim_app_server::hooks_settings::install(&mut builder);
     dim_agent_capabilities::hooks::install(&mut builder);
     builder
 }
@@ -97,7 +97,7 @@ async fn start_with(
         .unwrap();
     });
     let server = serve(
-        builder(&store.0),
+        builder(),
         ServerConfig {
             unix_path: Some(PathBuf::from("/tmp").join(format!(
                 "dim-title-appended-{}/server.sock",

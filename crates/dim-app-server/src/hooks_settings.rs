@@ -282,49 +282,19 @@ fn host_error_message(message: String) -> dim_agent_capabilities::host::HostErro
 
 /// Registers the Session part that binds the hook sources; the host registers
 /// `HooksSettingsPlugin` with its Settings.
-pub fn install(builder: &mut AgentBuilder, product_home: Option<PathBuf>) {
+pub fn install(builder: &mut AgentBuilder) {
     crate::register_names(builder.catalog_mut());
-    builder.require_feature(
-        Feature::new("HookSources").session("HookSources", move |names| {
-            Ok(Box::new(HookSourcesPlugin::new(
-                names,
-                product_home.clone(),
-            )?))
-        }),
-    );
-}
-
-struct SessionHookSources {
-    owner: Arc<HooksService>,
-    home: Option<PathBuf>,
-}
-impl ReadHookSources for SessionHookSources {
-    fn sources(
-        &self,
-        cwd: &Path,
-        cancel: CancellationToken,
-    ) -> dim_agent_capabilities::host::HostFuture<'_, HookSourcesSnapshot> {
-        let cwd = cwd.to_path_buf();
-        Box::pin(async move { self.owner.sources(&cwd, cancel).await })
-    }
-    fn home(&self) -> Option<PathBuf> {
-        self.home.clone()
-    }
+    builder.require_feature(Feature::new("HookSources").session("HookSources", |names| {
+        Ok(Box::new(HookSourcesPlugin {
+            host: names.key()?,
+            owner: names.key()?,
+        }))
+    }));
 }
 
 struct HookSourcesPlugin {
     host: Key<HookSourcesHost>,
     owner: Key<HooksService>,
-    home: Option<PathBuf>,
-}
-impl HookSourcesPlugin {
-    fn new(names: &Names<'_>, home: Option<PathBuf>) -> rutis::Result<Self> {
-        Ok(Self {
-            host: names.key()?,
-            owner: names.key()?,
-            home,
-        })
-    }
 }
 impl DynPlugin for HookSourcesPlugin {
     fn name(&self) -> &str {
@@ -338,10 +308,7 @@ impl DynPlugin for HookSourcesPlugin {
             let owner = ctx.require_at(&self.owner)?;
             ctx.provide_at(
                 self.host.clone(),
-                Arc::new(HookSourcesHost(Arc::new(SessionHookSources {
-                    home: self.home.clone(),
-                    owner,
-                }))),
+                Arc::new(HookSourcesHost(owner.reader.clone())),
             )?;
             Ok(Effect::Done)
         })

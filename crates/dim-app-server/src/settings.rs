@@ -235,6 +235,23 @@ pub struct RegisteredDocument<D> {
 }
 
 impl<D: Serialize + Send + Sync + 'static> RegisteredDocument<D> {
+    fn register(
+        settings: Arc<SettingsService>,
+        owner: &Ctx,
+        format: Arc<dyn Format<Document = D>>,
+        user_file: &str,
+        project_file: Option<&str>,
+        kind: Kind,
+    ) -> rutis::Result<Arc<Self>> {
+        let registration =
+            settings.register_source(owner, format.source(), user_file, project_file, kind)?;
+        Ok(Arc::new(Self {
+            settings,
+            registration: Arc::downgrade(&registration),
+            format,
+        }))
+    }
+
     fn path(&self, scope: SettingsScope) -> Result<FilePath> {
         let entry = current_registration(&self.settings, self.format.source(), &self.registration)?;
         self.settings.locate(
@@ -297,26 +314,38 @@ impl SettingsService {
     /// Registers the Rust source `D` for as long as the plugin that owns
     /// `ctx` is loaded. A source name or file registered already fails.
     pub fn register<D: BusinessDocument>(&self, ctx: &Ctx) -> rutis::Result<()> {
-        self.register_typed::<D>(ctx).map(drop)
+        self.register_source(
+            ctx,
+            D::NAMESPACE,
+            D::USER_FILE,
+            D::PROJECT_FILE,
+            Kind::Rust(TypeId::of::<D>()),
+        )
+        .map(drop)
     }
-    fn register_typed<D: BusinessDocument>(
+
+    fn register_source(
         &self,
         ctx: &Ctx,
+        name: &str,
+        user_file: &str,
+        project_file: Option<&str>,
+        kind: Kind,
     ) -> rutis::Result<Arc<Registration<Source>>> {
-        let failed = |error: SettingsError| registration_failed(D::NAMESPACE, error.to_string());
-        validate_namespace(D::NAMESPACE).map_err(failed)?;
-        validate_file(D::USER_FILE).map_err(failed)?;
-        if let Some(file) = D::PROJECT_FILE {
+        let failed = |error: SettingsError| registration_failed(name, error.to_string());
+        validate_namespace(name).map_err(failed)?;
+        validate_file(user_file).map_err(failed)?;
+        if let Some(file) = project_file {
             validate_file(file).map_err(failed)?;
         }
         self.insert(
             ctx,
-            D::NAMESPACE,
+            name,
             Source {
                 owner: ctx.instance().to_string(),
-                user_file: D::USER_FILE.into(),
-                project_file: D::PROJECT_FILE.map(Into::into),
-                kind: Kind::Rust(TypeId::of::<D>()),
+                user_file: user_file.into(),
+                project_file: project_file.map(Into::into),
+                kind,
             },
         )
     }

@@ -585,7 +585,7 @@ pub fn run_with(
                 dim_agent_capabilities::timeline_tree::BranchToolConfig::default(),
             );
             permission_rules::install(&mut builder);
-            hooks_settings::install(&mut builder, config.product_home.clone());
+            hooks_settings::install(&mut builder);
             dim_agent_capabilities::hooks::install(&mut builder);
             crate::session_grants::install(&mut builder);
             dim_agent_capabilities::file_access::install(&mut builder);

@@ -3089,9 +3089,9 @@ async fn plugin_content_follows_the_record_over_restarts() {
 
 /// The product's local execution profile with mock model hosts, with Hooks
 /// installed: a Session mounts the Hooks parts and reads its hook sources.
-fn hooks_builder(home: &Path) -> AgentBuilder {
+fn hooks_builder() -> AgentBuilder {
     let mut builder = product_builder();
-    dim_app_server::hooks_settings::install(&mut builder, Some(home.to_owned()));
+    dim_app_server::hooks_settings::install(&mut builder);
     dim_agent_capabilities::hooks::install(&mut builder);
     builder
 }
@@ -3185,7 +3185,7 @@ async fn plugin_hooks_run_with_their_plugin_root_and_follow_the_record() {
         .to_string(),
     )
     .unwrap();
-    let server = serve(hooks_builder(&home), config.clone()).await.unwrap();
+    let server = serve(hooks_builder(), config.clone()).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     select_fixture_model(&mut client).await;
 
@@ -3261,7 +3261,7 @@ async fn plugin_hooks_run_with_their_plugin_root_and_follow_the_record() {
 
     // The registration is kept in `hooks-plugins`, so a new process restores
     // it without being told again.
-    let server = serve(hooks_builder(&home), config).await.unwrap();
+    let server = serve(hooks_builder(), config).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     when_served(&mut client, "plugin.list", json!({})).await;
     let session = session_in(&mut client, &work).await;
@@ -3334,7 +3334,7 @@ async fn a_refused_plugin_hook_document_stops_only_its_own_kind() {
     let source = home.join("src/kit");
     write_hook_plugin(&source, "kit", &runs, "kit");
     std::fs::write(source.join("hooks.json"), json!({"hooks": []}).to_string()).unwrap();
-    let server = serve(hooks_builder(&home), config.clone()).await.unwrap();
+    let server = serve(hooks_builder(), config.clone()).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     select_fixture_model(&mut client).await;
 
@@ -3370,7 +3370,7 @@ async fn a_refused_plugin_hook_document_stops_only_its_own_kind() {
 
     // Startup registers every plugin in use again, so a refused document is
     // reported again after a restart.
-    let server = serve(hooks_builder(&home), config).await.unwrap();
+    let server = serve(hooks_builder(), config).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     let list = call(&mut client, "plugin.list", json!({})).await;
     assert_eq!(item(&list, "kit")["refused"][0]["kind"], "hooks", "{list}");
@@ -3407,7 +3407,7 @@ async fn a_plugin_hooks_document_that_cannot_be_read_stays_refused() {
     let work = home.join("work");
     std::fs::create_dir_all(&work).unwrap();
     let runs = home.join("hook-runs");
-    let server = serve(hooks_builder(&home), config.clone()).await.unwrap();
+    let server = serve(hooks_builder(), config.clone()).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     select_fixture_model(&mut client).await;
 
@@ -3465,7 +3465,7 @@ async fn a_plugin_hooks_document_that_cannot_be_read_stays_refused() {
 
     // Startup registers every plugin in use again, so the refusal and the
     // plugin's other content survive a restart.
-    let server = serve(hooks_builder(&home), config).await.unwrap();
+    let server = serve(hooks_builder(), config).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     let list = call(&mut client, "plugin.list", json!({})).await;
     assert_eq!(item(&list, "kit")["refused"][0]["kind"], "hooks", "{list}");
@@ -3510,7 +3510,7 @@ async fn plugin_hooks_follow_the_hooks_owner() {
     let runs = home.join("hook-runs");
     let source = home.join("src/kit");
     write_hook_plugin(&source, "kit", &runs, "kit");
-    let server = serve(hooks_builder(&home), config).await.unwrap();
+    let server = serve(hooks_builder(), config).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     select_fixture_model(&mut client).await;
 
@@ -4761,7 +4761,7 @@ async fn a_failed_prompt_hook_proceeds_and_the_reply_names_it() {
         .to_string(),
     )
     .unwrap();
-    let server = serve(hooks_builder(&home), config).await.unwrap();
+    let server = serve(hooks_builder(), config).await.unwrap();
     let mut client = Client::new_version(&server, false, 3).await;
     select_fixture_model(&mut client).await;
     let cwd = home.join("work");

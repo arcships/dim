@@ -604,7 +604,7 @@ fn a_stop_hook_exports_its_session_from_dimcode_home() {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         defaults::mock_hosts(&mut builder);
         defaults::install(&mut builder);
-        dim_app_server::hooks_settings::install(&mut builder, Some(home.0.clone()));
+        dim_app_server::hooks_settings::install(&mut builder);
         dim_agent_capabilities::hooks::install(&mut builder);
         let server = serve(
             builder,

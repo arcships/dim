@@ -94,32 +94,15 @@ pub(super) fn register(settings: Arc<SettingsService>, caller: &Ctx, args: Value
         owner: caller.cancellation_token(),
         service: settings.stopping.clone(),
     };
-    let checked = validate_namespace(&declaration.source)
-        .and_then(|()| validate_file(&declaration.user_file))
-        .and_then(|()| {
-            declaration
-                .project_file
-                .as_deref()
-                .map_or(Ok(()), validate_file)
-        });
-    checked.map_err(|error| Error::value(error.to_string()))?;
-    let registration = settings
-        .insert(
-            caller,
-            &declaration.source,
-            Source {
-                owner: caller.instance().to_string(),
-                user_file: declaration.user_file,
-                project_file: declaration.project_file,
-                kind: Kind::Custom,
-            },
-        )
-        .map_err(|error| Error::value(error.to_string()))?;
-    let source = Arc::new(RegisteredDocument {
+    let source = RegisteredDocument::register(
         settings,
-        registration: Arc::downgrade(&registration),
-        format: Arc::new(format),
-    });
+        caller,
+        Arc::new(format),
+        &declaration.user_file,
+        declaration.project_file.as_deref(),
+        Kind::Custom,
+    )
+    .map_err(|error| Error::value(error.to_string()))?;
     let read = source.clone();
     let read = Value::callback(move |args| {
         let (scope,): (SettingsScope,) = serde_json::from_value(args.json()?)

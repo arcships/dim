@@ -345,12 +345,14 @@ impl Settings {
         &self,
         owner: &Ctx,
     ) -> rutis::Result<Arc<RegisteredDocument<D>>> {
-        let registration = self.0.register_typed::<D>(owner)?;
-        Ok(Arc::new(RegisteredDocument {
-            settings: self.0.clone(),
-            registration: Arc::downgrade(&registration),
-            format: typed::<D>(),
-        }))
+        RegisteredDocument::register(
+            self.0.clone(),
+            owner,
+            typed::<D>(),
+            D::USER_FILE,
+            D::PROJECT_FILE,
+            Kind::Rust(TypeId::of::<D>()),
+        )
     }
 
     /// The declarations of the JSON Schema sources the row `instance_id`
