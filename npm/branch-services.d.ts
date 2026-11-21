@@ -41,298 +41,11 @@ export interface Approval {
   decide(requestId: string, decision: ApprovalDecision): Promise<void>
 }
 
-export type PromptScope =
-  | { kind: "branch"; timeline: string }
-  | { kind: "turn"; timeline: string; id: string }
-  | { kind: "task"; timeline: string; id: string }
-
-export type PromptDelivery =
-  | /** Part of the system prompt. */ "system"
-  | /** A rule delivered as a `dim-rule` input. */ "context"
-  | /** State delivered as a `dim-state` input. */ "state"
-
-export type PromptEntry = {
-  source: string
-  version: string
-  body: string
-  scope: PromptScope
-  delivery: PromptDelivery
-  order: number
-}
-
-export type PromptReference = {
-  timeline: string
-  revision: string
-}
-
-export type PromptCheckpointState = {
-  entries: PromptEntry[]
-  revision?: PromptReference | null
-  system_revision?: PromptReference | null
-  system: string
-  turns: string[]
-  tasks: PromptScope[]
-}
-
-export type ModelId = {
-  providerId: string
-  modelId: string
-}
-
-/**
- * The adopted capabilities of a model: an exact value a Session carries and
- * ContextCompaction reads. Both limits are required and positive; absence is
- * a property of the catalog, which carries [`CatalogCapabilities`] and
- * converts through [`CatalogCapabilities::declared`].
- */
-export type ModelCapabilities = {
-  modalities: string[]
-  toolCalling: boolean
-  streaming: boolean
-  structuredOutput: boolean
-  vision: boolean
-  audio: boolean
-  reasoning: boolean
-  contextWindow: number | bigint
-  maxOutputTokens: number | bigint
-  providerState?: import('./plugin.js').BridgeJsonObject | null
-}
-
-export type ReasoningBudget = {
-  min?: number | null
-  max?: number | null
-  default?: number | null
-  unit?: string | null
-}
-
-export type ReasoningOff =
-  | { kind: "thinking_type"; value: string }
-  | { kind: "thinking_budget"; value: number | bigint }
-  | { kind: "enable_thinking"; value: boolean }
-  | { kind: "chat_template_kwargs"; keys: string[] }
-
-export type ModelReasoning = {
-  supported: boolean
-  defaultEnabled?: boolean | null
-  mode?: string | null
-  effort?: string | null
-  effortOptions?: string[] | null
-  level?: string | null
-  levelOptions?: string[] | null
-  verbosity?: string | null
-  verbosityOptions?: string[] | null
-  interleaved?: boolean | null
-  summaries?: boolean | null
-  visibility?: string | null
-  continuation?: string[] | null
-  budget?: ReasoningBudget | null
-  notes?: string[] | null
-  off?: ReasoningOff | null
-}
-
-export type ModelServiceTier = {
-  supported: boolean
-  default?: string | null
-  options?: string[]
-}
-
-export type ModelCapabilitySnapshot = {
-  target: ModelId
-  capabilities: ModelCapabilities
-  reasoning?: ModelReasoning | null
-  serviceTier?: ModelServiceTier | null
-}
-
-export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
-
-/**
- * A tool input schema.
- *
- * Deserialization accepts the JSON Schema forms an MCP server may send and
- * stores the canonical shape the v22 format defines: a `type` array of one
- * name becomes that name, two or more names become `anyOf` branches (under
- * `allOf` when the node already has an `anyOf`), and a boolean subschema
- * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
- * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
- * walked. A rejected node's error names its path under `inputSchema`.
- */
-export type JsonSchema = {
-  type?: SchemaType | null
-  properties?: Record<string, JsonSchema> | null
-  items?: JsonSchema | null
-  required?: string[] | null
-  enum?: import('./plugin.js').BridgeJsonValue[] | null
-  description?: string | null
-} & import('./plugin.js').BridgeJsonObject
-
-export type ToolSource = "static" | "builtin" | "extension" | "dynamic"
-
-export type ToolMetadata = {
-  version?: string | null
-  author?: string | null
-  docsUrl?: string | null
-  sourcePluginId?: string | null
-  mcpServerId?: string | null
-  mcpOriginalToolName?: string | null
-} & import('./plugin.js').BridgeJsonObject
-
-export type ToolFilePathSelector = "path" | "affectedPaths"
-
-export type ToolPreExecutePaths = {
-  selector: ToolFilePathSelector
-}
-
-export type ToolFileChangeDeclaration = {
-  preExecutePaths?: ToolPreExecutePaths | null
-  postExecutePaths?: ToolFilePathSelector | null
-}
-
-export type ToolDefinition = {
-  name: string
-  description: string
-  inputSchema: JsonSchema
-  source: ToolSource
-  risk?: string | null
-  metadata?: ToolMetadata | null
-  fileChanges?: ToolFileChangeDeclaration | null
-}
-
-export type ToolSourceVersion = {
-  key: string
-  version: string
-}
-
-export type ModelProtocol =
-  | "openai-chat"
-  | "openai-compatible"
-  | "openai-responses"
-  | "xai"
-  | "xai-responses"
-  | "anthropic"
-  | "gemini"
-  | "bedrock"
-
-export type StartupAuth = "anonymous" | "apiKey" | "bearer"
-
-/**
- * Non-secret connection declaration. Credentials are rebound in Provider
- * memory; this identity remains valid across Session unload and restore.
- */
-export type StartupConnectionSource = {
-  id: string
-  apiFormat: ModelProtocol
-  baseUrl: string
-  auth: StartupAuth
-  headerNames: string[]
-}
-
-/**
- * Adopted startup policy, copied with the model at a branch cut and into
- * newly created native members and summary requests. Contains no secrets.
- */
-export type ModelStartup = {
-  connection?: StartupConnectionSource | null
-  autoCompactWindow?: number | bigint | null
-}
-
-export type RequestMetadata = {
-  sessionId?: string | null
-  runId?: string | null
-  traceId?: string | null
-  turnId?: string | null
-  startup?: ModelStartup | null
-  /**
-   * The Agent profile whose prompt the branch runs: the profile it last
-   * adopted. An adoption from a profile records it; a model selection and a
-   * preference update carry it into the new configuration, and only
-   * another adoption replaces it.
-   */
-  agentId?: string | null
-} & import('./plugin.js').BridgeJsonObject
-
-export type ModelConfiguration = {
-  providerId: string
-  modelId: string
-  capabilitySnapshot?: ModelCapabilitySnapshot | null
-  tools?: ToolDefinition[] | null
-  toolSources?: ToolSourceVersion[]
-  config?: import('./plugin.js').ModelConfig | null
-  metadata?: RequestMetadata | null
-}
-
-export type CacheControl = { type: "ephemeral" }
-
-export type SystemPromptPart = { type: "text"; text: string; cache_control?: CacheControl | null }
-
-export type SystemPrompt = string | SystemPromptPart[]
-
-export type ContextConfiguredData = {
-  timeline: string
-  revision: string
-  previous?: PromptReference | null
-  prompt?: PromptReference | null
-  settings: ModelConfiguration
-  system?: SystemPrompt | null
-  /**
-   * The source text `system` was composed after, apart from the guide: a
-   * model- or tool-only adoption re-renders the guide over it. Absent in
-   * records written before it was recorded, which keep their adopted
-   * System.
-   */
-  system_source?: string | null
-}
-
-export type AdoptedPrompt = {
-  prompts: PromptCheckpointState
-  configuration?: ContextConfiguredData | null
-}
-
-export type PromptChange =
-  | { op: "set"; entry: PromptEntry }
-  | { op: "revoke"; source: string; scope: PromptScope }
-
-/**
- * The model-owned part of configuration. Tool declarations and system content
- * are adopted by their own capabilities, not supplied by a provider.
- */
-export type ModelSelection = {
-  providerId: string
-  modelId: string
-  capabilitySnapshot?: ModelCapabilitySnapshot | null
-  config?: import('./plugin.js').ModelConfig | null
-  metadata?: RequestMetadata | null
-}
-
-/**
- * The tool part of a configuration: the complete declaration and the
- * source versions it was built from.
- */
-export type ToolSetAdoption = {
-  tools: ToolDefinition[]
-  toolSources: ToolSourceVersion[]
-}
-
-/**
- * Runtime content a capability places in the model context. The renderer
- * puts `text` verbatim as one user message where the input is consumed.
- */
-export type InputBlock = { type: "raw"; text: string; key?: string | null; retire?: boolean }
-
-export type PublishConfiguration = {
-  adopted: AdoptedPrompt
-  changes: PromptChange[]
-  model?: ModelSelection | null
-  toolAdoption?: ToolSetAdoption | null
-  inputs: InputBlock[]
-}
-
 export type PublishedSequence = {
   sequence: number | bigint
 }
 
 export interface ContextPreparation {
-  /** @throws {AgentErrorThrown} */
-  publish(request: PublishConfiguration): Promise<number | bigint | null>
   /**
    * Waits until the batch ending at `sequence` is published, so a commit
    * failure reaches the caller before the next adoption runs.
@@ -458,6 +171,12 @@ export type UserInput = {
   content: ContentBlock[]
 }
 
+/**
+ * Runtime content a capability places in the model context. The renderer
+ * puts `text` verbatim as one user message where the input is consumed.
+ */
+export type InputBlock = { type: "raw"; text: string; key?: string | null; retire?: boolean }
+
 export type InputMode = "queue" | "steer" | "append"
 
 /**
@@ -575,9 +294,143 @@ export interface Permission {
   check(call: ApprovalCallData, risk: string | null, cancelled: () => void | Promise<void>): Promise<Decision>
 }
 
+export type PromptScope =
+  | { kind: "branch"; timeline: string }
+  | { kind: "turn"; timeline: string; id: string }
+  | { kind: "task"; timeline: string; id: string }
+
 export type PromptSourceTarget = {
   source: string
   scope: PromptScope
+}
+
+export type ModelId = {
+  providerId: string
+  modelId: string
+}
+
+/**
+ * The adopted capabilities of a model: an exact value a Session carries and
+ * ContextCompaction reads. Both limits are required and positive; absence is
+ * a property of the catalog, which carries [`CatalogCapabilities`] and
+ * converts through [`CatalogCapabilities::declared`].
+ */
+export type ModelCapabilities = {
+  modalities: string[]
+  toolCalling: boolean
+  streaming: boolean
+  structuredOutput: boolean
+  vision: boolean
+  audio: boolean
+  reasoning: boolean
+  contextWindow: number | bigint
+  maxOutputTokens: number | bigint
+  providerState?: import('./plugin.js').BridgeJsonObject | null
+}
+
+export type ReasoningBudget = {
+  min?: number | null
+  max?: number | null
+  default?: number | null
+  unit?: string | null
+}
+
+export type ReasoningOff =
+  | { kind: "thinking_type"; value: string }
+  | { kind: "thinking_budget"; value: number | bigint }
+  | { kind: "enable_thinking"; value: boolean }
+  | { kind: "chat_template_kwargs"; keys: string[] }
+
+export type ModelReasoning = {
+  supported: boolean
+  defaultEnabled?: boolean | null
+  mode?: string | null
+  effort?: string | null
+  effortOptions?: string[] | null
+  level?: string | null
+  levelOptions?: string[] | null
+  verbosity?: string | null
+  verbosityOptions?: string[] | null
+  interleaved?: boolean | null
+  summaries?: boolean | null
+  visibility?: string | null
+  continuation?: string[] | null
+  budget?: ReasoningBudget | null
+  notes?: string[] | null
+  off?: ReasoningOff | null
+}
+
+export type ModelServiceTier = {
+  supported: boolean
+  default?: string | null
+  options?: string[]
+}
+
+export type ModelCapabilitySnapshot = {
+  target: ModelId
+  capabilities: ModelCapabilities
+  reasoning?: ModelReasoning | null
+  serviceTier?: ModelServiceTier | null
+}
+
+export type ModelProtocol =
+  | "openai-chat"
+  | "openai-compatible"
+  | "openai-responses"
+  | "xai"
+  | "xai-responses"
+  | "anthropic"
+  | "gemini"
+  | "bedrock"
+
+export type StartupAuth = "anonymous" | "apiKey" | "bearer"
+
+/**
+ * Non-secret connection declaration. Credentials are rebound in Provider
+ * memory; this identity remains valid across Session unload and restore.
+ */
+export type StartupConnectionSource = {
+  id: string
+  apiFormat: ModelProtocol
+  baseUrl: string
+  auth: StartupAuth
+  headerNames: string[]
+}
+
+/**
+ * Adopted startup policy, copied with the model at a branch cut and into
+ * newly created native members and summary requests. Contains no secrets.
+ */
+export type ModelStartup = {
+  connection?: StartupConnectionSource | null
+  autoCompactWindow?: number | bigint | null
+}
+
+export type RequestMetadata = {
+  sessionId?: string | null
+  runId?: string | null
+  traceId?: string | null
+  turnId?: string | null
+  startup?: ModelStartup | null
+  /**
+   * The Agent profile whose prompt the branch runs: the profile it last
+   * adopted. An adoption from a profile records it; a model selection and a
+   * preference update carry it into the new configuration, and only
+   * another adoption replaces it.
+   */
+  agentId?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+/**
+ * The model-owned part of configuration. Tool declarations and system content
+ * are adopted by their own capabilities, not supplied by a provider.
+ */
+export type ModelSelection = {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
 }
 
 export type ConfigureUpdate = {
@@ -594,6 +447,20 @@ export interface InitialPromptConfiguration {
   get(): Promise<ConfigureUpdate | null>
 }
 
+export type PromptDelivery =
+  | /** Part of the system prompt. */ "system"
+  | /** A rule delivered as a `dim-rule` input. */ "context"
+  | /** State delivered as a `dim-state` input. */ "state"
+
+export type PromptEntry = {
+  source: string
+  version: string
+  body: string
+  scope: PromptScope
+  delivery: PromptDelivery
+  order: number
+}
+
 export type PromptConfigurationRequest =
   | ConfigureUpdate
   | { sources: [PromptSourceTarget, PromptEntry | null][]; model?: ModelSelection | null }
@@ -601,6 +468,75 @@ export type PromptConfigurationRequest =
 export type ConfigureOutcome = "unchanged" | "adopted" | "superseded"
 
 export type PromptRead = {
+}
+
+export type SchemaType = "object" | "array" | "string" | "number" | "integer" | "boolean" | "null"
+
+/**
+ * A tool input schema.
+ *
+ * Deserialization accepts the JSON Schema forms an MCP server may send and
+ * stores the canonical shape the v22 format defines: a `type` array of one
+ * name becomes that name, two or more names become `anyOf` branches (under
+ * `allOf` when the node already has an `anyOf`), and a boolean subschema
+ * becomes `{}` or `{"not": {}}`. Keywords the struct does not type, such as
+ * `anyOf` branches or `$defs`, stay verbatim in `extensions` and are never
+ * walked. A rejected node's error names its path under `inputSchema`.
+ */
+export type JsonSchema = {
+  type?: SchemaType | null
+  properties?: Record<string, JsonSchema> | null
+  items?: JsonSchema | null
+  required?: string[] | null
+  enum?: import('./plugin.js').BridgeJsonValue[] | null
+  description?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ToolSource = "static" | "builtin" | "extension" | "dynamic"
+
+export type ToolMetadata = {
+  version?: string | null
+  author?: string | null
+  docsUrl?: string | null
+  sourcePluginId?: string | null
+  mcpServerId?: string | null
+  mcpOriginalToolName?: string | null
+} & import('./plugin.js').BridgeJsonObject
+
+export type ToolFilePathSelector = "path" | "affectedPaths"
+
+export type ToolPreExecutePaths = {
+  selector: ToolFilePathSelector
+}
+
+export type ToolFileChangeDeclaration = {
+  preExecutePaths?: ToolPreExecutePaths | null
+  postExecutePaths?: ToolFilePathSelector | null
+}
+
+export type ToolDefinition = {
+  name: string
+  description: string
+  inputSchema: JsonSchema
+  source: ToolSource
+  risk?: string | null
+  metadata?: ToolMetadata | null
+  fileChanges?: ToolFileChangeDeclaration | null
+}
+
+export type ToolSourceVersion = {
+  key: string
+  version: string
+}
+
+export type ModelConfiguration = {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  tools?: ToolDefinition[] | null
+  toolSources?: ToolSourceVersion[]
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
 }
 
 export interface Prompt {

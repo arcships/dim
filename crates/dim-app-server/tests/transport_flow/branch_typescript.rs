@@ -637,44 +637,35 @@ async fn node_prompt_adopts_frozen_content_in_the_native_snapshot() {
             .any(|entry| entry.source == "fixture" && entry.body == "frozen fixture content")
     );
     let session = agent.get_session(&id).unwrap();
-    let history = branch_events(&session, "main", ..).await.unwrap();
-    let configuration = history
-        .iter()
-        .rev()
-        .find_map(|event| match &event.kind {
-            dim_agent_types::EventKind::ContextConfigured(data) => Some(data),
-            _ => None,
-        })
-        .unwrap();
+    let cutoff = session.sequence("main").unwrap();
     let reply = client
-        .rpc(
-            "session.promptfixture.publish",
-            json!({
-                "sessionId": id,
-                "adopted": {"prompts": snapshot.checkpoint(), "configuration": configuration}
-            }),
-        )
+        .rpc("session.promptfixture.publish", json!({"sessionId": id}))
         .await;
     assert_ok(&reply);
-    assert_eq!(reply["result"]["unchanged"], Value::Null);
-    let end: u64 = reply["result"]["published"]
-        .as_str()
-        .unwrap()
-        .parse()
-        .unwrap();
-    let published = branch_events(&session, "main", end - 1..=end)
-        .await
-        .unwrap();
-    let [change, delivery] = published.as_slice() else {
-        panic!("missing publication batch")
-    };
-    assert!(
-        matches!(&change.kind, dim_agent_types::EventKind::PromptChanged(data)
-        if data.inputs == [delivery.id.clone()] && data.previous == snapshot.revision)
+    assert_eq!(
+        reply["result"],
+        json!({"published":"adopted","unchanged":"unchanged"})
     );
+    let events = branch_events(&session, "main", cutoff + 1..).await.unwrap();
+    let mut changes = events.iter().filter_map(|event| match &event.kind {
+        dim_agent_types::EventKind::PromptChanged(change) => Some(change),
+        _ => None,
+    });
+    let change = changes.next().expect("new source adopted");
+    assert!(changes.next().is_none());
+    assert_eq!(change.previous, snapshot.revision);
+    assert!(events.iter().any(|event| change.inputs.contains(&event.id)
+        && matches!(&event.kind, dim_agent_types::EventKind::InputMessage(input)
+            if input.blocks.iter().any(|block| matches!(block, dim_agent_types::InputBlock::Raw { text, .. } if text.contains("published content"))))));
+    let current = session
+        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>("main")
+        .unwrap()
+        .unwrap();
     assert!(
-        matches!(&delivery.kind, dim_agent_types::EventKind::InputMessage(input)
-        if matches!(input.blocks.as_slice(), [dim_agent_types::InputBlock::Raw { text, .. }] if text == "published content"))
+        current
+            .entries
+            .values()
+            .any(|entry| entry.source == "fixture" && entry.body == "frozen fixture content")
     );
     server.shutdown();
     server.join().await.unwrap();

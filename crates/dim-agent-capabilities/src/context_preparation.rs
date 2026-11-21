@@ -33,23 +33,6 @@ pub struct ToolSetAdoption {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct AdoptedPrompt {
-    pub prompts: PromptCheckpointState,
-    pub configuration: Option<ContextConfiguredData>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct PublishConfiguration {
-    pub adopted: AdoptedPrompt,
-    pub changes: Vec<PromptChange>,
-    pub model: Option<ModelSelection>,
-    pub tool_adoption: Option<ToolSetAdoption>,
-    pub inputs: Vec<InputBlock>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublishedSequence {
     pub sequence: u64,
@@ -57,34 +40,6 @@ pub struct PublishedSequence {
 
 #[rutis::service]
 impl ContextPreparation {
-    pub async fn publish(
-        &self,
-        request: PublishConfiguration,
-    ) -> dim_agent_runtime::Result<Option<u64>> {
-        if self.closing() {
-            return Err(AgentError::Cancelled(
-                "the branch closed before prompt publication".into(),
-            ));
-        }
-        let before = PromptSnapshot::from_checkpoint(&request.adopted.prompts);
-        self.publish_registered(
-            (&before, request.adopted.configuration.as_ref()),
-            request.changes,
-            request.model,
-            request.tool_adoption,
-            |_, _| request.inputs,
-            |_| {
-                if self.closing() {
-                    Err(AgentError::Cancelled(
-                        "the branch closed before prompt publication".into(),
-                    ))
-                } else {
-                    Ok(())
-                }
-            },
-        )
-    }
-
     /// Waits until the batch ending at `sequence` is published, so a commit
     /// failure reaches the caller before the next adoption runs.
     pub async fn await_published(
