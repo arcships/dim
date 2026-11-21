@@ -70,13 +70,15 @@ struct Catalog {
 
 pub(crate) struct Configuration {
     cache: PathBuf,
-    sources: Mutex<BTreeMap<String, (String, UiPackage)>>,
+    plugins: Arc<crate::plugin_manager::State>,
+    sources: Mutex<BTreeMap<String, serde_json::Value>>,
     revision: AtomicU64,
 }
 impl Configuration {
-    pub fn new(cache: PathBuf) -> Arc<Self> {
+    pub fn new(cache: PathBuf, plugins: Arc<crate::plugin_manager::State>) -> Arc<Self> {
         Arc::new(Self {
             cache,
+            plugins,
             sources: Mutex::default(),
             revision: AtomicU64::new(0),
         })
@@ -105,15 +107,7 @@ pub struct UiExtensionPlugin {
 #[serde(deny_unknown_fields)]
 pub struct UiExtensionRegistration {
     pub plugin: String,
-    pub name: String,
-    pub package: Option<UiPackage>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct UiPackage {
-    pub directory: PathBuf,
-    pub manifest: serde_json::Value,
+    pub manifest: Option<serde_json::Value>,
 }
 
 #[rutis::service(name = "uiExtensions")]
@@ -136,23 +130,24 @@ impl UiExtensions {
             .map(|error| error.message.clone())
     }
     pub async fn register(&self, request: UiExtensionRegistration) -> Result<(), ResourceError> {
-        let UiExtensionRegistration {
-            plugin,
-            name,
-            package,
-        } = request;
-        let Some(package) = package else {
+        let UiExtensionRegistration { plugin, manifest } = request;
+        let Some(manifest) = manifest else {
             self.withdraw(UiExtensionPlugin { plugin }).await;
             return Ok(());
         };
         let _update = self.updating.lock().await;
         let _operation = self.reads.enter()?;
+        let (name, directory) = self
+            .configuration
+            .plugins
+            .package_by_id(&plugin)
+            .ok_or_else(|| ResourceError::invalid("Unknown plugin ID"))?;
         self.configuration
             .sources
             .lock()
             .unwrap()
-            .insert(plugin.clone(), (name.clone(), package.clone()));
-        let prepared = match Package::read(&package.directory, package.manifest) {
+            .insert(plugin.clone(), manifest.clone());
+        let prepared = match Package::read(&directory, manifest) {
             Ok(Package::Supported { root, panels }) => self
                 .prepare(&name, &root, &panels)
                 .await
@@ -525,12 +520,11 @@ impl DynPlugin for UiExtensionsPlugin {
                 .await
                 .map_err(|error| ErrorKind::PluginFailed(error.into()))?;
             let sources = self.configuration.sources.lock().unwrap().clone();
-            for (plugin, (name, package)) in sources {
+            for (plugin, manifest) in sources {
                 if let Err(error) = service
                     .register(UiExtensionRegistration {
                         plugin: plugin.clone(),
-                        name,
-                        package: Some(package),
+                        manifest: Some(manifest),
                     })
                     .await
                 {

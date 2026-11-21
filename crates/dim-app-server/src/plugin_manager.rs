@@ -188,6 +188,17 @@ pub(crate) struct StartupLayer {
 }
 
 impl State {
+    pub(crate) fn package_by_id(&self, id: &str) -> Option<(String, PathBuf)> {
+        let record = self.record.lock().unwrap();
+        if let Some(entry) = record.installed(id) {
+            return Some((entry.name.clone(), entry.dir.clone()));
+        }
+        self.defaults
+            .plugins
+            .get(id)
+            .map(|dir| (id.to_owned(), dir.clone()))
+    }
+
     /// Startup (§3.1), first part: reads `plugins.json` and the default
     /// configuration file, deletes the copies no entry names (§7), and
     /// registers the `instanceNames` and process names of the plugins that
@@ -859,13 +870,7 @@ impl Owners {
                     if let Err(error) = ui
                         .register(UiExtensionRegistration {
                             plugin: plugin.into(),
-                            name: manifest.name.clone(),
-                            package: manifest.ui.clone().map(|manifest| {
-                                crate::ui_extensions::UiPackage {
-                                    directory: dir.to_path_buf(),
-                                    manifest,
-                                }
-                            }),
+                            manifest: manifest.ui.clone(),
                         })
                         .await
                     {

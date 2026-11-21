@@ -563,6 +563,15 @@ async fn node_ui_operations_use_the_connected_client_and_extension_catalog() {
     })
     .await;
     let mut client = Client::new_version(&server, false, 3).await;
+    let source = home.join("ui-fixture");
+    std::fs::create_dir_all(source.join("ui")).unwrap();
+    std::fs::write(source.join("dim-plugin.json"), r#"{"name":"ui-fixture"}"#).unwrap();
+    std::fs::write(source.join("ui/panel.js"), "export default 1").unwrap();
+    let installed = client
+        .rpc("plugin.install", json!({"source":{"path":source}}))
+        .await;
+    assert_ok(&installed);
+    assert_eq!(installed["result"]["id"], "ui-fixture");
     let session = attached_session(&mut client).await;
     for action in ["detach", "release"] {
         assert_ok(

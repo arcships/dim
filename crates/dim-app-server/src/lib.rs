@@ -1036,8 +1036,8 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
         }
         None => None,
     };
-    if let Some(home) = plugin_home {
-        let configuration = ui_extensions::Configuration::new(home.join("ui-cache"));
+    if let (Some(home), Some(state)) = (plugin_home, &plugins) {
+        let configuration = ui_extensions::Configuration::new(home.join("ui-cache"), state.clone());
         rows.push(register_part(
             &mut builtins,
             builder.catalog(),

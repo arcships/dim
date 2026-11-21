@@ -43,7 +43,7 @@ Status: Ready.
 
 UiExtensions 是拥有内容状态的 App Server 插件，不是把错误作用域接回 Session 的接线模块。UiResources 的资源属于 Session，不能只在进程表里存一个 Session ID，再另建 Session 关闭观察系统。两者都不读写分支 Timeline，不是 Capability。两者由独立的 UiExtensions 插件装配并可停用；位于 App Server crate 不代表属于协议内核。App Server 负责装配与受保护传输，Web/Desktop 负责界面。将内容与文件 owner 放入 CLI 会让直连 daemon 的客户端依赖另一个常驻客户端，因此不这样放置。
 
-复用 [PluginManager](plugins/PluginManager.md) 的安装、选择、启停、重载与内容分发。PluginManager 将选中包的目录与 UI 声明交给 UiExtensions 验证，不保存客户端面板状态，不复制 UI 目录和资源读取任务。使用 [贡献注册规则](rutis-usage.md#r6-contributions-register-with-their-owner) 管理注册与撤下，不增加插件运行时、依赖图或第二套服务总线。
+复用 [PluginManager](plugins/PluginManager.md) 的安装、选择、启停、重载与内容分发。调用方以插件 ID 和 UI 声明注册。UiExtensions 按 ID 从 PluginManager 获取实际安装目录，再验证声明和资源路径，不保存客户端面板状态，不复制 UI 目录和资源读取任务。使用 [贡献注册规则](rutis-usage.md#r6-contributions-register-with-their-owner) 管理注册与撤下，不增加插件运行时、依赖图或第二套服务总线。
 
 客户端没有 rutis loader 的镜像。它只消费已启用的内容目录，管理面板实例；这里的客户端能力是一个固定接口集合，不是浏览器中的通用依赖注入容器。
 

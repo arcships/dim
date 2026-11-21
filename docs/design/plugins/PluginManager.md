@@ -96,8 +96,8 @@ The repository's own TypeScript plugins (`runtime/plugins/*`) get a `dim-plugin.
 
 `ui` is an optional manifest member owned by
 [UiExtensions](../client-ui-extensions.md#附录-a-manifest-绑定). A UI-only package
-has kind `ui` and needs no code row. PluginManager forwards the selected package directory, its UI declaration and
-its stable name. UiExtensions validates the declaration and its resource paths; unsupported versions
+has kind `ui` and needs no code row. PluginManager forwards the plugin ID and UI declaration. UiExtensions looks up
+the name and installation directory by ID and validates the resource paths; unsupported versions
 and invalid UI declarations appear as content refusals without stopping the
 package's backend code or other content. When UiExtensions is absent, `ui` is
 reported as skipped. Withdrawals use the installed id, as for other content.

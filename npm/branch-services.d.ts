@@ -1268,15 +1268,9 @@ export type UiExtensionPlugin = {
   plugin: string
 }
 
-export type UiPackage = {
-  directory: string
-  manifest: import('./plugin.js').BridgeJsonValue
-}
-
 export type UiExtensionRegistration = {
   plugin: string
-  name: string
-  package?: UiPackage | null
+  manifest?: import('./plugin.js').BridgeJsonValue | null
 }
 
 export type ResourceError = {
