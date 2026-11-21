@@ -12,10 +12,7 @@
 //! stays idle while it is off.
 use crate::context_preparation::ContextPreparation;
 use crate::history::fold_output_parts;
-use crate::host::{
-    HostError, ModelChunk, ModelConnection, ModelHost, ModelStream, ProviderConnectionResolver,
-    ResolvedModelConnection,
-};
+use crate::host::{HostError, InvocationMode, ModelChunk, ModelHost, ModelStream};
 use crate::methods::{
     Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, params, reply,
 };
@@ -154,29 +151,17 @@ impl HostDispatch for PromptSuggestionSettingsHost {
     }
 }
 
-/// Installs PromptSuggestion in every Session, resolving each request's
-/// connection through the process [`ProviderConnectionResolver`].
+/// Installs PromptSuggestion with the profile's model host.
 pub fn install(builder: &mut AgentBuilder) {
-    install_mode(builder, true);
+    builder.require_feature(
+        Feature::new("PromptSuggestion").session("PromptSuggestion", |names| {
+            Ok(Box::new(PromptSuggestionPlugin::with(names)?))
+        }),
+    );
 }
 
-/// Installs PromptSuggestion for a Session whose model is local: the part
-/// sends [`ModelConnection::Local`], as `ModelProviderPlugin::new` does, and
-/// depends on no process resolver.
 pub fn install_local(builder: &mut AgentBuilder) {
-    install_mode(builder, false);
-}
-
-fn install_mode(builder: &mut AgentBuilder, process_resolver: bool) {
-    builder.require_feature(Feature::new("PromptSuggestion").session(
-        "PromptSuggestion",
-        move |names| {
-            Ok(Box::new(PromptSuggestionPlugin::with(
-                names,
-                process_resolver,
-            )?))
-        },
-    ));
+    install(builder);
 }
 
 /// The one line the model is asked for.
@@ -482,7 +467,6 @@ impl State {
 
 struct Hosts {
     model: Arc<ModelHost>,
-    resolver: Option<Arc<ProviderConnectionResolver>>,
     settings: Option<Arc<PromptSuggestionSettingsHost>>,
     tree: Arc<TreeCommands>,
 }
@@ -493,21 +477,19 @@ struct PromptSuggestionPlugin {
     lifecycle: Key<SessionLifecycle>,
     methods: Key<SessionMethods>,
     tree: Key<TreeCommands>,
-    model: Key<ModelHost>,
-    resolver: Option<Key<ProviderConnectionResolver>>,
+    model: Key<dyn rutis_bridge::session::HostDispatch>,
     settings: Option<Key<PromptSuggestionSettingsHost>>,
 }
 
 impl PromptSuggestionPlugin {
-    fn with(names: &Names<'_>, process_resolver: bool) -> rutis::Result<Self> {
+    fn with(names: &Names<'_>) -> rutis::Result<Self> {
         Ok(Self {
             identity: names.key()?,
             config: names.key()?,
             lifecycle: names.key()?,
             methods: names.key()?,
             tree: names.key()?,
-            model: names.key()?,
-            resolver: process_resolver.then(|| names.key()).transpose()?,
+            model: rutis_bridge::session::host_key("modelHost"),
             settings: names
                 .registered::<PromptSuggestionSettingsHost>()
                 .then(|| names.key::<PromptSuggestionSettingsHost>())
@@ -535,7 +517,6 @@ impl DynPlugin for PromptSuggestionPlugin {
             self.tree.erase(),
             self.model.erase(),
         ];
-        deps.extend(self.resolver.iter().map(Key::erase));
         deps.extend(self.settings.iter().map(Key::erase));
         deps
     }
@@ -546,11 +527,7 @@ impl DynPlugin for PromptSuggestionPlugin {
             let lifecycle = ctx.require_at(&self.lifecycle)?;
             let methods = ctx.require_at(&self.methods)?;
             let tree = ctx.require_at(&self.tree)?;
-            let model = ctx.require_at(&self.model)?;
-            let resolver = match &self.resolver {
-                Some(key) => Some(ctx.require_at(key)?),
-                None => None,
-            };
+            let model = ModelHost::from_scope(ctx)?;
             let settings = match &self.settings {
                 Some(key) => ctx.get_at(key),
                 None => None,
@@ -561,7 +538,6 @@ impl DynPlugin for PromptSuggestionPlugin {
                 state: Mutex::new(State::default()),
                 hosts: Hosts {
                     model,
-                    resolver,
                     settings,
                     tree,
                 },
@@ -1197,27 +1173,19 @@ impl Part {
         token: &CancellationToken,
     ) -> Result<String, &'static str> {
         let request = suggestion_request(&call.request, content, &instruction(max_chars));
-        let resolved = match &self.hosts.resolver {
-            Some(resolver) => resolver
-                .0
-                .resolve(request.clone(), token.clone())
-                .await
-                .map_err(|_| "failed")?,
-            None => ResolvedModelConnection {
-                connection: ModelConnection::Local,
-                failure_policy: None,
-                recovery: None,
-            },
-        };
-        let ResolvedModelConnection { connection, .. } = resolved;
-        let stream = self
-            .hosts
+        self.hosts
             .model
-            .0
-            .invoke(request, connection, token.clone())
+            .invoke(
+                request,
+                InvocationMode::Once,
+                token,
+                &mut SuggestionLimit(max_chars as usize),
+                |stream, limit, token, _| {
+                    Box::pin(async move { read_line(stream, limit.0, &token).await })
+                },
+            )
             .await
-            .map_err(failed)?;
-        read_line(stream, max_chars as usize, token).await
+            .map_err(failed)
     }
 
     fn respond(&self, value: Value) -> Result<Value, RpcError> {
@@ -1265,16 +1233,19 @@ fn failed(_: HostError) -> &'static str {
     "failed"
 }
 
+struct SuggestionLimit(usize);
+impl crate::model_provider::RetryObserver for SuggestionLimit {}
+
 async fn read_line(
     mut stream: ModelStream,
     max_chars: usize,
     token: &CancellationToken,
-) -> Result<String, &'static str> {
+) -> Result<String, HostError> {
     let mut text = String::new();
     loop {
         let chunk = tokio::select! {
             chunk = stream.next() => chunk,
-            _ = token.cancelled() => return Err("failed"),
+            _ = token.cancelled() => return Err(HostError::failed("Suggestion generation failed")),
         };
         let Some(chunk) = chunk else {
             break;
@@ -1286,10 +1257,12 @@ async fn read_line(
                     break;
                 }
             }
-            Ok(ModelChunk::ToolStart { .. }) | Ok(ModelChunk::ToolUse(_)) => return Err("failed"),
+            Ok(ModelChunk::ToolStart { .. }) | Ok(ModelChunk::ToolUse(_)) => {
+                return Err(HostError::failed("Suggestion generation failed"));
+            }
             Ok(ModelChunk::MessageStop { .. }) => break,
             Ok(_) => {}
-            Err(_) => return Err("failed"),
+            Err(error) => return Err(error),
         }
     }
     Ok(text)

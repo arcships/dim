@@ -116,7 +116,7 @@ async fn tool_session(
 fn configured(model: Arc<dyn ModelDriver>, context: Context) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(model)))
+        .process_data_value(Arc::new(ModelHost::local(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

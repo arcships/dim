@@ -6,7 +6,7 @@
 
 ## 1. 摘要
 
-`auxiliaryModel` 服务只有一个异步方法 `complete(model, request)`。它在任何 Session 之外发起
+`providerService` 服务提供异步方法 `complete(model, request)`。它在任何 Session 之外发起
 一次非流式模型调用：由模型选择的所有者解析给定模型的连接，调用现有的 `ModelHost`，返回文本。
 它不写任何 Timeline，凭据不离开该所有者。
 
@@ -33,7 +33,7 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
 - 压缩已经有自己的端口 `ResolveContextModel` → `ContextModel`
   （`dim-agent-capabilities/src/host.rs`）：上下文窗口、输出预算、token 计数和 `compact`。
   只返回文本的 `complete` 会丢掉这些信息。生产压缩宿主（F1）实现这个端口，不使用
-  `auxiliaryModel`。
+  `providerService`。
 
 ## 2. 结构
 
@@ -47,7 +47,7 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
  +----------------------------------------------^-----------------+
                                                 | complete(model, request)
  Session 作用域                                 |
-   SessionTitle（Deps：auxiliaryModel） ----'
+   SessionTitle（Deps：providerService） ----'
      model = 其 Settings 来源 `session-title` 的 model，否则为 Session 的模型
 ```
 
@@ -62,7 +62,7 @@ S4 完成标准里只有一个使用者：SessionTitle（P4），它需要在自
 
 ### 4.1 语言中立（ADR 002 D5）
 
-`auxiliaryModel`，进程作用域，无实例 key，由该配置中模型选择的所有者提供（产品配置为
+`providerService`，进程作用域，无实例 key，由该配置中模型选择的所有者提供（产品配置为
 Provider，model-config 配置为 ConfiguredModels）。
 
 | 方法 | 模式 | 请求 | 回复 |
@@ -95,20 +95,13 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
     fn complete(&self, model: ModelId, request: AuxiliaryRequest, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
 ```
-
-`auxiliary_model::provide` 在 Rust 类型键和 `host_key("auxiliaryModel")` 提供同一个
-`AuxiliaryModel`。每个所有者的 `apply` 用各自的 `CompleteAuxiliary` 实现调用它；其 `Deps` 增加 `Arc<ModelHost>`。
 
 ### 4.3 具名绑定
 
-所有者提供的同一个操作经上述共享的 `provide` 在 `host_key("auxiliaryModel")` 实现
-`HostDispatch`，进程 catalog 登记此共享名称。普通 C4 行注入 `auxiliaryModel`，调用
-`complete({model, request})`；Rust 的 SessionTitle 通过 `AuxiliaryModel` 绑定依赖同名的
-`auxiliaryModel` 服务，直接调用所有者操作，不经过序列化。SDK 在
-[`dimcode/plugin`](../../../../npm/plugin.d.ts) 中将其声明为 `AuxiliaryModel`。这是既有操作的绑定，
-不新增插件或另一套模型执行器。
+进程内调用方通过 `ProviderService::complete` 调用当前模型所有者。跨语言插件注入
+`providerService`，调用 `complete({model, request})`。两条路径使用同一个
+`CompleteAuxiliary` 实现。见[进程所有者接口](../../../design/contracts/process-owner-operations.md)。
 
 调用接收一个含 `model` 和 `request` 的数据对象。在此边界解码原生请求一次；未知字段、非法消息
 数据或参数形状以 `invalid_request` 拒绝。可选的 `system` 和 `maxOutputTokens` 可以缺省或为 null。
@@ -174,12 +167,12 @@ Provider 通过 `ProviderService` 解析模型、通过 `ProductResolver` 解析
 | 部件 | 关系 |
 | --- | --- |
 | 默认选择（`provider.select`） | 不变。`complete` 不使用它 |
-| SessionTitle（P4） | Rust 部分（`dim-session-title`）要求 `AuxiliaryModel` 并调用 `complete`；`model` 取其 Settings 来源 `session-title` 中可选的 `model`，否则取前缀中最新 `context/configured` 的模型。没有提供该操作的所有者时，必需依赖让该部分保持 Pending；原生 Session 不依赖该行。具名 `auxiliaryModel` HostDispatch 绑定仍供 TypeScript Session 部分使用。SessionTitle 自身的 Ready 决策和实现仍单独处理 |
+| SessionTitle（P4） | Rust 部分（`dim-session-title`）要求 `ProviderService` 并调用 `complete`；`model` 取其 Settings 来源 `session-title` 中可选的 `model`，否则取前缀中最新 `context/configured` 的模型。没有提供该操作的所有者时，必需依赖让该部分保持 Pending；原生 Session 不依赖该行。具名 `providerService` HostDispatch 绑定仍供 TypeScript Session 部分使用。SessionTitle 自身的 Ready 决策和实现仍单独处理 |
 | 压缩宿主（F1） | 不使用本服务。实现 `ResolveContextModel`；如何选模型、如何读上下文窗口由 F1 设计 |
 | Collaboration | S4 不带来变化。成员模型 = profile 的模型，否则为默认选择；如果以后需要单独的成员默认值，那是 Collaboration 自己的设置 |
 | Modality | 把每个类别的默认模型保存在自己的 Settings 来源 `modality` 中，并显式传入模型。非对话型连接解析是另一项 Provider 补充，不在 S4 内 |
 | Workflow | `stage.model` > profile 模型 > Agents 默认选择已经覆盖模型选择；该操作没有阶段默认值 |
-| `--model-config` 配置（ConfiguredModels，没有 Provider 插件） | 用配置的目录及其 provider 声明的连接提供 `auxiliaryModel`，走同一份共享运行；SessionTitle 的必需依赖在该配置中同样满足 |
+| `--model-config` 配置（ConfiguredModels，没有 Provider 插件） | 用配置的目录及其 provider 声明的连接提供 `providerService`，走同一份共享运行；SessionTitle 的必需依赖在该配置中同样满足 |
 
 ## 9. 规则检查
 
@@ -211,7 +204,7 @@ Provider 通过 `ProviderService` 解析模型、通过 `ProductResolver` 解析
 7. 真实 Node Session 部分按名称注入进程服务，经 `complete({model, request})` 发起 HTTP 调用；
    回复字段和抛出的错误码保持不变。非法请求、未知模型不发送 HTTP 请求，调用不写 Session 历史。
    将模型请求停在 HTTP 端点后，关闭调用方会完成取消引用，在 Provider 保持装载时关闭 HTTP 流。
-   没有 auxiliaryModel 的所有者时，原生 Session 仍能创建，只有外来命名空间不可用。
+   没有 providerService 的所有者时，原生 Session 仍能创建，只有外来命名空间不可用。
 8. model-config 配置用其目录及 provider 声明的连接提供并运行该操作：调用把请求发往配置的模型，
    `maxTokens` 截到模型采用后的输出额度（按文件声明的一对上限推导）；未声明的模型返回 `model_unavailable` 且不发请求；
    Session 部分和 Session 的自动标题在该配置中都能到达它。

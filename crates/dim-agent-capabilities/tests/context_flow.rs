@@ -247,7 +247,7 @@ fn builder_with_prepare(
 ) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(model)))
+        .process_data_value(Arc::new(ModelHost::local(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(history))
         .session_value(Arc::new(PrepareContextHost(prepare)))
@@ -2089,7 +2089,7 @@ async fn a_compaction_completed_after_a_stop_is_committed_not_discarded() {
     );
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(HistoryRenderer::default()))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

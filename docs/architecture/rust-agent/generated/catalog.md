@@ -11,7 +11,6 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | Name | Group | Provider | Face | Methods |
 | --- | --- | --- | --- | --- |
 | `agentIndex` | process | Agents | internal(owner-api) | — |
-| `auxiliaryModel` | process | Provider | data | `complete` async |
 | `basePromptSettingsHost` | process | PromptSettings | data | `base` async |
 | `callChannel` | process | CallChannel | data | `closed` async, `notify` async |
 | `collaborationDirectory` | process | CollaborationDirectory | data | `relations` async |
@@ -36,18 +35,16 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
 | `modalityTargets` | process | Modality | data | `resolve` async |
 | `modelHost` | process | Aimux | internal(owner-api) | — |
-| `modelSelectionHost` | process | Provider | data | `resolve` async |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | internal(secret) | — |
 | `partRegistry` | process | PartRegistry | data | `registerDefinition` async |
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `processActivity` | process | ServerControl | data | `activated` async, `hold` async, `release` async |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | data | `read` async |
 | `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
-| `providerService` | process | Provider | internal(secret) | — |
+| `providerService` | process | Provider | data | `applyPreferences` async, `complete` async, `configuration` async, `resolve` async, `selectableForModality` async, `selectableModels` async |
 | `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
 | `scheduleJobs` | process | Scheduler | data | `call` async |
-| `selectableModelsHost` | process | Provider | data | `selectableForModality` async, `selectableModels` async |
 | `serverControl` | process | ServerControl | internal(control) | — |
 | `sessionClientsHost` | process | Connection | data | `presences` async |
 | `sessionFiles` | process | SessionStore | data | `import` async, `owned_paths` async, `owns` async, `put` async, `read` async, `register` async |

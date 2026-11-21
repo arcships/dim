@@ -1,12 +1,12 @@
-//! Session image questions through Modality's current target and `auxiliaryModel`.
+//! Session image questions through Modality's current target and `providerService.complete`.
 //! References resolve only within the calling branch's published history.
 mod history;
 
 use dim_agent_capabilities::timeline_tree::TreeCommands;
 use dim_agent_capabilities::{
     host::{
-        AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest, HostError, HostFuture,
-        ModelStopReason, SessionFiles, ToolExecutionContext,
+        AuxiliaryErrorCode, AuxiliaryRequest, HostError, HostFuture, ModelStopReason,
+        ProviderService, SessionFiles, ToolExecutionContext,
     },
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolConcurrency, ToolContribution, ToolHandler, ToolRegistry, definition},
@@ -82,7 +82,7 @@ struct ImageUnderstanding {
     files: Arc<SessionFiles>,
     identity: Arc<SessionIdentity>,
     targets: Arc<ModalityTargets>,
-    auxiliary: Arc<AuxiliaryModel>,
+    auxiliary: Arc<ProviderService>,
     indexes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<history::Index>>>>,
     flights: Mutex<HashMap<(String, ReuseKey), Weak<Flight>>>,
     stop: CancellationToken,
@@ -197,7 +197,7 @@ impl ImageUnderstanding {
                         _ = cancelled.cancelled() => {
                             return Err(HostError::Cancelled("Image request cancelled".into()));
                         }
-                        reply = auxiliary.0.complete(target.clone(), request, cancelled.clone()) =>
+                        reply = auxiliary.complete(target.clone(), request, cancelled.clone()) =>
                             reply,
                     };
                     match reply {
@@ -281,7 +281,7 @@ pub struct ImageUnderstandingPlugin {
     files: Key<SessionFiles>,
     identity: Key<SessionIdentity>,
     targets: Key<ModalityTargets>,
-    auxiliary: Key<AuxiliaryModel>,
+    auxiliary: Key<ProviderService>,
     guide: Key<GuideEntries>,
 }
 

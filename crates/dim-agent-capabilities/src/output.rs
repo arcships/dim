@@ -525,7 +525,10 @@ impl Output {
 }
 
 impl crate::model_provider::RetryObserver for Output {
-    fn waiting(&mut self, retry: Option<crate::model_provider::RetryWaiting<'_>>) {
+    async fn waiting(
+        &mut self,
+        retry: Option<crate::model_provider::RetryWaiting<'_>>,
+    ) -> Result<(), HostError> {
         self.show(|progress| {
             progress.retry = retry.map(|retry| RetryProgress {
                 attempt: retry.attempt,
@@ -535,6 +538,7 @@ impl crate::model_provider::RetryObserver for Output {
                 reason: retry.reason.map(str::to_owned),
             });
         });
+        Ok(())
     }
 }
 

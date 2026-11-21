@@ -56,7 +56,7 @@ impl DynPlugin for AimuxPlugin {
                 driver.close().await;
                 return Err(error);
             }
-            ctx.provide(ModelHost(driver))?;
+            ctx.provide(ModelDriverHost(driver))?;
             Ok(Effect::Done)
         })
     }
@@ -68,7 +68,7 @@ pub struct ConfiguredModelsPlugin(pub Arc<AimuxModels>);
 impl Plugin for ConfiguredModelsPlugin {
     /// The shared name and the run for auxiliary calls need the model host;
     /// Aimux provides it and depends on nothing here.
-    type Deps = (Arc<ModelHost>,);
+    type Deps = (Arc<ModelDriverHost>,);
     fn name(&self) -> &str {
         "ConfiguredModels"
     }
@@ -78,14 +78,12 @@ impl Plugin for ConfiguredModelsPlugin {
             models: self.0.clone(),
             generation: ctx.cancellation_token(),
         });
-        ctx.provide(ProviderConnectionResolver(resolver.clone()))?;
+        dim_agent_capabilities::host::ModelHost::new(host.clone(), Some(resolver.clone()))
+            .provide(ctx)?;
         let selection = resolver.clone();
-        dim_agent_capabilities::host::provide_model_selection(
-            ctx,
-            &ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
-                selection.resolve(explicit, cwd, cancel)
-            })),
-        )?;
+        let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
+            selection.resolve(explicit, cwd, cancel)
+        }));
         ctx.provide(ModalityConnectionHost(resolver.clone()))?;
         let selectable = ConfiguredSelectable {
             models: self.0.clone(),
@@ -93,19 +91,23 @@ impl Plugin for ConfiguredModelsPlugin {
         let modalities = ConfiguredSelectable {
             models: self.0.clone(),
         };
-        dim_agent_capabilities::host::provide_selectable_models(
-            ctx,
-            &SelectableModelsHost::new(
-                Arc::new(move |cancel| selectable.selectable(cancel)),
-                Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
-            ),
-        )?;
+        let selectable_host = SelectableModelsHost::new(
+            Arc::new(move |cancel| selectable.selectable(cancel)),
+            Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
+        );
         let auxiliary = Arc::new(crate::auxiliary::ConfiguredAuxiliary {
             models: self.0.clone(),
             connection: resolver,
             host,
         });
-        dim_agent_capabilities::auxiliary_model::provide(ctx, auxiliary)?;
+
+        dim_agent_capabilities::host::ProviderService::provide(
+            ctx,
+            selection_host,
+            selectable_host,
+            auxiliary,
+            None,
+        )?;
         Ok(())
     }
 }

@@ -6,7 +6,7 @@ use crate::AimuxModels;
 use dim_agent_capabilities::auxiliary_model::{self, AuxiliaryTarget};
 use dim_agent_capabilities::host::{
     AuxiliaryError, AuxiliaryErrorCode, AuxiliaryReply, AuxiliaryRequest, CompleteAuxiliary,
-    ModelHost, ResolveModelConnection,
+    ModelDriverHost, ResolveModelConnection,
 };
 use dim_agent_types::ModelId;
 use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 pub(crate) struct ConfiguredAuxiliary {
     pub(crate) models: Arc<AimuxModels>,
     pub(crate) connection: Arc<dyn ResolveModelConnection>,
-    pub(crate) host: Arc<ModelHost>,
+    pub(crate) host: Arc<ModelDriverHost>,
 }
 
 impl CompleteAuxiliary for ConfiguredAuxiliary {

@@ -55,7 +55,7 @@ test('packed plugin service types compile the author guide and enforce the publi
   });
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, ProviderService, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
 import type { BridgeJsonValue, JsonValue, PromptEntry } from 'dimcode/plugin';
 import type { ConfigureUpdate, InitialPromptConfiguration } from 'dimcode/branch-services.js';
 declare const initial: InitialPromptConfiguration;
@@ -77,7 +77,7 @@ declare const sessions: Sessions;
 declare const permissions: SessionPermissions;
 declare const workflowFiles: WorkflowFiles;
 declare const metadata: SessionMetadata;
-declare const auxiliary: AuxiliaryModel;
+declare const auxiliary: ProviderService;
 declare const files: FileScope;
 declare const tools: ToolRegistry;
 declare const execute: ToolExecute;

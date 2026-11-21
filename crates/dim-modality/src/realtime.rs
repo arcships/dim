@@ -214,8 +214,7 @@ impl Realtime {
         })?;
         let (_, evaluation) = evaluate(
             &self.shared.settings,
-            &self.shared.selectable,
-            &self.shared.selection,
+            &self.shared.provider,
             &self.shared.ctx,
             self.shared.ocr_helper.as_deref(),
             cancel,

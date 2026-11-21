@@ -91,8 +91,7 @@ impl ModalityTargets {
             _ = cancel.cancelled() => return Err(RpcError::interrupted().into()),
             result = evaluate(
                 &self.shared.settings,
-                &self.shared.selectable,
-                &self.shared.selection,
+                &self.shared.provider,
                 &self.shared.ctx,
                 self.shared.ocr_helper.as_deref(),
                 &cancel,

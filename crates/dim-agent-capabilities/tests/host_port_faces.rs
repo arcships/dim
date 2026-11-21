@@ -189,10 +189,13 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
         Arc::new(|_| Box::pin(async { Ok(Vec::new()) })),
         Arc::new(move |_| Box::pin(async move { Ok(vec![declared()]) })),
     );
-    dim_agent_capabilities::host::provide_selectable_models(&root, &selectable).unwrap();
-    let binding = root.get::<SelectableModelsHost>().unwrap();
-    let empty =
-        wire::<SelectableModelsReply>(&root, "selectableModelsHost", "selectableModels").await;
+    root.provide_at(
+        host_key("providerService"),
+        Arc::new(selectable.clone()) as Arc<dyn HostDispatch>,
+    )
+    .unwrap();
+    let binding = &selectable;
+    let empty = wire::<SelectableModelsReply>(&root, "providerService", "selectableModels").await;
     assert!(empty.models.is_empty());
     assert_eq!(
         binding
@@ -203,7 +206,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
         empty
     );
     let modality =
-        wire::<ModalityModelsReply>(&root, "selectableModelsHost", "selectableForModality").await;
+        wire::<ModalityModelsReply>(&root, "providerService", "selectableForModality").await;
     assert_eq!(
         binding
             .selectable_for_modality(CancellationToken::new())
@@ -214,7 +217,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
     );
     assert_eq!(modality.models, vec![declared()]);
     let refused = call(
-        &face(&root, "selectableModelsHost"),
+        &face(&root, "providerService"),
         "selectableModels",
         json!([]),
     )
@@ -222,7 +225,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
     .expect_err("a positional array is not the documented request object");
     assert_eq!(refused.code(), Some("invalid_request"));
     let refused = call(
-        &face(&root, "selectableModelsHost"),
+        &face(&root, "providerService"),
         "selectableModels",
         json!({"unexpected": true}),
     )
@@ -249,8 +252,12 @@ async fn the_model_selection_answers_the_same_through_the_binding_and_the_face()
             })
         })
     }));
-    dim_agent_capabilities::host::provide_model_selection(&root, &selection).unwrap();
-    let binding = root.get::<ModelSelectionHost>().unwrap();
+    root.provide_at(
+        host_key("providerService"),
+        Arc::new(selection.clone()) as Arc<dyn HostDispatch>,
+    )
+    .unwrap();
+    let binding = &selection;
     let request = ModelSelectionRequest::at(
         Some(ModelId {
             provider_id: "provider".into(),
@@ -260,7 +267,7 @@ async fn the_model_selection_answers_the_same_through_the_binding_and_the_face()
     )
     .unwrap();
     let reply = call(
-        &face(&root, "modelSelectionHost"),
+        &face(&root, "providerService"),
         "resolve",
         serde_json::to_value(&request).unwrap(),
     )
@@ -285,9 +292,13 @@ async fn a_host_failure_keeps_the_code_its_caller_acts_on() {
         Arc::new(|_| Box::pin(async { Err(HostError::Cancelled("the owner closed".into())) })),
         Arc::new(|_| Box::pin(async { Err(HostError::failed("storage")) })),
     );
-    dim_agent_capabilities::host::provide_selectable_models(&root, &selectable).unwrap();
+    root.provide_at(
+        host_key("providerService"),
+        Arc::new(selectable.clone()) as Arc<dyn HostDispatch>,
+    )
+    .unwrap();
     let cancelled = call(
-        &face(&root, "selectableModelsHost"),
+        &face(&root, "providerService"),
         "selectableModels",
         json!({}),
     )
@@ -295,14 +306,14 @@ async fn a_host_failure_keeps_the_code_its_caller_acts_on() {
     .expect_err("the owner fails");
     assert_eq!(cancelled.code(), Some("cancelled"));
     let failed = call(
-        &face(&root, "selectableModelsHost"),
+        &face(&root, "providerService"),
         "selectableForModality",
         json!({}),
     )
     .await
     .expect_err("the owner fails");
     assert_eq!(failed.code(), Some("failed"));
-    let binding = root.get::<SelectableModelsHost>().unwrap();
+    let binding = &selectable;
     let cancelled = binding.selectable_models(CancellationToken::new()).await;
     assert!(
         matches!(cancelled, Err(ModelPortError::Cancelled { .. })),

@@ -77,7 +77,7 @@ fn configuration(model: &str) -> ModelSelection {
 fn mock_model_hosts(builder: &mut AgentBuilder) {
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(None)))
         .session_value(Arc::new(CompactionStrategyHost(None)))
@@ -371,7 +371,7 @@ async fn an_adopted_request_and_the_summarizers_request_carry_one_system() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(Some(
             strategy.clone() as Arc<dyn ResolveContextModel>

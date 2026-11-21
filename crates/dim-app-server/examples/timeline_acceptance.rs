@@ -255,7 +255,7 @@ async fn memory(steps: usize) -> std::result::Result<(), Error> {
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
         .session_value(Arc::new(HistoryRenderer::default()))
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_value(Arc::new(ContextModelHost(Some(Arc::new(Compactor {

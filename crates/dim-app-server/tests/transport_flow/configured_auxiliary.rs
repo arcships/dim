@@ -5,7 +5,7 @@ use super::*;
 use axum::{Json, Router, extract::State, routing::post};
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
 use dim_agent_capabilities::{
-    host::{AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryRequest},
+    host::{AuxiliaryErrorCode, AuxiliaryRequest, ProviderService as ModelProviderService},
     model_provider::ModelProviderPlugin,
     timeline_tree::BranchToolConfig,
     workspace_tools::WorkspaceToolsConfig,
@@ -191,12 +191,12 @@ async fn the_configured_profile_provides_and_runs_the_auxiliary_model() {
         let server = launch_configured(&directory, models, None, None).await;
 
         let diagnostics = server.diagnostics();
-        let key = rutis_bridge::session::host_key("auxiliaryModel").erase();
+        let key = rutis_bridge::session::host_key("providerService").erase();
         let binding = diagnostics
             .bindings
             .iter()
             .find(|binding| binding.key == key)
-            .expect("the configured profile provides auxiliaryModel");
+            .expect("the configured profile provides providerService");
         let owner = diagnostics
             .plugins
             .iter()
@@ -205,11 +205,10 @@ async fn the_configured_profile_provides_and_runs_the_auxiliary_model() {
         assert_eq!(owner.name, "ConfiguredModels");
 
         let auxiliary = server
-            .service::<AuxiliaryModel>()
+            .service::<ModelProviderService>()
             .expect("the auxiliary model host")
             .clone();
         let reply = auxiliary
-            .0
             .complete(model("small"), request(Some(32)), CancellationToken::new())
             .await
             .unwrap();
@@ -221,7 +220,6 @@ async fn the_configured_profile_provides_and_runs_the_auxiliary_model() {
         assert_eq!(max_tokens(&sent), Some(32));
 
         auxiliary
-            .0
             .complete(
                 model("small"),
                 request(Some(1_000_000)),
@@ -233,7 +231,6 @@ async fn the_configured_profile_provides_and_runs_the_auxiliary_model() {
         assert_eq!(max_tokens(&sent), Some(200));
 
         let missing = auxiliary
-            .0
             .complete(model("absent"), request(None), CancellationToken::new())
             .await
             .unwrap_err();

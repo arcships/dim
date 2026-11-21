@@ -1,18 +1,18 @@
 import { definePlugin } from '@arcships/rutis'
 import { partRow } from './part-row.ts'
-import type { AuxiliaryModel, SessionMethods } from '../../npm/plugin.d.ts'
+import type { ProviderService, SessionMethods } from '../../npm/plugin.d.ts'
 import provides from './auxiliary-model.json' with { type: 'json' }
 
 export const part = definePlugin({
   name: 'AuxiliaryModelFixture',
-  inject: ['auxiliaryModel', 'sessionMethods'],
+  inject: ['providerService', 'sessionMethods'],
   provides,
   async apply(ctx) {
-    const auxiliary = ctx.use<AuxiliaryModel>('auxiliaryModel')
+    const auxiliary = ctx.use<ProviderService>('providerService')
     await ctx.use<SessionMethods>('sessionMethods').register(
       'session.auxiliary',
       [{ name: 'session.auxiliary.complete', mutating: false, interruption: 'report', progress: false }],
-      async (call: { params: { request: Parameters<AuxiliaryModel['complete']>[0]; cancellable?: boolean } }, cancelled: Promise<void>) => {
+      async (call: { params: { request: Parameters<ProviderService['complete']>[0]; cancellable?: boolean } }, cancelled: Promise<void>) => {
         try {
           const reply = call.params.cancellable
             ? await auxiliary.complete(call.params.request, () => cancelled)

@@ -69,7 +69,7 @@ async fn fixture(tools: Arc<dyn ToolDriver>) -> Fixture {
     let branch_ctx = Arc::new(Mutex::new(None));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
+        .process_data_value(Arc::new(ModelHost::local(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(tools)))
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),

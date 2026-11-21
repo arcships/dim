@@ -473,6 +473,10 @@
   },
   {
     "from": "dim-image-understanding",
+    "to": "dim-agent-capabilities"
+  },
+  {
+    "from": "dim-image-understanding",
     "to": "dim-agent-runtime"
   },
   {

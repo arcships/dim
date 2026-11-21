@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 fn builder(model: Arc<dyn ModelDriver>, tools: Arc<dyn ToolDriver>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .process_value(Arc::new(ModelHost(model)))
+        .process_data_value(Arc::new(ModelHost::local(model)))
         .session_value(Arc::new(ToolHost(tools)))
         .session_value(Arc::new(
             dim_agent_capabilities::history::HistoryRenderer::default(),
@@ -591,8 +591,11 @@ impl Plugin for AnnouncingHosts {
         "test.announcing-failure"
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
-        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        ModelHost::new(
+            Arc::new(ModelDriverHost(Arc::new(self.0.clone()))),
+            Some(Arc::new(self.0.clone())),
+        )
+        .provide(ctx)?;
         Ok(())
     }
 }
@@ -803,8 +806,11 @@ impl Plugin for QuietThenAnnouncedHosts {
         "test.quiet-then-announced"
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
-        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        ModelHost::new(
+            Arc::new(ModelDriverHost(Arc::new(self.0.clone()))),
+            Some(Arc::new(self.0.clone())),
+        )
+        .provide(ctx)?;
         Ok(())
     }
 }
@@ -1860,8 +1866,11 @@ impl Plugin for RecoveryHosts {
         "test.recovery.hosts"
     }
     async fn apply(&self, ctx: &Ctx, (): Self::Deps) -> rutis::Result {
-        ctx.provide(ModelHost(Arc::new(self.0.clone())))?;
-        ctx.provide(ProviderConnectionResolver(Arc::new(self.0.clone())))?;
+        ModelHost::new(
+            Arc::new(ModelDriverHost(Arc::new(self.0.clone()))),
+            Some(Arc::new(self.0.clone())),
+        )
+        .provide(ctx)?;
         Ok(())
     }
 }
@@ -4790,25 +4799,6 @@ impl ToolDriver for Screenshot {
     }
 }
 
-/// The compaction strategy resolves a connection only when it compacts; this
-/// turn never does.
-struct NoConnection;
-impl ResolveModelConnection for NoConnection {
-    fn resolve(
-        &self,
-        _: Arc<ModelRequest>,
-        _: CancellationToken,
-    ) -> HostFuture<'_, ResolvedModelConnection> {
-        Box::pin(async {
-            Ok(ResolvedModelConnection {
-                connection: ModelConnection::Local,
-                failure_policy: None,
-                recovery: None,
-            })
-        })
-    }
-}
-
 /// The turn's context estimates, one per model call, for a tool that returns a
 /// text block with or without an image.
 async fn tool_result_estimates(with_image: bool) -> Vec<f64> {
@@ -4835,9 +4825,7 @@ async fn tool_result_estimates(with_image: bool) -> Vec<f64> {
     );
     defaults::install(&mut builder);
     let agent = MinimalHost::start_with(&builder, |root, _| {
-        root.provide(ModelHost(Arc::new(EchoModel))).unwrap();
-        root.provide(ProviderConnectionResolver(Arc::new(NoConnection)))
-            .unwrap();
+        ModelHost::local(Arc::new(EchoModel)).provide(root)?;
         Ok(())
     })
     .await

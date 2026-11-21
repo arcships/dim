@@ -40,10 +40,7 @@ pub use adapter::{
     RemoteCancel, Submitted,
 };
 use dim_agent_capabilities::{
-    host::{
-        HostError, HostErrorKind, ModelPortError, ModelSelectionHost, ModelSelectionRequest,
-        SelectableModelsHost,
-    },
+    host::{HostError, HostErrorKind, ModelPortError, ModelSelectionRequest, ProviderService},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::{AgentBuilder, Names};
@@ -1046,8 +1043,7 @@ pub(crate) enum OcrLookup {
 
 pub(crate) async fn evaluate(
     settings: &SettingsService,
-    selectable: &SelectableModelsHost,
-    selection: &ModelSelectionHost,
+    provider: &ProviderService,
     ctx: &Ctx,
     ocr_helper: Option<&std::path::Path>,
     cancel: &CancellationToken,
@@ -1057,17 +1053,17 @@ pub(crate) async fn evaluate(
         .read::<ModalitySettings>(SettingsScope::User, cancel)
         .await
         .map_err(settings_error)?;
-    let selectable_models = selectable
+    let selectable_models = provider
         .selectable_models(cancel.clone())
         .await
         .map_err(port_error)?
         .models;
-    let declared = selectable
+    let declared = provider
         .selectable_for_modality(cancel.clone())
         .await
         .map_err(port_error)?
         .models;
-    let global = selection
+    let global = provider
         .resolve(
             ModelSelectionRequest::at(None, None).map_err(port_error)?,
             cancel.clone(),
@@ -1197,8 +1193,7 @@ fn selection_refusal(
 pub struct ModalityPlugin {
     settings: Key<SettingsService>,
     methods: Key<ManagementMethods>,
-    selection: Key<ModelSelectionHost>,
-    selectable: Key<SelectableModelsHost>,
+    provider: Key<ProviderService>,
     files: Key<dim_app_server::plugin_files::PluginFiles>,
     fs: Key<dim_agent_capabilities::file_storage::FsHost>,
     options: InstallOptions,
@@ -1208,8 +1203,7 @@ impl ModalityPlugin {
         Ok(Self {
             settings: names.key()?,
             methods: names.key()?,
-            selection: names.key()?,
-            selectable: names.key()?,
+            provider: names.key()?,
             files: names.key()?,
             fs: names.key()?,
             options,
@@ -1224,8 +1218,7 @@ impl DynPlugin for ModalityPlugin {
         vec![
             self.settings.erase(),
             self.methods.erase(),
-            self.selection.erase(),
-            self.selectable.erase(),
+            self.provider.erase(),
             self.files.erase(),
             self.fs.erase(),
         ]
@@ -1234,8 +1227,7 @@ impl DynPlugin for ModalityPlugin {
         Box::pin(async move {
             let settings = ctx.require_at(&self.settings)?;
             let methods = ctx.require_at(&self.methods)?;
-            let selection = ctx.require_at(&self.selection)?;
-            let selectable = ctx.require_at(&self.selectable)?;
+            let provider = ctx.require_at(&self.provider)?;
             let files = ctx.require_at(&self.files)?.open(ctx)?;
             settings.register::<ModalitySettings>(ctx)?;
             // The task layer: one state for the methods, the scheduler and
@@ -1244,8 +1236,7 @@ impl DynPlugin for ModalityPlugin {
                 files,
                 ctx.require_at(&self.fs)?,
                 settings.clone(),
-                selection.clone(),
-                selectable.clone(),
+                provider.clone(),
                 ctx.clone(),
                 self.options.clock.clone(),
                 self.options.ocr_helper.clone(),
@@ -1308,8 +1299,7 @@ impl DynPlugin for ModalityPlugin {
                         origin,
                     } = call;
                     let settings = settings.clone();
-                    let selection = selection.clone();
-                    let selectable = selectable.clone();
+                    let provider = provider.clone();
                     let context = context.clone();
                     let tasks = task_handle.clone();
                     let ocr_helper = ocr_helper.clone();
@@ -1320,8 +1310,7 @@ impl DynPlugin for ModalityPlugin {
                                 let _: Empty = params(value)?;
                                 let (revision, evaluation) = evaluate(
                                     &settings,
-                                    &selectable,
-                                    &selection,
+                                    &provider,
                                     &context,
                                     ocr_helper.as_deref(),
                                     &stopping,
@@ -1342,8 +1331,7 @@ impl DynPlugin for ModalityPlugin {
                                 };
                                 let (_, mut evaluation) = evaluate(
                                     &settings,
-                                    &selectable,
-                                    &selection,
+                                    &provider,
                                     &context,
                                     ocr_helper.as_deref(),
                                     &stopping,

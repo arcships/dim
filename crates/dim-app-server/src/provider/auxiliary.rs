@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 #[derive(Clone)]
 pub(super) struct AuxiliaryModel {
     pub(super) owner: Arc<ProviderService>,
-    pub(super) host: Arc<ModelHost>,
+    pub(super) host: Arc<ModelDriverHost>,
 }
 
 impl CompleteAuxiliary for AuxiliaryModel {
@@ -49,7 +49,7 @@ fn unavailable() -> AuxiliaryError {
 
 async fn run(
     owner: Arc<ProviderService>,
-    host: Arc<ModelHost>,
+    host: Arc<ModelDriverHost>,
     model: ModelId,
     request: AuxiliaryRequest,
     cancel: CancellationToken,

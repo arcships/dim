@@ -19,8 +19,7 @@ use crate::{Evaluation, catalog_category, host_target, is_understand};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dim_agent_capabilities::file_storage::{EntryKind, FsHost, OpenRead};
 use dim_agent_capabilities::host::{
-    ModalityConnection, ModalityConnectionHost, ModalityTarget, ModelSelectionHost,
-    SelectableModelsHost,
+    ModalityConnection, ModalityConnectionHost, ModalityTarget, ProviderService,
 };
 use dim_agent_capabilities::host_platform::{
     ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, HostPlatform, SystemServices,
@@ -468,8 +467,7 @@ pub(crate) struct Shared {
     pub(crate) files: Arc<FileScope>,
     fs: Arc<FsHost>,
     pub(crate) settings: Arc<SettingsService>,
-    pub(crate) selection: Arc<ModelSelectionHost>,
-    pub(crate) selectable: Arc<SelectableModelsHost>,
+    pub(crate) provider: Arc<ProviderService>,
     pub(crate) ctx: Ctx,
     /// The generation's stop signal; running work and the scheduler stop with
     /// it.
@@ -494,8 +492,7 @@ impl Shared {
         files: Arc<FileScope>,
         fs: Arc<FsHost>,
         settings: Arc<SettingsService>,
-        selection: Arc<ModelSelectionHost>,
-        selectable: Arc<SelectableModelsHost>,
+        provider: Arc<ProviderService>,
         ctx: Ctx,
         clock: Arc<dyn Clock>,
         ocr_helper: Option<PathBuf>,
@@ -505,8 +502,7 @@ impl Shared {
             files,
             fs,
             settings,
-            selection,
-            selectable,
+            provider,
             ctx,
             stop: CancellationToken::new(),
             clock,
@@ -956,8 +952,7 @@ impl ModalityTasks {
         }
         let (_, evaluation) = crate::evaluate(
             &shared.settings,
-            &shared.selectable,
-            &shared.selection,
+            &shared.provider,
             &shared.ctx,
             shared.ocr_helper.as_deref(),
             cancel,

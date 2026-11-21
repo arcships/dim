@@ -205,7 +205,6 @@ Proposed target operations: [Session and branch operations](contracts/runtime-ow
 | `mcpService` | process | Mcp | host-resource |
 | `hooksService` | process | HooksSettings | host-resource |
 | `providerService` | process | Provider | 当前为 secret，迁移后通过数据操作使用凭据 |
-| `providerConnectionResolver` | process | Provider | host-resource |
 | `sessionLoader` | session | SessionScope | control |
 | `timelineFactory` | session | SessionScope | control |
 
@@ -224,7 +223,7 @@ PromptSettings 的三个只读端口按 [prompt overrides §3.1](appserver/promp
 
 ### 4.2 `modelHost`：保留完整模型请求
 
-迁移前 `PromptSuggestion` 继续用类型化调用。模型 owner 在 #1292 的批次内定义能承载完整 `ModelRequest` 的公开操作，保留当轮 provider、model、system、tools、config、cached prefix、流式回复与取消。精简请求迁往 `providerService.complete`，随后移除 `auxiliaryModel`。PromptSuggestion 切到同一数据契约的 Rust 绑定时，覆盖 tools、config 和缓存前缀。
+对话、摘要和建议调用所选配置的 [modelHost.invoke](contracts/process-owner-operations.md#model-invocation)。调用方传入完整模型请求并消费输出；连接与凭据由模型执行服务解析。辅助补全使用 `providerService.complete`。
 
 ### 4.3 `scheduleJobs`
 

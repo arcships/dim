@@ -7,7 +7,7 @@ model-config profile, by ConfiguredModels).
 
 ## 1. Summary
 
-The `auxiliaryModel` service has one async method `complete(model, request)`. It makes a
+The `providerService` service exposes the async method `complete(model, request)`. It makes a
 single non-streaming model call outside any Session: the owner of model selection resolves
 the connection for the given model, calls the existing `ModelHost`, and returns the text.
 It writes no Timeline, and credentials never leave that owner.
@@ -41,7 +41,7 @@ more than the need:
 - Compaction already has its own port, `ResolveContextModel` → `ContextModel`
   (`dim-agent-capabilities/src/host.rs`): context window, output budget, token counting and
   `compact`. A text-only `complete` would lose that information. The production compaction
-  host (F1) implements that port; it does not use `auxiliaryModel`.
+  host (F1) implements that port; it does not use `providerService`.
 
 ## 2. Structure
 
@@ -55,7 +55,7 @@ more than the need:
  +----------------------------------------------^-----------------+
                                                 | complete(model, request)
  Session scope                                  |
-   SessionTitle (Deps: auxiliaryModel) -----'
+   SessionTitle (Deps: providerService) -----'
      model = its Settings source `session-title`.model, else the Session's model
 ```
 
@@ -71,7 +71,7 @@ tracking own an in-flight call. ConfiguredModels has no admission and tracks no 
 
 ### 4.1 Language-neutral (ADR 002 D5)
 
-`auxiliaryModel`, process scope, no instance key, provided by the profile's owner of
+`providerService`, process scope, no instance key, provided by the profile's owner of
 model selection (Provider in the product profile, ConfiguredModels in the model-config
 profile).
 
@@ -110,25 +110,13 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
     fn complete(&self, model: ModelId, request: AuxiliaryRequest, cancel: CancellationToken)
         -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-pub struct AuxiliaryModel(pub Arc<dyn CompleteAuxiliary>);
 ```
-
-`auxiliary_model::provide` publishes one `AuxiliaryModel` at the Rust type key and
-`host_key("auxiliaryModel")`. Each owner's `apply` calls it with its own `CompleteAuxiliary`
-implementation; its `Deps` gain `Arc<ModelHost>`.
 
 ### 4.3 Named binding
 
-The [target process binding](../contracts/process-owner-operations.md) moves callers of `auxiliaryModel.complete` to `providerService.complete` with the same request and stream. Retire the former catalog entry with its consumers. The binding below is the pre-migration name.
-
-The same owner-provided operation implements `HostDispatch` at
-`host_key("auxiliaryModel")` through that shared `provide`; the process catalog registers
-that shared name. An ordinary C4 row injects `auxiliaryModel` and calls
-`complete({model, request})`; Rust SessionTitle names the same `auxiliaryModel` service
-through its `AuxiliaryModel` binding and calls the owner directly without serialization.
-The SDK declares it as `AuxiliaryModel` in
-[`dimcode/plugin`](../../../npm/plugin.d.ts). This is the existing operation's binding,
-not another plugin or a second model runner.
+Native callers use `ProviderService::complete`. Foreign plugins inject `providerService` and call
+`complete({model, request})`. Both use the active owner's `CompleteAuxiliary` implementation.
+See the [process owner contract](../contracts/process-owner-operations.md).
 
 The call takes one data object with `model` and `request`. Decode the native request once
 at this boundary; unknown fields, invalid message data and invalid argument shapes reject
@@ -203,12 +191,12 @@ written anywhere.
 | Part | Relationship |
 | --- | --- |
 | Default selection (`provider.select`) | Unchanged. `complete` does not consult it |
-| SessionTitle (P4) | The Rust part (`dim-session-title`) requires `AuxiliaryModel` and calls `complete`; `model` is the optional `model` of its Settings source `session-title`, else the model of the latest `context/configured` in the prefix. Without an owner that provides the operation, its required dependency keeps the part Pending; native Sessions do not depend on that row. The named `auxiliaryModel` HostDispatch binding stays for TypeScript Session parts. SessionTitle's own Ready decisions and implementation remain separate |
+| SessionTitle (P4) | The Rust part (`dim-session-title`) requires `ProviderService` and calls `complete`; `model` is the optional `model` of its Settings source `session-title`, else the model of the latest `context/configured` in the prefix. Without an owner that provides the operation, its required dependency keeps the part Pending; native Sessions do not depend on that row. The named `providerService` HostDispatch binding stays for TypeScript Session parts. SessionTitle's own Ready decisions and implementation remain separate |
 | Compaction host (F1) | Does not use this service. Implements `ResolveContextModel`; how it picks the model and reads the context window is F1's design |
 | Collaboration | No change from S4. A member's model is its profile's model, else the default selection; a separate member default, if ever wanted, is Collaboration's own setting |
 | Modality | Keeps its default model per category in its own `modality` Settings source and passes the model explicitly. Non-conversational connection resolution is a separate Provider supplement, not S4 |
 | Workflow | `stage.model` > profile model > the Agents default already covers model choice; the operation has no stage default |
-| `--model-config` profile (ConfiguredModels, no Provider plugin) | Provides `auxiliaryModel` from the configured catalog and the connection its provider names, through the same shared run; SessionTitle's required dependency resolves in this profile too |
+| `--model-config` profile (ConfiguredModels, no Provider plugin) | Provides `providerService` from the configured catalog and the connection its provider names, through the same shared run; SessionTitle's required dependency resolves in this profile too |
 
 ## 9. Rule check
 

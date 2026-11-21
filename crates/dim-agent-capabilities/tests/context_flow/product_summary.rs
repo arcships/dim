@@ -446,8 +446,8 @@ async fn product_session_on(
         }),
     );
     let agent = MinimalHost::start_with(&builder, |root, _| {
-        root.provide(ModelHost(driver.clone()))?;
-        root.provide(ProviderConnectionResolver(connection))?;
+        ModelHost::new(Arc::new(ModelDriverHost(driver.clone())), Some(connection))
+            .provide(root)?;
         Ok(())
     })
     .await

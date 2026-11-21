@@ -1,5 +1,5 @@
 use dim_agent_capabilities::{
-    host::{AuxiliaryModel, AuxiliaryRequest},
+    host::{AuxiliaryRequest, ProviderService},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, SessionMethods, reply},
     session_broadcast::{SessionBroadcast, SessionBroadcastEvent, session_channel},
     timeline_tree::TreeCommands,
@@ -140,7 +140,7 @@ struct SessionTitle {
     settings: Key<Settings>,
     tree: Key<TreeCommands>,
     store: Key<SessionMetadataService>,
-    auxiliary: Key<AuxiliaryModel>,
+    auxiliary: Key<ProviderService>,
     identity: Key<SessionIdentity>,
     config: Key<SessionConfig>,
     lifecycle: Key<SessionLifecycle>,
@@ -288,7 +288,7 @@ struct Owner {
     settings: Arc<Settings>,
     tree: Arc<TreeCommands>,
     store: Arc<SessionMetadataService>,
-    auxiliary: Arc<AuxiliaryModel>,
+    auxiliary: Arc<ProviderService>,
     state: Mutex<State>,
     stop: CancellationToken,
     tasks: TaskTracker,
@@ -665,7 +665,6 @@ impl Owner {
         if let Some(model) = explicit.or(adopted) {
             let reply = self
                 .auxiliary
-                .0
                 .complete(
                     model,
                     AuxiliaryRequest {

@@ -284,8 +284,8 @@ use crate::summary_eval::{
 use dim_agent_capabilities::{
     context_model::{output_allowance, window_facts},
     host::{
-        HostFuture, ModelHost, ModelSelectionHost, ModelSelectionRequest, ModelStopReason,
-        ProviderConnectionResolver, ResolveContextModel, ToolExecutionContext,
+        HostFuture, ModelHost, ModelSelectionRequest, ModelStopReason, ProviderService,
+        ResolveContextModel, ToolExecutionContext,
     },
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry, definition},
     workspace_tools::FileToolBoundary,
@@ -992,23 +992,19 @@ async fn rejudge_with(
     plan: &[(&SavedRun, usize)],
     cancel: &CancellationToken,
 ) -> Result<(Vec<RunRecord>, ModelSelection, ModelSelection, JudgeWindow)> {
-    let (Some(host), Some(resolver)) = (
-        server.service::<ModelHost>(),
-        server.service::<ProviderConnectionResolver>(),
-    ) else {
+    let Some(host) = server.service::<ModelHost>() else {
         return Err("the served profile has no model host for the judge".into());
     };
     let judge = selection(server, &options.judge, &options.out, cancel).await?;
     let model = selection(server, &options.model, &options.out, cancel).await?;
     let limits = judge_window(&judge, options.model_config.as_deref(), cancel).await?;
-    let (source, host, resolver, cancel) = (source, &host, &resolver, cancel);
+    let (source, host, cancel) = (source, &host, cancel);
     let judge = &judge;
     let mut pending: Vec<Option<RunRecord>> = (0..plan.len()).map(|_| None).collect();
     let planned = plan.iter().enumerate().map(|(index, (run, scenario))| {
         let scenario = &scenarios[*scenario];
         async move {
-            let record =
-                rejudge_one(source, host, resolver, judge, scenario, run, limits, cancel).await?;
+            let record = rejudge_one(source, host, judge, scenario, run, limits, cancel).await?;
             Ok::<_, Box<dyn std::error::Error>>((index, record))
         }
     });
@@ -1035,7 +1031,7 @@ async fn rejudge_with(
 async fn rejudge_one(
     source: &Path,
     host: &Arc<ModelHost>,
-    resolver: &Arc<ProviderConnectionResolver>,
+
     judge: &ModelSelection,
     scenario: &Scenario,
     saved: &SavedRun,
@@ -1052,7 +1048,7 @@ async fn rejudge_one(
             .join(format!("run-{}.judge-view.jsonl", saved.run));
         let view = std::fs::read_to_string(&path)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        judge_export(host, resolver, judge, scenario, &view, limits, cancel).await
+        judge_export(host, judge, scenario, &view, limits, cancel).await
     };
     let stop = stop_name(&saved.stop)?;
     Ok(RunRecord {
@@ -4385,10 +4381,7 @@ async fn drive_once(
             });
         }
     };
-    let (Some(host), Some(resolver)) = (
-        server.service::<ModelHost>(),
-        server.service::<ProviderConnectionResolver>(),
-    ) else {
+    let Some(host) = server.service::<ModelHost>() else {
         return Ok(Finished {
             driven,
             export: Some(export),
@@ -4400,7 +4393,7 @@ async fn drive_once(
         });
     };
     let view = judge_view(&export);
-    let judging = judge_export(&host, &resolver, judge, scenario, &view, limits, cancel).await;
+    let judging = judge_export(&host, judge, scenario, &view, limits, cancel).await;
     Ok(Finished {
         driven,
         export: Some(export),
@@ -4477,7 +4470,7 @@ pub(crate) async fn selection(
     cancel: &CancellationToken,
 ) -> Result<ModelSelection> {
     let host = server
-        .service::<ModelSelectionHost>()
+        .service::<ProviderService>()
         .ok_or("the served profile resolves no model selection")?;
     host.resolve(
         ModelSelectionRequest::at(Some(target.clone()), Some(cwd))
@@ -6088,7 +6081,7 @@ async fn judge_window(
 /// stays unusable leaves every probe `unparsed` (model-prompts §8.1).
 async fn judge_export(
     host: &Arc<ModelHost>,
-    resolver: &Arc<ProviderConnectionResolver>,
+
     judge: &ModelSelection,
     scenario: &Scenario,
     view: &str,
@@ -6133,7 +6126,7 @@ async fn judge_export(
     let (outcome, probes, error) = loop {
         let request = Arc::new(judge_request(judge, &messages, &config));
         let started = Instant::now();
-        let reply: Completion = match complete_detailed(host, resolver, &request, cancel).await {
+        let reply: Completion = match complete_detailed(host, &request, cancel).await {
             Ok(reply) => {
                 calls.push(JudgeCall::answered(&reply, started.elapsed()));
                 reply
@@ -6155,7 +6148,7 @@ async fn judge_export(
                 dropped = true;
                 let retry = Arc::new(judge_request(judge, &messages, &config));
                 let started = Instant::now();
-                match complete_detailed(host, resolver, &retry, cancel).await {
+                match complete_detailed(host, &retry, cancel).await {
                     Ok(reply) => {
                         calls.push(JudgeCall::answered(&reply, started.elapsed()));
                         reply
@@ -8402,6 +8395,7 @@ mod tests {
         );
     }
 
+    use dim_agent_capabilities::host::ModelDriverHost;
     struct Local;
     impl ResolveModelConnection for Local {
         fn resolve(
@@ -8463,8 +8457,10 @@ mod tests {
         };
         let driver = Arc::new(Garbage::default());
         let judging = judge_export(
-            &Arc::new(ModelHost(driver.clone())),
-            &Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            &Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(driver.clone())),
+                Some(Arc::new(Local)),
+            )),
             &judge,
             &scenario,
             "{\"kind\":\"header\"}",
@@ -8586,8 +8582,10 @@ mod tests {
         };
         let driver = Arc::new(Capped::default());
         let judging = judge_export(
-            &Arc::new(ModelHost(driver.clone())),
-            &Arc::new(ProviderConnectionResolver(Arc::new(Local))),
+            &Arc::new(ModelHost::new(
+                Arc::new(ModelDriverHost(driver.clone())),
+                Some(Arc::new(Local)),
+            )),
             &judge,
             &scenario,
             "{\"kind\":\"header\"}",

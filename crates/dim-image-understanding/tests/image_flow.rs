@@ -263,7 +263,8 @@ impl DynPlugin for ObserveSelection {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let selection = ctx.require::<ModelSelectionHost>()?;
+            let provider = ctx.require::<ProviderService>()?;
+            let selection = provider.clone();
             let script = self.script.clone();
             let observed = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
                 let selection = selection.clone();
@@ -276,11 +277,8 @@ impl DynPlugin for ObserveSelection {
                     result.map_err(|error| HostError::failed(error.to_string()))
                 })
             }));
-            let ctx = ctx.isolate(
-                TypeKey::of::<ModelSelectionHost>(),
-                "fixture-image-selection",
-            );
-            ctx.provide(observed)?;
+            let ctx = ctx.isolate(TypeKey::of::<ProviderService>(), "fixture-image-selection");
+            ctx.provide(provider.with_selection(observed))?;
             self.modality.apply(&ctx).await
         })
     }

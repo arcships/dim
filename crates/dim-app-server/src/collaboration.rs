@@ -20,7 +20,7 @@ use crate::settings::{SettingsScope, SettingsService};
 use dim_agent_capabilities::{
     context_block,
     host::{
-        HostError, HostFuture, ModelPortError, ModelSelectionRequest, SelectableModelsHost,
+        HostError, HostFuture, ModelPortError, ModelSelectionRequest, ProviderService,
         ToolExecutionContext,
     },
     methods::RpcError,
@@ -954,7 +954,7 @@ pub struct CollaborationSession {
     lifecycle: Arc<SessionLifecycle>,
     /// The deployment's selectable models, when it reads them: the `models`
     /// action is offered exactly then.
-    selectable: Option<Arc<SelectableModelsHost>>,
+    selectable: Option<Arc<ProviderService>>,
     state: Mutex<State>,
     interactive: bool,
     approval_tools: bool,
@@ -3459,7 +3459,7 @@ impl DynPlugin for CollaborationSessionPlugin {
                 role: config.collaboration_role,
                 tree,
                 lifecycle,
-                selectable: ctx.get::<SelectableModelsHost>(),
+                selectable: ctx.get::<ProviderService>(),
                 state: Mutex::new(State::default()),
                 interactive: config.interactive,
                 approval_tools: config.tools.as_ref().is_none_or(|tools| {
