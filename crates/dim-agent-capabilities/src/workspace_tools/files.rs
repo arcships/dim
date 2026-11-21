@@ -1533,6 +1533,7 @@ mod mutation_tests {
             let reads = branch();
             if replaced {
                 std::fs::write(&target, b"before\r\n").unwrap();
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
                 call(
                     &tools,
                     &reads,
@@ -1579,15 +1580,16 @@ mod mutation_tests {
             .await;
             assert!(matches!(result, Err(HostError::Cancelled(_))));
             let preparation = observed.lock().unwrap().take().unwrap();
+            let written: &[u8] = if replaced { b"after\r\n" } else { b"after\n" };
             assert_eq!(
-                preparation.bytes, b"after\n",
-                "preparation holds the new bytes"
+                preparation.bytes, written,
+                "preparation holds the bytes the call is writing, in the target's line endings"
             );
             if replaced {
                 assert!(!preparation.directory, "a replaced target stages a file");
                 assert_eq!(
                     preparation.mode, 0o600,
-                    "a replaced target's staged file is private"
+                    "a replaced 0600 target's staged file is no wider than the target"
                 );
                 assert!(preparation.target_exists);
             } else {
