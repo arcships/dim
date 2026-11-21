@@ -37,7 +37,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `processActivity` | process | ServerControl | data | `activated` async, `hold` async, `release` async |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | data | `read` async |
-| `providerService` | process | Provider | data | `applyPreferences` async, `complete` async, `configuration` async, `resolve` async, `selectableForModality` async, `selectableModels` async |
+| `providerService` | process | Provider | data | `applyPreferences` async, `checkStartup` async, `complete` async, `configuration` async, `prepareStartup` async, `releaseStartup` async, `resolve` async, `retainStartup` async, `selectableForModality` async, `selectableModels` async |
 | `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |
 | `scheduleJobs` | process | Scheduler | data | `call` async |

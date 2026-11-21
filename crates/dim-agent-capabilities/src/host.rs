@@ -911,23 +911,6 @@ impl ModelSelectionHost {
 
 const PROVIDER_SERVICE: &str = "providerService";
 
-impl HostDispatch for ModelSelectionHost {
-    fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({"resolve": "async"}))
-    }
-
-    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
-        if method != "resolve" {
-            return Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
-        }
-        let request: ModelSelectionRequest = crate::port_faces::request(PROVIDER_SERVICE, args)?;
-        let host = self.clone();
-        crate::port_faces::serving(PROVIDER_SERVICE, async move {
-            host.resolve(request, CancellationToken::new()).await
-        })
-    }
-}
-
 /// The environment variable names the owner reads credentials from, bound as
 /// the face's one operation. It answers from the owner's current state on
 /// every call, so a later owner can add a name without a consumer change.
@@ -1052,29 +1035,6 @@ impl SelectableModelsHost {
     }
 }
 
-impl HostDispatch for SelectableModelsHost {
-    fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({"selectableModels": "async", "selectableForModality": "async"}))
-    }
-
-    fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
-        if !matches!(method, "selectableModels" | "selectableForModality") {
-            return Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
-        }
-        let crate::port_faces::Empty {} = crate::port_faces::request(PROVIDER_SERVICE, args)?;
-        let host = self.clone();
-        if method == "selectableModels" {
-            crate::port_faces::serving(PROVIDER_SERVICE, async move {
-                host.selectable_models(CancellationToken::new()).await
-            })
-        } else {
-            crate::port_faces::serving(PROVIDER_SERVICE, async move {
-                host.selectable_for_modality(CancellationToken::new()).await
-            })
-        }
-    }
-}
-
 /// One non-streaming request outside any Session: no tools, no Timeline.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1139,19 +1099,46 @@ pub trait CompleteAuxiliary: Send + Sync + 'static {
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = Result<AuxiliaryReply, AuxiliaryError>> + Send + '_>>;
 }
-#[derive(Clone)]
-pub(crate) struct AuxiliaryModel(pub(crate) Arc<dyn CompleteAuxiliary>);
 
 /// Model selection and completion provided by the active model catalog.
+pub trait ConfigureModel: Send + Sync {
+    fn configuration(
+        self: Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<String>,
+        preferences: ModelPreferences,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ModelSelection>;
+    fn apply_preferences(
+        self: Arc<Self>,
+        current: ModelConfiguration,
+        update: ModelPreferenceUpdate,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ModelSelection>;
+    fn dispatch_prepare_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
+    fn dispatch_retain_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
+    fn dispatch_check_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
+    fn dispatch_release_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
+}
+
 #[derive(Clone)]
 pub struct ProviderService {
     selection: ModelSelectionHost,
     selectable: SelectableModelsHost,
-    auxiliary: AuxiliaryModel,
-    configuration: Option<Arc<dyn HostDispatch>>,
+    auxiliary: Arc<dyn CompleteAuxiliary>,
+    configuration: Option<Arc<dyn ConfigureModel>>,
 }
 
 impl ProviderService {
+    fn configuration_owner(
+        &self,
+        method: &str,
+    ) -> Result<Arc<dyn ConfigureModel>, rutis_bridge::session::Error> {
+        self.configuration
+            .clone()
+            .ok_or_else(|| crate::port_faces::unknown_method(PROVIDER_SERVICE, method))
+    }
+
     #[cfg(feature = "testing")]
     pub fn with_selection(&self, selection: ModelSelectionHost) -> Self {
         Self {
@@ -1165,12 +1152,12 @@ impl ProviderService {
         selection: ModelSelectionHost,
         selectable: SelectableModelsHost,
         auxiliary: Arc<dyn CompleteAuxiliary>,
-        configuration: Option<Arc<dyn HostDispatch>>,
+        configuration: Option<Arc<dyn ConfigureModel>>,
     ) -> rutis::Result<()> {
         let owner = Arc::new(Self {
             selection,
             selectable,
-            auxiliary: AuxiliaryModel(auxiliary),
+            auxiliary,
             configuration,
         });
         ctx.provide_as::<Self>(owner.clone())?;
@@ -1209,7 +1196,7 @@ impl ProviderService {
         request: AuxiliaryRequest,
         cancel: CancellationToken,
     ) -> Result<AuxiliaryReply, AuxiliaryError> {
-        self.auxiliary.0.complete(model, request, cancel).await
+        self.auxiliary.complete(model, request, cancel).await
     }
 }
 
@@ -1219,19 +1206,86 @@ impl HostDispatch for ProviderService {
         if self.configuration.is_some() {
             methods["configuration"] = json!("async");
             methods["applyPreferences"] = json!("async");
+            methods["prepareStartup"] = json!("async");
+            methods["retainStartup"] = json!("async");
+            methods["checkStartup"] = json!("async");
+            methods["releaseStartup"] = json!("async");
         }
         Some(methods)
     }
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
         match method {
-            "resolve" => self.selection.invoke(method, args),
-            "selectableModels" | "selectableForModality" => self.selectable.invoke(method, args),
-            "complete" => self.auxiliary.invoke(method, args),
-            _ => match &self.configuration {
-                Some(owner) => owner.invoke(method, args),
-                None => Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method)),
-            },
+            "resolve" => {
+                let request: ModelSelectionRequest =
+                    crate::port_faces::request(PROVIDER_SERVICE, args)?;
+                let host = self.clone();
+                crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                    host.resolve(request, CancellationToken::new()).await
+                })
+            }
+            "selectableModels" | "selectableForModality" => {
+                let crate::port_faces::Empty {} =
+                    crate::port_faces::request(PROVIDER_SERVICE, args)?;
+                let host = self.clone();
+                if method == "selectableModels" {
+                    crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                        host.selectable_models(CancellationToken::new()).await
+                    })
+                } else {
+                    crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                        host.selectable_for_modality(CancellationToken::new()).await
+                    })
+                }
+            }
+            "complete" => self.dispatch_complete(args),
+            "configuration" | "applyPreferences" => {
+                let owner = self.configuration_owner(method)?;
+                let cancel = CancellationToken::new();
+                let guard = cancel.clone().drop_guard();
+                let operation = if method == "configuration" {
+                    #[derive(serde::Deserialize)]
+                    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                    struct Request {
+                        explicit: Option<ModelId>,
+                        cwd: Option<String>,
+                        preferences: ModelPreferences,
+                    }
+                    let Request {
+                        explicit,
+                        cwd,
+                        preferences,
+                    } = crate::port_faces::request(PROVIDER_SERVICE, args)?;
+                    owner.configuration(explicit, cwd, preferences, cancel)
+                } else {
+                    #[derive(serde::Deserialize)]
+                    #[serde(deny_unknown_fields)]
+                    struct Request {
+                        current: ModelConfiguration,
+                        update: ModelPreferenceUpdate,
+                    }
+                    let Request { current, update } =
+                        crate::port_faces::request(PROVIDER_SERVICE, args)?;
+                    owner.apply_preferences(current, update, cancel)
+                };
+                crate::port_faces::serving(PROVIDER_SERVICE, async move {
+                    let _guard = guard;
+                    operation.await.map_err(ModelPortError::from)
+                })
+            }
+            "prepareStartup" => self
+                .configuration_owner(method)?
+                .dispatch_prepare_startup(args),
+            "retainStartup" => self
+                .configuration_owner(method)?
+                .dispatch_retain_startup(args),
+            "checkStartup" => self
+                .configuration_owner(method)?
+                .dispatch_check_startup(args),
+            "releaseStartup" => self
+                .configuration_owner(method)?
+                .dispatch_release_startup(args),
+            _ => Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method)),
         }
     }
 }

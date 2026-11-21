@@ -7,15 +7,14 @@
 //! Managed and configured model owners expose `providerService.complete` to
 //! Session parts ([AuxiliaryModel §4.3](../../../docs/design/appserver/auxiliary-model.md#43-named-binding)).
 use crate::host::{
-    AuxiliaryError, AuxiliaryErrorCode, AuxiliaryModel, AuxiliaryReply, AuxiliaryRequest,
-    HostError, ModelChunk, ModelDriverHost, ModelStopReason, ModelStream, ResolveModelConnection,
+    AuxiliaryError, AuxiliaryErrorCode, AuxiliaryReply, AuxiliaryRequest, HostError, ModelChunk,
+    ModelDriverHost, ModelStopReason, ModelStream, ProviderService, ResolveModelConnection,
 };
 use crate::model_provider::invoke_with_recovery;
 use dim_agent_types::{ModelCapabilitySnapshot, ModelConfig, ModelId, ModelRequest, SystemPrompt};
 use futures_util::StreamExt;
-use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
+use rutis_bridge::session::{Error, Reply, Value};
 use serde::Deserialize;
-use serde_json::json;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -127,17 +126,8 @@ struct ModelInput {
     model_id: String,
 }
 
-impl HostDispatch for AuxiliaryModel {
-    fn methods(&self) -> Option<serde_json::Value> {
-        Some(json!({"complete": "async"}))
-    }
-
-    fn invoke(&self, method: &str, args: Value) -> Reply {
-        if method != "complete" {
-            return Err(Error::value(format!(
-                "unknown providerService method {method}"
-            )));
-        }
+impl ProviderService {
+    pub(crate) fn dispatch_complete(&self, args: Value) -> Reply {
         let mut args = args
             .list()
             .map_err(|_| failure(invalid("Invalid providerService.complete arguments")))?
@@ -168,7 +158,7 @@ impl HostDispatch for AuxiliaryModel {
                 "Too many providerService.complete arguments",
             )));
         }
-        let operation = self.0.clone();
+        let operation = self.clone();
         Ok(Value::future(async move {
             let cancel = CancellationToken::new();
             let call = operation.complete(model, request, cancel.clone());

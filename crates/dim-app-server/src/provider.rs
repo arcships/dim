@@ -3,7 +3,6 @@
 mod auxiliary;
 mod drivers;
 mod editing;
-mod face;
 mod legacy;
 pub(crate) mod management;
 mod models;
@@ -1688,6 +1687,141 @@ enum Saved {
     Apply,
     /// Resolve at the model's declared defaults alone.
     Withhold,
+}
+
+impl dim_agent_capabilities::host::ConfigureModel for ProviderService {
+    fn configuration(
+        self: Arc<Self>,
+        explicit: Option<ModelId>,
+        cwd: Option<String>,
+        preferences: ModelPreferences,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ModelSelection> {
+        Box::pin(async move {
+            ProviderService::configuration(
+                &self,
+                explicit,
+                cwd.as_deref().map(Path::new),
+                preferences,
+                &cancel,
+            )
+            .await
+        })
+    }
+
+    fn apply_preferences(
+        self: Arc<Self>,
+        current: dim_agent_types::ModelConfiguration,
+        update: dim_agent_types::ModelPreferenceUpdate,
+        cancel: CancellationToken,
+    ) -> HostFuture<'static, ModelSelection> {
+        Box::pin(async move {
+            ProviderService::apply_preferences(&self, &current, &update, &cancel).await
+        })
+    }
+    fn dispatch_prepare_startup(
+        self: Arc<Self>,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct PrepareStartup {
+            target: crate::protocol::ModelSelection,
+            cwd: String,
+            preferences: ModelPreferences,
+            input: StartupInput,
+            current: Option<dim_agent_types::ModelConfiguration>,
+        }
+        let p: PrepareStartup =
+            dim_agent_capabilities::port_faces::request("providerService", args)?;
+        let caller = rutis_bridge::session::caller_row().ok_or_else(|| {
+            rutis_bridge::session::Error::value("prepareStartup needs its caller")
+        })?;
+        let caller = caller.ctx().clone();
+        let cancel = caller.cancellation_token().child_token();
+        dim_agent_capabilities::port_faces::serving("providerService", async move {
+            let _guard = cancel.clone().drop_guard();
+            let selection = self
+                .prepare_startup(
+                    p.target,
+                    Path::new(&p.cwd),
+                    p.preferences,
+                    p.input,
+                    p.current.as_ref(),
+                    &cancel,
+                )
+                .await
+                .map_err(ModelPortError::from)?;
+            selection.bind(&caller).map_err(ModelPortError::from)
+        })
+    }
+
+    fn dispatch_retain_startup(
+        self: Arc<Self>,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RetainStartup {
+            session_id: String,
+            generation: String,
+            model: dim_agent_types::ModelSelection,
+            admission_id: Option<String>,
+        }
+        let p: RetainStartup =
+            dim_agent_capabilities::port_faces::request("providerService", args)?;
+        dim_agent_capabilities::port_faces::serving("providerService", async move {
+            let source = p
+                .model
+                .metadata
+                .as_ref()
+                .and_then(|m| m.startup.as_ref())
+                .and_then(|s| s.connection.as_ref());
+            if let Some(id) = &p.admission_id
+                && source.map(|s| &s.id) != Some(id)
+            {
+                return Err(ModelPortError::InvalidRequest {
+                    message: "Startup admission does not match model".into(),
+                });
+            }
+            self.retain_startup(&p.session_id, &p.generation, &p.model)
+                .map_err(ModelPortError::from)?;
+            if let Some(id) = p.admission_id {
+                self.release_startup(&id)
+                    .await
+                    .map_err(ModelPortError::from)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn dispatch_check_startup(
+        self: Arc<Self>,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        let source = dim_agent_capabilities::port_faces::request("providerService", args)?;
+        dim_agent_capabilities::port_faces::serving("providerService", async move {
+            self.check_startup(&source).map_err(ModelPortError::from)
+        })
+    }
+
+    fn dispatch_release_startup(
+        self: Arc<Self>,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct ReleaseStartup {
+            admission_id: String,
+        }
+        let p: ReleaseStartup =
+            dim_agent_capabilities::port_faces::request("providerService", args)?;
+        dim_agent_capabilities::port_faces::serving("providerService", async move {
+            self.release_startup(&p.admission_id)
+                .await
+                .map_err(ModelPortError::from)
+        })
+    }
 }
 
 impl ProviderService {
@@ -3428,8 +3562,8 @@ impl DynPlugin for ProviderPlugin {
                 ctx,
                 selection_host,
                 selectable_host,
-                auxiliary.clone(),
-                Some(auxiliary),
+                auxiliary,
+                Some(service.clone()),
             )?;
             ctx.provide_as::<ProviderService>(service)?;
             Ok(Effect::Done)

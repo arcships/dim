@@ -29,6 +29,47 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
+struct UnusedAuxiliary;
+impl dim_agent_capabilities::host::CompleteAuxiliary for UnusedAuxiliary {
+    fn complete(
+        &self,
+        _: ModelId,
+        _: dim_agent_capabilities::host::AuxiliaryRequest,
+        _: CancellationToken,
+    ) -> std::pin::Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        dim_agent_capabilities::host::AuxiliaryReply,
+                        dim_agent_capabilities::host::AuxiliaryError,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        unreachable!()
+    }
+}
+
+fn provider(
+    root: &Ctx,
+    selection: Option<ModelSelectionHost>,
+    selectable: Option<SelectableModelsHost>,
+) -> Arc<dim_agent_capabilities::host::ProviderService> {
+    use dim_agent_capabilities::host::ProviderService;
+    ProviderService::provide(
+        root,
+        selection.unwrap_or_else(|| ModelSelectionHost::new(Arc::new(|_, _, _| unreachable!()))),
+        selectable.unwrap_or_else(|| {
+            SelectableModelsHost::new(Arc::new(|_| unreachable!()), Arc::new(|_| unreachable!()))
+        }),
+        Arc::new(UnusedAuxiliary),
+        None,
+    )
+    .unwrap();
+    root.get::<ProviderService>().unwrap()
+}
+
 /// The face `name` is provided under, as a caller of another language reads
 /// it.
 fn face(root: &Ctx, name: &str) -> Arc<dyn HostDispatch> {
@@ -189,12 +230,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
         Arc::new(|_| Box::pin(async { Ok(Vec::new()) })),
         Arc::new(move |_| Box::pin(async move { Ok(vec![declared()]) })),
     );
-    root.provide_at(
-        host_key("providerService"),
-        Arc::new(selectable.clone()) as Arc<dyn HostDispatch>,
-    )
-    .unwrap();
-    let binding = &selectable;
+    let binding = provider(&root, None, Some(selectable.clone()));
     let empty = wire::<SelectableModelsReply>(&root, "providerService", "selectableModels").await;
     assert!(empty.models.is_empty());
     assert_eq!(
@@ -252,12 +288,7 @@ async fn the_model_selection_answers_the_same_through_the_binding_and_the_face()
             })
         })
     }));
-    root.provide_at(
-        host_key("providerService"),
-        Arc::new(selection.clone()) as Arc<dyn HostDispatch>,
-    )
-    .unwrap();
-    let binding = &selection;
+    let binding = provider(&root, Some(selection), None);
     let request = ModelSelectionRequest::at(
         Some(ModelId {
             provider_id: "provider".into(),
@@ -292,11 +323,7 @@ async fn a_host_failure_keeps_the_code_its_caller_acts_on() {
         Arc::new(|_| Box::pin(async { Err(HostError::Cancelled("the owner closed".into())) })),
         Arc::new(|_| Box::pin(async { Err(HostError::failed("storage")) })),
     );
-    root.provide_at(
-        host_key("providerService"),
-        Arc::new(selectable.clone()) as Arc<dyn HostDispatch>,
-    )
-    .unwrap();
+    provider(&root, None, Some(selectable.clone()));
     let cancelled = call(
         &face(&root, "providerService"),
         "selectableModels",
