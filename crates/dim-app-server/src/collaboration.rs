@@ -14,7 +14,7 @@ mod pending;
 pub use approvals::ApprovalDestination;
 
 use crate::agents::{
-    AgentIndex, AgentProfile, DirectoryUse, SessionRestored, UnloadedSessionDeleted,
+    AgentIndex, AgentProfile, SessionRestored, SessionUse, UnloadedSessionDeleted,
 };
 use crate::collaboration_model_policy::ModelPolicy;
 use crate::protocol::SessionOrigin;
@@ -232,7 +232,6 @@ impl Plugin for CollaborationDirectoryPlugin {
 /// [`SessionRestored`] and [`UnloadedSessionDeleted`].
 pub struct Collaboration {
     sessions: Arc<crate::agents::Sessions>,
-    caller: Ctx,
     index: Arc<AgentIndex>,
     directory: Arc<CollaborationDirectory>,
     /// The subagent model policy's source; local execution only.
@@ -243,7 +242,7 @@ pub struct Collaboration {
     reads: AtomicUsize,
 }
 struct Peer {
-    usage: Arc<DirectoryUse>,
+    usage: Arc<SessionUse>,
     agent_id: String,
     session: Session,
 }
@@ -624,22 +623,16 @@ impl Collaboration {
         self.lookup(agent_id, session_id).await
     }
     async fn lookup(self: &Arc<Self>, agent_id: &str, session_id: &str) -> Result<Peer, Refusal> {
-        let acquired = self
+        let lease = self
             .index
-            .acquire_use(
-                crate::agents::AcquireUse {
-                    session_id: session_id.into(),
-                    agent_id: agent_id.into(),
-                },
-                &self.caller,
-            )
+            .acquire_member(agent_id, session_id)
             .await
             .map_err(|error| match error {
                 crate::agents::SessionsError::Rejected { .. } => Refusal::TeamMemberNotFound,
                 _ => Refusal::MemberClosed,
             })?;
-        let usage = Arc::new(acquired.bind(self.index.clone()));
-        let session = usage.session().map_err(|_| Refusal::MemberClosed)?;
+        let usage = Arc::new(lease);
+        let session = usage.session.clone();
         Ok(Peer {
             agent_id: agent_id.to_owned(),
             session,
@@ -793,7 +786,6 @@ impl DynPlugin for CollaborationPlugin {
                 None => None,
             };
             let service = Arc::new(Collaboration {
-                caller: ctx.clone(),
                 sessions: ctx.require_at(&self.sessions)?,
                 index,
                 directory,
@@ -884,7 +876,7 @@ struct BranchRecord {
 }
 /// A delivered or delivering request, until its `result` is written.
 struct Request {
-    usage: Arc<DirectoryUse>,
+    usage: Arc<SessionUse>,
     /// Keeps the leader from an idle release while the request is open
     /// (idle unload R4).
     _hold: SessionHold,
@@ -2063,7 +2055,7 @@ impl CollaborationSession {
                     CollaborationMessageMode::Steer => InputMode::Steer,
                 };
                 let input = peer
-                    .usage
+                    .session
                     .input(
                         self.message_input(&sender, data.content.clone(), mode),
                         ROOT_BRANCH_ID,
@@ -2077,7 +2069,7 @@ impl CollaborationSession {
                     .collaboration
                     .member(&self.session_id, &data.agent_id, &data.session_id)
                     .await?;
-                let _ = peer.usage.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
+                let _ = peer.session.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
                 Ok(delivered(&peer, None, Some(cancel)))
             }
             EventKind::CollaborationClose(data) => {
@@ -2086,7 +2078,7 @@ impl CollaborationSession {
                     .member(&self.session_id, &data.agent_id, &data.session_id)
                     .await?;
                 let working = self.in_flight(&data.session_id);
-                let _ = peer.usage.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
+                let _ = peer.session.stop(ROOT_BRANCH_ID, CANCELLED.into()).await;
                 if let Some(mut done) = working {
                     let abort = self.with_abort(branch_id);
                     tokio::select! {
@@ -2200,7 +2192,7 @@ impl CollaborationSession {
                 && (state.requests.contains_key(&member)
                     || state.stopping.contains_key(&member)
                     || peer
-                        .usage
+                        .session
                         .state(ROOT_BRANCH_ID)
                         .is_ok_and(|state| state.running))
             {
@@ -2227,7 +2219,7 @@ impl CollaborationSession {
             );
         }
         let input = match peer
-            .usage
+            .session
             .input(
                 self.message_input(&sender, data.prompt.clone(), InputMode::Queue),
                 ROOT_BRANCH_ID,
@@ -2344,7 +2336,7 @@ impl CollaborationSession {
         let branch_id = branch_id.to_owned();
         branch.tasks.spawn(async move {
             let idle = tokio::select! {
-                result = session.idle(ROOT_BRANCH_ID) => result,
+                result = session.session.idle(ROOT_BRANCH_ID) => result,
                 _ = abort.cancelled() => return,
             };
             this.settle(&branch_id, &member, Some(idle)).await;
@@ -2445,7 +2437,7 @@ impl CollaborationSession {
     /// mark goes, so a later cancel or interrupt starts the stop again.
     async fn carry_out_stop(
         self: &Arc<Self>,
-        session: &Arc<DirectoryUse>,
+        session: &Arc<SessionUse>,
         input: &str,
         reason: &str,
         stopping: Stopping,
@@ -2464,12 +2456,12 @@ impl CollaborationSession {
     /// mark across both and clears the request's flag when either fails.
     async fn stop_request_input(
         self: &Arc<Self>,
-        usage: &Arc<DirectoryUse>,
+        usage: &Arc<SessionUse>,
         input: &str,
         reason: &str,
         stopping: Arc<Stopping>,
     ) -> dim_agent_runtime::Result<()> {
-        let session = &usage.session()?;
+        let session = &usage.session;
         let mut after = 0;
         let mut open = None;
         // Subscribed before the first check, so a consumption or a deletion

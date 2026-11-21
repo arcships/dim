@@ -584,17 +584,8 @@ fn settlement(error: AgentError) -> SessionsError {
     }
 }
 
-impl AcquiredUse {
-    pub(crate) fn bind(self, index: Arc<AgentIndex>) -> DirectoryUse {
-        DirectoryUse {
-            id: self.use_id,
-            index,
-        }
-    }
-}
-
 impl super::SessionUse {
-    async fn withdraw(
+    pub(crate) async fn withdraw(
         &self,
         branch: &str,
         request: InputWithdrawData,
@@ -606,78 +597,30 @@ impl super::SessionUse {
     }
 }
 
-pub(crate) struct DirectoryUse {
-    id: uuid::Uuid,
-    index: Arc<AgentIndex>,
-}
-
-impl Drop for DirectoryUse {
-    fn drop(&mut self) {
-        if let Some(cleanup) = self.index.retire_use(self.id) {
-            tokio::spawn(async move {
-                let _ = cleanup.dispose().await;
-            });
-        }
-    }
-}
-
-impl DirectoryUse {
-    fn lease(&self) -> dim_agent_runtime::Result<super::SessionUse> {
-        self.index
-            .pinned_use(self.id)
-            .map_err(|error| AgentError::Closed(error.to_string()))
-    }
-
-    pub(crate) fn session(&self) -> dim_agent_runtime::Result<Session> {
-        Ok(self.lease()?.session.clone())
-    }
-
-    pub(crate) async fn withdraw(
-        &self,
-        branch: &str,
-        request: InputWithdrawData,
-    ) -> dim_agent_runtime::Result<Withdrawal> {
-        self.lease()?.withdraw(branch, request).await
-    }
-
-    pub(crate) fn state(
-        &self,
-        branch: &str,
-    ) -> dim_agent_runtime::Result<dim_agent_runtime::BranchStatus> {
-        self.lease()?.session.state(branch)
-    }
-
-    pub(crate) async fn input(
-        &self,
-        message: InputMessageData,
-        branch: &str,
-    ) -> dim_agent_runtime::Result<Arc<AgentEvent>> {
-        self.lease()?.session.input(message, branch).await
-    }
-
-    pub(crate) async fn stop(
-        &self,
-        branch: &str,
-        reason: String,
-    ) -> dim_agent_runtime::Result<u64> {
-        self.lease()?.session.stop(branch, reason).await
-    }
-
-    pub(crate) async fn idle(&self, branch: &str) -> dim_agent_runtime::Result<u64> {
-        self.lease()?.session.idle(branch).await
-    }
-}
-
 impl AgentIndex {
+    pub(crate) async fn acquire_member(
+        &self,
+        agent: &str,
+        session: &str,
+    ) -> Result<super::SessionUse, SessionsError> {
+        let lease = self.acquire(session).await?;
+        if lease.host.agent_id != agent {
+            return Err(SessionsError::rejected("Session belongs to another Agent"));
+        }
+        if self.stopping.is_cancelled() {
+            return Err(SessionsError::reloading("the Agents index"));
+        }
+        Ok(lease)
+    }
+
     pub(crate) async fn acquire_use(
         self: &Arc<Self>,
         request: AcquireUse,
         caller: &Ctx,
     ) -> Result<AcquiredUse, SessionsError> {
-        let lease = self.acquire(&request.session_id).await?;
-        if lease.host.agent_id != request.agent_id {
-            return Err(SessionsError::rejected("Session belongs to another Agent"));
-        }
+        let lease = self
+            .acquire_member(&request.agent_id, &request.session_id)
+            .await?;
         let generation = lease.session.instance()?.to_string();
         let id = uuid::Uuid::new_v4();
         let owner = Arc::downgrade(self);
