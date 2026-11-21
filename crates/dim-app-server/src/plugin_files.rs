@@ -415,8 +415,8 @@ fn lease_value(
                             _ => return Err(invalid()),
                         };
                         let fs = fs.clone();
-                let path = path.clone();
-                let lease = lease.clone();
+                        let path = path.clone();
+                        let lease = lease.clone();
                         let task = tasks.spawn(async move {
                             let guard = lease.lock().await;
                             let Some(id) = *guard else {
@@ -428,7 +428,10 @@ fn lease_value(
                                     .await
                                     .map(|value| json!(value).into()),
                                 ("readBytes", LeaseArgument::None) => {
-                                    match fs.read_bytes(&path, MAX_WHOLE_FILE_BYTES, Some(id), &cancel).await {
+                                    let read = fs.read_bytes(
+                                        &path, MAX_WHOLE_FILE_BYTES, Some(id), &cancel,
+                                    );
+                                    match read.await {
                                         Ok(bytes) => Ok(Value::Bytes(bytes)),
                                         Err(FileStorageError::Io(error))
                                             if error.kind() == io::ErrorKind::NotFound =>
@@ -450,14 +453,18 @@ fn lease_value(
                                             bytes.len()
                                         )));
                                     }
-                                    fs.replace(&path, bytes, FsPermissions::Private, Some(id), &cancel)
+                                    fs.replace(
+                                        &path, bytes, FsPermissions::Private, Some(id), &cancel,
+                                    )
                                         .await
                                         .map(|_| json!(null).into())
                                 }
                                 ("replaceBytes", LeaseArgument::Bytes(bytes))
                                     if bytes.len() <= MAX_WHOLE_FILE_BYTES =>
                                 {
-                                    fs.replace(&path, bytes, FsPermissions::Private, Some(id), &cancel)
+                                    fs.replace(
+                                        &path, bytes, FsPermissions::Private, Some(id), &cancel,
+                                    )
                                         .await
                                         .map(|_| json!(null).into())
                                 }

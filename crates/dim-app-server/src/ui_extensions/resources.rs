@@ -140,7 +140,9 @@ pub(crate) async fn read_page(
             biased;
             _ = cancel.cancelled() => return Err(gone()),
             _ = stop.cancelled() => return Err(gone()),
-            chunk = read.files.read_at(read.file.read_id.clone(), at, (end - at) as usize, &stop) => chunk,
+            chunk = read.files.read_at(
+                read.file.read_id.clone(), at, (end - at) as usize, &stop,
+            ) => chunk,
         }
         .map_err(page_error)?;
         if chunk.is_empty() {
@@ -255,7 +257,9 @@ impl UiResources {
         let file = tokio::select! {
             _ = self.reads.stop.cancelled() => return Err(gone()),
             _ = self.lifecycle.closing() => return Err(gone()),
-            file = self.files.open_read(caller, &request.path, &cancel) => file.map_err(file_error)?,
+            file = self.files.open_read(caller, &request.path, &cancel) => {
+                file.map_err(file_error)?
+            },
         };
         let inline = matches!(
             request.media_type.as_str(),
