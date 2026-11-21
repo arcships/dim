@@ -1198,7 +1198,7 @@ async fn overlapping_load_is_superseded_and_close_joins_cancellation() {
         });
         started.notified().await;
         let branch = session
-            .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()
+            .session_service::<dim_agent_capabilities::timeline_tree::TimelineTree>()
             .unwrap()
             .get("main")
             .unwrap();
