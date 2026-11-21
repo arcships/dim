@@ -689,6 +689,16 @@ async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch(
         ) -> HostFuture<'_, ToolResult> {
             if call.name == "wait" {
                 self.0.send((call.id.clone(), context.clone())).unwrap();
+                if call.id != "nested-wait" {
+                    return Box::pin(async move {
+                        cancel.cancelled().await;
+                        let mut result = ToolResult::error("parent interrupted");
+                        result.effects = Some(vec![ToolEffect::FileWritten {
+                            path: "/nested-grandchild".into(),
+                        }]);
+                        Ok(result)
+                    });
+                }
             }
             if call.name == "echo" {
                 return Box::pin(async move {
