@@ -767,7 +767,8 @@ impl DynPlugin for InputMethodsPlugin {
                         }
                             Ok(InputWithdrawData {input_id:p.input_id,reason:p.reason,steer})
                         };
-                        let (answer, replacement) = tree.withdraw_checked(&p.branch_id, command, &cancel).await?;
+                        let (answer, replacement) =
+                            tree.withdraw_checked(&p.branch_id, command, &cancel).await?;
                         let mut result = match answer {
                             Withdrawal::Deleted { sequence } => {
                                 serde_json::json!({"status": "deleted", "sequence": sequence})

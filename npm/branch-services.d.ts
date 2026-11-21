@@ -812,7 +812,7 @@ export interface TimelineTree {
    * (design §10).
    * @throws {AgentErrorThrown}
    */
-  endWithFinal(id: string, source: BranchSource, finalMessage: string | null): Promise<void>
+  endWithFinal(id: string, source: BranchSource, finalMessage?: string | null): Promise<void>
   /**
    * The line the Session's conversation is on: the root until a
    * `branch/default` moves it, then that fact's line while it is open and

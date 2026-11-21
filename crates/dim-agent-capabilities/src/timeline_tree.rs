@@ -2,6 +2,7 @@ pub mod read;
 
 use crate::{
     host::{HostError, HostFuture, ToolExecutionContext},
+    input_queue::Withdrawal,
     prompt_guide::{GuideEntries, GuideEntry, GuideScope},
     tool_registry::{ToolContribution, ToolHandler, ToolRegistry},
 };
@@ -655,8 +656,7 @@ impl TimelineTree {
         &self,
         branch_id: &str,
         command: InputWithdrawData,
-    ) -> Result<impl Future<Output = Result<crate::input_queue::Withdrawal>> + Send + 'static + use<>>
-    {
+    ) -> Result<impl Future<Output = Result<Withdrawal>> + Send + 'static + use<>> {
         let queue = self
             .get(branch_id)?
             .service::<crate::input_queue::InputQueue>()?;
