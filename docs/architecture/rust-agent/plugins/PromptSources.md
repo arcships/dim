@@ -96,7 +96,7 @@ from branch adoption.
 
 | Service | Purpose |
 | --- | --- |
-| `P:HostPlatform` | Home, environment and shell/platform context. |
+| `P:ExecHost` | Home, environment and shell/platform context. |
 | `S:SessionConfig` | Working directory, Session context and the reply language a record carries. |
 | `S:PromptRegistry` | Register each of its sources by name, until this part unloads. |
 
@@ -165,7 +165,7 @@ was applied (`a_branch_opened_after_the_value_was_applied_holds_one_block`).
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`S:PromptRegistry`、`S:SessionConfig` |
+| 注入 | `P:ExecHost`、`S:PromptRegistry`、`S:SessionConfig` |
 | 提供 | `S:SessionLanguage`、`S:dyn HostDispatch#sessionLanguage` |
 | 被注入于 | `PromptSourcesBranch` |
 <!-- /generated -->

@@ -53,7 +53,7 @@ Caller unload does not automatically remove registered content.
 
 | Service | Purpose |
 | --- | --- |
-| `P:HostPlatform` | Resolve the user home root. |
+| `P:ExecHost` | Resolve the user home root. |
 | `P:SkillSettingsHost` | Read and update enablement. |
 | `P:PartRegistry` | Register the Skills parts, until this plugin unloads. |
 
@@ -141,7 +141,7 @@ settings mutation was durably saved.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 进程 |
-| 注入 | `P:HostPlatform`、`P:PartRegistry`、`P:SkillSettingsHost` |
+| 注入 | `P:ExecHost`、`P:PartRegistry`、`P:SkillSettingsHost` |
 | 提供 | `P:SkillsCatalog`、`P:SkillsCatalog#dim/skills/catalog-owner`、`P:dyn HostDispatch#skillsCatalog` |
 | 被注入于 | `Skills` |
 <!-- /generated -->

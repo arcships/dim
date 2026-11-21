@@ -95,7 +95,7 @@ enter.
 
 | Service | Purpose |
 | --- | --- |
-| `P:HostPlatform` | Home, shell, environment and process supervision. |
+| `P:ExecHost` | Home, shell, environment and process supervision. |
 | `S:TreeCommands` | Resolve the calling branch per call. |
 | `S:SessionConfig` | cwd and collaboration role. |
 | `S:SessionIdentity` | Session-specific output directory. |
@@ -470,7 +470,7 @@ empty live preview and unavailable historical captures.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`P:MentionIndex`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TreeCommands` |
+| 注入 | `P:ExecHost`、`P:MentionIndex`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionMethods`、`S:TreeCommands` |
 | 提供 | `S:ToolHost`、`S:dyn HostDispatch#toolHost` |
 | 被注入于 | `ToolRegistry` |
 <!-- /generated -->
@@ -572,6 +572,7 @@ releases no lock across a read: the page opens the registered file itself.
 
 | Service | Purpose |
 | --- | --- |
+| `P:ExecHost` | Read retained task output and stop a running task. |
 | `B:Dispatcher` | Replay commands, then consume command ends and interrupts in dispatch order. |
 | `B:Timeline` | Commit ends/notices, recovered ones included. |
 | `B:TimelineIdentity` | The branch whose entry this part registers. |
@@ -638,7 +639,7 @@ and Session isolation.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:GuideEntries`、`S:SessionLifecycle` |
+| 注入 | `B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`P:ExecHost`、`S:GuideEntries`、`S:SessionLifecycle` |
 | 提供 | `B:BackgroundExec`、`B:dyn HostDispatch#backgroundExec` |
 | 被注入于 | — |
 <!-- /generated -->

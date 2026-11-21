@@ -245,7 +245,7 @@
         ]
       },
       {
-        "id": 80,
+        "id": 77,
         "parent": 73,
         "name": "eventhub-ready",
         "state": "Active",
@@ -2063,7 +2063,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2085,7 +2085,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 29,
             "generation": 1
@@ -2111,7 +2111,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 29,
             "declared": true,
             "external": true
@@ -2144,7 +2144,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2156,7 +2156,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 29,
             "generation": 1
@@ -2170,7 +2170,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 29,
             "declared": true,
             "external": true
@@ -2191,7 +2191,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2203,7 +2203,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 29,
             "generation": 1
@@ -2217,7 +2217,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 29,
             "declared": true,
             "external": true
@@ -3409,7 +3409,7 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host_platform::HostPlatform",
+        "service": "dim_agent_capabilities::host_platform::ExecHost",
         "provider": 29,
         "generation": 1,
         "removing": false
