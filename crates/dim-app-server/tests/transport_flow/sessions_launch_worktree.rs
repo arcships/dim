@@ -297,10 +297,24 @@ async fn managed_launch_refuses_conflicts_and_rolls_back_failed_association() {
     assert_eq!(agent.sessions().len(), count);
     let connection = rusqlite::Connection::open(store.database()).unwrap();
     connection.execute_batch("CREATE TRIGGER reject_launch_worktree BEFORE INSERT ON session_worktrees BEGIN SELECT RAISE(ABORT, 'launch association unavailable'); END;").unwrap();
+    git(
+        &repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "tag",
+            "-a",
+            "launch-base",
+            "-m",
+            "launch base",
+        ],
+    );
     let reply = sessions
         .call(
             "launch",
-            json!({"cwd":repo,"worktree":{"branch":"failed-launch"}}),
+            json!({"cwd":repo,"worktree":{"base":"launch-base","branch":"failed-launch"}}),
         )
         .await;
     assert_eq!(reply["error"]["code"], "failed", "{reply}");

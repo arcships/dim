@@ -122,7 +122,7 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
 | Agents | 现有 `cwd` 只能指向已存在目录，不能把创建目录和创建 Session 合成一次请求 | `session.create` 与 `sessions.launch` 共用可选 `worktree`、嵌套回复、创建关联与失败清除；launch 保持既有策略上限与非交互语义 | 入口只校验格式与权限；Git、失败清除由 ManagedWorktrees 执行，创建失败时入口调用它清除 |
 | App Server 协议 | 客户端各自 `git worktree add` 会重新引入路径分歧；新成员会被旧 daemon 当作未知字段拒绝 | `hello.features` 宣告 `session.create.worktree` 与 `sessions.launch.worktree`（仅在产品 home 与原生存储都存在时宣告）、`worktree.list`、`worktree.remove`、`worktree.prune`；`cwd` 声明为源工作区；三个操作注册为 `managementMethods` 的 `worktree` 命名空间，不服务配对设备 | 客户端只在宣告存在时发送；失败不留半成品，重试创建新的 `<task-id>` |
 | CLI 与 Desktop | 没有可调用的创建入口，只能让模型跑 Git | 各自的入口与展示（`--worktree`、`dimcode worktree ...`；TUI 的 `/worktree` 面板留待后续），只消费类型化结果与拒绝原因 | 由各自 owner 更新 cli-commands.md 与 clients.md；不拼路径、不读存储、不直接调用 Git |
-| ManagedWorktrees（本部件） | 现有 `Worktrees` 只做 Session 内识别，没有 Process 级根与创建/清理 | Process 部件：根与命名、Git 调用、创建与失败清除、list/remove/prune 的选择、复核与锁的编排 | 不持有 Session 或分支状态；只在用户命令或 Session 创建时动作 |
+| ManagedWorktrees（本部件） | 现有 `Worktrees` 只做 Session 内识别，没有 Process 级根与创建/清理 | Process 部件：根与命名、Git 调用、创建与失败清除、list/remove/prune 的选择、复核与锁的编排 | 不持有 Session 或分支状态；响应用户命令、Session 创建和插件通过 `managedWorktrees` 发起的操作 |
 
 这些需求都不改变 Timeline、Dispatcher、装配与门面，因此不向基础设施提通用能力。
 
