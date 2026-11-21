@@ -1,5 +1,5 @@
 //! SessionStore title metadata through its public flows (S5b,
-//! design/appserver/session-title-metadata.md §16): the `sessionMetadata`
+//! design/appserver/session-title-metadata.md §16): the `store`
 //! service as a Session part injects it, the way SessionTitle's row does,
 //! title notices on attached v3 clients and the v3 list fields, on
 //! disposable native stores.
@@ -13,7 +13,7 @@ use rutis::host::CtxHost;
 use rutis_bridge::session::{HostDispatch, Reply};
 use std::sync::OnceLock;
 
-/// `sessionMetadata` as a Session part injects it by name. `serve` takes no
+/// `store` as a Session part injects it by name. `serve` takes no
 /// extra process rows, so the part is the test's consumer.
 #[derive(Clone, Default)]
 struct Metadata(Arc<OnceLock<Arc<dyn HostDispatch>>>);
@@ -25,7 +25,7 @@ impl MetadataConsumer {
     fn new(names: &dim_agent_runtime::Names<'_>, metadata: Metadata) -> rutis::Result<Self> {
         Ok(Self {
             metadata,
-            service: names.named("sessionMetadata")?,
+            service: names.named("store")?,
         })
     }
 }
@@ -53,7 +53,7 @@ impl Metadata {
     fn start(&self, method: &str, request: Value) -> Reply {
         self.0
             .get()
-            .expect("a Session injected sessionMetadata")
+            .expect("a Session injected store")
             .invoke(method, json!([request]).into())
     }
     /// The reply envelope.
@@ -66,7 +66,8 @@ impl Metadata {
         tokio::spawn(envelope(self.start(method, request).unwrap()))
     }
     async fn read(&self, session: &str) -> Value {
-        self.call("read", json!({"sessionId": session})).await
+        self.call("readMetadata", json!({"sessionId": session}))
+            .await
     }
     async fn set(&self, session: &str, expected: u64, title: Value) -> Value {
         self.call("setTitle", set_request(session, expected, title))
@@ -79,7 +80,7 @@ async fn envelope(reply: rutis_bridge::session::Value) -> Value {
         rutis_bridge::session::Value::Reference(reply) if reply.is_future() => {
             reply.wait_async().await.unwrap().json().unwrap()
         }
-        reply => panic!("sessionMetadata replies asynchronously: {:?}", reply.json()),
+        reply => panic!("store replies asynchronously: {:?}", reply.json()),
     }
 }
 fn set_request(session: &str, expected: u64, title: Value) -> Value {
@@ -227,7 +228,10 @@ async fn set_title_commits_revisions_and_announces_each_commit_once() {
                 "setTitle",
                 json!({"sessionId": sid, "expectedRevision": 4, "title": {"text": "x"}}),
             ),
-            ("read", json!({"sessionId": sid, "branchId": "main"})),
+            (
+                "readMetadata",
+                json!({"sessionId": sid, "branchId": "main"}),
+            ),
             ("rename", json!({"sessionId": sid})),
         ] {
             assert!(
@@ -240,7 +244,7 @@ async fn set_title_commits_revisions_and_announces_each_commit_once() {
                 .0
                 .get()
                 .unwrap()
-                .invoke("read", json!([]).into())
+                .invoke("readMetadata", json!([]).into())
                 .is_err()
         );
         assert_eq!(
@@ -349,9 +353,7 @@ async fn failed_writes_announce_nothing_and_dropped_calls_still_settle() {
             .unwrap();
         let failed = metadata.set(&sid, 1, title("Lost", "manual")).await;
         assert_eq!(code(&failed), "storage");
-        let native = server
-            .service::<dim_app_server::storage::SessionMetadataService>()
-            .unwrap();
+        let native = server.service::<dim_app_server::storage::Store>().unwrap();
         let native_error = native
             .set_title(
                 &sid,
@@ -434,7 +436,7 @@ async fn failed_writes_announce_nothing_and_dropped_calls_still_settle() {
         drop(native_write);
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                if native.read(&sid).await.unwrap().revision == 3 {
+                if native.read_metadata(&sid).await.unwrap().revision == 3 {
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -444,7 +446,7 @@ async fn failed_writes_announce_nothing_and_dropped_calls_still_settle() {
         .expect("an unpolled native wait cannot defer or cancel its admitted write");
         assert_eq!(
             metadata.read(&sid).await,
-            ok(serde_json::to_value(native.read(&sid).await.unwrap()).unwrap())
+            ok(serde_json::to_value(native.read_metadata(&sid).await.unwrap()).unwrap())
         );
         drop(client);
         server.shutdown();
@@ -595,7 +597,7 @@ async fn titles_survive_restart_skip_forks_and_go_with_their_session() {
 }
 
 /// §16 item 10: a TypeScript Session row running in Node injects
-/// `sessionMetadata` by name, reads and sets its Session's title, and the
+/// `store` by name, reads and sets its Session's title, and the
 /// attached client receives the notice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
@@ -651,12 +653,10 @@ async fn node_typescript_row_reads_and_sets_the_title_through_session_metadata()
         call(&mut client, "read", json!({})).await,
         ok(json!({"revision": 0, "title": null}))
     );
-    let native = server
-        .service::<dim_app_server::storage::SessionMetadataService>()
-        .unwrap();
+    let native = server.service::<dim_app_server::storage::Store>().unwrap();
     assert_eq!(
         call(&mut client, "read", json!({})).await,
-        ok(serde_json::to_value(native.read(&sid).await.unwrap()).unwrap())
+        ok(serde_json::to_value(native.read_metadata(&sid).await.unwrap()).unwrap())
     );
     let typed = title("From TypeScript", "manual");
     assert_eq!(
@@ -707,7 +707,7 @@ async fn node_typescript_row_reads_and_sets_the_title_through_session_metadata()
     );
     assert_eq!(
         call(&mut client, "read", json!({})).await,
-        ok(serde_json::to_value(native.read(&sid).await.unwrap()).unwrap())
+        ok(serde_json::to_value(native.read_metadata(&sid).await.unwrap()).unwrap())
     );
     assert_eq!(
         title_notices(&mut client, &sid).await,

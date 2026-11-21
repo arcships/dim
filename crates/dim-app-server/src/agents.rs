@@ -2,7 +2,7 @@ use crate::{
     ProcessActivity, ProcessHold, ServerConfig,
     protocol::{AgentInfo, CreateWorktree, SessionOrigin},
     settings::SettingsService,
-    storage::{PreparedWorktree, SessionMetadataService, SessionStore, SqliteStorage, Store},
+    storage::{PreparedWorktree, SqliteStorage, Store},
     worktrees::{CreatedWorktree, ManagedWorktrees, WorktreeError},
 };
 use dim_agent_capabilities::{host::ModelSelectionHost, methods::RpcError};
@@ -392,7 +392,6 @@ pub struct AgentIndex {
     startup_timeout: Duration,
     records: Option<Arc<SqliteStorage>>,
     session_store: Option<Arc<Store>>,
-    session_metadata: Option<Arc<SessionMetadataService>>,
     settings: Option<Arc<SettingsService>>,
     stopping: CancellationToken,
     /// Notified once an `idle` call on this generation is admitted and
@@ -1091,9 +1090,9 @@ impl AgentIndex {
         session: &Session,
         version: u32,
     ) -> dim_agent_runtime::Result<crate::protocol::SessionInfo> {
-        let title = match (&self.session_metadata, version >= 3) {
+        let title = match (&self.session_store, version >= 3) {
             (_, false) => None,
-            (Some(store), true) => Some(match store.read(session.id()).await {
+            (Some(store), true) => Some(match store.read_metadata(session.id()).await {
                 Ok(metadata) => metadata.into(),
                 Err(_) => crate::storage::TitleFields::default(),
             }),
@@ -2126,12 +2125,7 @@ impl AgentIndex {
     }
 }
 
-type StoredKeys = (
-    Key<Store>,
-    Key<SessionStore>,
-    Key<SqliteStorage>,
-    Key<SessionMetadataService>,
-);
+type StoredKeys = (Key<Store>, Key<SqliteStorage>);
 
 /// Owns every Agent subtree: the process assembly entry.
 pub(crate) struct AgentsPlugin {
@@ -2159,7 +2153,7 @@ impl AgentsPlugin {
             stored: config
                 .database_path
                 .is_some()
-                .then(|| Ok::<_, Error>((names.key()?, names.key()?, names.key()?, names.key()?)))
+                .then(|| Ok::<_, Error>((names.key()?, names.key()?)))
                 .transpose()?,
             settings: config
                 .local_execution()
@@ -2181,11 +2175,9 @@ impl DynPlugin for AgentsPlugin {
     }
     fn injects(&self) -> Vec<TypeKey> {
         let mut injects = Vec::new();
-        if let Some((store, native, storage, metadata)) = &self.stored {
+        if let Some((store, storage)) = &self.stored {
             injects.push(store.erase());
-            injects.push(native.erase());
             injects.push(storage.erase());
-            injects.push(metadata.erase());
         }
         if let Some(settings) = &self.settings {
             injects.push(settings.erase());
@@ -2199,12 +2191,7 @@ impl DynPlugin for AgentsPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let stored = match &self.stored {
-                Some((store, native, storage, metadata)) => Some((
-                    ctx.require_at(store)?,
-                    ctx.require_at(native)?,
-                    ctx.require_at(storage)?,
-                    ctx.require_at(metadata)?,
-                )),
+                Some((store, storage)) => Some((ctx.require_at(store)?, ctx.require_at(storage)?)),
                 None => None,
             };
             let settings = match &self.settings {
@@ -2240,12 +2227,12 @@ impl DynPlugin for AgentsPlugin {
                 },
             )?;
             let mut builder = self.builder.clone();
-            let (records, session_store, session_metadata) = match stored {
-                Some((store, native, storage, metadata)) => {
-                    builder.timeline_store(native.timeline_store());
-                    (Some(storage), Some(store), Some(metadata))
+            let (records, session_store) = match stored {
+                Some((store, storage)) => {
+                    store.bind_timeline(&mut builder);
+                    (Some(storage), Some(store))
                 }
-                None => (None, None, None),
+                None => (None, None),
             };
             let default_id = match &records {
                 Some(records) => records
@@ -2268,7 +2255,6 @@ impl DynPlugin for AgentsPlugin {
                 startup_timeout: self.config.startup_timeout,
                 records,
                 session_store,
-                session_metadata,
                 settings,
                 selects_models: self.config.protected_profile(),
                 stopping: CancellationToken::new(),

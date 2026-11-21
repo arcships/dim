@@ -39,7 +39,7 @@ only outcome and duration.
 | Observation | Read the Session id from `sessionIdentity`, the creation configuration from `sessionConfig` and closing from `sessionLifecycle` ([plugin contract](../plugin-contract.md#9-requirements-raised-to-mechanism-owners) R2), then the records on its Session's `session/{sessionId}` channel. C4 broadcast #180 is delivered; #63/#168 are closed. |
 | Timeline reads | Use the Session’s branch query facade on `main`, with a fixed published cutoff. Read only the adopted input identity, its user content or Goal objective, and the adopted model fields (§0.1). |
 | Configuration | Existing named Settings and row source declaration, user scope only (A.3/A12). Read settings.read({source:"session-title",scope:"user"}) at each decision and use its validated/defaulted document directly. |
-| Metadata/notice | S5b #60/#96 defines the process service `sessionMetadata` (`read` and `setTitle`, both async), its errors `conflict`/`not_found`/`storage`, the handover and the v3 list fields `title`/`titleSource`/`titleRevision` ([title metadata](../appserver/session-title-metadata.md)); A.2 restates that contract. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). Names, modes, handover and errors follow S5b. |
+| Metadata/notice | S5b #60/#96 defines the process service `store` (`readMetadata` and `setTitle`, both async), its errors `conflict`/`not_found`/`storage`, the handover and the v3 list fields `title`/`titleSource`/`titleRevision` ([title metadata](../appserver/session-title-metadata.md)); A.2 restates that contract. After each commit SessionStore calls `session_broadcast::notify`, and Rpc forwards the record to attached v3 clients as `session.notice {sessionId, source, kind, data}` (C6 #49/#85, [Session broadcast notices](../appserver/session-notices.md)). Names, modes, handover and errors follow S5b. |
 | Auxiliary request | The profile's model-selection owner implements AuxiliaryModel and its named `auxiliaryModel.complete` HostDispatch/catalog binding: Provider in the product profile, ConfiguredModels in the model-config profile. Inject it through ordinary C4 dependencies; credentials stay with that owner ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). |
 | Policies | A1–A12 define the first implementation. Appendix D requires public-flow acceptance; documentation CI alone is not runtime acceptance. |
 
@@ -69,10 +69,10 @@ and registers the Session part; each Session mounts a copy. The part injects
 `sessionMethods` and registers `session.rename` with it from `apply`; it provides no service.
 `apply` reads the Session identity and creation configuration and registers observation/cleanup;
 it does not start an asynchronous initialization job. Its creation configuration is immutable.
-The plugin depends on the existing public Rust Settings and sessionMetadata bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
+The plugin depends on the existing public Rust Settings and store bindings; it does not expose or alter their implementations. Plugin behavior and cross-plugin title flows live in this crate's tests and use the public client and host APIs. App Server tests have no dependency on this crate and install no title plugin implicitly.
 
 The part injects its required dependencies: the process services
-`settings`, `sessionMetadata` and `auxiliaryModel`, and the Session services branch queries, `sessionIdentity`,
+`settings`, `store` and `auxiliaryModel`, and the Session services branch queries, `sessionIdentity`,
 `sessionConfig`, `sessionLifecycle` and `sessionMethods`. The optional `sessionTitleGenerator`
 is read by name when used, without injection or a readiness gate, under the
 [required/optional binding contract](../rutis-usage.md#3-services-by-name).
@@ -123,7 +123,7 @@ flowchart LR
 | Part | Scope | Depends on | Provides |
 | --- | --- | --- | --- |
 | `session-title` | Process | Settings and part registry | Registers the Settings source and Session part |
-| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; Session branch queries; process Settings, title metadata `sessionMetadata` (S5b) and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
+| `SessionTitle` | Session | Session services `sessionIdentity`, `sessionConfig`, `sessionLifecycle` and `sessionMethods`; Session branch queries; process Settings, title metadata `store` (S5b) and required `auxiliaryModel` (a profile without an owner of model selection keeps the row Pending); optional `sessionTitleGenerator` read at use | Registers session.rename with sessionMethods |
 
 Dependencies stay in the Session or enclosing process. Session observation, branch queries and Settings supply observation, field reads and configuration; S5b supplies title metadata and C6 the notices; the profile's model-selection owner supplies the named auxiliary operation. The plugin's row registers its source in its `apply`. Real provider reloads cancel the row's work (ADR 002 D3); SessionStore index reload does not. Business data changes never reload the plugin (D4).
 
@@ -358,7 +358,7 @@ post-commit title notices. SessionTitle consumes these delivered contracts.
 | Effect on sequence, batch, interrupt, reload | No sequence number and no batch; not replayed: a client that resubscribes reads current state through the owner's query (`session.summaries`); interrupts do not apply; a reload of the emitter only stops notices. |
 | Owner and issue | Runtime C6 [#49](https://github.com/arcships/dim/issues/49), implemented in [#85](https://github.com/arcships/dim/pull/85): the record, `session_broadcast::notify` and Rpc's `session.notice` ([Session broadcast notices](../appserver/session-notices.md)). SessionStore emits the title notice ([S5b](../appserver/session-title-metadata.md), the supplement in [overview Appendix B.2](../overview.md#b2-app-server-process-plugins)). |
 
-**#4: None.** Observation uses the Session services and the Session channel; branch queries are Session services; Settings, `sessionMetadata` and the auxiliary model are process services. SessionTitle injects no branch service.
+**#4: None.** Observation uses the Session services and the Session channel; branch queries are Session services; Settings, `store` and the auxiliary model are process services. SessionTitle injects no branch service.
 
 **The model-selection owner (S4): the named `auxiliaryModel` binding.** Provider (product) and ConfiguredModels (model-config) bind their existing `AuxiliaryModel` operation for C4 injection ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)). A profile without such an owner keeps SessionTitle's row Pending through its ordinary required dependency. No core mechanism is needed.
 
@@ -380,8 +380,8 @@ Registered with `sessionMethods` (Session, namespace `session.rename`) with one 
 
 | Service | Method | Kind | Request | Reply and errors |
 | --- | --- | --- | --- | --- |
-| SessionStore `sessionMetadata` (S5b) | `read` | async | `{sessionId}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`; errors `not_found`, `storage` ([S5b §4](../appserver/session-title-metadata.md#4-operations)) |
-| SessionStore `sessionMetadata` (S5b) | `setTitle` | async | `{sessionId, expectedRevision, title: {text, source} \| null}` | `{revision}`; errors `conflict`, `not_found`, `storage`. The call is the handover; after a commit SessionStore emits the title notice |
+| SessionStore `store` (S5b) | `readMetadata` | async | `{sessionId}` | `{revision, title: {text, source: "auto" \| "manual"} \| null}`; errors `not_found`, `storage` ([S5b §4](../appserver/session-title-metadata.md#4-operations)) |
+| SessionStore `store` (S5b) | `setTitle` | async | `{sessionId, expectedRevision, title: {text, source} \| null}` | `{revision}`; errors `conflict`, `not_found`, `storage`. The call is the handover; after a commit SessionStore emits the title notice |
 | SessionStore (S5b) | title notice | Session broadcast notice (C6 record, §9) | — | `{source: "SessionStore", kind: "title", data: {title, titleSource, titleRevision}}` on the Session's broadcast channel; no sequence number, not replayed |
 | `AuxiliaryModel` (the profile's model-selection owner) | `complete` | async | `{model: {providerId, modelId}, request: {system, messages: [{role: "user", content: text}]}}`, optional `cancelled: () => Promise<void>` ([S4 §4.3](../appserver/auxiliary-model.md#43-named-binding)) | `{text, stopReason, usage}`; rejects with the existing error code/message. Resolve the cancellation reference on timeout or closing and await the original call's settlement |
 
@@ -408,7 +408,7 @@ omits `maxOutputTokens`, using S4's existing model limit; the 30 s budget remain
 | Listen | The Session's copy of the part listens to its Session's `session/{sessionId}` from `apply`, filters main input/applied, registers an owned task and returns; `sessionLifecycle.closing()` or copy cleanup ends owned work |
 | Eligibility | C4 creation snapshot: `interactive !== false && collaborationRole === "leader"` for generation; native omission means true. A requested initial title (`initialTitle`, §3.4) is written for interactive and non-interactive Sessions alike: it needs no model, and it is the caller's own text |
 | Trigger | On `input/applied` at `N`: skip if not eligible, disabled, in flight or failed attempts ≥ 3 (A5); otherwise start a generation task owned by the plugin's lifetime |
-| Check | `sessionMetadata.read({sessionId})`: skip if any title exists; keep revision `r` |
+| Check | `store.readMetadata({sessionId})`: skip if any title exists; keep revision `r` |
 | Read | The four field queries in §0.1 share published T >= N. No adopted eligible input/text means no title (A8/A10). |
 | Generate | Route and fall back under §3.3 within the shared 30 s budget (A4); normalize the first line, remove quotes and trailing punctuation, collapse whitespace, cut at `maxLength`, trim again |
 | Write | `setTitle({sessionId, expectedRevision: r, title: {text, source: "auto"}})`; `conflict` or `not_found` discards |
@@ -503,15 +503,15 @@ auxiliary binding use the owner contracts in §0. The optional service contract 
 | --- | --- |
 | Namespace `session.rename` registered with `sessionMethods` | The Session part calls `methods.register(ctx, "session.rename", Vec<MethodDecl>, handler)` on a `Key<SessionMethods>` dependency |
 | Published branch properties | Required `Key<TreeCommands>`; `TreeCommands::query("main", TimelineQuery)` with branch scope, `include_publishing: false` and one-row `QuerySelect::Fields` results. Configuration paths are `data.settings.providerId` and `data.settings.modelId`. |
-| Title metadata | `SessionMetadataService::read` and `SessionMetadataService::set_title` |
+| Title metadata | `Store::read_metadata` and `Store::set_title` |
 | Auxiliary call | `AuxiliaryModel.0.complete` with its cancellation token |
 | Optional generation | `ctx.get_at(&host_key("sessionTitleGenerator"))` at use; `HostDispatch.generate` with a cancellable callback promise, using the request/reply types exported by `dim-session-title` |
 | Session broadcast listener | Listener on `session_channel(session_id)` for `Event` records, removed by `ctx.effect` |
 | Generation task | Spawned under `ctx.effect` |
 
 ```rust
-// SessionMetadataService (S5b; named service `sessionMetadata`)
-async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+// Store (S5b; named service `store`)
+async fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
 fn set_title(&self, session_id: &str, expected_revision: u64, title: Option<Title>)
     -> impl Future<Output = Result<u64, MetadataError>>; // Conflict | NotFound | Storage; the call is the handover
 pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }

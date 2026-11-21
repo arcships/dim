@@ -154,9 +154,7 @@ flowchart LR
   p3 -->|"dim_app_server::control::ProcessActivity"| p40
   p18 -->|"dim_app_server::settings::SettingsService"| p40
   p8 -->|"dim_app_server::storage::face::Store"| p40
-  p8 -->|"dim_app_server::storage::metadata::binding::SessionMetadata"| p40
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p40
-  p8 -->|"dim_app_server::storage::timeline::SessionStore"| p40
   p2 -->|"rutis_loader::loader::Loader"| p40
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p37
   p10 -->|"dim_app_server::methods::ManagementMethods"| p37

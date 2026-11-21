@@ -1466,7 +1466,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
             )
             .await;
         assert_ok(&refused);
-        assert_eq!(refused["result"]["errors"].as_array().unwrap().len(), 3);
+        assert_eq!(refused["result"]["errors"].as_array().unwrap().len(), 5);
         assert!(!store.has_records(id).await.unwrap());
         assert!(matches!(
             store.delete_session(id).await,
@@ -1587,7 +1587,14 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
             directory["result"]["branches"],
             serde_json::to_value(raw.branches(session).await.unwrap()).unwrap()
         );
-        raw.rollback_session(session).await.unwrap();
+        let released = client
+            .rpc(
+                "storefixture.release_timeline",
+                json!({"sessionId":session}),
+            )
+            .await;
+        assert_ok(&released);
+        assert!(raw.session_config(session).await.unwrap().is_none());
     }
     raw.create_session(protected.to_str().unwrap(), &config)
         .await
@@ -1773,7 +1780,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
     assert_eq!(store.worktree_directories().await.unwrap().len(), 1);
 
     let ready = home.join("removal-ready");
-    let removal = client.send("storefixture.remove", json!({"directory":{"repository":directory.repository,"root":directory.root},"ready":ready})).await;
+    let removal = client.send("storefixture.remove", json!({"sessionId":"round-a","directory":{"repository":directory.repository,"root":directory.root},"ready":ready})).await;
     tokio::time::timeout(Duration::from_secs(10), async {
         while !ready.exists() {
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1785,8 +1792,16 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         std::fs::read_to_string(&ready).unwrap(),
         workspace.to_string_lossy()
     );
+    let mut timeline_creation = Box::pin(raw.create_session("late-timeline", &config));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut timeline_creation)
+            .await
+            .is_err(),
+        "timeline creation must wait for the worktree removal callback"
+    );
     let mut concurrent_creation = {
         let store = store.clone();
+        let config = config.clone();
         tokio::spawn(async move {
             store
                 .create_owned_session(
@@ -1808,6 +1823,7 @@ async fn node_store_preserves_repository_results_and_worktree_removal_exclusion(
         "creation must remain excluded until the foreign removal settles"
     );
     assert_ok(&client.rpc("storefixture.release", json!({})).await);
+    timeline_creation.await.unwrap();
     let removed = client.response(removal).await;
     assert_ok(&removed);
     assert_eq!(removed["result"], json!({"removed":true}));

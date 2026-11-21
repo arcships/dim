@@ -75,36 +75,6 @@ export interface SessionClientsHost {
   presences(request: SessionPresenceRequest): Promise<SessionPresencesReply>
 }
 
-/**
- * One worktree association to record: the Session, the Git common directory
- * and worktree root it belongs to, and the Session's verified subtree. The
- * paths are UTF-8 strings, as every path that crosses is ([service faces
- * §1](../../../docs/design/service-faces.md#1-规则)).
- */
-export type WorktreeAssociation = {
-  sessionId: string
-  repository: string
-  root: string
-  subtree: string
-}
-
-/** What `worktreeAssociations.associate` fails with: `{code, message}`. */
-export type WorktreeAssociationError = { code: "failed"; message: string }
-
-/**
- * The `worktreeAssociations` face: the association store records a verified
- * directory and its Session subtree atomically. The owner binds its write; a
- * Rust reader calls [`Self::associate`] directly and a part of another
- * language calls the same operation by name.
- */
-export interface WorktreeAssociations {
-  /**
-   * Records `request`'s directory and Session subtree as one association.
-   * @throws {WorktreeAssociationErrorThrown}
-   */
-  associate(request: WorktreeAssociation): Promise<void>
-}
-
 /** The `variables` reply: the names only, never a credential value. */
 export type CredentialVariablesReply = {
   variables: string[]
@@ -1337,14 +1307,10 @@ export type WaitErrorThrown = RustError<"WaitError", "read" | "unknown" | "close
 /** What a method returning `Err(WorkflowFilesError)` throws. */
 export type WorkflowFilesErrorThrown = RustError<"WorkflowFilesError", "invalid_path" | "closed" | "cancelled" | "locked" | "unsupported" | "unsynced" | "io" | "not_found" | "invalid_data", WorkflowFilesError>
 
-/** What a method returning `Err(WorktreeAssociationError)` throws. */
-export type WorktreeAssociationErrorThrown = RustError<"WorktreeAssociationError", "failed", WorktreeAssociationError>
-
 /** The exported services by name: `ctx.use<Services['name']>('name')`. */
 export interface Services {
   approval: Approval
   sessionClientsHost: SessionClientsHost
-  worktreeAssociations: WorktreeAssociations
   credentialVariablesHost: CredentialVariablesHost
   toolHost: ToolHost
   inputQueue: InputQueue

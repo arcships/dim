@@ -3,18 +3,42 @@ use std::os::unix::fs::PermissionsExt;
 
 #[derive(Default)]
 struct Associations(AtomicUsize);
+#[derive(Clone)]
+pub(super) struct Store(Arc<Associations>);
+
+impl DynPlugin for Store {
+    fn name(&self) -> &str {
+        "TestWorktreeStore"
+    }
+    fn apply<'a>(&'a self, ctx: &'a rutis::Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
+        Box::pin(async move {
+            use rutis_bridge::session::{HostDispatch, host_key};
+            ctx.provide_at(
+                host_key("store"),
+                Arc::new(self.clone()) as Arc<dyn HostDispatch>,
+            )?;
+            Ok(Effect::Done)
+        })
+    }
+}
+impl rutis_bridge::session::HostDispatch for Store {
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        assert_eq!(method, "associateWorktree");
+        let [request]: [file_access::WorktreeAssociation; 1] =
+            serde_json::from_value(args.json()?).unwrap();
+        assert!(!request.session_id.is_empty());
+        assert!(Path::new(&request.subtree).starts_with(&request.root));
+        self.0.0.fetch_add(1, Ordering::SeqCst);
+        Ok(serde_json::json!({}).into())
+    }
+}
 impl Associations {
-    fn port(self: &Arc<Self>) -> file_access::WorktreeAssociations {
-        let associations = self.clone();
-        file_access::WorktreeAssociations::new(Arc::new(move |request| {
-            let associations = associations.clone();
-            Box::pin(async move {
-                assert!(!request.session_id.is_empty());
-                assert!(Path::new(&request.subtree).starts_with(&request.root));
-                associations.0.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            })
-        }))
+    fn port(self: &Arc<Self>) -> Store {
+        Store(self.clone())
     }
 }
 struct Probes {

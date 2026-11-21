@@ -45,6 +45,19 @@ async fn worktree_usage_survives_reopen_but_is_not_copied_by_fork_or_owned_by_se
         .await
         .unwrap()
         .unwrap();
+    assert!(
+        sessions
+            .fork_session("source", "other", 0, &config)
+            .await
+            .is_err()
+    );
+    assert!(
+        sessions
+            .session_config_text("other")
+            .await
+            .unwrap()
+            .is_some()
+    );
     sessions
         .fork_session("source", "fork", 0, &config)
         .await

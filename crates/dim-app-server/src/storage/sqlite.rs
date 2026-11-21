@@ -1214,6 +1214,7 @@ fn slow_upgrade_report() {
 /// The process connection and maintenance admission. Business modules never
 /// open a second connection to this database.
 pub struct SqliteStorage {
+    pub(super) ownership: Arc<tokio::sync::Mutex<()>>,
     pub(super) defaults: Mutex<std::collections::BTreeMap<String, String>>,
     pub(super) timeline_memo: Mutex<super::timeline::Memo>,
     pub(super) connection: Mutex<Option<Connection>>,
@@ -1403,6 +1404,26 @@ impl Drop for DatabaseLease {
     }
 }
 struct Operation(Arc<SqliteStorage>);
+impl Operation {
+    async fn write<T: Send + 'static>(
+        self,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        tokio::task::spawn_blocking(move || {
+            let mut guard = self
+                .0
+                .connection
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let connection = guard
+                .as_mut()
+                .ok_or_else(|| storage("SQLite storage is closed"))?;
+            guarded(connection, operation)
+        })
+        .await
+        .map_err(storage)?
+    }
+}
 impl Drop for Operation {
     fn drop(&mut self) {
         let mut admission = self.0.admission.lock().unwrap();
@@ -1818,6 +1839,7 @@ impl SqliteStorage {
         let _ = std::fs::remove_file(startup_note_path(&path));
         let readers = Readers::demand();
         Ok(Arc::new(Self {
+            ownership: Default::default(),
             defaults: Mutex::default(),
             timeline_memo: Mutex::default(),
             connection: Mutex::new(Some(connection)),
@@ -1869,6 +1891,7 @@ impl SqliteStorage {
         }
         Ok((
             Arc::new(Self {
+                ownership: Default::default(),
                 defaults: Mutex::default(),
                 timeline_memo: Mutex::default(),
                 connection: Mutex::new(Some(connection)),
@@ -1906,17 +1929,23 @@ impl SqliteStorage {
         self: &Arc<Self>,
         operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
+        self.admit()?.write(operation).await
+    }
+
+    pub(super) async fn run_ownership_write<T: Send + 'static>(
+        self: &Arc<Self>,
+        operation: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         let admitted = self.admit()?;
-        tokio::task::spawn_blocking(move || {
-            let mut guard = admitted
-                .0
-                .connection
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            let connection = guard
-                .as_mut()
-                .ok_or_else(|| storage("SQLite storage is closed"))?;
-            guarded(connection, operation)
+        let ownership = self.ownership.clone();
+        tokio::spawn(async move {
+            let guard = ownership.lock_owned().await;
+            admitted
+                .write(move |connection| {
+                    let _guard = guard;
+                    operation(connection)
+                })
+                .await
         })
         .await
         .map_err(storage)?
@@ -2545,9 +2574,76 @@ struct SqliteDispatch(Arc<SqliteStorage>);
 
 impl HostDispatch for SqliteDispatch {
     fn methods(&self) -> Option<serde_json::Value> {
-        Some(
-            serde_json::json!({"batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
-        )
+        Some(serde_json::Value::Object(
+            [
+                "readMetadata",
+                "setTitle",
+                "readPage",
+                "readSegments",
+                "query",
+                "trace",
+                "saveSnapshot",
+                "latestSnapshot",
+                "releaseSession",
+                "rollbackSession",
+                "batchEnd",
+                "batchEndAt",
+                "createSession",
+                "sessionConfig",
+                "branches",
+                "head",
+                "commitTimelineRound",
+                "storageReport",
+                "readUser",
+                "importUserIfAbsent",
+                "replaceUser",
+                "agents",
+                "owners",
+                "save",
+                "delete",
+                "members",
+                "ledMembers",
+                "ownedAgents",
+                "memberSessions",
+                "agentOwner",
+                "unfinishedOwned",
+                "readSelection",
+                "writeSelection",
+                "readPreferences",
+                "reserveFile",
+                "commitFile",
+                "abandonFile",
+                "releaseStaleFileWriters",
+                "unownedFiles",
+                "deleteIfUnowned",
+                "recordedFiles",
+                "addGrant",
+                "removeGrant",
+                "grants",
+                "setSessionLanguage",
+                "creationRecord",
+                "owner",
+                "hasRecords",
+                "sessionConfigText",
+                "catalog",
+                "fork",
+                "createOwnedSession",
+                "associateWorktree",
+                "removeWorktreeDirectory",
+                "removableOutputDirectories",
+                "touchWorktreeDirectories",
+                "worktreeDirectories",
+                "sessionsUnderWorkspace",
+                "worktreeUsages",
+                "ownsFile",
+                "ownsOutput",
+                "ownedPaths",
+                "registerOutput",
+            ]
+            .into_iter()
+            .map(|name| (name.to_owned(), serde_json::Value::from("async")))
+            .collect(),
+        ))
     }
 
     fn invoke(&self, method: &str, args: BridgeValue) -> Reply {
@@ -2566,6 +2662,16 @@ impl HostDispatch for SqliteDispatch {
             deny_unknown_fields
         )]
         enum Request {
+            ReadMetadata(dim_agent_runtime::TimelineSessionRequest),
+            SetTitle(super::metadata::SetTitleRequest),
+            ReadPage(dim_agent_runtime::TimelinePageRequest),
+            ReadSegments(dim_agent_runtime::TimelineSegmentsRequest),
+            Query(Box<dim_agent_runtime::TimelineQueryRequest>),
+            Trace(dim_agent_runtime::TimelinePositionRequest),
+            SaveSnapshot(dim_agent_runtime::TimelineSaveSnapshotRequest),
+            LatestSnapshot(dim_agent_runtime::TimelineSnapshotRequest),
+            ReleaseSession(dim_agent_runtime::TimelineSessionRequest),
+            RollbackSession(dim_agent_runtime::TimelineSessionRequest),
             BatchEnd(dim_agent_runtime::TimelinePositionRequest),
             BatchEndAt(dim_agent_runtime::TimelinePositionRequest),
             CreateSession(Box<dim_agent_runtime::TimelineCreateRequest>),
@@ -2591,6 +2697,17 @@ impl HostDispatch for SqliteDispatch {
                 session_id: String,
                 file_id: String,
                 generation: String,
+            },
+            ReleaseStaleFileWriters {
+                generation: String,
+            },
+            UnownedFiles {},
+            #[serde(rename_all = "camelCase")]
+            DeleteIfUnowned {
+                file_id: String,
+            },
+            RecordedFiles {
+                names: Vec<String>,
             },
             #[serde(rename_all = "camelCase")]
             OwnsFile {
@@ -2657,6 +2774,15 @@ impl HostDispatch for SqliteDispatch {
             },
             ImportUserIfAbsent(ImportUser),
             ReplaceUser(ReplaceUser),
+            Catalog(Box<super::face::Catalog>),
+            Fork(super::face::Fork),
+            CreateOwnedSession(Box<super::face::Create>),
+            AssociateWorktree(dim_agent_capabilities::file_access::WorktreeAssociation),
+            RemoveWorktreeDirectory(super::face::Directory),
+            RemovableOutputDirectories(super::face::Session),
+            TouchWorktreeDirectories(super::face::Session),
+            #[serde(untagged)]
+            Rows(super::face::SessionRows),
         }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
@@ -2664,6 +2790,64 @@ impl HostDispatch for SqliteDispatch {
         let db = self.0.clone();
         Ok(BridgeValue::cancellable_future(async move {
             let value = match request {
+                Request::ReadMetadata(p) => {
+                    super::metadata::envelope(db.read_metadata(p.session_id).await)
+                }
+                Request::SetTitle(p) => super::metadata::envelope(
+                    db.set_title(p.session_id, p.expected_revision, p.title)
+                        .await
+                        .map(|revision| serde_json::json!({"revision":revision})),
+                ),
+                Request::ReadPage(p) => {
+                    serde_json::json!({"events":db.page(&dim_agent_runtime::TimelineKey {session_id:p.session_id,branch_id:p.branch_id}, p.after,p.limit,p.through,&mut super::codec::Reader::new(super::codec::CONTENT_BUDGET)).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::ReadSegments(p) => {
+                    serde_json::json!({"segments":db.segments(&p.session_id, p.segments.into_iter().map(|segment| (segment.branch_id,segment.from..=segment.through)).collect(),&mut super::codec::Reader::new(super::codec::CONTENT_BUDGET)).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::Trace(p) => {
+                    serde_json::json!({"trace":db.trace(&dim_agent_runtime::TimelineKey {session_id:p.session_id,branch_id:p.branch_id},p.sequence,&mut super::codec::Reader::new(super::codec::CONTENT_BUDGET)).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::SaveSnapshot(p) => {
+                    db.save_snapshot(
+                        &dim_agent_runtime::TimelineKey {
+                            session_id: p.session_id,
+                            branch_id: p.branch_id,
+                        },
+                        p.snapshot,
+                        &mut super::codec::Reader::new(super::codec::CONTENT_BUDGET),
+                    )
+                    .await
+                    .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({})
+                }
+                Request::LatestSnapshot(p) => {
+                    serde_json::json!({"snapshot":db.latest_snapshot(&dim_agent_runtime::TimelineKey {session_id:p.session_id,branch_id:p.branch_id},p.through,&p.interpreter).await.map_err(dim_agent_runtime::timeline_store_failure)?})
+                }
+                Request::RollbackSession(p) => {
+                    db.rollback_session(&p.session_id)
+                        .await
+                        .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!({})
+                }
+                Request::ReleaseSession(p) => {
+                    let _operation = db.admit().map_err(storage_failure)?;
+                    db.release_session(&p.session_id);
+                    serde_json::json!({})
+                }
+                Request::Query(p) => {
+                    let (result, _) = db
+                        .query(
+                            &p.scope,
+                            &p.query,
+                            p.page.as_ref(),
+                            super::codec::Reader::new(super::codec::CONTENT_BUDGET),
+                            #[cfg(feature = "testing")]
+                            Arc::default(),
+                        )
+                        .await
+                        .map_err(dim_agent_runtime::timeline_store_failure)?;
+                    serde_json::json!(result.map_err(dim_agent_runtime::timeline_store_failure)?)
+                }
                 Request::BatchEnd(p) => {
                     db.batch_end(
                         dim_agent_runtime::TimelineKey {
@@ -2757,6 +2941,78 @@ impl HostDispatch for SqliteDispatch {
                 ),
                 Request::ReadSelection { scope } => {
                     serde_json::json!(db.read_selection(scope).await.map_err(storage_failure)?)
+                }
+                Request::Catalog(p) => {
+                    let cancel = CancellationToken::new();
+                    let _guard = cancel.clone().drop_guard();
+                    serde_json::json!(
+                        db.catalog(p.request, p.agent, p.version, p.hosts, p.closed, cancel)
+                            .await
+                            .map_err(super::face::failure)?
+                    )
+                }
+                Request::Fork(p) => {
+                    db.fork_session(&p.source_session_id, &p.session_id, p.at, &p.config_text)
+                        .await
+                        .map_err(super::face::failure)?;
+                    serde_json::json!({})
+                }
+                Request::CreateOwnedSession(p) => {
+                    db.create_owned_session(
+                        &p.session_id,
+                        &p.config,
+                        &p.agent_id,
+                        p.protocol_version,
+                        p.leader_session_id.as_deref(),
+                        p.origin,
+                        p.worktree.map(Into::into),
+                    )
+                    .await
+                    .map_err(super::face::failure)?;
+                    serde_json::json!({})
+                }
+                Request::AssociateWorktree(p) => {
+                    db.associate_worktree(&p.session_id, p.directory(), p.subtree.into())
+                        .await
+                        .map_err(super::face::association_failure)?;
+                    serde_json::json!({})
+                }
+                Request::RemoveWorktreeDirectory(p) => {
+                    let _ownership = db.ownership.lock().await;
+                    let removed = db
+                        .remove_worktree_directory(super::WorktreeDirectory {
+                            repository: p.repository.into(),
+                            root: p.root.into(),
+                        })
+                        .await
+                        .map_err(super::face::failure)?;
+                    serde_json::json!({"removed": removed})
+                }
+                Request::RemovableOutputDirectories(p) => {
+                    serde_json::json!({"directories":db.removable_output_directories(&p.session_id).await.map_err(storage_failure)?})
+                }
+                Request::TouchWorktreeDirectories(p) => {
+                    db.touch_worktree_directories(&p.session_id)
+                        .await
+                        .map_err(storage_failure)?;
+                    serde_json::json!({})
+                }
+                Request::Rows(rows) => rows.execute(&db).await.map_err(super::face::failure)?,
+                Request::ReleaseStaleFileWriters { generation } => serde_json::json!(
+                    db.release_stale_file_writers(generation)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::UnownedFiles {} => {
+                    serde_json::json!(db.unowned_files().await.map_err(storage_failure)?)
+                }
+                Request::DeleteIfUnowned { file_id } => serde_json::json!(
+                    db.delete_if_unowned(file_id)
+                        .await
+                        .map_err(storage_failure)?
+                ),
+                Request::RecordedFiles { names } => {
+                    serde_json::json!(db.recorded_files(names).await.map_err(storage_failure)?)
                 }
                 Request::OwnsFile {
                     session_id,

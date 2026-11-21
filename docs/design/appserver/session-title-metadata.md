@@ -1,6 +1,5 @@
 # SessionStore title metadata
 
-The [target repository binding](../contracts/resource-owner-operations.md) moves SessionTitle and rename callers to `store.readMetadata` and `store.setTitle`. Remove the `sessionMetadata` catalog entry when switching its consumers. References to that binding below describe the pre-migration implementation.
 
 Status: Implemented in roadmap item S5b ([#60](https://github.com/arcships/dim/issues/60),
 [#96](https://github.com/arcships/dim/pull/96)), after C6 ([#49](https://github.com/arcships/dim/issues/49),
@@ -26,7 +25,7 @@ channel ([C6](session-notices.md)), and Rpc shows the title in protocol v3 Sessi
   titleRevision}}`, in commit order.
 - **Lists.** Protocol v3 `session.summaries` entries carry `title`, `titleSource` and
   `titleRevision`.
-- **Binding.** The process service `sessionMetadata` (`read`, `setTitle`), provided by SessionStore, reaches
+- **Binding.** The process service `store` (`readMetadata`, `setTitle`), provided by SessionStore, reaches
   TypeScript through the existing service catalog, like `sessions` and `settings`.
 - **Lifecycle.** A delete removes the title in S5c's delete transaction; a fork does not copy it (SessionTitle A7);
   a restart keeps it. Reading or writing a title never loads the Session.
@@ -41,8 +40,8 @@ protocol version.
  Session scope                          Process scope (control node)
  ----------------------------           --------------------------------------------------------------
  SessionTitle (Session part)          SessionStore (existing plugin)
-   inject 'sessionMetadata'               sessionMetadata (HostDispatch)
-     read -------------------------->       read     -> metadata()   ------------------+
+   inject 'store'               store (HostDispatch)
+     readMetadata ------------------>       readMetadata -> read_metadata() -----------+
      setTitle ---------------------->       setTitle -> set_title()                    |
                                                           |                            v
                                           title writer: one write at a time ---> SqliteStorage
@@ -57,10 +56,10 @@ protocol version.
 
 | Part | Scope | Change |
 | --- | --- | --- |
-| SessionStore ([timeline.rs](../../../crates/dim-app-server/src/storage/timeline.rs), [metadata.rs](../../../crates/dim-app-server/src/storage/metadata.rs)) | Process | `metadata` and `set_title`, the title writer, the `sessionMetadata` service; delete and creation rollback remove the title row; the catalog query reads it |
+| SessionStore ([timeline.rs](../../../crates/dim-app-server/src/storage/timeline.rs), [metadata.rs](../../../crates/dim-app-server/src/storage/metadata.rs)) | Process | `metadata` and `set_title`, the title writer, the `store` service; delete and creation rollback remove the title row; the catalog query reads it |
 | SqliteStorage ([sqlite.rs](../../../crates/dim-app-server/src/storage/sqlite.rs)) | Process | v16 schema and its upgrade step |
 | Rpc ([protocol.rs](../../../crates/dim-app-server/src/protocol.rs), [connection.rs](../../../crates/dim-app-server/src/connection.rs)) | Process | The v3 list fields |
-| Service catalog ([lib.rs](../../../crates/dim-app-server/src/lib.rs)) | Process | `register_shared("sessionMetadata")`, one line, as S2 did for `sessions` |
+| Service catalog ([lib.rs](../../../crates/dim-app-server/src/lib.rs)) | Process | `register_shared("store")`, one line, as S2 did for `sessions` |
 | Session broadcast, Rpc notice forwarding | Session, process | Unchanged (C6) |
 
 ## 3. Data and revisions
@@ -84,15 +83,15 @@ protocol version.
 
 ### 4.1 Language-neutral (ADR 002 D5)
 
-`sessionMetadata`, process scope, control node only, no instance key, provided by SessionStore.
+`store`, process scope, control node only, no instance key, provided by SessionStore.
 
 | Method | Mode | Request | Reply value | Errors |
 | --- | --- | --- | --- | --- |
-| `read` | async | `{sessionId}` | `{revision, title: {text, source} \| null}` | `not_found`, `storage` |
+| `readMetadata` | async | `{sessionId}` | `{revision, title: {text, source} \| null}` | `not_found`, `storage` |
 | `setTitle` | async | `{sessionId, expectedRevision, title: {text, source: "auto" \| "manual"} \| null}` | `{revision}`: the committed revision | `conflict`, `not_found`, `storage` |
 
 - Replies use one envelope, `{ok: true, value}` or `{ok: false, error: {code, message}}`, as `settings` does.
-- Neither method loads the Session. `read` reads committed state and does not wait for the title writer (§5).
+- Neither method loads the Session. `readMetadata` reads committed state and does not wait for the title writer (§5).
 - `title` is required in `setTitle`; `null` clears. A request without `title` is rejected rather than read as a
   clear, so a caller's omission never erases a user's title.
 - A malformed call (unknown method, not exactly one request object, an unknown field, a wrong type or a missing
@@ -106,9 +105,9 @@ protocol version.
 
 ### 4.2 Rust
 
-Rust consumers inject `SessionMetadataService`, the typed binding of `sessionMetadata`, and call
-`read` and `set_title`. The binding is the existing dispatcher, published at both its typed key
-and `host_key("sessionMetadata")`; both routes delegate directly to the same SessionStore owner.
+Rust consumers inject `Store`, the typed binding of `store`, and call
+`read_metadata` and `set_title`. The binding is the existing dispatcher, published at both its typed key
+and `host_key("store")`; both routes delegate directly to the same SessionStore owner.
 The existing `SessionMetadata` reply type is unchanged.
 
 `set_title` is a regular function returning the owner's wait future. Calling it admits the write
@@ -151,7 +150,7 @@ This settles the boundary that SessionTitle §0 left to S5b.
 | Before the call | The caller's own work. Cancelling it before the call writes nothing |
 | The call | The handover is SessionStore receiving the call: before it returns, `setTitle` admits the write and starts it as SessionStore's own task, or, once SessionStore is closing, fails `storage` without writing. In Rust `set_title` is a plain function that does this and returns a future of the reply. That future only awaits the task, so dropping it detaches the reply, never the write. The named service calls it inside `invoke`, so a JavaScript call is handed over once the host receives it |
 | After the call | SessionStore settles the write itself: it commits and announces, or fails and writes nothing. Dropping the call, unloading the calling row or losing the reply neither cancels nor undoes it. `setTitle` has no cancel action |
-| Lost reply | The caller reads with `read`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
+| Lost reply | The caller reads with `readMetadata`. It does not repeat the write blindly: a repeat at the old revision fails `conflict`, and one at the new revision would be a second change ([SessionTitle Appendix C](../plugins/SessionTitle.md#appendix-c-errors-and-recovery)) |
 | SessionStore unload | Its disposer first stops admission: from then on a call fails `storage` at once and writes nothing. It then waits until every admitted write, the one in its turn and those waiting for theirs, has committed and announced or failed. Only then does it close Session files and the Timeline writer, and SqliteStorage, which unloads after SessionStore, closes the connection. The notices follow C6 delivery: once the Session is no longer loaded, nobody listens and they are dropped. Nothing is retried after a reload |
 
 Rejected: a cancel action that works until the transaction starts. It would only move the uncertainty, since a caller
@@ -210,11 +209,11 @@ Rpc never calls `setTitle` and gains no method. How each error reaches clients:
 | Event | Title |
 | --- | --- |
 | Session created | None, revision 0; no row is written |
-| Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `read` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
-| `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `read` and `setTitle` fail `not_found` |
+| Load, unload, close, restart | Unchanged: the title is stored with the Session's rows, not with its instance. `readMetadata` and `setTitle` work on a Session that is not loaded; their notices are dropped, as nobody listens |
+| `session.delete` (S5c) | Removed in S5c's single delete transaction, before the Session record. Afterwards `readMetadata` and `setTitle` fail `not_found` |
 | Creation rollback | The same transaction as a delete; it removes a row that a racing write committed |
 | `session.fork` (S5c) | Not copied ([SessionTitle A7](../plugins/SessionTitle.md#appendix-e-assumptions)): the fork starts untitled at revision 0 |
-| SessionStore or SqliteStorage reload | Settles as in §6. Consumers of `sessionMetadata` reload with SessionStore ([ADR 002](../../adr/002-plugin-scope.md) D3), which SessionTitle §1 accepts. SessionStore reloads only with SqliteStorage, which has no dependencies |
+| SessionStore or SqliteStorage reload | Settles as in §6. Consumers of `store` reload with SessionStore ([ADR 002](../../adr/002-plugin-scope.md) D3), which SessionTitle §1 accepts. SessionStore reloads only with SqliteStorage, which has no dependencies |
 
 ## 10. Timing and conflicts
 
@@ -259,7 +258,7 @@ CREATE TABLE session_metadata (session_id TEXT NOT NULL PRIMARY KEY REFERENCES a
   `settings_documents` belongs to Settings. Columns added to `agent_sessions` change its stored SQL, so they need a
   new version as well, and they would mix a mutable value into the creation record.
 - **Why one row per Session.** Only the current title and revision are read. No decision uses earlier titles.
-- **Index.** The primary key serves `read`, `setTitle`, the list join and the delete. No other index.
+- **Index.** The primary key serves `readMetadata`, `setTitle`, the list join and the delete. No other index.
 
 | Store found | Action at startup, in the existing admission transaction (`IMMEDIATE`, before writable PRAGMAs) |
 | --- | --- |
@@ -278,12 +277,12 @@ after the upgrade commits (S5a's log line, with the version the store came from)
 
 | Item | Rule |
 | --- | --- |
-| Identity | `dyn HostDispatch` at `host_key("sessionMetadata")`, provided by SessionStore; `register_shared("sessionMetadata")` in App Server's service catalog, beside `sessions` and `settings` |
-| Use | A C4 Session part declares `inject: ['sessionMetadata']` and calls `ctx.use('sessionMetadata')`, the path `settings` takes from a Session part ([settings-owner fixture](../../../runtime/fixtures/settings-owner.ts)). Types are in [npm/plugin.d.ts](../../../npm/plugin.d.ts) |
-| Modes | `read` and `setTitle` are both `async` |
+| Identity | `dyn HostDispatch` at `host_key("store")`, provided by SessionStore; `register_shared("store")` in App Server's service catalog, beside `sessions` and `settings` |
+| Use | A C4 Session part declares `inject: ['store']` and calls `ctx.use('store')`, the path `settings` takes from a Session part ([settings-owner fixture](../../../runtime/fixtures/settings-owner.ts)). Types are in [npm/plugin.d.ts](../../../npm/plugin.d.ts) |
+| Modes | `readMetadata` and `setTitle` are both `async` |
 | Writer | The service carries no caller identity, as for `settings` (AGENTS.md rule 11). SessionTitle is the title's one writer by design ([SessionTitle §2](../plugins/SessionTitle.md#2-data-and-state)); other packages only read |
 | Reload | A consuming row reloads with SessionStore. SessionStore reloads only with SqliteStorage, so no directory part that never reloads is needed, unlike `sessions`, whose index reloads with Settings ([sessions D1](sessions-service.md#3-decisions)) |
-| Missing provider | A daemon without a native store has no SessionStore, so a row that injects `sessionMetadata` stays Pending under the existing rules; native Sessions continue |
+| Missing provider | A daemon without a native store has no SessionStore, so a row that injects `store` stays Pending under the existing rules; native Sessions continue |
 
 This uses only the existing catalog and `HostDispatch` mechanisms ([#4](https://github.com/arcships/dim/issues/4)
 named-service rules). S5b leaves nothing for C4 or S4 to add; S4's own named auxiliary binding is a separate
@@ -299,7 +298,7 @@ SessionTitle gate.
 | [Session deletion and fork](session-deletion-and-fork.md) | §3.3 and §14 point to this design |
 | [Native storage format](native-storage-format.md) | The v16 decision, the table, the record example |
 | [ADR 001](../../adr/001-harness-foundation.md), [Timeline storage](../../architecture/rust-agent/timeline-storage.md) | Current format v16 |
-| [TypeScript plugin authoring](../../typescript-plugin-authoring.md), [npm/plugin.d.ts](../../../npm/plugin.d.ts) | The `sessionMetadata` service and its types |
+| [TypeScript plugin authoring](../../typescript-plugin-authoring.md), [npm/plugin.d.ts](../../../npm/plugin.d.ts) | The `store` service and its types |
 
 ## 14. Rule check
 
@@ -311,7 +310,7 @@ SessionTitle gate.
 | §4 rule 4 (no business meaning in core) | SessionStore stores text and source without interpreting them; the notice is C6's generic record; Rpc copies the fields |
 | §4 rule 5 (batches) | Not applicable: no Timeline event |
 | §4 rule 6 (model context) | No model-visible effect |
-| §4 rule 7 (public events and services) | SessionTitle uses the public `sessionMetadata` service; clients use the public notice and list fields |
+| §4 rule 7 (public events and services) | SessionTitle uses the public `store` service; clients use the public notice and list fields |
 | §4 rule 8 (infrastructure unchanged) | Timeline, Dispatcher, event formats, assembly, rutis and the Session facade are unchanged. SessionTitle's requirement closes inside SessionStore, its owner, as the overview B.2 supplement records |
 | §4 rule 9 (only decision facts in the Timeline) | The title never enters the Timeline; clients see changes through the notice |
 | §1 (Capability and App Server boundary) | Inside the existing SessionStore plugin and Rpc; no new plugin |
@@ -327,12 +326,12 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
 
 ## 16. Acceptance (flow tests)
 
-1. `setTitle` commits and returns the next revision; `read` returns it. Two v3 clients attached over IPC and
+1. `setTitle` commits and returns the next revision; `readMetadata` returns it. Two v3 clients attached over IPC and
    WebSocket each receive exactly one `session.notice` per commit, in commit order, with `data` equal to the list's
    title fields. A conflict and an unknown Session announce nothing.
 2. Concurrent writers: every commit is announced once, in increasing `titleRevision` order.
 3. A clear (`null`) commits a revision with no title and announces nulls.
-4. `read` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
+4. `readMetadata` and `setTitle` of a Session that was never created, or was deleted: `not_found`.
 5. A failed transaction (a disposable store with a failing trigger): `storage`, no notice, state unchanged; the next
    write at the same revision commits.
 6. A `setTitle` call whose caller awaits the reply and then drops it, while the write is held before its transaction,
@@ -343,7 +342,7 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
 9. An empty store is created at v16. Disposable v15 and v13 stores upgrade in place to the exact v16 schema with
    every business row unchanged and report the upgrade once; v16 schemas with a wrong marker, partial upgrades and
    older schemas are refused and preserved.
-10. A TypeScript Session part running in Node injects `sessionMetadata`, reads and sets the title, and the attached
+10. A TypeScript Session part running in Node injects `store`, reads and sets the title, and the attached
     client receives the notice (`node_` test, run by CI's Node step).
 11. A `setTitle` request without `title` is rejected; the plugin SDK type check covers the call shapes.
 12. Unload: writes admitted before SessionStore starts closing, one in its turn and one waiting for it, commit and
@@ -351,7 +350,7 @@ None. S5b uses C6's `notify`, the existing service catalog and `HostDispatch`, a
     is not in the store after a restart (§6).
 
 Tests: items 1 to 8, 10 and 12 are in [titles.rs](../../../crates/dim-app-server/tests/transport_flow/titles.rs), through
-the `sessionMetadata` service as a Session part injects it and the [session-metadata
+the `store` service as a Session part injects it and the [session-metadata
 fixture](../../../runtime/fixtures/session-metadata.ts); items 6 and 12 hold the write with
 `storage::testing::hold_title_write` (feature `testing`); item 9 is `a_v15_store_upgrades_in_place_once`,
 `a_v13_store_upgrades_in_place_once`, `the_daemon_reports_a_v13_upgrade_on_stderr_once` and the refusal cases in
@@ -369,11 +368,11 @@ fixture](../../../runtime/fixtures/session-metadata.ts); items 6 and 12 hold the
 | D5 | Notice `data` is `{title, titleSource, titleRevision}` | A.2's `{sessionId, title, titleSource, revision}` | The channel already names the Session (C6 D4); one field set for list entries and notices lets clients merge without mapping |
 | D6 | `titleRevision` in v3 list entries | `title` and `titleSource` only | Without it a client cannot order a list reply against a notice (§8) |
 | D7 | List fields for protocol v3 only | All protocol versions | v1 and v2 are frozen and receive no title notices |
-| D8 | Service `sessionMetadata` with `read` and `setTitle`; the Rust binding uses `read` and `set_title` | A.2's method name `metadata` | `sessionMetadata.metadata` repeats itself; `read` matches `settings.read` |
+| D8 | Service `store` with `readMetadata` and `setTitle`; the Rust binding uses `read_metadata` and `set_title` | A.2's method name `metadata` | The name distinguishes the metadata read from other store operations. |
 | D9 | Errors `conflict`, `not_found`, `storage` as data; malformed calls are bridge errors | A `rejected` code as in `sessions` | The three codes are the write's outcomes; a malformed call is a programming error, as in `settings` |
 | D10 | `not_found` for a Session the store does not hold | `session_closed` | Maintainer decision; it is SessionStore's vocabulary, and SessionTitle maps it to `session_not_found` |
 | D11 | SessionStore stores text as given | Validating length and characters | SessionTitle owns the title rules and validates them; checking again would duplicate the contract |
-| D12 | SessionStore itself provides `sessionMetadata` | A part that never reloads | SessionStore reloads only with SqliteStorage (§12) |
+| D12 | SessionStore itself provides `store` | A part that never reloads | SessionStore reloads only with SqliteStorage (§12) |
 | D13 | The same text written again commits a new revision | Treating it as a no-op | SessionTitle Appendix B expects a duplicate rename to rewrite; a no-op would need its own reply |
 | D14 | Admission at the call; unload stops admission, then waits for every admitted write | Admitting a write when it takes its turn, and failing the writes still waiting at unload (the first implementation) | That left a handed-over write without a definite admission: whether it ran depended on whether its task reached the title writer before the disposer did, and a call that arrived during unload was neither refused nor admitted until the write in progress ended. Admitting at the call makes both the handover and the refusal immediate. Titles are written rarely, so waiting for the admitted ones is short. Session files' puts are admitted the same way |
 
@@ -395,8 +394,8 @@ pub struct SessionMetadata { pub revision: u64, pub title: Option<Title> }
 pub struct TitleFields { pub title: Option<String>, pub title_source: Option<TitleSource>, pub title_revision: u64 }
 pub enum MetadataError { Conflict, NotFound, Storage(String) }
 
-impl SessionMetadataService {
-    pub async fn read(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
+impl Store {
+    pub async fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError>;
     /// Admits and starts the write when called, or fails `Storage` once
     /// SessionStore is closing: the call is the handover. Dropping the
     /// returned future loses only the reply.

@@ -55,7 +55,7 @@ test('packed plugin service types compile the author guide and enforce the publi
   });
   const calls = path.join(directory, 'calls.mts');
   writeFileSync(calls, `
-import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, SessionMetadata, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
+import type { Settings, SettingsResult, Sessions, WorkflowFiles, WorkflowFileEntry, WorkflowFilesErrorThrown, SessionPermissions, PermissionState, PermissionPolicy, SessionsErrorThrown, Store, SessionMetadataResult, AuxiliaryModel, AuxiliaryReply, FileScope, FileResult, ToolRegistry, ToolExecute, ToolResult, SessionMethods, SessionMethodHandler, ManagementMethods, MethodHandler, MethodDeclaration, SessionConfig, SessionBroadcast, BranchEvent, Services, AgentErrorThrown, MethodReply, CallChannel, CallChannelError, EventHub, EventHubDeclaration, EventHubDelivery, EventHubErrorThrown, EventHubPublishReply } from 'dimcode/plugin';
 import type { BridgeJsonValue, JsonValue, PromptEntry } from 'dimcode/plugin';
 import type { ConfigureUpdate, InitialPromptConfiguration } from 'dimcode/branch-services.js';
 declare const initial: InitialPromptConfiguration;
@@ -76,7 +76,7 @@ declare const settings: Settings;
 declare const sessions: Sessions;
 declare const permissions: SessionPermissions;
 declare const workflowFiles: WorkflowFiles;
-declare const metadata: SessionMetadata;
+declare const metadata: Store;
 declare const auxiliary: AuxiliaryModel;
 declare const files: FileScope;
 declare const tools: ToolRegistry;
@@ -192,7 +192,7 @@ void hub.publish({ source: 'example', type: 'example.ping', id: 'ping-3' });
 declare const hubError: EventHubErrorThrown;
 const hubCode: 'invalid_params' | 'invalid_event' | 'invalid_declaration' | 'duplicate_source' | 'no_caller_row' | 'unknown_source' | 'unknown_type' | 'too_large' | 'storage' | 'transport' | 'failed' | 'session_closed' | 'branch_missing' | 'branch_ended' | 'reloading' | 'rejected' | 'ambiguous' | 'publication_unknown' = hubError.code;
 void hubCode;
-void metadata.read({ sessionId: at.sessionId });
+void metadata.readMetadata({ sessionId: at.sessionId });
 const titled: Promise<SessionMetadataResult<{ revision: number }>> = metadata.setTitle({
   sessionId: at.sessionId, expectedRevision: 0, title: { text: 'Notebook', source: 'manual' } });
 void titled;

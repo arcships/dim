@@ -11,7 +11,7 @@ use rusqlite::{
 };
 use rutis::Ctx;
 use rutis::host::CtxHost;
-use rutis_bridge::session::{Error, HostDispatch, Reply, Value as RpcValue};
+use rutis_bridge::session::{Error, Reply, Value as RpcValue};
 use serde::{Deserialize, Deserializer, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
@@ -164,11 +164,10 @@ impl TitleWriter {
         let _turn = self.turn.lock().await;
         #[cfg(feature = "testing")]
         testing::pause(&session_id).await;
-        let (id, written) = (session_id.clone(), title.clone());
         let revision = self
             .db
-            .run(move |connection| Ok(write(connection, &id, expected_revision, written.as_ref())))
-            .await??;
+            .set_title(session_id.clone(), expected_revision, title.clone())
+            .await?;
         let data = TitleFields::from(SessionMetadata { revision, title });
         notify(
             &self.ctx,
@@ -183,15 +182,36 @@ impl TitleWriter {
     }
 }
 
+impl SqliteStorage {
+    pub(super) async fn read_metadata(
+        self: &Arc<Self>,
+        session_id: String,
+    ) -> Result<SessionMetadata, MetadataError> {
+        self.run_read(move |connection| Ok(read(connection, &session_id)))
+            .await?
+    }
+
+    pub(super) async fn set_title(
+        self: &Arc<Self>,
+        session_id: String,
+        expected_revision: u64,
+        title: Option<Title>,
+    ) -> Result<u64, MetadataError> {
+        self.run(move |connection| {
+            Ok(write(
+                connection,
+                &session_id,
+                expected_revision,
+                title.as_ref(),
+            ))
+        })
+        .await?
+    }
+}
 impl SessionStore {
     /// The Session's title and revision. Never loads the Session.
     pub async fn metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError> {
-        let id = session_id.to_owned();
-        self.titles
-            .0
-            .db
-            .run_read(move |connection| Ok(read(connection, &id)))
-            .await?
+        self.titles.0.db.read_metadata(session_id.to_owned()).await
     }
     /// Commits `title` as revision `expected_revision + 1` and announces it.
     /// The call is the handover: unless SessionStore is closing, it admits
@@ -287,24 +307,21 @@ struct ReadRequest {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetTitleRequest {
-    session_id: String,
-    expected_revision: u64,
+pub(super) struct SetTitleRequest {
+    pub(super) session_id: String,
+    pub(super) expected_revision: u64,
     /// Required: `null` clears, and an omitted title is refused rather than
     /// read as a clear.
     #[serde(deserialize_with = "present")]
-    title: Option<Title>,
+    pub(super) title: Option<Title>,
 }
 fn present<'de, D: Deserializer<'de>>(value: D) -> Result<Option<Title>, D::Error> {
     Option::deserialize(value)
 }
 /// One request object; anything else is the caller's programming error.
 fn request<T: DeserializeOwned>(args: RpcValue) -> Result<T, Error> {
-    let invalid = |detail: String| {
-        Error::value(format!(
-            "expected one sessionMetadata request object: {detail}"
-        ))
-    };
+    let invalid =
+        |detail: String| Error::value(format!("expected one store request object: {detail}"));
     let Value::Array(args) = args.json()? else {
         return Err(invalid("not an argument list".into()));
     };
@@ -313,73 +330,51 @@ fn request<T: DeserializeOwned>(args: RpcValue) -> Result<T, Error> {
     serde_json::from_value(request).map_err(|error| invalid(error.to_string()))
 }
 /// `{ok: true, value}` or `{ok: false, error: {code, message}}`, as `settings`.
-fn envelope(result: Result<impl Serialize, MetadataError>) -> RpcValue {
+pub(super) fn envelope(result: Result<impl Serialize, MetadataError>) -> Value {
     match result {
         Ok(value) => json!({"ok": true, "value": value}),
         Err(error) => {
             json!({"ok": false, "error": {"code": error.code(), "message": error.to_string()}})
         }
     }
-    .into()
 }
 
-pub use binding::SessionMetadata as SessionMetadataService;
-
-mod binding {
-    use super::*;
-    /// `sessionMetadata` by name for every language (S5b §4.1). It carries no
-    /// caller identity; SessionTitle is the title's one writer by design.
-    pub struct SessionMetadata(pub(in crate::storage) Arc<SessionStore>);
-    impl SessionMetadata {
-        /// Reads committed title metadata without loading the Session.
-        pub async fn read(
-            &self,
-            session_id: &str,
-        ) -> Result<super::SessionMetadata, MetadataError> {
-            self.0.metadata(session_id).await
-        }
-
-        /// Admits the write when called; dropping the returned wait never cancels the write.
-        pub fn set_title(
-            &self,
-            session_id: &str,
-            expected_revision: u64,
-            title: Option<Title>,
-        ) -> impl Future<Output = Result<u64, MetadataError>> + Send + 'static {
-            self.0.set_title(session_id, expected_revision, title)
-        }
+impl super::Store {
+    /// Reads committed title metadata without loading the Session.
+    pub async fn read_metadata(&self, session_id: &str) -> Result<SessionMetadata, MetadataError> {
+        self.0.metadata(session_id).await
     }
 
-    impl HostDispatch for SessionMetadata {
-        fn methods(&self) -> Option<Value> {
-            Some(json!({"read": "async", "setTitle": "async"}))
-        }
-        fn invoke(&self, method: &str, args: RpcValue) -> Reply {
-            match method {
-                "read" => {
-                    let ReadRequest { session_id } = request(args)?;
-                    let store = Self(self.0.clone());
-                    Ok(RpcValue::future(async move {
-                        Ok(envelope(store.read(&session_id).await))
-                    }))
-                }
-                "setTitle" => {
-                    let SetTitleRequest {
-                        session_id,
-                        expected_revision,
-                        title,
-                    } = request(args)?;
-                    let reply = self.set_title(&session_id, expected_revision, title);
-                    Ok(RpcValue::future(async move {
-                        Ok(envelope(
-                            reply.await.map(|revision| json!({"revision": revision})),
-                        ))
-                    }))
-                }
-                _ => Err(Error::value(format!(
-                    "unknown sessionMetadata method {method}"
-                ))),
+    /// Admits the write when called; dropping the returned wait never cancels the write.
+    pub fn set_title(
+        &self,
+        session_id: &str,
+        expected_revision: u64,
+        title: Option<Title>,
+    ) -> impl Future<Output = Result<u64, MetadataError>> + Send + 'static {
+        self.0.set_title(session_id, expected_revision, title)
+    }
+    pub(super) fn title_operation(&self, method: &str, args: RpcValue) -> Reply {
+        match method {
+            "readMetadata" => {
+                let ReadRequest { session_id } = request(args)?;
+                let store = self.clone();
+                Ok(RpcValue::future(async move {
+                    Ok(envelope(store.read_metadata(&session_id).await).into())
+                }))
             }
+            "setTitle" => {
+                let SetTitleRequest {
+                    session_id,
+                    expected_revision,
+                    title,
+                } = request(args)?;
+                let reply = self.set_title(&session_id, expected_revision, title);
+                Ok(RpcValue::future(async move {
+                    Ok(envelope(reply.await.map(|revision| json!({"revision": revision}))).into())
+                }))
+            }
+            _ => Err(Error::value(format!("unknown store method {method}"))),
         }
     }
 }

@@ -15,7 +15,7 @@ use dim_agent_types::{
 };
 use dim_app_server::{
     settings::{Settings, SettingsScope, SourceDeclaration},
-    storage::{MetadataError, SessionMetadataService, Title, TitleSource},
+    storage::{MetadataError, Store, Title, TitleSource},
 };
 use regex::Regex;
 use rutis::Ctx;
@@ -32,7 +32,7 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const SOURCE: &str = "session-title";
 
-/// Installs SessionTitle in a host profile that provides Settings and SessionMetadataService.
+/// Installs SessionTitle in a host profile that provides Settings and Store.
 pub fn install(builder: &mut AgentBuilder) {
     builder.plugin(|names| Ok(Box::new(SessionTitlePlugin::new(names)?)));
 }
@@ -139,7 +139,7 @@ impl DynPlugin for SessionTitlePlugin {
 struct SessionTitle {
     settings: Key<Settings>,
     tree: Key<TreeCommands>,
-    store: Key<SessionMetadataService>,
+    store: Key<Store>,
     auxiliary: Key<AuxiliaryModel>,
     identity: Key<SessionIdentity>,
     config: Key<SessionConfig>,
@@ -287,7 +287,7 @@ struct Owner {
     id: String,
     settings: Arc<Settings>,
     tree: Arc<TreeCommands>,
-    store: Arc<SessionMetadataService>,
+    store: Arc<Store>,
     auxiliary: Arc<AuxiliaryModel>,
     state: Mutex<State>,
     stop: CancellationToken,
@@ -310,7 +310,7 @@ impl Owner {
     /// `maxLength`, as the first manual title. A `Conflict` means another
     /// writer titled the Session first, and that title wins.
     async fn initial(&self, requested: String) {
-        let stored = self.store.read(&self.id).await;
+        let stored = self.store.read_metadata(&self.id).await;
         let Ok(stored) = stored else {
             tracing::info!(target: "session_title", outcome = "initial_failed", "the title record is unreadable");
             return;
@@ -346,7 +346,7 @@ impl Owner {
             if !self.current(epoch) || document.as_ref().is_ok_and(|d| !d.enabled) {
                 return Ok("skipped");
             }
-            let stored = self.store.read(&self.id).await;
+            let stored = self.store.read_metadata(&self.id).await;
             if !self.current(epoch) || stored.as_ref().is_ok_and(|m| m.title.is_some()) {
                 return Ok("skipped");
             }
@@ -720,7 +720,7 @@ impl Owner {
             return Err(RpcError::invalid("Invalid title length"));
         }
         for _ in 0..=3 {
-            let stored = self.store.read(&self.id).await;
+            let stored = self.store.read_metadata(&self.id).await;
             if self.stop.is_cancelled() || cancel.is_cancelled() {
                 return Err(reloading());
             }

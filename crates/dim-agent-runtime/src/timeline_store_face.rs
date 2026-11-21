@@ -232,16 +232,16 @@ enum Request {
     CreateSession(Box<TimelineCreateRequest>),
     ReleaseSession(TimelineSessionRequest),
     RollbackSession(TimelineSessionRequest),
-    SaveSnapshot(SaveSnapshot),
+    SaveSnapshot(TimelineSaveSnapshotRequest),
     Branches(TimelineSessionRequest),
     Head(TimelineKey),
-    ReadPage(Page),
-    ReadSegments(Segments),
-    Query(Box<Query>),
+    ReadPage(TimelinePageRequest),
+    ReadSegments(TimelineSegmentsRequest),
+    Query(Box<TimelineQueryRequest>),
     Trace(TimelinePositionRequest),
     BatchEnd(TimelinePositionRequest),
     BatchEndAt(TimelinePositionRequest),
-    LatestSnapshot(Snapshot),
+    LatestSnapshot(TimelineSnapshotRequest),
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -256,10 +256,10 @@ pub struct TimelineCreateRequest {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SaveSnapshot {
-    session_id: String,
-    branch_id: String,
-    snapshot: RecoverySnapshot,
+pub struct TimelineSaveSnapshotRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    pub snapshot: RecoverySnapshot,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -276,32 +276,32 @@ struct Close {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Page {
-    session_id: String,
-    branch_id: String,
-    after: u64,
-    limit: usize,
-    through: u64,
+pub struct TimelinePageRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    pub after: u64,
+    pub limit: usize,
+    pub through: u64,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Segments {
-    session_id: String,
-    segments: Vec<Segment>,
+pub struct TimelineSegmentsRequest {
+    pub session_id: String,
+    pub segments: Vec<TimelineSegment>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Segment {
-    branch_id: String,
-    from: u64,
-    through: u64,
+pub struct TimelineSegment {
+    pub branch_id: String,
+    pub from: u64,
+    pub through: u64,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Query {
-    scope: TimelineReadScope,
-    query: QuerySpec,
-    page: Option<QueryPage>,
+pub struct TimelineQueryRequest {
+    pub scope: TimelineReadScope,
+    pub query: QuerySpec,
+    pub page: Option<QueryPage>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -312,11 +312,11 @@ pub struct TimelinePositionRequest {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Snapshot {
-    session_id: String,
-    branch_id: String,
-    through: u64,
-    interpreter: String,
+pub struct TimelineSnapshotRequest {
+    pub session_id: String,
+    pub branch_id: String,
+    pub through: u64,
+    pub interpreter: String,
 }
 
 impl HostDispatch for TimelineStoreBinding {

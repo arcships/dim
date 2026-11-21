@@ -56,47 +56,6 @@ impl WorktreeAssociation {
     }
 }
 
-/// What `worktreeAssociations.associate` fails with: `{code, message}`.
-#[derive(Debug, serde::Serialize, thiserror::Error)]
-#[serde(tag = "code", rename_all = "snake_case")]
-pub enum WorktreeAssociationError {
-    #[error("{message}")]
-    Failed { message: String },
-}
-
-/// An owner's write of one association, bound as the face's one operation.
-/// Missing Sessions and storage failures fail without publishing either
-/// record; the closure says which by its message.
-pub type WorktreeAssociationWrite = Arc<
-    dyn Fn(WorktreeAssociation) -> BoxFuture<'static, Result<(), WorktreeAssociationError>>
-        + Send
-        + Sync,
->;
-
-/// The `worktreeAssociations` face: the association store records a verified
-/// directory and its Session subtree atomically. The owner binds its write; a
-/// Rust reader calls [`Self::associate`] directly and a part of another
-/// language calls the same operation by name.
-pub struct WorktreeAssociations(WorktreeAssociationWrite);
-
-impl WorktreeAssociations {
-    /// Binds an owner's write as the face's operation.
-    pub fn new(associate: WorktreeAssociationWrite) -> Self {
-        Self(associate)
-    }
-}
-
-#[rutis::service]
-impl WorktreeAssociations {
-    /// Records `request`'s directory and Session subtree as one association.
-    pub async fn associate(
-        &self,
-        request: WorktreeAssociation,
-    ) -> Result<(), WorktreeAssociationError> {
-        (self.0)(request).await
-    }
-}
-
 /// Facts for one resolved path under one branch's file-access policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileFacts {
@@ -379,7 +338,9 @@ impl Worktrees {
         }
         let associations = self
             .ctx
-            .get::<WorktreeAssociations>()
+            .get_at::<dyn rutis_bridge::session::HostDispatch>(&rutis_bridge::session::host_key(
+                "store",
+            ))
             .ok_or_else(|| HostError::failed("Worktree association storage is unavailable"))?;
         let target = path.clone();
         let directory = blocking(move || existing_directory(&target)).await?;
@@ -430,8 +391,10 @@ impl Worktrees {
             return Err(cancelled());
         }
         let request = association(&self.session, &root)?;
-        associations
-            .associate(request)
+        let reply = associations
+            .invoke("associateWorktree", serde_json::json!([request]).into())
+            .map_err(|error| HostError::failed(error.to_string()))?;
+        rutis_bridge::session::settle(reply)
             .await
             .map_err(|error| HostError::failed(error.to_string()))?;
         if self.stopping.is_cancelled() || self.lifecycle.phase() != SessionPhase::Active {

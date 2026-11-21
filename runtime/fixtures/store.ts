@@ -13,7 +13,7 @@ export default definePlugin({
     let release: (() => void) | undefined
     await ctx.use<ManagementMethods>('managementMethods').register(
       'storefixture',
-      ['status', 'commit_round', 'timeline_directory', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
+      ['status', 'commit_round', 'timeline_directory', 'release_timeline', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
       async (call: { method: string; params: any }): Promise<MethodReply> => {
         const params = call.params
         if (call.method === 'storefixture.status') return { kind: 'value', value: {} }
@@ -24,11 +24,36 @@ export default definePlugin({
           const { sequence } = await sqlite.head(key)
           assert.deepEqual(await sqlite.batchEnd({ ...key, sequence }), {})
           assert.deepEqual(await sqlite.batchEndAt({ ...key, sequence }), { sequence })
+          if (sequence > 0) {
+            const { events } = await sqlite.readPage({ ...key, after: 0, through: sequence, limit: sequence })
+            assert.deepEqual(events.map(record => record.event.id),
+              Array.from({ length: sequence }, (_, index) => sessionId + '-' + (index + 1)))
+            assert.deepEqual(await sqlite.readSegments({ sessionId, segments: [{ branchId: 'main', from: 1, through: sequence }] }), { segments: [events] })
+            assert.deepEqual(await sqlite.trace({ ...key, sequence }), { trace: events[sequence - 1].trace })
+            const snapshot = { sequence, event_id: events[sequence - 1].event.id, interpreter: 'fixture', state: '{}' }
+            await sqlite.saveSnapshot({ ...key, snapshot })
+            assert.deepEqual(await sqlite.latestSnapshot({ ...key, through: sequence, interpreter: 'fixture' }), { snapshot })
+            const scope = { key, through: sequence, segments: [{ branchId: 'main', from: 1, through: sequence, storedThrough: sequence, tail: [] }] }
+            const query = await sqlite.query({ scope, query: { select: { kind: 'count' } } })
+            assert.deepEqual(query, { result: { kind: 'count', count: sequence }, next: null })
+          }
           return { kind: 'value', value: {
             ...await sqlite.sessionConfig({ sessionId }),
             ...await sqlite.branches({ sessionId }),
             sequence,
           } }
+        }
+        if (call.method === 'storefixture.release_timeline') {
+          const { sessionId } = params
+          const session = { sessionId }
+          assert.deepEqual(await sqlite.readMetadata(session), await store.readMetadata(session))
+          assert.deepEqual(await sqlite.setTitle({ sessionId, expectedRevision: 0, title: { text: 'restored', source: 'manual' } }),
+            { ok: true, value: { revision: 1 } })
+          assert.deepEqual(await store.readMetadata(session), { ok: true, value: { revision: 1, title: { text: 'restored', source: 'manual' } } })
+          assert.deepEqual(await sqlite.releaseSession(session), {})
+          assert.deepEqual(await sqlite.rollbackSession(session), {})
+          assert.deepEqual(await sqlite.sessionConfig(session), { config: null })
+          return { kind: 'value', value: {} }
         }
         if (call.method === 'storefixture.commit_round') return { kind: 'value', value: await sqlite.commitTimelineRound(params) }
         if (call.method === 'storefixture.selection') {
@@ -48,12 +73,23 @@ export default definePlugin({
         if (call.method === 'storefixture.file_ownership') {
           const { file, path } = params
           const { sessionId } = file
+          const session = { sessionId }
+          assert.deepEqual(await sqlite.hasRecords(session), await store.hasRecords(session))
+          assert.deepEqual(await sqlite.owner(session), await store.owner(session))
+          assert.deepEqual(await sqlite.creationRecord(session), await store.creationRecord(session))
+          assert.deepEqual(await sqlite.sessionConfigText(session), await store.sessionConfigText(session))
+          assert.deepEqual(await sqlite.grants(session), await store.grants(session))
+          assert.deepEqual(await sqlite.worktreeDirectories({}), await store.worktreeDirectories({}))
           assert.equal(await sqlite.commitFile({ ...file, generation: 'other' }), 'superseded')
           assert.equal(await sqlite.commitFile(file), 'owned')
           assert.equal(await sqlite.ownsFile({ sessionId, fileId: file.fileId }), true)
           const abandoned = { ...file, fileId: 'fixture-abandoned' }
           assert.equal(await sqlite.reserveFile(abandoned), true)
           assert.equal(await sqlite.abandonFile({ fileId: abandoned.fileId, generation: file.generation }), 1)
+          assert.deepEqual(await sqlite.recordedFiles({ names: [file.fileId, 'absent'] }), [file.fileId])
+          assert.ok((await sqlite.unownedFiles({})).includes(abandoned.fileId))
+          assert.equal(await sqlite.deleteIfUnowned({ fileId: file.fileId }), 0)
+          assert.equal(await sqlite.deleteIfUnowned({ fileId: abandoned.fileId }), 1)
           assert.equal(await sqlite.registerOutput({ sessionId: 'missing', path }), false)
           assert.equal(await sqlite.ownsFile({ sessionId, fileId: 'absent' }), false)
           assert.equal(await sqlite.ownsOutput({ sessionId, path }), false)
@@ -99,6 +135,8 @@ export default definePlugin({
         if (call.method === 'storefixture.invalid_id') {
           const errors: { code: string; message: string }[] = []
           for (const operation of [
+            () => sqlite.createOwnedSession(params.create),
+            () => sqlite.fork({ sourceSessionId: 'wire-source', sessionId: params.create.sessionId, at: 0, configText: '{}' }),
             () => store.createOwnedSession(params.create),
             () => store.fork({ sourceSessionId: 'wire-source', sessionId: params.create.sessionId, at: 0, configText: '{}' }),
             () => store.delete({ sessionId: params.create.sessionId }),
@@ -126,14 +164,19 @@ export default definePlugin({
           }
         }
         if (call.method === 'storefixture.remove') {
+          let lateAssociation: Promise<unknown> | undefined
           const removed = await store.removeWorktree(params.directory, async path => {
             assert.deepEqual(await store.worktreeUsages(params.directory), { usages: [] })
+            lateAssociation = sqlite.associateWorktree({ ...params.directory, sessionId: params.sessionId, subtree: path })
+              .then(() => null, (error: unknown) => error)
             const gate = new Promise<void>(resolve => { release = resolve })
             await writeFile(`${params.ready}.pending`, path)
             await rename(`${params.ready}.pending`, params.ready)
             await gate
             await rm(path, { recursive: true })
           })
+          const error = await lateAssociation
+          assert.ok(error instanceof Error && error.message.includes('the worktree root no longer exists'))
           return { kind: 'value', value: removed }
         }
         const { sessionId, forkId, grant } = params
@@ -147,6 +190,15 @@ export default definePlugin({
         const directories = await store.worktreeDirectories({})
         assert.equal(directories.directories.length, 1)
         const directory = directories.directories[0]
+        const association = { sessionId, repository: directory.repository, root: directory.root, subtree: directory.root }
+        assert.deepEqual(await store.associateWorktree(association), {})
+        assert.deepEqual(await sqlite.associateWorktree(association), {})
+        for (const repository of [store, sqlite]) {
+          await assert.rejects(() => repository.associateWorktree({ ...association, sessionId: 'missing' }),
+            (error: unknown) => error instanceof Error && 'code' in error && error.code === 'failed' && error.message.includes('missing'))
+        }
+        assert.deepEqual(await sqlite.worktreeUsages({ repository: directory.repository, root: directory.root }),
+          await store.worktreeUsages({ repository: directory.repository, root: directory.root }))
         assert.deepEqual(await store.sessionsUnderWorkspace({ root: directory.root }), { sessionIds: [sessionId] })
         assert.deepEqual(await store.worktreeUsages({ repository: directory.repository, root: directory.root }), {
           usages: [{ sessionId, subtree: directory.root }],
@@ -186,6 +238,14 @@ export default definePlugin({
         } catch (error) {
           if (!(error instanceof Error) || !('code' in error) || typeof error.code !== 'string') throw error
           missing = { code: error.code, message: error.message }
+        }
+        assert.ok(missing)
+        await assert.rejects(() => sqlite.setSessionLanguage({ sessionId: 'wire-missing', language: null }),
+          { code: missing.code, message: missing.message })
+        for (const repository of [store, sqlite]) {
+          await assert.rejects(() => repository.addGrant({ sessionId: 'wire-missing', path: grant, kind: 'dir', mode: 'read' }),
+            { code: 'storage' })
+          await repository.removeGrant({ sessionId: 'wire-missing', path: grant })
         }
         return { kind: 'value', value: { grants, config, fork, removed, absent, origin, owner, missing, catalog } }
       },

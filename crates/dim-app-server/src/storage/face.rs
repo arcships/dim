@@ -18,6 +18,10 @@ use tokio_util::sync::CancellationToken;
 pub struct Store(pub(super) Arc<SessionStore>);
 
 impl Store {
+    pub(crate) fn bind_timeline(&self, builder: &mut dim_agent_runtime::AgentBuilder) {
+        builder.timeline_store(self.0.timeline_store());
+    }
+
     pub fn session_config(
         &self,
         session_id: &str,
@@ -161,6 +165,17 @@ impl Store {
 enum Request {
     SessionConfig(Session),
     Query(Box<Query>),
+    Delete(Session),
+    Fork(Fork),
+    CreateOwnedSession(Box<Create>),
+    AssociateWorktree(dim_agent_capabilities::file_access::WorktreeAssociation),
+    RemoveWorktreeDirectory(Directory),
+    #[serde(untagged)]
+    Rows(SessionRows),
+}
+#[derive(Deserialize)]
+#[serde(tag = "method", content = "request", rename_all = "camelCase")]
+pub(super) enum SessionRows {
     AddGrant(Grant),
     RemoveGrant(Path),
     Grants(Session),
@@ -168,32 +183,93 @@ enum Request {
     CreationRecord(Session),
     Owner(Session),
     HasRecords(Session),
-    Delete(Session),
-    Fork(Fork),
     SessionConfigText(Session),
-    CreateOwnedSession(Box<Create>),
     WorktreeDirectories(Empty),
     SessionsUnderWorkspace(Root),
-    RemoveWorktreeDirectory(Directory),
     WorktreeUsages(Directory),
+}
+
+impl SessionRows {
+    pub(super) async fn execute(self, db: &Arc<super::SqliteStorage>) -> Result<serde_json::Value> {
+        Ok(match self {
+            Self::AddGrant(p) => {
+                db.add_grant(&p.session_id, p.path.into(), p.kind, p.mode)
+                    .await?;
+                json!({})
+            }
+            Self::RemoveGrant(p) => {
+                db.remove_grant(&p.session_id, p.path.into()).await?;
+                json!({})
+            }
+            Self::Grants(p) => json!({"grants":db.grants(&p.session_id).await?}),
+            Self::SetSessionLanguage(p) => {
+                db.set_session_language(&p.session_id, p.language).await?;
+                json!({})
+            }
+            Self::CreationRecord(p) => {
+                let (origin, leader) = db.creation_record(&p.session_id).await?;
+                json!({"origin":origin,"leaderSessionId":leader})
+            }
+            Self::Owner(p) => json!({"agentId":db.owner(&p.session_id).await?}),
+            Self::HasRecords(p) => {
+                json!({"exists":db.has_records(&p.session_id).await?})
+            }
+            Self::SessionConfigText(p) => {
+                json!({"configText":db.session_config_text(&p.session_id).await?})
+            }
+            Self::WorktreeDirectories(_) => {
+                let directories: Vec<_> = db
+                    .worktree_directories()
+                    .await?
+                    .into_iter()
+                    .map(|entry| {
+                        json!({
+                            "repository":entry.directory.repository,
+                            "root":entry.directory.root,
+                            "lastUsedAtMs":entry.last_used_at_ms,
+                        })
+                    })
+                    .collect();
+                json!({"directories":directories})
+            }
+            Self::SessionsUnderWorkspace(p) => {
+                let root = std::path::Path::new(&p.root);
+                let ids = db.sessions_under_workspace(root).await?;
+                json!({"sessionIds":ids})
+            }
+            Self::WorktreeUsages(p) => {
+                let directory = WorktreeDirectory {
+                    repository: p.repository.into(),
+                    root: p.root.into(),
+                };
+                let usages: Vec<_> = db
+                    .worktree_usages(directory)
+                    .await?
+                    .into_iter()
+                    .map(|entry| json!({"sessionId":entry.session_id,"subtree":entry.subtree}))
+                    .collect();
+                json!({"usages":usages})
+            }
+        })
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Empty {}
+pub(super) struct Empty {}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Session {
-    session_id: String,
+pub(super) struct Session {
+    pub(super) session_id: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Path {
+pub(super) struct Path {
     session_id: String,
     path: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Grant {
+pub(super) struct Grant {
     session_id: String,
     path: String,
     kind: GrantKind,
@@ -201,46 +277,57 @@ struct Grant {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Language {
+pub(super) struct Language {
     session_id: String,
     #[serde(deserialize_with = "Option::<ReplyLanguage>::deserialize")]
     language: Option<ReplyLanguage>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Fork {
-    source_session_id: String,
-    session_id: String,
-    at: u64,
-    config_text: String,
+pub(super) struct Fork {
+    pub(super) source_session_id: String,
+    pub(super) session_id: String,
+    pub(super) at: u64,
+    pub(super) config_text: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Create {
-    session_id: String,
-    config: SessionConfig,
-    agent_id: String,
-    protocol_version: u32,
-    leader_session_id: Option<String>,
-    origin: SessionOrigin,
-    worktree: Option<Worktree>,
+pub(super) struct Create {
+    pub(super) session_id: String,
+    pub(super) config: SessionConfig,
+    pub(super) agent_id: String,
+    pub(super) protocol_version: u32,
+    pub(super) leader_session_id: Option<String>,
+    pub(super) origin: SessionOrigin,
+    pub(super) worktree: Option<Worktree>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Worktree {
-    repository: String,
-    root: String,
-    subtree: String,
+pub(super) struct Worktree {
+    pub(super) repository: String,
+    pub(super) root: String,
+    pub(super) subtree: String,
+}
+impl From<Worktree> for PreparedWorktree {
+    fn from(worktree: Worktree) -> Self {
+        Self {
+            directory: WorktreeDirectory {
+                repository: worktree.repository.into(),
+                root: worktree.root.into(),
+            },
+            subtree: worktree.subtree.into(),
+        }
+    }
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Directory {
-    repository: String,
-    root: String,
+pub(super) struct Directory {
+    pub(super) repository: String,
+    pub(super) root: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Root {
+pub(super) struct Root {
     root: String,
 }
 
@@ -253,12 +340,12 @@ struct Query {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Catalog {
-    request: crate::protocol::Catalog,
-    agent: Option<String>,
-    version: u32,
-    hosts: Vec<String>,
-    closed: Vec<String>,
+pub(super) struct Catalog {
+    pub(super) request: crate::protocol::Catalog,
+    pub(super) agent: Option<String>,
+    pub(super) version: u32,
+    pub(super) hosts: Vec<String>,
+    pub(super) closed: Vec<String>,
 }
 
 impl SessionStore {
@@ -288,11 +375,14 @@ impl HostDispatch for Store {
             "setSessionLanguage":"async", "creationRecord":"async", "owner":"async",
             "hasRecords":"async", "delete":"async", "fork":"async",
             "sessionConfigText":"async", "createOwnedSession":"async",
-            "worktreeDirectories":"async", "sessionsUnderWorkspace":"async",
+            "readMetadata":"async", "setTitle":"async","associateWorktree":"async","worktreeDirectories":"async", "sessionsUnderWorkspace":"async",
             "removeWorktreeDirectory":"async", "worktreeUsages":"async", "removeWorktree":"async"
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        if matches!(method, "readMetadata" | "setTitle") {
+            return self.title_operation(method, args);
+        }
         if method == "removeWorktree" {
             let mut args = args.list()?.into_iter();
             let directory = args
@@ -375,6 +465,7 @@ impl HostDispatch for Store {
         }
         let request: Request = serde_json::from_value(json!({"method":method,"request":request}))
             .map_err(|error| Error::value(error.to_string()))?;
+        let association = matches!(&request, Request::AssociateWorktree(_));
         let owner = self.clone();
         Ok(Value::future(async move {
             let result: dim_agent_runtime::Result<serde_json::Value> = async {
@@ -388,31 +479,6 @@ impl HostDispatch for Store {
                         serde_json::to_value(result)
                             .map_err(|error| AgentError::Storage(error.to_string()))?
                     }
-                    Request::AddGrant(p) => {
-                        owner
-                            .add_grant(&p.session_id, p.path.into(), p.kind, p.mode)
-                            .await?;
-                        json!({})
-                    }
-                    Request::RemoveGrant(p) => {
-                        owner.remove_grant(&p.session_id, p.path.into()).await?;
-                        json!({})
-                    }
-                    Request::Grants(p) => json!({"grants":owner.grants(&p.session_id).await?}),
-                    Request::SetSessionLanguage(p) => {
-                        owner
-                            .set_session_language(&p.session_id, p.language)
-                            .await?;
-                        json!({})
-                    }
-                    Request::CreationRecord(p) => {
-                        let (origin, leader) = owner.creation_record(&p.session_id).await?;
-                        json!({"origin":origin,"leaderSessionId":leader})
-                    }
-                    Request::Owner(p) => json!({"agentId":owner.owner(&p.session_id).await?}),
-                    Request::HasRecords(p) => {
-                        json!({"exists":owner.has_records(&p.session_id).await?})
-                    }
                     Request::Delete(p) => {
                         json!({"removed":owner.delete_session(&p.session_id).await?})
                     }
@@ -422,17 +488,8 @@ impl HostDispatch for Store {
                             .await?;
                         json!({})
                     }
-                    Request::SessionConfigText(p) => {
-                        json!({"configText":owner.session_config_text(&p.session_id).await?})
-                    }
                     Request::CreateOwnedSession(p) => {
-                        let worktree = p.worktree.map(|worktree| PreparedWorktree {
-                            directory: WorktreeDirectory {
-                                repository: worktree.repository.into(),
-                                root: worktree.root.into(),
-                            },
-                            subtree: worktree.subtree.into(),
-                        });
+                        let worktree = p.worktree.map(Into::into);
                         owner
                             .create_owned_session(
                                 &p.session_id,
@@ -446,25 +503,12 @@ impl HostDispatch for Store {
                             .await?;
                         json!({})
                     }
-                    Request::WorktreeDirectories(_) => {
-                        let directories: Vec<_> = owner
-                            .worktree_directories()
-                            .await?
-                            .into_iter()
-                            .map(|entry| {
-                                json!({
-                                    "repository":entry.directory.repository,
-                                    "root":entry.directory.root,
-                                    "lastUsedAtMs":entry.last_used_at_ms,
-                                })
-                            })
-                            .collect();
-                        json!({"directories":directories})
-                    }
-                    Request::SessionsUnderWorkspace(p) => {
-                        let root = std::path::Path::new(&p.root);
-                        let ids = owner.sessions_under_workspace(root).await?;
-                        json!({"sessionIds":ids})
+                    Request::AssociateWorktree(p) => {
+                        owner
+                            .0
+                            .associate_worktree(&p.session_id, p.directory(), p.subtree.into())
+                            .await?;
+                        json!({})
                     }
                     Request::RemoveWorktreeDirectory(p) => {
                         let removed = owner
@@ -475,29 +519,25 @@ impl HostDispatch for Store {
                             .await?;
                         json!({"removed":removed})
                     }
-                    Request::WorktreeUsages(p) => {
-                        let directory = WorktreeDirectory {
-                            repository: p.repository.into(),
-                            root: p.root.into(),
-                        };
-                        let usages: Vec<_> = owner
-                            .worktree_usages(directory)
-                            .await?
-                            .into_iter()
-                            .map(|entry| {
-                                json!({"sessionId":entry.session_id,"subtree":entry.subtree})
-                            })
-                            .collect();
-                        json!({"usages":usages})
-                    }
+                    Request::Rows(rows) => rows.execute(&owner.0.timeline.db).await?,
                 })
             }
             .await;
-            result.map(Value::from).map_err(failure)
+            result.map(Value::from).map_err(|error| {
+                if association {
+                    association_failure(error)
+                } else {
+                    failure(error)
+                }
+            })
         }))
     }
 }
-fn failure(error: AgentError) -> Error {
+pub(super) fn association_failure(error: AgentError) -> Error {
+    rutis_bridge::exports::failure("StoreError", "failed", error.to_string(), None)
+}
+
+pub(super) fn failure(error: AgentError) -> Error {
     let code = match &error {
         AgentError::InvalidInput(_) => "invalid",
         AgentError::Closed(_) => "closed",
