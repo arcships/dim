@@ -187,6 +187,10 @@ fn consume<'a>(
 }
 
 impl HostDispatch for ModelHost {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn methods(&self) -> Option<serde_json::Value> {
         Some(json!({"invoke":"async"}))
     }

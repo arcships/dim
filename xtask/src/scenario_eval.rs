@@ -1024,14 +1024,9 @@ async fn rejudge_with(
 /// One saved run judged again: a run that failed before judging keeps its
 /// outcome and is not judged; every other run's view is read from its saved
 /// `judge-view.jsonl` and judged afresh.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one parameter per input a re-judging run carries"
-)]
 async fn rejudge_one(
     source: &Path,
     host: &Arc<ModelHost>,
-
     judge: &ModelSelection,
     scenario: &Scenario,
     saved: &SavedRun,
@@ -6081,7 +6076,6 @@ async fn judge_window(
 /// stays unusable leaves every probe `unparsed` (model-prompts §8.1).
 async fn judge_export(
     host: &Arc<ModelHost>,
-
     judge: &ModelSelection,
     scenario: &Scenario,
     view: &str,

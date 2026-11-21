@@ -610,7 +610,7 @@ impl DynPlugin for ModelProviderPlugin {
             let timeline = ctx.require_at(&self.timeline)?;
             let dispatcher = ctx.require_at(&self.dispatcher)?;
             let context = ctx.require_at(&self.context)?;
-            let host = ModelHost::from_scope(ctx)?;
+            let host = ModelHost::from_scope(ctx, &self.host)?;
             let files = self.files.as_ref().and_then(|key| ctx.get_at(key));
             let identity = ctx.require_at(&self.identity)?;
             let service = Arc::new(ModelProvider {

@@ -1302,7 +1302,7 @@ export type AgentErrorThrown = RustError<"AgentError", "InvalidInput" | "Closed"
 export type ApprovalRespondErrorThrown = RustError<"ApprovalRespondError", "Unknown" | "Cancelled" | "Closed", undefined>
 
 /** What a method returning `Err(HostError)` throws. */
-export type HostErrorThrown = RustError<"HostError", "Failed" | "Cancelled", undefined>
+export type HostErrorThrown = RustError<"HostError", "failed" | "cancelled", import('./plugin.js').ModelInvocationError>
 
 /** What a method returning `Err(ListenAddressesError)` throws. */
 export type ListenAddressesErrorThrown = RustError<"ListenAddressesError", "invalid_path", ListenAddressesError>

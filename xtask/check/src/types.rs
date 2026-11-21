@@ -41,6 +41,10 @@ fn declarations(root: &Path) -> Result<String> {
             "dim_agent_types::ModelConfig",
             "import('./plugin.js').ModelConfig",
         )
+        .declared(
+            "dim_agent_capabilities::host::HostError",
+            "import('./plugin.js').ModelInvocationError",
+        )
         .declared("std::num::NonZeroU64", "number | bigint")
         .declared(
             "dim_agent_types::ToolCall",
