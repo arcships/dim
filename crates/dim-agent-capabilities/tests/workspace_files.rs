@@ -297,31 +297,65 @@ async fn replacement_preserves_permissions_and_open_original() {
     }
 }
 
+/// The umask a child run of [`a_new_file_takes_the_process_umask`] uses, in
+/// octal. The test runner's own umask is unknown, so the mode a new file takes
+/// is fixed by running this test again in a child process under a known one.
+#[cfg(unix)]
+const CHILD_UMASK: &str = "DIM_TEST_NEW_FILE_UMASK";
+
 #[cfg(unix)]
 #[tokio::test]
-async fn a_new_file_takes_the_umask_default_permissions() {
+async fn a_new_file_takes_the_process_umask() {
     use std::os::unix::fs::PermissionsExt;
-    let workspace = Workspace::new();
-    // A file this test creates directly takes `0o666 & !umask`; `write` must
-    // create a new file with that same mode instead of a private one.
-    let control = workspace.path("control");
-    fs::write(&control, b"control\n").unwrap();
-    let expected = fs::metadata(&control).unwrap().permissions().mode() & 0o777;
-    let reads = branch();
-    ok(&workspace
-        .call(&reads, "write", json!({"path": "new", "content": "text\n"}))
-        .await);
-    assert_eq!(workspace.bytes("new"), b"text\n");
-    assert_eq!(
-        fs::metadata(workspace.path("new"))
+    if let Some(umask) = std::env::var_os(CHILD_UMASK) {
+        let umask = u32::from_str_radix(umask.to_str().unwrap(), 8).unwrap();
+        let workspace = Workspace::new();
+        let reads = branch();
+        ok(&workspace
+            .call(&reads, "write", json!({"path": "new", "content": "text\n"}))
+            .await);
+        assert_eq!(workspace.bytes("new"), b"text\n");
+        let mode = fs::metadata(workspace.path("new"))
             .unwrap()
             .permissions()
             .mode()
-            & 0o777,
-        expected,
-        "a new file takes the mode a directly created file takes"
-    );
-    assert_eq!(fs::read_dir(&workspace.root).unwrap().count(), 2);
+            & 0o777;
+        println!("new file mode {mode:03o}");
+        assert_eq!(
+            mode,
+            0o666 & !umask,
+            "a new file created under umask {umask:03o}"
+        );
+        return;
+    }
+    let binary = std::env::current_exe().unwrap();
+    for umask in ["022", "002"] {
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"umask "$1" && exec "$0" a_new_file_takes_the_process_umask --nocapture"#,
+            ])
+            .arg(&binary)
+            .arg(umask)
+            .env(CHILD_UMASK, umask)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success(),
+            "umask {umask}: {stdout}{}",
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "umask {umask} ran the child test: {stdout}"
+        );
+        let expected = 0o666 & !u32::from_str_radix(umask, 8).unwrap();
+        assert!(
+            stdout.contains(&format!("new file mode {expected:03o}")),
+            "umask {umask}: {stdout}"
+        );
+    }
 }
 
 #[test]

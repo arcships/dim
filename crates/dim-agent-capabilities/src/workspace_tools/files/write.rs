@@ -328,57 +328,34 @@ pub(super) fn write_target(
             false,
         )));
     }
-    struct Temporary<'a> {
-        target: &'a Target,
-        name: std::ffi::OsString,
-        file: std::fs::File,
-    }
-    impl Drop for Temporary<'_> {
-        fn drop(&mut self) {
-            if self.target.staged_owned(&self.name, &self.file) {
-                #[cfg(windows)]
-                if let Ok(metadata) = self.file.metadata() {
-                    let mut permissions = metadata.permissions();
-                    permissions.set_readonly(false);
-                    let _ = self.file.set_permissions(permissions);
-                }
-                self.target.remove_staged(&self.name);
-            }
-        }
-    }
-    let staged = std::ffi::OsString::from(format!(".dim-write-{}", uuid::Uuid::new_v4()));
-    let file = match target.create_staged(&staged, original.is_some()) {
-        Ok(file) => file,
+    let name = std::ffi::OsString::from(format!(".dim-write-{}", uuid::Uuid::new_v4()));
+    let mut staged = match target.create_staged(name, original.is_some()) {
+        Ok(staged) => staged,
         Err(TargetError::Refused) => return Ok(Err(refused(path))),
         Err(TargetError::Io(error)) => return Ok(Err(write_failure(&error, display, false))),
     };
-    let mut temporary = Temporary {
-        target,
-        name: staged.clone(),
-        file,
-    };
     let prepare = (|| -> std::io::Result<()> {
-        temporary.file.write_all(bytes)?;
+        staged.file_mut().write_all(bytes)?;
         if let Some(original) = original {
             #[cfg(unix)]
             {
                 use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
                 let metadata = original.metadata()?;
-                let staged = temporary.file.metadata()?;
-                if (metadata.uid(), metadata.gid()) != (staged.uid(), staged.gid())
+                let prepared = staged.file().metadata()?;
+                if (metadata.uid(), metadata.gid()) != (prepared.uid(), prepared.gid())
                     && unsafe {
-                        libc::fchown(temporary.file.as_raw_fd(), metadata.uid(), metadata.gid())
+                        libc::fchown(staged.file().as_raw_fd(), metadata.uid(), metadata.gid())
                     } != 0
                 {
                     return Err(std::io::Error::last_os_error());
                 }
             }
-            temporary
-                .file
+            staged
+                .file()
                 .set_permissions(original.metadata()?.permissions())?;
-            preserve_metadata(original, &temporary.file)?;
+            preserve_metadata(original, staged.file())?;
         }
-        temporary.file.sync_all()
+        staged.file().sync_all()
     })();
     if let Err(error) = prepare {
         return Ok(Err(write_failure(&error, display, false)));
@@ -402,10 +379,10 @@ pub(super) fn write_target(
             && original
                 .metadata()
                 .and_then(|metadata| {
-                    temporary
-                        .file
+                    staged
+                        .file()
                         .metadata()
-                        .map(|staged| metadata.permissions() == staged.permissions())
+                        .map(|prepared| metadata.permissions() == prepared.permissions())
                 })
                 .unwrap_or(false);
         if !same {
@@ -415,7 +392,7 @@ pub(super) fn write_target(
             )));
         }
         #[cfg(windows)]
-        if metadata_revision(&temporary.file).ok().as_ref() != metadata_before.as_ref() {
+        if metadata_revision(staged.file()).ok().as_ref() != metadata_before.as_ref() {
             return Ok(Err(failed(
                 "Cannot preserve the file's owner, group or access control during replacement.",
                 json!({"code": "write_error"}),
@@ -423,13 +400,13 @@ pub(super) fn write_target(
         }
     }
     Cancelled::check(cancel)?;
-    if !target.staged_owned(&staged, &temporary.file) {
+    if !staged.owned() {
         return Ok(Err(failed(
             "Staged file was replaced during preparation.",
             json!({"code": "write_error"}),
         )));
     }
-    let committed = target.install(&staged, &temporary.file, original.is_some());
+    let committed = staged.install();
     if let Err(error) = committed {
         return Ok(Err(match error {
             TargetError::Refused => refused(path),
@@ -444,7 +421,7 @@ pub(super) fn write_target(
             TargetError::Io(error) => write_failure(&error, display, false),
         }));
     }
-    drop(temporary);
+    drop(staged);
     #[cfg(unix)]
     if let Err(error) = target.sync_parent() {
         return Ok(Err(match error {
