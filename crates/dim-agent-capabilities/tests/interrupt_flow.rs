@@ -230,7 +230,7 @@ async fn interrupt_reaches_every_capability_before_native_cleanup_and_stop_waits
         let tool_calls = Arc::new(AtomicUsize::new(0));
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .process_value(Arc::new(ModelHost(Arc::new(Model {
                 stage,
                 barrier: native.clone(),
@@ -617,7 +617,7 @@ async fn a_tool_call_already_committed_when_the_interrupt_arrives_is_not_execute
         }),
     );
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(ProposesTool))))
         .session_value(Arc::new(ToolHost(Arc::new(CountedTools(executed.clone())))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(Prepare {
@@ -685,7 +685,7 @@ async fn stop_waits_for_an_interrupted_turn_whose_start_is_not_yet_dispatched() 
         }),
     );
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(Model {
             stage: Stage::Model,
             barrier: next_model.clone(),
@@ -839,7 +839,7 @@ impl ChannelModel {
 fn channel_builder(model: Arc<ChannelModel>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
@@ -1184,7 +1184,7 @@ async fn a_steer_during_preparation_ends_the_request_before_the_model_call() {
     let model_calls = Arc::new(AtomicUsize::new(0));
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(Model {
             stage: Stage::Preparation,
             barrier: native.clone(),
@@ -1576,7 +1576,7 @@ async fn a_steer_is_not_consumed_between_a_failed_preparation_and_its_terminal()
     let prepare = Arc::new(FailingPrepare::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_data_value(Arc::new(PrepareContextHost(prepare.clone())))
         .session_data_value(Arc::new(ContextModelHost(None)))
@@ -1827,7 +1827,7 @@ async fn an_interrupt_while_a_later_segment_waits_cancels_those_calls() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             dim_agent_runtime::MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(BatchModel))))
         .session_value(Arc::new(ToolHost(tools)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

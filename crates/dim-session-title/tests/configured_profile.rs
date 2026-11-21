@@ -140,9 +140,7 @@ fn configured_builder(directory: &Path, models: Arc<AimuxModels>) -> AgentBuilde
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             dim_agent_runtime::MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(
-            dim_agent_capabilities::history::HistoryRenderer::default(),
-        ))
+        .require_feature(dim_agent_capabilities::history::HistoryRenderer::default().feature())
         .session_data_value(Arc::new(dim_agent_capabilities::host::PrepareContextHost(
             Arc::new(dim_agent_capabilities::host::IdentityContext),
         )));

@@ -31,9 +31,7 @@ fn builder(model: Arc<dyn ModelDriver>, tools: Arc<dyn ToolDriver>) -> AgentBuil
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(tools)))
-        .session_value(Arc::new(
-            dim_agent_capabilities::history::HistoryRenderer::default(),
-        ))
+        .require_feature(dim_agent_capabilities::history::HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
         .session_data_value(Arc::new(CompactionStrategyHost::default()))

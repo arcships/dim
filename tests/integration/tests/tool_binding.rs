@@ -219,7 +219,7 @@ async fn env_named(
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store));
     }
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(model.clone())))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
@@ -483,7 +483,7 @@ fn unconfigured_builder(prepare: Arc<dyn PrepareModel>) -> AgentBuilder {
         Arc::new(dim_agent_capabilities::adapters::MockTools),
     );
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(
             dim_agent_capabilities::adapters::EchoModel,
         ))))
@@ -1300,7 +1300,7 @@ async fn tool_updates_wait_for_branch_activation_and_do_not_run_after_failed_ass
         let model = Arc::new(ScriptedModel::default());
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))

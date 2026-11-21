@@ -1256,7 +1256,7 @@ fn setup_recording(
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(CheckedModel { names, tools }))))
         .session_data_value(Arc::new(context))
         .session_data_value(Arc::new(ContextModelHost(None)))
@@ -3170,7 +3170,7 @@ async fn node_session_command_rules_share_the_native_owner_and_survive_another_s
         .session_value(Arc::new(
             dim_agent_capabilities::prompt::InitialPromptConfiguration::fixed(None),
         ))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

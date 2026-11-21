@@ -829,7 +829,7 @@ async fn large_report_readback_survives_member_close_and_is_branch_local() {
         builder.timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()));
         defaults::install(&mut builder);
         builder
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .process_value(Arc::new(ModelHost(Arc::new(LargeReportModel))))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
@@ -5513,7 +5513,7 @@ async fn undispatched_results_name_calls_from_their_starts() {
     )));
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(PartialCallModel))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

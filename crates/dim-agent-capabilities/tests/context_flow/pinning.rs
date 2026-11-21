@@ -119,7 +119,7 @@ fn configured(model: Arc<dyn ModelDriver>, context: Context) -> AgentBuilder {
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())
         .session_data_value(Arc::new(CompactionStrategyHost::new(

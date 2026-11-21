@@ -650,7 +650,7 @@
       {
         "id": 66,
         "parent": 2,
-        "name": "CommandRules",
+        "name": "HistoryRenderer",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -680,7 +680,7 @@
       {
         "id": 65,
         "parent": 2,
-        "name": "PromptSources",
+        "name": "CommandRules",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -710,7 +710,7 @@
       {
         "id": 64,
         "parent": 2,
-        "name": "ShellInput",
+        "name": "PromptSources",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -740,7 +740,7 @@
       {
         "id": 63,
         "parent": 2,
-        "name": "Recall",
+        "name": "ShellInput",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -770,7 +770,7 @@
       {
         "id": 62,
         "parent": 2,
-        "name": "Wait",
+        "name": "Recall",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -800,7 +800,7 @@
       {
         "id": 61,
         "parent": 2,
-        "name": "WorkspaceToolsOwner",
+        "name": "Wait",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -830,7 +830,7 @@
       {
         "id": 60,
         "parent": 2,
-        "name": "BranchTool",
+        "name": "WorkspaceToolsOwner",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -860,7 +860,7 @@
       {
         "id": 59,
         "parent": 2,
-        "name": "ToolExecution",
+        "name": "BranchTool",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -890,7 +890,7 @@
       {
         "id": 58,
         "parent": 2,
-        "name": "Permission",
+        "name": "ToolExecution",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -920,7 +920,7 @@
       {
         "id": 57,
         "parent": 2,
-        "name": "ModelProvider",
+        "name": "Permission",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -950,7 +950,7 @@
       {
         "id": 56,
         "parent": 2,
-        "name": "Loop",
+        "name": "ModelProvider",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -980,7 +980,7 @@
       {
         "id": 55,
         "parent": 2,
-        "name": "Prompt",
+        "name": "Loop",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -1010,7 +1010,7 @@
       {
         "id": 54,
         "parent": 2,
-        "name": "ContextPreparation",
+        "name": "Prompt",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -1040,7 +1040,7 @@
       {
         "id": 53,
         "parent": 2,
-        "name": "ToolRegistry",
+        "name": "ContextPreparation",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -1070,7 +1070,7 @@
       {
         "id": 52,
         "parent": 2,
-        "name": "InputQueue",
+        "name": "ToolRegistry",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -1100,7 +1100,7 @@
       {
         "id": 51,
         "parent": 2,
-        "name": "SessionMethods",
+        "name": "InputQueue",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -1130,7 +1130,7 @@
       {
         "id": 50,
         "parent": 2,
-        "name": "TimelineTree",
+        "name": "SessionMethods",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -1160,7 +1160,7 @@
       {
         "id": 49,
         "parent": 2,
-        "name": "HistoryRenderer",
+        "name": "TimelineTree",
         "state": "Active",
         "generation": 1,
         "injects": [
@@ -3139,7 +3139,7 @@
           {
             "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
             "scope": null,
-            "provider": 61,
+            "provider": 60,
             "generation": 1
           },
           {
@@ -3152,7 +3152,7 @@
         "reads": [
           {
             "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-            "provider": 61,
+            "provider": 60,
             "declared": true,
             "external": true
           },
@@ -3500,7 +3500,7 @@
       },
       {
         "service": "dim_agent_capabilities::workspace_tools::mentions::MentionIndex",
-        "provider": 61,
+        "provider": 60,
         "generation": 1,
         "removing": false
       },

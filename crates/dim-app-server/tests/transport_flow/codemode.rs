@@ -121,9 +121,7 @@ async fn launch_codemode_with_model(
     defaults::install(&mut builder);
     let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(UsageResolver))));
     builder
-        .session_value(Arc::new(
-            dim_agent_capabilities::history::HistoryRenderer::default(),
-        ))
+        .require_feature(dim_agent_capabilities::history::HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())

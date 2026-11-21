@@ -78,7 +78,7 @@ flowchart LR
   p37 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p46
   p37 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p46
   p42 -->|"dim_agent_capabilities::context_preparation::ContextPreparation@main"| p45
-  p26 -->|"dim_agent_capabilities::history::face::HistoryFace@session"| p45
+  p26 -->|"dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session"| p45
   p22 -->|"dim_agent_capabilities::host::CompactionStrategyHost@session"| p45
   p22 -->|"dim_agent_capabilities::host::ContextModelHost@session"| p45
   p29 -->|"dim_agent_capabilities::host::PrepareModelHost@session"| p45
@@ -97,7 +97,7 @@ flowchart LR
   p37 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p43
   p37 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p43
   p43 -->|"dim_agent_capabilities::context_usage::ContextUsage@main"| p42
-  p26 -->|"dim_agent_capabilities::history::face::HistoryFace@session"| p42
+  p26 -->|"dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session"| p42
   p22 -->|"dim_agent_capabilities::host::CompactionStrategyHost@session"| p42
   p22 -->|"dim_agent_capabilities::host::ContextModelHost@session"| p42
   p22 -->|"dim_agent_capabilities::host::PrepareContextHost@session"| p42
@@ -133,7 +133,6 @@ flowchart LR
   p33 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p28
   p32 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p27
   p33 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p27
-  p22 -->|"dim_agent_capabilities::history::HistoryRenderer@session"| p26
   p33 -->|"dim_agent_capabilities::timeline_tree::TimelineTree@session"| p26
   p33 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p25
   p35 -->|"dim_agent_capabilities::tool_registry::ToolRegistry@session"| p25

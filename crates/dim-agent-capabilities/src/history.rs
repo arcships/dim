@@ -250,7 +250,9 @@ pub type BuildProjectionCheckpoint =
     fn(&ContextHistory, &str) -> Result<ProjectionCheckpoint, String>;
 pub type EncodeProjectionCheckpoint =
     fn(&RecoverySnapshot, &ProjectionCheckpoint) -> Result<String, String>;
-pub struct HistoryRenderer {
+#[derive(Clone)]
+pub struct HistoryRenderer<T = ()> {
+    pub tree: T,
     /// Explicit readers only; the prepare path always folds with the default
     /// projection.
     pub render: RenderHistory,
@@ -325,6 +327,7 @@ fn decode_checkpoint(
 impl Default for HistoryRenderer {
     fn default() -> Self {
         Self {
+            tree: (),
             render: project_context_history,
             checkpoint: projection_checkpoint,
             checkpoint_interpreter: "dim/context-projection/v4",
@@ -334,7 +337,7 @@ impl Default for HistoryRenderer {
     }
 }
 
-impl HistoryRenderer {
+impl<T> HistoryRenderer<T> {
     /// Encode optional state only after the final compaction fact is adopted.
     pub fn snapshot(
         &self,
@@ -742,7 +745,7 @@ pub struct StreamedContext {
     pub compaction_cut: Option<dim_agent_types::TimelinePosition>,
 }
 
-impl HistoryRenderer {
+impl<T> HistoryRenderer<T> {
     /// [`Self::replay_context`] through the Session facade, for callers that do not hold
     /// the branch's Timeline. A Session exposes no recovery snapshot, so the fold
     /// begins at the chain's start, and the branches it covered are the ones the

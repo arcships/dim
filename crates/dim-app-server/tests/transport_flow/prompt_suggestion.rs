@@ -506,7 +506,7 @@ async fn serve_compaction_fixture_with(
     dim_app_server::permission_rules::install(&mut builder);
     let model = Scripted::new(reply);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .process_value(Arc::new(ModelHost(model.clone())))
         .require_feature(

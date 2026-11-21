@@ -76,7 +76,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `contextModelHost` | session | SessionScope | data | `contributions` async, `count` async, `describe` async, `estimate` async |
 | `faultReporter` | session | SessionScope | internal(hot-path) | — |
 | `guideEntries` | session | PromptGuide | data | `register` async |
-| `historyRenderer` | session | HistoryRenderer, SessionScope | data | `context` async, `renderedContext` async, `renderedStream` async, `snapshot` async, `snapshotFromCheckpoint` async, `streamCheckpoint` async |
+| `historyRenderer` | session | HistoryRenderer | data | `context` async, `renderedContext` async, `renderedStream` async, `snapshot` async, `snapshotFromCheckpoint` async, `streamCheckpoint` async |
 | `initialPromptConfiguration` | session | PromptRegistry | data | `get` async |
 | `mcpSession` | session | McpSession | data | `call` async, `refresh` async, `state` async, `widget` async |
 | `prepareContextHost` | session | SessionScope | data | `prepare` async |

@@ -96,7 +96,7 @@ async fn start(home: &Path) -> RunningServer {
                 ))
             }),
         )
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .require_feature(
             Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {

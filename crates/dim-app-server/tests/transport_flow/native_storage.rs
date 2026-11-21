@@ -278,7 +278,7 @@ async fn process_model_and_home_storage_serve_independent_sessions() {
             ..Default::default()
         });
         defaults::install_with_process_model(&mut builder);
-        builder.session_value(Arc::new(HistoryRenderer::default()))
+        builder.require_feature(HistoryRenderer::default().feature())
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
             .session_data_value(Arc::new(CompactionStrategyHost::default()));

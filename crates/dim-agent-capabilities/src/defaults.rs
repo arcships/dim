@@ -115,13 +115,6 @@ fn install_with_prompt_capability_and_branch(
                 }),
         )
         .require_feature(
-            Feature::new("HistoryRenderer").session("HistoryRenderer", |names| {
-                Ok(Box::new(crate::history::face::HistoryFacePlugin::new(
-                    names,
-                )?))
-            }),
-        )
-        .require_feature(
             Feature::new("TimelineTree")
                 .session("TimelineTree", |names| {
                     Ok(Box::new(TimelineTreePlugin::new(names)?))
@@ -328,7 +321,7 @@ pub fn mock_model_hosts_with_model(
 ) {
     crate::register_names(builder);
     builder
-        .session_value(Arc::new(history))
+        .require_feature(history.feature())
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

@@ -590,7 +590,7 @@ pub fn run_with(
             crate::session_grants::install(&mut builder);
             dim_agent_capabilities::file_access::install(&mut builder);
             builder
-                .session_value(Arc::new(HistoryRenderer::default()))
+                .require_feature(HistoryRenderer::default().feature())
                 .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))));
             if let Some(models) = &models {
                 defaults::install_compaction(

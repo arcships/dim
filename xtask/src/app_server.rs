@@ -235,7 +235,7 @@ pub async fn serve_home(
     );
     dim_app_server::permission_rules::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))));
     match run.model_config {
         Some(path) => {

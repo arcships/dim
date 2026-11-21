@@ -71,9 +71,7 @@ async fn fixture(tools: Arc<dyn ToolDriver>) -> Fixture {
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(tools)))
-        .session_value(Arc::new(
-            dim_agent_capabilities::history::HistoryRenderer::default(),
-        ))
+        .require_feature(dim_agent_capabilities::history::HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
         .session_data_value(Arc::new(CompactionStrategyHost::default()))

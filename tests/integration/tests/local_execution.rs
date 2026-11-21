@@ -356,7 +356,7 @@ impl Harness {
         })));
         builder
             .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(strategy_model.clone())

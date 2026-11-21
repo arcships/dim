@@ -77,7 +77,7 @@ fn configuration(model: &str) -> ModelSelection {
 /// workspace tools provide it.
 fn mock_model_hosts(builder: &mut AgentBuilder) {
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
@@ -374,7 +374,7 @@ async fn an_adopted_request_and_the_summarizers_request_carry_one_system() {
         strategy.clone() as Arc<dyn ResolveContextModel>
     )));
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())

@@ -400,7 +400,7 @@ async fn product_session_on(
     }
     builder
         .session_value(Arc::new(ToolHost(tools)))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(
             ProductContextModel,

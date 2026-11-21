@@ -18,7 +18,7 @@ cannot fit the request fails terminally without requesting another recovery.
 
 | Service | Purpose |
 | --- | --- |
-| `S:HistoryFace` | Render supported history for preparation/budget checks. |
+| `S:HistoryRenderer<Arc<TimelineTree>>` | Render supported history for preparation/budget checks. |
 | `S:ContextModelHost` | Optional window facts for context policy and recovery. |
 | `S:CompactionStrategyHost` | Optional compaction strategy; the policy exists when both hosts are bound. |
 | `S:PrepareContextHost` | Call `prepare({request, source:{turnId, requestId, through}}, cancelled)` with the request and its original Timeline cutoff. |
@@ -105,7 +105,7 @@ Prompt submits its current projection and adopted changes internally for atomic 
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryFace`、`S:PrepareContextHost` |
+| 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer<Arc<TimelineTree>>`、`S:PrepareContextHost` |
 | 提供 | `B:ContextPreparation`、`B:dyn HostDispatch#contextPreparation` |
 | 被注入于 | `Loop`、`ModelProvider`、`Prompt` |
 <!-- /generated -->

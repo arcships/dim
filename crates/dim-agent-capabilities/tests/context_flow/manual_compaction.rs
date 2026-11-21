@@ -205,7 +205,7 @@ fn builder_with_strategy(
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(history))
+        .require_feature(history.feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(context_model)
         .require_feature(

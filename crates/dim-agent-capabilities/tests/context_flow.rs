@@ -250,7 +250,7 @@ fn builder_with_prepare(
     builder
         .process_value(Arc::new(ModelHost(model)))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(history))
+        .require_feature(history.feature())
         .session_data_value(Arc::new(PrepareContextHost(prepare)))
         .session_data_value(strategy_model.clone())
         .session_data_value(Arc::new(CompactionStrategyHost::new(
@@ -2096,7 +2096,7 @@ async fn a_compaction_completed_after_a_stop_is_committed_not_discarded() {
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())
         .session_data_value(Arc::new(CompactionStrategyHost::new(

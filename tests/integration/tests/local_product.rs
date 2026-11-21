@@ -44,7 +44,7 @@ async fn product(dirs: &Dirs) -> Product {
     let model = Arc::new(ScriptedModel::default());
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(model.clone())))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

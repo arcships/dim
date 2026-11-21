@@ -126,7 +126,7 @@ async fn effects_session(
     builder
         .process_value(Arc::new(ModelHost(script)))
         .session_value(Arc::new(ToolHost(Arc::new(Effects))))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())
         .session_data_value(Arc::new(CompactionStrategyHost::new(

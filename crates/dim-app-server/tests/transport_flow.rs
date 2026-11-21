@@ -1592,9 +1592,7 @@ async fn large_live_event_has_no_32mib_outbound_cap_and_slow_client_is_local() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(
-            dim_agent_capabilities::history::HistoryRenderer::default(),
-        ))
+        .require_feature(dim_agent_capabilities::history::HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(LargeModel))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

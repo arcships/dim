@@ -20,24 +20,24 @@ flowchart LR
     p69["Modality"]
     p68["PrepareModelHost"]
     p67["ContextCompaction"]
-    p66["CommandRules"]
-    p65["PromptSources"]
-    p64["ShellInput"]
-    p63["Recall"]
-    p62["Wait"]
-    p61["WorkspaceToolsOwner"]
-    p60["BranchTool"]
-    p59["ToolExecution"]
-    p58["Permission"]
-    p57["ModelProvider"]
-    p56["Loop"]
-    p55["Prompt"]
-    p54["ContextPreparation"]
-    p53["ToolRegistry"]
-    p52["InputQueue"]
-    p51["SessionMethods"]
-    p50["TimelineTree"]
-    p49["HistoryRenderer"]
+    p66["HistoryRenderer"]
+    p65["CommandRules"]
+    p64["PromptSources"]
+    p63["ShellInput"]
+    p62["Recall"]
+    p61["Wait"]
+    p60["WorkspaceToolsOwner"]
+    p59["BranchTool"]
+    p58["ToolExecution"]
+    p57["Permission"]
+    p56["ModelProvider"]
+    p55["Loop"]
+    p54["Prompt"]
+    p53["ContextPreparation"]
+    p52["ToolRegistry"]
+    p51["InputQueue"]
+    p50["SessionMethods"]
+    p49["TimelineTree"]
     p48["SessionBroadcast"]
     p47["session-title"]
     p46["PartRegistry"]
@@ -218,7 +218,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p15
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p14
   p10 -->|"dim_app_server::methods::ManagementMethods"| p13
-  p61 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
+  p60 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p9
   p8 -->|"dim_app_server::storage::face::Store"| p9

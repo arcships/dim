@@ -631,7 +631,7 @@ impl Env {
         let model = Arc::new(Model::default());
         let mut builder = AgentBuilder::new(Default::default());
         builder
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .process_value(Arc::new(ModelHost(model.clone())))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
@@ -2558,7 +2558,7 @@ async fn mcp_image_tool_results_reach_the_model_and_the_session_keeps_working() 
             ..Default::default()
         });
         builder
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))
             .session_data_value(Arc::new(CompactionStrategyHost::default()));

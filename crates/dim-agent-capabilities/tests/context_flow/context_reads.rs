@@ -1151,7 +1151,7 @@ fn builder_with_usage_resolver(resolver: Arc<dyn ResolveContextModel>) -> AgentB
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())
         .session_data_value(Arc::new(CompactionStrategyHost::new(
@@ -1618,7 +1618,7 @@ async fn model_reload_recovers_the_old_terminal_before_its_publication() {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -1743,7 +1743,7 @@ async fn stop_waits_for_an_unpublished_turn_end_seen_by_a_reloaded_loop() {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .require_feature(
                 Feature::new("PrepareModelHost").session("PrepareModelHost", |names| {
                     Ok(Box::new(DefaultPrepareModelPlugin::new(names)?))
@@ -2487,7 +2487,7 @@ async fn a_request_written_after_an_interrupt_loop_has_not_handled_does_not_run(
     builder
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(strategy_model.clone())
         .session_data_value(Arc::new(CompactionStrategyHost::new(
@@ -2650,7 +2650,7 @@ async fn progress_keeps_committed_output_until_it_is_published() {
         let mut builder = AgentBuilder::new(AgentConfig::default());
         builder
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .process_value(Arc::new(ModelHost(Arc::new(HeldTextModel(end.clone())))))
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_data_value(Arc::new(ContextModelHost(None)))

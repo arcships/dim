@@ -79,7 +79,7 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<timeline_tree::TreeCommands>(catalog, session);
     register::<tool_registry::ToolRegistry>(catalog, session);
     catalog.register_shared_instance("toolSourcesView", SESSION_GROUP);
-    register::<history::HistoryRenderer>(catalog, session);
+    register::<history::face::SessionHistoryRenderer>(catalog, session);
     catalog.register_shared_instance("historyRenderer", SESSION_GROUP);
     catalog.register_shared_instance("initialPromptConfiguration", SESSION_GROUP);
     register::<prompt_guide::GuideEntries>(catalog, session);

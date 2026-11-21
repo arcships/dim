@@ -411,7 +411,7 @@ async fn reloaded_loop_fails_the_unfinished_turn_and_later_turns_run() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(GatedModel {
             entered: entered.clone(),
             release: release.clone(),
@@ -611,7 +611,7 @@ async fn contributed_tools_follow_session_config_and_survive_tool_host_reload() 
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(declared.clone())))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))
@@ -732,7 +732,7 @@ async fn a_stop_while_loop_reloads_waits_for_its_successor() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(GatedModel {
             entered: entered.clone(),
             release: release.clone(),
@@ -840,7 +840,7 @@ async fn state_notifications_follow_a_loop_reload() {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(GatedModel {
             entered: entered.clone(),
             release: release.clone(),

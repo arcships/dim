@@ -72,7 +72,7 @@ impl ResolveModelConnection for Local {
 /// provided by [`product_hosts`] or [`product_process`].
 pub fn product(builder: &mut AgentBuilder) -> std::result::Result<(), Error> {
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(Some(Arc::new(
             ProductContextModel,

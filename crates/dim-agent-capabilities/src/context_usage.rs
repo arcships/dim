@@ -274,6 +274,7 @@ struct Progress {
 }
 
 pub struct ContextUsage {
+    mounted: std::sync::Weak<Self>,
     timeline: Arc<Timeline>,
     resolver: Arc<ContextModelHost>,
     registry: Arc<ToolRegistry>,
@@ -1288,9 +1289,7 @@ impl ContextUsage {
     }
 }
 
-struct UsageFace(Arc<ContextUsage>);
-
-impl rutis_bridge::session::HostDispatch for UsageFace {
+impl rutis_bridge::session::HostDispatch for ContextUsage {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({"read":"async"}))
     }
@@ -1311,7 +1310,10 @@ impl rutis_bridge::session::HostDispatch for UsageFace {
         }
         let (Request { through }, cancel, cancelled) =
             crate::host::cancellable_request(NAME, args)?;
-        let owner = self.0.clone();
+        let owner = self
+            .mounted
+            .upgrade()
+            .ok_or_else(|| rutis_bridge::session::Error::value("contextUsage is closed"))?;
         Ok(rutis_bridge::session::Value::future(async move {
             let _finished = cancel.clone().drop_guard();
             let usage = crate::host::call_until_cancelled(
@@ -1373,13 +1375,19 @@ impl DynPlugin for ContextUsagePlugin {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let owner = Arc::new(ContextUsage {
-                timeline: ctx.require_at(&self.timeline)?,
-                resolver: ctx.require_at(&self.resolver)?,
-                registry: ctx.require_at(&self.registry)?,
+            let timeline = ctx.require_at(&self.timeline)?;
+            let resolver = ctx.require_at(&self.resolver)?;
+            let registry = ctx.require_at(&self.registry)?;
+            let dispatcher = ctx.require_at(&self.dispatcher)?;
+            let branch = ctx.require_at(&self.branch)?;
+            let owner = Arc::new_cyclic(|mounted| ContextUsage {
+                mounted: mounted.clone(),
+                timeline,
+                resolver,
+                registry,
                 dynamic_fixed: Mutex::new(None),
-                dispatcher: ctx.require_at(&self.dispatcher)?,
-                branch: ctx.require_at(&self.branch)?,
+                dispatcher,
+                branch,
                 wanted: AtomicU64::new(0),
                 handoff: AtomicU64::new(0),
                 wake: Notify::new(),
@@ -1459,7 +1467,7 @@ impl DynPlugin for ContextUsagePlugin {
             }
             ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
                 rutis_bridge::session::host_key_in("contextUsage", self.instance),
-                Arc::new(UsageFace(owner.clone())),
+                owner.clone(),
             )?;
             ctx.provide_at(self.usage.clone(), owner)?;
             Ok(Effect::Done)

@@ -576,7 +576,7 @@ pub(super) async fn serve_streaming(
     let mut builder = AgentBuilder::new(AgentConfig::default());
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(model)))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

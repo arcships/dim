@@ -15,7 +15,7 @@ delivers the current snapshot and subsequent changes until the caller or Loop un
 | Service | Purpose |
 | --- | --- |
 | `B:ContextPreparation` | Transfer the request-local projection without another history read. |
-| `S:HistoryFace` | Render supported context history for requests. |
+| `S:HistoryRenderer<Arc<TimelineTree>>` | Render supported context history for requests. |
 | `S:ContextModelHost` | Window facts; with the strategy, context recovery and manual compaction are available. |
 | `S:CompactionStrategyHost` | The compaction strategy its manual step calls through ContextPolicy. |
 | `S:PrepareModelHost` | Call `prepare({turnId, requestId, history, availableTools})` with the fixed history and pinned tool order. The host returns the model settings; Loop supplies the messages. |
@@ -150,7 +150,7 @@ interruption, pending-input restore and the manual compaction step.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryFace`、`S:PrepareModelHost` |
+| 注入 | `B:ContextPreparation`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer<Arc<TimelineTree>>`、`S:PrepareModelHost` |
 | 提供 | `B:StateCell<LoopSnapshot>`、`B:dyn AgentLoop`、`B:dyn HostDispatch#agentLoop` |
 | 被注入于 | — |
 <!-- /generated -->

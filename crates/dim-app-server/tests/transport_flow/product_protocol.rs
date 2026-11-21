@@ -2749,7 +2749,7 @@ async fn model_progress_follows_a_reloaded_provider() {
     defaults::install(&mut builder);
     let owners = views.clone();
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_data_value(Arc::new(ContextModelHost(None)))
         .session_data_value(Arc::new(CompactionStrategyHost::default()))

@@ -193,7 +193,7 @@ async fn configured_agent()
             dim_agent_capabilities::summary_strategy::ProductSummaryStrategyConfig::default(),
         );
         builder
-            .session_value(Arc::new(HistoryRenderer::default()))
+            .require_feature(HistoryRenderer::default().feature())
             .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
             .session_value(Arc::new(ToolHost(Arc::new(MockTools))));
         dim_agent_aimux::install(&mut builder);

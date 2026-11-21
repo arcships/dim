@@ -5905,7 +5905,7 @@ async fn a_nested_line_is_told_its_own_parent_at_open() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -6077,7 +6077,7 @@ async fn a_nested_line_whose_opening_read_fails_is_a_failed_create() {
     let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -6441,7 +6441,7 @@ async fn the_parent_block_replays_after_a_compaction() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -7575,7 +7575,7 @@ async fn a_roster_and_an_identity_replay_separately_after_a_compaction() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -9554,7 +9554,7 @@ async fn a_switched_line_keeps_its_identity_after_a_compaction() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -9621,7 +9621,7 @@ async fn a_multi_paragraph_purpose_survives_a_move_and_a_compaction() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -9766,7 +9766,7 @@ async fn measure_e2_chained_reads_before_and_after_a_compaction() {
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(FlowModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
@@ -11303,7 +11303,7 @@ fn compacting_builder(store: Arc<dyn TimelineStore>) -> AgentBuilder {
     let strategy_model = Arc::new(ContextModelHost(Some(Arc::new(Compact))));
     builder
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store))
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))

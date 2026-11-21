@@ -109,9 +109,7 @@ async fn launch_configured_with(
         .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(Arc::new(
             dim_agent_runtime::MemoryTimelineStore::default(),
         )))
-        .session_value(Arc::new(
-            dim_agent_capabilities::history::HistoryRenderer::default(),
-        ))
+        .require_feature(dim_agent_capabilities::history::HistoryRenderer::default().feature())
         .session_data_value(Arc::new(dim_agent_capabilities::host::PrepareContextHost(
             Arc::new(dim_agent_capabilities::host::IdentityContext),
         )));

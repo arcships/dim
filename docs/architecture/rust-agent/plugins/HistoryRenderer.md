@@ -6,14 +6,13 @@ The Session part serves the [history rendering operations](../../../design/contr
 
 | Service | Purpose |
 | --- | --- |
-| `S:HistoryRenderer` | Render history and encode recovery snapshots. |
 | `S:TimelineTree` | Resolve the requested branch timeline. |
 
 <!-- generated:plugin HistoryRenderer — 由 `cargo run -p xtask -- graph` 从真实装配生成，勿手改 -->
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `S:HistoryRenderer`、`S:TimelineTree` |
-| 提供 | `S:HistoryFace`、`S:dyn HostDispatch#historyRenderer` |
+| 注入 | `S:TimelineTree` |
+| 提供 | `S:HistoryRenderer<Arc<TimelineTree>>`、`S:dyn HostDispatch#historyRenderer` |
 | 被注入于 | `ContextPreparation`、`Loop` |
 <!-- /generated -->

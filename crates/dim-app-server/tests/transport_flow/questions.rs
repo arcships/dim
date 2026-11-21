@@ -398,7 +398,7 @@ async fn a_late_answer_from_another_client_never_reaches_a_reused_call_id() {
     )));
     defaults::install(&mut builder);
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(model.clone())))
         .session_data_value(Arc::new(PrepareContextHost(Arc::new(IdentityContext))))
         .session_data_value(Arc::new(ContextModelHost(None)))

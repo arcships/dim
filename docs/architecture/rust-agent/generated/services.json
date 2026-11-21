@@ -781,7 +781,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+            "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
             "scope": null,
             "status": "Ready"
           },
@@ -834,7 +834,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+            "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
             "scope": null,
             "provider": 26,
             "generation": 1
@@ -896,7 +896,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+            "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
             "provider": 26,
             "declared": true,
             "external": true
@@ -1143,7 +1143,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+            "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
             "scope": null,
             "status": "Ready"
           },
@@ -1196,7 +1196,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+            "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
             "scope": null,
             "provider": 26,
             "generation": 1
@@ -1258,7 +1258,7 @@
             "external": true
           },
           {
-            "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+            "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
             "provider": 26,
             "declared": true,
             "external": true
@@ -2156,23 +2156,12 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::history::HistoryRenderer@session",
-            "scope": null,
-            "status": "Ready"
-          },
-          {
             "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
             "status": "Ready"
           }
         ],
         "resolved": [
-          {
-            "service": "dim_agent_capabilities::history::HistoryRenderer@session",
-            "scope": null,
-            "provider": 22,
-            "generation": 1
-          },
           {
             "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "scope": null,
@@ -2181,12 +2170,6 @@
           }
         ],
         "reads": [
-          {
-            "service": "dim_agent_capabilities::history::HistoryRenderer@session",
-            "provider": 22,
-            "declared": true,
-            "external": false
-          },
           {
             "service": "dim_agent_capabilities::timeline_tree::TimelineTree@session",
             "provider": 33,
@@ -2245,13 +2228,7 @@
     ],
     "bindings": [
       {
-        "service": "dim_agent_capabilities::history::HistoryRenderer@session",
-        "provider": 22,
-        "generation": 1,
-        "removing": false
-      },
-      {
-        "service": "dim_agent_capabilities::history::face::HistoryFace@session",
+        "service": "dim_agent_capabilities::history::HistoryRenderer<alloc::sync::Arc<dim_agent_capabilities::timeline_tree::TimelineTree>>@session",
         "provider": 26,
         "generation": 1,
         "removing": false

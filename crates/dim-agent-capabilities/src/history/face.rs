@@ -1,7 +1,7 @@
 use super::{HistoryEntry, HistoryRenderer, StreamedContext};
 use crate::{port_faces, timeline_tree::TimelineTree};
-use dim_agent_runtime::{ContextHistory, Names};
-use dim_agent_types::{AgentEvent, ProjectionCheckpoint, RecoverySnapshot};
+use dim_agent_runtime::ContextHistory;
+use dim_agent_types::{AgentEvent, ProjectionCheckpoint};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use rutis_bridge::session::{HostDispatch, Reply, Value};
@@ -10,109 +10,94 @@ use std::sync::Arc;
 
 const NAME: &str = "historyRenderer";
 
-pub(crate) struct HistoryFacePlugin {
-    renderer: Key<HistoryRenderer>,
-    tree: Key<TimelineTree>,
-}
+pub(crate) type SessionHistoryRenderer = HistoryRenderer<Arc<TimelineTree>>;
 
-impl HistoryFacePlugin {
-    pub(crate) fn new(names: &Names<'_>) -> rutis::Result<Self> {
-        Ok(Self {
-            renderer: names.key()?,
-            tree: names.key()?,
-        })
+impl HistoryRenderer {
+    pub fn feature(self) -> dim_agent_runtime::Feature {
+        dim_agent_runtime::Feature::new("HistoryRenderer").session(
+            "HistoryRenderer",
+            move |names| {
+                Ok(Box::new(HistoryRendererPlugin {
+                    renderer: self.clone(),
+                    tree: names.key()?,
+                    service: names.key()?,
+                }))
+            },
+        )
     }
 }
 
-impl DynPlugin for HistoryFacePlugin {
+struct HistoryRendererPlugin {
+    renderer: HistoryRenderer,
+    tree: Key<TimelineTree>,
+    service: Key<SessionHistoryRenderer>,
+}
+
+impl DynPlugin for HistoryRendererPlugin {
     fn name(&self) -> &str {
         "HistoryRenderer"
     }
-
     fn injects(&self) -> Vec<TypeKey> {
-        vec![self.renderer.erase(), self.tree.erase()]
+        vec![self.tree.erase()]
     }
 
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let host = Arc::new(HistoryFace {
-                renderer: ctx.require_at(&self.renderer)?,
+            let renderer = Arc::new(HistoryRenderer {
                 tree: ctx.require_at(&self.tree)?,
+                render: self.renderer.render,
+                checkpoint: self.renderer.checkpoint,
+                checkpoint_interpreter: self.renderer.checkpoint_interpreter,
+                encode_checkpoint: self.renderer.encode_checkpoint,
+                decode_checkpoint: self.renderer.decode_checkpoint,
             });
             let instance = self
-                .renderer
+                .service
                 .erase()
                 .instance_id()
                 .expect("Session renderer");
-            ctx.provide_at(Key::<HistoryFace>::of().instance(instance), host.clone())?;
+            ctx.provide_at(self.service.clone(), renderer.clone())?;
             ctx.provide_at(
                 rutis_bridge::session::host_key_in(NAME, instance),
-                host as Arc<dyn HostDispatch>,
+                renderer as Arc<dyn HostDispatch>,
             )?;
             Ok(Effect::Done)
         })
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct HistoryFace {
-    renderer: Arc<HistoryRenderer>,
-    tree: Arc<TimelineTree>,
-}
-
-impl HistoryFace {
-    pub(crate) fn key(names: &Names<'_>) -> rutis::Result<Key<Self>> {
-        Ok(Key::of().instance(names.instance(dim_agent_runtime::SESSION_GROUP)?))
-    }
-    pub(crate) async fn rendered_context(
+impl SessionHistoryRenderer {
+    pub(crate) async fn branch_rendered_context(
         &self,
         branch: &str,
         through: u64,
     ) -> dim_agent_runtime::Result<(ContextHistory, Vec<HistoryEntry>)> {
-        self.renderer
-            .rendered_context(&self.tree.history_timeline(branch)?, through)
+        self.rendered_context(&self.tree.history_timeline(branch)?, through)
             .await
     }
-    pub(crate) async fn rendered_stream(
+    pub(crate) async fn branch_rendered_stream(
         &self,
         branch: &str,
         through: u64,
         batch: u64,
     ) -> dim_agent_runtime::Result<StreamedContext> {
-        self.renderer
-            .rendered_stream(&self.tree.history_timeline(branch)?, through, batch)
+        self.rendered_stream(&self.tree.history_timeline(branch)?, through, batch)
             .await
     }
-    pub(crate) async fn stream_checkpoint(
+    pub(crate) async fn branch_stream_checkpoint(
         &self,
         branch: &str,
         through: u64,
         retain_from: &str,
         batch: u64,
     ) -> dim_agent_runtime::Result<ProjectionCheckpoint> {
-        self.renderer
-            .stream_checkpoint(
-                &self.tree.history_timeline(branch)?,
-                through,
-                retain_from,
-                batch,
-            )
-            .await
-    }
-    pub(crate) fn snapshot(
-        &self,
-        context: &ContextHistory,
-        retain_from: &str,
-        anchor: &AgentEvent,
-    ) -> Result<RecoverySnapshot, String> {
-        self.renderer.snapshot(context, retain_from, anchor)
-    }
-    pub(crate) fn snapshot_from_checkpoint(
-        &self,
-        checkpoint: &ProjectionCheckpoint,
-        anchor: &AgentEvent,
-    ) -> Result<RecoverySnapshot, String> {
-        self.renderer.snapshot_from_checkpoint(checkpoint, anchor)
+        self.stream_checkpoint(
+            &self.tree.history_timeline(branch)?,
+            through,
+            retain_from,
+            batch,
+        )
+        .await
     }
 }
 
@@ -140,7 +125,7 @@ struct Snapshot {
     anchor: AgentEvent,
 }
 
-impl HostDispatch for HistoryFace {
+impl HostDispatch for SessionHistoryRenderer {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
             serde_json::json!({"context":"async","renderedContext":"async","renderedStream":"async","snapshotFromCheckpoint":"async","streamCheckpoint":"async","snapshot":"async"}),
@@ -158,7 +143,6 @@ impl HostDispatch for HistoryFace {
                         .history_timeline(&branch_id)
                         .map_err(|e| e.to_string())?;
                     owner
-                        .renderer
                         .context(&timeline, through)
                         .await
                         .map_err(|e| e.to_string())
@@ -173,7 +157,7 @@ impl HostDispatch for HistoryFace {
                 let Prefix { branch_id, through } = port_faces::request(NAME, args)?;
                 port_faces::serving(NAME, async move {
                     let (context, history) = owner
-                        .rendered_context(&branch_id, through)
+                        .branch_rendered_context(&branch_id, through)
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok::<_, String>(Rendered { context, history })
@@ -194,7 +178,7 @@ impl HostDispatch for HistoryFace {
                 } = port_faces::request(NAME, args)?;
                 port_faces::serving(NAME, async move {
                     owner
-                        .rendered_stream(&branch_id, through, batch)
+                        .branch_rendered_stream(&branch_id, through, batch)
                         .await
                         .map_err(|error| error.to_string())
                 })
@@ -230,7 +214,7 @@ impl HostDispatch for HistoryFace {
                 } = port_faces::request(NAME, args)?;
                 port_faces::serving(NAME, async move {
                     owner
-                        .stream_checkpoint(&branch_id, through, &retain_from, batch)
+                        .branch_stream_checkpoint(&branch_id, through, &retain_from, batch)
                         .await
                         .map_err(|e| e.to_string())
                 })

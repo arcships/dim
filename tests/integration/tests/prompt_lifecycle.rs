@@ -389,7 +389,7 @@ impl PrepareContext for GatedContext {
 fn builder_with_context(host: Arc<Prompts>, prepare: Arc<dyn PrepareContext>) -> AgentBuilder {
     let mut builder = AgentBuilder::new(AgentConfig::default());
     builder
-        .session_value(Arc::new(HistoryRenderer::default()))
+        .require_feature(HistoryRenderer::default().feature())
         .process_value(Arc::new(ModelHost(Arc::new(EchoModel))))
         .session_value(Arc::new(ToolHost(Arc::new(MockTools))))
         .session_data_value(Arc::new(PrepareContextHost(prepare)))
