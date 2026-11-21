@@ -4,6 +4,7 @@ use dim_agent_capabilities::{
     port_faces::{request, serving},
 };
 use dim_agent_types::{ModelConfiguration, ModelId, ModelPreferences};
+use rutis::host::CtxHost;
 use rutis_bridge::session::{Error, HostDispatch, Reply, Value};
 use serde::Deserialize;
 use serde_json::json;

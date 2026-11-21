@@ -436,7 +436,9 @@ impl Collaboration {
         });
         self.watch(&leader_host.agent_id, leader);
         self.watch(&host.agent_id, session.clone());
-        self.lookup(&host.agent_id, session.id()).await
+        self.lookup(&host.agent_id, session.id())
+            .await
+            .map_err(Failure::from)
     }
     /// An owned Agent is visible only within its owner's Team, and a public
     /// one to every Team. An unknown Agent is visible to none: absence is a
