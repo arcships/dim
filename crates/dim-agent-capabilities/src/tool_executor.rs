@@ -182,10 +182,7 @@ impl NestedGate {
             )
             .map_err(|error| HostError::failed(error.to_string()))?;
         if let Some(child_effects) = result.effects.clone() {
-            self.effects
-                .lock()
-                .unwrap()
-                .push((ordinal, child_effects));
+            self.effects.lock().unwrap().push((ordinal, child_effects));
         }
         Ok(result)
     }
@@ -235,20 +232,25 @@ impl ToolExecutor {
             confirmed.extend(gate.effects.lock().unwrap().iter().cloned());
         }
         confirmed.sort_by_key(|(ordinal, _)| *ordinal);
-        let mut reported = result.effects.clone().unwrap_or_default();
-        for effect in confirmed.into_iter().flat_map(|(_, effects)| effects) {
-            if let Some(index) = reported.iter().position(|item| item == &effect) {
-                reported.swap_remove(index);
-            } else {
-                result.effects.get_or_insert_with(Vec::new).push(effect);
+        let children: Vec<_> = confirmed
+            .into_iter()
+            .flat_map(|(_, effects)| effects)
+            .collect();
+        if !children.is_empty() {
+            let reported = result.effects.get_or_insert_with(Vec::new);
+            for effect in &children {
+                if let Some(index) = reported.iter().position(|item| item == effect) {
+                    reported.remove(index);
+                }
             }
+            reported.extend(children);
         }
         (result, label)
     }
 
     /// Opens the child-call gate for the current top-level batch. A gate
-    /// exists only while its context matches the current batch; a closed or
-    /// interrupted executor refuses.
+    /// exists only for a running parent in the matching current batch. Nested calls
+    /// must use distinct call IDs. A closed or interrupted executor refuses.
     pub fn open(
         self: &Arc<Self>,
         parent_call_id: String,

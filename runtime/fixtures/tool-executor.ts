@@ -20,7 +20,7 @@ const part = definePlugin({
         if (!cancelChild) throw new Error('no child is running')
         const gateId = executor.open({ parentCallId, context: { turnId, requestId, branchId } }, () => new Promise<void>(() => {}))
         await executor.invoke({ gateId, call: { id: 'nested-grandchild', name: 'echo', input: { text: 'grandchild' } } })
-        assert.deepEqual(await executor.close({ gateId }), [{ kind: 'fileWritten', path: '/fixture' }])
+        assert.deepEqual(await executor.close({ gateId }), [{ kind: 'fileWritten', path: '/nested-grandchild' }])
         cancelChild()
         return { kind: 'value', value: {} }
       }
@@ -38,7 +38,7 @@ const part = definePlugin({
         const effects = await executor.close({ gateId })
         await assert.rejects(async () => executor.invoke({ gateId, call: child }), /closed/)
         assert.ok(typeof result.content === 'string')
-        assert.deepEqual(effects, [{ kind: 'fileWritten', path: '/fixture' }])
+        assert.deepEqual(effects, [{ kind: 'fileWritten', path: '/nested-echo' }])
         const waitingGate = executor.open({ parentCallId, context: { turnId, requestId, branchId } }, () => cancelled)
         cancelChild = release
         const waiting = executor.invoke({ gateId: waitingGate, call: {
@@ -48,7 +48,7 @@ const part = definePlugin({
         assert.equal(interrupted.isError, true)
         assert.match(String(interrupted.content), /cancel/i)
         await assert.rejects(async () => executor.invoke({ gateId: waitingGate, call: child }), /cancel/i)
-        assert.deepEqual(await executor.close({ gateId: waitingGate }), effects)
+        assert.deepEqual(await executor.close({ gateId: waitingGate }), [{ kind: 'fileWritten', path: '/nested-grandchild' }])
         return { kind: 'value', value: { output: result.content, effectCount: effects.length } }
       } finally {
         cancelChild = undefined

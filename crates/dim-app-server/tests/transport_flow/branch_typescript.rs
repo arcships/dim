@@ -692,10 +692,9 @@ async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch(
             }
             if call.name == "echo" {
                 return Box::pin(async move {
+                    let path = format!("/{}", call.id);
                     let mut result = MockTools.execute(call, context, cancel).await?;
-                    result.effects = Some(vec![ToolEffect::FileWritten {
-                        path: "/fixture".into(),
-                    }]);
+                    result.effects = Some(vec![ToolEffect::FileWritten { path }]);
                     Ok(result)
                 });
             }
@@ -796,11 +795,13 @@ async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch(
     assert_eq!(
         parent_result.result.effects.as_deref(),
         Some(
-            vec![
+            [
                 ToolEffect::FileWritten {
-                    path: "/fixture".into()
-                };
-                2
+                    path: "/nested-echo".into()
+                },
+                ToolEffect::FileWritten {
+                    path: "/nested-grandchild".into()
+                },
             ]
             .as_slice()
         )
