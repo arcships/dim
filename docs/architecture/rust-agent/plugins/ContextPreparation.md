@@ -88,7 +88,7 @@ nothing and no digest can be written
 
 ## Configuration publication
 
-`publish({adopted, changes, model?, toolAdoption?, inputs})` returns the last sequence of the committed batch, or null for an unchanged adoption. `adopted` carries the prompt checkpoint and the previous configuration from the same consumed prefix. For a prompt change, each supplied input block is committed in order and its event ID is recorded in the prompt change. `awaitPublished({sequence})` waits for publication and returns that sequence or the Timeline failure.
+Prompt submits its current projection and adopted changes internally for atomic publication. Other callers submit changes through `prompt.configure`. `awaitPublished({sequence})` waits for publication and returns that sequence or the Timeline failure.
 
 ## Tests
 

@@ -65,7 +65,7 @@ substitutes a newer head.
 | Caller → owner | New API |
 | --- | --- |
 | ToolBinding, Session language and Agent configuration → `prompt` | `prompt.initialCompletion({}) → void or opening error`; `prompt.configure({sources, model?}) → unchanged, adopted or superseded`. Sources are targets to load or pairs of a target and its frozen entry (null revokes the entry). |
-| Prompt and guide adoption → `contextPreparation` | `contextPreparation.publish({adopted, changes, model?, toolAdoption?, inputs}) → sequence or null`; `awaitPublished({sequence}) → sequence`. Publication commits adoption atomically. |
+| Loaded prompt sources → `prompt.configure` | Supply changed source targets with their entries (or null to revoke) and an optional model. Prompt uses its current projection and commits the adoption batch through ContextPreparation. `contextPreparation.awaitPublished({sequence})` waits for a specific publication. |
 | File read/edit/write tools → branch FileReads | `binding({path}) → TextFileBinding or null`, `writeBinding({path}) → absent, compacted or bound`, `record({path, binding, established}) → void`. The original read supplies the established sequence; file I/O stays on the file node. |
 
 ### Model preparation, history and tools
