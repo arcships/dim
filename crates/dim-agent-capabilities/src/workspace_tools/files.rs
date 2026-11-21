@@ -808,11 +808,11 @@ fn create_staged_file(
         }
     };
     #[cfg(target_os = "macos")]
-    if inherited.present {
-        if let Err(error) = acl::Acl::clear(&directory) {
-            remove_staging_entry(&parent, name);
-            return Err(classify(error));
-        }
+    if inherited.present
+        && let Err(error) = acl::Acl::clear(&directory)
+    {
+        remove_staging_entry(&parent, name);
+        return Err(classify(error));
     }
     let created = open_relative(
         &directory,
@@ -823,11 +823,11 @@ fn create_staged_file(
     match created {
         Ok(file) => {
             #[cfg(target_os = "macos")]
-            if inherited.present {
-                if let Err(error) = require_no_acl(&file) {
-                    remove_staging_entry(&parent, name);
-                    return Err(classify(error));
-                }
+            if inherited.present
+                && let Err(error) = require_no_acl(&file)
+            {
+                remove_staging_entry(&parent, name);
+                return Err(classify(error));
             }
             Ok((
                 file,
