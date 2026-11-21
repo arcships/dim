@@ -1,7 +1,7 @@
 //! The `goal.test.mjs` cases that decide over a branch's own facts: the
 //! no-Loop part harness supplies the facts the Loop, InputQueue and
 //! TimelineTree write, and every expectation is the input Goal writes.
-mod support;
+use crate::support;
 
 use dim_agent_types::{
     BranchCreateAt, BranchCreateData, BranchSource, ContextCompactData, EventKind, InputBlock,

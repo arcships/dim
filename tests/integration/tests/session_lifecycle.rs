@@ -2,7 +2,7 @@
 //! lifecycle §3): Session parts start deferred work only for a published
 //! Session and end it as soon as close starts. Its activity holds veto an idle
 //! release, never a close (idle unload §5.1, R1).
-mod local_support;
+use crate::local_support;
 
 use dim_agent_runtime::*;
 use dim_agent_types::InputMode;

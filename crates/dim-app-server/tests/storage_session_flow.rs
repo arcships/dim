@@ -252,12 +252,21 @@ async fn sqlite_session_failure_rejects_writes_on_an_idle_sibling_timeline() {
     }).await.expect("SQLite sibling failure and cleanup completed");
 }
 
+struct Generation(Mutex<Option<tokio::sync::oneshot::Sender<()>>>);
+impl Drop for Generation {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.lock().unwrap().take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
 struct RecordCleanup {
     timeline: Key<Timeline>,
-    _generation: Arc<()>,
+    _generation: Arc<Generation>,
 }
 impl RecordCleanup {
-    fn new(names: &Names<'_>, generation: Arc<()>) -> rutis::Result<Self> {
+    fn new(names: &Names<'_>, generation: Arc<Generation>) -> rutis::Result<Self> {
         Ok(Self {
             timeline: names.key()?,
             _generation: generation,
@@ -306,12 +315,16 @@ async fn session_close_and_idle_unload_persist_finalizers_and_release_branch_par
             defaults::install(&mut builder);
             let generation = Arc::new(Mutex::new(Weak::new()));
             let mounted_generation = generation.clone();
+            let released = Arc::new(Mutex::new(None));
+            let mounted_released = released.clone();
             builder
                 .timeline_store(dim_agent_runtime::TimelineStoreBinding::new(store.clone()))
                 .require_feature(Feature::new("storage-session.record-cleanup").branch(
                     "storage-session.record-cleanup",
                     move |names| {
-                        let marker = Arc::new(());
+                        let (sender, receiver) = tokio::sync::oneshot::channel();
+                        *mounted_released.lock().unwrap() = Some(receiver);
+                        let marker = Arc::new(Generation(Mutex::new(Some(sender))));
                         *mounted_generation.lock().unwrap() = Arc::downgrade(&marker);
                         Ok(Box::new(RecordCleanup::new(names, marker)?))
                     },
@@ -339,10 +352,15 @@ async fn session_close_and_idle_unload_persist_finalizers_and_release_branch_par
                 session.close().await.unwrap();
             }
             drop(session);
-            assert!(
-                generation.upgrade().is_none(),
-                "branch part must be dropped after Session teardown (idle unload: {unloading})"
-            );
+            let released = released.lock().unwrap().take().expect("branch part built");
+            tokio::time::timeout(Duration::from_secs(10), released)
+                .await
+                .unwrap_or_else(|_| {
+                    panic!(
+                        "branch part must be dropped after Session teardown (idle unload: {unloading})"
+                    )
+                })
+                .expect("branch part drop signalled");
             let head = store.head(&key).await.unwrap();
             let records = store.read(&key, 1..=head).await.unwrap();
             assert_eq!(

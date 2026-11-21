@@ -20,6 +20,18 @@ const ALPHA_PACKAGE: &str = "dimcode-alpha";
 const ALPHA_COMMAND: &str = "dima";
 const REGISTRY: &str = "https://registry.npmjs.org";
 const TIMEOUT: Duration = Duration::from_secs(4);
+
+/// The registry deadline; a debug build takes `DIM_TEST_UPDATE_TIMEOUT_MS` so
+/// a flow can keep it past a loaded runner's scheduling delay.
+fn timeout() -> Duration {
+    #[cfg(debug_assertions)]
+    if let Some(millis) = std::env::var_os("DIM_TEST_UPDATE_TIMEOUT_MS")
+        .and_then(|value| value.to_str().and_then(|value| value.parse().ok()))
+    {
+        return Duration::from_millis(millis);
+    }
+    TIMEOUT
+}
 /// The version the user chose to skip, shared with the TypeScript CLI.
 const SKIP_FILE: &str = "upgrade-skip.json";
 
@@ -302,9 +314,9 @@ fn upgrade_tag(version: &str, release: bool) -> Option<&str> {
 }
 
 /// A newer version on the channel of `current` the user has not skipped, or
-/// `None` when there is none or the registry did not answer in time.
+/// `None` when there is none or the registry did not answer.
 pub async fn available(home: &Path, current: &str) -> Option<Offer> {
-    let tag = upgrade_tag(current, dim_agent_capabilities::build::RELEASE)?;
+    let tag = upgrade_tag(current, dim_agent_capabilities::build::release())?;
     let package = package().ok()?;
     let version = channel_version(&package, tag).await.ok()?;
     if !newer(current, &version) || skipped(home).as_deref() == Some(version.as_str()) {
@@ -333,7 +345,7 @@ fn offer(exe: &Path, package: &str, current: &str, version: String) -> Offer {
 /// be offered: a source build, or a registry that did not answer.
 pub async fn check(current: &str) -> Result<Option<Offer>, String> {
     let package = package()?;
-    let Some(tag) = upgrade_tag(current, dim_agent_capabilities::build::RELEASE) else {
+    let Some(tag) = upgrade_tag(current, dim_agent_capabilities::build::release()) else {
         return Err(not_installable(&package, current));
     };
     let version = channel_version(&package, tag)
@@ -347,7 +359,7 @@ pub async fn check(current: &str) -> Result<Option<Offer>, String> {
 }
 
 async fn channel_version(package: &str, tag: &str) -> crate::Result<String> {
-    let client = reqwest::Client::builder().timeout(TIMEOUT).build()?;
+    let client = reqwest::Client::builder().timeout(timeout()).build()?;
     let tags: serde_json::Value = client
         .get(format!("{}/-/package/{package}/dist-tags", registry()))
         .send()
@@ -375,7 +387,7 @@ pub(crate) async fn recover_startup(
 ) -> crate::Result<i32> {
     use std::os::unix::process::CommandExt;
 
-    if !dim_agent_capabilities::build::RELEASE
+    if !dim_agent_capabilities::build::release()
         || !enabled()
         || !std::io::stderr().is_terminal()
         || std::env::var_os(crate::client::STARTUP_RETRY).is_some()

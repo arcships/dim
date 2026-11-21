@@ -1,31 +1,47 @@
 import {execFileSync,spawnSync} from 'node:child_process';
 import {appendFileSync} from 'node:fs';
 
-export const groups=['rust','windows','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
+export const groups=['rust','windows','static','xtask','node','eval','execution','web','scripts','macos_scripts','dependencies'];
 const everything=Object.fromEntries(groups.map(group=>[group,true]));
 const documentation=/^docs\/|^[^/]+\.md$/;
+const cargoManifest=/(?:^|\/)Cargo\.toml$/;
 
 const rules=[
   [/^benchmarks\/baselines\/[^/]+\.json$/,[]],
-  [/^docs\/architecture\/rust-agent\/(plugins|generated)\//,['xtask']],
+  [/^\.agents\/|^skills\/|^\.github\/(?:ISSUE_TEMPLATE\/|pull_request_template\.md$|PULL_REQUEST_TEMPLATE\.md$)/,[]],
+  [/^docs\/architecture\/rust-agent\/generated\/catalog\.md$/,['xtask']],
+  [/^docs\/architecture\/rust-agent\/(plugins|generated)\//,['static']],
   [/^docs\/design\/appserver\/native-storage-format\.md$/,['rust']],
+  // scripts/tui-tmux.test.mjs reads this page and checks every scenario is documented.
+  [/^docs\/architecture\/tui-e2e\.md$/,['scripts']],
+  // crates/dim-event-hub tests compare their strings to its appendix blocks.
+  [/^docs\/design\/plugins\/EventHub\.md$/,['rust']],
+  // runtime/plugin-sdk.test.mjs compiles its fenced TypeScript blocks.
+  [/^docs\/typescript-plugin-authoring\.md$/,['rust','node']],
   // The ADR check runs in the changes job; docs alone need no build group.
   [documentation,[]],
   [/^deny\.toml$|^LICENSE$/,['dependencies']],
   [/^web\/src\/features\/chat\/quote-cases\.json$/,['web','rust','windows']],
-  [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','xtask']],
+  [/^web\/src\/.*\.(ts|vue|mjs|js)$/,['web','static']],
   [/^web\//,['web']],
   [/^scripts\/run-rust-test\.mjs$/,groups],
-  [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts','web']],
-  [/^scripts\/(code-layout\/|code-layout-darwin\.test\.mjs$)/,['scripts','web','macos_scripts']],
-  [/^scripts\/(stage-release|pack-release|native-binary|store-formats|release\.test)\.mjs$/,['scripts','web','macos_scripts']],
-  [/^scripts\//,['scripts','web']],
+  [/^scripts\/test-macos-native(?:\.test)?\.mjs$/,['rust','scripts']],
+  [/^scripts\/stage-web\.mjs$/,['scripts','web']],
+  [/^scripts\/(code-layout\/|code-layout-darwin\.test\.mjs$)/,['scripts','macos_scripts']],
+  [/^scripts\/(stage-release|pack-release|native-binary|store-formats|release\.test)\.mjs$/,['scripts','macos_scripts']],
+  [/^scripts\//,['scripts']],
   [/^docker\//,['scripts']],
   [/^crates\/dim-cli\//,['rust','windows']],
+  [/^crates\/dim-client\//,['rust','windows','node']],
   [/^crates\/dim-agent-types\//,['rust','windows','node']],
   [/^crates\/dimcode\//,['rust']],
+  [/^crates\/dim-app-server\/src\/protocol\.rs$/,['rust','node','web','scripts']],
+  [/^crates\/dim-app-server\/src\/storage\/sqlite\.rs$/,['rust','node','scripts','macos_scripts']],
+  [/^crates\/dim-app-server\/resources\//,['rust','node','scripts']],
   [/^crates\/dim-agent-capabilities\/src\/(background_exec|workspace_tools\/exec|host_platform)/,['rust','node','execution']],
   [/^tests\/integration\/tests\/(local_execution|local_support|minimal_execution)/,['rust','node','execution']],
+  [/^vendor\/grok-build\//,['rust','windows','node']],
+  [/^xtask\/check\//,['static','xtask']],
   [/^xtask\//,['rust','node','eval']],
   [/^(crates|tests|vendor|runtime|npm)\//,['rust','node']],
 ];
@@ -35,6 +51,7 @@ export function classify(files) {
   for (const file of files) {
     const rule=rules.find(([pattern])=>pattern.test(file));
     for (const group of rule?rule[1]:groups) needed.add(group);
+    if (cargoManifest.test(file)) needed.add('dependencies');
   }
   return Object.fromEntries(groups.map(group=>[group,needed.has(group)]));
 }
@@ -57,8 +74,11 @@ if (import.meta.main) {
           execFileSync('git',['fetch','--no-tags','--depth=1','origin',base],{stdio:'pipe',timeout:30_000});
         }
         const files=changedFiles(base);
-        if (files.length && files.every(file=>documentation.test(file))) {
+        if (files.length) {
+          console.log(JSON.stringify(files));
           const selected=classify(files);
+          // Stage ADR 026 D5 rollout: skip main pushes that select no check
+          // group, and keep code pushes full until the daily sweep is verified.
           if (!Object.values(selected).includes(true)) result=selected;
         }
       } catch {

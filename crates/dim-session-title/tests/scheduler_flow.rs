@@ -1,5 +1,4 @@
-#![cfg(unix)]
-mod support;
+use crate::support;
 use dim_agent_capabilities::{adapters::MockTools, defaults};
 use dim_agent_runtime::testing::branch_events;
 use dim_agent_runtime::{AgentBuilder, AgentConfig};

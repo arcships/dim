@@ -515,7 +515,7 @@ Scheduler 的记录是进程状态，没有 Timeline 事实，因此要展示它
 
 ## 12. Loop
 
-Loop 是 Scheduler 的一种记录，其每一轮都是某条分支上的普通输入。`/loop` 是它的入口：保存的 prompt 立刻运行一轮，自定节奏时由模型安排下一轮。它不是 job。job 是 `schedule` Settings 源里用户写的持久配置，由 `/scheduled` 管理且从不过期；loop 属于 Session 且有界。一种记录承载两种节奏，因此一个 `list`、一个 `stop` 和一个过期规则服务两者。
+Loop 是 Scheduler 的一种记录，其每一轮都是某条分支上的普通输入。它有两个入口，区别在于首轮何时到期：用户的 `/loop` 命令立刻运行它保存的 prompt；模型的 `loop` 工具绝不在调用时投递任何一轮——它的 `start` 必须带 `delay_seconds`（夹到 60..3600），首轮在调用之后这么久才到期，因为模型此刻已在一轮之中，当下就该做的事属于这一轮。自定节奏时，后续轮次只在模型安排下一轮时到达。它不是 job。job 是 `schedule` Settings 源里用户写的持久配置，由 `/scheduled` 管理且从不过期；loop 属于 Session 且有界。一种记录承载两种节奏，因此一个 `list`、一个 `stop` 和一个过期规则服务两者。
 
 ### 12.1 记录
 
@@ -542,7 +542,7 @@ Loop 存在 `scheduler/loops.json`：内层 v1 JSON 文档放在宿主的 `{vers
 
 loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）：读一次文件、取一次时钟、对它改动的记录至多写一次。`delivering_round` 在写任何外部效果之前持久化，因此重启后按 `sessions.lookup` 用同一 submission id 结算，而不是再写一轮（§A.6 对 job 投递的规则）。
 
-`session.loop.start` 记录 `next_at = now`，因此第 1 轮是带 loop 标记的普通投递，绝不是普通用户消息。
+`session.loop.start` 记录 `next_at = now`，因此用户的首轮是带 loop 标记的普通投递，绝不是普通用户消息；`loop` 工具的 `start` 改为记录 `next_at = now + delay_seconds`，其结果写明该到期时刻、距现在多少秒，并说明调用时不投递任何一轮。
 
 ### 12.3 等待，且没有兜底轮
 
@@ -552,7 +552,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 
 ### 12.4 自定节奏的延迟
 
-`loop` 的 `action=next` 接受 `delay_seconds` 并夹到 60..3600。这个范围是边界，不是日程：选多久属于模型，描述要求它在无事可做时等久一些、工作完成时停止而不是继续等。Scheduler 不声明任何 prompt cache 窗口，因为缓存寿命由 provider 决定，此处没有契约声明它。
+`loop` 的 `start` 与 `action=next` 都接受 `delay_seconds`，并夹到 60..3600。`start` 上它必填，决定首轮的到期时刻，调用时不投递任何一轮。`next` 安排下一轮；在一轮尚未投递时到达的 `next` 会替换该轮的到期时刻，节奏变化就是这样应用的。这个范围是边界，不是日程：选多久属于模型，描述要求它在无事可做时等久一些、工作完成时停止而不是继续等。Scheduler 不声明任何 prompt cache 窗口，因为缓存寿命由 provider 决定，此处没有契约声明它。
 
 ### 12.5 边界与结果
 
@@ -670,7 +670,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | 种类 | 形式 | 规则 |
 | --- | --- | --- |
 | `cron` | `{cron: "m h dom mon dow", tz?: IANA}` | 五字段，支持列表、区间、步长；`tz` 缺省为控制节点时区；DST 空档时刻跳过，重复时刻只触发一次 |
-| `every` | `{every_minutes: n}` | `n` ≥ 1；窗口在 `anchor + k·n`，锚点为 `Job.enabled_at`(A.1) |
+| `every` | `{every_minutes: n}` | `n` ≥ 1；窗口在 `anchor + k·n`（k ≥ 1），锚点为 `Job.enabled_at`(A.1)：首个窗口在任务保存或启用后一个间隔，因此保存时不投递任何东西，立即运行用 `schedule.run_now` |
 | `at` | `{at: RFC 3339 时刻}` | 一个窗口；触发或错过之后任务被禁用 |
 
 调度必须恰为上述对象中的一种；拒绝混合形式和未知字段。例如：
@@ -681,7 +681,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 {"at": "2030-01-01T00:00:00Z"}
 ```
 
-`every_minutes` 是正整数。cron 形式省略 `tz` 时使用宿主本地时区，而非 UTC。`at` 值包含 UTC 偏移量（`Z` 或显式偏移量）。
+`every_minutes` 是正整数。cron 形式省略 `tz` 时使用宿主本地时区，而非 UTC。`at` 值包含 UTC 偏移量（`Z` 或显式偏移量）。已启用的 `every` 任务总带 `enabled_at`，即窗口计数的保存或启用时刻：新任务与重新启用的任务首窗都在一个间隔之后；保持启用的保存或调度编辑不移动它(A.1)。
 
 固定分钟间隔优先使用 `every_minutes`，所选时区中的日历时间使用 `cron`，特定时刻的一次投递使用 `at`。
 

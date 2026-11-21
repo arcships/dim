@@ -373,6 +373,62 @@ fn hooks_toggle_conflict_reads_the_area_again() {
     daemon.join().unwrap();
 }
 
+/// Creates a Session over the App Server's own wire and waits for its
+/// SessionStart hook point. A Session with no first turn runs the hook at
+/// activation, so the check does not race a turn's model request.
+fn start_hook_session(
+    home: &Home,
+    binary: &str,
+    project: &std::path::Path,
+    marker: &std::path::Path,
+    expected: &str,
+) {
+    let endpoint = home.0.join("rust/daemon.sock");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let mut client = dim_client::Client::connect(&dim_client::ConnectionConfig {
+            endpoint,
+            server: dim_client::Server {
+                program: binary.into(),
+                embedded: false,
+            },
+            profile: None,
+            client_kind: "other",
+            client_name: "cli_flow hooks-flow",
+            protocol_version: 4,
+        })
+        .await
+        .expect("connect to the App Server");
+        let created = client
+            .rpc("session.create", json!({"cwd": project.to_str().unwrap()}))
+            .await
+            .expect("create the Session");
+        assert!(created["sessionId"].is_string(), "{created}");
+        wait_for_hook(marker, expected);
+        client
+            .rpc("session.close", json!({"sessionId": created["sessionId"]}))
+            .await
+            .expect("close the Session");
+    });
+}
+
+/// Waits for the next hook point to run the saved document, without assuming
+/// when the started Session reaches activation.
+fn wait_for_hook(marker: &std::path::Path, expected: &str) {
+    let deadline = Instant::now() + PATIENCE;
+    loop {
+        let seen = fs::read_to_string(marker).unwrap_or_default();
+        if seen == expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the saved document did not reach the next hook point: {seen:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 #[ignore = "requires DIM_TEST_APP_SERVER pointing to the built production App Server"]
 fn project_hooks_start_disabled_and_the_user_enables_them() {
@@ -492,18 +548,10 @@ fn project_hooks_start_disabled_and_the_user_enables_them() {
         ),
         "{listed}"
     );
-    // The next hook point runs the document the CLI wrote. SessionStart
-    // fires before the model is asked, so the offline configuration's dead
-    // endpoint does not keep it from running; that configuration never
-    // finishes a turn, so `Stop` is not reachable here. A turn's own failure
-    // is expected and not this test's subject.
+    // A Session with no first turn reaches its SessionStart hook point at
+    // activation.
     let marker = project.join("user-ran.txt");
-    let _ = run(&["exec", "-p", "go"]);
-    assert_eq!(
-        fs::read_to_string(&marker).unwrap_or_default(),
-        "user-one",
-        "the saved document did not reach the next hook point"
-    );
+    start_hook_session(&home, &binary, &project, &marker, "user-one");
     // A replacement reaches the next hook point too.
     fs::write(
         &document,
@@ -516,12 +564,7 @@ fn project_hooks_start_disabled_and_the_user_enables_them() {
             .status
             .success()
     );
-    let _ = run(&["exec", "-p", "go"]);
-    assert_eq!(
-        fs::read_to_string(&marker).unwrap_or_default(),
-        "user-two",
-        "the replacement did not reach the next hook point"
-    );
+    start_hook_session(&home, &binary, &project, &marker, "user-two");
     assert!(run(&["daemon", "stop"]).status.success());
 }
 

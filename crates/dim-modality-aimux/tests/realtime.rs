@@ -1,7 +1,6 @@
 //! The realtime relay against a local WebSocket stub: the URL and headers it
 //! connects with, the frames it writes, the events it forwards, and the ends
 //! it reports.
-#![cfg(unix)]
 use dim_agent_capabilities::host::{
     HttpModelConnection, ModalityConnection, ModelConnection, ModelNetwork, RealtimeDeclaration,
     ResolvedModelConnection,

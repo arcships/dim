@@ -368,7 +368,7 @@ fn a_model_picked_at_home_drops_the_effort_home_chose() {
                     picking = true;
                     wire.reply(
                         &request,
-                        super::models::picker_page("preview-provider", "Preview", picked.clone()),
+                        picker_page("preview-provider", "Preview", picked.clone()),
                     );
                 }
                 "provider.catalog" => {
