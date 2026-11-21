@@ -822,7 +822,11 @@ impl SqliteStorage {
                         if let Some(target) = target {
                             let record = read_model_record(&tx, &id, &target)?;
                             let targets = std::slice::from_ref(&target);
-                            let name = if record.is_some() { persistence::names(&tx, &bundled, &id, targets)?.remove(&target) } else { None };
+                            let name = if record.is_some() {
+                                persistence::names(&tx, &bundled, &id, targets)?.remove(&target)
+                            } else {
+                                None
+                            };
                             return Ok(ManagementWindow {
                                 record,
                                 target_name: name,
