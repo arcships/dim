@@ -74,50 +74,28 @@ impl Plugin for ConfiguredModelsPlugin {
     }
     async fn apply(&self, ctx: &Ctx, (host,): Self::Deps) -> rutis::Result {
         ctx.provide_as::<AimuxModels>(self.0.clone())?;
-        let resolver = Arc::new(ConfiguredConnection {
+        let resolver = Arc::new_cyclic(|mounted| ConfiguredConnection {
+            mounted: mounted.clone(),
+            host: host.clone(),
             models: self.0.clone(),
             generation: ctx.cancellation_token(),
         });
         dim_agent_capabilities::host::ModelHost::new(host.clone(), Some(resolver.clone()))
             .provide(ctx)?;
-        let selection = resolver.clone();
-        let selection_host = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
-            selection.resolve(explicit, cwd, cancel)
-        }));
         ctx.provide(ModalityConnectionHost(resolver.clone()))?;
-        let selectable = ConfiguredSelectable {
-            models: self.0.clone(),
-        };
-        let modalities = ConfiguredSelectable {
-            models: self.0.clone(),
-        };
-        let selectable_host = SelectableModelsHost::new(
-            Arc::new(move |cancel| selectable.selectable(cancel)),
-            Arc::new(move |cancel| modalities.selectable_for_modality(cancel)),
-        );
-        let auxiliary = Arc::new(crate::auxiliary::ConfiguredAuxiliary {
-            models: self.0.clone(),
-            connection: resolver,
-            host,
-        });
-
-        dim_agent_capabilities::host::ProviderService::provide(
-            ctx,
-            selection_host,
-            selectable_host,
-            auxiliary,
-            None,
-        )?;
+        provide_model_catalog(ctx, resolver)?;
         Ok(())
     }
 }
-/// The configured catalog's `selectableModels` read: the same entries
-/// execution resolves, listed by provider and model id.
-struct ConfiguredSelectable {
-    models: Arc<AimuxModels>,
+pub(crate) struct ConfiguredConnection {
+    mounted: std::sync::Weak<Self>,
+    pub(crate) models: Arc<AimuxModels>,
+    pub(crate) host: Arc<ModelDriverHost>,
+    generation: CancellationToken,
 }
-impl ConfiguredSelectable {
-    fn selectable(
+
+impl ProviderService for ConfiguredConnection {
+    fn list_models(
         &self,
         cancel: CancellationToken,
     ) -> HostFuture<'static, Vec<dim_agent_types::ModelCapabilitySnapshot>> {
@@ -129,7 +107,7 @@ impl ConfiguredSelectable {
             Ok(models)
         })
     }
-    fn selectable_for_modality(
+    fn list_modality_models(
         &self,
         cancel: CancellationToken,
     ) -> HostFuture<'static, Vec<dim_agent_types::ModalityModelSnapshot>> {
@@ -144,14 +122,8 @@ impl ConfiguredSelectable {
             Ok(Vec::new())
         })
     }
-}
 
-struct ConfiguredConnection {
-    models: Arc<AimuxModels>,
-    generation: CancellationToken,
-}
-impl ConfiguredConnection {
-    fn resolve(
+    fn resolve_target(
         &self,
         explicit: Option<dim_agent_types::ModelId>,
         _: Option<std::path::PathBuf>,
@@ -188,6 +160,23 @@ impl ConfiguredConnection {
                 }),
             })
         })
+    }
+}
+impl rutis_bridge::session::HostDispatch for ConfiguredConnection {
+    fn methods(&self) -> Option<serde_json::Value> {
+        provider_methods(false)
+    }
+    fn invoke(
+        &self,
+        method: &str,
+        args: rutis_bridge::session::Value,
+    ) -> rutis_bridge::session::Reply {
+        dispatch_provider(
+            self.mounted.upgrade().expect("mounted ConfiguredModels"),
+            None,
+            method,
+            args,
+        )
     }
 }
 impl ResolveModelConnection for ConfiguredConnection {

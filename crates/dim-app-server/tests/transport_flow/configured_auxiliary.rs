@@ -205,7 +205,7 @@ async fn the_configured_profile_provides_and_runs_the_auxiliary_model() {
         assert_eq!(owner.name, "ConfiguredModels");
 
         let auxiliary = server
-            .service::<ModelProviderService>()
+            .service::<dyn ModelProviderService>()
             .expect("the auxiliary model host")
             .clone();
         let reply = auxiliary

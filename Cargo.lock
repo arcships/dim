@@ -1036,6 +1036,7 @@ dependencies = [
  "http",
  "reqwest 0.12.28",
  "rutis",
+ "rutis-bridge",
  "serde",
  "serde_json",
  "sha2 0.10.9",

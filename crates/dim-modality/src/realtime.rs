@@ -214,7 +214,7 @@ impl Realtime {
         })?;
         let (_, evaluation) = evaluate(
             &self.shared.settings,
-            &self.shared.provider,
+            self.shared.provider.as_ref(),
             &self.shared.ctx,
             self.shared.ocr_helper.as_deref(),
             cancel,

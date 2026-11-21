@@ -7,13 +7,7 @@ use dim_agent_types::ModelId;
 use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone)]
-pub(super) struct AuxiliaryModel {
-    pub(super) owner: Arc<ProviderService>,
-    pub(super) host: Arc<ModelDriverHost>,
-}
-
-impl CompleteAuxiliary for AuxiliaryModel {
+impl CompleteAuxiliary for ProviderService {
     fn complete(
         &self,
         model: ModelId,
@@ -24,13 +18,16 @@ impl CompleteAuxiliary for AuxiliaryModel {
             auxiliary_model::check(&request)?;
             let call = cancel.child_token();
             let _dropped = call.clone().drop_guard();
-            let (owner, host) = (self.owner.clone(), self.host.clone());
+            let (owner, host) = (
+                self.mounted.upgrade().expect("mounted Provider"),
+                self.driver.clone(),
+            );
             let target = model.clone();
             let started = Instant::now();
-            let result = self
-                .owner
+            let task_owner = owner.clone();
+            let result = owner
                 .owned(&call, move |cancel| {
-                    Box::pin(async move { run(owner, host, target, request, cancel).await })
+                    Box::pin(async move { run(task_owner, host, target, request, cancel).await })
                 })
                 .await;
             auxiliary_model::record(&model, started, result.as_ref());

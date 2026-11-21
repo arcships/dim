@@ -2,25 +2,15 @@
 //! catalog and its declared configuration, the configured connection, and the
 //! shared model host. The run and the binding are the ones every owner of
 //! model selection uses ([AuxiliaryModel §4.3](../../../docs/design/appserver/auxiliary-model.md#43-named-binding)).
-use crate::AimuxModels;
 use dim_agent_capabilities::auxiliary_model::{self, AuxiliaryTarget};
 use dim_agent_capabilities::host::{
     AuxiliaryError, AuxiliaryErrorCode, AuxiliaryReply, AuxiliaryRequest, CompleteAuxiliary,
-    ModelDriverHost, ResolveModelConnection,
 };
 use dim_agent_types::ModelId;
-use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
+use std::{future::Future, pin::Pin, time::Instant};
 use tokio_util::sync::CancellationToken;
 
-/// The configured profile's owner of the operation: the file's catalog, the
-/// connection its `apiKeyEnv` names, and the Aimux model host.
-pub(crate) struct ConfiguredAuxiliary {
-    pub(crate) models: Arc<AimuxModels>,
-    pub(crate) connection: Arc<dyn ResolveModelConnection>,
-    pub(crate) host: Arc<ModelDriverHost>,
-}
-
-impl CompleteAuxiliary for ConfiguredAuxiliary {
+impl CompleteAuxiliary for crate::plugin::ConfiguredConnection {
     fn complete(
         &self,
         model: ModelId,
@@ -37,14 +27,7 @@ impl CompleteAuxiliary for ConfiguredAuxiliary {
                         config: entry.defaults.clone(),
                         capability_snapshot: None,
                     };
-                    auxiliary_model::complete(
-                        &self.host,
-                        self.connection.as_ref(),
-                        target,
-                        request,
-                        &cancel,
-                    )
-                    .await
+                    auxiliary_model::complete(&self.host, self, target, request, &cancel).await
                 }
                 Err(_) => Err(unavailable()),
             };

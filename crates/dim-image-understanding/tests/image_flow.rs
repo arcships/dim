@@ -263,10 +263,10 @@ impl DynPlugin for ObserveSelection {
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
-            let provider = ctx.require::<ProviderService>()?;
+            let provider = ctx.require::<dyn ProviderService>()?;
             let selection = provider.clone();
             let script = self.script.clone();
-            let observed = ModelSelectionHost::new(Arc::new(move |explicit, cwd, cancel| {
+            let observed: ResolveModelSelection = Arc::new(move |explicit, cwd, cancel| {
                 let selection = selection.clone();
                 let script = script.clone();
                 Box::pin(async move {
@@ -276,9 +276,19 @@ impl DynPlugin for ObserveSelection {
                     script.selections.fetch_add(1, Ordering::SeqCst);
                     result.map_err(|error| HostError::failed(error.to_string()))
                 })
-            }));
-            let ctx = ctx.isolate(TypeKey::of::<ProviderService>(), "fixture-image-selection");
-            ctx.provide(provider.with_selection(observed))?;
+            });
+            let ctx = ctx.isolate(
+                TypeKey::of::<dyn ProviderService>(),
+                "fixture-image-selection",
+            );
+            let models = provider.clone();
+            let modalities = provider.clone();
+            ctx.provide_as::<dyn ProviderService>(Arc::new(TestModelCatalog {
+                resolve: observed,
+                models: Arc::new(move |cancel| models.list_models(cancel)),
+                modalities: Arc::new(move |cancel| modalities.list_modality_models(cancel)),
+                auxiliary: Some(provider),
+            }))?;
             self.modality.apply(&ctx).await
         })
     }

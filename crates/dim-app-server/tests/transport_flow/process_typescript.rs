@@ -1252,7 +1252,7 @@ async fn node_reads_the_five_host_ports_through_the_product_owners() {
     };
     let mut reply = files_available(&mut client, "hostports.read", json!({"model":model})).await;
     let cancel = CancellationToken::new();
-    let models = server.service::<ProviderService>().unwrap();
+    let models = server.service::<dyn ProviderService>().unwrap();
     let adopted: dim_agent_types::ModelSelection =
         serde_json::from_value(reply.as_object_mut().unwrap().remove("adopted").unwrap()).unwrap();
     let provider = server

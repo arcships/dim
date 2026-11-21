@@ -1103,7 +1103,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
                 .unwrap();
         }
         if index == 0 {
-            let listed = root.get::<ModelProviderService>().unwrap();
+            let listed = root.get::<dyn ModelProviderService>().unwrap();
             assert!(
                 listed
                     .selectable_for_modality(cancel.clone())
@@ -1385,7 +1385,7 @@ async fn managed_provider_selection_http_recovery_and_restart_flow() {
     .await
     .unwrap();
     assert!(grok.status(&cancel).await.unwrap().authenticated);
-    let auxiliary = root.get::<ModelProviderService>().unwrap();
+    let auxiliary = root.get::<dyn ModelProviderService>().unwrap();
     let sent = f.model_requests.lock().unwrap().len();
     f.model_rejections.store(2, Ordering::SeqCst);
     let error = auxiliary

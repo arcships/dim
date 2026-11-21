@@ -10,8 +10,8 @@ use dim_agent_capabilities::execution_settings::{
     ExecutionSettings, ExecutionSettingsError, ExecutionSettingsHost,
 };
 use dim_agent_capabilities::host::{
-    HostError, ModalityModelsReply, ModelPortError, ModelSelectionHost, ModelSelectionRequest,
-    SelectableModelsHost, SelectableModelsReply,
+    HostError, ModalityModelsRead, ModalityModelsReply, ModelPortError, ModelSelectionRequest,
+    ResolveModelSelection, SelectableModelsRead, SelectableModelsReply,
 };
 use dim_agent_capabilities::prompt_suggestion::{
     PromptSuggestionSettings, PromptSuggestionSettingsError, PromptSuggestionSettingsHost,
@@ -29,45 +29,22 @@ use serde_json::{Value, json};
 use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-struct UnusedAuxiliary;
-impl dim_agent_capabilities::host::CompleteAuxiliary for UnusedAuxiliary {
-    fn complete(
-        &self,
-        _: ModelId,
-        _: dim_agent_capabilities::host::AuxiliaryRequest,
-        _: CancellationToken,
-    ) -> std::pin::Pin<
-        Box<
-            dyn Future<
-                    Output = Result<
-                        dim_agent_capabilities::host::AuxiliaryReply,
-                        dim_agent_capabilities::host::AuxiliaryError,
-                    >,
-                > + Send
-                + '_,
-        >,
-    > {
-        unreachable!()
-    }
-}
-
 fn provider(
     root: &Ctx,
-    selection: Option<ModelSelectionHost>,
-    selectable: Option<SelectableModelsHost>,
-) -> Arc<dim_agent_capabilities::host::ProviderService> {
-    use dim_agent_capabilities::host::ProviderService;
-    ProviderService::provide(
-        root,
-        selection.unwrap_or_else(|| ModelSelectionHost::new(Arc::new(|_, _, _| unreachable!()))),
-        selectable.unwrap_or_else(|| {
-            SelectableModelsHost::new(Arc::new(|_| unreachable!()), Arc::new(|_| unreachable!()))
-        }),
-        Arc::new(UnusedAuxiliary),
-        None,
-    )
-    .unwrap();
-    root.get::<ProviderService>().unwrap()
+    selection: Option<ResolveModelSelection>,
+    selectable: Option<(SelectableModelsRead, ModalityModelsRead)>,
+) -> Arc<dyn dim_agent_capabilities::host::ProviderService> {
+    use dim_agent_capabilities::host::{ProviderService, TestModelCatalog, provide_model_catalog};
+    let (models, modalities) =
+        selectable.unwrap_or_else(|| (Arc::new(|_| unreachable!()), Arc::new(|_| unreachable!())));
+    let owner = TestModelCatalog {
+        resolve: selection.unwrap_or_else(|| Arc::new(|_, _, _| unreachable!())),
+        models,
+        modalities,
+        auxiliary: None,
+    };
+    provide_model_catalog(root, Arc::new(owner)).unwrap();
+    root.get::<dyn ProviderService>().unwrap()
 }
 
 /// The face `name` is provided under, as a caller of another language reads
@@ -226,7 +203,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
         },
         operations: vec!["image.generate".into()],
     };
-    let selectable = SelectableModelsHost::new(
+    let selectable: (SelectableModelsRead, ModalityModelsRead) = (
         Arc::new(|_| Box::pin(async { Ok(Vec::new()) })),
         Arc::new(move |_| Box::pin(async move { Ok(vec![declared()]) })),
     );
@@ -273,7 +250,7 @@ async fn the_selectable_models_answer_their_documented_empty_request() {
 #[tokio::test]
 async fn the_model_selection_answers_the_same_through_the_binding_and_the_face() {
     let root = Ctx::root().unwrap();
-    let selection = ModelSelectionHost::new(Arc::new(|explicit, _, _| {
+    let selection: ResolveModelSelection = Arc::new(|explicit, _, _| {
         Box::pin(async move {
             let id = explicit.unwrap_or(ModelId {
                 provider_id: "provider".into(),
@@ -287,7 +264,7 @@ async fn the_model_selection_answers_the_same_through_the_binding_and_the_face()
                 metadata: None,
             })
         })
-    }));
+    });
     let binding = provider(&root, Some(selection), None);
     let request = ModelSelectionRequest::at(
         Some(ModelId {
@@ -319,11 +296,11 @@ async fn the_model_selection_answers_the_same_through_the_binding_and_the_face()
 #[tokio::test]
 async fn a_host_failure_keeps_the_code_its_caller_acts_on() {
     let root = Ctx::root().unwrap();
-    let selectable = SelectableModelsHost::new(
+    let selectable: (SelectableModelsRead, ModalityModelsRead) = (
         Arc::new(|_| Box::pin(async { Err(HostError::Cancelled("the owner closed".into())) })),
         Arc::new(|_| Box::pin(async { Err(HostError::failed("storage")) })),
     );
-    provider(&root, None, Some(selectable.clone()));
+    let binding = provider(&root, None, Some(selectable));
     let cancelled = call(
         &face(&root, "providerService"),
         "selectableModels",
@@ -340,7 +317,6 @@ async fn a_host_failure_keeps_the_code_its_caller_acts_on() {
     .await
     .expect_err("the owner fails");
     assert_eq!(failed.code(), Some("failed"));
-    let binding = &selectable;
     let cancelled = binding.selectable_models(CancellationToken::new()).await;
     assert!(
         matches!(cancelled, Err(ModelPortError::Cancelled { .. })),

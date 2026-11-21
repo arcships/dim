@@ -4465,7 +4465,7 @@ pub(crate) async fn selection(
     cancel: &CancellationToken,
 ) -> Result<ModelSelection> {
     let host = server
-        .service::<ProviderService>()
+        .service::<dyn ProviderService>()
         .ok_or("the served profile resolves no model selection")?;
     host.resolve(
         ModelSelectionRequest::at(Some(target.clone()), Some(cwd))
