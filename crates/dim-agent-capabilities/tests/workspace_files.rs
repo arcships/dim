@@ -315,6 +315,20 @@ async fn a_new_file_takes_the_process_umask() {
             .call(&reads, "write", json!({"path": "new", "content": "text\n"}))
             .await);
         assert_eq!(workspace.bytes("new"), b"text\n");
+        let leftovers: Vec<_> = fs::read_dir(&workspace.root)
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".dim-write-")
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a successful write leaves no staging entry: {leftovers:?}"
+        );
         let mode = fs::metadata(workspace.path("new"))
             .unwrap()
             .permissions()

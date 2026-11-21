@@ -118,9 +118,13 @@ and retain coordinator admission through I/O/publication. A new target is staged
 as `staged` with mode `0o666` inside a private directory created for it in the
 target's parent (mode `0o700`, named for the staged entry), so the process umask
 and the parent's default ACLs decide the installed file's mode while nobody else
-can read or change the staged bytes; installation links that file at the target
-without replacing an entry, and the private directory is removed on every
-failure, cancellation and installation path. A replaced target stages its
+can read or change the staged bytes. The directory is opened without following a
+symlink and checked to be a directory the effective user owns with no group or
+other permission, and the staged file is created, verified, linked and removed
+relative to that handle, so a directory name swapped after creation cannot
+receive the bytes or redirect the installation; installation links the file at
+the target without replacing an entry, and the private directory is removed on
+every failure, cancellation and installation path. A replaced target stages its
 sibling `0o600` directly in the parent, takes the original's owner, group and
 mode before installation, and is renamed over it. Windows installs a directory
 entry that inherits the parent's permissions. Foreground commands
@@ -458,14 +462,20 @@ asserts the declaration the model reads.
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also covers the mode of the file a mutation installs:
 `a_new_file_takes_the_process_umask` runs itself again in a child process under
-umask `022` and `002` and checks the new file's `0644` and `0664`, and
+umask `022` and `002`, checks the new file's `0644` and `0664`, and that a
+successful write leaves no staging entry;
 `replacement_preserves_permissions_and_open_original` replaces a `0600` and a
 `0644` file and keeps each mode and the open original's bytes.
 [mutation_tests](../../../../crates/dim-agent-capabilities/src/workspace_tools/files.rs)
 covers preparation itself: `preparation_stays_private_until_installation` runs
 the `before_commit` hook to check that a new target's bytes are reachable only
 through a `0700` staging directory, that a replaced target's staged file is
-`0600`, and that cancellation removes the staged entry and the directory.
+`0600`, and that cancellation removes the staged entry and the directory;
+`the_private_staging_directory_is_opened_and_checked` checks that a symlink and
+a `0755` directory are refused while a `0700` directory is opened, and
+`a_swapped_staging_directory_name_receives_nothing` replaces the directory's
+name after the handle exists and checks that only the original directory's bytes
+are installed.
 
 [workspace_files.rs](../../../../crates/dim-agent-capabilities/tests/workspace_files.rs)
 also drives `read` over images: a PNG and its line, an image recognized ahead of

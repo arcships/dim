@@ -626,17 +626,209 @@ fn open_relative(
 
 /// The staged file's name inside the private directory a new target is
 /// prepared in.
-#[cfg(not(windows))]
+#[cfg(unix)]
 const STAGED_FILE: &str = "staged";
 
-/// The staged file of the private directory `name`, relative to the target's
-/// parent directory.
-#[cfg(not(windows))]
-fn staged_entry(name: &std::ffi::OsStr) -> std::ffi::OsString {
-    let mut entry = name.to_owned();
-    entry.push("/");
-    entry.push(STAGED_FILE);
-    entry
+/// The private directory a new target's file is staged in, opened relative to
+/// the target's parent and checked before anything is written into it. Every
+/// operation on the staged file runs relative to `dir`, so a name swapped after
+/// creation cannot receive the staged bytes or redirect the installation.
+#[cfg(unix)]
+struct StagingDirectory {
+    /// The target's parent directory, relative to which the private
+    /// directory's entry is removed.
+    parent: std::fs::File,
+    /// The opened, checked private directory itself.
+    dir: std::fs::File,
+}
+
+/// Creates the private staging directory `name` below `parent` with mode 0700.
+#[cfg(unix)]
+fn create_staging_directory(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> Result<(), TargetError> {
+    use std::os::fd::AsRawFd;
+    let name = c_name(name)?;
+    // SAFETY: `parent` is an open directory handle and `name` a live
+    // NUL-terminated string for the call.
+    if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
+        return Err(classify(std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// Opens the staging directory `name` below `parent` without following a
+/// symlink and checks that it is a directory the effective user owns whose
+/// group and other permission bits are all clear. A name swapped between the
+/// creation and this open is refused here unless it names such a directory.
+#[cfg(unix)]
+fn open_staging_directory(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> Result<std::fs::File, TargetError> {
+    use std::os::unix::fs::MetadataExt;
+    let directory =
+        open_relative(parent, name, libc::O_RDONLY | libc::O_DIRECTORY, 0).map_err(classify)?;
+    let metadata = directory.metadata().map_err(TargetError::Io)?;
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    let owner = unsafe { libc::geteuid() };
+    if metadata.is_dir() && metadata.uid() == owner && metadata.mode() & 0o077 == 0 {
+        Ok(directory)
+    } else {
+        Err(TargetError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the private staging directory is not the one this call created",
+        )))
+    }
+}
+
+/// Creates the staged file inside the private directory `name` below `parent`,
+/// which is checked before the file exists. A failed creation removes the empty
+/// staging directory it was made for.
+#[cfg(unix)]
+fn create_staged_file(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> Result<(std::fs::File, StagingDirectory), TargetError> {
+    let parent = parent.try_clone().map_err(classify)?;
+    create_staging_directory(&parent, name)?;
+    let directory = match open_staging_directory(&parent, name) {
+        Ok(directory) => directory,
+        Err(error) => {
+            remove_staging_entry(&parent, name);
+            return Err(error);
+        }
+    };
+    let created = open_relative(
+        &directory,
+        std::ffi::OsStr::new(STAGED_FILE),
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        0o666,
+    );
+    match created {
+        Ok(file) => Ok((
+            file,
+            StagingDirectory {
+                parent,
+                dir: directory,
+            },
+        )),
+        Err(error) => {
+            remove_staging_entry(&parent, name);
+            Err(classify(error))
+        }
+    }
+}
+
+/// Removes the empty staging directory entry `name` below `parent`. A name
+/// swapped after creation makes this fail or remove another empty directory;
+/// nothing below it is removed recursively, and the failure is not reported,
+/// because the call may already have installed the target.
+#[cfg(unix)]
+fn remove_staging_entry(parent: &std::fs::File, name: &std::ffi::OsStr) {
+    use std::os::fd::AsRawFd;
+    if let Ok(name) = c_name(name) {
+        // SAFETY: `parent` is an open directory handle and `name` a live
+        // NUL-terminated string for the call.
+        unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    }
+}
+
+/// Removes the staged file inside a checked staging directory.
+#[cfg(unix)]
+fn remove_staged_file(staging: &StagingDirectory) {
+    use std::os::fd::AsRawFd;
+    if let Ok(name) = c_name(std::ffi::OsStr::new(STAGED_FILE)) {
+        // SAFETY: the directory handle and the NUL-terminated name are live
+        // for the call.
+        unsafe { libc::unlinkat(staging.dir.as_raw_fd(), name.as_ptr(), 0) };
+    }
+}
+
+/// Whether `file` is still the regular file `name` in `dir`, checked without
+/// following a symlink and by device and inode.
+#[cfg(unix)]
+fn staged_owned_in(dir: &std::fs::File, name: &std::ffi::OsStr, file: &std::fs::File) -> bool {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    let (Ok(metadata), Ok(name)) = (file.metadata(), c_name(name)) else {
+        return false;
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: the handle and the NUL-terminated name are live for the call,
+    // and `stat` is a valid uninitialized `libc::stat` buffer.
+    let result = unsafe {
+        libc::fstatat(
+            dir.as_raw_fd(),
+            name.as_ptr(),
+            stat.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    };
+    if result < 0 {
+        return false;
+    }
+    // SAFETY: `fstatat` returned 0 (checked above), so it initialized the
+    // struct.
+    let stat = unsafe { stat.assume_init() };
+    #[expect(
+        clippy::unnecessary_cast,
+        reason = "`st_dev` is 32-bit on macOS and 64-bit on Linux, so its cast is needed on one and lints on the other; `st_ino` is 64-bit on both"
+    )]
+    let (device, inode) = (stat.st_dev as u64, stat.st_ino as u64);
+    stat.st_mode & libc::S_IFMT == libc::S_IFREG
+        && (device, inode) == (metadata.dev(), metadata.ino())
+}
+
+/// Links the staged file at `name` in the staging directory's parent, which
+/// never replaces an existing entry.
+#[cfg(unix)]
+fn link_staged(staging: &StagingDirectory, name: &std::ffi::OsStr) -> Result<(), TargetError> {
+    use std::os::fd::AsRawFd;
+    let staged = c_name(std::ffi::OsStr::new(STAGED_FILE))?;
+    let name = c_name(name)?;
+    // SAFETY: both handles are open directory handles and both names are live
+    // NUL-terminated strings for the call.
+    let result = unsafe {
+        libc::linkat(
+            staging.dir.as_raw_fd(),
+            staged.as_ptr(),
+            staging.parent.as_raw_fd(),
+            name.as_ptr(),
+            0,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(TargetError::Io(std::io::Error::last_os_error()))
+    }
+}
+
+/// Creates the staged file for `path` where [`Target::create_staged`]
+/// documents it: a new target's file lives in a checked private directory in
+/// the target's parent.
+#[cfg(unix)]
+fn staged_path_file(
+    path: &Path,
+    name: &std::ffi::OsStr,
+    existing: bool,
+) -> Result<(std::fs::File, Option<StagingDirectory>), TargetError> {
+    if existing {
+        let mut options = open_options();
+        options.write(true).create_new(true);
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        return options
+            .open(path.with_file_name(name))
+            .map(|file| (file, None))
+            .map_err(TargetError::Io);
+    }
+    let parent_path = path
+        .parent()
+        .ok_or_else(|| TargetError::Io(std::io::Error::other("a target has a parent")))?;
+    let parent = std::fs::File::open(parent_path).map_err(TargetError::Io)?;
+    create_staged_file(&parent, name).map(|(file, staging)| (file, Some(staging)))
 }
 
 /// A walk that met a symlink (`ELOOP`) or a non-directory (`ENOTDIR`) is the
@@ -751,80 +943,22 @@ impl Parent {
         &self,
         name: &std::ffi::OsStr,
         existing: bool,
-    ) -> Result<std::fs::File, TargetError> {
-        let staged = if existing {
-            name.to_owned()
-        } else {
-            self.create_staging_directory(name)?;
-            staged_entry(name)
-        };
-        let created = open_relative(
-            &self.dir,
-            &staged,
-            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
-            if existing { 0o600 } else { 0o666 },
-        );
-        if !existing && created.is_err() {
-            // The private directory holds nothing yet, and removing it fails
-            // rather than removing an entry of another process.
-            self.remove_staging_directory(name);
+    ) -> Result<(std::fs::File, Option<StagingDirectory>), TargetError> {
+        if existing {
+            return open_relative(
+                &self.dir,
+                name,
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+                0o600,
+            )
+            .map(|file| (file, None))
+            .map_err(classify);
         }
-        created.map_err(classify)
-    }
-
-    /// Creates the private directory that holds a new target's staged file,
-    /// relative to the target's parent.
-    fn create_staging_directory(&self, name: &std::ffi::OsStr) -> Result<(), TargetError> {
-        use std::os::fd::AsRawFd;
-        let name = c_name(name)?;
-        // SAFETY: `self.dir` is an open directory handle and `name` a live
-        // NUL-terminated string for the call.
-        if unsafe { libc::mkdirat(self.dir.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
-            return Err(classify(std::io::Error::last_os_error()));
-        }
-        Ok(())
-    }
-
-    fn remove_staging_directory(&self, name: &std::ffi::OsStr) {
-        use std::os::fd::AsRawFd;
-        let Ok(name) = c_name(name) else {
-            return;
-        };
-        // SAFETY: the handle and the NUL-terminated name are live for the
-        // call.
-        unsafe { libc::unlinkat(self.dir.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+        create_staged_file(&self.dir, name).map(|(file, staging)| (file, Some(staging)))
     }
 
     fn staged_owned(&self, name: &std::ffi::OsStr, file: &std::fs::File) -> bool {
-        use std::os::fd::AsRawFd;
-        use std::os::unix::fs::MetadataExt;
-        let (Ok(metadata), Ok(name)) = (file.metadata(), c_name(name)) else {
-            return false;
-        };
-        let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
-        // SAFETY: the handle and the NUL-terminated name are live for the
-        // call, and `stat` is a valid uninitialized `libc::stat` buffer.
-        let result = unsafe {
-            libc::fstatat(
-                self.dir.as_raw_fd(),
-                name.as_ptr(),
-                stat.as_mut_ptr(),
-                libc::AT_SYMLINK_NOFOLLOW,
-            )
-        };
-        if result < 0 {
-            return false;
-        }
-        // SAFETY: `fstatat` returned 0 (checked above), so it initialized
-        // the struct.
-        let stat = unsafe { stat.assume_init() };
-        #[expect(
-            clippy::unnecessary_cast,
-            reason = "`st_dev` is 32-bit on macOS and 64-bit on Linux, so its cast is needed on one and lints on the other; `st_ino` is 64-bit on both"
-        )]
-        let (device, inode) = (stat.st_dev as u64, stat.st_ino as u64);
-        stat.st_mode & libc::S_IFMT == libc::S_IFREG
-            && (device, inode) == (metadata.dev(), metadata.ino())
+        staged_owned_in(&self.dir, name, file)
     }
 
     fn remove_staged(&self, name: &std::ffi::OsStr) {
@@ -986,122 +1120,89 @@ impl Target {
     /// owner, group and mode before installation, so its bytes stay private. A
     /// new target's file is created with `0o666` inside a private directory in
     /// its parent: the process umask and the parent's default ACLs decide the
-    /// installed file's mode, and nobody else can read or change the staged
-    /// bytes before installation.
+    /// installed file's mode, and the directory is opened and checked as a
+    /// directory owned by the effective user with no group or other access, so
+    /// nobody else can read or change the staged bytes before installation.
     pub(crate) fn create_staged(
         &self,
         name: std::ffi::OsString,
         existing: bool,
     ) -> Result<Staged<'_>, TargetError> {
+        #[cfg(unix)]
+        let (file, staging) = self.staged_file(&name, existing)?;
+        #[cfg(not(unix))]
+        let file = self.staged_file(&name, existing)?;
         Ok(Staged {
             target: self,
-            file: self.staged_file(&name, existing)?,
+            file,
             name,
+            #[cfg(unix)]
+            staging,
             existing,
         })
     }
 
     /// Creates the staged file `name` where [`Self::create_staged`] documents
-    /// it.
+    /// it, with the checked private directory a new target's file lives in.
+    #[cfg(unix)]
     fn staged_file(
         &self,
         name: &std::ffi::OsStr,
         existing: bool,
-    ) -> Result<std::fs::File, TargetError> {
+    ) -> Result<(std::fs::File, Option<StagingDirectory>), TargetError> {
         match self {
-            Self::Path(path) => {
-                #[cfg(windows)]
-                {
-                    let parent =
-                        crate::file_storage::windows::open_root(path.parent().ok_or_else(
-                            || TargetError::Io(std::io::Error::other("a target has a parent")),
-                        )?)
-                        .map_err(|error| TargetError::Io(std::io::Error::other(error)))?;
-                    let file = crate::file_storage::windows::create_temp(
-                        &parent,
-                        &name.to_owned(),
-                        &parent,
-                        &path
-                            .file_name()
-                            .ok_or_else(|| {
-                                TargetError::Io(std::io::Error::other("a target names a file"))
-                            })?
-                            .to_owned(),
-                        None,
-                    );
-                    return file.map_err(TargetError::Io);
-                }
-                #[cfg(not(windows))]
-                {
-                    let staged = if existing {
-                        path.with_file_name(name)
-                    } else {
-                        let directory = path.with_file_name(name);
-                        let mut builder = std::fs::DirBuilder::new();
-                        #[cfg(unix)]
-                        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-                        builder.create(&directory).map_err(TargetError::Io)?;
-                        directory.join(STAGED_FILE)
-                    };
-                    let mut options = open_options();
-                    options.write(true).create_new(true);
-                    #[cfg(unix)]
-                    std::os::unix::fs::OpenOptionsExt::mode(
-                        &mut options,
-                        if existing { 0o600 } else { 0o666 },
-                    );
-                    let created = options.open(&staged);
-                    if !existing && created.is_err() {
-                        // The private directory holds nothing yet, and removing
-                        // it fails rather than removing an entry of another
-                        // process.
-                        let _ = std::fs::remove_dir(
-                            staged.parent().expect("a staged file has a parent"),
-                        );
-                    }
-                    created.map_err(TargetError::Io)
-                }
-            }
-            #[cfg(unix)]
+            Self::Path(path) => staged_path_file(path, name, existing),
             Self::Handle(parent) => parent.create_staged(name, existing),
         }
     }
 
-    /// Removes the empty private staging directory `name`.
-    #[cfg(not(windows))]
-    fn remove_staging_directory(&self, name: &std::ffi::OsStr) {
-        match self {
-            Self::Path(path) => {
-                let _ = std::fs::remove_dir(path.with_file_name(name));
-            }
-            #[cfg(unix)]
-            Self::Handle(parent) => parent.remove_staging_directory(name),
-        }
+    /// Creates the staged file `name` where [`Self::create_staged`] documents
+    /// it.
+    #[cfg(windows)]
+    fn staged_file(
+        &self,
+        name: &std::ffi::OsStr,
+        _existing: bool,
+    ) -> Result<std::fs::File, TargetError> {
+        let Self::Path(path) = self;
+        let parent = crate::file_storage::windows::open_root(
+            path.parent()
+                .ok_or_else(|| TargetError::Io(std::io::Error::other("a target has a parent")))?,
+        )
+        .map_err(|error| TargetError::Io(std::io::Error::other(error)))?;
+        crate::file_storage::windows::create_temp(
+            &parent,
+            &name.to_owned(),
+            &parent,
+            &path
+                .file_name()
+                .ok_or_else(|| TargetError::Io(std::io::Error::other("a target names a file")))?
+                .to_owned(),
+            None,
+        )
+        .map_err(TargetError::Io)
     }
 
-    /// Removes the staged file inside the private staging directory `name`.
-    #[cfg(not(windows))]
-    fn remove_staged_file(&self, name: &std::ffi::OsStr) {
-        match self {
-            Self::Path(path) => {
-                let _ = std::fs::remove_file(path.with_file_name(name).join(STAGED_FILE));
-            }
-            #[cfg(unix)]
-            Self::Handle(parent) => parent.remove_staged(&staged_entry(name)),
-        }
+    #[cfg(not(any(unix, windows)))]
+    fn staged_file(
+        &self,
+        _name: &std::ffi::OsStr,
+        _existing: bool,
+    ) -> Result<std::fs::File, TargetError> {
+        Err(TargetError::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "staged writes require a Unix or Windows host",
+        )))
     }
 
     fn staged_owned(&self, staged: &Staged) -> bool {
-        #[cfg(not(windows))]
-        if let Some(directory) = staged.private_directory() {
-            return match self {
-                Self::Path(path) => owned_temporary(
-                    &path.with_file_name(directory).join(STAGED_FILE),
-                    &staged.file,
-                ),
-                #[cfg(unix)]
-                Self::Handle(parent) => parent.staged_owned(&staged_entry(directory), &staged.file),
-            };
+        #[cfg(unix)]
+        if let Some(staging) = &staged.staging {
+            return staged_owned_in(
+                &staging.dir,
+                std::ffi::OsStr::new(STAGED_FILE),
+                &staged.file,
+            );
         }
         match self {
             Self::Path(path) => owned_temporary(&path.with_file_name(&staged.name), &staged.file),
@@ -1112,10 +1213,10 @@ impl Target {
 
     /// Removes whatever preparation added to the target's parent directory.
     fn remove_staged(&self, staged: &Staged) {
-        #[cfg(not(windows))]
-        if staged.private_directory().is_some() {
-            self.remove_staged_file(&staged.name);
-            return self.remove_staging_directory(&staged.name);
+        #[cfg(unix)]
+        if let Some(staging) = &staged.staging {
+            remove_staged_file(staging);
+            return remove_staging_entry(&staging.parent, &staged.name);
         }
         match self {
             Self::Path(path) => {
@@ -1152,13 +1253,14 @@ impl Target {
                     )
                     .map_err(TargetError::Io);
                 }
-                #[cfg(not(windows))]
-                if staged.private_directory().is_some() {
-                    return std::fs::hard_link(
-                        path.with_file_name(&staged.name).join(STAGED_FILE),
-                        path,
-                    )
-                    .map_err(TargetError::Io);
+                #[cfg(unix)]
+                if let Some(staging) = &staged.staging {
+                    return link_staged(
+                        staging,
+                        path.file_name().ok_or_else(|| {
+                            TargetError::Io(std::io::Error::other("a target names a file"))
+                        })?,
+                    );
                 }
                 let result = if staged.existing {
                     std::fs::rename(path.with_file_name(&staged.name), path)
@@ -1169,8 +1271,8 @@ impl Target {
             }
             #[cfg(unix)]
             Self::Handle(parent) => {
-                if let Some(directory) = staged.private_directory() {
-                    return parent.install(&staged_entry(directory), false);
+                if let Some(staging) = &staged.staging {
+                    return link_staged(staging, &parent.name);
                 }
                 parent.install(&staged.name, staged.existing)
             }
@@ -1212,19 +1314,14 @@ pub(crate) struct Staged<'a> {
     /// The name preparation added to the target's parent directory: the staged
     /// file itself, or the private directory holding it.
     name: std::ffi::OsString,
+    /// The checked private directory a new target's file is staged in.
+    #[cfg(unix)]
+    staging: Option<StagingDirectory>,
     /// Whether the target existed, so installation replaces it.
     existing: bool,
 }
 
 impl Staged<'_> {
-    /// The name of the private directory a new target's file is prepared in,
-    /// relative to the target's parent. Windows stages an entry that already
-    /// inherits the parent's permissions, so only its replacement is private.
-    #[cfg(not(windows))]
-    fn private_directory(&self) -> Option<&std::ffi::OsStr> {
-        (!self.existing).then_some(self.name.as_os_str())
-    }
-
     pub(crate) fn file(&self) -> &std::fs::File {
         &self.file
     }
@@ -1515,6 +1612,100 @@ mod mutation_tests {
                     .starts_with(".dim-write-")
             })
             .collect()
+    }
+
+    /// The private staging directory is opened through its parent and checked:
+    /// a symlink and a directory group or others can enter are refused, and a
+    /// directory only its owner can enter is accepted.
+    #[cfg(unix)]
+    #[test]
+    fn the_private_staging_directory_is_opened_and_checked() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("dim-staging-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let parent = std::fs::File::open(&root).unwrap();
+        std::os::unix::fs::symlink(&root, root.join("link")).unwrap();
+        assert!(
+            open_staging_directory(&parent, std::ffi::OsStr::new("link")).is_err(),
+            "a symlink is not a staging directory"
+        );
+        for (name, mode) in [("wide", 0o755), ("private", 0o700)] {
+            std::fs::create_dir(root.join(name)).unwrap();
+            std::fs::set_permissions(root.join(name), std::fs::Permissions::from_mode(mode))
+                .unwrap();
+            assert_eq!(
+                open_staging_directory(&parent, std::ffi::OsStr::new(name)).is_ok(),
+                mode == 0o700,
+                "a {mode:o} directory"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Operations on a new target run relative to the opened staging directory,
+    /// not its name: replacing the name after the handle exists neither
+    /// receives the staged bytes nor changes the installed file.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_swapped_staging_directory_name_receives_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        for bounded in [false, true] {
+            let root = std::env::temp_dir().join(format!("dim-swap-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&root).unwrap();
+            let root = root.canonicalize().unwrap();
+            let mut tools = if bounded {
+                FileTools::with_boundary(
+                    root.clone(),
+                    root.join("out"),
+                    FileToolBoundary {
+                        workspace: root.clone(),
+                        home: root.clone(),
+                        read_only_roots: Vec::new(),
+                    },
+                )
+            } else {
+                FileTools::new(root.clone(), root.clone(), root.join("out"))
+            };
+            let reads = branch();
+            let swapped: Arc<Mutex<Option<(PathBuf, PathBuf)>>> = Arc::default();
+            let seen = swapped.clone();
+            tools.before_commit = Some(Arc::new(move |path| {
+                let staged = staged_entries(path);
+                assert_eq!(staged.len(), 1, "one staged entry for {path:?}");
+                let original = staged[0].path();
+                let moved = path.with_file_name("moved-staging");
+                std::fs::rename(&original, &moved).unwrap();
+                std::fs::create_dir(&original).unwrap();
+                std::fs::set_permissions(&original, std::fs::Permissions::from_mode(0o700))
+                    .unwrap();
+                *seen.lock().unwrap() = Some((moved, original));
+            }));
+            let result = call(
+                &tools,
+                &reads,
+                "write",
+                json!({"path": "file", "content": "after\n"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_error, None, "bounded={bounded}: {result:?}");
+            assert_eq!(std::fs::read(root.join("file")).unwrap(), b"after\n");
+            let (moved, replacement) = swapped.lock().unwrap().take().unwrap();
+            assert!(
+                !moved.join(STAGED_FILE).exists(),
+                "the original directory's staged file was removed"
+            );
+            assert!(
+                !replacement.join(STAGED_FILE).exists(),
+                "the directory that took the name received nothing"
+            );
+            assert!(
+                !replacement.exists(),
+                "the empty replacement directory was removed by its name"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 
     /// A new target's bytes are reachable only through its private staging
