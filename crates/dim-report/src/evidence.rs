@@ -53,11 +53,16 @@ impl ErrorReference {
         tree: Option<&TreeCommands>,
     ) -> Result<(Snapshot, Option<ModelId>), RpcError> {
         let (observed, branch, timeline) = match self {
-            Self::Observed { observed } => (
-                observed,
-                DEFAULT_BRANCH_ID.to_owned(),
-                Err(Missing::NoReference),
-            ),
+            Self::Observed { observed } => {
+                // A report raised without a reference reads the line the
+                // Session's conversation is on; a provider without a Session
+                // has none, and reads the root (design §9, §15).
+                let branch = match tree {
+                    Some(tree) => tree.default_branch()?,
+                    None => DEFAULT_BRANCH_ID.to_owned(),
+                };
+                (observed, branch, Err(Missing::NoReference))
+            }
             Self::Timeline {
                 branch_id,
                 sequence,
@@ -84,6 +89,7 @@ impl ErrorReference {
                 error: Some(observed.into()),
                 timeline,
                 client_version,
+                branch: None,
                 conversation_through: None,
             },
             default_model,
@@ -186,22 +192,27 @@ pub(super) struct Snapshot {
     /// The label the reporting client sent for itself, when it sent one: a
     /// comparison with the daemon's own label is what a report shows.
     pub(super) client_version: Option<String>,
+    /// The line the snapshot's conversation was read from, and its cutoff: a
+    /// report's evidence stays on the line the Session's conversation was on
+    /// when it was prepared (design §9, §15).
+    pub(super) branch: Option<String>,
     pub(super) conversation_through: Option<u64>,
 }
 
 impl Snapshot {
     pub(super) async fn capture_session(tree: &TreeCommands) -> (Self, Option<ModelId>) {
-        let branch = tree.get(DEFAULT_BRANCH_ID).ok();
+        let default = tree.default_branch().ok();
+        let branch = default.as_deref().and_then(|id| tree.get(id).ok());
         let conversation_through = branch.as_ref().map(Branch::sequence);
-        let timeline = match conversation_through {
-            Some(through) => read_window(tree, DEFAULT_BRANCH_ID, through, ACTIVITY_KINDS)
+        let timeline = match (default.as_deref(), conversation_through) {
+            (Some(id), Some(through)) => read_window(tree, id, through, ACTIVITY_KINDS)
                 .await
                 .map(|(events, truncated)| {
                     let (recent, truncated) = excerpt(&events, truncated, true);
                     TimelineEvidence::Recent { recent, truncated }
                 })
                 .map_err(|_| Missing::ReadFailed),
-            None => Err(Missing::ReadFailed),
+            _ => Err(Missing::ReadFailed),
         };
         let model = branch.as_ref().and_then(adopted_model);
         (
@@ -209,6 +220,7 @@ impl Snapshot {
                 error: None,
                 timeline,
                 client_version: None,
+                branch: default,
                 conversation_through,
             },
             model,
@@ -226,11 +238,12 @@ pub(super) struct ConversationExcerpt {
 
 pub(super) async fn capture_conversation(
     tree: &TreeCommands,
+    branch: &str,
     through: u64,
 ) -> Vec<ConversationExcerpt> {
     let Ok((events, _)) = read_window(
         tree,
-        DEFAULT_BRANCH_ID,
+        branch,
         through,
         &[
             "input/message",

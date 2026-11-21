@@ -213,6 +213,16 @@ pub struct FollowHold {
     pub release: tokio::sync::Notify,
 }
 
+/// Feature `testing`: a hold on one `session.branches` read before it takes
+/// its tree snapshot. It notifies `entered` once the read is held and answers
+/// once `release` is notified.
+#[cfg(feature = "testing")]
+#[derive(Default)]
+pub struct BranchesHold {
+    pub entered: tokio::sync::Notify,
+    pub release: tokio::sync::Notify,
+}
+
 pub struct RunningServer {
     pub unix_path: Option<PathBuf>,
     pub pipe_name: Option<String>,
@@ -310,6 +320,15 @@ impl RunningServer {
         self.root
             .get::<ConnectionHub>()
             .map(|hub| hub.hold_next_follow())
+    }
+    /// Holds the next `session.branches` read before its tree snapshot until
+    /// `release`, so a test can move the default and end the former default at
+    /// a known point. Feature `testing` only.
+    #[cfg(feature = "testing")]
+    pub fn hold_next_branches(&self) -> Option<Arc<BranchesHold>> {
+        self.root
+            .get::<ConnectionHub>()
+            .map(|hub| hub.hold_next_branches())
     }
     /// Makes the next attach fail before it registers its listener. Feature
     /// `testing` only.

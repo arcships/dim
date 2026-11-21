@@ -1131,13 +1131,9 @@ impl HostDispatch for LoopsFace {
                         Ok(args) => args,
                         Err(error) => return face_failure(error),
                     };
-                let request = match loop_start_request(request) {
-                    Ok(request) => request,
-                    Err(error) => {
-                        return face_failure(SchedulerError::new("invalid_params", error.message));
-                    }
-                };
+                let resolving = shared.clone();
                 face_call(&shared, cancelled, false, async move {
+                    let request = loop_start_request(&resolving, request).await?;
                     let record = loops.start(request).await?;
                     Ok(wire_loop(&record))
                 })
@@ -1165,13 +1161,9 @@ impl HostDispatch for LoopsFace {
                         Ok(args) => args,
                         Err(error) => return face_failure(error),
                     };
-                let (session_id, branch) = match loop_list_scope(request) {
-                    Ok(scope) => scope,
-                    Err(error) => {
-                        return face_failure(SchedulerError::new("invalid_params", error.message));
-                    }
-                };
+                let resolving = shared.clone();
                 face_call(&shared, cancelled, true, async move {
+                    let (session_id, branch) = loop_list_scope(&resolving, request).await?;
                     let records = loops.list(&session_id, &branch).await?;
                     Ok(json!({ "loops": records.iter().map(wire_loop).collect::<Vec<_>>() }))
                 })

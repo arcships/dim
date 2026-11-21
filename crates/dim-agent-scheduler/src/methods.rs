@@ -14,7 +14,7 @@ use dim_agent_capabilities::{
     settings::{SettingsChanged, SettingsScope, settings_changes},
 };
 use dim_agent_runtime::{Names, PartRegistry, PartScope};
-use dim_agent_types::InputMode;
+use dim_agent_types::{InputMode, PermissionPreset};
 use dim_app_server::{
     ProcessActivity,
     methods::ManagementMethods,
@@ -421,6 +421,37 @@ impl Shared {
         self.loop_lookup.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// The branch a request that names none reaches: the line the Session's
+    /// conversation is on, read once through the `sessions` data face
+    /// (timeline branches §20.22).
+    pub(crate) async fn default_branch(&self, session_id: &str) -> Result<String, SchedulerError> {
+        let answer = crate::engine::sessions(
+            self.sessions.as_ref(),
+            "defaultBranchId",
+            json!({ "sessionId": session_id }),
+        )
+        .await;
+        let value = match answer {
+            Ok(Ok(value)) => value,
+            Ok(Err(code)) => {
+                return Err(SchedulerError::new(
+                    sessions_code(&code),
+                    format!("the Session's default branch was not read: {code}"),
+                ));
+            }
+            Err(message) => return Err(SchedulerError::new("service_unavailable", message)),
+        };
+        value["defaultBranchId"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                SchedulerError::new(
+                    "service_unavailable",
+                    "the sessions service answered no default branch",
+                )
+            })
+    }
+
     /// Waits `delay`; `false` once the owner is unloading, when the caller
     /// stops and leaves an unsettled delivery to the next generation's
     /// recovery.
@@ -447,6 +478,17 @@ impl Shared {
             _ = self.stop.cancelled() => false,
             activated = self.activity.activated() => activated,
         }
+    }
+}
+
+/// A `sessions` error as the Scheduler answers it: the Session lifecycle
+/// codes keep their names, and a reload reads as this owner's
+/// `service_reloading`.
+fn sessions_code(code: &str) -> &'static str {
+    match code {
+        "session_closed" => "session_closed",
+        "reloading" => "service_reloading",
+        _ => "service_unavailable",
     }
 }
 
@@ -607,7 +649,69 @@ struct ManagementPatch {
     #[serde(default)]
     prompt: Option<String>,
     #[serde(default)]
-    target: Option<Target>,
+    target: Option<TargetInput>,
+}
+
+/// A management save's target (design §2.1): the stored shape, except that an
+/// omitted session `branch_id` is resolved when the save commits.
+#[derive(Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum TargetInput {
+    Session {
+        session_id: String,
+        #[serde(default)]
+        branch_id: Option<String>,
+        #[serde(default)]
+        input_mode: InputMode,
+    },
+    Launch {
+        cwd: String,
+        #[serde(default)]
+        agent_id: Option<String>,
+        #[serde(default)]
+        policy: Option<PermissionPreset>,
+        #[serde(default = "crate::document::default_max_run_minutes")]
+        max_run_minutes: u32,
+    },
+}
+
+impl TargetInput {
+    /// The stored target. A session target that omits `branch_id` records the
+    /// Session's current default branch now (timeline branches §20.22); a
+    /// stored row that omits it keeps meaning the root in
+    /// [`Job::effective_target`].
+    async fn resolve(self, shared: &Shared) -> Result<Target, SchedulerError> {
+        Ok(match self {
+            Self::Session {
+                session_id,
+                branch_id,
+                input_mode,
+            } => {
+                if session_id.is_empty() {
+                    return Err(invalid("a session target needs a Session and a branch"));
+                }
+                Target::Session {
+                    branch_id: match branch_id {
+                        Some(branch_id) => branch_id,
+                        None => shared.default_branch(&session_id).await?,
+                    },
+                    session_id,
+                    input_mode,
+                }
+            }
+            Self::Launch {
+                cwd,
+                agent_id,
+                policy,
+                max_run_minutes,
+            } => Target::Launch {
+                cwd,
+                agent_id,
+                policy,
+                max_run_minutes,
+            },
+        })
+    }
 }
 
 /// The fields of a job a save writes. The server owns `created_by`,
@@ -849,6 +953,10 @@ async fn save(
     cancel: &CancellationToken,
 ) -> Result<Value, SchedulerError> {
     let id = input.job.id.clone();
+    let target = match &input.job.target {
+        Some(target) => Some(target.clone().resolve(shared).await?),
+        None => None,
+    };
     let (job, previous) = save_job(
         shared,
         cancel,
@@ -856,7 +964,7 @@ async fn save(
         input.revision,
         Origin::User,
         |_| Ok(()),
-        move |previous| merge(previous, input.job),
+        move |previous| merge(previous, input.job, target),
     )
     .await?;
     // Only the save that replaced the binding releases it: a later save that
@@ -879,12 +987,16 @@ async fn save(
 
 /// The saved input of a management save: an omitted field keeps the stored
 /// value, and a new job needs a name, schedule, prompt and target (A.3).
-fn merge(previous: Option<&Job>, patch: ManagementPatch) -> Result<JobInput, SchedulerError> {
+/// `target` is the patch's target with any omitted session branch resolved.
+fn merge(
+    previous: Option<&Job>,
+    patch: ManagementPatch,
+    target: Option<Target>,
+) -> Result<JobInput, SchedulerError> {
     let ManagementPatch {
         name,
         schedule,
         prompt,
-        target,
         enabled,
         ..
     } = patch;

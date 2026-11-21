@@ -2638,6 +2638,58 @@ impl TimelineTree {
             )
         }) && !state.ended.contains_key(id)
     }
+    /// The directory records as `state` holds them, with the open and ending
+    /// lines' heads left at 0: every reader completes them after dropping the
+    /// lock, and both directory reads build on this one collection (design
+    /// §14).
+    fn directory_records(state: &TreeState) -> Vec<BranchDirectoryEntry> {
+        let mut entries: Vec<BranchDirectoryEntry> = state
+            .nodes
+            .values()
+            .filter(|node| matches!(&*node.ready.borrow(), Some(Ok(_))))
+            .map(|node| {
+                let end_event = node
+                    .context
+                    .as_ref()
+                    .and_then(|context| context.end_event());
+                BranchDirectoryEntry {
+                    info: node.info.clone(),
+                    head: 0,
+                    state: match end_event {
+                        Some(_) => BranchDirectoryState::Ending,
+                        None => BranchDirectoryState::Open,
+                    },
+                    end_event,
+                }
+            })
+            .collect();
+        for ended in state.ended.values() {
+            entries.push(BranchDirectoryEntry {
+                info: ended.info.clone(),
+                head: ended.head,
+                state: BranchDirectoryState::Ended,
+                end_event: ended.end_event,
+            });
+        }
+        entries
+    }
+    /// Resolves the open and ending lines' heads through `head()`, which takes
+    /// the lock itself, and orders the rows: `main` first, the rest by id.
+    fn complete_directory(
+        &self,
+        mut entries: Vec<BranchDirectoryEntry>,
+    ) -> Vec<BranchDirectoryEntry> {
+        for entry in &mut entries {
+            if entry.state != BranchDirectoryState::Ended {
+                entry.head = self.head(&entry.info.id).unwrap_or(0);
+            }
+        }
+        entries.sort_by(|a, b| {
+            let order = |id: &str| id != ROOT_BRANCH_ID;
+            (order(&a.info.id), &a.info.id).cmp(&(order(&b.info.id), &b.info.id))
+        });
+        entries
+    }
 }
 
 impl TimelineTreeControl for TimelineTree {
@@ -2887,6 +2939,22 @@ impl TimelineTreeControl for TimelineTree {
                 .and_then(|result| result.as_ref().ok().cloned())
         })
     }
+    fn published(&self, id: &str) -> Result<Branch> {
+        let state = self.state.lock().unwrap();
+        if state.ended.contains_key(id) {
+            return Err(AgentError::BranchEnded(id.into()));
+        }
+        state
+            .nodes
+            .get(id)
+            .and_then(|node| {
+                node.ready
+                    .borrow()
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok().cloned())
+            })
+            .ok_or_else(|| AgentError::UnknownBranch(id.into()))
+    }
     fn end(&self, id: String, source: BranchSource) -> BoxFuture<'_, Result<()>> {
         Box::pin(async move { TimelineTree::end(self, &id, source).await })
     }
@@ -2916,48 +2984,22 @@ impl TimelineTreeControl for TimelineTree {
     fn directory(&self) -> Vec<BranchDirectoryEntry> {
         // Collect the records under the lock, then resolve heads through
         // `head()`, which takes the lock itself.
-        let mut entries: Vec<BranchDirectoryEntry> = {
+        let entries = {
             let state = self.state.lock().unwrap();
-            let mut entries: Vec<BranchDirectoryEntry> = state
-                .nodes
-                .values()
-                .filter(|node| matches!(&*node.ready.borrow(), Some(Ok(_))))
-                .map(|node| {
-                    let end_event = node
-                        .context
-                        .as_ref()
-                        .and_then(|context| context.end_event());
-                    BranchDirectoryEntry {
-                        info: node.info.clone(),
-                        head: 0,
-                        state: match end_event {
-                            Some(_) => BranchDirectoryState::Ending,
-                            None => BranchDirectoryState::Open,
-                        },
-                        end_event,
-                    }
-                })
-                .collect();
-            for ended in state.ended.values() {
-                entries.push(BranchDirectoryEntry {
-                    info: ended.info.clone(),
-                    head: ended.head,
-                    state: BranchDirectoryState::Ended,
-                    end_event: ended.end_event,
-                });
-            }
-            entries
+            Self::directory_records(&state)
         };
-        for entry in &mut entries {
-            if entry.state != BranchDirectoryState::Ended {
-                entry.head = self.head(&entry.info.id).unwrap_or(0);
-            }
-        }
-        entries.sort_by(|a, b| {
-            let order = |id: &str| id != ROOT_BRANCH_ID;
-            (order(&a.info.id), &a.info.id).cmp(&(order(&b.info.id), &b.info.id))
-        });
-        entries
+        self.complete_directory(entries)
+    }
+    fn default_and_directory(&self) -> (String, Vec<BranchDirectoryEntry>) {
+        // One acquisition answers both, so the default a client selects is one
+        // of the identities and lifecycle states in the same answer (design
+        // §14): a move or an end that commits while this read holds the lock
+        // is either wholly in the answer or wholly out of it.
+        let (default, entries) = {
+            let state = self.state.lock().unwrap();
+            (state.default.clone(), Self::directory_records(&state))
+        };
+        (default, self.complete_directory(entries))
     }
     fn close(&self) -> BoxFuture<'_, Result<()>> {
         self.start_close();

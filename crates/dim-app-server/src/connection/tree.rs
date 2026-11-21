@@ -9,7 +9,7 @@ use dim_agent_runtime::{
     QueryOrderKey, QueryOutput, QueryPage, QueryPick, QuerySelect, QuerySpec, QueryValue,
     TimelineQuery,
 };
-use dim_agent_types::{BranchSource, DEFAULT_BRANCH_ID, InputBlock, InputMode, TimelinePosition};
+use dim_agent_types::{BranchSource, InputBlock, InputMode, TimelinePosition};
 
 impl Connection {
     /// Runs the Session's submit checks before writing operator input (Hooks
@@ -34,8 +34,15 @@ impl Connection {
             return Err(RpcError::invalid("text and user are mutually exclusive"));
         }
         let session = self.session(rpc, &params.session_id)?;
-        let branch = params.branch_id.as_deref().unwrap_or(DEFAULT_BRANCH_ID);
-        let publication = session.publication(branch).map_err(RpcError::from)?;
+        // A request that names no line goes to the line the Session's
+        // conversation is on, read once for everything this call does, and to
+        // the root on a connection whose stream carries the root alone (design
+        // §9, §14, §15, §20.22).
+        let branch = match params.branch_id {
+            Some(branch) => branch,
+            None => self.unnamed_branch(&session).map_err(RpcError::from)?,
+        };
+        let publication = session.publication(&branch).map_err(RpcError::from)?;
         let user = params.user.or_else(|| {
             params.text.map(|text| UserInput {
                 content: vec![ContentBlock::Text { text }],
@@ -101,7 +108,7 @@ impl Connection {
                 &session,
                 SubmitCheckRequest {
                     entry: SubmitEntry::Submit,
-                    branch_id: branch.to_owned(),
+                    branch_id: branch.clone(),
                     user: data.user.clone(),
                     mode: data.effective_mode(),
                 },
@@ -120,7 +127,7 @@ impl Connection {
             }
         };
         let (event, commit) = session
-            .input_commit(data, branch)
+            .input_commit(data, &branch)
             .await
             .map_err(RpcError::from)?;
         // A warning describes the write of this call. A resubmission of a
@@ -537,8 +544,20 @@ impl Connection {
         params: Branches,
     ) -> Result<Reply, RpcError> {
         let session = self.session(rpc, &params.session_id)?;
+        // Feature `testing`: a test holds the read before its snapshot, moves
+        // the default away and ends the former default, then releases it.
+        #[cfg(feature = "testing")]
+        if let Some(hold) = self.hub.take_branches_hold() {
+            hold.entered.notify_one();
+            hold.release.notified().await;
+        }
+        // The default and the rows come from one tree snapshot: the advertised
+        // default is an open identity in the directory the same answer carries
+        // (design §14).
+        let (default_branch_id, rows) = session.default_and_directory();
         Ok(Reply::Branches(wire::BranchesResult {
-            branches: session.directory().into_iter().map(Into::into).collect(),
+            branches: rows.into_iter().map(Into::into).collect(),
+            default_branch_id,
         }))
     }
 
@@ -578,6 +597,30 @@ impl Connection {
             .await
             .map_err(RpcError::from)?;
         Ok(Reply::empty())
+    }
+
+    /// The user's entry to the default branch (design §14): the tree admits the
+    /// target and writes one `branch/default` on the root, and this call
+    /// answers the line the Session's conversation is on now. A refusal writes
+    /// nothing, and the tree's own codes reach the client unchanged.
+    pub(super) async fn set_default_branch(
+        &self,
+        rpc: &RpcService,
+        params: BranchSetDefault,
+    ) -> Result<Reply, RpcError> {
+        let session = self.session(rpc, &params.session_id)?;
+        let default_branch_id = session
+            .set_default_branch(
+                &params.branch_id,
+                BranchSource::User {
+                    operation_id: uuid::Uuid::new_v4().to_string(),
+                },
+            )
+            .await
+            .map_err(RpcError::from)?;
+        Ok(Reply::BranchSetDefault(wire::SetDefaultResult {
+            default_branch_id,
+        }))
     }
 
     pub(super) async fn create_branch(

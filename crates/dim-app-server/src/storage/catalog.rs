@@ -85,9 +85,20 @@ pub(super) fn refresh(connection: &Connection, session: &str, default: &str) -> 
 }
 
 /// Rebuilds `session`'s activity time from its most recent activity on
-/// `default`, the line its conversation is on (design §5, §15). Writes only
-/// `updated_at_ms`.
-fn refresh_activity(connection: &Connection, session: &str, default: &str) -> Result<()> {
+/// `default`, the line its conversation is on (design §5, §14, §15). A line
+/// other than the root that has no activity of its own yet is dated by its own
+/// opening event: a tool line switched to while its first turn runs is work in
+/// progress, not a Session waiting at its creation, and the opening input
+/// carries no user, so the activity predicate does not count it. The creation
+/// time answers for the root and for a line with no event at all. Writes only
+/// `updated_at_ms`. The writer calls it in the transaction that records a
+/// `branch/default`, so a move between idle lines leaves the catalog on the
+/// new line's own activity at once.
+pub(super) fn refresh_activity(
+    connection: &Connection,
+    session: &str,
+    default: &str,
+) -> Result<()> {
     let last: Option<String> = connection
         .query_row(
             &format!(
@@ -99,24 +110,27 @@ fn refresh_activity(connection: &Connection, session: &str, default: &str) -> Re
         )
         .optional()
         .map_err(error)?;
-    let updated_at = match last {
-        Some(body) => {
-            let row: Row = serde_json::from_str(&body).map_err(error)?;
-            row.wires()
-                .last()
-                .and_then(|wire| wire.event["create_at"].as_u64())
-                .ok_or_else(|| error("catalog activity event has no timestamp"))?
-        }
-        None => connection
+    let latest = last
+        .map(|body| stored_timestamp(&body, false))
+        .transpose()?;
+    let opening = if latest.is_none() && default != ROOT_BRANCH_ID {
+        let first: Option<String> = connection
             .query_row(
-                "SELECT created_at_ms FROM agent_sessions WHERE session_id=?1",
-                [session],
-                |row| row.get::<_, i64>(0),
+                "SELECT body FROM timeline_events WHERE session_id=?1 AND branch_id=?2 ORDER BY sequence ASC LIMIT 1",
+                params![session, default],
+                |row| row.get(0),
             )
             .optional()
-            .map_err(error)?
-            .ok_or_else(|| error("catalog Session has no creation time"))? as u64,
+            .map_err(error)?;
+        // The same failures the activity read answers: a row that exists but
+        // cannot be dated is damaged storage, not a line without an opening.
+        first
+            .map(|body| stored_timestamp(&body, true))
+            .transpose()?
+    } else {
+        None
     };
+    let updated_at = activity_time(latest, opening, default, || created_at(connection, session))?;
     connection
         .execute(
             "UPDATE session_catalog SET updated_at_ms=?2 WHERE session_id=?1",
@@ -124,6 +138,51 @@ fn refresh_activity(connection: &Connection, session: &str, default: &str) -> Re
         )
         .map_err(error)?;
     Ok(())
+}
+
+/// The time a catalog row reports for a Session line (session catalog §3.2):
+/// its newest activity event, or, while a line other than the root has none,
+/// its own opening event. The Session's creation time answers only for the
+/// root and for a line with no event at all. The stored rows and a daemon
+/// without a store decide here.
+pub(crate) fn activity_time(
+    latest: Option<u64>,
+    opening: Option<u64>,
+    default: &str,
+    created_at: impl FnOnce() -> Result<u64>,
+) -> Result<u64> {
+    match (latest, opening, default != ROOT_BRANCH_ID) {
+        (Some(at), _, _) => Ok(at),
+        (None, Some(at), true) => Ok(at),
+        (None, _, _) => created_at(),
+    }
+}
+
+/// The `create_at` of a stored event row: the newest wire of an activity row's
+/// batch, the first wire of an opening row's.
+fn stored_timestamp(body: &str, opening: bool) -> Result<u64> {
+    let row: Row = serde_json::from_str(body).map_err(error)?;
+    let wire = if opening {
+        row.wires().first()
+    } else {
+        row.wires().last()
+    };
+    wire.and_then(|wire| wire.event["create_at"].as_u64())
+        .ok_or_else(|| error("catalog activity event has no timestamp"))
+}
+
+/// The Session's creation time: the catalog's date for a line that has no
+/// event to date it by.
+fn created_at(connection: &Connection, session: &str) -> Result<u64> {
+    Ok(connection
+        .query_row(
+            "SELECT created_at_ms FROM agent_sessions WHERE session_id=?1",
+            [session],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(error)?
+        .ok_or_else(|| error("catalog Session has no creation time"))? as u64)
 }
 
 /// Fills `session`'s missing preview from its first user input within the

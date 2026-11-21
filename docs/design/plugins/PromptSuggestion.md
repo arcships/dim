@@ -175,18 +175,19 @@ The gates of `request`, in order. A refused request answers `{accepted: false, r
 | --- | --- | --- |
 | 1 | The setting is on | `disabled` |
 | 2 | The Session is a root interactive Session: `interactive` and `collaboration_role: leader`. A Collaboration member, a launched or scheduled Session never offers | `not_root` |
-| 3 | `turnId` is the latest turn, and no input followed its end | `not_latest_turn` |
-| 4 | That turn ended `Completed` | `turn_not_completed` |
-| 5 | The turn's last `model/content` belongs to its last `model/call` and holds text | `no_text` |
-| 6 | The unused count has not reached 20 | `throttled` |
-| 7 | No request is in flight for this turn; if one is, it answers for both once that request's preflight settles | `accepted: true` |
-| 8 | `main`'s committed head is not about to compact: `estimatedInputTokens` plus the instruction's tokens does not exceed `thresholdTokens` | `compaction_due` |
+| 3 | The cached turn belongs to the line the request names: the line the Session's conversation is on, read once when the request is admitted | `branch_changed` |
+| 4 | `turnId` is the latest turn, and no input followed its end | `not_latest_turn` |
+| 5 | That turn ended `Completed` | `turn_not_completed` |
+| 6 | The turn's last `model/content` belongs to its last `model/call` and holds text | `no_text` |
+| 7 | The unused count has not reached 20 | `throttled` |
+| 8 | No request is in flight for this turn; if one is, it answers for both once that request's preflight settles | `accepted: true` |
+| 9 | The request's line's committed head is not about to compact: `estimatedInputTokens` plus the instruction's tokens does not exceed `thresholdTokens` | `compaction_due` |
 
 Input that the running turn consumes, such as a steer, arrives before that turn's end and does not count as newer input: the turn that took it still offers.
 
 The unused counter: an offer shown and then cleared without an accept counts once; twenty in a row stop offering in that Session with `throttled`. The count resets on an accept and when the switch is turned on after being off, so turning suggestions off and on in `/settings` resumes them. The pause is Session-long on purpose: it stops spending requests on a user who does not use suggestions, and a user who ignores an offer is usually typing their own message.
 
-The context gate reads `main`'s usage through `ContextPreparation` exactly as `session.context.usage` reads it, before anything is built; the instruction's tokens are counted at four characters per token, since the part has no model counter. The suggestion never runs preparation and so never compacts: at a head where a real request would compact first, the suggestion is not sent, because it would be built on the prefix that request is about to replace. When the usage cannot be read (no compaction installed, no configuration yet), no compaction is imminent and the request proceeds as it is.
+The context gate reads the request's line's usage through `ContextPreparation` exactly as `session.context.usage` reads it, before anything is built; the instruction's tokens are counted at four characters per token, since the part has no model counter. The suggestion never runs preparation and so never compacts: at a head where a real request would compact first, the suggestion is not sent, because it would be built on the prefix that request is about to replace. When the usage cannot be read (no compaction installed, no configuration yet), no compaction is imminent and the request proceeds as it is.
 
 A committed write that leaves the switch on cancels nothing: the shown offer and the request in flight were valid when they began, and the next request reads the new `maxChars`.
 
@@ -205,12 +206,13 @@ Cancellation always keeps the Session's one in-flight slot consistent, and each 
 | The Session closes | `session_closed` |
 | The 30 s deadline | `timeout` |
 | The setting turns off | `disabled` |
+| A `branch/default` moves the conversation | `branch_changed` |
 | A model error, a tool call or a cancelled stream | `failed` |
 | The validator rejects the reply | `invalid` |
 
 A request in flight that is cancelled emits `cleared` with the cancelling reason; a request that never produced an offer because it failed, timed out or was invalid emits `cleared` with `failed`, `timeout` or `invalid`. Every accepted request therefore ends in exactly one `offer` or one `cleared`. The notices are emitted under the part's state lock, so the order of notices matches the order of the state changes they report: an `offer` can never follow the `cleared` that withdrew it.
 
-Every reason is a stable `snake_case` code: `disabled`, `not_root`, `not_latest_turn`, `turn_not_completed`, `no_text`, `throttled`, `compaction_due`, `new_input`, `turn_started`, `dismissed`, `accepted`, `session_closed`, `timeout`, `failed`, `invalid`.
+Every reason is a stable `snake_case` code: `disabled`, `not_root`, `branch_changed`, `not_latest_turn`, `turn_not_completed`, `no_text`, `throttled`, `compaction_due`, `new_input`, `turn_started`, `dismissed`, `accepted`, `session_closed`, `timeout`, `failed`, `invalid`.
 
 ## 9. Relation to Timeline branches
 
@@ -227,6 +229,8 @@ The suggestion opens no line. A host line would, once per turn:
 A line is also the same agent doing the work, and the suggestion plays the user ([§6](#6-the-instruction-and-the-validator)). Display-only state goes through a notice, never a line ([principles §4 rule 9](../../architecture/rust-agent/principles.md)).
 
 What the suggestion takes from branches is the cut and the shared prefix, and it writes nothing.
+
+The cached turn, the shown offer and the generation in flight belong to one line. `receive` follows `branch/default`: the committed move clears all three (a started generation is cancelled and announced as `cleared` with `branch_changed`), and the events of the new line replace them. Admission reads the line once and refuses a cached turn read from another one (`branch_changed`, before the part has seen the move; once `branch/default` is received the cache is empty and the request fails `not_latest_turn`); the compaction precheck reads that same line; and the completion re-reads it under the state lock before it publishes, so a generation that returns after a move offers nothing. The switch needs no new input and no new turn: a Session that moves back to an idle root simply has nothing cached to suggest from.
 
 ## 10. Settings
 
@@ -323,6 +327,7 @@ metadata: turnId and extensions.requestId gain "/suggestion"
 | --- | --- |
 | `disabled` | gate; also cancellation when the setting turns off |
 | `not_root` | gate |
+| `branch_changed` | gate; also cancellation when `branch/default` moves the conversation |
 | `not_latest_turn` | gate |
 | `turn_not_completed` | gate |
 | `no_text` | gate |
@@ -337,8 +342,8 @@ Transport flows (`crates/dim-app-server/tests/transport_flow/prompt_suggestion.r
 
 1. For each of `anthropic`, `openai-compatible` and `openai-responses`, a turn and a suggestion against a recording endpoint: the suggestion body's `system`, `tools` and every earlier message's text equal the turn's last request's, exactly the assistant message and the instruction follow, and `max_tokens`, reasoning, tool choice and service tier are equal. On `anthropic` the comparison ignores the automatic `cache_control` marker, which the converter places on the last user message and so moves to the instruction.
 2. The branch's events are the same before and after a suggestion, and the next real request is identical with and without one.
-3. One flow per gate: disabled, not the latest turn, no text in the last content, a non-root Session. A turn that took a steer still offers, and an input after a completed turn refuses that turn as `not_latest_turn`.
-4. One flow per cancellation: new input, a turn start, a newer request, dismissal, Session close. The deadline is not pinned by waiting 30 s. The preflight is pinned too: a switch turned off or a dismissal while the usage check is pending starts no model call and refuses the request, and a cancelled predecessor returning after a newer request for the same turn announces nothing.
+3. One flow per gate: disabled, not the latest turn, no text in the last content, a non-root Session, and a cached turn from another line (`branch_changed`). A turn that took a steer still offers, and an input after a completed turn refuses that turn as `not_latest_turn`.
+4. One flow per cancellation: new input, a turn start, a newer request, dismissal, Session close, and a `branch/default` that withdraws the generation in flight. The deadline is not pinned by waiting 30 s. The preflight is pinned too: a switch turned off or a dismissal while the usage check is pending starts no model call and refuses the request, and a cancelled predecessor returning after a newer request for the same turn announces nothing.
 5. The validator: a multi-line reply, a leading `/`, `<none>`, a refusal and a repeat of the last user message each clear with `invalid`.
 6. The unused counter: 20 unused offers then `throttled`; an accept resets it, and so does turning the switch off and on.
 7. The context gate: a model whose usage puts `main`'s head over its threshold makes `request` answer `compaction_due` and start no model request.

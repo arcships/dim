@@ -141,10 +141,10 @@ classDiagram
 
 | 目标 | 字段 | 到期窗口 |
 | --- | --- | --- |
-| `session` | `session_id`、`branch_id`(省略时为 `"main"`)、`input_mode?`(`queue` \| `steer` \| `append`；默认 `queue`) | 向该分支写入一条输入。不创建、不配置、不删除任何 Session。 |
+| `session` | `session_id`、`branch_id`(已存行省略时为 `"main"`)、`input_mode?`(`queue` \| `steer` \| `append`；默认 `queue`) | 向该分支写入一条输入。不创建、不配置、不删除任何 Session。 |
 | `launch` | `cwd`、`agent_id?`(新 Session 运行的 Agent profile；缺省为默认 profile)、`policy?`(可选预设)、`max_run_minutes?`(默认 60) | 启动一个非交互 Session，向其 `main` 分支写入一条输入，并在停止时刻停止它(§3.2)。 |
 
-`session` 目标是 `schedule` 工具保存的形状，也是工具唯一能保存的形状：调用方的 Session 与分支就是它的目标。`launch` 目标用于必须在没有活动 Session 时运行的工作；只有 `schedule.save` 能设置它(A.2、A.3)，管理端的 create 必须命名目标，因为它没有可作默认的 Session。一个任务只存一个目标，一次保存整体替换它。
+`session` 目标是 `schedule` 工具保存的形状，也是工具唯一能保存的形状：调用方的 Session 与分支就是它的目标。管理端的保存省略 `branch_id` 时，在保存时记录该 Session 当前的默认分支(timeline branches §20.22)；此前写入的已存行省略它时仍表示 `main`(§2.3)。`launch` 目标用于必须在没有活动 Session 时运行的工作；只有 `schedule.save` 能设置它(A.2、A.3)，管理端的 create 必须命名目标，因为它没有可作默认的 Session。一个任务只存一个目标，一次保存整体替换它。
 
 投递永不改变目标的名称、分支或身份。任务的目标在被一次保存替换之前固定；保存绝不改写已经记录的投递。
 
@@ -443,7 +443,7 @@ Settings 在边界处应用这些默认值并校验外部文档一次。非法�
 | 方法 | 参数 | 回复 |
 | --- | --- | --- |
 | `session.wakeup.create` | `{sessionId, branchId, at, prompt}` | `{wakeupId}` |
-| `session.wakeup.list` | `{sessionId, branchId?}` | `{wakeups: [{wakeupId, at, prompt, state}]}`，新的在前；`branchId` 缺省为 `main` |
+| `session.wakeup.list` | `{sessionId, branchId?}` | `{wakeups: [{wakeupId, at, prompt, state}]}`，新的在前；`branchId` 缺省为该 Session 的默认分支 |
 | `session.wakeup.cancel` | `{sessionId, wakeupId}` | 本调用把 `scheduled` 记录置终态时回复 `{}`；记录已到终态时回复 `{state}` |
 
 `at` 是绝对的 RFC 3339 时刻。字段为 camelCase 且 `deny_unknown_fields`，空字符串与相邻 Session 方法一样是 `invalid_params`。错误：`invalid_params` 对应畸形 `at`、空字段、未知字段或超过 32 KiB 的提示词；`wakeup_not_found` 对应 cancel 指定的记录不属于调用方 Session（另一个 Session 的 id 与未知 id 回答相同）；Rpc 自己的 `session_closed` 对应不存在的 Session id；Scheduler 行缺失、重载或失败时，方法表给出 `unknown_method`、`service_reloading` 或 `service_unavailable`。大小界在 wire 边界检查，因此调用方超长的提示词绝不会成为存储数据的 `invalid_data`；记录自身的校验仍作为存储侧守卫。
@@ -577,7 +577,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | Session 通知 | `{source: "Scheduler", kind: "loop", data: {branchId, loopId, state, round, nextAt?}}` | 记录已变更；`session.loop.list` 是真相 |
 | `loops` | 进程组数据面，注册为 shared，在 `host_key("loops")` 提供 dispatcher | `start`、`next`、`list`、`stop`，即 Session 部分调用的 owner 操作；投递 pass、恢复与 `settle_delivering` 保持内部 |
 
-工具与方法对非交互 Session 和 Collaboration member 一律拒绝，与 `schedule`、`wakeup` 相同。一轮的工具由目标分支自己的 Permission 状态授权；loop 不携带 policy，也不预批准任何东西。记录是 Scheduler 自己的业务存储，工具与方法都通过同一 typed 服务访问它：Session 部分用 `names.key()` 声明 `loops` 并直接调用原生 `Loops` 绑定，其他语言通过 `loops` 数据面访问同一 owner 操作。投递 pass、恢复与 `settle_delivering` 不在该面上。
+工具与方法对非交互 Session 和 Collaboration member 一律拒绝，与 `schedule`、`wakeup` 相同。`session.loop.start` 与 `session.loop.list` 作用于所命名的分支；省略 `branchId` 时到达该 Session 的默认分支，`loops` 或 `wakeups` 数据面中命名了 Session 但未命名分支的请求也一样(timeline branches §20.22)，每个请求读取一次。一轮的工具由目标分支自己的 Permission 状态授权；loop 不携带 policy，也不预批准任何东西。记录是 Scheduler 自己的业务存储，工具与方法都通过同一 typed 服务访问它：Session 部分用 `names.key()` 声明 `loops` 并直接调用原生 `Loops` 绑定，其他语言通过 `loops` 数据面访问同一 owner 操作。投递 pass、恢复与 `settle_delivering` 不在该面上。
 
 `/loop` 的读法：`/loop` 打印用法与本分支的 loop，`/loop <prompt>` 开始自定节奏 loop，`/loop <interval> <prompt>` 开始固定节奏，`/loop stop [id]` 停止一个。间隔只在行首且能解析时才算，否则整行都是 prompt。
 
@@ -602,7 +602,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | 记录 | 字段 |
 | --- | --- |
 | Job | `id`、`name`、`schedule`(A.4)、`prompt`(文本 ≤ 32 KiB)、`target`(`session` \| `launch`，A.2/§2.1)、`enabled`、`enabled_at?`(恰在 enabled 时必需)、`revision`、`created_by`(`user` \| `tool{session_id,branch_id}`；创建来源)、`disabled_reason?`(`{code, at}`；`code` 为 `session_closed`、`branch_missing` 或 `branch_ended`) |
-| 任务目标 `session` | `session_id`、`branch_id`(省略时为 `"main"`)、`input_mode?`(`queue` \| `steer` \| `append`；默认 `queue`) |
+| 任务目标 `session` | `session_id`、`branch_id`(已存行省略时为 `"main"`；新保存省略时记录该 Session 的默认分支)、`input_mode?`(`queue` \| `steer` \| `append`；默认 `queue`) |
 | 任务目标 `launch` | `cwd`、`agent_id?`(一个 Agent profile；缺省为默认 profile)、`policy?`(可选预设)、`max_run_minutes?`(默认 60，A7) |
 | Delivery | `run_id`、`job_id`、`window`(时刻或 `manual`)、`state`(§2.2)、`session_id?`、`branch_id?`、`input_event_id?`、`submission_id`、`deadline_at?`、`created_at`、`ended_at?`、`detail`、`attempts?`、`released?`、`job_revision?`。时间戳使用 UTC `YYYY-MM-DDTHH:mm:ss.sssZ`，恒为三位小数，因此时间顺序与字典顺序一致。 |
 
@@ -659,7 +659,7 @@ loop pass 与 job 窗口、wakeup 在同一个每秒 pass 中运行（§3.1）�
 | `schedule.history` | `{job_id, limit?}` | 投递，新的在前 |
 | `schedule.watch` | `{}` | `{}`。注册调用连接的观察并在观察期间保持打开（§11.2）；同一连接的第二次观察让前一个调用回答 `{}` 并接管 |
 
-`schedule.save` 是唯一能设置 `launch` 目标的入口，也是唯一能设置 `agent_id` 与 `policy` 的入口。`launch` 目标的 `cwd` 必需；`session` 目标的 `session_id` 必需，`branch_id` 缺省为 `main`。`policy` 预设在保存时原样存储；`sessions.launch` 在启动时按实时宿主上限收拢它，投递记录 Session 实际收到的策略。
+`schedule.save` 是唯一能设置 `launch` 目标的入口，也是唯一能设置 `agent_id` 与 `policy` 的入口。`launch` 目标的 `cwd` 必需；`session` 目标的 `session_id` 必需，保存省略 `branch_id` 时记录该 Session 当前的默认分支。`policy` 预设在保存时原样存储；`sessions.launch` 在启动时按实时宿主上限收拢它，投递记录 Session 实际收到的策略。
 
 以 `session_closed`、`branch_missing` 或 `branch_ended` 结算为 `failed` 的投递还会禁用任务：同一次 Settings CAS 设置 `enabled = false`、清除 `enabled_at` 并存入 `disabled_reason = {code, at}`。`schedule.list` 报告它；一次保存或 `set_enabled(true)` 会清除它。因其他原因 `failed` 的投递让任务保持启用。这次禁用是必需的状态，不是尽力而为的备注：输给并发写入的 CAS 会针对当前文档重试，只要任务仍命名该投递的 Session；替换目标的一次保存结束这份依据；读取或写入失败则留给定时通道，由它从任务最新的终态投递读回这份依据。这份依据归属于投递到期时所依据的任务修订号：每条投递记录该修订号，禁用写入在即将改动的文档上判断，且每次尝试(包括 CAS 重试)都判断，只有任务存在、处于启用、仍命名该投递的有效目标且带有该修订号时才禁用。否则依据已被取代：什么都不禁用，终态记录按原样留在 `schedule.history` 中。没有该修订号的记录——本次变更之前写入的记录——无法证明其依据仍然有效，永不禁用任务。当必需的禁用持续写入失败时，这次读回让任务留在窗口路径之外，任务不记录新窗口：任务在意图上已被禁用，向已消失的目标投递只会增加失败。
 
@@ -775,6 +775,7 @@ Scheduler 不向任何 Session 投递运行结果、不写报告输入，也不�
 | 非法原始 cron | 列表包含该任务的 `schedule_error`；定时器跳过该任务，继续其他任务 |
 | 工具 create 超过 16 条上限 | `schedule_invalid`，不写入任何东西 |
 | 新任务的保存未指定目标 | `schedule_invalid` |
+| 保存或数据面请求省略分支，而该 Session 的默认分支无法读取 | Session 已消失为 `session_closed`，索引重载为 `service_reloading`，其他为 `service_unavailable`；不写入任何东西 |
 | 窗口前的 Settings 读取失败 | 该窗口结算为 `failed: settings_read_failed`；其他任务继续 |
 | 投递写入失败 `reloading`，或回复丢失 | 记录保持 `delivering`；由查询结算(A.6) |
 | 投递写入失败 `session_closed`、`branch_missing` 或 `branch_ended` | `failed: <code>`，任务以该原因被禁用 |
@@ -786,7 +787,7 @@ Scheduler 不向任何 Session 投递运行结果、不写报告输入，也不�
 | 存储不可读或未知格式版本 | Scheduler 应用失败(不静默重置) |
 | 进程退出 | 定时器停止；`delivering` 记录在下次启动结算 |
 
-错误代码：`schedule_invalid`、`schedule_conflict`、`schedule_not_found`、`service_reloading`、`service_unavailable`、`invalid_data`。
+错误代码：`schedule_invalid`、`schedule_conflict`、`schedule_not_found`、`service_reloading`、`service_unavailable`、`invalid_data`、`session_closed`。
 
 ## 附录 D. 验收
 

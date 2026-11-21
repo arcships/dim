@@ -9,7 +9,7 @@ use dim_agent_capabilities::{
     timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{Names, PromptSourceTarget};
-use dim_agent_types::{DEFAULT_BRANCH_ID, ModelSelection, PromptScope};
+use dim_agent_types::{ModelSelection, PromptScope};
 use rutis::Ctx;
 use rutis::host::{BoxFuture, CtxHost, DynPlugin, Effect, Key, TypeKey};
 use serde_json::{Value, json};
@@ -101,7 +101,8 @@ fn configured_agent(tree: &TreeCommands, value: Value) -> Result<Value, RpcError
 }
 
 /// `session.agent.update`: adopts the named profile's prompt and optional
-/// model on `main`. The configuration it publishes records the profile, so
+/// model on the line the call names, and on the default branch when it names
+/// none (design §20.23). The configuration it publishes records the profile, so
 /// the record is the adopted configuration's own metadata.
 async fn adopt_profile(
     index: Arc<AgentIndex>,
@@ -114,7 +115,8 @@ async fn adopt_profile(
     struct Params {
         #[serde(rename = "sessionId")]
         _session_id: String,
-        branch_id: String,
+        #[serde(default)]
+        branch_id: Option<String>,
         agent_id: String,
     }
     let Params {
@@ -122,10 +124,12 @@ async fn adopt_profile(
         agent_id,
         ..
     } = params(value)?;
-    if branch_id != DEFAULT_BRANCH_ID {
-        return Err(RpcError::invalid(
-            "Agent configuration updates only support main",
-        ));
+    let branch_id = match branch_id {
+        Some(branch_id) => branch_id,
+        None => tree.default_branch()?,
+    };
+    if branch_id.is_empty() {
+        return Err(RpcError::invalid("branchId must not be empty"));
     }
     let branch = tree.get(&branch_id)?;
     let profile = index

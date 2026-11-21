@@ -468,6 +468,10 @@ impl Connection {
             .session_record(&host, &session, version)
             .await
             .map_err(RpcError::from)?;
+        let SessionRecord {
+            info: record_info,
+            default_branch: record_default,
+        } = record;
         // The transition lock keeps one attach, detach or finish in flight per
         // connection. When this attach replaces an existing attachment, the new
         // one is in place before the previous retires, so every event committed
@@ -575,7 +579,7 @@ impl Connection {
                     configuration.capability_snapshot,
                 ),
                 None => (
-                    record.model.clone(),
+                    record_info.model.clone(),
                     crate::provider::adopted_selection_preferences(
                         session.config().model.config.as_ref(),
                         session.config().model.metadata.as_ref(),
@@ -586,10 +590,11 @@ impl Connection {
             let record = SessionInfo {
                 attached_clients,
                 model,
-                ..record
+                ..record_info
             };
             let reply = AttachResult {
                 session: record,
+                default_branch: record_default,
                 model_preferences,
                 capability_snapshot: capability_snapshot.map(Box::new),
             };

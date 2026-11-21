@@ -6,7 +6,7 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 
 客户端用 `session.summaries` 列 Session，而这个回复是从历史构造的：App Server 为每个 Session 读起始于前 256 个事件内的批次找预览，再整条读最后一个事件取时间，一个接一个，回复一个没有页边界的数组。导入 Session 的最后一个事件是一个完整的 `context/compaction`，所以一次列目录会解码整个目录的历史，客户端还要排序并转换全部内容才能画出一行。
 
-目录读取改为有界的工作。SessionStore 保存一份列目录所需的投影——每个 Session 的最后活动时间（`main` 上最新一条属于 Session 自己活动的事件的时间，§3.2）、作为预览的第一条用户输入、以及工作区——由创建事务写入，之后在提交 `main` 每个携带活动的批次的事务里写入。新的内建方法 `session.catalog` 分页读取这份投影：缺省 50 行、不透明的键集游标，`query`、`cwd` 与 `withPreview` 在页边界之前的查询里应用。`session.summaries` 保留合同并读同一份投影，因此两个方法都不读历史。
+目录读取改为有界的工作。SessionStore 保存一份列目录所需的投影——每个 Session 的最后活动时间（默认分支上最新一条属于 Session 自己活动的事件的时间，§3.2）、作为预览的第一条用户输入、以及工作区——由创建事务写入，之后在提交默认分支每个携带活动的批次的事务里写入，并在记录 `branch/default` 的事务里刷新。新的内建方法 `session.catalog` 分页读取这份投影：缺省 50 行、不透明的键集游标，`query`、`cwd` 与 `withPreview` 在页边界之前的查询里应用。`session.summaries` 保留合同并读同一份投影，因此两个方法都不读历史。
 
 - **投影。** 归 SessionStore，随它的批次、并从创建起写入；本页只拥有目录如何被读取（§4）。
 - **方法。** `session.catalog {limit?, cursor?, query?, cwd?, withPreview?, withInternal?, withAcpSessions?, withAutomationSessions?, includeClosed?} -> {sessions, nextCursor?}`（§3.1）。
@@ -53,11 +53,11 @@ Issue：[#556](https://github.com/arcships/dim/issues/556)，要求有界的 `/r
 
 顺序是投影的活动时间，最新在前，Session ID 决定并列的次序，因此一页是某个全序里连续的一段，同一个库总是以同样的方式分页。游标是上一行的键而不是位置：两页之间变得活跃的 Session 移到第一页，后续页既不重复也不跳过任何其他 Session。它还带着取得它时的过滤（§3.1），因此一条页边界只能由同样的 `query`、`cwd`、`withPreview`、`withInternal`、`withAcpSessions`、`withAutomationSessions` 与 `includeClosed` 接着读。一组工作区按同一个顺序跨它的 Session 分页；它的游标在同一集合的任意顺序下继续可用，在其他集合或单个工作区下都不继续。单个工作区的游标在该工作区写成一个元素的数组时继续可用。
 
-**活动时间就是 Session 自己在 `main` 上的活动。** 它是 `main` 上最新一条属于 Session 自己活动的事件的 `create_at`：带用户部分的 `input/message`、`turn/end`、`branch/create`（父分支记下分支 prompt）或 `session/forked`。其余一切都是家事事件——没有用户部分的 `input/message`（宿主注入）、`branch/resume`、`branch/start`、`branch/ended`、`branch/end`、`branch/create-failed`、每一类 `context`/`prompt`/`model`/`step`/`tool`/`approval`/`stop`/`exec`/`permission`/`collaboration` 事件，以及扩展事件——不移动这一行。没有活动事件的 Session 停在创建时间。判断只此一处，写在投影代码旁边，投影的每个写入方都使用它；没有存储的守护进程在 `session.summaries` 里应用同一条选择（§3.3），两条列表不会给出不同答案。
+**活动时间就是 Session 自己在其默认分支上的活动。** 它是 Session 对话所在那条线上最新一条属于 Session 自己活动的事件的 `create_at`：带用户部分的 `input/message`、`turn/end`、`branch/create`（父分支记下分支 prompt）或 `session/forked`。其余一切都是家事事件——没有用户部分的 `input/message`（宿主注入）、`branch/resume`、`branch/start`、`branch/ended`、`branch/end`、`branch/create-failed`、每一类 `context`/`prompt`/`model`/`step`/`tool`/`approval`/`stop`/`exec`/`permission`/`collaboration` 事件，以及扩展事件——不移动这一行。没有活动事件的 Session 停在创建时间。判断只此一处，写在投影代码旁边，投影的每个写入方都使用它；没有存储的守护进程在 `session.summaries` 里应用同一条选择（§3.3），两条列表不会给出不同答案。持久化的 `branch/default` 在它自己的事务里用新默认分支的最新这类事件刷新该行；不是根、尚无活动的那条线取它自己首个事件的打开时间（工具线在其首轮仍在运行时被切为默认分支，正是进行中的工作，且其打开输入不带 user），只有根或一条没有任何事件的线才取 Session 的创建时间，移动本身不算活动，所以两条空闲线之间的移动报告移去的那条线，绝不报告离开的那条。这一行的 `sequence` 在存储查询和已加载覆盖两种投影里都是根的，因此加载或卸载 Session 都不会改变它；只有 `running` 与活动时间跟随默认分支（timeline branches §14）。
 
 ### 3.3 `session.summaries`
 
-`session.summaries` 保留回复类型与按连接判定的协议 v3 规则；参数新增下面可选的 `includeClosed`。原生存储打开时，它改为从同一份投影回答而不是读历史，内容不变：投影原样应用下面的预览规则，而且它的行从 Session 创建起就存在（§5）。没有存储的守护进程没有投影，与今天一样从已装载的 Session 回答；它也不列出 `session.catalog`（§3.1）。所以找不到 `session.catalog` 的客户端靠它列目录，比本变更更旧的守护进程上的客户端也靠它；两者继续可用，因为该方法的形态不变。
+`session.summaries` 保留回复类型与按连接判定的协议 v3 规则；参数新增下面可选的 `includeClosed`。原生存储打开时，它改为从同一份投影回答而不是读历史，内容不变：投影原样应用下面的预览规则，而且它的行从 Session 创建起就存在（§5）。没有存储的守护进程没有投影，与今天一样从已装载的 Session 回答；它也不列出 `session.catalog`（§3.1）。没有存储时，一行读它 Session 的默认分支和那条线的事实；若并发的移动在行读完之前结束了那条线，这一行改从 Session 的新默认分支重读，因此另一个客户端移动对话不会让列目录失败。重读只发生一次：第二次尝试读完之前那条线又被结束，读取返回它的错误，而不是再换一条线。每次尝试都在一次 tree 读取里判定该线的生命周期，因此与它并发的移动与结束只会把这条线判为已结束并进入上面的有界重读，不会判成这个 Session 没有的分支。所以找不到 `session.catalog` 的客户端靠它列目录，比本变更更旧的守护进程上的客户端也靠它；两者继续可用，因为该方法的形态不变。
 
 **`includeClosed` 与已关闭的 Session。** 本守护进程关闭的 Session（经 `session.close` 或 ACP 的 `session/close`）保留存储的行，但不进入任何目录读取：准入槽的关闭标志（[空闲卸载 §6.4](idle-unload.md#64-准入槽)）过滤的是同一条目录查询，因此恢复选择面板不会提供本守护进程拒绝附着的 Session。清理读的是存储的数据，而这类 Session 仍有数据，所以 `session.summaries` 与 `session.catalog` 都接受 `includeClosed?: boolean`，缺省 `false`，含义相同。为 `true` 时同一条查询去掉关闭过滤，每条已关闭 Session 的行带 `closed: true`；每行都带 `closed`，本进程没有关闭它为 `false`。两种情况都只读一次：这个标志去掉查询的一个条件，而不是增加第二次读取。旧版 App Server 没有这个参数，会以 `invalid_params` 拒绝（`deny_unknown_fields`），需要这些行的客户端再去掉它重读一次。没有存储的守护进程与之前一样从已装载的 Session 回答 `session.summaries`，`closed` 来自同一个槽位事实；它不列出目录（§3.1）。`session.catalog` 一旦接受该成员就宣告 `session.catalog.includeClosed`。
 

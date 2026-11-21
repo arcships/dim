@@ -2166,3 +2166,130 @@ async fn unloading_the_part_waits_for_its_request_task() {
     );
     fixture.end().await;
 }
+
+/// The last rest point of `branch`, as a client reads it.
+async fn through(client: &mut Client, id: &str, branch: &str) -> u64 {
+    let page = client
+        .rpc(
+            "session.history",
+            json!({"sessionId":id,"branchId":branch,"after":0,"limit":256}),
+        )
+        .await;
+    assert_ok(&page);
+    page["result"]["through"].as_u64().unwrap()
+}
+
+/// The newest turn `branch` ended.
+async fn latest_turn_on(client: &mut Client, id: &str, branch: &str) -> String {
+    let reply = client
+        .rpc(
+            "session.turn.get",
+            json!({"sessionId":id,"branchId":branch}),
+        )
+        .await;
+    assert_ok(&reply);
+    assert_eq!(reply["result"]["turn"]["ended"], true, "{reply}");
+    reply["result"]["turn"]["turnId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// A suggestion generation belongs to the line it was admitted on: a move to
+/// an idle root withdraws the running generation instead of offering it, and a
+/// later request for that turn is refused rather than answered from the line
+/// the conversation left (design §9, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_switch_withdraws_a_running_suggestion_and_its_cached_turn() {
+    let fixture = serve_fixture(Reply::Text("run the tests".into())).await;
+    let (mut client, id) = create(&fixture, true).await;
+    let cut = through(&mut client, &id, "main").await;
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId":id,"parentBranchId":"main","at":cut,"prompt":"line"}),
+        )
+        .await;
+    assert_ok(&opened);
+    let line = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":line}))
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":id,"branchId":line}),
+            )
+            .await,
+    );
+
+    // A completed turn on the line, and a suggestion request for it whose
+    // generation the completion gate holds.
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":line,"text":"add a test"}),
+            )
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":line}))
+            .await,
+    );
+    let turn = latest_turn_on(&mut client, &id, &line).await;
+    configure(&mut client, json!({"enabled":true})).await;
+    let completion = prompt_suggestion::testing::hold_next_completion(&id);
+    assert_eq!(
+        suggest(&mut client, &id, &turn).await,
+        json!({"accepted": true})
+    );
+    completion.entered().await;
+
+    // The conversation returns to the idle root while the generation runs.
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":id,"branchId":"main"}),
+            )
+            .await,
+    );
+    let cleared = suggestion_notice(&mut client, "cleared").await;
+    assert_eq!(cleared["params"]["data"]["reason"], "branch_changed");
+    assert_eq!(cleared["params"]["data"]["turnId"], json!(turn));
+    completion.release();
+    completion.passed().await;
+    // A round trip drains anything the returning generation sent: it must
+    // publish nothing on the new line.
+    assert_ok(
+        &client
+            .rpc(
+                "session.history",
+                json!({"sessionId":id,"branchId":"main","after":0,"limit":1}),
+            )
+            .await,
+    );
+    assert!(
+        client.notices.iter().all(|notice| {
+            notice["method"] != "session.notice"
+                || notice["params"]["source"] != "PromptSuggestion"
+                || notice["params"]["kind"] != "offer"
+        }),
+        "an offer followed the branch change: {:?}",
+        client.notices
+    );
+    assert_eq!(
+        suggest(&mut client, &id, &turn).await,
+        json!({"accepted": false, "reason": "not_latest_turn"}),
+        "the old line's cached turn is cleared by the move and never admitted on the new one"
+    );
+    fixture.end().await;
+}

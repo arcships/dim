@@ -1052,3 +1052,103 @@ async fn an_unloaded_session_is_deleted_as_stored_and_forked_after_a_restore() {
     server.shutdown();
     server.join().await.unwrap();
 }
+
+/// One catalog row's `sequence`, as a client reads it.
+async fn catalog_sequence(client: &mut Client, id: &str) -> u64 {
+    let listed = client.rpc("session.catalog", json!({})).await;
+    assert_ok(&listed);
+    listed["result"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["sessionId"] == json!(id))
+        .unwrap_or_else(|| panic!("{id} is listed: {listed}"))["sequence"]
+        .as_u64()
+        .unwrap()
+}
+
+/// §14: the catalog row's `sequence` is the root's in both projections, so an
+/// idle unload with the default branch on a longer line changes no sequence;
+/// only the running state and the activity follow the default branch (design
+/// §14, §15).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_catalog_sequence_stays_the_roots_across_an_idle_unload() {
+    let store = Store::new();
+    let loads = Loads::default();
+    let Served {
+        server,
+        agent,
+        sessions,
+        mut client,
+        ..
+    } = serve_unloading(&store, &loads, GRACE).await;
+    let mut create = create(json!(["branch"]));
+    create["permissionPolicy"]["allowedTools"] = json!(["branch"]);
+    let created = client.rpc("session.create", create).await;
+    assert_ok(&created);
+    let id = created["result"]["sessionId"].as_str().unwrap().to_owned();
+    let session = agent.get_session(&id).unwrap();
+    super::super::deletion::turn(&mut client, &id, "root turn").await;
+    let cut = session.sequence("main").unwrap();
+    let opened = client
+        .rpc(
+            "session.branch_create",
+            json!({"sessionId":id,"parentBranchId":"main","at":cut,"prompt":"child"}),
+        )
+        .await;
+    assert_ok(&opened);
+    let child = opened["result"]["branch"]["branchId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The line runs two turns, so its head passes the root's.
+    sessions
+        .ok("idle", json!({"sessionId":id,"branchId":child}))
+        .await;
+    for (submission, text) in [("test:one", "one"), ("test:two", "two")] {
+        sessions
+            .ok(
+                "input",
+                json!({"sessionId":id,"branchId":child,"mode":"queue",
+                    "submissionId":submission,"rawBlocks":[],
+                    "content":[{"type":"text","text":text}]}),
+            )
+            .await;
+        sessions
+            .ok("idle", json!({"sessionId":id,"branchId":child}))
+            .await;
+    }
+    assert_ok(
+        &client
+            .rpc(
+                "session.branch_set_default",
+                json!({"sessionId":id,"branchId":child}),
+            )
+            .await,
+    );
+    let heads = stored_heads(&store, &id);
+    assert!(
+        heads[&child] > heads["main"],
+        "the line has the longer head: {heads:?}"
+    );
+    let loaded = catalog_sequence(&mut client, &id).await;
+    assert_eq!(
+        loaded, heads["main"],
+        "the loaded row reports the root's sequence"
+    );
+    unloaded(session).await;
+    loads.released(&id).await;
+    let cold = catalog_sequence(&mut client, &id).await;
+    assert_eq!(
+        cold, heads["main"],
+        "the cold row reports the root's sequence"
+    );
+    assert_eq!(cold, loaded, "loading or unloading changed no sequence");
+    assert_eq!(
+        loads.of(&id),
+        (1, false),
+        "the catalog read restored nothing"
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

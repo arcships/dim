@@ -286,6 +286,9 @@ export interface Sessions {
    * restorable Session exists. Reads only; never acquires or restores a
    * Session. */
   exists(request: { sessionId: string }): Promise<SessionsResult<{ exists: boolean }>>;
+  /** The line the Session's conversation is on; reads the tree's current
+   * default and no history page. */
+  defaultBranchId(request: { sessionId: string }): Promise<SessionsResult<{ defaultBranchId: string }>>;
   history(request: HistoryRequest): Promise<SessionsResult<HistoryPage>>;
   withdraw(request: WithdrawRequest): Promise<SessionsResult<WithdrawReply>>;
   pending(request: PendingRequest): Promise<SessionsResult<{ pending: boolean }>>;
@@ -310,6 +313,7 @@ export interface EventHubDeclaration {
 /** One explicit target of a publish (design A.2). */
 export interface EventHubTarget {
   sessionId: string;
+  /** Defaults to the Session's current default branch. */
   branchId?: string;
   mode?: 'queue' | 'steer' | 'append';
 }
@@ -330,7 +334,9 @@ export type EventHubDelivery =
       inputId: string; sequence: number; truncated?: boolean; repeated?: boolean }
   | { status: 'gone'; sessionId: string; branchId: string; subscriptionIds: string[];
       code: 'branch_missing' | 'branch_ended' }
-  | { status: 'failed'; sessionId: string; branchId: string; subscriptionIds: string[];
+  | { status: 'failed'; sessionId: string;
+      /** Absent when an omitted branch could not be resolved: the target names no line. */
+      branchId?: string; subscriptionIds: string[];
       code: 'session_closed' | 'reloading' | 'rejected' | 'ambiguous' |
         'publication_unknown' | 'transport' | 'failed'; message: string };
 /** `publish`'s reply, after every target has an outcome (design A.2). */
@@ -358,7 +364,7 @@ export interface EventSubscriptionCall {
   types: string[];
   match?: Record<string, string>;
   mode?: 'queue' | 'steer' | 'append';
-  /** Defaults to `main`. */
+  /** Defaults to the Session's current default branch. */
   branchId?: string;
 }
 /** `eventSubscriptions.unsubscribe` (design A.3). */

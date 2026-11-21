@@ -9,6 +9,7 @@ use dim_agent_capabilities::{
     host::ModelSelectionRequest,
     input_queue::{InputQueue, Withdrawal},
     permission::PermissionState,
+    timeline_tree::TreeCommands,
 };
 use dim_agent_runtime::{AgentError, Publication};
 use dim_agent_types::{
@@ -188,16 +189,23 @@ pub enum LookupReply {
     Unknown,
 }
 
-/// `exists` (§6.9): whether the Session id still exists.
+/// One Session named by its id: `exists` (§6.9) and `defaultBranchId`
+/// (§6.11).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ExistsRequest {
+pub struct SessionRequest {
     pub session_id: String,
 }
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExistsReply {
     pub exists: bool,
+}
+/// The line the Session's conversation is on (§6.11).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DefaultBranchReply {
+    pub default_branch_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -595,7 +603,7 @@ impl AgentIndex {
     /// nothing, restores nothing and writes no event, so idle unload sees no
     /// effect. `false` means the Session was deleted; a closed, restorable
     /// Session is `true` because its rows remain.
-    pub async fn exists(&self, request: ExistsRequest) -> Result<ExistsReply, SessionsError> {
+    pub async fn exists(&self, request: SessionRequest) -> Result<ExistsReply, SessionsError> {
         self.until_unloaded(async {
             let id = &request.session_id;
             let (deleted, owned) = {
@@ -619,6 +627,24 @@ impl AgentIndex {
                 None => false,
             };
             Ok(ExistsReply { exists })
+        })
+        .await
+    }
+
+    /// The line the Session's conversation is on (§6.11): the tree's current
+    /// default, read from the tree owner and not from history. Like every
+    /// method except `launch`, `delete` and `exists`, it acquires the Session,
+    /// so an idle-unloaded one is restored for the answer.
+    pub async fn default_branch_id(
+        &self,
+        request: SessionRequest,
+    ) -> Result<DefaultBranchReply, SessionsError> {
+        self.until_unloaded(async {
+            let lease = self.acquire(&request.session_id).await?;
+            let tree = lease.session.session_service::<TreeCommands>()?;
+            Ok(DefaultBranchReply {
+                default_branch_id: tree.default_branch()?,
+            })
         })
         .await
     }
@@ -793,7 +819,7 @@ impl HostDispatch for SessionsService {
         Some(json!({
             "launch": "async", "input": "async", "lookup": "async", "exists": "async",
             "history": "async", "withdraw": "async", "pending": "async", "stop": "async", "idle": "async",
-            "delete": "async",
+            "delete": "async", "defaultBranchId": "async",
         }))
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
@@ -857,6 +883,7 @@ async fn call(
         }
         "lookup" => reply(index.lookup(request(args)?).await?),
         "exists" => reply(index.exists(request(args)?).await?),
+        "defaultBranchId" => reply(index.default_branch_id(request(args)?).await?),
         "history" => reply(index.history(request(args)?).await?),
         "pending" => reply(index.pending(request(args)?).await?),
         "withdraw" => reply(match index.withdraw(request(args)?).await? {

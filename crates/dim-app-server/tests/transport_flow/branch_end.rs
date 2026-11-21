@@ -214,6 +214,14 @@ async fn read_both_sides(config: ServerConfig) {
             .unwrap()
             .contains(&json!("session.branch_end"))
     );
+    assert!(
+        client
+            .features
+            .as_array()
+            .unwrap()
+            .contains(&json!("session.branch_set_default")),
+        "the switch is advertised beside the end"
+    );
     server.shutdown();
     server.join().await.unwrap();
 }

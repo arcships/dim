@@ -175,18 +175,19 @@ session.notice {sessionId, source: "PromptSuggestion", kind: "cleared", data: {t
 | --- | --- | --- |
 | 1 | 设置已开启 | `disabled` |
 | 2 | Session 是根交互 Session：`interactive` 且 `collaboration_role: leader`。Collaboration 成员、被启动或调度的 Session 从不提供 | `not_root` |
-| 3 | `turnId` 是最新轮次，且其后没有输入 | `not_latest_turn` |
-| 4 | 该轮以 `Completed` 结束 | `turn_not_completed` |
-| 5 | 该轮最后一次 `model/content` 属于其最后一次 `model/call` 且含文本 | `no_text` |
-| 6 | 未采用计数未达 20 | `throttled` |
-| 7 | 该轮没有在途请求；若有，待其预检结束，一个请求同时答复双方 | `accepted: true` |
-| 8 | `main` 已提交的头不会先压缩：`estimatedInputTokens` 加指令的 token 未超过 `thresholdTokens` | `compaction_due` |
+| 3 | 缓存的轮次属于请求命名的那条线：Session 对话所在的线，在请求准入时读一次 | `branch_changed` |
+| 4 | `turnId` 是最新轮次，且其后没有输入 | `not_latest_turn` |
+| 5 | 该轮以 `Completed` 结束 | `turn_not_completed` |
+| 6 | 该轮最后一次 `model/content` 属于其最后一次 `model/call` 且含文本 | `no_text` |
+| 7 | 未采用计数未达 20 | `throttled` |
+| 8 | 该轮没有在途请求；若有，待其预检结束，一个请求同时答复双方 | `accepted: true` |
+| 9 | 请求所在线的已提交头不会先压缩：`estimatedInputTokens` 加指令的 token 未超过 `thresholdTokens` | `compaction_due` |
 
 运行中的轮次消费的输入（例如 steer）在该轮结束之前到达，不算更新的输入：接受了它的轮次仍然提供建议。
 
 未采用计数：显示后被清除而未采用记一次；连续二十次后该 Session 停止提供并以 `throttled` 答复。计数在一次采用后清零，也在开关由关转为开时清零，因此在 `/settings` 中关闭再开启即可恢复。该暂停有意持续整个 Session：它阻止为不使用建议的用户继续花费请求，而忽略提示的用户通常是在自己输入消息。
 
-上下文门在任何构建之前，按 `session.context.usage` 的同一读法，通过 `ContextPreparation` 读取 `main` 的用量；指令的 token 按每 token 四字符估算，因为部件没有模型计数器。建议从不运行准备、因而从不压缩：在真实请求会先压缩的头上，建议不发送，因为它将建立在那个请求即将替换的前缀上。用量读不到时（没有装载压缩、尚无配置），不会有即将发生的压缩，请求照常进行。
+上下文门在任何构建之前，按 `session.context.usage` 的同一读法，通过 `ContextPreparation` 读取请求所在线的用量；指令的 token 按每 token 四字符估算，因为部件没有模型计数器。建议从不运行准备、因而从不压缩：在真实请求会先压缩的头上，建议不发送，因为它将建立在那个请求即将替换的前缀上。用量读不到时（没有装载压缩、尚无配置），不会有即将发生的压缩，请求照常进行。
 
 保持开关开启的提交写入不取消任何东西：正在显示的提示和在途请求在开始时就已有效，下一次请求读取新的 `maxChars`。
 
@@ -205,12 +206,13 @@ session.notice {sessionId, source: "PromptSuggestion", kind: "cleared", data: {t
 | Session 关闭 | `session_closed` |
 | 30 秒截止 | `timeout` |
 | 设置被关闭 | `disabled` |
+| `branch/default` 移动对话所在线 | `branch_changed` |
 | 模型错误、工具调用或被取消的流 | `failed` |
 | 校验拒绝回复 | `invalid` |
 
 在途请求被取消时发出带取消原因的 `cleared`；因失败、超时或非法而从未产生提示的请求发出 `failed`、`timeout` 或 `invalid`。因此每个被接受的请求最终恰好以一个 `offer` 或一个 `cleared` 结束。通知在部件的状态锁内发出，因此通知的顺序与它所报告的状态变更顺序一致：`offer` 绝不会出现在撤回它的 `cleared` 之后。
 
-所有原因都是稳定的 `snake_case` 码：`disabled`、`not_root`、`not_latest_turn`、`turn_not_completed`、`no_text`、`throttled`、`compaction_due`、`new_input`、`turn_started`、`dismissed`、`accepted`、`session_closed`、`timeout`、`failed`、`invalid`。
+所有原因都是稳定的 `snake_case` 码：`disabled`、`not_root`、`branch_changed`、`not_latest_turn`、`turn_not_completed`、`no_text`、`throttled`、`compaction_due`、`new_input`、`turn_started`、`dismissed`、`accepted`、`session_closed`、`timeout`、`failed`、`invalid`。
 
 ## 9. 与时间线分支的关系
 
@@ -227,6 +229,8 @@ session.notice {sessionId, source: "PromptSuggestion", kind: "cleared", data: {t
 线还是同一个 agent 在做工，而建议扮演的是用户（[§6](#6-指令与校验)）。只用于显示的状态走通知，不走线（[设计规则 §4 第 9 条](../../../architecture/rust-agent/principles.md)）。
 
 建议从分支取的只有截断与共享前缀，什么都不写。
+
+缓存的轮次、正在显示的提示与在途的生成同属一条线。`receive` 跟随 `branch/default`：已提交的移动把三者一起清掉（已开始的生成会被取消，并以 `branch_changed` 发出 `cleared`），新线的事件再替换它们。准入读一次线，缓存自另一条线的轮次以 `branch_changed` 拒绝（部件尚未看到移动之前；一旦收到 `branch/default`，缓存已空，请求以 `not_latest_turn` 被拒）；压缩预检读同一条线；完成在发布前于状态锁下再读一次，因此移动之后才返回的生成不提供任何东西。这次移动不需要新输入，也不需要新轮次：移回空闲根的 Session 就是没有可依据的缓存。
 
 ## 10. 设置
 
@@ -322,6 +326,7 @@ metadata：turnId 与 extensions.requestId 加 "/suggestion"
 | --- | --- |
 | `disabled` | 门；设置关闭时的取消也用它 |
 | `not_root` | 门 |
+| `branch_changed` | 门；`branch/default` 移动对话所在线时的取消也用它 |
 | `not_latest_turn` | 门 |
 | `turn_not_completed` | 门 |
 | `no_text` | 门 |
@@ -336,8 +341,8 @@ metadata：turnId 与 extensions.requestId 加 "/suggestion"
 
 1. 对 `anthropic`、`openai-compatible`、`openai-responses` 三种协议各跑一轮与一次建议，记录端点收到：建议请求体的 `system`、`tools` 与每条更早消息的文本与该轮最后一次请求相等，其后恰好是助手消息与指令，且 `max_tokens`、推理、工具选择与 service tier 相等。`anthropic` 上比较忽略自动 `cache_control` 标记，因为转换器把它放在最后一条 user 消息上，因而会移到指令上。
 2. 分支的事件在建议前后相同，下一次真实请求有无建议都相同。
-3. 每个门一个流程：关闭、不是最新轮次、最后一次内容没有文本、非根 Session。接受了 steer 的轮次仍然提供；轮次结束后写入的输入会以 `not_latest_turn` 拒绝该轮。
-4. 每种取消一个流程：新输入、轮次开始、更新的请求、拒绝、Session 关闭。截止不用等待 30 秒来固定。预检也被固定：在用量检查挂起时关闭开关或拒绝，不会发起模型调用并拒绝该请求；被取消的前任在同一轮的新请求之后返回时不发任何通知。
+3. 每个门一个流程：关闭、不是最新轮次、最后一次内容没有文本、非根 Session，以及缓存自另一条线的轮次（`branch_changed`）。接受了 steer 的轮次仍然提供；轮次结束后写入的输入会以 `not_latest_turn` 拒绝该轮。
+4. 每种取消一个流程：新输入、轮次开始、更新的请求、拒绝、Session 关闭，以及撤回在途生成的 `branch/default`。截止不用等待 30 秒来固定。预检也被固定：在用量检查挂起时关闭开关或拒绝，不会发起模型调用并拒绝该请求；被取消的前任在同一轮的新请求之后返回时不发任何通知。
 5. 校验：多行回复、以 `/` 开头、`<none>`、拒绝语与重复上一条用户消息，各自以 `invalid` 清除。
 6. 未采用计数：连续 20 次未采用后 `throttled`；一次采用后重置，关闭再开启开关同样重置。
 7. 上下文门：模型的用量让 `main` 的头超过阈值时，`request` 答复 `compaction_due` 且不发出任何模型请求。

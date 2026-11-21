@@ -301,7 +301,7 @@ impl Reports {
                 "Model-assisted reports are unavailable",
             ));
         }
-        let (mut plan, through, previous) = {
+        let (mut plan, through, branch, previous) = {
             let mut drafts = self.drafts.lock().unwrap();
             let draft = get(&mut drafts, caller, request.report_id)?;
             if draft.running.is_some() {
@@ -310,15 +310,16 @@ impl Reports {
             (
                 Plan::local(&draft.snapshot, request.redact, instructions),
                 draft.snapshot.conversation_through,
+                draft.snapshot.branch.clone(),
                 draft.plan.as_ref().map(|plan| plan.plan_id),
             )
         };
         if !request.redact
             && plan.evidence.includes_timeline()
-            && let (Some(session), Some(through)) = (&self.session, through)
+            && let (Some(session), Some(through), Some(branch)) = (&self.session, through, branch)
         {
             plan.evidence.conversation =
-                crate::evidence::capture_conversation(&session.tree, through).await;
+                crate::evidence::capture_conversation(&session.tree, &branch, through).await;
         }
         let mut drafts = self.drafts.lock().unwrap();
         let draft = get(&mut drafts, caller, request.report_id)?;

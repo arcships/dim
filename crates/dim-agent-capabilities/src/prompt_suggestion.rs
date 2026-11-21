@@ -29,8 +29,7 @@ use dim_agent_runtime::{
     SessionLifecycle,
 };
 use dim_agent_types::{
-    DEFAULT_BRANCH_ID, EventKind, Message, MessageContent, MessagePart, ModelRequest, Role,
-    TurnOutcome,
+    EventKind, Message, MessageContent, MessagePart, ModelRequest, Role, TurnOutcome,
 };
 use futures_util::StreamExt;
 use rutis::Ctx;
@@ -406,6 +405,10 @@ enum Settled {
 
 struct InFlight {
     turn_id: String,
+    /// The line whose turn this generation continues, fixed when the request
+    /// was admitted: a `branch/default` after it cancels the flight, and the
+    /// publication rechecks the line before it offers anything.
+    line: String,
     /// The identity of this invocation, told apart from another request for
     /// the same turn: only the invocation still in the slot may change it or
     /// announce anything.
@@ -424,6 +427,11 @@ struct InFlight {
 
 #[derive(Default)]
 struct State {
+    /// The line the cached turn and every offer above belong to: the line the
+    /// Session's conversation was on when they were read. A move clears them,
+    /// so a request for the former line's turn never answers for the new one
+    /// (design §9, §15).
+    line: Option<String>,
     latest_turn: Option<String>,
     completed: bool,
     call: Option<Call>,
@@ -706,6 +714,27 @@ impl Part {
         }
     }
 
+    /// Clears what the line the conversation left cached: the generation in
+    /// flight (announced when it had started), the shown offer, and the turn
+    /// facts read from that line. Called under the state lock, so an offer can
+    /// never follow the clearing that withdrew it.
+    fn clear_for_branch(&self, state: &mut State) {
+        let flight = state.cancel_in_flight().filter(|(_, started)| *started);
+        let clear = state.take_offer().or(flight.map(|(turn_id, _)| turn_id));
+        if let Some(turn_id) = clear {
+            self.notice(
+                "cleared",
+                json!({"turnId": turn_id, "reason": "branch_changed"}),
+            );
+        }
+        state.latest_turn = None;
+        state.completed = false;
+        state.call = None;
+        state.content = None;
+        state.streamed = None;
+        state.newer_input = false;
+    }
+
     /// A committed write on the source: read the new document, and clear the
     /// shown offer and the request in flight only when the switch turned off.
     /// A `maxChars` change alone leaves them alone, because they were valid
@@ -773,12 +802,36 @@ impl Part {
         let SessionBroadcastEvent::Event { branch_id, event } = record else {
             return;
         };
-        if branch_id != DEFAULT_BRANCH_ID {
-            return;
-        }
+        // The suggestion follows one line: the line the Session's conversation
+        // is on. The commit of a move clears the turn, the offer and the
+        // generation the previous line left, so nothing read from it is ever
+        // offered or admitted on the new one (design §9, §15).
+        let switched = match &event.kind {
+            EventKind::BranchDefault(data) => Some(data.branch.clone()),
+            _ => None,
+        };
         // The notice is emitted under the state lock, so the order of
         // notices matches the order of the state changes they report.
         let mut state = self.state.lock().unwrap();
+        if let Some(branch) = switched {
+            if state.line.as_deref() != Some(branch.as_str()) {
+                self.clear_for_branch(&mut state);
+                state.line = Some(branch);
+            }
+            return;
+        }
+        if state.line.is_none() {
+            // The first event names the line through the tree, not through
+            // itself: a line opened beside the conversation also broadcasts.
+            let Ok(default) = self.hosts.tree.default_branch() else {
+                return;
+            };
+            state.line = Some(default);
+        }
+        let line = state.line.clone().expect("the line is set");
+        if branch_id != &line {
+            return;
+        }
         let mut clear: Option<(String, &'static str)> = None;
         match &event.kind {
             EventKind::TurnStart(data) => {
@@ -858,13 +911,23 @@ impl Part {
         let token = cancel.child_token();
         let settings = self.read_settings(token.clone()).await?;
         let max_chars = settings.max_chars.clamp(10, 200);
+        // The line this request continues, read once: admission, the
+        // compaction precheck and the publication all check this line
+        // (design §9, §15).
+        let line = match self.hosts.tree.default_branch() {
+            Ok(line) => line,
+            Err(error) => return Err(RpcError::service("failed", error.to_string())),
+        };
         // The state lock leaves the request either registered as this
         // turn's owner, or holding the flight it shares and waits on.
         let mut registered = None;
         let shared = {
             let mut state = self.state.lock().unwrap();
             state.enabled = Some(settings.enabled);
-            match self.decision(&state, &params.turn_id, &settings, None) {
+            if state.line.is_none() {
+                state.line = Some(line.clone());
+            }
+            match self.decision(&state, &params.turn_id, &settings, None, &line) {
                 Decision::Refused(reason) => return Ok(refused(reason)),
                 Decision::Shared => {
                     let flight = state
@@ -890,6 +953,7 @@ impl Part {
                     let (sender, outcome) = watch::channel(None);
                     state.in_flight = Some(InFlight {
                         turn_id: params.turn_id.clone(),
+                        line: line.clone(),
                         invocation,
                         cancel: token.clone(),
                         started: false,
@@ -923,7 +987,7 @@ impl Part {
         // The pending registration holds the slot across the preflight, so a
         // settings change, a new input, a dismissal or the Session's close
         // cancels this request like one already in flight.
-        if self.compaction_due(max_chars, token.clone()).await {
+        if self.compaction_due(max_chars, &line, token.clone()).await {
             settle(
                 &mut self.state.lock().unwrap(),
                 Settled::Refused("compaction_due"),
@@ -952,20 +1016,22 @@ impl Part {
                 .as_ref()
                 .is_some_and(|flight| flight.invocation == invocation);
             if !ours || token.is_cancelled() {
-                let reason = self.cancelled_reason(&state, &params.turn_id, &settings, invocation);
+                let reason =
+                    self.cancelled_reason(&state, &params.turn_id, &settings, invocation, &line);
                 settle(&mut state, Settled::Refused(reason));
                 return Ok(refused(reason));
             }
-            let ready = match self.decision(&state, &params.turn_id, &settings, Some(invocation)) {
-                Decision::Refused(reason) => {
-                    settle(&mut state, Settled::Refused(reason));
-                    return Ok(refused(reason));
-                }
-                // `ours` was just checked: the slot holds this invocation,
-                // and a decision about its own flight is never shared.
-                Decision::Shared => unreachable!("a request never shares its own flight"),
-                Decision::Ready(call, content) => (call, content),
-            };
+            let ready =
+                match self.decision(&state, &params.turn_id, &settings, Some(invocation), &line) {
+                    Decision::Refused(reason) => {
+                        settle(&mut state, Settled::Refused(reason));
+                        return Ok(refused(reason));
+                    }
+                    // `ours` was just checked: the slot holds this invocation,
+                    // and a decision about its own flight is never shared.
+                    Decision::Shared => unreachable!("a request never shares its own flight"),
+                    Decision::Ready(call, content) => (call, content),
+                };
             state.enabled = Some(settings.enabled);
             if let Some(flight) = state.in_flight.as_mut() {
                 flight.started = true;
@@ -1031,10 +1097,11 @@ impl Part {
     /// and the settings as they are now.
     async fn shared_refusal(&self, turn_id: &str, invocation: u64) -> Result<Value, RpcError> {
         let settings = self.read_settings(self.stopping.child_token()).await?;
+        let line = self.hosts.tree.default_branch().unwrap_or_default();
         let state = self.state.lock().unwrap();
-        Ok(refused(
-            self.cancelled_reason(&state, turn_id, &settings, invocation),
-        ))
+        Ok(refused(self.cancelled_reason(
+            &state, turn_id, &settings, invocation, &line,
+        )))
     }
 
     /// What a request cancelled during its preflight answers. The gates see
@@ -1046,8 +1113,9 @@ impl Part {
         turn_id: &str,
         settings: &PromptSuggestionSettings,
         invocation: u64,
+        line: &str,
     ) -> &'static str {
-        match self.decision(state, turn_id, settings, Some(invocation)) {
+        match self.decision(state, turn_id, settings, Some(invocation), line) {
             Decision::Refused(reason) => reason,
             Decision::Shared | Decision::Ready(_, _) => "dismissed",
         }
@@ -1055,18 +1123,25 @@ impl Part {
 
     /// `own` names the invocation whose pending registration this decision
     /// is about: the gates ask whether a *different* request is in flight.
+    /// `line` is the branch the request continues, read once by the caller:
+    /// cached turn facts from another line are never admitted
+    /// (design §9, §15).
     fn decision(
         &self,
         state: &State,
         turn_id: &str,
         settings: &PromptSuggestionSettings,
         own: Option<u64>,
+        line: &str,
     ) -> Decision {
         if !settings.enabled {
             return Decision::Refused("disabled");
         }
         if !self.root {
             return Decision::Refused("not_root");
+        }
+        if state.line.as_deref() != Some(line) {
+            return Decision::Refused("branch_changed");
         }
         if state.latest_turn.as_deref() != Some(turn_id) || state.newer_input {
             return Decision::Refused("not_latest_turn");
@@ -1099,8 +1174,11 @@ impl Part {
         Decision::Ready(call, content)
     }
 
-    async fn compaction_due(&self, max_chars: u32, cancel: CancellationToken) -> bool {
-        let Ok(branch) = self.hosts.tree.get(DEFAULT_BRANCH_ID) else {
+    /// The compaction precheck of the request's own line: the branch the
+    /// admission read, never a default re-read that a move could have
+    /// changed (design §9, §15).
+    async fn compaction_due(&self, max_chars: u32, line: &str, cancel: CancellationToken) -> bool {
+        let Ok(branch) = self.hosts.tree.get(line) else {
             return false;
         };
         let Ok(preparation) = branch.service::<ContextPreparation>() else {
@@ -1164,12 +1242,31 @@ impl Part {
         // order of notices matches the order of the state changes they
         // report, so an offer can never follow the clearing that withdrew it.
         let mut state = self.state.lock().unwrap();
-        let current = state
+        let flight = state
             .in_flight
             .as_ref()
-            .is_some_and(|flight| flight.invocation == invocation);
-        if current {
-            state.in_flight = None;
+            .filter(|flight| flight.invocation == invocation)
+            .map(|flight| flight.line.clone());
+        let Some(flight_line) = flight else {
+            drop(state);
+            #[cfg(feature = "testing")]
+            if let Some(completion) = &completion {
+                completion.passed_now();
+            }
+            return;
+        };
+        // The publication rechecks the line the request was admitted on: a
+        // move that committed while the generation ran withdraws this
+        // generation instead of offering it on the new line (design §9, §15).
+        let line = self.hosts.tree.default_branch().ok();
+        let moved = line.as_deref() != Some(flight_line.as_str());
+        state.in_flight = None;
+        if moved {
+            self.notice(
+                "cleared",
+                json!({"turnId": turn_id, "reason": "branch_changed"}),
+            );
+        } else {
             match outcome {
                 Ok(text) => {
                     state.offer = Some(Offer {

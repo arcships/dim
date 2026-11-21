@@ -490,13 +490,9 @@ impl Session {
         self.0.created_at
     }
     fn published(&self, id: &str) -> Result<Branch> {
-        if self.0.tree.ended_head(id).is_some() {
-            return Err(AgentError::BranchEnded(id.into()));
-        }
-        self.0
-            .tree
-            .get(id)
-            .ok_or_else(|| AgentError::UnknownBranch(id.into()))
+        #[cfg(feature = "testing")]
+        crate::testing::lifecycle(self.id(), id);
+        self.0.tree.published(id)
     }
     /// Text input shorthand for [`Self::input`].
     pub async fn submit(
@@ -649,6 +645,11 @@ impl Session {
     /// comes first, then the rest in branch identity order.
     pub fn directory(&self) -> Vec<BranchDirectoryEntry> {
         self.0.tree.directory()
+    }
+    /// The line the Session's conversation is on and the complete directory,
+    /// read under one tree lock (design §14).
+    pub fn default_and_directory(&self) -> (String, Vec<BranchDirectoryEntry>) {
+        self.0.tree.default_and_directory()
     }
     pub async fn branch(&self, parent: String, at: u64, options: BranchOptions) -> Result<String> {
         self.branch_with_admission(parent, at, options, CancellationToken::new())
