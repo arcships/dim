@@ -3,7 +3,7 @@
 //! watching connection alone as one numbered progress item, run states in
 //! the order the record took them, nothing after the connection closes, and
 //! a reload answers the open call `operation_interrupted`.
-mod support;
+use crate::support;
 
 use dim_agent_capabilities::{defaults, history::HistoryRenderer};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};

@@ -127,7 +127,7 @@ fn default_plugins(executable: &Path) -> Option<PathBuf> {
 /// `dimcode web install`, while a build from source, which has none
 /// published, is pointed at `DIMCODE_WEB_ASSETS` or the embedded-web build.
 pub fn web_hint(error: &crate::Error, executable: &Path, home: &Path) -> Option<(String, String)> {
-    let install = if dim_agent_capabilities::build::RELEASE {
+    let install = if dim_agent_capabilities::build::release() {
         "Install it with `dimcode web install`".to_owned()
     } else {
         "Set DIMCODE_WEB_ASSETS to a frontend built from this source, or build the App Server with the embedded-web feature".to_owned()

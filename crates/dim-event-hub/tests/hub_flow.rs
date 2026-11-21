@@ -1,6 +1,6 @@
 //! The EventHub flows of design Appendix D items 1–6, 8, 9, 10's entry and
 //! tool halves and 11, over a real App Server.
-mod support;
+use crate::support;
 
 use dim_agent_types::ToolCall;
 use dim_event_hub::{PublishRequest, ToTarget};
