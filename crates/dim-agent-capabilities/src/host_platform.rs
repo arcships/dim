@@ -240,6 +240,7 @@ pub(crate) enum ExecutionTask {
 
 #[derive(Clone)]
 pub struct ExecHost {
+    mounted: std::sync::Weak<Self>,
     pub home: PathBuf,
     pub os: Os,
     /// Node's `process.arch` name (`arm64`, `x64`), as the TS texts use it.
@@ -384,6 +385,7 @@ impl ExecHost {
             commands: Arc::default(),
             command_shutdown: CancellationToken::new(),
             command_workers: tokio_util::task::TaskTracker::new(),
+            mounted: Default::default(),
             shell: Arc::new(Mutex::new(ResolvedShell {
                 config: Ok(None),
                 status: shell,
@@ -1088,21 +1090,17 @@ impl DynPlugin for HostPlatformPlugin {
             let toolchain = ctx.require_at(&self.toolchain)?;
             platform.toolchain = Some(toolchain.clone());
             platform.shell.lock().await.config = config;
-            let platform = Arc::new(platform);
-            let calls = tokio_util::task::TaskTracker::new();
-            let dispatch = face::Dispatch {
-                owner: platform.clone(),
-                stopping: ctx.cancellation_token(),
-                calls: calls.clone(),
-            };
+            platform.command_shutdown = ctx.cancellation_token().child_token();
+            let platform = Arc::new_cyclic(|mounted| {
+                platform.mounted = mounted.clone();
+                platform
+            });
             let owner = platform.clone();
             ctx.effect(move || async move {
                 {
                     let _admission = owner.commands.lock().unwrap();
                     owner.command_shutdown.cancel();
                 }
-                calls.close();
-                calls.wait().await;
                 owner.command_workers.close();
                 owner.command_workers.wait().await;
                 owner.commands.lock().unwrap().clear();
@@ -1110,7 +1108,7 @@ impl DynPlugin for HostPlatformPlugin {
             })?;
             ctx.provide_at(
                 rutis_bridge::session::host_key("execHost"),
-                Arc::new(dispatch) as Arc<dyn rutis_bridge::session::HostDispatch>,
+                platform.clone() as Arc<dyn rutis_bridge::session::HostDispatch>,
             )?;
             ctx.provide_as::<ExecHost>(platform)?;
             Ok(Effect::Done)

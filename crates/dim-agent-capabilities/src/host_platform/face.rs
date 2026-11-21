@@ -7,7 +7,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use rutis_bridge::session::{HostDispatch, Reply, Value};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
-use tokio_util::{sync::CancellationToken, task::TaskTracker};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -346,23 +346,16 @@ async fn configured(
     Ok(reply.into())
 }
 
-pub(super) struct Dispatch {
-    pub(super) owner: Arc<ExecHost>,
-    pub(super) stopping: CancellationToken,
-    pub(super) calls: TaskTracker,
-}
-
-impl Dispatch {
+impl ExecHost {
     fn process<F>(
-        &self,
+        self: Arc<Self>,
         run: impl FnOnce(Arc<ExecHost>, CancellationToken) -> F + Send + 'static,
     ) -> Reply
     where
         F: Future<Output = Reply> + Send + 'static,
     {
-        let owner = self.owner.clone();
-        let cancel = self.stopping.child_token();
-        let calls = self.calls.clone();
+        let cancel = self.command_shutdown.child_token();
+        let calls = self.command_workers.clone();
         Ok(Value::cancellable_future(async move {
             let hold = calls.token();
             if cancel.is_cancelled() {
@@ -376,7 +369,7 @@ impl Dispatch {
             let _dropped = cancel.clone().drop_guard();
             tokio::spawn(async move {
                 let _hold = hold;
-                run(owner, cancel).await
+                run(self, cancel).await
             })
             .await
             .map_err(|error| {
@@ -386,7 +379,7 @@ impl Dispatch {
     }
 }
 
-impl HostDispatch for Dispatch {
+impl HostDispatch for ExecHost {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(serde_json::json!({
             "shell":"async","write":"async","resize":"async","output":"async", "start":"async", "wait":"async", "kill":"async", "settle":"async",
@@ -396,10 +389,13 @@ impl HostDispatch for Dispatch {
     }
 
     fn invoke(&self, method: &str, args: Value) -> Reply {
+        let owner = self
+            .mounted
+            .upgrade()
+            .ok_or_else(|| exec_error("cancelled", "execution host closed"))?;
         if method == "output" {
             use crate::workspace_tools::background::{OUTPUT_PAGE_BYTES, OUTPUT_PAGE_BYTES_MAX};
             let request: OutputRequest = port_faces::request("execHost", args)?;
-            let owner = self.owner.clone();
             return Ok(Value::cancellable_future(async move {
                 if let OutputRequest::Task {
                     task_id,
@@ -500,7 +496,6 @@ impl HostDispatch for Dispatch {
                 (task_id, Action::Resize(super::PtySize { cols, rows }))
             };
             let shell = self
-                .owner
                 .shell_task(&id)
                 .ok_or_else(|| exec_error("task_unknown", "Unknown shell task"))?;
             return Ok(Value::future(async move {
@@ -553,7 +548,6 @@ impl HostDispatch for Dispatch {
                     Launch::Command(command),
                 )
             };
-            let owner = self.owner.clone();
             return Ok(Value::cancellable_future(async move {
                 if task_id.is_empty()
                     || task_id.contains(['/', '\\', '\0', ':'])
@@ -613,13 +607,12 @@ impl HostDispatch for Dispatch {
                 task_id,
                 timeout_ms,
             } = port_faces::request("execHost", args)?;
-            if let Some(shell) = self.owner.shell_task(&task_id) {
+            if let Some(shell) = self.shell_task(&task_id) {
                 return Ok(Value::cancellable_future(async move {
                     rutis_bridge::session::arg(&shell.wait(timeout_ms).await)
                 }));
             }
             let task = self
-                .owner
                 .command_task(&task_id)
                 .map_err(|e| exec_error("task_unknown", e.to_string()))?;
             return Ok(Value::cancellable_future(async move {
@@ -628,7 +621,6 @@ impl HostDispatch for Dispatch {
         }
         if matches!(method, "kill" | "settle") {
             let TaskRequest { task_id } = port_faces::request("execHost", args)?;
-            let owner = self.owner.clone();
             if let Some(shell) = owner.shell_task(&task_id) {
                 let kill = method == "kill";
                 return Ok(Value::future(async move {
@@ -668,7 +660,6 @@ impl HostDispatch for Dispatch {
         }
         if matches!(method, "retainOutput" | "tail") {
             let TaskRequest { task_id } = port_faces::request("execHost", args)?;
-            let owner = self.owner.clone();
             if method == "tail"
                 && let Some(shell) = owner.shell_task(&task_id)
             {
@@ -702,11 +693,10 @@ impl HostDispatch for Dispatch {
         }
         if method == "configured" {
             let request = port_faces::request("execHost", args)?;
-            return self.process(move |owner, cancel| configured(owner, request, cancel));
+            return owner.process(move |owner, cancel| configured(owner, request, cancel));
         }
         if method == "removeOutputDirectory" {
             let RemoveOutputDirectory { path } = port_faces::request("execHost", args)?;
-            let owner = self.owner.clone();
             return Ok(Value::future(async move {
                 owner.remove_output_directory(path).await.map_err(|error| {
                     let code = if error.kind() == std::io::ErrorKind::InvalidInput {
@@ -721,7 +711,7 @@ impl HostDispatch for Dispatch {
         }
         if method == "confined" {
             let request = port_faces::request("execHost", args)?;
-            return self.process(move |owner, cancel| confined(owner, request, cancel));
+            return owner.process(move |owner, cancel| confined(owner, request, cancel));
         }
         if method != "info" {
             return Err(port_faces::unknown_method("execHost", method));
@@ -729,7 +719,6 @@ impl HostDispatch for Dispatch {
         let Empty {} = port_faces::request("execHost", args).map_err(|error| {
             rutis_bridge::exports::failure("ExecHostError", "invalid", error.to_string(), None)
         })?;
-        let owner = self.owner.clone();
         Ok(Value::cancellable_future(async move {
             rutis_bridge::session::arg(&owner.info().await)
         }))
