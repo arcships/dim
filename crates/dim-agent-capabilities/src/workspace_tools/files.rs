@@ -629,6 +629,104 @@ fn open_relative(
 #[cfg(unix)]
 const STAGED_FILE: &str = "staged";
 
+/// The extended ACL of an open file, read and applied through its descriptor.
+/// macOS keeps inheritable access control entries separately from the mode
+/// bits, so a file created inside the private staging directory would
+/// otherwise carry the ACL the directory inherited from the target's parent
+/// instead of the ACL the target itself would get.
+#[cfg(target_os = "macos")]
+mod acl {
+    use std::ffi::c_void;
+    use std::os::fd::AsRawFd;
+
+    /// `ACL_TYPE_EXTENDED` from `<sys/acl.h>`.
+    const ACL_TYPE_EXTENDED: libc::c_int = 0x100;
+    /// `ACL_FIRST_ENTRY` from `<sys/acl.h>`.
+    const ACL_FIRST_ENTRY: libc::c_int = 0;
+
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: libc::c_int, kind: libc::c_int) -> *mut c_void;
+        fn acl_set_fd_np(fd: libc::c_int, acl: *mut c_void, kind: libc::c_int) -> libc::c_int;
+        fn acl_init(count: libc::c_int) -> *mut c_void;
+        fn acl_free(object: *mut c_void) -> libc::c_int;
+        fn acl_get_entry(
+            acl: *mut c_void,
+            entry: libc::c_int,
+            entry_p: *mut *mut c_void,
+        ) -> libc::c_int;
+    }
+
+    /// An ACL returned by libSystem and freed when dropped.
+    pub(super) struct Acl(*mut c_void);
+
+    impl Acl {
+        /// The extended ACL `file` carries. A file or file system without
+        /// extended ACLs reads as `None`.
+        pub(super) fn of(file: &std::fs::File) -> std::io::Result<Option<Self>> {
+            // SAFETY: `file` is open for the call and the returned object is
+            // owned by the wrapper until it is freed.
+            let acl = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
+            if !acl.is_null() {
+                return Ok(Some(Self(acl)));
+            }
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::ENOENT | libc::ENOTSUP) => Ok(None),
+                _ => Err(error),
+            }
+        }
+
+        /// Whether the ACL holds at least one entry.
+        pub(super) fn entries(&self) -> std::io::Result<bool> {
+            let mut entry = std::ptr::null_mut();
+            // SAFETY: the ACL is live for the call and `entry` is a valid out
+            // pointer.
+            let result = unsafe { acl_get_entry(self.0, ACL_FIRST_ENTRY, &mut entry) };
+            if result == 0 {
+                return Ok(true);
+            }
+            let error = std::io::Error::last_os_error();
+            match error.raw_os_error() {
+                Some(libc::ENOENT) => Ok(false),
+                _ => Err(error),
+            }
+        }
+
+        /// Replaces `file`'s extended ACL with this one.
+        pub(super) fn apply(&self, file: &std::fs::File) -> std::io::Result<()> {
+            // SAFETY: the ACL is live for the call, and `file` is open.
+            if unsafe { acl_set_fd_np(file.as_raw_fd(), self.0, ACL_TYPE_EXTENDED) } == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        }
+
+        /// Removes `file`'s extended ACL and confirms no entry is left.
+        pub(super) fn clear(file: &std::fs::File) -> std::io::Result<()> {
+            // SAFETY: `acl_init` allocates an ACL the wrapper frees.
+            let empty = unsafe { acl_init(0) };
+            if empty.is_null() {
+                return Err(std::io::Error::last_os_error());
+            }
+            Self(empty).apply(file)?;
+            match Self::of(file)? {
+                Some(acl) if acl.entries()? => Err(std::io::Error::other(
+                    "the staging directory still carries an access control entry",
+                )),
+                _ => Ok(()),
+            }
+        }
+    }
+
+    impl Drop for Acl {
+        fn drop(&mut self) {
+            // SAFETY: the pointer came from libSystem and is freed once here.
+            unsafe { acl_free(self.0) };
+        }
+    }
+}
+
 /// The private directory a new target's file is staged in, opened relative to
 /// the target's parent and checked before anything is written into it. Every
 /// operation on the staged file runs relative to `dir`, so a name swapped after
@@ -640,6 +738,10 @@ struct StagingDirectory {
     parent: std::fs::File,
     /// The opened, checked private directory itself.
     dir: std::fs::File,
+    /// The extended ACL the target inherits from its parent, applied to the
+    /// staged file immediately before installation on macOS.
+    #[cfg(target_os = "macos")]
+    acl: Option<acl::Acl>,
 }
 
 /// Creates the private staging directory `name` below `parent` with mode 0700.
@@ -685,13 +787,18 @@ fn open_staging_directory(
 
 /// Creates the staged file inside the private directory `name` below `parent`,
 /// which is checked before the file exists. A failed creation removes the empty
-/// staging directory it was made for.
+/// staging directory it was made for. On macOS, when `parent` carries an
+/// extended ACL, the directory's inherited ACL is cleared and read back before
+/// the file exists, the ACL the target inherits is read from an empty template,
+/// and the file is confirmed to carry no entry.
 #[cfg(unix)]
 fn create_staged_file(
     parent: &std::fs::File,
     name: &std::ffi::OsStr,
 ) -> Result<(std::fs::File, StagingDirectory), TargetError> {
     let parent = parent.try_clone().map_err(classify)?;
+    #[cfg(target_os = "macos")]
+    let inherited = inherited_file_acl(&parent, name)?;
     create_staging_directory(&parent, name)?;
     let directory = match open_staging_directory(&parent, name) {
         Ok(directory) => directory,
@@ -700,6 +807,13 @@ fn create_staged_file(
             return Err(error);
         }
     };
+    #[cfg(target_os = "macos")]
+    if inherited.present {
+        if let Err(error) = acl::Acl::clear(&directory) {
+            remove_staging_entry(&parent, name);
+            return Err(classify(error));
+        }
+    }
     let created = open_relative(
         &directory,
         std::ffi::OsStr::new(STAGED_FILE),
@@ -707,17 +821,94 @@ fn create_staged_file(
         0o666,
     );
     match created {
-        Ok(file) => Ok((
-            file,
-            StagingDirectory {
-                parent,
-                dir: directory,
-            },
-        )),
+        Ok(file) => {
+            #[cfg(target_os = "macos")]
+            if inherited.present {
+                if let Err(error) = require_no_acl(&file) {
+                    remove_staging_entry(&parent, name);
+                    return Err(classify(error));
+                }
+            }
+            Ok((
+                file,
+                StagingDirectory {
+                    parent,
+                    dir: directory,
+                    #[cfg(target_os = "macos")]
+                    acl: inherited.file,
+                },
+            ))
+        }
         Err(error) => {
             remove_staging_entry(&parent, name);
             Err(classify(error))
         }
+    }
+}
+
+/// What a parent directory's extended ACL means for a new target: whether it
+/// carries entries at all, and the ACL a file created directly in it would
+/// inherit.
+#[cfg(target_os = "macos")]
+struct ParentAcl {
+    /// Whether the parent carries at least one entry, so a directory created in
+    /// it may inherit entries the mode bits do not show.
+    present: bool,
+    /// The ACL a file created directly in the parent would inherit.
+    file: Option<acl::Acl>,
+}
+
+/// Reads the extended ACL a file created directly in `parent` would inherit,
+/// from an empty template created there and removed at once. A parent without
+/// entries takes the existing path and does no ACL work.
+#[cfg(target_os = "macos")]
+fn inherited_file_acl(
+    parent: &std::fs::File,
+    staging: &std::ffi::OsStr,
+) -> Result<ParentAcl, TargetError> {
+    match acl::Acl::of(parent).map_err(TargetError::Io)? {
+        Some(acl) => {
+            if !acl.entries().map_err(TargetError::Io)? {
+                return Ok(ParentAcl {
+                    present: false,
+                    file: None,
+                });
+            }
+        }
+        None => {
+            return Ok(ParentAcl {
+                present: false,
+                file: None,
+            });
+        }
+    }
+    let mut name = staging.to_owned();
+    name.push(".acl");
+    let template = open_relative(
+        parent,
+        &name,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+        0o666,
+    )
+    .map_err(classify)?;
+    let file = acl::Acl::of(&template).map_err(TargetError::Io);
+    let removed = remove_file_entry(parent, &name).map_err(TargetError::Io);
+    let file = file?;
+    removed?;
+    Ok(ParentAcl {
+        present: true,
+        file,
+    })
+}
+
+/// Confirms `file` carries no extended ACL entry.
+#[cfg(target_os = "macos")]
+fn require_no_acl(file: &std::fs::File) -> std::io::Result<()> {
+    match acl::Acl::of(file)? {
+        Some(acl) if acl.entries()? => Err(std::io::Error::other(
+            "the staged file inherited an access control entry",
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -732,6 +923,20 @@ fn remove_staging_entry(parent: &std::fs::File, name: &std::ffi::OsStr) {
         // SAFETY: `parent` is an open directory handle and `name` a live
         // NUL-terminated string for the call.
         unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) };
+    }
+}
+
+/// Removes the file entry `name` below `parent`.
+#[cfg(unix)]
+fn remove_file_entry(parent: &std::fs::File, name: &std::ffi::OsStr) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let name = c_name(name)?;
+    // SAFETY: `parent` is an open directory handle and `name` a live
+    // NUL-terminated string for the call.
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -781,13 +986,25 @@ fn staged_owned_in(dir: &std::fs::File, name: &std::ffi::OsStr, file: &std::fs::
         && (device, inode) == (metadata.dev(), metadata.ino())
 }
 
-/// Links the staged file at `name` in the staging directory's parent, which
-/// never replaces an existing entry.
+/// Applies the ACL the target inherits from its parent to the staged file and
+/// links it at `name` in the staging directory's parent, which never replaces
+/// an existing entry. The ACL is applied immediately before the link, while the
+/// file is still inside the private directory.
 #[cfg(unix)]
-fn link_staged(staging: &StagingDirectory, name: &std::ffi::OsStr) -> Result<(), TargetError> {
+fn link_staged(
+    staging: &StagingDirectory,
+    file: &std::fs::File,
+    name: &std::ffi::OsStr,
+) -> Result<(), TargetError> {
     use std::os::fd::AsRawFd;
     let staged = c_name(std::ffi::OsStr::new(STAGED_FILE))?;
     let name = c_name(name)?;
+    #[cfg(target_os = "macos")]
+    if let Some(acl) = &staging.acl {
+        acl.apply(file).map_err(TargetError::Io)?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = file;
     // SAFETY: both handles are open directory handles and both names are live
     // NUL-terminated strings for the call.
     let result = unsafe {
@@ -1120,9 +1337,13 @@ impl Target {
     /// owner, group and mode before installation, so its bytes stay private. A
     /// new target's file is created with `0o666` inside a private directory in
     /// its parent: the process umask and the parent's default ACLs decide the
-    /// installed file's mode, and the directory is opened and checked as a
-    /// directory owned by the effective user with no group or other access, so
-    /// nobody else can read or change the staged bytes before installation.
+    /// installed file's mode and ACL, and the directory is opened and checked
+    /// as a directory owned by the effective user with no group or other
+    /// access, so nobody else can read or change the staged bytes before
+    /// installation. On macOS the target's inheritable ACL is read from a
+    /// template in the parent, the directory's inherited ACL is cleared before
+    /// the staged file exists, and the target's ACL is applied to the staged
+    /// file immediately before installation.
     pub(crate) fn create_staged(
         &self,
         name: std::ffi::OsString,
@@ -1257,6 +1478,7 @@ impl Target {
                 if let Some(staging) = &staged.staging {
                     return link_staged(
                         staging,
+                        &staged.file,
                         path.file_name().ok_or_else(|| {
                             TargetError::Io(std::io::Error::other("a target names a file"))
                         })?,
@@ -1272,7 +1494,7 @@ impl Target {
             #[cfg(unix)]
             Self::Handle(parent) => {
                 if let Some(staging) = &staged.staging {
-                    return link_staged(staging, &parent.name);
+                    return link_staged(staging, &staged.file, &parent.name);
                 }
                 parent.install(&staged.name, staged.existing)
             }
@@ -1882,6 +2104,266 @@ mod mutation_tests {
             "another Session entered during preparation"
         );
         assert_eq!(first_result.is_error, None);
+    }
+}
+
+/// macOS keeps inheritable access control entries beside the mode bits. A new
+/// target's installed file must carry the ACL its parent gives a new file,
+/// while the private staging directory and the staged file carry none of what
+/// they would inherit from that parent. These need the in-crate commit hook.
+#[cfg(all(test, target_os = "macos"))]
+mod acl_tests {
+    use super::*;
+    use dim_agent_runtime::{MemoryTimelineStore, Timeline, TimelineKey};
+    use rutis::host::CtxHost;
+    use std::os::fd::AsRawFd;
+
+    /// One branch with its own empty Timeline.
+    fn branch() -> FileReads {
+        FileReads::new(Arc::new(Timeline::new(
+            rutis::Ctx::root().unwrap(),
+            TimelineKey {
+                session_id: "acl".into(),
+                branch_id: "main".into(),
+            },
+            Vec::new(),
+            Arc::new(MemoryTimelineStore::default()),
+        )))
+    }
+
+    async fn call(
+        tools: &FileTools,
+        reads: &FileReads,
+        name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> Result<ToolResult, HostError> {
+        tools
+            .execute(
+                &ToolCall {
+                    id: "acl".into(),
+                    name: name.into(),
+                    input: input.as_object().unwrap().clone(),
+                },
+                reads,
+                cancel,
+            )
+            .await
+    }
+
+    /// The entries preparation added to the target's parent directory.
+    fn staged_entries(path: &Path) -> Vec<std::fs::DirEntry> {
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(Result::unwrap)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".dim-write-")
+            })
+            .collect()
+    }
+
+    /// `ACL_TYPE_EXTENDED` from `<sys/acl.h>`.
+    const ACL_TYPE_EXTENDED: libc::c_int = 0x100;
+
+    unsafe extern "C" {
+        fn acl_get_fd_np(fd: libc::c_int, kind: libc::c_int) -> *mut libc::c_void;
+        fn acl_to_text(acl: *mut libc::c_void, len: *mut libc::ssize_t) -> *mut libc::c_char;
+        fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+    }
+
+    /// The extended ACL `path` carries as libSystem renders it; `None` when it
+    /// has no extended ACL.
+    fn acl_text(path: &Path) -> Option<String> {
+        let file = std::fs::File::open(path).unwrap();
+        // SAFETY: `file` is open for the call and the ACL is freed below.
+        let acl = unsafe { acl_get_fd_np(file.as_raw_fd(), ACL_TYPE_EXTENDED) };
+        if acl.is_null() {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(libc::ENOENT),
+                "{path:?}: {error}"
+            );
+            return None;
+        }
+        // SAFETY: the ACL is live and the returned text is freed below.
+        let text = unsafe { acl_to_text(acl, std::ptr::null_mut()) };
+        assert!(!text.is_null(), "{path:?}");
+        // SAFETY: `acl_to_text` returned a NUL-terminated string.
+        let rendered = unsafe { std::ffi::CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: both pointers came from libSystem and are freed once here.
+        unsafe {
+            acl_free(text.cast());
+            acl_free(acl);
+        }
+        Some(rendered)
+    }
+
+    /// Sets the current user's primary group as `permissions` on `directory`,
+    /// after removing any ACL it already carries.
+    fn inheritable(directory: &Path, permissions: &str) {
+        let output = std::process::Command::new("id")
+            .arg("-gn")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let group = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            std::process::Command::new("chmod")
+                .arg("-N")
+                .arg(directory)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            std::process::Command::new("chmod")
+                .arg("+a")
+                .arg(format!("group:{} {permissions}", group.trim()))
+                .arg(directory)
+                .status()
+                .unwrap()
+                .success(),
+            "setting {permissions} on {directory:?}"
+        );
+    }
+
+    fn workspace(name: &str) -> (PathBuf, FileTools) {
+        let root = std::env::temp_dir().join(format!("{name}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let tools = FileTools::new(root.clone(), root.clone(), root.join("out"));
+        (root, tools)
+    }
+
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    /// The private staging directory and its file carry no ACL entry, and the
+    /// installed file carries the ACL and mode a file created directly in the
+    /// same parent would, for each kind of inheritable parent entry.
+    #[tokio::test]
+    async fn a_new_file_takes_the_parents_acl_on_macos() {
+        for permissions in [
+            "allow list,search,add_file,delete_child,file_inherit,directory_inherit",
+            "allow read,write,execute,file_inherit",
+            "allow list,search,add_file,delete_child,directory_inherit",
+        ] {
+            let (root, mut tools) = workspace("dim-acl");
+            inheritable(&root, permissions);
+            let reads = branch();
+            let observed = Arc::new(Mutex::new(0usize));
+            let seen = observed.clone();
+            tools.before_commit = Some(Arc::new(move |path| {
+                let staged = staged_entries(path);
+                assert_eq!(staged.len(), 1, "one staging entry: {staged:?}");
+                assert!(staged[0].metadata().unwrap().is_dir());
+                let directory = staged[0].path();
+                assert_eq!(
+                    acl_text(&directory),
+                    None,
+                    "the private directory carries no ACL: {permissions}"
+                );
+                assert_eq!(
+                    acl_text(&directory.join(STAGED_FILE)),
+                    None,
+                    "the staged file carries no ACL: {permissions}"
+                );
+                *seen.lock().unwrap() += 1;
+            }));
+            let result = call(
+                &tools,
+                &reads,
+                "write",
+                json!({"path": "file", "content": "text\n"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(result.is_error, None, "{permissions}: {result:?}");
+            assert_eq!(*observed.lock().unwrap(), 1, "{permissions}");
+            let control = root.join("control");
+            std::fs::write(&control, b"").unwrap();
+            let target = root.join("file");
+            assert_eq!(
+                acl_text(&target),
+                acl_text(&control),
+                "the installed file takes the parent's ACL: {permissions}"
+            );
+            assert_eq!(
+                mode(&target),
+                mode(&control),
+                "the installed file takes the parent's mode: {permissions}"
+            );
+            assert!(
+                staged_entries(&target).is_empty(),
+                "a successful write leaves no staging entry: {permissions}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    /// Cancellation and a failed publication remove the private directory, the
+    /// staged file and the ACL template, leaving no `.dim-write-*` entry.
+    #[tokio::test]
+    async fn a_cancelled_or_failed_new_file_leaves_no_staging_entry_on_macos() {
+        for failure in ["cancel", "exists"] {
+            let (root, mut tools) = workspace("dim-acl-cleanup");
+            inheritable(
+                &root,
+                "allow list,search,add_file,delete_child,file_inherit,directory_inherit",
+            );
+            let reads = branch();
+            let cancel = CancellationToken::new();
+            let cancellation = cancel.clone();
+            tools.before_commit = Some(Arc::new(move |path| match failure {
+                "cancel" => cancellation.cancel(),
+                "exists" => std::fs::write(path, b"external").unwrap(),
+                _ => unreachable!(),
+            }));
+            let result = call(
+                &tools,
+                &reads,
+                "write",
+                json!({"path": "file", "content": "text\n"}),
+                cancel,
+            )
+            .await;
+            if failure == "cancel" {
+                assert!(matches!(result, Err(HostError::Cancelled(_))));
+                assert!(!root.join("file").exists());
+            } else {
+                let result = result.unwrap();
+                assert_eq!(result.is_error, Some(true));
+                assert_eq!(
+                    result.structured_content.unwrap()["code"],
+                    "text_binding_required"
+                );
+                assert_eq!(std::fs::read(root.join("file")).unwrap(), b"external");
+            }
+            let leftovers: Vec<_> = std::fs::read_dir(&root)
+                .unwrap()
+                .map(Result::unwrap)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".dim-write-")
+                })
+                .collect();
+            assert!(
+                leftovers.is_empty(),
+                "{failure} leaves no staging entry: {leftovers:?}"
+            );
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }
 
