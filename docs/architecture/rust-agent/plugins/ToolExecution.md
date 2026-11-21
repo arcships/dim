@@ -4,6 +4,8 @@ The ToolExecution plugin registers the Session [ToolMethods](ToolMethods.md) rea
 
 ## ToolBinding
 
+Loop and Code Mode use the branch [tool binding operations](../../../design/contracts/runtime-owner-operations.md) to pin, read, transfer and release request declarations.
+
 Owner: [tool_binding.rs](../../../../crates/dim-agent-capabilities/src/tool_binding.rs).
 Adopts a Session tool set into branch model configuration and pins handlers to
 requests so later registry changes cannot silently replace executing tools.
@@ -94,7 +96,7 @@ task, mutex, lifecycle phase or protocol field is needed.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:BranchLifecycle`、`B:BranchOpening`、`B:Dispatcher`、`B:Prompt`、`B:Timeline`、`S:ToolRegistry` |
-| 提供 | `B:ToolBinding` |
+| 提供 | `B:ToolBinding`、`B:dyn HostDispatch#toolBinding` |
 | 被注入于 | `Loop`、`ToolExecutor` |
 <!-- /generated -->
 
@@ -163,6 +165,10 @@ declarations on it travel on that fact
 ([session boundary A.6](../../../design/contracts/session-boundary.md#a6-tool-effects));
 a call it settles without a tool result carries none. Calls in a batch settle
 before the correlated batch result.
+The branch `toolExecutor.open({parentCallId, context}, cancelled)` returns a gate ID for a running parent in the current batch. A child ID must be unique within that batch. A cancelled gate refuses further calls. The parent collects confirmed child effects when it settles, including effects from gates its handler left open.
+`invoke({gateId, call})` executes the pinned tool and returns its result.
+`close({gateId})` closes admission, joins child tasks and returns their effects in invocation order.
+
 One top-level batch runs at once. A child batch carries `parent_call_id`; the
 top-level consumer ignores child batches, and the nested gate writes their
 `step/tool-call`/`step/tool-result` and joins them before the outer result. Child
@@ -218,7 +224,7 @@ effect before it retries, and reports the work neither as done nor as never run.
 | --- | --- |
 | 作用域 | 分支 |
 | 注入 | `B:Approval`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`B:ToolBinding` |
-| 提供 | `B:ToolExecutor` |
+| 提供 | `B:ToolExecutor`、`B:dyn HostDispatch#toolExecutor` |
 | 被注入于 | — |
 <!-- /generated -->
 

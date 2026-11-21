@@ -1495,7 +1495,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("contextPreparation", "hot-path"),
         ("contextUsage", "hot-path"),
         ("faultReporter", "hot-path"),
-        ("fileReads", "hot-path"),
         ("fileStorage", "object"),
         ("grokOAuthService", "secret"),
         ("historyRenderer", "hot-path"),
@@ -1520,8 +1519,6 @@ pub fn register_faces(builder: &mut dim_agent_runtime::AgentBuilder) {
         ("timelineFactory", "control"),
         ("timelineTree", "owner-api"),
         ("timelineTreeControl", "owner-api"),
-        ("toolBinding", "hot-path"),
-        ("toolExecutor", "hot-path"),
         ("uiExtensions", "control"),
         ("uiHost", "control"),
     ] {

@@ -111,7 +111,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `contextPreparation` | branch | ContextPreparation | internal(hot-path) | — |
 | `contextUsage` | branch | ContextUsage | internal(hot-path) | — |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
-| `fileReads` | branch | FileReads | internal(hot-path) | — |
+| `fileReads` | branch | FileReads | data | `binding` sync, `record` sync, `writeBinding` async |
 | `inputQueue` | branch | InputQueue | data | `submit` async, `withdraw` async |
 | `loopState` | branch | Loop | internal(hot-path) | — |
 | `permission` | branch | Permission | data | `check` async |
@@ -120,8 +120,8 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `skillsBranch` | branch | SkillsBranch | data | `list` sync |
 | `timeline` | branch | BranchScope | data | `ancestors` async, `append` async, `branchId` async, `committed` async, `hasPending` async, `query` async, `sequence` async |
 | `timelineIdentity` | branch | BranchScope | data | `get` async |
-| `toolBinding` | branch | ToolBinding | internal(hot-path) | — |
-| `toolExecutor` | branch | ToolExecutor | internal(hot-path) | — |
+| `toolBinding` | branch | ToolBinding | data | `bind` sync, `bindCurrent` sync, `definitions` sync, `release` sync, `transfer` sync |
+| `toolExecutor` | branch | ToolExecutor | data | `close` async, `invoke` async, `open` sync |
 | `wait` | branch | WaitBranch | data | `wait` async |
 
 ## Capabilities

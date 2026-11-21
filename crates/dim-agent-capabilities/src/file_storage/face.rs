@@ -41,7 +41,7 @@ enum EntryName {
     Native(OsString),
 }
 
-fn deserialize_name<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn deserialize_name<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> std::result::Result<OsString, D::Error> {
     Ok(match EntryName::deserialize(deserializer)? {

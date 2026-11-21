@@ -187,7 +187,7 @@ pub(super) async fn run(
         hook(&path);
     }
     let _lock = tools.locks.lock(&path, &cancel).await?;
-    let binding = reads.get(&path);
+    let binding = reads.binding(&path);
     let (target, bounded) = (path.clone(), tools.boundary.is_some());
     #[cfg(test)]
     let hook = tools.before_commit.clone();
@@ -206,7 +206,7 @@ pub(super) async fn run(
     .await?;
     let (result, binding) = written.map_err(|Cancelled| cancelled())?;
     if let Some(binding) = binding {
-        reads.set(path, binding, established);
+        reads.record(path, binding, established);
     }
     Ok(result)
 }

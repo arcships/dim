@@ -111,7 +111,9 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<context_usage::ContextUsage>(catalog, branch);
     register::<context_preparation::ConfigurationPublisher>(catalog, branch);
     register::<tool_executor::ToolExecutor>(catalog, branch);
+    catalog.register_shared_instance(name_of::<tool_executor::ToolExecutor>(), BRANCH_GROUP);
     register::<tool_binding::ToolBinding>(catalog, branch);
+    catalog.register_shared_instance(name_of::<tool_binding::ToolBinding>(), BRANCH_GROUP);
     register::<permission::Permission>(catalog, branch);
     register::<approval::Approval>(catalog, branch);
     catalog.register_shared_instance("skillsBranch", BRANCH_GROUP);
@@ -121,6 +123,10 @@ fn register_names_in(catalog: &mut dim_agent_runtime::names::ServiceCatalog) {
     register::<dyn exec_stop::ExecStop>(catalog, branch);
     register::<wait::Wait>(catalog, branch);
     register::<workspace_tools::file_reads::FileReads>(catalog, branch);
+    catalog.register_shared_instance(
+        name_of::<workspace_tools::file_reads::FileReads>(),
+        BRANCH_GROUP,
+    );
     catalog.register_shared_instance("branchLine", BRANCH_GROUP);
     register::<host_platform::HostPlatform>(catalog, None);
     register::<file_storage::FileStorage>(catalog, None);

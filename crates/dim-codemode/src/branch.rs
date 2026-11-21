@@ -6,6 +6,7 @@ use crate::{
 };
 use dim_agent_capabilities::{
     host::{HostError, ToolExecutionContext},
+    tool_binding::ToolBinding,
     tool_executor::ToolExecutor,
 };
 use dim_agent_runtime::{Names, TimelineIdentity};
@@ -18,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 pub struct CodeModeBranchPlugin {
     runs: Key<CodeModeRuns>,
     executor: Key<ToolExecutor>,
+    binding: Key<ToolBinding>,
     identity: Key<TimelineIdentity>,
     config: Arc<CodeModeConfig>,
 }
@@ -27,6 +29,7 @@ impl CodeModeBranchPlugin {
         Ok(Self {
             runs: names.key()?,
             executor: names.key()?,
+            binding: names.key()?,
             identity: names.key()?,
             config,
         })
@@ -42,6 +45,7 @@ impl DynPlugin for CodeModeBranchPlugin {
         vec![
             self.runs.erase(),
             self.executor.erase(),
+            self.binding.erase(),
             self.identity.erase(),
         ]
     }
@@ -49,8 +53,10 @@ impl DynPlugin for CodeModeBranchPlugin {
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
             let runs = ctx.require_at(&self.runs)?;
-            let executor: Arc<dyn NestedToolHost> =
-                Arc::new(ToolExecutorHost::new(ctx.require_at(&self.executor)?));
+            let executor: Arc<dyn NestedToolHost> = Arc::new(ToolExecutorHost::new(
+                ctx.require_at(&self.executor)?,
+                ctx.require_at(&self.binding)?,
+            ));
             let identity = ctx.require_at(&self.identity)?;
             let branch = Arc::new(CodeModeBranch {
                 executor,

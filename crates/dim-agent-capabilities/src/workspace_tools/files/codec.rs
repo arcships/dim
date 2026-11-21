@@ -4,7 +4,7 @@ use super::super::file_reads::{Bom, EncodingSource, Eol, TextEncoding, TextFileB
 use super::failed;
 use dim_agent_types::ToolResult;
 use encoding_rs::{DecoderResult, EncoderResult, Encoding};
-use serde_json::{Value, json};
+use serde_json::json;
 
 const UTF8_BOM: &[u8] = &[0xef, 0xbb, 0xbf];
 const UTF16LE_BOM: &[u8] = &[0xff, 0xfe];
@@ -132,6 +132,22 @@ fn resolve_explicit(input: &str, bom: Option<&TextEncoding>) -> Result<TextEncod
             "text_encoding_required",
             format!("Unsupported text encoding: {input}."),
         )),
+    }
+}
+
+pub(in crate::workspace_tools) fn deserialize_legacy_encoding<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<(String, &'static Encoding), D::Error> {
+    use serde::{Deserialize, de::Error};
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Legacy {
+        name: String,
+    }
+    let Legacy { name } = Legacy::deserialize(deserializer)?;
+    match resolve_explicit(&name, None).map_err(|error| D::Error::custom(error.message))? {
+        TextEncoding::Legacy { name, encoding } => Ok((name, encoding)),
+        _ => Err(D::Error::custom("expected a legacy encoding")),
     }
 }
 
@@ -270,38 +286,5 @@ pub(super) fn normalize_eol(text: &str, eol: Eol) -> String {
         Eol::Lf => text.replace("\r\n", "\n"),
         Eol::Crlf => text.replace("\r\n", "\n").replace('\n', "\r\n"),
         Eol::None | Eol::Mixed => text.to_owned(),
-    }
-}
-
-pub(super) fn encoding_json(encoding: &TextEncoding) -> Value {
-    match encoding {
-        TextEncoding::Legacy { name, .. } => json!({ "kind": "legacy", "name": name }),
-        other => json!({ "kind": kind(other) }),
-    }
-}
-
-pub(super) fn source_str(source: EncodingSource) -> &'static str {
-    match source {
-        EncodingSource::Bom => "bom",
-        EncodingSource::User => "user",
-        EncodingSource::Utf8Policy => "utf8-policy",
-    }
-}
-
-pub(super) fn bom_str(bom: Bom) -> &'static str {
-    match bom {
-        Bom::None => "none",
-        Bom::Utf8 => "utf8",
-        Bom::Utf16Le => "utf16le",
-        Bom::Utf16Be => "utf16be",
-    }
-}
-
-pub(super) fn eol_str(eol: Eol) -> &'static str {
-    match eol {
-        Eol::None => "none",
-        Eol::Lf => "lf",
-        Eol::Crlf => "crlf",
-        Eol::Mixed => "mixed",
     }
 }

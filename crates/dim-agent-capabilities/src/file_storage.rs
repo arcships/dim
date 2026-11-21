@@ -31,6 +31,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 mod face;
+pub(crate) use face::deserialize_name;
 pub use face::{FsHost, FsPermissions, FsRemove, OpenRead};
 
 /// Read-only reader lifetime observations for filesystem flow tests.

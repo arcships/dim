@@ -356,7 +356,8 @@ The outer approval (when the outer call asks) has no `parent_call_id`.
 | `partRegistry` | Process | `CodeMode` | Register `CodeModeSession` and `CodeModeBranch`. |
 | `CodeModeRuns` | Process | `CodeModeSession`, `CodeModeBranch` | Resolve the calling Session and branch's runner; the process plugin provides it. |
 | `toolRegistry` | Session | `CodeModeSession` | Register the `codemode` tool. |
-| `ToolExecutor` | branch | `CodeModeBranch` | Read the pinned declarations, submit child `step/tool-call` batches, run child calls and join the parent gate. |
+| `ToolBinding` | branch | `CodeModeBranch` | Read the request’s pinned declarations. |
+| `ToolExecutor` | branch | `CodeModeBranch` | Submit child `step/tool-call` batches, run child calls and join the parent gate. |
 | `TimelineIdentity` | branch | `CodeModeBranch` | The calling Session id and branch id. |
 | `rquickjs` | library | `CodeModeBranch` | The QuickJS runtime and the `tools` bridge. |
 
@@ -426,7 +427,7 @@ facade access or a Node/TypeScript runtime.
 | §4.4 core mechanism has no business meaning | The nested invocation service and `parent_call_id` are generic; the contract names no Code Mode type. |
 | §4.5 atomic batches and ordered dispatch | Child batches are committed and dispatched in sequence. The outer batch stays current; child batches do not take the model batch slot; the outer result is committed once. |
 | §4.6 context boundary | Child results never enter context. Only the outer `step/tool-result` is model-facing; a value the model needs is in the outer `content`. |
-| §4.7 public interaction | The plugin uses `ToolExecutor`, `ToolRegistry`, `CodeModeRuns` and `rquickjs`; it receives no handler or ToolExecutor internals. |
+| §4.7 public interaction | The plugin uses `ToolBinding`, `ToolExecutor`, `ToolRegistry`, `CodeModeRuns` and `rquickjs`; it receives no handler or ToolExecutor internals. |
 | §4.8 infrastructure requirements | R1–R5 state the existing mechanisms, the generic additions, cancellation/reload behavior and the owners. |
 | §4.9 facts in Timeline | Every child call has a durable `step/tool-call` command and a terminal `step/tool-result`; child effects travel on the child result and the outer result. |
 | ADR 002 D1 | Process `CodeMode`, Session tool, Branch execution and ToolExecutor each own their own state. |
@@ -467,16 +468,16 @@ CodeModeBranch::run(outer_call_id, code, context, cancel):
   runtime = AsyncRuntime::new(); runtime.set_memory_limit(max)
   runtime.set_interrupt_handler(deadline || child_cancel)
   quickjs = AsyncContext::full(runtime)
-  gate = toolExecutor.open(outer_call_id)
+  gateId = toolExecutor.open({parentCallId: outer_call_id, context}, cancelled)
   result = try:
     quickjs.async_with(|ctx|:
-      install tools.list / tools.describe from executor.definitions(context.request_id)
-      install tools.call = Async(|name, args| gate.invoke(ToolCall{name, args}, context, child_cancel))
+      install tools.list / tools.describe from toolBinding.definitions({requestId: context.request_id})
+      install tools.call = Async(|name, args| toolExecutor.invoke({gateId, call: {id: child_id, name, input: args}}))
       promise = ctx.eval(async function body)
       return promise.into_future())
   finally:
     child_cancel.cancel()
-    gate.close(reason)
+    collected_effects = toolExecutor.close({gateId})
     drop(program_slot)
   return ToolResult { content: JSON(result), effects: collected_effects }
 ```

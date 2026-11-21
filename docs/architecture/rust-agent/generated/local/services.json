@@ -2213,6 +2213,12 @@
         "removing": false
       },
       {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#fileReads@main",
+        "provider": 68,
+        "generation": 1,
+        "removing": false
+      },
+      {
         "service": "dyn rutis_bridge::session::services::HostDispatch#inputQueue@main",
         "provider": 70,
         "generation": 1,
@@ -2239,6 +2245,18 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#timelineIdentity@main",
         "provider": 60,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolBinding@main",
+        "provider": 78,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#toolExecutor@main",
+        "provider": 79,
         "generation": 1,
         "removing": false
       },

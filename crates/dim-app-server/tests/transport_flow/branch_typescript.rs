@@ -554,3 +554,257 @@ async fn node_branch_typescript_writes_and_follows_extension_events() {
     server.join().await.unwrap();
     let _ = std::fs::remove_dir_all(&home);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_tool_binding_transfers_pinned_handlers_in_the_native_owner() {
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"tool-binding","name":parts.anchor.parent().unwrap().join("fixtures/tool-binding.ts"),"provides":{}}),
+    ];
+    let (server, _agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("ToolBindingFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!(["echo", "wait"])).await;
+    let reply = client
+        .rpc("session.bindingfixture.pin", json!({"sessionId":id}))
+        .await;
+    assert_ok(&reply);
+    use dim_agent_capabilities::host::ToolDriver;
+    let echo = MockTools
+        .definitions()
+        .into_iter()
+        .find(|tool| tool.name == "echo")
+        .unwrap();
+    assert_eq!(reply["result"]["echo"], echo.description);
+    assert_eq!(reply["result"]["current"], reply["result"]["transferred"]);
+    assert_eq!(reply["result"]["empty"], 0);
+    assert!(
+        reply["result"]["collision"]
+            .as_str()
+            .unwrap()
+            .contains("request fixture-empty is already bound")
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_file_reads_round_trips_a_native_binding_used_by_write() {
+    use dim_agent_capabilities::workspace_tools::{file_reads::FileReads, files::FileTools};
+    let root = std::env::temp_dir().join(format!("dim-binding-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let source = root.join("source.txt");
+    let target = root.join("target.txt");
+    std::fs::write(&source, b"before").unwrap();
+    std::fs::copy(&source, &target).unwrap();
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"file-reads","name":parts.anchor.parent().unwrap().join("fixtures/file-reads.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(MockTools),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_feature(dim_agent_runtime::Feature::new("FixtureFileReadsOwner")
+                .branch("FileReads", |names| Ok(Box::new(dim_agent_capabilities::workspace_tools::file_reads::FileReadsPlugin::new(names)?))));
+            builder.require_part("FileReadsFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let id = super::session_typescript::new_session(&mut client, json!(["echo", "wait"])).await;
+    let reads = agent
+        .get_session(&id)
+        .unwrap()
+        .service::<FileReads>("main")
+        .unwrap();
+    let files = FileTools::new(root.clone(), root.clone(), root.join("outputs"));
+    let call = |name: &str, input: Value| dim_agent_types::ToolCall {
+        id: name.to_owned(),
+        name: name.to_owned(),
+        input: input.as_object().unwrap().clone(),
+    };
+    let read = files
+        .execute(
+            &call("read", json!({"path":source,"encoding":"cp932"})),
+            &reads,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(read.is_error, Some(true), "{read:?}");
+    let reply = client
+        .rpc(
+            "session.filebinding.copy",
+            json!({"sessionId":id,"source":source,"target":target}),
+        )
+        .await;
+    assert_ok(&reply);
+    let written = files
+        .execute(
+            &call("write", json!({"path":target,"content":"日"})),
+            &reads,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(written.is_error, Some(true), "{written:?}");
+    assert_eq!(std::fs::read(target).unwrap(), [0x93, 0xfa]);
+    server.shutdown();
+    server.join().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_nested_execution_runs_the_pinned_native_tool_in_the_current_batch() {
+    use dim_agent_capabilities::host::{HostFuture, ToolExecutionContext};
+    use dim_agent_types::{ToolCall, ToolDefinition, ToolEffect, ToolResult};
+
+    struct Tools(tokio::sync::mpsc::UnboundedSender<(String, ToolExecutionContext)>);
+    impl ToolDriver for Tools {
+        fn definitions(&self) -> Vec<ToolDefinition> {
+            MockTools.definitions()
+        }
+        fn execute(
+            &self,
+            call: ToolCall,
+            context: ToolExecutionContext,
+            cancel: CancellationToken,
+        ) -> HostFuture<'_, ToolResult> {
+            if call.name == "wait" {
+                self.0.send((call.id.clone(), context.clone())).unwrap();
+            }
+            if call.name == "echo" {
+                return Box::pin(async move {
+                    let mut result = MockTools.execute(call, context, cancel).await?;
+                    result.effects = Some(vec![ToolEffect::FileWritten {
+                        path: "/fixture".into(),
+                    }]);
+                    Ok(result)
+                });
+            }
+            MockTools.execute(call, context, cancel)
+        }
+    }
+
+    let (started, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut parts = branch_part();
+    parts.rows = vec![
+        json!({"id":"tool-executor","name":parts.anchor.parent().unwrap().join("fixtures/tool-executor.ts"),"provides":{}}),
+    ];
+    let (server, agent) = launch_with(
+        Arc::new(Tools(started)),
+        ServerConfig {
+            session_typescript: Some(parts),
+            ..Default::default()
+        },
+        |builder| {
+            builder.require_part("ToolExecutorFixture");
+        },
+    )
+    .await;
+    let mut client = Client::new_version(&server, false, 4).await;
+    let id = super::session_typescript::new_session(&mut client, json!(["echo", "wait"])).await;
+    assert_ok(
+        &client
+            .rpc(
+                "session.submit",
+                json!({"sessionId":id,"branchId":"main","text":"tool:wait {\"millis\":60000}"}),
+            )
+            .await,
+    );
+    let (parent, context) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let mut control = Client::new_version(&server, false, 4).await;
+    let (response, ()) = tokio::join!(
+        client.rpc(
+            "session.nestedfixture.run",
+            json!({
+                "sessionId":id,"parentCallId":parent,"turnId":context.turn_id,
+                "requestId":context.request_id,"branchId":context.branch_id
+            })
+        ),
+        async {
+            let (child, _) = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(child, "nested-wait");
+            assert_ok(
+                &control
+                    .rpc("session.nestedfixture.cancel", json!({"sessionId":id,"parentCallId":child,"turnId":context.turn_id,"requestId":context.request_id,"branchId":context.branch_id}))
+                    .await,
+            );
+        }
+    );
+    assert_ok(&response);
+    assert_eq!(
+        response["result"],
+        json!({"output":"from node","effectCount":1})
+    );
+    assert_ok(
+        &client
+            .rpc("session.stop", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    assert_ok(
+        &client
+            .rpc("session.idle", json!({"sessionId":id,"branchId":"main"}))
+            .await,
+    );
+    let session = agent.get_session(&id).unwrap();
+    let events = branch_events(&session, "main", ..).await.unwrap();
+    let child_calls = events
+        .iter()
+        .filter(|event| {
+            event.parent_call_id.as_deref() == Some(&parent)
+                && matches!(event.kind, dim_agent_types::EventKind::ToolCall(_))
+        })
+        .count();
+    assert_eq!(child_calls, 2);
+    assert!(events.iter().any(
+        |event| event.parent_call_id.as_deref() == Some("nested-wait")
+            && matches!(event.kind, dim_agent_types::EventKind::ToolCall(_))
+    ));
+    let parent_result = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            dim_agent_types::EventKind::ToolResult(data) if event.parent_call_id.is_none() => {
+                data.results.iter().find(|item| item.call_id == parent)
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        parent_result.result.effects.as_deref(),
+        Some(
+            vec![
+                ToolEffect::FileWritten {
+                    path: "/fixture".into()
+                };
+                2
+            ]
+            .as_slice()
+        )
+    );
+    server.shutdown();
+    server.join().await.unwrap();
+}

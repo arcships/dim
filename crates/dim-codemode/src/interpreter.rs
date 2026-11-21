@@ -1,8 +1,5 @@
 use crate::{config::CodeModeConfig, host::NestedToolHost};
-use dim_agent_capabilities::{
-    host::{HostError, ToolExecutionContext},
-    tool_executor::NestedGate,
-};
+use dim_agent_capabilities::host::{HostError, ToolExecutionContext};
 use dim_agent_types::{JsonObject, ToolCall, ToolEffect, ToolResult};
 use rquickjs::{AsyncContext, AsyncRuntime, Function, Object, Promise, prelude::*};
 use serde_json::json;
@@ -117,6 +114,7 @@ pub(crate) async fn run_program(
     let cancel_after = cancel.clone();
     let calls_after = calls.clone();
     let gate_after = gate.clone();
+    let executor_after = executor.clone();
     let child_cancel_after = child_cancel.clone();
     let run = context_handle.async_with(async move |ctx| {
         let host_tools = Object::new(ctx.clone()).map_err(js_error)?;
@@ -146,7 +144,8 @@ pub(crate) async fn run_program(
         host_tools.set("describe", describe).map_err(js_error)?;
 
         let call_scope = CallScope {
-            gate: gate.clone(),
+            executor,
+            gate,
             cancel: child_cancel.clone(),
             count: calls.clone(),
             parallel: parallel.clone(),
@@ -192,8 +191,7 @@ pub(crate) async fn run_program(
         result = timeout_at(deadline, run) => result.ok(),
     };
     child_cancel_after.cancel();
-    gate_after.close().await;
-    let effects = gate_after.effects();
+    let effects = executor_after.close(&gate_after).await?;
 
     match result {
         Some(Ok(output)) => Ok(if output.len() > output_limit {
@@ -233,7 +231,8 @@ pub(crate) async fn run_program(
 
 #[derive(Clone)]
 struct CallScope {
-    gate: Arc<dyn NestedGate>,
+    executor: Arc<dyn NestedToolHost>,
+    gate: String,
     cancel: CancellationToken,
     count: Arc<AtomicU64>,
     parallel: Arc<Semaphore>,
@@ -288,7 +287,7 @@ async fn call_nested_tool(
         name,
         input,
     };
-    let result = scope.gate.invoke(call).await;
+    let result = scope.executor.invoke(&scope.gate, call).await;
     drop(permit);
     match result {
         Ok(result) => {
