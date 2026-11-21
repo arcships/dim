@@ -1,5 +1,3 @@
-mod provider;
-
 use super::reclaim::Reclaimed;
 use dim_agent_runtime::{AgentError, Result, panic_message};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -2660,7 +2658,7 @@ impl HostDispatch for SqliteDispatch {
             ImportUserIfAbsent(ImportUser),
             ReplaceUser(ReplaceUser),
             #[serde(untagged)]
-            Provider(provider::ProviderOperation),
+            Provider(crate::provider::persistence::ProviderOperation),
         }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
@@ -2899,7 +2897,7 @@ impl HostDispatch for SqliteDispatch {
     }
 }
 
-fn storage_failure(error: AgentError) -> BridgeError {
+pub(crate) fn storage_failure(error: AgentError) -> BridgeError {
     let code = match error {
         AgentError::Cancelled(_) | AgentError::Closed(_) => "cancelled",
         _ => "storage_unavailable",

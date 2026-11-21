@@ -1,4 +1,4 @@
-use super::{SqliteStorage, storage_failure};
+use crate::storage::{SqliteStorage, storage_failure};
 use rutis_bridge::session::Error as BridgeError;
 use serde::Deserialize;
 use std::{collections::BTreeMap, sync::Arc};
@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
     rename_all = "camelCase",
     deny_unknown_fields
 )]
-pub(super) enum ProviderOperation {
+pub(crate) enum ProviderOperation {
     #[serde(rename_all = "camelCase")]
     CommitEdit {
         provider_id: String,
@@ -47,7 +47,7 @@ pub(super) enum ProviderOperation {
 
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub(super) enum RecordProjection {
+pub(crate) enum RecordProjection {
     Version,
     #[serde(untagged)]
     Models(crate::provider::ProviderRecordProjection),
@@ -55,7 +55,7 @@ pub(super) enum RecordProjection {
 
 #[derive(Deserialize)]
 #[serde(untagged, deny_unknown_fields, rename_all_fields = "camelCase")]
-pub(super) enum ManagementRead {
+pub(crate) enum ManagementRead {
     Providers {
         page: crate::provider::ManagementPageRequest,
         accounts: BTreeMap<String, String>,
@@ -74,7 +74,7 @@ pub(super) enum ManagementRead {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub(super) enum Candidates {
+pub(crate) enum Candidates {
     Providers {
         model_id: Option<String>,
     },
@@ -94,7 +94,7 @@ pub(super) enum Candidates {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub(super) enum ProviderEdit {
+pub(crate) enum ProviderEdit {
     RefreshManaged {
         expected_version: Option<u32>,
         catalog: crate::managed_provider::ManagedCatalog,
@@ -153,7 +153,7 @@ pub(super) enum ProviderEdit {
 }
 
 impl ProviderOperation {
-    pub(super) async fn execute(
+    pub(crate) async fn execute(
         self,
         db: &Arc<SqliteStorage>,
     ) -> Result<serde_json::Value, BridgeError> {

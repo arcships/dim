@@ -1,3 +1,6 @@
+mod operations;
+pub(crate) use operations::ProviderOperation;
+
 use super::*;
 use std::borrow::Cow;
 
