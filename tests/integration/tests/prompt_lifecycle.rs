@@ -1124,6 +1124,7 @@ async fn overlapping_load_is_superseded_and_close_joins_cancellation() {
             .insert("rules".into(), Reply::Entry(entry("rules", "new", "new")));
         let replacement = tokio::spawn({
             let session = session.clone();
+            let target = target.clone();
             async move {
                 if frozen {
                     session
@@ -1202,21 +1203,11 @@ async fn overlapping_load_is_superseded_and_close_joins_cancellation() {
             .unwrap()
             .get("main")
             .unwrap();
-        use dim_agent_capabilities::context_preparation::{
-            AdoptedPrompt, ContextPreparation, PublishConfiguration,
-        };
-        let publication = branch.service::<ContextPreparation>().unwrap();
-        let late = publication.publish(PublishConfiguration {
-            adopted: AdoptedPrompt {
-                prompts: snapshot.checkpoint(),
-                configuration: None,
-            },
-            changes: vec![PromptChange::Set {
-                entry: entry("late", "1", "late"),
-            }],
+        use dim_agent_capabilities::prompt::{Prompt, PromptConfigurationRequest};
+        let prompt = branch.service::<Prompt>().unwrap();
+        let late = prompt.configure(PromptConfigurationRequest::Loaded {
             model: Some(configuration("late")),
-            tool_adoption: None,
-            inputs: vec![],
+            sources: vec![(target, Some(entry("rules", "late", "late")))],
         });
         let closing = tokio::spawn(async move { agent.close().await });
         tokio::time::timeout(Duration::from_secs(2), async {

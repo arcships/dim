@@ -72,11 +72,11 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `collaborationConfig` | session | SessionScope | data | `get` async |
 | `collaborationSession` | session | CollaborationSession | data | `approvalDestination` sync |
 | `commandRules` | session | CommandRules | data | `read` async |
-| `compactionStrategyHost` | session | ProductSummaryStrategy | internal(hot-path) | — |
+| `compactionStrategyHost` | session | ProductSummaryStrategy | data | `compact` async, `describe` async |
 | `contextModelHost` | session | SessionScope | data | `contributions` async, `count` async, `describe` async, `estimate` async |
 | `faultReporter` | session | SessionScope | internal(hot-path) | — |
 | `guideEntries` | session | PromptGuide | data | `register` async |
-| `historyRenderer` | session | SessionScope | internal(hot-path) | — |
+| `historyRenderer` | session | HistoryRenderer, SessionScope | data | `context` async, `renderedContext` async, `renderedStream` async, `snapshot` async, `snapshotFromCheckpoint` async, `streamCheckpoint` async |
 | `initialPromptConfiguration` | session | PromptRegistry | data | `get` async |
 | `mcpSession` | session | McpSession | data | `call` async, `refresh` async, `state` async, `widget` async |
 | `prepareContextHost` | session | SessionScope | data | `prepare` async |
@@ -106,7 +106,7 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `branchLifecycle` | branch | BranchScope | data | `activated` async, `closing` async |
 | `branchLine` | branch | BranchLine | data | `cursor` async, `ending` async, `resolved` async |
 | `branchOpening` | branch | BranchScope | internal(hot-path) | — |
-| `contextPreparation` | branch | ContextPreparation | data | `awaitPublished` async, `prepare` async, `publish` async, `validate` async |
+| `contextPreparation` | branch | ContextPreparation | data | `awaitPublished` async, `prepare` async, `validate` async |
 | `contextUsage` | branch | ContextUsage | data | `read` async |
 | `dispatcher` | branch | BranchScope | data | `changed` async, `committed` async, `consume` async, `listen` async, `notify` async, `sequence` async |
 | `fileReads` | branch | FileReads | internal(hot-path) | — |

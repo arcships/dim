@@ -18,7 +18,7 @@ cannot fit the request fails terminally without requesting another recovery.
 
 | Service | Purpose |
 | --- | --- |
-| `S:HistoryRenderer` | Render supported history for preparation/budget checks. |
+| `S:HistoryFace` | Render supported history for preparation/budget checks. |
 | `S:ContextModelHost` | Optional window facts for context policy and recovery. |
 | `S:CompactionStrategyHost` | Optional compaction strategy; the policy exists when both hosts are bound. |
 | `S:PrepareContextHost` | Call `prepare({request, source:{turnId, requestId, through}}, cancelled)` with the request and its original Timeline cutoff. |
@@ -92,7 +92,7 @@ nothing and no digest can be written
 
 ## Configuration publication
 
-`publish({adopted, changes, model?, toolAdoption?, inputs})` returns the last sequence of the committed batch, or null for an unchanged adoption. `adopted` carries the prompt checkpoint and the previous configuration from the same consumed prefix. For a prompt change, each supplied input block is committed in order and its event ID is recorded in the prompt change. `awaitPublished({sequence})` waits for publication and returns that sequence or the Timeline failure.
+Prompt submits its current projection and adopted changes internally for atomic publication. Other callers submit changes through `prompt.configure`. `awaitPublished({sequence})` waits for publication and returns that sequence or the Timeline failure.
 
 ## Tests
 
@@ -105,7 +105,7 @@ nothing and no digest can be written
 | 项 | 值 |
 | --- | --- |
 | 作用域 | 分支 |
-| 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryRenderer`、`S:PrepareContextHost` |
+| 注入 | `B:BranchLifecycle`、`B:ContextUsage`、`B:Dispatcher`、`B:Timeline`、`B:TimelineIdentity`、`S:CompactionStrategyHost`、`S:ContextModelHost`、`S:GuideEntries`、`S:HistoryFace`、`S:PrepareContextHost` |
 | 提供 | `B:ContextPreparation`、`B:dyn HostDispatch#contextPreparation` |
 | 被注入于 | `Loop`、`ModelProvider`、`Prompt` |
 <!-- /generated -->

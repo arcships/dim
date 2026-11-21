@@ -350,78 +350,6 @@ export type ValidationRequest = {
   request: ModelRequest
 }
 
-export type PromptScope =
-  | { kind: "branch"; timeline: string }
-  | { kind: "turn"; timeline: string; id: string }
-  | { kind: "task"; timeline: string; id: string }
-
-export type PromptDelivery =
-  | /** Part of the system prompt. */ "system"
-  | /** A rule delivered as a `dim-rule` input. */ "context"
-  | /** State delivered as a `dim-state` input. */ "state"
-
-export type PromptEntry = {
-  source: string
-  version: string
-  body: string
-  scope: PromptScope
-  delivery: PromptDelivery
-  order: number
-}
-
-export type PromptCheckpointState = {
-  entries: PromptEntry[]
-  revision?: PromptReference | null
-  system_revision?: PromptReference | null
-  system: string
-  turns: string[]
-  tasks: PromptScope[]
-}
-
-export type AdoptedPrompt = {
-  prompts: PromptCheckpointState
-  configuration?: ContextConfiguredData | null
-}
-
-export type PromptChange =
-  | { op: "set"; entry: PromptEntry }
-  | { op: "revoke"; source: string; scope: PromptScope }
-
-/**
- * The model-owned part of configuration. Tool declarations and system content
- * are adopted by their own capabilities, not supplied by a provider.
- */
-export type ModelSelection = {
-  providerId: string
-  modelId: string
-  capabilitySnapshot?: ModelCapabilitySnapshot | null
-  config?: import('./plugin.js').ModelConfig | null
-  metadata?: RequestMetadata | null
-}
-
-/**
- * The tool part of a configuration: the complete declaration and the
- * source versions it was built from.
- */
-export type ToolSetAdoption = {
-  tools: ToolDefinition[]
-  toolSources: ToolSourceVersion[]
-}
-
-/**
- * Runtime content a capability places in the model context. The renderer
- * puts `text` verbatim as one user message where the input is consumed.
- */
-export type InputBlock = { type: "raw"; text: string; key?: string | null; retire?: boolean }
-
-export type PublishConfiguration = {
-  adopted: AdoptedPrompt
-  changes: PromptChange[]
-  model?: ModelSelection | null
-  toolAdoption?: ToolSetAdoption | null
-  inputs: InputBlock[]
-}
-
 export type PublishedSequence = {
   sequence: number | bigint
 }
@@ -431,8 +359,6 @@ export interface ContextPreparation {
   prepare(request: PreparationRequest, cancelled: () => void | Promise<void>): Promise<ModelRequest>
   /** @throws {HostErrorThrown} */
   validate(request: ValidationRequest, cancelled: () => void | Promise<void>): Promise<void>
-  /** @throws {AgentErrorThrown} */
-  publish(request: PublishConfiguration): Promise<number | bigint | null>
   /**
    * Waits until the batch ending at `sequence` is published, so a commit
    * failure reaches the caller before the next adoption runs.
@@ -545,6 +471,12 @@ export interface ToolHost {
 export type UserInput = {
   content: ContentBlock[]
 }
+
+/**
+ * Runtime content a capability places in the model context. The renderer
+ * puts `text` verbatim as one user message where the input is consumed.
+ */
+export type InputBlock = { type: "raw"; text: string; key?: string | null; retire?: boolean }
 
 export type InputMode = "queue" | "steer" | "append"
 
@@ -663,9 +595,26 @@ export interface Permission {
   check(call: ApprovalCallData, risk: string | null, cancelled: () => void | Promise<void>): Promise<Decision>
 }
 
+export type PromptScope =
+  | { kind: "branch"; timeline: string }
+  | { kind: "turn"; timeline: string; id: string }
+  | { kind: "task"; timeline: string; id: string }
+
 export type PromptSourceTarget = {
   source: string
   scope: PromptScope
+}
+
+/**
+ * The model-owned part of configuration. Tool declarations and system content
+ * are adopted by their own capabilities, not supplied by a provider.
+ */
+export type ModelSelection = {
+  providerId: string
+  modelId: string
+  capabilitySnapshot?: ModelCapabilitySnapshot | null
+  config?: import('./plugin.js').ModelConfig | null
+  metadata?: RequestMetadata | null
 }
 
 export type ConfigureUpdate = {
@@ -680,6 +629,20 @@ export type ConfigureUpdate = {
  */
 export interface InitialPromptConfiguration {
   get(): Promise<ConfigureUpdate | null>
+}
+
+export type PromptDelivery =
+  | /** Part of the system prompt. */ "system"
+  | /** A rule delivered as a `dim-rule` input. */ "context"
+  | /** State delivered as a `dim-state` input. */ "state"
+
+export type PromptEntry = {
+  source: string
+  version: string
+  body: string
+  scope: PromptScope
+  delivery: PromptDelivery
+  order: number
 }
 
 export type PromptConfigurationRequest =

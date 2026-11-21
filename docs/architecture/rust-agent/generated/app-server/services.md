@@ -8,35 +8,36 @@ flowchart LR
   subgraph process["process"]
     p1["root"]
     p2["rutis-loader"]
-    p76["Attachments"]
-    p75["Report"]
-    p74["goal"]
-    p73["eventhub"]
-    p77["eventhub-ready"]
-    p72["Scheduler"]
-    p71["Questions"]
-    p70["PromptSuggestion"]
-    p69["ImageUnderstanding"]
-    p68["Modality"]
-    p67["PrepareModelHost"]
-    p66["ContextCompaction"]
-    p65["CommandRules"]
-    p64["PromptSources"]
-    p63["ShellInput"]
-    p62["Recall"]
-    p61["Wait"]
-    p60["WorkspaceToolsOwner"]
-    p59["BranchTool"]
-    p58["ToolExecution"]
-    p57["Permission"]
-    p56["ModelProvider"]
-    p55["Loop"]
-    p54["Prompt"]
-    p53["ContextPreparation"]
-    p52["ToolRegistry"]
-    p51["InputQueue"]
-    p50["SessionMethods"]
-    p49["TimelineTree"]
+    p77["Attachments"]
+    p76["Report"]
+    p75["goal"]
+    p74["eventhub"]
+    p78["eventhub-ready"]
+    p73["Scheduler"]
+    p72["Questions"]
+    p71["PromptSuggestion"]
+    p70["ImageUnderstanding"]
+    p69["Modality"]
+    p68["PrepareModelHost"]
+    p67["ContextCompaction"]
+    p66["CommandRules"]
+    p65["PromptSources"]
+    p64["ShellInput"]
+    p63["Recall"]
+    p62["Wait"]
+    p61["WorkspaceToolsOwner"]
+    p60["BranchTool"]
+    p59["ToolExecution"]
+    p58["Permission"]
+    p57["ModelProvider"]
+    p56["Loop"]
+    p55["Prompt"]
+    p54["ContextPreparation"]
+    p53["ToolRegistry"]
+    p52["InputQueue"]
+    p51["SessionMethods"]
+    p50["TimelineTree"]
+    p49["HistoryRenderer"]
     p48["SessionBroadcast"]
     p47["session-title"]
     p46["PartRegistry"]
@@ -84,32 +85,33 @@ flowchart LR
     p4["FileStorage"]
     p3["ServerControl"]
   end
+  p46 -->|"dim_agent_runtime::parts::PartRegistry"| p77
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p76
+  p10 -->|"dim_app_server::methods::ManagementMethods"| p76
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p75
-  p10 -->|"dim_app_server::methods::ManagementMethods"| p75
+  p18 -->|"dim_app_server::settings::declared::Settings"| p75
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p74
-  p18 -->|"dim_app_server::settings::declared::Settings"| p74
+  p3 -->|"dim_app_server::control::ProcessActivity"| p74
+  p10 -->|"dim_app_server::methods::ManagementMethods"| p74
+  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p74
+  p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p74
+  p74 -->|"dim_event_hub::bridge::EventHub"| p78
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p73
   p3 -->|"dim_app_server::control::ProcessActivity"| p73
   p10 -->|"dim_app_server::methods::ManagementMethods"| p73
   p14 -->|"dim_app_server::plugin_files::PluginFiles"| p73
+  p18 -->|"dim_app_server::settings::SettingsService"| p73
   p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p73
-  p73 -->|"dim_event_hub::bridge::EventHub"| p77
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p72
-  p3 -->|"dim_app_server::control::ProcessActivity"| p72
-  p10 -->|"dim_app_server::methods::ManagementMethods"| p72
-  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p72
-  p18 -->|"dim_app_server::settings::SettingsService"| p72
-  p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p72
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p71
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p70
-  p46 -->|"dim_agent_runtime::parts::PartRegistry"| p69
-  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p68
-  p17 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p68
-  p17 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p68
-  p10 -->|"dim_app_server::methods::ManagementMethods"| p68
-  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p68
-  p18 -->|"dim_app_server::settings::SettingsService"| p68
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p69
+  p17 -->|"dim_agent_capabilities::host::ModelSelectionHost"| p69
+  p17 -->|"dim_agent_capabilities::host::SelectableModelsHost"| p69
+  p10 -->|"dim_app_server::methods::ManagementMethods"| p69
+  p14 -->|"dim_app_server::plugin_files::PluginFiles"| p69
+  p18 -->|"dim_app_server::settings::SettingsService"| p69
+  p46 -->|"dim_agent_runtime::parts::PartRegistry"| p68
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p67
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p66
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p65
@@ -216,7 +218,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p15
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p14
   p10 -->|"dim_app_server::methods::ManagementMethods"| p13
-  p60 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
+  p61 -->|"dim_agent_capabilities::workspace_tools::mentions::MentionIndex"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p9
   p8 -->|"dim_app_server::storage::face::Store"| p9

@@ -699,6 +699,11 @@ impl Prompt {
         update: ConfigureUpdate,
         loaded: Option<LoadedPrompts>,
     ) -> Result<ConfigureOutcome> {
+        if self.branch_phase.phase() >= BranchPhase::Closing {
+            return Err(AgentError::Cancelled(
+                "the branch closed before prompt configuration".into(),
+            ));
+        }
         let id = Uuid::new_v4().to_string();
         let (send, receive) = oneshot::channel();
         self.timeline.append_registered(
@@ -708,6 +713,11 @@ impl Prompt {
                 let EventKind::PromptConfigureRequest(data) = &event.kind else {
                     unreachable!("before preserves event kind")
                 };
+                if self.branch_phase.phase() >= BranchPhase::Closing {
+                    return Err(AgentError::Cancelled(
+                        "the branch closed before prompt configuration".into(),
+                    ));
+                }
                 self.register(data.operation_id.clone(), update, loaded, Some(send))
             },
         )?;
