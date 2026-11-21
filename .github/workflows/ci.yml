@@ -1,6 +1,9 @@
 name: PR check
 on:
   workflow_dispatch:
+  schedule:
+    # Daily full cross-platform sweep (ADR 026 D5).
+    - cron: '0 19 * * *'
   push:
     branches: [main]
   pull_request:
@@ -18,11 +21,12 @@ jobs:
     # Self-hosted runners keep state between jobs, so they run only code from branches of this
     # repository; fork pull requests skip every job and fail ci-ok. See docs/release/README.md.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.groups.outputs.rust }}
       windows: ${{ steps.groups.outputs.windows }}
+      static: ${{ steps.groups.outputs.static }}
       xtask: ${{ steps.groups.outputs.xtask }}
       node: ${{ steps.groups.outputs.node }}
       eval: ${{ steps.groups.outputs.eval }}
@@ -53,7 +57,7 @@ jobs:
         run: node scripts/adr-check.mjs --base HEAD^1
   dependencies:
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
+    if: needs.changes.outputs.dependencies == 'true'
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -71,6 +75,29 @@ jobs:
         run: cargo install --jobs 2 --locked cargo-deny --version '=0.20.2'
       - name: Check dependency advisories and licenses
         run: cargo deny --locked check advisories licenses
+  static-checks:
+    needs: changes
+    if: needs.changes.outputs.static == 'true'
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions-rust-lang/setup-rust-toolchain@c8ff772090ab9d00f7f7bd7b388f3c3032282e3b
+        with:
+          cache: false
+          build-warnings: ""
+      - name: Run pure static repository checks
+        run: |
+          cargo fmt --all -- --check --config error_on_line_overflow=true
+          cargo clippy --locked -p xtask-check --all-targets -- -D warnings
+          cargo test --locked -p xtask-check
+          cargo run --locked -p xtask-check
   windows-cli:
     needs: changes
     if: needs.changes.outputs.windows == 'true'
@@ -78,6 +105,7 @@ jobs:
     timeout-minutes: 15
     env:
       CARGO_INCREMENTAL: "0"
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../.dim-windows-cli-target
       RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -87,6 +115,34 @@ jobs:
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: amd64
+      - name: Reuse bounded Windows CLI target directory
+        shell: powershell
+        env:
+          CACHE_STAMP: ${{ hashFiles('rust-toolchain.toml') }}-${{ env.CARGO_PROFILE_DEV_DEBUG }}
+        run: |
+          $targetDir = [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR)
+          $stampFile = Join-Path $targetDir '.cache-stamp'
+          $maxBytes = 6GB
+          $reset = $false
+          if (Test-Path $targetDir) {
+            $current = if (Test-Path $stampFile) { (Get-Content -Raw $stampFile).Trim() } else { '' }
+            if ($current -ne $env:CACHE_STAMP) {
+              Write-Output 'Resetting Windows CLI target cache (toolchain or profile stamp changed).'
+              $reset = $true
+            } else {
+              $bytes = (Get-ChildItem -LiteralPath $targetDir -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+              if ($bytes -gt $maxBytes) {
+                Write-Output "Resetting Windows CLI target cache ($([math]::Round($bytes / 1GB, 2)) GiB exceeded 6 GiB budget)."
+                $reset = $true
+              }
+            }
+          }
+          if ($reset) {
+            Remove-Item -LiteralPath $targetDir -Recurse -Force
+          }
+          New-Item -ItemType Directory -Path $targetDir -Force | Out-Null
+          Set-Content -LiteralPath $stampFile -Value $env:CACHE_STAMP -NoNewline
+          "CARGO_TARGET_DIR=$targetDir" >> $env:GITHUB_ENV
       - name: Verify native Windows CLI boundaries
         run: cargo test --locked -p dim-cli --lib
   web:
@@ -138,11 +194,33 @@ jobs:
         run: npm.cmd run check:boundary --prefix web --workspace=@dimcode/chat-ui
       - name: Build the chat-ui package
         run: npm.cmd run build --prefix web --workspace=@dimcode/chat-ui
+  scripts:
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions-rust-lang/setup-rust-toolchain@c8ff772090ab9d00f7f7bd7b388f3c3032282e3b
+        with:
+          cache: false
+          build-warnings: ""
+      - name: Test development and release scripts
+        run: |
+          node --check scripts/check-acp-registry.mjs
+          node --test scripts/*.test.mjs
   verify:
     needs: changes
-    if: >-
-      needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
-      needs.changes.outputs.scripts == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true'
     name: verify (${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -174,8 +252,9 @@ jobs:
         run: |
           echo "CPUs: $(nproc)"
           grep -E 'MemTotal|MemAvailable' /proc/meminfo
-          # Without a working bubblewrap the confined process tests return without running.
-          bwrap --ro-bind / / true
+          # The confined tests create a user namespace and a private /proc, so
+          # check the sandbox they use instead of a plain read-only bind.
+          bwrap --unshare-user --unshare-pid --proc /proc --dev /dev --ro-bind / / true
       - name: Build and lint the Rust workspace
         if: needs.changes.outputs.rust == 'true'
         shell: bash
@@ -199,36 +278,61 @@ jobs:
           target/debug/xtask check
       - name: Run compiled workspace tests
         if: needs.changes.outputs.rust == 'true'
+        shell: bash
         env:
           DIM_TEST_TIMEOUT_MS: "900000"
         run: |
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace --test-threads=3
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            cpus=$(nproc)
+            # Runner hosts may share their physical cores between instances and
+            # report SMT siblings as CPUs; scale by the cores this job can use.
+            if command -v lscpu >/dev/null; then
+              cores=$(lscpu -p=Core,Socket | grep -v '^#' | sort -u | wc -l)
+              logical=$(lscpu -p=CPU | grep -vc '^#')
+              (( cores > 0 )) || cores=1
+              smt=$(( logical / cores ))
+              (( smt < 1 )) && smt=1
+              physical=$(( cpus / smt ))
+            else
+              physical=$cpus
+            fi
+            (( physical < 1 )) && physical=1
+            test_jobs=$(( physical / 3 ))
+            (( test_jobs < 3 )) && test_jobs=3
+            (( test_jobs > 8 )) && test_jobs=8
+            test_threads=$(( physical / 4 ))
+            (( test_threads < 2 )) && test_threads=2
+            (( test_threads > 6 )) && test_threads=6
+          else
+            test_jobs=3
+            test_threads=3
+          fi
+          echo "Workspace tests: DIM_TEST_JOBS=$test_jobs --test-threads=$test_threads"
+          DIM_TEST_JOBS="$test_jobs" node scripts/run-rust-test.mjs target/test-artifacts.jsonl --workspace "--test-threads=$test_threads"
           cargo test --workspace --doc --locked ${{ needs.changes.outputs.eval == 'true' && '--features xtask/eval-tests' || '' }}
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'
-        run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl local_execution a_long_foreground_command_moves_to_the_background_after_30_seconds --ignored --exact
-      - name: Test development and release scripts
-        if: needs.changes.outputs.scripts == 'true'
-        run: |
-          node --check scripts/check-acp-registry.mjs
-          node --test scripts/*.test.mjs
+        run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl integration_flow local_execution::a_long_foreground_command_moves_to_the_background_after_30_seconds --ignored --exact
       - name: Verify actual CLI profiles and line-mode flows
         if: needs.changes.outputs.rust == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          npm ci --prefix runtime --ignore-scripts --registry=https://registry.npmjs.org
+          npm ci --prefix runtime --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
           # The ignored CLI flows below start the real plugins, so their
           # packages are installed here, before the flows; the job's checkout
           # carries them into the Node binding checks as well.
-          npm ci --prefix runtime/plugins/workflow --ignore-scripts --registry=https://registry.npmjs.org
-          (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/workflow)
+          npm ci --prefix runtime/plugins/workflow --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+          (cd runtime && npm install --no-save --ignore-scripts --no-audit --no-fund --install-links ./plugins/workflow)
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           # The TUI cases a tmux scenario replaces are ignored in the test
           # target and run only in the local tmux suite
           # (docs/architecture/tui-e2e.md); the remaining TUI cases still run
           # under the ordinary selection, so this step names the production
           # and line-mode flows it keeps.
+          cli_threads=2
+          if [[ "$RUNNER_OS" == Linux ]]; then cli_threads=4; fi
           node scripts/run-rust-test.mjs target/test-artifacts.jsonl cli_flow \
             accounts::login_reaches_the_codex_account_of_the_production_daemon \
             acp::acp_stdio_temporary_mcp_calls_tools_and_settles_the_child_on_eof \
@@ -242,14 +346,7 @@ jobs:
             project_mcp_entries_start_disabled_and_the_user_enables_them \
             real_daemon_profile_conflicts_preserve_the_running_daemon_and_endpoint \
             workflow::workflow_commands_write_and_enable_against_the_real_owner \
-            --ignored --test-threads=2
-      - name: Verify startup recovery and Update now in a release-stamped CLI
-        if: needs.changes.outputs.rust == 'true'
-        env:
-          DIM_RELEASE_BUILD: '1'
-        run: |
-          cargo test --locked -p dimcode --test cli_flow "staged_update::recovery::"
-          cargo test --locked -p dimcode --test cli_flow "staged_update::tui_update::"
+            --ignored --test-threads="$cli_threads"
       - name: Verify public Node bindings
         if: needs.changes.outputs.node == 'true'
         shell: bash
@@ -266,12 +363,13 @@ jobs:
           export DIM_TEST_NODE="$(command -v node)"
           export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
           export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored --test-threads=2
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl mcp_http_flow node_ --ignored --test-threads=2
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl migration_flow node_ --ignored --test-threads=2
-          node scripts/run-rust-test.mjs target/test-artifacts.jsonl hub_flow node_ --ignored --test-threads=2
+          node_threads=2
+          if [[ "$RUNNER_OS" == Linux ]]; then node_threads=4; fi
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow node_ --ignored --test-threads="$node_threads"
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl app_server_flow mcp_http_flow::node_ --ignored --test-threads="$node_threads"
+          node scripts/run-rust-test.mjs target/test-artifacts.jsonl hub_flow node_ --ignored --test-threads="$node_threads"
           if [[ '${{ needs.changes.outputs.eval }}' == true ]]; then
-            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored --test-threads=2
+            node scripts/run-rust-test.mjs target/test-artifacts.jsonl xtask node_ --ignored --test-threads="$node_threads"
           fi
       - name: Verify Python plugins
         if: needs.changes.outputs.node == 'true' && vars.DIM_CI_PYTHON_PLUGINS == 'true'
@@ -305,7 +403,7 @@ jobs:
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
   macos-native:
     needs: changes
-    if: github.event_name == 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.macos_scripts == 'true')
+    if: (github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true') || needs.changes.outputs.macos_scripts == 'true'
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     env:
@@ -322,7 +420,7 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
       - name: Test macOS native Rust flows
-        if: needs.changes.outputs.rust == 'true'
+        if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
         run: node scripts/test-macos-native.mjs
       - name: Test macOS code layout and release packaging
         if: needs.changes.outputs.macos_scripts == 'true'
@@ -384,9 +482,9 @@ jobs:
           retention-days: 1
   ci-ok:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
-    needs: [changes, dependencies, windows-cli, web, verify, macos-native, acp-registry]
+    needs: [changes, dependencies, static-checks, windows-cli, web, scripts, verify, macos-native, acp-registry]
     if: always()
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     steps:
       # A skipped changes job means a fork pull request, which this workflow does not verify.

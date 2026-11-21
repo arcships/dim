@@ -23,18 +23,23 @@ const BUILD_ID: &str = "DIM_BUILD_ID";
 /// named a commit or when this is a release build, whose output must not change.
 const COMMIT: &str = "DIM_GIT_COMMIT";
 
+/// Whether the release flow produced this build, forwarded into the final
+/// binary crate so a build cache replays it alongside the stamp.
+const RELEASE: &str = "DIM_RELEASE_BUILD";
+
 fn main() {
-    println!("cargo:rerun-if-env-changed=DIM_RELEASE_BUILD");
+    println!("cargo:rerun-if-env-changed={RELEASE}");
     println!("cargo:rerun-if-env-changed={FROM_CALLER}");
     println!("cargo:rerun-if-env-changed={BUILD_ID}");
     let stamp = std::env::var(BUILD_ID)
         .ok()
         .map(|stamp| stamp.trim().to_owned())
         .filter(|stamp| !stamp.is_empty());
-    if std::env::var_os("DIM_RELEASE_BUILD").is_some_and(|value| !value.is_empty()) {
+    if std::env::var_os(RELEASE).is_some_and(|value| !value.is_empty()) {
         // A released build carries no source identity, but the artifact stamp a
         // packaging caller resolved still distinguishes two builds of one
         // version.
+        println!("cargo:rustc-env={RELEASE}=1");
         if let Some(stamp) = stamp {
             println!("cargo:rustc-env={BUILD_ID}={stamp}");
         }

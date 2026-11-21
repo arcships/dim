@@ -1,8 +1,7 @@
 //! A Goal-first Session titles from its applied objective (#1265,
 //! SessionTitle.md A10). The fixtures use a scripted local model or an
 //! unreachable provider; no live provider is contacted.
-#![cfg(unix)]
-mod support;
+use crate::support;
 
 use axum::{Router, http::StatusCode, routing::post};
 use dim_agent_capabilities::{adapters::MockTools, defaults, timeline_tree::TreeCommands};

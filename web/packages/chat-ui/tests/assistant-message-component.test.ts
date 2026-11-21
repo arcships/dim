@@ -92,6 +92,17 @@ const testIdComponent = (name: string): Component => defineComponent({
   setup: (_, { attrs }) => () => h('div', { ...attrs, 'data-testid': name }),
 })
 
+let capturedGroupBlocks: readonly ChatUiAssistantMessageBlock[] = []
+const BlockGroupStub = defineComponent({
+  name: 'StubBlockGroup',
+  inheritAttrs: false,
+  props: { blocks: { type: Array, default: () => [] } },
+  setup: props => () => {
+    capturedGroupBlocks = props.blocks as readonly ChatUiAssistantMessageBlock[]
+    return h('div', { 'data-testid': 'stub-block-group' })
+  },
+})
+
 const ContextMenuItem = defineComponent({
   name: 'StubContextMenuItem',
   inheritAttrs: false,
@@ -184,6 +195,7 @@ async function mountMessage(options: {
   terminalLineText?: string
   terminalExplainText?: string
   toolCategories?: Record<string, ChatUiTimelineToolSummaryCategory>
+  notificationText?: Record<string, string>
   onViewPlan?: () => Promise<void>
   chatUiHost?: ChatUiHost
 } = {}) {
@@ -208,7 +220,7 @@ async function mountMessage(options: {
         detailsToggleVisible: options.detailsToggleVisible ?? true,
         blockExpandedById: {},
         blockGroupExpandedById: {},
-        notificationTextByBlockId: {},
+        notificationTextByBlockId: options.notificationText ?? {},
         subagentTargetByNotificationBlockId: {},
         toolCategoryByBlockId: options.toolCategories ?? {},
         terminal: options.terminal ?? null,
@@ -229,7 +241,7 @@ async function mountMessage(options: {
         contextMenuTriggerComponent: passthrough('ContextMenuTrigger'),
         contextMenuContentComponent: passthrough('ContextMenuContent'),
         contextMenuItemComponent: ContextMenuItem,
-        blockGroupComponent: testIdComponent('stub-block-group'),
+        blockGroupComponent: BlockGroupStub,
         thinkingItemComponent: testIdComponent('stub-thinking-item'),
         textItemComponent: testIdComponent('stub-text-item'),
         retryNoticeComponent: testIdComponent('stub-retry-notice'),
@@ -269,15 +281,18 @@ describe('TimelineAssistantMessage', () => {
     const { host, events } = await mountMessage({
       blocks: [
         block('thinking-1', 'thinking', { content: 'reasoning' }),
+        block('notify-1', 'notification', { content: 'notice' }),
         block('tool-1', 'tool', { toolName: 'read' }),
         block('text-1', 'text', { content: 'final answer' }),
       ],
       toolCategories: { 'tool-1': 'read' },
+      notificationText: { 'notify-1': 'notice' },
     })
 
     expect(host.querySelector('[data-testid="timeline-work-summary"]')).not.toBeNull()
     expect(host.textContent).toContain('summary:none::1.0s')
     expect(host.querySelector('[data-testid="stub-block-group"]')).not.toBeNull()
+    expect(capturedGroupBlocks.map(block => block.id)).toEqual(['thinking-1', 'notify-1', 'tool-1'])
     expect(host.querySelector('[data-testid="stub-text-item"]')).not.toBeNull()
 
     host.querySelector<HTMLButtonElement>('[data-testid="timeline-work-summary"] button')!.click()

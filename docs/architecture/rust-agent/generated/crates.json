@@ -581,6 +581,10 @@
   },
   {
     "from": "dimcode",
+    "to": "dim-client"
+  },
+  {
+    "from": "dimcode",
     "to": "rutis"
   },
   {

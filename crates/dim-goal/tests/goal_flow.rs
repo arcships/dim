@@ -2,7 +2,7 @@
 //! triggers by branch id, the branch part folds the branch's committed facts,
 //! states the state in a `goal:state` record and decides continuation. The
 //! product profile's agent loop drives the turns these inputs queue.
-mod support;
+use crate::support;
 
 use dim_agent_types::{EventKind, InputMode};
 use serde_json::json;

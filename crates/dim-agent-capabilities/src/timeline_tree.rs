@@ -228,10 +228,10 @@ pub struct TimelineTree {
     /// waiters cannot both deliver and record it (design §10, §20.26b).
     retry: tokio::sync::Mutex<()>,
     /// Serialises the operations that read the tree and then write on it, an
-    /// end and a move: each admits under the state lock and keeps the lock
-    /// until its fact commits, so of two conflicting operations exactly one is
-    /// admitted and each reads what the other would have written (design §10,
-    /// §20.26).
+    /// open, an end and a move: each admits under the state lock and keeps the
+    /// lock until its fact commits, so of two conflicting operations exactly one
+    /// is admitted and each reads what the other would have written (design
+    /// §6.1, §10, §14, §20.26).
     operations: Arc<tokio::sync::Mutex<()>>,
     /// The tasks that settle an admitted operation: each holds the operations
     /// guard, awaits its fact's publication and applies the live update, so a
@@ -275,21 +275,27 @@ impl TreeCommands {
         options: BranchOptions,
         admission: CancellationToken,
     ) -> Result<Branch> {
-        self.branch_with_idle_notice(parent, at, options, admission, IdleNotice::Steer)
+        self.tree
+            .upgrade()
+            .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
+            .create_child(parent, at, options, admission, None)
             .await
     }
-    async fn branch_with_idle_notice(
+    /// Opens a line for the `branch` tool: the caller's eligibility and the
+    /// Session's cap are charged in the same lock that reserves the line (§4,
+    /// §6.1).
+    async fn open_tool_line(
         &self,
         parent: String,
         at: u64,
         options: BranchOptions,
         admission: CancellationToken,
-        idle_notice: IdleNotice,
+        open: ToolOpen,
     ) -> Result<Branch> {
         self.tree
             .upgrade()
             .ok_or_else(|| AgentError::Closed("TimelineTree".into()))?
-            .create_child(parent, at, options, admission, idle_notice)
+            .create_child(parent, at, options, admission, Some(open))
             .await
     }
     // The data methods below spell out `std::result::Result` for rutis'
@@ -1727,6 +1733,46 @@ impl TimelineTree {
             .clone()
             .ok_or_else(|| AgentError::UnknownBranch(id.into()))
     }
+    /// Admits one open by the `branch` tool where the line it opens is
+    /// reserved: under the same lock, so the caller's eligibility and the
+    /// Session's counted total are the state the reservation is taken in (§4,
+    /// §6.1). A refusal writes nothing.
+    fn admit_open(state: &TreeState, opener: &str, max_open_lines: usize) -> Result<()> {
+        if !Self::can_open(state, opener) {
+            return Err(AgentError::refused(
+                BranchRefusal::NotOpener,
+                format!("line {opener} is not the root or the default branch"),
+            ));
+        }
+        if Self::counted_tool_lines(state) >= max_open_lines {
+            return Err(AgentError::refused(
+                BranchRefusal::LimitReached,
+                format!("the Session holds {max_open_lines} open tool lines"),
+            ));
+        }
+        Ok(())
+    }
+    /// The Session's two openers: the root in every state, and the current
+    /// default branch while it holds the role (§4, §11). A plugin line is
+    /// never either.
+    fn can_open(state: &TreeState, line: &str) -> bool {
+        line == ROOT_BRANCH_ID || line == state.default.as_str()
+    }
+    /// The tool lines a new open is charged with, one slot each: the lines the
+    /// tool opened that are open or ending, except the current default branch
+    /// and its ancestors, which an end cannot close (§6.1). A reservation is in
+    /// `nodes` before its build, so it is counted here too.
+    fn counted_tool_lines(state: &TreeState) -> usize {
+        state
+            .nodes
+            .iter()
+            .filter(|(id, node)| {
+                matches!(node.info.source, Some(BranchSource::Tool { .. }))
+                    && id.as_str() != state.default.as_str()
+                    && !Self::protects(state, id)
+            })
+            .count()
+    }
     /// Whether `id` is above the current default branch: the default's parent
     /// chain goes through it.
     fn protects(state: &TreeState, id: &str) -> bool {
@@ -2266,13 +2312,18 @@ impl TimelineTree {
         let event = context.branch().input(data).await?;
         Self::published(timeline, event.sequence).await
     }
+    /// Reserves one line and answers once its build publishes it. The opener
+    /// check, the cap and the `branch/create` append decide under the
+    /// operations guard, so a move or an end that already holds it has applied
+    /// its state first (design §6.1, §10, §14). The guard is released as soon
+    /// as the reservation exists, before the build it started.
     fn create_child(
         &self,
         parent: String,
         at: u64,
         options: BranchOptions,
         admission: CancellationToken,
-        idle_notice: IdleNotice,
+        open: Option<ToolOpen>,
     ) -> BoxFuture<'_, Result<Branch>> {
         Box::pin(async move {
             if self.state.lock().unwrap().ended.contains_key(&parent) {
@@ -2300,6 +2351,12 @@ impl TimelineTree {
             if parent_context.is_closing() {
                 return Err(AgentError::Closed(parent.clone()));
             }
+            let operations = tokio::select! {
+                operations = self.operations.clone().lock_owned() => operations,
+                _ = admission.cancelled() => {
+                    return Err(AgentError::Cancelled("branch admission".into()));
+                }
+            };
             let mut ready = None;
             let _ =
                 timeline.append_registered(EventKind::BranchCreate(original).into(), |event| {
@@ -2327,6 +2384,9 @@ impl TimelineTree {
                         return Err(AgentError::Cancelled("branch admission".into()));
                     }
                     let mut state = self.state.lock().unwrap();
+                    if let Some(open) = open {
+                        Self::admit_open(&state, &parent, open.max_open_lines)?;
+                    }
                     let mut above = Some(parent.clone());
                     while let Some(id) = above {
                         if state.ended.contains_key(&id) {
@@ -2350,10 +2410,11 @@ impl TimelineTree {
                             create_anchor: Some(event.sequence),
                             source: Some(final_data.source.clone()),
                         },
-                        idle_notice,
+                        open.map_or(IdleNotice::Steer, |open| open.idle_notice),
                     )?);
                     Ok(())
                 })?;
+            drop(operations);
             tokio::select! {
                 result = Self::await_branch(ready.expect("committed branch reservation")) => result,
                 _ = admission.cancelled() => Err(AgentError::Cancelled(
@@ -2816,7 +2877,7 @@ impl TimelineTreeControl for TimelineTree {
         options: BranchOptions,
         admission: CancellationToken,
     ) -> BoxFuture<'_, Result<Branch>> {
-        self.create_child(parent, at, options, admission, IdleNotice::Steer)
+        self.create_child(parent, at, options, admission, None)
     }
     fn get(&self, id: &str) -> Option<Branch> {
         self.state.lock().unwrap().nodes.get(id).and_then(|node| {
@@ -3110,7 +3171,13 @@ impl DynPlugin for BranchToolPlugin {
                             .as_deref()
                             .unwrap_or(BRANCH_TOOL_DESCRIPTION),
                     ),
-                    handler: Arc::new(BranchTool { tree }),
+                    handler: Arc::new(BranchTool {
+                        tree,
+                        max_open_lines: self
+                            .config
+                            .max_open_lines
+                            .unwrap_or(DEFAULT_MAX_OPEN_LINES),
+                    }),
                 },
             )?;
             Ok(Effect::Done)
@@ -3135,6 +3202,14 @@ enum IdleNotice {
     #[default]
     Steer,
     None,
+}
+/// An open by the `branch` tool: the notice the new line gives its opener when
+/// a turn ends quietly, and the Session's cap on open tool lines. The tree
+/// charges both in the lock that reserves the line (§4, §6.1).
+#[derive(Clone, Copy)]
+struct ToolOpen {
+    idle_notice: IdleNotice,
+    max_open_lines: usize,
 }
 const QUIET_IDLE_ATTRIBUTE: &str = "idle-notice";
 /// One line its parent opened, as the parent's own facts recorded it.
@@ -3268,7 +3343,7 @@ impl LineView {
     }
 }
 /// `<dim-branch-line>`, written by TimelineTree at the start of every child.
-const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
+const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; a block carrying `default` is the note a move writes. Both are state about the line, not requests."#;
 
 /// `<dim-branch-lines>`, the roster BranchLine writes under [`roster_key`] on
 /// a line that opened lines.
@@ -4524,12 +4599,14 @@ impl BranchLine {
         };
         Ok(prompt.clone())
     }
-    /// Writes the note a load owes, comparing one thing only: whether this
-    /// line is the default branch now, against the role its latest
-    /// `branch:line` block states, where a missing `default` attribute means
-    /// not default. A line that took no part in the latest move keeps the
+    /// Writes the note a load owes, comparing two things: whether this line is
+    /// the default branch now, against the role its latest `branch:line` block
+    /// states, where a missing `default` attribute means not default; and, for
+    /// the tree's current default branch alone, the text of that block against
+    /// the note this code writes for the line, so a note an older rule set left
+    /// is replaced once. A line that took no part in the latest move keeps the
     /// counterpart its own note named, so a move between other lines does not
-    /// rewrite it, and a load that finds the roles in agreement writes nothing
+    /// rewrite it, and a load that finds both in agreement writes nothing
     /// (design §5).
     async fn write_load_note(&self, role: LineRole, parent: Option<&str>) -> Result<()> {
         if !receives_note(role) {
@@ -4553,12 +4630,27 @@ impl BranchLine {
         } else {
             None
         };
-        if self.record_status(block).unwrap_or(false) == is_default {
+        let agrees = self.record_status(block).unwrap_or(false) == is_default;
+        if agrees && !is_default {
             return Ok(());
         }
         let Some(text) = self.note_text(parent, is_default, &other).await? else {
             return Ok(());
         };
+        // The line is the tree's default branch, so its latest note was written
+        // by the move that made it the default and carries this code's text: a
+        // note an older rule set left differs and is replaced once (design §5).
+        let in_force = agrees
+            && self
+                .view
+                .lock()
+                .unwrap()
+                .identity
+                .as_ref()
+                .is_some_and(|(latest, retired)| !retired && latest == &text);
+        if in_force {
+            return Ok(());
+        }
         let data = InputMessageData {
             blocks: vec![crate::context_block::raw(text.clone(), Some(line_key()))],
             mode: Some(InputMode::Append),
@@ -4771,6 +4863,8 @@ fn first_line(purpose: &str) -> String {
 
 struct BranchTool {
     tree: Arc<TreeCommands>,
+    /// The Session's cap on open tool lines (§6.1).
+    max_open_lines: usize,
 }
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 /// Target events per `read` page; the final atomic batch may exceed it.
@@ -4849,7 +4943,7 @@ impl BranchTool {
         };
         crate::context_policy::check_cancel(&cancel)?;
         match input.action.as_str() {
-            "create" => self.create(&own, input, &context, &call.id, cancel).await,
+            "create" => self.create(input, &context, &call.id, cancel).await,
             "message" => self.message(&own, input).await,
             "read" => self.read(&own, input, &line).await,
             "end" => tokio::select! {
@@ -4862,18 +4956,11 @@ impl BranchTool {
     /// Opens a tool line cut before this request's model start (design §11).
     async fn create(
         &self,
-        own: &OwnLine,
         input: BranchInput,
         context: &ToolExecutionContext,
         call_id: &str,
         cancel: CancellationToken,
     ) -> std::result::Result<ToolResult, HostError> {
-        if own.role != LineRole::Main {
-            return Ok(refusal(
-                "branch_not_main",
-                "Only main opens lines. Tell main if more parallel work is needed.".into(),
-            ));
-        }
         let prompt = input.prompt.unwrap_or_default();
         if prompt.is_empty() {
             return Err(invalid("create requires a nonempty prompt"));
@@ -4970,9 +5057,9 @@ impl BranchTool {
                 sequence.as_u64().expect("event sequence is unsigned") - 1
             }
         };
-        let branch = self
+        let opened = self
             .tree
-            .branch_with_idle_notice(
+            .open_tool_line(
                 context.branch_id.clone(),
                 at,
                 BranchOptions {
@@ -4984,14 +5071,25 @@ impl BranchTool {
                     },
                 },
                 cancel,
-                input.idle_notice,
+                ToolOpen {
+                    idle_notice: input.idle_notice,
+                    max_open_lines: self.max_open_lines,
+                },
             )
-            .await
-            .map_err(|error| match error {
-                AgentError::Cancelled(reason) => HostError::Cancelled(reason),
-                error => HostError::failed(error.to_string()),
-            })?;
-        Ok(ToolResult::text(format!("Line created: {}", branch.id())))
+            .await;
+        match opened {
+            Ok(branch) => Ok(ToolResult::text(format!("Line created: {}", branch.id()))),
+            Err(AgentError::BranchRefused {
+                refusal: BranchRefusal::NotOpener,
+                ..
+            }) => Ok(refusal("branch_not_opener", NOT_OPENER_TEXT.into())),
+            Err(AgentError::BranchRefused {
+                refusal: BranchRefusal::LimitReached,
+                ..
+            }) => Ok(refusal("branch_limit_reached", LIMIT_REACHED_TEXT.into())),
+            Err(AgentError::Cancelled(reason)) => Err(HostError::Cancelled(reason)),
+            Err(error) => Err(HostError::failed(error.to_string())),
+        }
     }
     /// Sends one message to a line of the calling line's pair (design §6).
     async fn message(
@@ -5131,10 +5229,7 @@ impl BranchTool {
         call_id: &str,
     ) -> std::result::Result<ToolResult, HostError> {
         if own.role != LineRole::Tool {
-            return Ok(refusal(
-                "branch_cannot_end",
-                "Only a line opened with create can end itself.".into(),
-            ));
+            return Ok(refusal("branch_cannot_end", CANNOT_END_TEXT.into()));
         }
         if own.ending {
             return Ok(self.ended(&own.id));
@@ -5161,6 +5256,10 @@ impl BranchTool {
                 own.id, parent
             ))),
             Err(AgentError::BranchEnded(line)) => Ok(self.ended(&line)),
+            Err(AgentError::BranchRefused {
+                refusal: BranchRefusal::CannotEnd,
+                ..
+            }) => Ok(refusal("branch_cannot_end", CANNOT_END_TEXT.into())),
             Err(AgentError::BranchRefused {
                 refusal: kind,
                 message,
@@ -5662,7 +5761,7 @@ fn tool_line_body(line: &str, parent: &str, prompt: &str) -> String {
         prompt,
         String::new(),
         format!("How you work with {parent}:"),
-        format!("- Work on this purpose only. You cannot open lines; if more parallel work is needed, tell {parent}."),
+        format!("- Work on this purpose only. You cannot open lines unless this line is the default branch of the session, and this block does not make it one: a status note would. If more parallel work is needed and you cannot open a line, tell {parent}."),
         format!("- Read {parent} with the branch tool (action read, branch \"{parent}\") when what {parent} did or decided since your cut changes your work; the parent block reports when {parent} has moved. Message {parent} only for what it must act on: a decision that changes its work, a blocker only the user can settle, a conflict with another line, or a change to your purpose. Use mode \"steer\" for what {parent} must act on now, \"append\" for what {parent} should see at its next step. Do not send {parent} a progress report it can read, and do not page through {parent}'s whole stream: read the page that answers your question, then act."),
         format!("- You share the workspace with {parent} and its other lines. Change only the files {parent} gave you; before changing any other file, tell {parent} which. If edit or write fails because the file was modified after it was last read, another line may have changed the file: read it again and tell {parent} before you continue."),
         "- The user can talk to you directly. Answer the user, and ask with ask_user when only the user can decide.".to_string(),
@@ -5725,15 +5824,15 @@ fn status_note(
     let change = if default {
         match kind {
             "tool" => format!(
-                "This line is now the session's default branch, switched from line {other}. While this block is your latest one: answer the user here; you send no automatic idle notice to {parent}; you cannot call end on yourself. Line {other} stays open and keeps the lines it opened."
+                "This line is now the session's default branch, switched from line {other}. While this block is your latest one: answer the user here; you can open lines with create; you send no automatic idle notice to {parent}; you cannot call end on yourself. Line {other} stays open and keeps the lines it opened."
             ),
             _ => format!(
-                "The user has now made this line the session's default branch, switched from line {other}. While this block is your latest one: answer the user here; you cannot call end on yourself; the user ends this line. Line {other} stays open and keeps the lines it opened."
+                "The user has now made this line the session's default branch, switched from line {other}. While this block is your latest one: answer the user here; you can open lines with create; you cannot call end on yourself; the user ends this line. Line {other} stays open and keeps the lines it opened."
             ),
         }
     } else {
         format!(
-            "Line {other} is now the session's default branch. This line stays open, reports to {parent} as before and keeps coordinating the lines it opened; the rest of the rules above hold again."
+            "Line {other} is now the session's default branch. This line stays open, reports to {parent} as before and keeps coordinating the lines it opened; it can no longer open lines with create, and the rest of the rules above hold again."
         )
     };
     let body = format!("{birth}\n\n{change}");
@@ -5749,10 +5848,21 @@ fn status_note(
     crate::context_block::element("dim-branch-line", &attrs, &body)
 }
 
+/// The `branch` tool's refusal of `create` on a line that is neither the root
+/// nor the default branch (design §4, §11).
+const NOT_OPENER_TEXT: &str = "Only the root and the default branch open lines. Tell one of them if more parallel work is needed.";
+/// The `branch` tool's refusal of `end` on the root, the default branch, a
+/// plugin line, a line the user opened or an ancestor of the default branch
+/// (design §10, §11).
+const CANNOT_END_TEXT: &str = "Only a line opened with create can end itself, and not while it or a line below it is the default branch.";
+/// The `branch` tool's refusal of `create` when the open would cross the
+/// Session's cap of open tool lines (design §6.1, §11).
+const LIMIT_REACHED_TEXT: &str = "This Session holds its limit of open lines. Continue on this line, or end one of its open lines first.";
+
 /// The `branch` tool's description: its policy sentences are the coordination
 /// text for `main` ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)),
 /// replaceable at [`BranchToolConfig`].
-const BRANCH_TOOL_DESCRIPTION: &str = "Work with the other lines of this session. A line is you: it starts from your history at the point it is opened, then works in parallel on its own line. It is not a helper with its own memory, and it owes you no result; you and it keep each other informed by reading each other's work and messaging what the other must act on. On main you coordinate: answer a line's steer and act on what it asks for; leave a line's part to that line instead of redoing it; read a line's work instead of waiting for a report.\n- create (main only): open a line to work on prompt in parallel. Open one line per part that can go on at the same time as the rest — separate files, a separate question, or a second approach — instead of doing those parts one after another yourself; not for a single quick edit, nor when your next step needs its result. Write prompt as a brief to yourself: the purpose, what you already know that it needs, which files or area are its own, and when it should tell you or end. Returns the line's id.\n- message: send content to a line you opened, or to the line that opened you. Send a decision, a blocker, or a conflict, not a progress report the receiver can read. Mode \"append\" (default) reaches the receiver at its next step without interrupting it and does not wake an idle line. Use \"steer\" when the receiver must act now or is idle.\n- read: show a page of the activity of the line you were cut from, or of a line you opened, also after it ended. With no after, a read continues after your last read of that line: from your cut for the line you were cut from, and from its first event for a line you opened. Pass after to read from another point. Do not page through a whole line.\n- end: on a line opened with create, end your own line. content is your final message to the line that opened you: what you found, did, changed and left undone. It is your last action.\nA line reads the line it was cut from; main reads the lines it opened. Messages pass only between main and the lines it opened.";
+const BRANCH_TOOL_DESCRIPTION: &str = "Work with the other lines of this session. A line is you: it starts from your history at the point it is opened, then works in parallel on its own line. It is not a helper with its own memory, and it owes you no result; you and it keep each other informed by reading each other's work and messaging what the other must act on. On main you coordinate: answer a line's steer and act on what it asks for; leave a line's part to that line instead of redoing it; read a line's work instead of waiting for a report.\n- create (the root and the current default branch only): open a line to work on prompt in parallel. Open one line per part that can go on at the same time as the rest — separate files, a separate question, or a second approach — instead of doing those parts one after another yourself; not for a single quick edit, nor when your next step needs its result. Write prompt as a brief to yourself: the purpose, what you already know that it needs, which files or area are its own, and when it should tell you or end. Returns the line's id.\n- message: send content to a line you opened, or to the line that opened you. Send a decision, a blocker, or a conflict, not a progress report the receiver can read. Mode \"append\" (default) reaches the receiver at its next step without interrupting it and does not wake an idle line. Use \"steer\" when the receiver must act now or is idle.\n- read: show a page of the activity of the line you were cut from, or of a line you opened, also after it ended. With no after, a read continues after your last read of that line: from your cut for the line you were cut from, and from its first event for a line you opened. Pass after to read from another point. Do not page through a whole line.\n- end: on a line opened with create, end your own line. content is your final message to the line that opened you: what you found, did, changed and left undone. It is your last action.\nA line messages and reads the line it was cut from and the lines it opened. The end action ends the calling line only.";
 
 /// Factory configuration of the branch tool ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)).
 /// The product sets none of it, so the built-in text is in force.
@@ -5766,7 +5876,15 @@ pub struct BranchToolConfig {
     /// BranchLine, the part that writes the roster
     /// ([timeline branches §12.4](../../../docs/design/timeline-branches.md#124-texts-and-their-classes)).
     pub roster_closing: Option<Arc<str>>,
+    /// The Session's cap on open tool lines in place of the built-in four
+    /// ([timeline branches §6.1](../../../docs/design/timeline-branches.md#61-resources-and-limits)).
+    pub max_open_lines: Option<usize>,
 }
+
+/// The cap in force when the product sets none: four open tool lines at once,
+/// the larger of four and the two open at once that recorded runs reached, plus
+/// two (§6.1). The evaluation re-checks it.
+const DEFAULT_MAX_OPEN_LINES: usize = 4;
 
 fn branch_definition(description: &str) -> ToolDefinition {
     ToolDefinition {
