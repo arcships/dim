@@ -47,6 +47,25 @@ impl Script {
         *self.held.lock().unwrap() = None;
         self.release.notify_waiters();
     }
+    /// The text and error flag of the result for `id`, as the model reads them.
+    fn tool_result(&self, id: &str) -> Option<(String, bool)> {
+        self.requests.lock().unwrap().iter().find_map(|request| {
+            request.messages.iter().find_map(|message| {
+                let MessageContent::Parts(parts) = &message.content else {
+                    return None;
+                };
+                parts.iter().find_map(|part| match part {
+                    MessagePart::ToolResult {
+                        tool_use_id,
+                        content: ToolContent::Text(text),
+                        is_error,
+                        ..
+                    } if tool_use_id == id => Some((text.clone(), is_error == &Some(true))),
+                    _ => None,
+                })
+            })
+        })
+    }
 }
 
 impl ModelDriver for Script {
@@ -1038,5 +1057,275 @@ async fn a_start_racing_an_expiry_pass_waits_and_delivers_round_one() {
     assert!(
         rounds.iter().any(|event| marker_of(event) == marker),
         "the next pass delivered the new loop's round 1: {rounds:?}"
+    );
+}
+
+/// The tool's `start` never delivers at the call: its first round is due after
+/// the delay it was given, and its result names that due time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_start_waits_its_delay_and_delivers_one_round() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "delay_seconds": 600, "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    let before = dim_agent_scheduler::testing::clock(home.path()).now();
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+
+    wait_for("the loop record", || !stored_loops(home.path()).is_empty()).await;
+    let record = stored_loops(home.path())[0].clone();
+    let due = record["next_at"]
+        .as_str()
+        .expect("round 1 is due after the delay")
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let delay = due.duration_since(before).as_secs();
+    assert!(
+        (600..=605).contains(&delay),
+        "the first round is 600 s after the call, got {delay}: {record}"
+    );
+
+    // A pass just before the delay writes nothing.
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    clock.advance_to(due - jiff::SignedDuration::from_secs(2));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "nothing is delivered at the call or before the delay"
+    );
+
+    // The due time delivers exactly one round.
+    clock.advance_to(due);
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while loop_rounds(&history(&mut client, &session).await).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("round 1 is delivered at the due time");
+    let rounds = loop_rounds(&history(&mut client, &session).await);
+    assert_eq!(rounds.len(), 1, "exactly one round is delivered");
+    assert!(
+        marker_of(&rounds[0]).contains("round=\"1\""),
+        "the round is round 1: {}",
+        marker_of(&rounds[0])
+    );
+
+    wait_for("the tool result", || model.tool_result("call-1").is_some()).await;
+    let (text, is_error) = model.tool_result("call-1").unwrap();
+    assert!(!is_error, "{text}");
+    let stamp = due.strftime("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    assert!(
+        text.contains(&stamp),
+        "the result names the due time {stamp}: {text}"
+    );
+    assert!(text.contains("in 600 seconds"), "{text}");
+    assert!(text.contains("not delivered now"), "{text}");
+}
+
+/// A tool `start` without `delay_seconds` is refused and writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_start_without_a_delay_is_refused_and_writes_nothing() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+
+    wait_for("the tool result", || model.tool_result("call-1").is_some()).await;
+    let (text, is_error) = model.tool_result("call-1").unwrap();
+    assert!(is_error, "{text}");
+    assert!(text.contains("loop_invalid"), "{text}");
+    assert!(text.contains("delay_seconds between 60 and 3600"), "{text}");
+    assert!(
+        stored_loops(home.path()).is_empty(),
+        "a refused start writes no record"
+    );
+    assert!(loop_rounds(&history(&mut client, &session).await).is_empty());
+}
+
+/// A `next` before the first round replaces the pending round's due time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_next_before_the_first_round_replaces_its_due_time() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "delay_seconds": 600, "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the loop record", || !stored_loops(home.path()).is_empty()).await;
+    let first = stored_loops(home.path())[0]["next_at"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+
+    model.push(vec![ToolCall {
+        id: "call-2".into(),
+        name: "loop".into(),
+        input: json!({"action": "next", "delay_seconds": 120})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    let armed = dim_agent_scheduler::testing::clock(home.path()).now();
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "run it sooner"}),
+        )
+        .await
+        .unwrap();
+
+    wait_for("the replaced due time", || {
+        stored_loops(home.path()).first().is_some_and(|record| {
+            record["next_at"]
+                .as_str()
+                .is_some_and(|at| at.parse::<jiff::Timestamp>().ok() != Some(first))
+        })
+    })
+    .await;
+    let record = stored_loops(home.path())[0].clone();
+    let due = record["next_at"]
+        .as_str()
+        .expect("the armed round is due")
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    let delay = due.duration_since(armed).as_secs();
+    assert!(
+        (120..=125).contains(&delay),
+        "the next's 120 s replaces the pending due time, got {delay}: {record}"
+    );
+    assert!(due < first, "the pending 600 s round is replaced: {record}");
+
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+    clock.advance_to(due - jiff::SignedDuration::from_secs(2));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "nothing is delivered before the replaced due time"
+    );
+    clock.advance_to(due);
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while loop_rounds(&history(&mut client, &session).await).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("round 1 is delivered at the replaced due time");
+    assert_eq!(
+        loop_rounds(&history(&mut client, &session).await).len(),
+        1,
+        "one round is delivered"
+    );
+}
+
+/// A tool-started loop keeps its round across a restart: it neither fires
+/// early nor loses the round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_tool_start_keeps_its_round_across_a_restart() {
+    let home = home();
+    let model = Arc::new(Script::default());
+    let server = start(home.path(), model.clone()).await;
+    let mut client = connect(&server).await;
+    let session = create_session(&mut client, home.path(), &["loop"], true).await;
+
+    model.push(vec![ToolCall {
+        id: "call-1".into(),
+        name: "loop".into(),
+        input: json!({"action": "start", "delay_seconds": 600, "prompt": "check the deploy"})
+            .as_object()
+            .cloned()
+            .unwrap(),
+    }]);
+    client
+        .rpc(
+            "session.submit",
+            json!({"sessionId": session, "branchId": "main", "text": "set the loop"}),
+        )
+        .await
+        .unwrap();
+    wait_for("the loop record", || !stored_loops(home.path()).is_empty()).await;
+    let due = stored_loops(home.path())[0]["next_at"]
+        .as_str()
+        .unwrap()
+        .parse::<jiff::Timestamp>()
+        .unwrap();
+    drop(client);
+    server.shutdown();
+    server.join().await.unwrap();
+
+    let server = start(home.path(), Arc::new(Script::default())).await;
+    let mut client = connect(&server).await;
+    let clock = dim_agent_scheduler::testing::clock(home.path());
+
+    clock.advance_to(due - jiff::SignedDuration::from_secs(2));
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    assert!(
+        loop_rounds(&history(&mut client, &session).await).is_empty(),
+        "a restart before the delay does not fire the round"
+    );
+
+    clock.advance_to(due);
+    dim_agent_scheduler::testing::step(home.path(), 1).await;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while loop_rounds(&history(&mut client, &session).await).is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the restored round is delivered at its due time");
+    assert_eq!(
+        loop_rounds(&history(&mut client, &session).await).len(),
+        1,
+        "the round is delivered once"
     );
 }

@@ -7,6 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "Scheduled jobs: a native process owner and Session feature for Dim"
+autotests = false
+
+[[test]]
+name = "scheduler_flow"
+path = "tests/scheduler_flow.rs"
 
 [dependencies]
 dim-agent-runtime.workspace = true

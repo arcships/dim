@@ -1,4 +1,7 @@
+const RELEASE: bool = matches!(option_env!("DIM_RELEASE_BUILD"), Some(value) if !value.is_empty());
+
 fn main() {
+    dim_agent_capabilities::build::install(None, None, RELEASE);
     #[cfg(target_os = "linux")]
     unsafe {
         unsafe extern "C" {

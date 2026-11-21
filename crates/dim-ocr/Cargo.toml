@@ -7,6 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "The OCR helper contract and the on-device Apple Vision engine"
+autotests = false
+
+[[test]]
+name = "ocr_flow"
+path = "tests/ocr_flow.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

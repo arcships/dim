@@ -27,8 +27,12 @@ fn bundled_model(bytes: &[u8]) -> ModelEntry {
 }
 
 fn bundled_record<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> T {
-    serde_json::from_reader(flate2::read::GzDecoder::new(bytes))
-        .expect("checked-in bundled catalog records deserialize")
+    use std::io::Read as _;
+    let mut decoded = Vec::with_capacity(bytes.len().saturating_mul(3));
+    flate2::read::GzDecoder::new(bytes)
+        .read_to_end(&mut decoded)
+        .expect("checked-in bundled catalog records decompress");
+    serde_json::from_slice(&decoded).expect("checked-in bundled catalog records deserialize")
 }
 const REASONING_OFF: &str = include_str!("../resources/reasoning-off-overrides.json");
 

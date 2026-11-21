@@ -19,7 +19,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-mod support;
+use crate::support;
 use support::*;
 
 /// Replies with queued tool batches, then with text; keeps every request.
