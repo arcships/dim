@@ -159,7 +159,7 @@ impl Rig {
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             files
-                .with_lock("scheduler/loops.json", move |_| {
+                .update_text("scheduler/loops.json", move |_| {
                     entered.send(()).unwrap();
                     held.recv_timeout(Duration::from_secs(30)).unwrap();
                     (None, ())
@@ -182,7 +182,7 @@ impl Rig {
         let (entered, entered_rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             files
-                .with_lock("scheduler/wakeups.json", move |_| {
+                .update_text("scheduler/wakeups.json", move |_| {
                     entered.send(()).unwrap();
                     held.recv_timeout(Duration::from_secs(30)).unwrap();
                     (None, ())

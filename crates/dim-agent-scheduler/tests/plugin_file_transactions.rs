@@ -30,17 +30,17 @@ impl DynPlugin for Probe {
             let observed = self.observed.clone();
             tokio::spawn(async move {
                 let created = files
-                    .with_lock("scheduler/runs.json", |current| {
+                    .update_text("scheduler/runs.json", |current| {
                         (Some("first".to_owned()), current.map(str::to_owned))
                     })
                     .await;
                 let read = files
-                    .with_lock("scheduler/runs.json", |current| {
+                    .update_text("scheduler/runs.json", |current| {
                         (None, current.map(str::to_owned))
                     })
                     .await;
                 let refused = files
-                    .with_lock("scheduler/invalid.json", |_| (Some("never".to_owned()), ()))
+                    .update_text("scheduler/invalid.json", |_| (Some("never".to_owned()), ()))
                     .await;
                 let _ = observed.set(json!({
                     "created": format!("{created:?}"),

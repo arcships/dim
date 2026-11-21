@@ -621,7 +621,7 @@ async fn hold_runs_file(
     let (entered, entered_rx) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
         files
-            .with_lock("scheduler/runs.json", move |_| {
+            .update_text("scheduler/runs.json", move |_| {
                 entered.send(()).unwrap();
                 held.recv_timeout(std::time::Duration::from_secs(30))
                     .unwrap();

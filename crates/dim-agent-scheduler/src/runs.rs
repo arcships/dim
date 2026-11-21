@@ -349,7 +349,7 @@ fn encode(runs: Vec<Delivery>) -> String {
 /// history.
 pub async fn read(files: &FileScope) -> Result<Vec<Delivery>, SchedulerError> {
     files
-        .with_lock(RUNS_FILE, |current| (None, decode(current)))
+        .update_text(RUNS_FILE, |current| (None, decode(current)))
         .await?
 }
 
@@ -360,7 +360,7 @@ pub async fn update<R: Send + 'static>(
     change: impl FnOnce(&mut Vec<Delivery>) -> Result<(bool, R), SchedulerError> + Send + 'static,
 ) -> Result<R, SchedulerError> {
     files
-        .with_lock(RUNS_FILE, move |current| {
+        .update_text(RUNS_FILE, move |current| {
             let mut runs = match decode(current) {
                 Ok(runs) => runs,
                 Err(error) => return (None, Err(error)),

@@ -222,7 +222,7 @@ fn parse(text: &str) -> Result<TaskRecord, serde_json::Error> {
 /// taken and the bytes are left unchanged.
 pub async fn load(files: &FileScope, task_id: &str) -> Result<Option<TaskRecord>, StoreError> {
     let parsed = files
-        .with_lock(&record_name(task_id), |text| {
+        .update_text(&record_name(task_id), |text| {
             (None, text.map(parse).transpose())
         })
         .await?;
@@ -246,7 +246,7 @@ pub async fn write(
 ) -> Result<Write, StoreError> {
     let name = record_name(&record.task_id);
     let outcome = files
-        .with_lock(&name, move |text| {
+        .update_text(&name, move |text| {
             let current = match text {
                 Some(text) => match parse(text) {
                     Ok(current) => Some(current),

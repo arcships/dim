@@ -634,7 +634,7 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
     );
 
     files
-        .with_lock("media/text.json", |_| (Some("inner".to_owned()), ()))
+        .update_text("media/text.json", |_| (Some("inner".to_owned()), ()))
         .await
         .unwrap();
     let read = call(
@@ -661,7 +661,7 @@ async fn binary_files_round_trip_and_stream_without_an_envelope() {
     );
     assert_eq!(
         files
-            .with_lock("media/blob.bin", |current| (
+            .update_text("media/blob.bin", |current| (
                 None,
                 current.map(str::to_owned)
             ))
@@ -811,7 +811,7 @@ async fn list_remove_and_work_directories_follow_the_root_and_its_leases() {
         .await
         .unwrap();
     files
-        .with_lock("media/tasks/a1/task.json", |_| {
+        .update_text("media/tasks/a1/task.json", |_| {
             (Some("record".to_owned()), ())
         })
         .await

@@ -293,38 +293,36 @@ impl FileScope {
         {
             return Err(invalid());
         }
-        let acquisition = self.stopping.child_token();
+        let acquisition = CancellationToken::new();
         let cancel_waiter = acquisition.clone().drop_guard();
         let cancelled = async move {
-            match cancelled {
+            tokio::select! {
+                _ = acquisition.cancelled() => (),
+                _ = async { match cancelled {
                 Some(reference) => {
                     let _ = reference.wait_async().await;
                 }
                 None => std::future::pending::<()>().await,
+                }} => (),
             }
         };
         let tasks = self.tasks.clone();
-        let task =
-            self.with_file_lease(&name, acquisition, cancelled, move |lease, _| async move {
-                let lease = Arc::new(tokio::sync::Mutex::new(Some(lease)));
-                let result = match callback
-                    .call_async(Value::List(vec![lease_value(lease.clone(), tasks)]))
-                    .await
-                {
-                    Ok(value) => resolve(value).await,
-                    Err(error) => Err(error),
-                };
-                lease.lock().await.take();
-                result.map(success)
-            });
+        let task = self.with_lock(&name, cancelled, move |lease, _| async move {
+            let lease = Arc::new(tokio::sync::Mutex::new(Some(lease)));
+            let result = match callback
+                .call_async(Value::List(vec![lease_value(lease.clone(), tasks)]))
+                .await
+            {
+                Ok(value) => resolve(value).await,
+                Err(error) => Err(error),
+            };
+            lease.lock().await.take();
+            result.map(success)
+        });
         Ok(Value::future(async move {
             let _cancel_waiter = cancel_waiter;
-            match task {
-                Ok(task) => match task.await {
-                    Ok(Ok(reply)) => reply,
-                    Ok(Err(error)) => Ok(failure(error)),
-                    Err(error) => Ok(failure(FileStorageError::Worker(error))),
-                },
+            match task.await {
+                Ok(reply) => reply,
                 Err(error) => Ok(failure(error)),
             }
         }))
@@ -556,20 +554,15 @@ impl FileScope {
     /// transaction returns. An envelope that is not version 1 fails with
     /// [`PluginFileError::InvalidData`] before `change` runs, and the bytes are
     /// left as they were.
-    pub async fn with_lock<R: Send + 'static>(
+    pub async fn update_text<R: Send + 'static>(
         &self,
         name: &str,
         change: impl FnOnce(Option<&str>) -> (Option<String>, R) + Send + 'static,
     ) -> Result<R, PluginFileError> {
-        self.with_file_lease(
-            name,
-            self.stopping.child_token(),
-            std::future::pending(),
-            move |lease, stopping| transact_file(lease, stopping, change),
-        )
-        .map_err(file_error)?
+        self.with_lock(name, std::future::pending(), move |lease, stopping| {
+            transact_file(lease, stopping, change)
+        })
         .await
-        .map_err(|error| PluginFileError::Io(error.to_string()))?
         .map_err(file_error)?
     }
 
@@ -692,32 +685,37 @@ impl FileScope {
         .await
     }
 
-    fn with_file_lease<R: Send + 'static, RFuture>(
+    /// Runs one callback with the acquired lease. Cancellation while waiting for the lock skips the callback.
+    pub fn with_lock<R: Send + 'static, RFuture>(
         &self,
         name: &str,
-        stopping: CancellationToken,
         cancelled: impl Future<Output = ()> + Send + 'static,
         action: impl FnOnce(FileLease, CancellationToken) -> RFuture + Send + 'static,
-    ) -> Result<tokio::task::JoinHandle<Result<R, FileStorageError>>, FileStorageError>
+    ) -> impl Future<Output = Result<R, FileStorageError>> + Send + 'static
     where
         RFuture: Future<Output = R> + Send + 'static,
     {
-        let files = &self.files;
-        let path = files.storage.path(files.root, name)?;
-        let _admission = files.admission.lock().unwrap();
-        if self.stopping.is_cancelled() {
-            return Err(FileStorageError::Closed);
-        }
-        let storage = files.storage.clone();
-        let owner = files.tasks.token();
-        Ok(self.tasks.spawn(async move {
-            let _owner = owner;
-            let lease = tokio::select! {
-                _ = cancelled => { stopping.cancel(); return Err(FileStorageError::Closed); }
-                result = acquire(&storage, &path, &stopping) => result?,
-            };
-            Ok(action(lease, stopping).await)
-        }))
+        let start = || {
+            let files = &self.files;
+            let path = files.storage.path(files.root, name)?;
+            let _admission = files.admission.lock().unwrap();
+            if self.stopping.is_cancelled() {
+                return Err(FileStorageError::Closed);
+            }
+            let storage = files.storage.clone();
+            let owner = files.tasks.token();
+            let stopping = self.stopping.child_token();
+            Ok(self.tasks.spawn(async move {
+                let _owner = owner;
+                let lease = tokio::select! {
+                    _ = cancelled => { stopping.cancel(); return Err(FileStorageError::Closed); }
+                    result = acquire(&storage, &path, &stopping) => result?,
+                };
+                Ok(action(lease, stopping).await)
+            }))
+        };
+        let task = start();
+        async move { task?.await.map_err(FileStorageError::Worker)? }
     }
 
     async fn run<R: Send + 'static>(

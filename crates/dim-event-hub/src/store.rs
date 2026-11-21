@@ -254,7 +254,7 @@ impl Store {
         let _guard = self.state.change_lock().await;
         let document = self
             .files
-            .with_lock(SUBSCRIPTIONS_FILE, |current| (None, decode(current)))
+            .update_text(SUBSCRIPTIONS_FILE, |current| (None, decode(current)))
             .await
             .map_err(|error| error.to_string())??;
         self.state.replace_subscriptions(document);
@@ -288,7 +288,7 @@ impl Store {
         let _guard = self.state.change_lock().await;
         let outcome = self
             .files
-            .with_lock(SUBSCRIPTIONS_FILE, move |current| {
+            .update_text(SUBSCRIPTIONS_FILE, move |current| {
                 let mut document = match decode(current) {
                     Ok(document) => document,
                     Err(error) => {

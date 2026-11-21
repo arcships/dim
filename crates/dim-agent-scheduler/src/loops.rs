@@ -300,7 +300,7 @@ pub async fn read(
     files: &dim_app_server::plugin_files::FileScope,
 ) -> Result<Vec<Loop>, SchedulerError> {
     files
-        .with_lock(LOOPS_FILE, |current| (None, decode(current)))
+        .update_text(LOOPS_FILE, |current| (None, decode(current)))
         .await?
 }
 
@@ -311,7 +311,7 @@ async fn update<R: Send + 'static>(
     change: impl FnOnce(&mut Vec<Loop>) -> Result<(bool, R), SchedulerError> + Send + 'static,
 ) -> Result<R, SchedulerError> {
     files
-        .with_lock(LOOPS_FILE, move |current| {
+        .update_text(LOOPS_FILE, move |current| {
             let mut loops = match decode(current) {
                 Ok(loops) => loops,
                 Err(error) => return (None, Err(error)),

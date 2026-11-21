@@ -156,7 +156,7 @@ pub async fn read(
     files: &dim_app_server::plugin_files::FileScope,
 ) -> Result<Vec<Wakeup>, SchedulerError> {
     files
-        .with_lock(WAKEUPS_FILE, |current| (None, decode(current)))
+        .update_text(WAKEUPS_FILE, |current| (None, decode(current)))
         .await?
 }
 
@@ -167,7 +167,7 @@ async fn update<R: Send + 'static>(
     change: impl FnOnce(&mut Vec<Wakeup>) -> Result<(bool, R), SchedulerError> + Send + 'static,
 ) -> Result<R, SchedulerError> {
     files
-        .with_lock(WAKEUPS_FILE, move |current| {
+        .update_text(WAKEUPS_FILE, move |current| {
             let mut wakeups = match decode(current) {
                 Ok(wakeups) => wakeups,
                 Err(error) => return (None, Err(error)),
