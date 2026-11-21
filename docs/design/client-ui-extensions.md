@@ -43,7 +43,7 @@ Status: Ready.
 
 UiExtensions 是拥有内容状态的 App Server 插件，不是把错误作用域接回 Session 的接线模块。UiResources 的资源属于 Session，不能只在进程表里存一个 Session ID，再另建 Session 关闭观察系统。两者都不读写分支 Timeline，不是 Capability。两者由独立的 UiExtensions 插件装配并可停用；位于 App Server crate 不代表属于协议内核。App Server 负责装配与受保护传输，Web/Desktop 负责界面。将内容与文件 owner 放入 CLI 会让直连 daemon 的客户端依赖另一个常驻客户端，因此不这样放置。
 
-复用 [PluginManager](plugins/PluginManager.md) 的安装、选择、启停、重载与内容分发。PluginManager 将已经验证的 UI 声明交给内容 owner，不保存客户端面板状态，不复制 UI 目录和资源读取任务。使用 [贡献注册规则](rutis-usage.md#r6-contributions-register-with-their-owner) 管理注册与撤下，不增加插件运行时、依赖图或第二套服务总线。
+复用 [PluginManager](plugins/PluginManager.md) 的安装、选择、启停、重载与内容分发。PluginManager 将选中包的目录与 UI 声明交给 UiExtensions 验证，不保存客户端面板状态，不复制 UI 目录和资源读取任务。使用 [贡献注册规则](rutis-usage.md#r6-contributions-register-with-their-owner) 管理注册与撤下，不增加插件运行时、依赖图或第二套服务总线。
 
 客户端没有 rutis loader 的镜像。它只消费已启用的内容目录，管理面板实例；这里的客户端能力是一个固定接口集合，不是浏览器中的通用依赖注入容器。
 
@@ -75,7 +75,7 @@ UiExtensions 公开目录只包含当前被选择并启用的内容，不包含�
 目录的 generation 属于 UI 内容 owner，不等于 rutis 后端代码 generation：
 
 - 禁用、移除、选择其他安装副本及显式刷新内容会撤下旧 UI generation。
-- UI 声明解析失败时，由 PluginManager 报告内容诊断并撤下旧注册；已验证声明的快照构建失败，由 UiExtensions 在目录中报告内容错误。不能静默继续展示已被替换的版本，各 owner 只保留自己产生的错误。
+- UiExtensions 在声明解析或快照构建失败时撤下旧注册，并在目录中报告内容错误。不能静默继续展示已被替换的版本，各 owner 只保留自己产生的错误。
 - 后端代码重启不自动证明内容变化。面板所需方法不可用时，面板按 §5 进入不可用状态；UI-only 内容不依赖后端 row 是否 Active。
 - 后端方法的准入和已接受调用仍使用 [Session 方法契约](contracts/session-boundary.md#a1-method-contributions)。UI generation 不包装成另一层业务请求 generation，不改变原来的调用结算。
 
@@ -430,7 +430,7 @@ type PreviewMethods = {
 
 | 名称 | 范围 | 输入与结果 |
 | --- | --- | --- |
-| `uiExtensions` | process，后端命名服务 | 接受 PluginManager 的已验证内容注册/撤下；提供目录快照及变化观察，不供页面发布内容 |
+| `uiExtensions` | process，后端命名服务 | 接收 PluginManager 选中包的注册/撤下，验证 UI 声明和资源路径；提供目录快照及变化观察，不供页面发布内容 |
 | `uiResources` | Session，后端命名服务 | `publishFile({path, mediaType}) -> ResourceRef`；`withdraw(ref)` 等到读取结束；注册自动归调用者生命周期，调用者不能撤下其他注册 |
 | `ui.extensions.list` | 已授权客户端的精确只读方法 | `{}` → `{revision, extensions, errors}`；extension 包含插件名、generation 和面板声明，不含 URL；errors 仅含 UiExtensions 自己产生的内容错误且不含绝对路径 |
 | `ui.extensions.read` | 已授权客户端的精确只读方法（local） | `{generation, path, offset?, limit?}` → `{offset, bytes, total, mediaType, data}`；`data` 为标准 base64；默认 1 MiB、上限 4 MiB；不在 `WEB_MANAGEMENT_METHODS` |

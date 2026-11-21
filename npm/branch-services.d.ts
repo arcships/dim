@@ -1348,8 +1348,6 @@ export type ResourceErrorThrown = RustError<"ResourceError", string, ResourceErr
 /** What a method returning `Err(SessionsError)` throws. */
 export type SessionsErrorThrown = RustError<"SessionsError", "rejected" | "agent_unknown" | "session_closed" | "branch_missing" | "branch_ended" | "reloading" | "future_sequence" | "ambiguous" | "publication_unknown" | "failed", SessionsError>
 
-/** What a method returning `Err(String)` throws. */
-
 /** What a method returning `Err(TaskError)` throws. */
 export type TaskErrorThrown = RustError<"TaskError", "read" | "unknown" | "closed", TaskError>
 

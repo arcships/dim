@@ -31,7 +31,7 @@ export default definePlugin({
         assert.ok(after.presences.every(presence => presence.channel !== 'tui'))
       } else if (call.method === 'uifixture.detach') {
         assert.equal(host.detach({connectionId, sessionId}), undefined)
-        await assert.rejects(extensions.register({plugin, name: plugin, package: {kind: 'unsupported', version: 2}}), /Unsupported UI version 2/)
+        await assert.rejects(extensions.register({plugin, name: plugin, package: {directory: '.', manifest: {version: 2}}}), /Unsupported UI version 2/)
         assert.ok((await extensions.plugins({})).includes(plugin))
         assert.equal(await extensions.refusal({plugin}), 'Unsupported UI version 2')
       } else {
