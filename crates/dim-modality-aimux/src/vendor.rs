@@ -365,6 +365,18 @@ pub static VENDORS: &[Vendor] = &[
         base: Base::AsIs,
         format: None,
     },
+    // The Dim account relay speaks the OpenAI Image API on its `/v1` base:
+    // JSON `/images/generations` and multipart `/images/edits`, with the
+    // account's bearer. The relay names the model, so a model the package
+    // does not know keeps edit.
+    Vendor {
+        catalog: "dimcode-api-oauth",
+        aimux: "openai",
+        options: "openai",
+        kinds: kinds(true, false, false, false),
+        base: Base::AsIs,
+        format: Some("outputFormat"),
+    },
     // The catalog's `/speechtotext/v1` is the prefix the package appends.
     Vendor {
         catalog: "rev-ai",

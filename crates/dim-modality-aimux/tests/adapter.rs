@@ -622,6 +622,73 @@ fn path_is_inside(path: &Path, dir: &Path) -> bool {
     path.strip_prefix(dir).is_ok()
 }
 
+/// The Dim account relay speaks the OpenAI Image API on its `/v1` base with
+/// the account's bearer, for a model id only the relay knows (#1887).
+#[tokio::test]
+async fn the_dim_account_relay_serves_its_image_models_over_the_openai_image_api() {
+    let relay = ModelId {
+        provider_id: "dimcode-api-oauth".into(),
+        model_id: "arcship-image".into(),
+    };
+    let names: Vec<String> = MediaAdapter::new()
+        .operations(&relay)
+        .into_iter()
+        .map(|operation| format!("{}.{}", operation.category, operation.operation))
+        .collect();
+    assert_eq!(names, ["realtime.voice", "image.generate", "image.edit"]);
+
+    let dir = work_dir("relay");
+    let (adapter, requests) =
+        scripted(|_| ok_json(json!({"created": 1, "data": [{"b64_json": base64(PNG_HEADER)}]})));
+    let base = "https://relay.example.test/v1";
+    let generate = job(
+        "dimcode-api-oauth",
+        "arcship-image",
+        "image",
+        "generate",
+        json!({"prompt": "a red circle"}),
+        Vec::new(),
+        &dir,
+    );
+    let output = run(&adapter, generate, base, "arcship-image")
+        .await
+        .unwrap();
+    assert_eq!(output.files[0].media_type, "image/png");
+    let reference = input(&dir, "in.png", "image/png", PNG_HEADER);
+    let edit = job(
+        "dimcode-api-oauth",
+        "arcship-image",
+        "image",
+        "edit",
+        json!({"prompt": "add a hat"}),
+        vec![reference],
+        &dir,
+    );
+    run(&adapter, edit, base, "arcship-image").await.unwrap();
+
+    let requests = requests.lock().unwrap();
+    let urls: Vec<&str> = requests
+        .iter()
+        .map(|request| request.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://relay.example.test/v1/images/generations",
+            "https://relay.example.test/v1/images/edits"
+        ]
+    );
+    for request in requests.iter() {
+        assert_eq!(
+            request.header("authorization"),
+            Some("Bearer test-credential")
+        );
+    }
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "arcship-image");
+    assert_eq!(body["prompt"], "a red circle");
+}
+
 /// One (row, operation) pair with the exact request it must send.
 struct Case {
     provider: &'static str,
