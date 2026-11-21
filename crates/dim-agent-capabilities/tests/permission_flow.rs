@@ -359,6 +359,11 @@ async fn granted_agent_with(
         builder.process_value(Arc::new(associations));
     }
     defaults::install_with_prompt_capability(&mut builder, ModelProviderPlugin::new);
+    builder.plugin(|_| {
+        Ok(Box::new(
+            dim_agent_capabilities::file_storage::FileStoragePlugin::new(vec![]),
+        ))
+    });
     file_access::install(&mut builder);
     defaults::mock_model_hosts(&mut builder);
     defaults::tool_host(&mut builder, tools);

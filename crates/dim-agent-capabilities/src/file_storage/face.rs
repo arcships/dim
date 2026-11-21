@@ -102,13 +102,11 @@ pub struct FsHost {
     pub(crate) writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
     system_roots: Arc<Vec<PathBuf>>,
     storage: Arc<FileStorage>,
-    generation: Ctx,
 }
 
 impl FsHost {
     pub(super) fn new(
         owner: Arc<FileStorage>,
-        ctx: Ctx,
         writes: Arc<crate::workspace_tools::files::FileWriteCoordinator>,
         node_home: Option<PathBuf>,
     ) -> Self {
@@ -118,7 +116,6 @@ impl FsHost {
             writes,
             system_roots: Arc::new(crate::host_platform::platform_roots()),
             storage: owner,
-            generation: ctx,
         }
     }
 
@@ -182,39 +179,48 @@ impl FsHost {
         let lease = self.storage.lock(&path, cancel).await?;
         let id = lease.0.as_ref().expect("new file lease").id;
         let held = Arc::new(super::SharedLease::new(Some(lease)));
-        let cleanup = held.clone();
         let release = caller
-            .unwrap_or(&self.generation)
-            .effect(move || async move {
-                cleanup.lock().await.take();
-                Ok(())
+            .map(|caller| {
+                let cleanup = held.clone();
+                caller.effect(move || async move {
+                    cleanup.lock().await.take();
+                    Ok(())
+                })
             })
+            .transpose()
             .map_err(|_| FileStorageError::Closed)?;
         {
             let mut state = self.storage.state.lock().unwrap();
             if let Some(entry) = state.leases.get_mut(&id) {
-                entry.binding = Some((Arc::downgrade(&held), release));
+                entry.binding = Some((held, release));
                 return Ok(id);
             }
         }
-        let _ = release.dispose().await;
+        if let Some(release) = release {
+            let _ = release.dispose().await;
+        }
         Err(FileStorageError::Closed)
     }
 
     pub async fn unlock(&self, id: Uuid) -> Result<()> {
-        let release = {
-            let mut state = self.storage.state.lock().unwrap();
-            let (_, release) = state
-                .leases
-                .get_mut(&id)
-                .and_then(|entry| entry.binding.take())
-                .ok_or(FileStorageError::InvalidPath("unknown lease id"))?;
+        let (held, release) = self
+            .storage
+            .state
+            .lock()
+            .unwrap()
+            .leases
+            .get_mut(&id)
+            .and_then(|entry| entry.binding.take())
+            .ok_or(FileStorageError::InvalidPath("unknown lease id"))?;
+        if let Some(release) = release {
             release
-        };
-        release
-            .dispose()
-            .await
-            .map_err(|_| FileStorageError::Closed)
+                .dispose()
+                .await
+                .map_err(|_| FileStorageError::Closed)?;
+        } else {
+            held.lock().await.take();
+        }
+        Ok(())
     }
 
     /// Authorizes reads of these exact configured files for the mounting row's lifetime.
@@ -360,7 +366,7 @@ impl FsHost {
             state
                 .leases
                 .get(&id)
-                .and_then(|entry| entry.binding.as_ref()?.0.upgrade())
+                .and_then(|entry| entry.binding.as_ref().map(|(held, _)| held.clone()))
                 .ok_or(FileStorageError::InvalidPath("unknown lease id"))?
         };
         let guard = tokio::select! {

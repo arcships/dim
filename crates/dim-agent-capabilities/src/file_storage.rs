@@ -175,7 +175,7 @@ type SharedLease = tokio::sync::Mutex<Option<FileLease>>;
 
 struct LeaseEntry {
     lease: Weak<Lease>,
-    binding: Option<(Weak<SharedLease>, Disposer)>,
+    binding: Option<(Arc<SharedLease>, Option<Disposer>)>,
 }
 
 struct ReaderEntry {
@@ -727,7 +727,7 @@ impl FileStorage {
                         state
                             .leases
                             .drain()
-                            .filter_map(|(_, entry)| entry.lease.upgrade())
+                            .map(|(_, entry)| entry)
                             .collect::<Vec<_>>(),
                         state
                             .readers
@@ -740,8 +740,10 @@ impl FileStorage {
                 }
             };
             if let Some((leases, readers)) = resources {
-                for lease in leases {
-                    lease.resources.lock().unwrap().take();
+                for entry in leases {
+                    if let Some(lease) = entry.lease.upgrade() {
+                        lease.resources.lock().unwrap().take();
+                    }
                 }
                 for entry in readers {
                     if let Some(reader) = entry.reader.upgrade() {
@@ -1596,7 +1598,6 @@ impl Plugin for FileStoragePlugin {
         })?;
         let binding = Arc::new(FsHost::new(
             storage.clone(),
-            ctx.clone(),
             self.writes.clone(),
             self.node_home.clone().or_else(std::env::home_dir),
         ));

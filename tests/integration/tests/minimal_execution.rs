@@ -113,6 +113,7 @@ impl Plugin for PlatformPlugin {
 fn test_platform(platform: ExecHost) -> impl FnOnce(&mut AgentBuilder) {
     let platform = Arc::new(platform);
     move |builder| {
+        builder.plugin(|_| Ok(Box::new(FileStoragePlugin::new(vec![]))));
         builder.plugin(move |_| Ok(Box::new(PlatformPlugin(platform.clone()))));
     }
 }
