@@ -26,16 +26,13 @@ dim-agent-types.workspace = true
 dim-client.workspace = true
 rutis.workspace = true
 rutis-bridge.workspace = true
-rutis-types = "0.23.0"
 rutis-loader.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
-syn = { version = "2", features = ["full", "visit"] }
-# The literal-main rule reads a literal's line from its span.
-proc-macro2 = { version = "1", features = ["span-locations"] }
+xtask-check = { path = "check" }
 axum = { workspace = true, features = ["json"] }
 # The run child's process group: a cancelled run kills the group, so the
 # Node plugin runtimes it started go with it. std starts the group

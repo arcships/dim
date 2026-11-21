@@ -21,10 +21,10 @@ Read [version preparation](../../../docs/release/README.md#version-preparation) 
 
 Every release goes through one release PR into `main`. It carries the version the release publishes, so the tag lands on a tree that already says that number.
 
-Work from a clean checkout of the latest `origin/main` on a branch, in this order:
+Inspect the working tree, current branch and open release PRs before syncing. Continue the existing PR or matching branch for the same release preparation. For new preparation, fetch `origin/main` and start a branch from a clean checkout of it.
 
-1. **Sync the bundled catalog.** The App Server embeds a checked-in catalog, and nothing refreshes it during a build. Run `node scripts/update-provider-catalog.ts --sync` and read its summary. A diff becomes the PR's first commit, with the summary in the commit message. No diff: the PR carries only the version commit. Never sync a second time for the same release; recovery and nightly repair rebuild an existing SHA or tag and skip this step.
-2. **Select the version.** Inspect the working tree, current branch, `origin/main`, remote tags, open release PRs and existing GitHub Releases; fetch `origin/main` and tags without changing unrelated work. Continue an existing PR for the same preparation task rather than opening a duplicate, and resume the matching release branch when the request is a retry.
+1. **Sync the bundled catalog.** Follow [the catalog sync checks](#verify-the-bundled-catalog-sync) before changing the version.
+2. **Select the version.** Fetch tags without changing unrelated work and inspect remote tags, open release PRs and existing GitHub Releases.
    - Read registry versions for `dimcode-alpha`, `dimcode-web`, every `dimcode-<platform>` in `npm/package.json`, and legacy `dimcode`. Use `npm view PACKAGE versions --json --registry=https://registry.npmjs.org`; only an explicit E404 means an absent package. Authentication or network failures do not mean a version is free.
    - Use an explicit requested version. For “next alpha” without a number, choose the highest alpha across those registry versions, reserved GitHub tags/Releases and other open release PRs, then increment its numeric `N`. If no alpha exists, use the Cargo workspace's `X.Y.Z-alpha.0`. Compare SemVer numerically: `alpha.10` follows `alpha.9`. Do not choose from a dist-tag or the committed Cargo version alone; a partial publication reserves its version too.
    - A new version must be absent from every package and remote tag/Release. An existing matching release is a retry, not a new version. An alpha must stay below the newest legacy `dimcode` beta; retain the packaging scripts' check. Do not change the release core the user explicitly selected.
@@ -56,6 +56,16 @@ git diff --check
 
 - Metadata-only changes need these checks and the existing PR checks; they do not need six-platform builds or a repeated full local test suite. Reuse valid evidence under `AGENTS.md`.
 - Summarize user-visible changes since the previous release for the PR and release notes. Commit as `chore: prepare vVERSION`. Show the user the chosen version, the commits and the verification, then ask whether to open the pull request; open it only when the user says yes. Never merge it. Report the chosen version, source commit, changed metadata and verification; for preparation-only work, end here.
+
+### Verify the bundled catalog sync
+
+Reuse an accepted sync result when resuming the same release, including a recorded up-to-date result. Otherwise use the Node version in `.node-version` and run `node scripts/update-provider-catalog.ts --sync` with its default PublicProviderConf source from a clean checkout of the release branch. Capture the exit status and output, and check `git status --short` and the catalog diff.
+
+- **Updated.** Require exit status `0`, the final `Updated catalog:` message and a diff confined to `crates/dim-app-server/resources/default-catalog.json`. Review the summary for model removals, changes to defaults or API base URLs, and capability or limit regressions. Use the relevant diff, upstream data or catalog policy to explain questionable changes. Commit the accepted diff as the release PR's first commit and include the sync summary in the commit message.
+- **Up to date.** Require exit status `0`, `Catalog is up to date` and a clean checkout. Proceed with the version commit.
+- **Failed or needs review.** Stop before committing the catalog or changing the version if the command fails, its status, output and diff disagree, or the review finds unexplained changes. Report the error or the affected providers, models and fields. Address the cause before retrying. If a repository fix is needed, land it on `main` first. Then fetch `origin/main` and update the same release branch and its PR, if open, to include the fix before rerunning the sync. Resolve any unexplained changes before proceeding.
+
+Record the successful result in the release PR, with the affected providers and significant changes when there is a diff. [Recovery and nightly repair](#recovery) use the catalog from the existing source and skip the sync.
 
 ## Dispatch the release from main
 

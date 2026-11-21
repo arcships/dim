@@ -1,6 +1,5 @@
 //! Hook points through the public Session interfaces and real commands
 //! (`docs/design/plugins/Hooks.md`, appendix D).
-#![cfg(unix)]
 use dim_agent_capabilities::{
     defaults,
     execution_settings::ExecutionSettingsHost,

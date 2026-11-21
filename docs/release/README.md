@@ -44,7 +44,7 @@ For the next alpha, inspect registry versions across `dimcode-alpha`, `dimcode-w
 
 The release PR has one or two commits, in this order:
 
-1. The bundled-catalog sync, when `node scripts/update-provider-catalog.ts --sync` produced a diff. The App Server embeds a checked-in provider catalog and nothing refreshes it during a build.
+1. The bundled-catalog sync commit when the [release skill's catalog sync checks](../../.agents/skills/dim-release/SKILL.md#verify-the-bundled-catalog-sync) accept a diff. The App Server embeds the catalog from the release commit.
 2. The version commit, which synchronizes:
 
 | File | Fields |
@@ -139,11 +139,11 @@ and runtime validation before fat LTO is enabled there. Other targets still need
 release-profile build and runtime validation; Linux or macOS measurements do not establish their
 peak memory requirements.
 
-The Ubuntu preflight generates the Rust distribution notices once with cargo-about 0.9.3 using the versioned checkout. All six targets download that artifact. Linux builds on each native host with GNU tools in a digest-pinned manylinux_2_28 container. The executable also runs in that glibc 2.28 environment. Windows uses native MSVC, clang-cl on ARM64, NASM on x64, and the Windows system tar to create ZIP archives. Actions installs Node from `.node-version` and Rust uses `rust-toolchain.toml`. Web and Release assembly run on hosted Ubuntu.
+The Ubuntu preflight generates the Rust distribution notices once with the pinned prebuilt cargo-about 0.9.3 binary (verified by SHA-256) using the versioned checkout. All six targets download that artifact. Linux builds on each native host with GNU tools in a digest-pinned manylinux_2_28 container. The executable also runs in that glibc 2.28 environment. Windows uses native MSVC, clang-cl on ARM64, NASM on x64, and the Windows system tar to create ZIP archives. Actions installs Node from `.node-version` and Rust uses `rust-toolchain.toml`. Web and Release assembly run on hosted Ubuntu.
 
 The separate PR workflow uses self-hosted macOS ARM64, Windows x64, and Linux x64 runners. Register self-hosted runners with the [OS and architecture labels](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/use-in-a-workflow). A Linux x64 runner that carries workspace verification also has the `dim-verify` label and bubblewrap installed. Keep PR runner credentials and private networks isolated as required by the [CI trust model](#ci-trust-model).
 
-The platform-independent `changes` and `ci-ok` jobs can run on any eligible self-hosted runner.
+The platform-independent `changes`, `scripts`, and `ci-ok` jobs are pinned to self-hosted Linux x64 runners so they do not claim macOS or Windows slots.
 
 ## GitHub workflows
 
@@ -178,17 +178,17 @@ failure stops packaging. An explicitly requested historical tag that predates
 the builder uses its original Cargo build. Linux arm64, macOS and Windows
 release packages use the ordinary Cargo executable.
 
-`ci.yml` runs on pull requests, pushes to `main`, and manual dispatch. A pull request runs the groups its changed paths need, as decided by `scripts/ci-changes.mjs`. A push to `main` runs only `changes` and `ci-ok` when its entire push range changes only documentation paths that select no check group. Architecture pages checked by `xtask` and the native storage format document retain the full main run, as do mixed pushes and pushes whose base cannot be compared. Manual dispatch selects every group. Every push to `main` runs its selected jobs to completion: a later push does not cancel them, so each merge has its own result and the `main CI` badge in the [README](../../README.md) reports the latest finished one.
+`ci.yml` runs on pull requests, pushes to `main`, a daily scheduled full sweep (`0 19 * * *` UTC), and manual dispatch. A pull request runs the groups its changed paths need, as decided by `scripts/ci-changes.mjs`. A push to `main` runs only `changes` and `ci-ok` when its entire push range changes only paths that select no check group (documentation and non-code repository metadata); pushes touching any checked path or whose base cannot be compared keep the full `main` run while the daily scheduled sweep is established (ADR 026 D5). Scheduled sweeps and manual dispatch select every group across both Linux and macOS: if a scheduled sweep fails on a cross-group regression, the maintainers triage it and bisect the `main` commit range since the previous passing sweep back to the regressing merge. Every push to `main` runs its selected jobs to completion: a later push does not cancel them, so each merge has its own result and the `main CI` badge in the [README](../../README.md) reports the latest finished one.
 
-CI builds the workspace, checks formatting and Clippy, runs workspace tests and boundary checks, runs the packaging/development script tests, and exercises the ignored actual CLI profile and public Node-backed flows. `ci-ok` passes when every selected gating job passes, so it is the check to require. CI builds without debug info (`CARGO_PROFILE_DEV_DEBUG=0`). The [build environment](../architecture/build.md) describes test artifact reuse, concurrency limits, and target deadlines. Cargo runs documentation tests with the same features, and ignored CLI and Node flows reuse the recorded binaries without package-scoped recompilation. Web source changes also run the `xtask` check, which reads them for branch id literals. Node-backed checks run for runtime, binding and service-contract paths, and CLI-only changes retain their ordinary and actual-profile flows. Evaluation tests use `xtask/eval-tests` for `xtask/` changes, and the wall-clock handoff runs for execution-related changes. PRs run `verify (linux)` for the selected groups. Rust changes also run `macos-native` on Apple Silicon, and changes affecting native packaging or code layout select its macOS script checks. Both jobs feed `ci-ok`. Full `main` pushes run `verify (macos)`, and manual dispatch runs full verification on both Linux and macOS. The `web` job runs on self-hosted Windows x64. It stages the frontend package, verifies generated declarations and bundled dependency notices, and runs the Web tests.
+CI builds the workspace, checks formatting and Clippy, runs workspace tests and boundary checks, runs the packaging/development script tests in a dedicated Linux x64 `scripts` job, and exercises the ignored actual CLI profile and public Node-backed flows. `ci-ok` passes when every selected gating job passes, so it is the check to require. CI builds without debug info (`CARGO_PROFILE_DEV_DEBUG=0`). The [build environment](../architecture/build.md) describes test artifact reuse, concurrency limits, and target deadlines. Cargo runs documentation tests with the same features, and ignored CLI and Node flows reuse the recorded binaries without package-scoped recompilation. Web source changes, plugin pages and static generated graphs run the lightweight `static-checks` job (`xtask-check`) on Linux x64 without compiling business runtime crates, while `catalog.md` changes retain the runtime-assembled `xtask` check; from `scripts/`, `scripts/stage-web.mjs` and `scripts/run-rust-test.mjs` select the `web` job (the latter deliberately selects every group), while Rust files read directly by packaging scripts (`crates/dim-app-server/src/protocol.rs`, `crates/dim-app-server/src/storage/sqlite.rs`, and `crates/dim-app-server/resources/`) retain their owning packaging checks. Node-backed checks run for runtime, binding and service-contract paths, and CLI-only changes retain their ordinary and actual-profile flows. Windows client transport and CLI terminal crates (`crates/dim-cli/`, `crates/dim-client/`, `crates/dim-agent-types/`, `vendor/grok-build/`) trigger `windows-cli`. Evaluation tests use `xtask/eval-tests` for `xtask/` changes, and the wall-clock handoff runs for execution-related changes. PRs run `verify (linux)` for the selected Rust/`xtask` groups. Rust PRs also run `macos-native` on Apple Silicon, and changes affecting native packaging or code layout select its macOS script checks on PRs, `main` pushes, scheduled sweeps and manual runs. All selected jobs feed `ci-ok`. Full `main` pushes run `verify (macos)`, and scheduled sweeps and manual dispatch run full verification on both Linux and macOS. The `web` job runs on self-hosted Windows x64. It stages the frontend package, verifies generated declarations and bundled dependency notices, and runs the Web tests.
 
 The `Verify Python plugins` step is off by default. When a Python plugin ships, set the repository Actions variable `DIM_CI_PYTHON_PLUGINS` to `true` to run it whenever the Node check group is selected. It prepares CPython for the `python_plugin_` flows and reuses the App Server test binary from the workspace build. See the [App Server verification commands](../../crates/dim-app-server/README.md#verification) to run the suites locally.
 
-The `Verify downloaded Node runtime` step runs on full `main` push checks and manual dispatch. It switches a running system Node to the official downloaded archive and reuses the same App Server test binary. The public Node bindings check uses the installed interpreter.
+The `Verify downloaded Node runtime` step runs on full `main` push checks, scheduled full sweeps, and manual dispatch. It switches a running system Node to the official downloaded archive and reuses the same App Server test binary. The public Node bindings check uses the installed interpreter.
 
 ### Action pins and updates
 
-External Actions in every workflow use full commit SHAs, including `code-layout.yml`. This policy covers both persistent self-hosted runners and GitHub-hosted runners. Pinning does not change the [CI trust boundary](#ci-trust-model).
+External Actions in every workflow and local composite action (`.github/actions/*/action.yml`) use full commit SHAs, including `code-layout.yml`. This policy covers both persistent self-hosted runners and GitHub-hosted runners. Pinning does not change the [CI trust boundary](#ci-trust-model).
 
 Update an Action in a normal pull request:
 
@@ -200,7 +200,7 @@ The release script suite rejects external Action references that are not full co
 
 ### ACP Registry checks
 
-The `acp-registry` job runs on the trusted Linux x64 runner for full `main` push checks and manual CI runs. It installs the toolchain from `rust-toolchain.toml`, compiles `dimcode` with both OAuth client ID secrets and executes the unmodified upstream Registry authentication checker and unauthenticated protocol matrix, pinned to the revision in `ci.yml`. Missing secrets, authentication failures, skipped authentication checks or failed advertised protocol methods fail `ci-ok`. Pull requests use the ordinary Gateway/helper flow tests without client IDs.
+The `acp-registry` job runs on the trusted Linux x64 runner for `main` pushes that select `rust` or `scripts`, scheduled sweeps, and manual CI runs. It installs the toolchain from `rust-toolchain.toml`, compiles `dimcode` with both OAuth client ID secrets and executes the unmodified upstream Registry authentication checker and unauthenticated protocol matrix, pinned to the revision in `ci.yml`. Missing secrets, authentication failures, skipped authentication checks or failed advertised protocol methods fail `ci-ok`. Pull requests use the ordinary Gateway/helper flow tests without client IDs.
 
 `scripts/check-acp-registry.mjs EXECUTABLE REGISTRY_CHECKOUT REPORT_DIRECTORY` also runs locally with uv and tar available. It uses Python 3.14.2 with no added Python packages, makes a temporary binary manifest with the executable's actual version, disables browser launch to exercise terminal capability negotiation, and stops its isolated daemon on exit. Reports retain upstream/source provenance and the auth/matrix results for one day; the executable and account home are never uploaded. Update the pinned upstream revision only after running the same check against the candidate revision.
 
@@ -215,10 +215,11 @@ The `dependencies` job uses the `cargo-deny` version pinned in
 cargo deny --locked check advisories licenses
 ```
 
-Install that same tool version to run the check locally. The job runs for Rust
-check groups and dependency-policy changes; `deny.toml` or root `LICENSE` edits
-alone do not trigger workspace compilation. Pushes to `main` and manual CI runs
-also scan. Its failure or cancellation fails the existing `ci-ok` check.
+Install that same tool version to run the check locally. The job runs when
+Cargo manifests, `Cargo.lock`, `deny.toml` or root `LICENSE` change;
+`deny.toml` or root `LICENSE` edits alone do not trigger workspace compilation.
+Full `main` pushes, daily scheduled sweeps and manual CI runs also scan. Its
+failure or cancellation fails the existing `ci-ok` check.
 
 [`deny.toml`](../../deny.toml) owns the policy. It enables all workspace features
 and includes development dependencies, unpublished workspace members and all

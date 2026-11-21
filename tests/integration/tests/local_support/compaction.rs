@@ -1,9 +1,12 @@
 //! Window facts and the strategy that takes the retention rule's cut, so an
 //! execution flow test can compact a real command's history and read the
 //! digest (ContextCompaction §5.10, acceptance 18).
-#![expect(
-    dead_code,
-    reason = "three flow binaries share this fixture; each uses the parts it needs"
+#![cfg_attr(
+    not(unix),
+    allow(
+        dead_code,
+        reason = "unix execution flows also use helpers from this fixture"
+    )
 )]
 use dim_agent_capabilities::{
     agent_loop::AgentLoop,

@@ -1583,6 +1583,7 @@ dependencies = [
  "dim-agent-types",
  "dim-app-server",
  "dim-cli",
+ "dim-client",
  "dim-event-hub",
  "dim-goal",
  "dim-image-understanding",
@@ -6052,17 +6053,25 @@ dependencies = [
  "dim-session-title",
  "futures-util",
  "libc",
- "proc-macro2",
  "rusqlite",
  "rutis",
  "rutis-bridge",
  "rutis-loader",
- "rutis-types",
  "serde",
  "serde_json",
- "syn 2.0.119",
  "tokio",
  "tokio-util",
+ "xtask-check",
+]
+
+[[package]]
+name = "xtask-check"
+version = "0.1.0-alpha.27"
+dependencies = [
+ "proc-macro2",
+ "rutis-types",
+ "serde_json",
+ "syn 2.0.119",
 ]
 
 [[package]]

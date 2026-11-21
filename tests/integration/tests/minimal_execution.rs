@@ -1,11 +1,8 @@
 //! Integration tests for the persistent shell execution capability.
 //! Recovery contract: docs/design/shell-exec-recovery.md.
 
-#![cfg(unix)]
-#[path = "local_support/compaction.rs"]
-mod compaction_support;
-#[path = "local_support/process.rs"]
-mod process_support;
+use crate::compaction_support;
+use crate::process_support;
 use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,
@@ -549,7 +546,7 @@ fn tool_results(events: &[Arc<AgentEvent>]) -> usize {
 }
 
 /// #552: the entry TimelineTree registers for `<dim-branch-line>`.
-const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; it is state about the line, not a request."#;
+const IDENTITY_ENTRY: &str = r#"<dim-branch-line branch="C" parent="main" source="tool">: which line of this session you are, placed by the runtime at the start of a line's own history. A later block of this name replaces the earlier one; a block carrying `default` is the note a move writes. Both are state about the line, not requests."#;
 
 fn system_text(prompt: &SystemPrompt) -> String {
     match prompt {

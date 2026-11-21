@@ -221,7 +221,7 @@ fn dim_device_login_can_retry_the_model_refresh_from_the_account_panel() {
         }]});
         wire.reply(&retry, catalog.clone());
         let models = wire.read("provider.models.query");
-        wire.reply(&models, super::models::picker_page(PROVIDER, "DimAgent", json!({"catalog":catalog})));
+        wire.reply(&models, picker_page(PROVIDER, "DimAgent", json!({"catalog":catalog})));
         wire.hold();
     });
     let mut command = home.command();
