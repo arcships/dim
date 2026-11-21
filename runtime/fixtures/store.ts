@@ -60,6 +60,14 @@ export default definePlugin({
           assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'replaceConnection', expected: full, record: changed } }), changed)
           await assert.rejects(() => sqlite.commitEdit({ providerId: copyId, edit: { kind: 'refreshStatic', expected: full, record: changed } }),
             (error: any) => error.code === 'provider_conflict')
+          const account = { credentialEpoch: 'fixture', generation: 1 }
+          const managedId = 'managed-refresh-fixture'
+          const refresh = { kind: 'refreshManaged' as const, expectedVersion: null, catalog: { account, models: [] }, current: account }
+          await assert.rejects(() => sqlite.commitEdit({ providerId: managedId, edit: { ...refresh, current: { ...account, generation: 2 } } }),
+            (error: any) => error.code === 'provider_account_changed')
+          assert.equal(await sqlite.readRecord({ providerId: managedId, projection: { kind: 'version' } }), null)
+          const refreshed = await sqlite.commitEdit({ providerId: managedId, edit: refresh })
+          assert.equal(refreshed.version, 1)
           const window = await sqlite.managementPage({providerId: copyId, page: { limit: 1 }})
           assert.equal(window.next, 'first')
           assert.deepEqual(Object.keys(window.pageNames ?? {}), ['first'])
