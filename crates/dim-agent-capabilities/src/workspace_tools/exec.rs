@@ -10,9 +10,8 @@ use super::{
 use crate::{
     host::{HostError, ToolExecutionContext},
     host_platform::{
-        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecHost, ISOLATION_SUMMARY,
-        Isolation, Os, ProcessSpec, ProcessSpecError, ProcessTree, ShellEdition, ShellKind,
-        signal_name,
+        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecHost, ISOLATION_SUMMARY, Isolation,
+        Os, ProcessSpec, ProcessSpecError, ProcessTree, ShellEdition, ShellKind, signal_name,
     },
     tool_registry::definition,
 };
@@ -2051,7 +2050,7 @@ impl ExecHost {
         })
     }
 
-    pub(crate) fn command(&self, task_id: &str) -> Result<Arc<CommandTask>, CaptureError> {
+    pub(crate) fn command_task(&self, task_id: &str) -> Result<Arc<CommandTask>, CaptureError> {
         match self.commands.lock().unwrap().get(task_id) {
             Some(crate::host_platform::ExecutionTask::Command(task)) => Ok(task.clone()),
             _ => Err(CaptureError::Unknown),
@@ -2060,20 +2059,22 @@ impl ExecHost {
 
     pub(crate) fn settle_command(&self, task_id: &str, task: &Arc<CommandTask>) {
         let mut commands = self.commands.lock().unwrap();
-        if matches!(commands.get(task_id),Some(crate::host_platform::ExecutionTask::Command(held)) if Arc::ptr_eq(held,task))
-        {
+        if matches!(
+            commands.get(task_id),
+            Some(crate::host_platform::ExecutionTask::Command(held)) if Arc::ptr_eq(held, task)
+        ) {
             commands.remove(task_id);
         }
     }
     pub async fn retain_output(&self, task_id: &str) -> Result<String, CaptureError> {
-        self.command(task_id)?
+        self.command_task(task_id)?
             .output
             .ensure_file()
             .await
             .map_err(CaptureError::Unavailable)
     }
     pub async fn tail(&self, task_id: &str) -> Result<OutputTail, CaptureError> {
-        let task = self.command(task_id)?;
+        let task = self.command_task(task_id)?;
         let output = &task.output;
         let capture = output.capture.lock().await;
         Ok(OutputTail {
@@ -2210,7 +2211,9 @@ impl RunningCommand {
         let deadline = timeout.map(|ms| task.started + Duration::from_millis(ms));
         let observed = tokio::select! {
             biased;
-            status = self.tree.wait() => status.map(Observed::Exited).map_err(|error| error.to_string()),
+            status = self.tree.wait() => {
+                status.map(Observed::Exited).map_err(|error| error.to_string())
+            },
             _ = async { tokio::time::sleep_until(deadline.expect("guarded")).await }, if deadline.is_some() => Ok(Observed::TimedOut),
             _ = task.timeout.cancelled() => Ok(Observed::TimedOut),
             _ = self.output.failed.cancelled() => Ok(Observed::OutputFailed),

@@ -11,7 +11,7 @@ use dim_agent_capabilities::{
     },
     host::*,
     host_platform::{
-        ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+        ExecHost, ExecShellRuntime, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
     },
     methods::{RpcError, SessionMethods},
     model_provider::ModelProviderPlugin,

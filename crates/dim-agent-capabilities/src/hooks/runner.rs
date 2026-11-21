@@ -2759,7 +2759,7 @@ mod tests {
     #[cfg(unix)]
     fn test_runtime(dir: &Path, sources: Arc<dyn ReadHookSources>) -> Arc<HooksRuntime> {
         use crate::host_platform::{
-            ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+            ExecHost, ExecShellRuntime, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
         };
         std::fs::create_dir_all(dir.join("home")).unwrap();
         let mut platform = ExecHost::current(ShellStatus::Available(ExecShellRuntime {

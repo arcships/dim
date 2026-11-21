@@ -1,6 +1,6 @@
 use crate::{methods::ManagementMethods, protocol::Empty};
 use dim_agent_capabilities::{
-    host_platform::{ExecShellSettingsError, ExecHost},
+    host_platform::{ExecHost, ExecShellSettingsError},
     methods::{Interruption, MethodCall, MethodDecl, RpcError, params, reply},
 };
 use dim_agent_runtime::Names;

@@ -2424,10 +2424,7 @@ fn find_executable(name: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    fn host_with(
-        env: &[(&str, &str)],
-        toolchains: Option<Vec<InstalledToolchain>>,
-    ) -> ExecHost {
+    fn host_with(env: &[(&str, &str)], toolchains: Option<Vec<InstalledToolchain>>) -> ExecHost {
         let mut platform = ExecHost::current(ShellStatus::Unavailable {
             code: "test",
             reason: String::new(),

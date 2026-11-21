@@ -2944,7 +2944,7 @@ mod toolhost {
         defaults,
         execution_settings::ExecutionSettingsHost,
         host_platform::{
-            ExecShellRuntime, ExecHost, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
+            ExecHost, ExecShellRuntime, OutputEncoding, ShellEdition, ShellSource, ShellStatus,
         },
         workspace_tools::{self, FileToolBoundary, WorkspaceToolsConfig},
     };

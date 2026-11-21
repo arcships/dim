@@ -2,8 +2,7 @@
 //! a Modality host task relies on.
 #![cfg(target_os = "macos")]
 use dim_agent_capabilities::host_platform::{
-    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, ExecHost, ShellStatus,
-    SystemServices,
+    ConfinedError, ConfinedOutput, ConfinedSpec, Confinement, ExecHost, ShellStatus, SystemServices,
 };
 use serde_json::Value;
 use std::ffi::OsString;

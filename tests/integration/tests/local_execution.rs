@@ -11,7 +11,7 @@ use dim_agent_capabilities::{
     history::HistoryRenderer,
     host::*,
     host_platform::{
-        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecShellRuntime, ExecHost,
+        EXEC_SHELL_CONFIG_INVALID, EXEC_SHELL_UNAVAILABLE, ExecHost, ExecShellRuntime,
         HostPlatformConfig, HostPlatformPlugin, OutputEncoding, ShellEdition, ShellSource,
         ShellStatus, resolve_shell,
     },

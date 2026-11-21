@@ -5,7 +5,7 @@
 
 use crate::{
     host::{ToolDriver, ToolExecutionContext, ToolHost},
-    host_platform::{HostFacts, ExecHost, ISOLATION_SUMMARY},
+    host_platform::{ExecHost, HostFacts, ISOLATION_SUMMARY},
     shell_session::{CallContext, ShellSession},
     timeline_tree::TreeCommands,
 };
