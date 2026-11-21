@@ -178,7 +178,7 @@ impl CollaborationSession {
         Some(ApprovalDestination {
             branch_id: request.branch.clone(),
             delegation_id: request.op.clone(),
-            agent_id: request.agent_id.clone(),
+            agent_id: request.usage.host.agent_id.clone(),
             interactive: self.interactive,
             approval_tools: self.approval_tools,
         })
@@ -501,7 +501,7 @@ impl CollaborationSession {
                 let owner = state
                     .requests
                     .get_mut(member)
-                    .filter(|request| request.agent_id == agent_id)
+                    .filter(|request| request.usage.host.agent_id == agent_id)
                     .map(|request| {
                         request.approvals_open = false;
                         request.branch.clone()

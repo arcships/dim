@@ -241,11 +241,6 @@ pub struct Collaboration {
     #[cfg(feature = "testing")]
     reads: AtomicUsize,
 }
-struct Peer {
-    usage: Arc<SessionUse>,
-    agent_id: String,
-    session: Session,
-}
 enum NewMember {
     Agent(String),
     Temporary(AgentProfile),
@@ -278,7 +273,7 @@ impl Collaboration {
         target: NewMember,
         adopted: Option<ModelSelection>,
         permission: PermissionPolicy,
-    ) -> Result<Peer, Failure> {
+    ) -> Result<Arc<SessionUse>, Failure> {
         let (leader_host, leader) = self.index.session(leader_id).ok_or(Refusal::Closed)?;
         let startup = adopted
             .as_ref()
@@ -595,7 +590,7 @@ impl Collaboration {
         from: &str,
         agent_id: &str,
         session_id: &str,
-    ) -> Result<Peer, Refusal> {
+    ) -> Result<Arc<SessionUse>, Refusal> {
         self.authorize_peer(from, agent_id, session_id)?;
         self.lookup(agent_id, session_id).await
     }
@@ -616,13 +611,17 @@ impl Collaboration {
         leader: &str,
         agent_id: &str,
         session_id: &str,
-    ) -> Result<Peer, Refusal> {
+    ) -> Result<Arc<SessionUse>, Refusal> {
         if self.member_agent(leader, session_id).as_deref() != Some(agent_id) {
             return Err(Refusal::TeamMemberNotFound);
         }
         self.lookup(agent_id, session_id).await
     }
-    async fn lookup(self: &Arc<Self>, agent_id: &str, session_id: &str) -> Result<Peer, Refusal> {
+    async fn lookup(
+        self: &Arc<Self>,
+        agent_id: &str,
+        session_id: &str,
+    ) -> Result<Arc<SessionUse>, Refusal> {
         let lease = self
             .index
             .acquire_member(agent_id, session_id)
@@ -631,13 +630,7 @@ impl Collaboration {
                 crate::agents::SessionsError::Rejected { .. } => Refusal::TeamMemberNotFound,
                 _ => Refusal::MemberClosed,
             })?;
-        let usage = Arc::new(lease);
-        let session = usage.session.clone();
-        Ok(Peer {
-            agent_id: agent_id.to_owned(),
-            session,
-            usage,
-        })
+        Ok(Arc::new(lease))
     }
     /// Every participant of the caller's Team; empty outside a Team.
     fn team(&self, from: &str) -> Vec<Participant> {
@@ -883,8 +876,6 @@ struct Request {
     branch: String,
     op: String,
     turn_id: String,
-    agent_id: String,
-    session: Session,
     input_event_id: Option<String>,
     /// A client cancel on this request: the settle names it when the member
     /// never started the turn (`cancel_named`), and the queued input is
@@ -2033,12 +2024,13 @@ impl CollaborationSession {
         adopted: Option<ModelSelection>,
         permission: Option<PermissionPolicy>,
     ) -> Result<CollaborationDelivery, Failure> {
-        let delivered = |peer: &Peer, input: Option<String>, outcome| CollaborationDelivery::Ok {
-            agent_id: peer.agent_id.clone(),
-            session_id: peer.session.id().to_owned(),
-            input_event_id: input,
-            outcome,
-        };
+        let delivered =
+            |peer: &SessionUse, input: Option<String>, outcome| CollaborationDelivery::Ok {
+                agent_id: peer.host.agent_id.clone(),
+                session_id: peer.session.id().to_owned(),
+                input_event_id: input,
+                outcome,
+            };
         match &event.kind {
             EventKind::CollaborationRequest(data) => {
                 self.request(branch_id, event, data, adopted, permission)
@@ -2201,13 +2193,11 @@ impl CollaborationSession {
             state.requests.insert(
                 member.clone(),
                 Request {
-                    usage: peer.usage.clone(),
+                    usage: peer.clone(),
                     _hold: hold,
                     branch: branch_id.to_owned(),
                     op: event.id.clone(),
                     turn_id: data.turn_id.clone(),
-                    agent_id: peer.agent_id.clone(),
-                    session: peer.session.clone(),
                     input_event_id: None,
                     cancelled_by_client: false,
                     carrying_out: false,
@@ -2272,7 +2262,7 @@ impl CollaborationSession {
             } else {
                 CANCELLED_BY_CLIENT
             };
-            let session = peer.usage.clone();
+            let session = peer.clone();
             let input = input.id.clone();
             let stops = self.clone();
             self.collaboration.tasks.spawn(async move {
@@ -2282,7 +2272,7 @@ impl CollaborationSession {
             });
         }
         Ok(CollaborationDelivery::Ok {
-            agent_id: peer.agent_id,
+            agent_id: peer.host.agent_id.clone(),
             session_id: member,
             input_event_id: Some(input.id.clone()),
             outcome: None,
@@ -2365,8 +2355,7 @@ impl CollaborationSession {
                     (
                         (
                             request.op.clone(),
-                            request.agent_id.clone(),
-                            request.session.clone(),
+                            request.usage.clone(),
                             request.input_event_id.clone(),
                             request.cancelled_by_client,
                             request.leader_reason.clone(),
@@ -2378,12 +2367,13 @@ impl CollaborationSession {
             return;
         };
         self.retire_member_approvals(branch_id, member).await;
-        let (op, agent_id, session, input, cancelled, leader_reason) = request;
+        let (op, usage, input, cancelled, leader_reason) = request;
+        let session = &usage.session;
         let through = match &idle {
             Some(Ok(cutoff)) => Some(*cutoff),
             _ => None,
         };
-        let (last_turn_id, text, derived) = outcome(&session, input.as_deref(), through).await;
+        let (last_turn_id, text, derived) = outcome(session, input.as_deref(), through).await;
         let settle = self
             .state
             .lock()
@@ -2406,7 +2396,7 @@ impl CollaborationSession {
             let _ = timeline.append(
                 EventKind::CollaborationResult(CollaborationResultData {
                     request_event_id: op,
-                    agent_id,
+                    agent_id: usage.host.agent_id.clone(),
                     session_id: member.to_owned(),
                     last_turn_id,
                     text,
@@ -2505,12 +2495,11 @@ impl CollaborationSession {
         // the member may not have consumed yet.
         let stop = self.collaboration.stop.clone();
         let tasks = self.collaboration.tasks.clone();
-        let session = session.clone();
         let input = input.to_owned();
         let reason = reason.to_owned();
         let usage = usage.clone();
         let wait = async move {
-            let _usage = usage;
+            let session = &usage.session;
             // The mark lives until this block ends, and a failure of the loop
             // below clears the request's flag before it goes.
             let result: dim_agent_runtime::Result<()> = async {
@@ -2526,9 +2515,9 @@ impl CollaborationSession {
                             }
                         }
                     }
-                    match input_fate(&session, &input, &mut after, &mut open).await? {
+                    match input_fate(session, &input, &mut after, &mut open).await? {
                         InputFate::Consumed(Some(turn)) => {
-                            stop_member_turn(&session, &turn, &reason)?;
+                            stop_member_turn(session, &turn, &reason)?;
                             return Ok(());
                         }
                         // The member deleted the input first: no turn will
@@ -2716,7 +2705,7 @@ impl CollaborationSession {
                 } else {
                     None
                 };
-                let session = request.session.clone();
+                let session = request.usage.clone();
                 let start = input.map(|input| (request.usage.clone(), input));
                 let start = start.map(|(usage, input)| {
                     (usage, input, Stopping::mark(self, &mut state, &member))
@@ -2735,7 +2724,9 @@ impl CollaborationSession {
                     });
                 }
             } else {
-                let _ = session.interrupt(ROOT_BRANCH_ID, INTERRUPTED.into());
+                let _ = session
+                    .session
+                    .interrupt(ROOT_BRANCH_ID, INTERRUPTED.into());
             }
             self.settle(branch_id, &member, None).await;
         }

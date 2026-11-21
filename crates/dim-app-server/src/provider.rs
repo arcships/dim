@@ -1721,6 +1721,9 @@ impl dim_agent_capabilities::host::ConfigureModel for ProviderService {
             ProviderService::apply_preferences(&self, &current, &update, &cancel).await
         })
     }
+}
+
+impl ProviderService {
     fn dispatch_prepare_startup(
         self: Arc<Self>,
         args: rutis_bridge::session::Value,
@@ -3242,7 +3245,16 @@ impl dim_agent_capabilities::host::ProviderService for ProviderService {
 
 impl rutis_bridge::session::HostDispatch for ProviderService {
     fn methods(&self) -> Option<serde_json::Value> {
-        provider_methods(true)
+        let mut methods = provider_methods(true)?;
+        for method in [
+            "prepareStartup",
+            "checkStartup",
+            "retainStartup",
+            "releaseStartup",
+        ] {
+            methods[method] = serde_json::json!("async");
+        }
+        Some(methods)
     }
     fn invoke(
         &self,
@@ -3250,7 +3262,13 @@ impl rutis_bridge::session::HostDispatch for ProviderService {
         args: rutis_bridge::session::Value,
     ) -> rutis_bridge::session::Reply {
         let owner = self.mounted.upgrade().expect("mounted Provider");
-        dispatch_provider(owner.clone(), Some(owner), method, args)
+        match method {
+            "prepareStartup" => owner.dispatch_prepare_startup(args),
+            "checkStartup" => owner.dispatch_check_startup(args),
+            "retainStartup" => owner.dispatch_retain_startup(args),
+            "releaseStartup" => owner.dispatch_release_startup(args),
+            _ => dispatch_provider(owner.clone(), Some(owner), method, args),
+        }
     }
 }
 impl ResolveModalityConnection for ProductResolver {

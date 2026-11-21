@@ -1019,10 +1019,6 @@ pub trait ConfigureModel: Send + Sync {
         update: ModelPreferenceUpdate,
         cancel: CancellationToken,
     ) -> HostFuture<'static, ModelSelection>;
-    fn dispatch_prepare_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
-    fn dispatch_check_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
-    fn dispatch_retain_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
-    fn dispatch_release_startup(self: Arc<Self>, args: BridgeValue) -> Reply;
 }
 
 /// Selection and completion supplied by the active model catalog.
@@ -1100,10 +1096,6 @@ pub fn provider_methods(managed: bool) -> Option<serde_json::Value> {
     if managed {
         methods["configuration"] = json!("async");
         methods["applyPreferences"] = json!("async");
-        methods["prepareStartup"] = json!("async");
-        methods["checkStartup"] = json!("async");
-        methods["retainStartup"] = json!("async");
-        methods["releaseStartup"] = json!("async");
     }
     Some(methods)
 }
@@ -1114,7 +1106,6 @@ pub fn dispatch_provider(
     method: &str,
     args: BridgeValue,
 ) -> Reply {
-    let managed = || configuration.ok_or_else(|| crate::port_faces::unknown_method(PROVIDER_SERVICE, method));
     match method {
         "resolve" => {
             let request: ModelSelectionRequest =
@@ -1139,7 +1130,8 @@ pub fn dispatch_provider(
         }
         "complete" => crate::auxiliary_model::dispatch_complete(owner, args),
         "configuration" | "applyPreferences" => {
-            let owner = managed()?;
+            let owner = configuration
+                .ok_or_else(|| crate::port_faces::unknown_method(PROVIDER_SERVICE, method))?;
             let cancel = CancellationToken::new();
             let guard = cancel.clone().drop_guard();
             let operation = if method == "configuration" {
@@ -1172,10 +1164,6 @@ pub fn dispatch_provider(
                 operation.await.map_err(ModelPortError::from)
             })
         }
-        "prepareStartup" => managed()?.dispatch_prepare_startup(args),
-        "checkStartup" => managed()?.dispatch_check_startup(args),
-        "retainStartup" => managed()?.dispatch_retain_startup(args),
-        "releaseStartup" => managed()?.dispatch_release_startup(args),
         _ => Err(crate::port_faces::unknown_method(PROVIDER_SERVICE, method)),
     }
 }

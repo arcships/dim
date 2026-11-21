@@ -524,6 +524,7 @@ while the first write is still unpublished.
 | --- | --- |
 | `sessions` | Typed `AgentIndex` methods (Agents) over the `Session` facade ([agent.rs](../../../crates/dim-agent-runtime/src/agent.rs), [branch.rs](../../../crates/dim-agent-runtime/src/branch.rs)); Agents' directory part exposes them by name ([sessions service, Appendix A](../appserver/sessions-service.md#appendix-a-rust-binding)) |
 | `launch` | `AgentIndex::launch(LaunchRequest) -> Result<LaunchReply, SessionsError>` |
+| `acquireUse`, `releaseUse`, `state` | `AgentIndex::acquire_member(agent, session)` pins the verified member. Collaboration holds that `SessionUse` through delivery and settlement and reads `Session::state` on the pinned generation. A bridge caller addresses its lease by `useId` and releases it explicitly or on unload. |
 | per-call acquire | `AgentIndex::acquire(id)` (existing, crate-internal) returning a `SessionUse` lease |
 | `input` | `Session::input(InputMessageData, branch)` (existing; returns the committed input for an id the branch already holds); a key is `InputBlock::Raw { key: Some(name), retire }` |
 | `lookup` | `Session::lookup(branch, submission_id)`, shared with `session.input_lookup`: a query of the branch's committed input identities; waits for the found input's publication |
