@@ -2,8 +2,7 @@
 //! `title`, Agents stores it in the Session's fixed configuration, and
 //! SessionTitle writes it once as the first manual title. SessionTitle stays
 //! the title's one writer (SessionTitle.md §2, session-title-metadata.md).
-#![cfg(unix)]
-mod support;
+use crate::support;
 
 use dim_agent_capabilities::{adapters::MockTools, defaults};
 use dim_agent_runtime::{AgentBuilder, AgentConfig, Feature};

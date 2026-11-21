@@ -3,7 +3,7 @@
 //! `dim_goal::install`, no TypeScript row. Each flow keeps its scenario and
 //! compares Goal's writes with the literal texts of support/texts.rs byte for
 //! byte.
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 use std::sync::Mutex;

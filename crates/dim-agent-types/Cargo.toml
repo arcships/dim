@@ -5,6 +5,11 @@ edition = "2024"
 license.workspace = true
 repository.workspace = true
 publish = false
+autotests = false
+
+[[test]]
+name = "agent_types_contract"
+path = "tests/agent_types_contract.rs"
 
 [dependencies]
 serde = { workspace = true }

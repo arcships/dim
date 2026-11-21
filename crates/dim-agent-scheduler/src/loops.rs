@@ -329,7 +329,8 @@ fn stamp(instant: Timestamp) -> String {
     format_instant(instant)
 }
 
-/// The clamp a self-paced `next` applies (§12.4).
+/// The clamp a self-paced delay applies (§12.4): the tool's `start` and
+/// `next` both use it.
 pub fn clamp_next(seconds: i64) -> i64 {
     seconds.clamp(MIN_NEXT_SECONDS, MAX_NEXT_SECONDS)
 }
@@ -349,6 +350,10 @@ pub struct StartRequest {
     pub prompt: String,
     /// A fixed cadence's interval; absent starts a self-paced loop.
     pub every_seconds: Option<u64>,
+    /// The delay before round 1. Only the `loop` tool fills it, so the model's
+    /// start never delivers at the call (§12.2); the user's entries leave it
+    /// absent, which makes round 1 due now.
+    pub first_delay_seconds: Option<i64>,
 }
 
 /// `loop_not_found` names no loop of the calling Session.
@@ -385,8 +390,10 @@ impl Loops {
         );
     }
 
-    /// Records a loop whose first round is due now, so `/loop` starts through
-    /// the delivery path rather than a plain user message (§12.2).
+    /// Records a loop. The first round is due now for the user's entries and
+    /// after the delay a tool start carries, so `/loop` starts through the
+    /// delivery path rather than a plain user message while the model's start
+    /// never delivers at its call (§12.2).
     ///
     /// Takes `shared.loops` for the record write and the live-loop flag
     /// refresh, as `change` and the pass do, so the refresh can never store a
@@ -401,11 +408,15 @@ impl Loops {
         }
         let _hold = self.shared.loops.lock().await;
         let now = self.shared.now();
+        let first_at = match request.first_delay_seconds {
+            Some(delay) => now + SignedDuration::from_secs(clamp_next(delay)),
+            None => now,
+        };
         let cadence = match request.every_seconds {
             Some(seconds) => Cadence::Every {
                 every_seconds: fixed_seconds(seconds)
                     .map_err(|message| SchedulerError::new("loop_invalid", message))?,
-                anchor: stamp(now),
+                anchor: stamp(first_at),
             },
             None => Cadence::SelfPaced,
         };
@@ -416,7 +427,7 @@ impl Loops {
             prompt: request.prompt,
             cadence,
             state: LoopState::Running,
-            next_at: Some(stamp(now)),
+            next_at: Some(stamp(first_at)),
             round: 1,
             delivering_round: None,
             expires_at: stamp(now + LIFETIME),

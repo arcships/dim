@@ -121,23 +121,12 @@ pub(crate) const THINKING_ROWS: usize = 4;
 /// shorter); collapsed, one row with the newest text, as the settled row
 /// is one. Collapsed callers supply the projection's bounded excerpt.
 pub(crate) fn live_thinking(text: &str, expanded: bool, width: usize, p: &Palette) -> Vec<String> {
+    let label = t("Thinking…");
     if !expanded {
-        return vec![thinking_summary_row(
-            t(if text.is_empty() {
-                "Thinking…"
-            } else {
-                "Thinking excerpt"
-            }),
-            text,
-            width,
-            p,
-        )];
+        return vec![thinking_summary_row(label, text, width, p)];
     }
     let body = thinking_body(text, width);
-    let mut rows = vec![
-        thinking_title(t("Thinking…"), width, p),
-        thinking_row("", width, p),
-    ];
+    let mut rows = vec![thinking_title(label, width, p), thinking_row("", width, p)];
     if body.len() > THINKING_ROWS {
         rows.push(thinking_row("…", width, p));
         let newest = &body[body.len() - (THINKING_ROWS - 1)..];

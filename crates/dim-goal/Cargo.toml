@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The operator's standing goal for a branch, as a rutis plugin"
+autotests = false
+
+[[test]]
+name = "goal_suite"
+path = "tests/goal_suite.rs"
 
 [dependencies]
 dim-agent-capabilities.workspace = true

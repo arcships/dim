@@ -4,6 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
+
+[[test]]
+name = "transport_flow"
+path = "tests/transport_flow.rs"
+
+[[test]]
+name = "provider_memory_flow"
+path = "tests/provider_memory_flow.rs"
+
+[[test]]
+name = "app_server_flow"
+path = "tests/app_server_flow.rs"
 
 [dependencies]
 dim-codemode.workspace = true

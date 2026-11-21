@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 publish = false
 description = "The built-in Modality adapter: media operations executed through aimux"
+autotests = false
+
+[[test]]
+name = "modality_aimux_flow"
+path = "tests/modality_aimux_flow.rs"
 
 [dependencies]
 aimux-core.workspace = true

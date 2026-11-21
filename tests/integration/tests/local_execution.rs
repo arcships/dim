@@ -1,12 +1,8 @@
 //! exec, BackgroundExec and wait flows on a real Unix shell
 //! (`docs/architecture/rust-agent/plugins/{BackgroundExec,WaitBranch}.md`).
-#![cfg(unix)]
-#[path = "local_support/compaction.rs"]
-mod compaction_support;
-#[path = "local_support/process.rs"]
-mod process_support;
-#[path = "local_support/task_store.rs"]
-mod task_store;
+use crate::compaction_support;
+use crate::process_support;
+use crate::task_store;
 use dim_agent_capabilities::toolchain::ToolchainSourceHost;
 use dim_agent_capabilities::{
     adapters::DefaultPrepareModelPlugin,

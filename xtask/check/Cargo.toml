@@ -1,0 +1,16 @@
+[package]
+name = "xtask-check"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+rutis-types = "0.23.0"
+serde_json.workspace = true
+syn = { version = "2", features = ["full", "visit"] }
+
+[lints]
+workspace = true

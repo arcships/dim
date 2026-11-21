@@ -49,8 +49,11 @@ pub enum AgentError {
     Multiple(Vec<AgentError>),
 }
 
-/// Why the tree refused an operation on a line, named the way the protocol's
-/// `appError` names it ([timeline branches §14](../../../docs/design/timeline-branches.md#14-clients)).
+/// Why the tree refused an operation on a line, named the way the protocol
+/// names it: the codes `session.branch_set_default` answers as its `appError`
+/// and the codes the branch tool answers as its own result
+/// ([timeline branches §11](../../../docs/design/timeline-branches.md#11-the-branch-tool),
+/// [§14](../../../docs/design/timeline-branches.md#14-clients)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchRefusal {
     /// The target is already the Session's default branch.
@@ -65,6 +68,12 @@ pub enum BranchRefusal {
     /// the default branch. The root's own refusal is the operation's input
     /// error, which its callers already answer.
     CannotEnd,
+    /// The caller may not open a line: only the root, and the current default
+    /// branch, open one.
+    NotOpener,
+    /// The Session holds its limit of open tool lines, counting the admitted
+    /// reservations.
+    LimitReached,
 }
 
 impl BranchRefusal {
@@ -75,6 +84,8 @@ impl BranchRefusal {
             Self::NotSelectable => "branch_not_selectable",
             Self::Protected => "branch_target_protected",
             Self::CannotEnd => "branch_cannot_end",
+            Self::NotOpener => "branch_not_opener",
+            Self::LimitReached => "branch_limit_reached",
         }
     }
 }
