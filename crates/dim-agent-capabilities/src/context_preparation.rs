@@ -92,6 +92,11 @@ impl ContextPreparation {
         &self,
         request: PublishConfiguration,
     ) -> dim_agent_runtime::Result<Option<u64>> {
+        if self.closing() {
+            return Err(AgentError::Cancelled(
+                "the branch closed before prompt publication".into(),
+            ));
+        }
         let before = PromptSnapshot::from_checkpoint(&request.adopted.prompts);
         self.publish_registered(
             (&before, request.adopted.configuration.as_ref()),

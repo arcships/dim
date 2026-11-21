@@ -1095,6 +1095,10 @@ impl DynPlugin for PromptPlugin {
         })
     }
 }
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromptRead {}
+
 #[rutis::service]
 impl Prompt {
     pub async fn configure(&self, request: PromptConfigurationRequest) -> Result<ConfigureOutcome> {
@@ -1106,14 +1110,11 @@ impl Prompt {
         }
     }
 
-    pub fn adopted_configuration(
-        &self,
-        _request: crate::port_faces::Empty,
-    ) -> Option<ModelConfiguration> {
+    pub fn adopted_configuration(&self, _request: PromptRead) -> Option<ModelConfiguration> {
         self.snapshot.subscribe().borrow().configuration.clone()
     }
 
-    pub async fn initial_completion(&self, _request: crate::port_faces::Empty) -> Result<()> {
+    pub async fn initial_completion(&self, _request: PromptRead) -> Result<()> {
         let mut opened = self.opened.subscribe();
         loop {
             if let Some(result) = opened.borrow_and_update().clone() {

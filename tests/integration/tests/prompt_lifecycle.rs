@@ -1197,16 +1197,39 @@ async fn overlapping_load_is_superseded_and_close_joins_cancellation() {
             }
         });
         started.notified().await;
+        let branch = session
+            .session_service::<dim_agent_capabilities::timeline_tree::TreeCommands>()
+            .unwrap()
+            .get("main")
+            .unwrap();
+        use dim_agent_capabilities::context_preparation::{
+            AdoptedPrompt, ContextPreparation, PublishConfiguration,
+        };
+        let publication = branch.service::<ContextPreparation>().unwrap();
+        let late = publication.publish(PublishConfiguration {
+            adopted: AdoptedPrompt {
+                prompts: snapshot.checkpoint(),
+                configuration: None,
+            },
+            changes: vec![PromptChange::Set {
+                entry: entry("late", "1", "late"),
+            }],
+            model: Some(configuration("late")),
+            tool_adoption: None,
+            inputs: vec![],
+        });
         let closing = tokio::spawn(async move { agent.close().await });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), async {
-                while !closing.is_finished() {
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .is_err()
-        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !branch.is_closing() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let cutoff = branch.sequence();
+        assert!(matches!(late.await, Err(AgentError::Cancelled(_))));
+        assert_eq!(branch.sequence(), cutoff);
+        assert!(!closing.is_finished());
         finish.notify_waiters();
         tokio::time::timeout(Duration::from_secs(2), closing)
             .await
