@@ -1,6 +1,9 @@
 name: PR check
 on:
   workflow_dispatch:
+  schedule:
+    # Daily full cross-platform sweep (ADR 026 D5).
+    - cron: '0 19 * * *'
   push:
     branches: [main]
   pull_request:
@@ -18,7 +21,7 @@ jobs:
     # Self-hosted runners keep state between jobs, so they run only code from branches of this
     # repository; fork pull requests skip every job and fail ci-ok. See docs/release/README.md.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.groups.outputs.rust }}
@@ -54,7 +57,7 @@ jobs:
         run: node scripts/adr-check.mjs --base HEAD^1
   dependencies:
     needs: changes
-    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.dependencies == 'true'
+    if: needs.changes.outputs.dependencies == 'true'
     runs-on: [self-hosted, windows, x64]
     timeout-minutes: 15
     env:
@@ -191,11 +194,33 @@ jobs:
         run: npm.cmd run check:boundary --prefix web --workspace=@dimcode/chat-ui
       - name: Build the chat-ui package
         run: npm.cmd run build --prefix web --workspace=@dimcode/chat-ui
+  scripts:
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 15
+    env:
+      CARGO_INCREMENTAL: "0"
+      RUSTC_WRAPPER: ""
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions-rust-lang/setup-rust-toolchain@c8ff772090ab9d00f7f7bd7b388f3c3032282e3b
+        with:
+          cache: false
+          build-warnings: ""
+      - name: Test development and release scripts
+        run: |
+          node --check scripts/check-acp-registry.mjs
+          node --test scripts/*.test.mjs
   verify:
     needs: changes
-    if: >-
-      needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true' ||
-      needs.changes.outputs.scripts == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.xtask == 'true'
     name: verify (${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -289,22 +314,17 @@ jobs:
       - name: Verify wall-clock background handoff
         if: needs.changes.outputs.execution == 'true'
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl integration_flow local_execution::a_long_foreground_command_moves_to_the_background_after_30_seconds --ignored --exact
-      - name: Test development and release scripts
-        if: needs.changes.outputs.scripts == 'true'
-        run: |
-          node --check scripts/check-acp-registry.mjs
-          node --test scripts/*.test.mjs
       - name: Verify actual CLI profiles and line-mode flows
         if: needs.changes.outputs.rust == 'true'
         shell: bash
         run: |
           set -euo pipefail
-          npm ci --prefix runtime --ignore-scripts --registry=https://registry.npmjs.org
+          npm ci --prefix runtime --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
           # The ignored CLI flows below start the real plugins, so their
           # packages are installed here, before the flows; the job's checkout
           # carries them into the Node binding checks as well.
-          npm ci --prefix runtime/plugins/workflow --ignore-scripts --registry=https://registry.npmjs.org
-          (cd runtime && npm install --no-save --ignore-scripts --install-links ./plugins/workflow)
+          npm ci --prefix runtime/plugins/workflow --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org
+          (cd runtime && npm install --no-save --ignore-scripts --no-audit --no-fund --install-links ./plugins/workflow)
           export DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server"
           # The TUI cases a tmux scenario replaces are ignored in the test
           # target and run only in the local tmux suite
@@ -384,7 +404,7 @@ jobs:
         run: node scripts/run-rust-test.mjs target/test-artifacts.jsonl transport_flow runtime_manager::runtime_switches_from_system_to_downloaded_node --ignored --exact
   macos-native:
     needs: changes
-    if: github.event_name == 'pull_request' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.macos_scripts == 'true')
+    if: (github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true') || needs.changes.outputs.macos_scripts == 'true'
     runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 30
     env:
@@ -401,7 +421,7 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
       - name: Test macOS native Rust flows
-        if: needs.changes.outputs.rust == 'true'
+        if: github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true'
         run: node scripts/test-macos-native.mjs
       - name: Test macOS code layout and release packaging
         if: needs.changes.outputs.macos_scripts == 'true'
@@ -463,9 +483,9 @@ jobs:
           retention-days: 1
   ci-ok:
     # The one check to require: it passes when every selected job passed and skipped jobs were not needed.
-    needs: [changes, dependencies, static-checks, windows-cli, web, verify, macos-native, acp-registry]
+    needs: [changes, dependencies, static-checks, windows-cli, web, scripts, verify, macos-native, acp-registry]
     if: always()
-    runs-on: self-hosted
+    runs-on: [self-hosted, linux, x64]
     timeout-minutes: 5
     steps:
       # A skipped changes job means a fork pull request, which this workflow does not verify.
