@@ -600,16 +600,15 @@ export type PromptConfigurationRequest =
 
 export type ConfigureOutcome = "unchanged" | "adopted" | "superseded"
 
-/** The request of an operation that takes none: the documented `{}`. */
-export type Empty = {
+export type PromptRead = {
 }
 
 export interface Prompt {
   /** @throws {AgentErrorThrown} */
   configure(request: PromptConfigurationRequest): Promise<ConfigureOutcome>
-  adoptedConfiguration(request: Empty): Promise<ModelConfiguration | null>
+  adoptedConfiguration(request: PromptRead): Promise<ModelConfiguration | null>
   /** @throws {AgentErrorThrown} */
-  initialCompletion(request: Empty): Promise<void>
+  initialCompletion(request: PromptRead): Promise<void>
 }
 
 /**
@@ -1183,7 +1182,7 @@ export type SessionsError =
   | { code: "publication_unknown"; message: string }
   | { code: "failed"; message: string }
 
-export type Empty2 = {
+export type Empty = {
 }
 
 /** Read-only policy access through the stable Agents directory. */
@@ -1197,7 +1196,7 @@ export interface SessionPermissions {
    * Reads the current host bound without creating or choosing a Session.
    * @throws {SessionsErrorThrown}
    */
-  permissionDefaults(request: Empty2): Promise<import('./plugin.js').PermissionPolicy>
+  permissionDefaults(request: Empty): Promise<import('./plugin.js').PermissionPolicy>
 }
 
 /**
