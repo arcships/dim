@@ -65,6 +65,7 @@ pub struct Overrides {
 /// endpoint a client connects to. The product path leaves every field empty.
 #[derive(Clone)]
 pub struct RunSettings {
+    pub platform_home: Option<PathBuf>,
     pub overrides: Overrides,
     pub model_config: Option<PathBuf>,
     pub unix_path: Option<PathBuf>,
@@ -90,6 +91,7 @@ pub struct RunSettings {
 impl Default for RunSettings {
     fn default() -> Self {
         Self {
+            platform_home: None,
             overrides: Overrides::default(),
             model_config: None,
             unix_path: None,
@@ -173,6 +175,7 @@ pub async fn serve_home(
     let mut config = ServerConfig {
         websocket_address: Some(([127, 0, 0, 1], 0).into()),
         unix_path: run.unix_path.clone(),
+        platform_home: run.platform_home.clone(),
         product_home: product.then(|| home.clone()),
         target_home: Some(if product {
             home.join("rust")

@@ -192,7 +192,15 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             ])
             .env(CHILD_HOME, &home)
             .env("SHELL", &shell)
-            .env("PATH", &bin)
+            .env(
+                "PATH",
+                std::env::join_paths([
+                    bin.as_path(),
+                    std::path::Path::new("/usr/bin"),
+                    std::path::Path::new("/bin"),
+                ])
+                .unwrap(),
+            )
             .output()
             .await
             .unwrap();
