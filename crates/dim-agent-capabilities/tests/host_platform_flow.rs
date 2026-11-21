@@ -1,5 +1,4 @@
 //! HostPlatform acceptance on Unix (`docs/architecture/rust-agent/plugins/HostPlatform.md`).
-#![cfg(unix)]
 use dim_agent_capabilities::execution_settings::{ExecutionSettings, ExecutionSettingsHost};
 use dim_agent_capabilities::host_platform::*;
 use dim_agent_capabilities::toolchain::{InstalledToolchain, ToolchainSourceHost};
@@ -188,7 +187,7 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
         let output = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "unchanged_shell_preferences_reuse_detection_and_edits_recover",
+                "host_platform_flow::unchanged_shell_preferences_reuse_detection_and_edits_recover",
                 "--nocapture",
             ])
             .env(CHILD_HOME, &home)
@@ -198,11 +197,12 @@ async fn unchanged_shell_preferences_reuse_detection_and_edits_recover() {
             .await
             .unwrap();
         std::fs::remove_dir_all(home).unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}\n{stderr}");
         assert!(
-            output.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            stdout.contains("1 passed;"),
+            "child shell-cache probe ran no test:\n{stdout}\n{stderr}"
         );
         return;
     };

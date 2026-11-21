@@ -729,7 +729,7 @@ There is no atomic transaction spanning the account file and SQLite. A generatio
 Public API-key, provider, native subscription, managed provider and transport flows do not need Node:
 
 ```sh
-cargo test --locked -p dim-app-server --test provider_flow --test managed_oauth_flow --test managed_provider_flow --test model_catalog_flow --test transport_flow
+cargo test --locked -p dim-app-server --test app_server_flow --test transport_flow
 ```
 
 The separately enabled Node flows load plugins through the actual rutis runtime and MCP servers built on the official MCP SDK. They cover C4 Session tool and method binding, isolation, restore, cancellation, an unmodified Cordis 4 branch plugin, and stdio and legacy SSE MCP flows.
@@ -739,8 +739,8 @@ npm ci --prefix runtime --ignore-scripts
 export DIM_TEST_NODE="$(command -v node)"
 export DIM_TEST_JS_RUNTIME="$PWD/runtime/node_modules/@arcships/rutis-runtime"
 export DIM_TEST_RUTIS_SDK="$PWD/runtime/node_modules/@arcships/rutis/src/index.mjs"
-cargo test --locked -p dim-app-server --test transport_flow --test mcp_http_flow \
-  node_ -- --ignored
+cargo test --locked -p dim-app-server --test transport_flow node_ -- --ignored
+cargo test --locked -p dim-app-server --test app_server_flow mcp_http_flow::node_ -- --ignored
 ```
 
 The separate Python flows cover plugin installation, reload and scoped parts. In the same shell, use Python 3.12 or later with the pinned `rutis` package.
@@ -762,8 +762,8 @@ cargo test --locked -p dim-app-server --test transport_flow \
 Run the live Context7 check manually with `CONTEXT7_API_KEY`.
 
 ```sh
-cargo test --locked -p dim-app-server --test mcp_http_flow \
-  context7_live_through_rust_plugins -- --ignored
+cargo test --locked -p dim-app-server --test app_server_flow \
+  mcp_http_flow::context7_live_through_rust_plugins -- --ignored
 ```
 
 The [C4 Session TypeScript spike](../../docs/design/session-typescript-spike.md)

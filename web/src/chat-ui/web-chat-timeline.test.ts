@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { computed, createApp, defineComponent, h, nextTick, ref, shallowReactive, type App } from "vue"
+import { computed, createApp, defineComponent, h, nextTick, reactive, ref, shallowReactive, type App } from "vue"
 import { createPinia, setActivePinia, type Pinia } from "pinia"
 import { createMemoryHistory, createRouter, type Router } from "vue-router"
 import type { ChatUiHost } from "@dimcode/chat-ui"
 import { i18n } from "../i18n"
 import { Projection } from "../projection"
-import type { ApprovalRequest, PendingQuestion, SessionEvent } from "../rpc/protocol"
+import type { ApprovalRequest, ModelRetryProgress, PendingQuestion, SessionEvent } from "../rpc/protocol"
 import { useChatStore } from "../stores/chat"
 import { useConnectionStore } from "../stores/connection"
 import { useSessionsStore } from "../stores/sessions"
@@ -220,8 +220,11 @@ describe("WebChatTimeline", () => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "Date"], now: 1_700_000_000_000 })
     const projection = new Projection()
     projection.apply(recorded[0]!)
-    const retry = { attempt: 2, maxAttempts: 8, retryAtMs: Date.now() + 5_000, kind: "server_error", reason: "overloaded" }
-    const root = mount(projection.rows, () => {}, { running: true, retry })
+    const props = reactive<{ running: boolean; retry: ModelRetryProgress | undefined }>({
+      running: true,
+      retry: { attempt: 2, maxAttempts: 8, retryAtMs: Date.now() + 5_000, kind: "server_error", reason: "overloaded" },
+    })
+    const { root } = mountWith(projection.rows, { props })
     await settle()
     const live = (): string[] => [...root.querySelectorAll("[aria-live]")]
       .filter(region => region.closest("[aria-hidden='true']") === null)
@@ -237,6 +240,23 @@ describe("WebChatTimeline", () => {
     expect(countdown()).toContain("in 3 s")
     expect(live()).toEqual(before)
     expect(root.querySelector("[data-testid='web-chat-retry']")?.closest("[aria-hidden='true']")).not.toBeNull()
+
+    props.retry = { ...props.retry!, retryAtMs: Date.now() + 4_000 }
+    await settle()
+    expect(countdown()).toContain("in 4 s")
+    expect(live()).toEqual(before)
+
+    props.retry = { ...props.retry!, attempt: 3, retryAtMs: Date.now() + 5_000 }
+    await settle()
+    expect(live()).toContain("Retrying, attempt 3 of 8: The provider reported a server error")
+    vi.advanceTimersByTime(1_000)
+    await settle()
+    expect(countdown()).toContain("in 4 s")
+
+    props.retry = undefined
+    await settle()
+    expect(root.querySelector("[data-testid='web-chat-retry']")).toBeNull()
+    expect(live()).not.toContain("Retrying, attempt 3 of 8: The provider reported a server error")
   })
 
   it("rebuilds only the turn whose rows changed", () => {

@@ -1,4 +1,4 @@
-mod local_support;
+use crate::local_support;
 
 use dim_agent_capabilities::prompt_sources::refresh_update;
 use dim_agent_runtime::testing::chain_events;

@@ -15154,7 +15154,7 @@ mod tests {
                 show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
                 let frame = drawn.app.frame(drawn.size);
                 let visible = strip_escapes(&frame.live.join("\n"));
-                assert!(visible.contains("Thinking excerpt · Read"), "{visible}");
+                assert!(visible.contains("Thinking… · Read"), "{visible}");
                 assert!(!visible.contains("Still checking"), "{visible}");
                 thought.row_id = "thought-durable".into();
                 thought.provisional_id = Some("thought-preview".into());
@@ -15165,14 +15165,14 @@ mod tests {
                 show(&mut drawn, vec![std::sync::Arc::new(thought.clone())]);
                 let frame = drawn.app.frame(drawn.size);
                 let visible = strip_escapes(&frame.live.join("\n"));
-                assert!(visible.contains("Thinking excerpt · Read"), "{visible}");
+                assert!(visible.contains("Thinking… · Read"), "{visible}");
                 assert!(!visible.contains("Check the owner"), "{visible}");
                 drawn
                     .app
                     .tick_at(Instant::now() + Duration::from_millis(501));
                 let frame = drawn.app.frame(drawn.size);
                 let visible = strip_escapes(&frame.live.join("\n"));
-                assert!(visible.contains("Thinking excerpt · Check"), "{visible}");
+                assert!(visible.contains("Thinking… · Check"), "{visible}");
                 thought.streaming = false;
                 thought.elapsed_ms = Some(18000);
                 thought.text.push_str(". Keep the owner.");
@@ -15231,12 +15231,12 @@ mod tests {
             assert!(drawn.app.click(None, row, cols as usize));
             let frame = drawn.app.frame(drawn.size);
             let visible = strip_escapes(&frame.live.join("\n"));
-            assert!(visible.contains("Thinking excerpt"), "{visible}");
+            assert!(visible.contains("Thinking… · Keep locks."), "{visible}");
             assert!(!visible.contains("Read callers."), "{visible}");
             let header = frame
                 .live
                 .iter()
-                .position(|row| row.contains("Thinking excerpt"))
+                .position(|row| row.contains("Thinking…"))
                 .unwrap();
             assert!(drawn.app.click(None, header, cols as usize));
             let frame = drawn.app.frame(drawn.size);

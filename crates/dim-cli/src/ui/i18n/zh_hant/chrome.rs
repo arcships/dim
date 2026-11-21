@@ -287,8 +287,7 @@ pub fn lookup(english: &str) -> Option<&'static str> {
             "還有 {count} 則 · shift+← 編輯最後一則 · ctrl+s 立即 steer"
         }
         "Queue ({count})" => "佇列（{count}）",
-        "Thinking…" => "思考中…",
-        "Thinking excerpt" => "思考摘錄",
+        "Thinking…" => "正在思考…",
         "Thought" => "已思考",
         "Thought for {duration}" => "已思考 {duration}",
         "Welcome to DIM {version}!" => "歡迎使用 DIM {version}！",

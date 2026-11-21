@@ -26,8 +26,7 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-#[path = "fixtures/mcp_host.rs"]
-mod mcp_host;
+use crate::mcp_host;
 
 type Services = (Arc<McpService>, Arc<SettingsService>, Arc<FileStorage>);
 struct Capture {

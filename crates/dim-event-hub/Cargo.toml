@@ -7,6 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 description = "Events from producers to subscribed Sessions: a native process owner and Session feature for Dim"
+autotests = false
+
+[[test]]
+name = "hub_flow"
+path = "tests/event_hub_flow.rs"
 
 [dependencies]
 dim-agent-runtime.workspace = true

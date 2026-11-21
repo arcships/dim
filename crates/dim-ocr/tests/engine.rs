@@ -1,7 +1,6 @@
 //! The Apple Vision engine end to end: a checked-in image, a mixed PDF whose
 //! first page has its own text layer and whose second page does not, and a
 //! scanned PDF whose two pages are images.
-#![cfg(target_os = "macos")]
 use dim_ocr::{Document, helper_main, helper_main_with_budget, read_pages};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};

@@ -2,7 +2,6 @@
 //! (`docs/architecture/rust-agent/plugins/HostPlatform.md`). The platform has
 //! no confinement backend, so the timeout, output caps and cancellation apply
 //! and the result reports `confined: false`.
-#![cfg(windows)]
 use dim_agent_capabilities::execution_settings::{ExecutionSettings, ExecutionSettingsHost};
 use dim_agent_capabilities::host_platform::*;
 use std::{ffi::OsString, path::PathBuf, time::Duration};

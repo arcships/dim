@@ -6,10 +6,35 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 description = "The single dimcode executable: the CLI, with the App Server as its `app-server` subcommand"
+autotests = false
 
 [[bin]]
 name = "dimcode"
 path = "src/main.rs"
+
+[[test]]
+name = "cli_flow"
+path = "tests/cli_flow.rs"
+
+[[test]]
+name = "cli_tui_flow"
+path = "tests/cli_tui_flow.rs"
+
+[[test]]
+name = "cli_session_flow"
+path = "tests/cli_session_flow.rs"
+
+[[test]]
+name = "cli_daemon_flow"
+path = "tests/cli_daemon_flow.rs"
+
+[[test]]
+name = "ocr_helper_flow"
+path = "tests/ocr_helper_flow.rs"
+
+[[test]]
+name = "ui_leaf"
+path = "tests/ui_leaf.rs"
 
 [features]
 # Compile the Web workspace into the executable (dim-app-server's feature).
@@ -35,6 +60,7 @@ dim-agent-capabilities.workspace = true
 agent-client-protocol-schema = { version = "=1.12.0", default-features = false }
 base64 = "0.22.1"
 sha2 = "0.10.9"
+dim-client.workspace = true
 dim-agent-types.workspace = true
 # The legacy prompt-reference flow seeds a real branch through a Session, which
 # needs the runtime's test host.

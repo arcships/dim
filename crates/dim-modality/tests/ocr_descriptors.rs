@@ -1,7 +1,6 @@
 //! One layout OCR task under a lowered descriptor limit: the host path opens
 //! and copies one artifact at a time, so a task publishes every page while the
 //! process holds far fewer descriptors than the page count.
-#![cfg(target_os = "macos")]
 use base64::Engine;
 use dim_agent_capabilities::{adapters::MockTools, defaults};
 use dim_agent_runtime::{AgentBuilder, AgentConfig};
