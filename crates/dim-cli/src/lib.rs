@@ -862,7 +862,7 @@ async fn act(root: &rutis::Ctx, mut options: Options) -> Result<i32> {
         return open_tui(root, &options, initial, locale).await;
     }
     if matches!(options.action, Action::WebInstall) {
-        if !dim_agent_capabilities::build::RELEASE {
+        if !dim_agent_capabilities::build::release() {
             return Err("A build from source has no published Web workspace; set DIMCODE_WEB_ASSETS to a frontend built from this source, or build the App Server with the embedded-web feature".into());
         }
         let executable = std::env::current_exe().unwrap_or_default();

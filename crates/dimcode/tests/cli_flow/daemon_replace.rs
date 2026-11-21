@@ -644,4 +644,55 @@ mod build_identity {
             "an explicit server gets no embedded-build notice: {stderr}"
         );
     }
+
+    #[test]
+    fn release_override_controls_version_identity_in_debug_builds() {
+        let version = env!("CARGO_PKG_VERSION");
+        let released = Command::new(env!("CARGO_BIN_EXE_dimcode"))
+            .env("DIM_TEST_RELEASE_BUILD", "1")
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(released.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&released.stdout).trim(),
+            format!("dimcode {version}"),
+            "DIM_TEST_RELEASE_BUILD=1 must report the bare release version"
+        );
+
+        for disabled in ["0", ""] {
+            let output = Command::new(env!("CARGO_BIN_EXE_dimcode"))
+                .env("DIM_TEST_RELEASE_BUILD", disabled)
+                .arg("--version")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout
+                    .trim()
+                    .starts_with(&format!("dimcode {version}-source")),
+                "DIM_TEST_RELEASE_BUILD={disabled:?} must report a source build: {stdout}"
+            );
+        }
+
+        let default_build = Command::new(env!("CARGO_BIN_EXE_dimcode"))
+            .env_remove("DIM_TEST_RELEASE_BUILD")
+            .arg("--version")
+            .output()
+            .unwrap();
+        assert!(default_build.status.success());
+        let stdout = String::from_utf8_lossy(&default_build.stdout);
+        let compiled_release = option_env!("DIM_RELEASE_BUILD").is_some_and(|v| !v.is_empty());
+        if compiled_release {
+            assert_eq!(stdout.trim(), format!("dimcode {version}"));
+        } else {
+            assert!(
+                stdout
+                    .trim()
+                    .starts_with(&format!("dimcode {version}-source")),
+                "default source build must carry -source: {stdout}"
+            );
+        }
+    }
 }

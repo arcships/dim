@@ -63,13 +63,18 @@ const BUILD_ID: Option<&str> = match option_env!("DIM_BUILD_ID") {
     _ => None,
 };
 
+/// Whether the release flow produced this build, which `build.rs` forwards from
+/// `DIM_RELEASE_BUILD`. Keeping it in the final binary crate means toggling
+/// `DIM_RELEASE_BUILD` never recompiles upstream crates.
+const RELEASE: bool = present(option_env!("DIM_RELEASE_BUILD")).is_some();
+
 fn main() {
     // Both roles this executable serves read one installed identity: the CLI's
     // `--version`, the daemon's report `Dim` line and its MCP client
     // declaration, so a log, a report and a screenshot name one commit. The
     // client and the daemon also compare their stamps, so a client that meets a
     // daemon of another build of the same version can say so.
-    dim_agent_capabilities::build::install(GIT_COMMIT, BUILD_ID);
+    dim_agent_capabilities::build::install(GIT_COMMIT, BUILD_ID, RELEASE);
     #[cfg(target_os = "linux")]
     unsafe {
         unsafe extern "C" {

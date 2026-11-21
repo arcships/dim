@@ -754,23 +754,6 @@ fn capabilities() -> Value {
     })
 }
 
-pub(super) fn picker_page(provider_id: &str, provider_name: &str, snapshot: Value) -> Value {
-    let catalog = &snapshot["catalog"];
-    let models: Vec<_> = catalog["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|model| {
-            json!({
-                "providerId":provider_id,"providerName":provider_name,"model":model,
-                "version":catalog["version"],"preferences":{},
-                "disabled":catalog["disabledModelIds"].as_array().unwrap().contains(&model["id"])
-            })
-        })
-        .collect();
-    json!({"models":models,"next":null,"empty":[]})
-}
-
 /// `provider.catalog` as the picker reads it.
 fn picker_catalog() -> Value {
     json!({"catalog": {"version": 3, "disabledModelIds": [], "models": [

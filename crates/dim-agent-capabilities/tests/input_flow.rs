@@ -1,6 +1,6 @@
 //! The input entry's atomic batch: several validated inputs commit together
 //! or not at all, and a replayed batch returns what the branch already holds.
-mod support;
+use crate::support;
 
 use std::{
     ops::RangeInclusive,

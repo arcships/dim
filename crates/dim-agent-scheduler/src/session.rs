@@ -47,7 +47,7 @@ const LOOP_UNAVAILABLE: &str = "loop is available only in interactive leader Ses
 const LOOP_CANCELLED_BEFORE_HANDOVER: &str = "loop: cancelled before handover";
 /// The `loop` tool's declaration (design §12.4). The description sentences
 /// that say when to continue and when to stop are policy text.
-const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop with delay_seconds until its first round is due (default 300).\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days; a loop whose Session or branch is gone stops.";
+const LOOP_DESCRIPTION: &str = "Run this Session's work on a rhythm you choose. A loop delivers its prompt as one ordinary input of this branch, marked as that loop's round, and the loop ends unless you arm the next round with action=next.\n- start: begin a loop whose first round is due after delay_seconds, required and clamped to 60..3600 seconds out; nothing is delivered when you call it.\n- next: arm the following round after the current one, between 60 and 3600 seconds out; choose short waits while work is moving and long ones when nothing is pending, and stop instead of waiting when the work is done. When the user changes the rhythm, call next with the new delay: it replaces the pending round.\n- stop: end the loop now.\n- list: the loops of this branch, with their state, round and next due time.\nA loop ends after 7 days; a loop whose Session or branch is gone stops.";
 
 fn declaration(description: &str) -> ToolDefinition {
     let mut tool = definition(
@@ -402,7 +402,7 @@ fn loop_declaration() -> ToolDefinition {
             "properties": {
                 "action": {"type": "string", "enum": ["start", "next", "stop", "list"]},
                 "prompt": {"type": "string", "description": format!("[start] The text each round delivers, at most {MAX_PROMPT_BYTES} bytes of UTF-8.")},
-                "delay_seconds": {"type": "integer", "description": "[start, next] Seconds until the round is due; a next delay is clamped to 60..3600."},
+                "delay_seconds": {"type": "integer", "description": "[start, next] Seconds until the round is due; required for start; a start or next delay is clamped to 60..3600."},
                 "loop_id": {"type": "string", "description": "[next, stop] The loop to act on; absent, the branch's only loop."}
             }
         }),
@@ -452,6 +452,7 @@ pub(crate) fn loop_start_request(params: LoopStartParams) -> Result<StartRequest
         branch_id: branch.to_owned(),
         prompt: params.prompt,
         every_seconds: params.every_seconds,
+        first_delay_seconds: None,
     })
 }
 
@@ -729,8 +730,6 @@ struct LoopArgs {
     #[serde(default)]
     delay_seconds: Option<i64>,
     #[serde(default)]
-    every_seconds: Option<u64>,
-    #[serde(default)]
     loop_id: Option<String>,
 }
 
@@ -803,18 +802,29 @@ impl ToolHandler for LoopTool {
                     if let Err(message) = prompt_size(&prompt) {
                         return Ok(ToolResult::error(format!("loop: loop_invalid\n{message}")));
                     }
+                    let Some(delay) = args.delay_seconds else {
+                        return Ok(ToolResult::error(
+                            "loop: loop_invalid\nstart requires delay_seconds between 60 and 3600",
+                        ));
+                    };
+                    // The tool never delivers at the call, so its first round
+                    // waits the delay it announced (§12.2); the user's entries
+                    // leave the delay absent and stay due now.
+                    let delay = loops::clamp_next(delay);
                     self.loops
                         .start(StartRequest {
                             session_id: self.session_id.clone(),
                             branch_id: branch_id.clone(),
                             prompt,
-                            every_seconds: args.every_seconds,
+                            every_seconds: None,
+                            first_delay_seconds: Some(delay),
                         })
                         .await
                         .map(|record| {
                             format!(
-                                "loop: started\n{}\nThe first round is due now; arm the following one with action=next.",
-                                wire_loop(&record)
+                                "loop: started\n{}\nThe first round is due at {}, in {delay} seconds. It is not delivered now: work that is due now belongs to this turn.",
+                                wire_loop(&record),
+                                record.next_at.as_deref().unwrap_or_default(),
                             )
                         })
                         .map_err(|error| format!("loop: {}\n{}", error.code, error.message))

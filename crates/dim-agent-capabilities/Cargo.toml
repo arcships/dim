@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
+
+[[test]]
+name = "capabilities_flow"
+path = "tests/capabilities_flow.rs"
 
 [dependencies]
 dim-agent-types.workspace = true

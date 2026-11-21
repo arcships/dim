@@ -1765,11 +1765,11 @@ A provider failure that carries a `failure` fact prints one line built from its 
 The public CLI flow tests exercise the real native binary and NDJSON boundary. Unix PTY checks cover default-deny approval, questions, discarded typeahead, stopping while a frame is fragmented, prompt recovery and hidden callback input:
 
 ```bash
-cargo test --locked -p dimcode --test cli_flow
+cargo test --locked -p dimcode --test cli_flow --test cli_tui_flow --test cli_session_flow --test cli_daemon_flow
 cargo clippy --locked -p dim-cli --all-targets -- -D warnings
 ```
 
-Two debug-only variables shorten the daemon startup waits for the flow tests: `DIM_TEST_DAEMON_START_TIMEOUT_MS` replaces the 10 s bound of the wait before spawning and of the spawn wait and `DIM_TEST_START_LOCK_TIMEOUT_MS` the start-lock wait's derived bound, so a test reaches an inactivity bound without waiting the production time. A third, `DIM_TEST_BUILD_ID`, replaces this build's artifact stamp, so a flow or a tmux scenario can stand a client and a daemon of different builds beside each other; an empty value means no stamp. Only a debug build reads them, a release build ignores them, and the tests that set them compile only in debug builds.
+Two debug-only variables shorten the daemon startup waits for the flow tests: `DIM_TEST_DAEMON_START_TIMEOUT_MS` replaces the 10 s bound of the wait before spawning and of the spawn wait and `DIM_TEST_START_LOCK_TIMEOUT_MS` the start-lock wait's derived bound, so a test reaches an inactivity bound without waiting the production time. Two more inject build identity without recompiling: `DIM_TEST_BUILD_ID` replaces this build's artifact stamp (so a flow or a tmux scenario can stand a client and a daemon of different builds beside each other; an empty value means no stamp), and `DIM_TEST_RELEASE_BUILD` overrides the release mark (so flows can test release-gated startup recovery and `Update now` against the already-compiled debug binary; an empty value or `"0"` means a source build). `DIM_TEST_UPDATE_TIMEOUT_MS` replaces the update check's 4 s registry deadline, so a flow on a loaded runner still sees the offer. `DIM_TEST_APP_SERVER_STARTUP_TIMEOUT_MS` replaces the embedded App Server's 10 s startup inactivity bound, so its plugin assembly may take longer on a loaded runner. Only a debug build reads them, a release build ignores them, and the tests that set them compile only in debug builds.
 
 The production-model flow uses the actual App Server, an API-key environment reference and a local OpenAI-compatible HTTP stream fixture. It checks the production tool list, a real file read reaching the model, and continued input on the same persisted session:
 
@@ -1785,7 +1785,7 @@ The permission flows run against the same fixture: `exec --permission full-acces
 
 ```bash
 DIM_TEST_APP_SERVER="$PWD/target/debug/dim-app-server" \
-  cargo test --locked -p dim-cli --test cli_flow permission::real_daemon -- --ignored
+  cargo test --locked -p dimcode --test cli_flow permission::real_daemon -- --ignored
 ```
 
 The daemon-profile check rejects an already running mock or different configured daemon, verifies that its process and endpoint remain intact, then explicitly stops it through the CLI despite a changed invalid model configuration:

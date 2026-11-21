@@ -31,7 +31,8 @@ test('long workspace targets start first, overlap and drain the queue after a fa
   const artifacts = path.join(temporary, 'artifacts.jsonl');
   const longTargets = ['transport_flow', 'cli_flow'];
   const initial = [...longTargets, 'parallel'];
-  const records = ['parallel', 'queued', ...longTargets].map(name => {
+  const workers = [...initial, 'fourth'];
+  const records = ['parallel', 'fourth', 'queued', ...longTargets].map(name => {
     const directory = path.join(temporary, name);
     mkdirSync(directory);
     return { reason: 'compiler-artifact', profile: { test: true }, target: { name }, manifest_path: path.join(directory, 'Cargo.toml'), executable: process.execPath };
@@ -60,15 +61,53 @@ test('long workspace targets start first, overlap and drain the queue after a fa
       }, 10);
     }
   `;
-  const result = spawnSync(process.execPath, [path.join(import.meta.dirname, 'run-rust-test.mjs'), artifacts, '--workspace', '--eval', fixture], { encoding: 'utf8', timeout: 10_000 });
+  const result = spawnSync(process.execPath, [path.join(import.meta.dirname, 'run-rust-test.mjs'), artifacts, '--workspace', '--eval', fixture], {
+    encoding: 'utf8',
+    env: { ...process.env, DIM_TEST_JOBS: '3' },
+    timeout: 10_000,
+  });
   assert.equal(result.status, 7, result.stderr);
-  assert.deepEqual(Array.from(result.stderr.matchAll(/^\[test\] START (\S+)/gm), match => match[1]), [...initial, 'queued']);
-  assert.match(result.stderr, /\[test\] END .*\n\[test\] START queued /);
+  assert.deepEqual(Array.from(result.stderr.matchAll(/^\[test\] START (\S+)/gm), match => match[1]), [...initial, 'fourth', 'queued']);
+  assert.match(result.stderr, /\[test\] END .*\n\[test\] START fourth /);
   for (const record of records) {
     assert(existsSync(path.join(path.dirname(record.manifest_path), 'done')), result.stdout);
     assert.match(result.stderr, new RegExp(`START ${record.target.name}`));
     assert.match(result.stderr, new RegExp(`END ${record.target.name}`));
   }
+  for (const name of workers) {
+    for (const marker of ['started', 'done']) rmSync(path.join(temporary, name, marker), { force: true });
+  }
+  const raised = `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const root = path.dirname(process.cwd());
+    fs.writeFileSync('started', '');
+    const initial = ${JSON.stringify(workers)};
+    const until = Date.now() + 5000;
+    const timer = setInterval(() => {
+      if (initial.every(target => fs.existsSync(path.join(root, target, 'started')))) {
+        clearInterval(timer);
+        fs.writeFileSync('done', '');
+      } else if (Date.now() > until) {
+        clearInterval(timer);
+        process.exitCode = 9;
+      }
+    }, 10);
+  `;
+  const parallel = spawnSync(process.execPath, [path.join(import.meta.dirname, 'run-rust-test.mjs'), artifacts, '--workspace', '--eval', raised], {
+    encoding: 'utf8',
+    env: { ...process.env, DIM_TEST_JOBS: '4' },
+    timeout: 10_000,
+  });
+  assert.equal(parallel.status, 0, parallel.stderr);
+  assert.deepEqual(Array.from(parallel.stderr.matchAll(/^\[test\] START (\S+)/gm), match => match[1]), [...workers, 'queued']);
+  for (const name of workers) assert(existsSync(path.join(temporary, name, 'done')), `${name} never proved four workers ran together`);
+  const invalidJobs = spawnSync(process.execPath, [path.join(import.meta.dirname, 'run-rust-test.mjs'), artifacts, '--workspace'], {
+    encoding: 'utf8',
+    env: { ...process.env, DIM_TEST_JOBS: '0' },
+  });
+  assert.notEqual(invalidJobs.status, 0);
+  assert.match(invalidJobs.stderr, /DIM_TEST_JOBS must be a positive integer/);
   writeFileSync(artifacts, '');
   const empty = spawnSync(process.execPath, [path.join(import.meta.dirname, 'run-rust-test.mjs'), artifacts, '--workspace'], { encoding: 'utf8' });
   assert.notEqual(empty.status, 0);

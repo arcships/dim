@@ -7,13 +7,16 @@ It is installed with the default execution loop; the minimal execution profile
 leaves it out. The facts it emits and consumes are BranchLine's, the branch
 part below.
 
-`create` passes the optional idle notice policy to TimelineTree. The child
-restores it from its opening identity before BranchLine handles turn ends. `create` admits
-two callers and refuses every other line: the root, in every state, and the current
-default branch. The root's right never changes, which is what lets a user ask it for a
-line while another line holds the role. The cap is a total over the Session and counts
-the open tool lines that are not on the protected path, so a line the user keeps
-continuing on costs no slot.
+`create` passes the optional idle notice policy and the Session's cap to TimelineTree.
+The child restores the idle notice from its opening identity before BranchLine handles
+turn ends. `create` admits two callers and refuses every other line: the root, in every
+state, and the current default branch. The root's right never changes, which is what
+lets a user ask it for a line while another line holds the role. The cap is a total
+over the Session and counts the open tool lines that are not on the protected path, so
+a line the user keeps continuing on costs no slot. TimelineTree charges the caller's
+eligibility and the cap in the lock that reserves the new line, so a switch or a second
+create cannot slip between a check and the reservation; publication charges nothing a
+second time, and a creation that fails releases its slot.
 
 `end` ends the calling line and nothing else, so it guards the caller as well as the
 target: only a tool line ends itself, a plugin line follows its own protocol, and a line
@@ -64,6 +67,15 @@ specific target from its own `step/tool-use` and `step/tool-result` (design [§6
 [branch_flow.rs](../../../../crates/dim-agent-capabilities/tests/branch_flow.rs):
 `a_stop_settles_the_branch_tool_while_the_tree_still_builds_the_child`,
 `a_refused_branch_call_writes_nothing`,
+`the_root_opens_a_line_while_another_line_is_default`,
+`the_default_branch_opens_a_line`,
+`a_former_default_branch_keeps_its_lines_and_opens_none`,
+`a_plugin_line_never_opens_a_line`,
+`a_tool_line_still_cannot_open_a_line`,
+`the_cap_does_not_count_the_default_branch_or_its_ancestors`,
+`a_switch_over_the_cap_closes_nothing`,
+`a_switch_that_frees_a_slot_admits_the_next_open`,
+`the_cap_is_refused_under_the_tree_lock`,
 `a_tool_line_ends_itself_and_main_learns_it_from_the_roster`,
 `a_message_reaches_its_receiver_in_the_mode_it_asked_for`,
 `a_first_parent_read_starts_after_the_cut`,
@@ -130,7 +142,8 @@ Consumes `branch/create`, `branch/create-failed`, `branch/ended`, `branch/end`,
   filled when the move committed, woken by its move signal. It
   restates the line's birth identity byte for byte and then the sentences the move changes; the
   root never receives one, and a load whose latest block disagrees with the tree writes the
-  missing note once (design [§5](../../../design/timeline-branches.md#5-parts), [§12.1](../../../design/timeline-branches.md#121-context-mapping)).
+  missing note once; on the tree's current default branch the load also compares that block's text
+  with the note this code writes, and replaces a note an older rule set left once (design [§5](../../../design/timeline-branches.md#5-parts), [§12.1](../../../design/timeline-branches.md#121-context-mapping)).
 - **Roster.** On a line that has opened tool lines, a keyed Append under `branch:roster` of `<dim-branch-lines>` lists the lines it opened with the tool that are still open, in the order it opened them, with the
   first line of each purpose; when none is open the key is retired. A plugin line is never on a roster, and neither is a line the user opened: it stays in the Session's directory and coordinates its own tool lines. A child whose inherited prefix holds a live roster gets one block in its opening input that retires that key, so a line that opened no tool line of its own keeps no list; TimelineTree writes it with the identity block (design [§7.1](../../../design/timeline-branches.md#71-keyed-state-branchline-branchroster-and-branchparent)).
 - **Parent block.** On a line that is not the root, one keyed Append of
@@ -176,6 +189,9 @@ BranchLine mounts at the committed Dispatcher cutoff without reading historical 
 `a_roster_and_an_identity_replay_separately_after_a_compaction`,
 `a_child_cut_after_a_roster_retires_it_and_one_cut_before_gets_nothing`,
 `the_roots_roster_from_before_the_key_split_is_retired_at_load`,
+`an_opener_that_is_not_the_root_keeps_its_identity_and_its_roster`,
+`a_status_note_and_a_live_roster_do_not_retire_each_other`,
+`a_user_opened_default_branch_coordinates_the_line_it_opens`,
 `a_line_messages_and_reads_its_parent_and_the_lines_it_opened`,
 `a_sibling_or_grandparent_is_refused_with_nothing_written`,
 `an_idle_line_is_told_its_parent_moved_without_being_woken`,

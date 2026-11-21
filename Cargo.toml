@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-event-hub", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-report", "crates/dim-codemode", "crates/dim-modality", "crates/dim-image-understanding", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "tests/extension-a", "tests/extension-b", "tests/integration"]
+members = ["crates/dim-agent-types", "crates/dim-agent-runtime", "crates/dim-agent-capabilities", "crates/dim-agent-aimux", "crates/dim-agent-attachments", "crates/dim-agent-questions", "crates/dim-agent-scheduler", "crates/dim-event-hub", "crates/dim-app-server", "crates/dim-client", "crates/dim-acp", "crates/dim-cli", "crates/dim-oauth", "crates/dim-session-title", "crates/dim-goal", "crates/dim-report", "crates/dim-codemode", "crates/dim-modality", "crates/dim-image-understanding", "crates/dim-ocr", "crates/dim-modality-aimux", "crates/dimcode", "crates/dim-migration", "xtask", "xtask/check", "tests/extension-a", "tests/extension-b", "tests/integration"]
 exclude = ["vendor/grok-build"]
 
 [workspace.package]
@@ -57,6 +57,25 @@ jiff = { version = "0.2.46", features = ["serde", "tzdb-bundle-always"] }
 
 [profile.dev]
 debug = "line-tables-only"
+
+[profile.dev.package]
+adler2 = { opt-level = 2 }
+aho-corasick = { opt-level = 2 }
+crc32fast = { opt-level = 2 }
+fdeflate = { opt-level = 2 }
+flate2 = { opt-level = 2 }
+image = { opt-level = 2 }
+image-webp = { opt-level = 2 }
+memchr = { opt-level = 2 }
+miniz_oxide = { opt-level = 2 }
+png = { opt-level = 2 }
+regex = { opt-level = 2 }
+regex-automata = { opt-level = 2 }
+regex-syntax = { opt-level = 2 }
+serde_json = { opt-level = 2 }
+sha2 = { opt-level = 2 }
+simd-adler32 = { opt-level = 2 }
+zune-jpeg = { opt-level = 2 }
 
 [profile.release]
 lto = "fat"
