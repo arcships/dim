@@ -245,7 +245,7 @@
         ]
       },
       {
-        "id": 80,
+        "id": 77,
         "parent": 73,
         "name": "eventhub-ready",
         "state": "Active",
@@ -1846,6 +1846,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_runtime::parts::PartRegistry",
             "scope": null,
             "status": "Ready"
@@ -1859,6 +1864,12 @@
         "resolved": [
           {
             "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "scope": null,
+            "provider": 4,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -1879,6 +1890,12 @@
         "reads": [
           {
             "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "provider": 4,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true
@@ -2063,7 +2080,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2085,7 +2102,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 29,
             "generation": 1
@@ -2111,7 +2128,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 29,
             "declared": true,
             "external": true
@@ -2144,7 +2161,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2156,7 +2173,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 29,
             "generation": 1
@@ -2170,7 +2187,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 29,
             "declared": true,
             "external": true
@@ -2191,7 +2208,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2203,7 +2220,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 29,
             "generation": 1
@@ -2217,7 +2234,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 29,
             "declared": true,
             "external": true
@@ -2419,7 +2436,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2451,7 +2468,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -2489,7 +2506,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true
@@ -2740,6 +2757,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::storage::sqlite::SqliteStorage",
             "scope": null,
             "status": "Ready"
@@ -2748,6 +2770,12 @@
         "resolved": [
           {
             "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "scope": null,
+            "provider": 4,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -2762,6 +2790,12 @@
         "reads": [
           {
             "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "provider": 4,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true
@@ -2914,7 +2948,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2926,7 +2960,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -2940,7 +2974,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true
@@ -2961,7 +2995,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2973,7 +3007,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -2987,7 +3021,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true
@@ -3008,14 +3042,14 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "status": "Ready"
           }
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "scope": null,
             "provider": 4,
             "generation": 1
@@ -3023,7 +3057,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
             "provider": 4,
             "declared": true,
             "external": true
@@ -3392,7 +3426,7 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host_platform::HostPlatform",
+        "service": "dim_agent_capabilities::host_platform::ExecHost",
         "provider": 29,
         "generation": 1,
         "removing": false

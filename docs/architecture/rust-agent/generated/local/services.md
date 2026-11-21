@@ -156,6 +156,7 @@ flowchart LR
   p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p65
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p65
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p65
+  p5 -->|"dim_agent_capabilities::host_platform::ExecHost"| p64
   p42 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p64
   p33 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p64
   p60 -->|"dim_agent_runtime::config::TimelineIdentity@main"| p64
@@ -165,10 +166,10 @@ flowchart LR
   p60 -->|"dim_agent_runtime::core::dispatcher::Dispatcher@main"| p63
   p60 -->|"dim_agent_runtime::core::timeline::Timeline@main"| p63
   p73 -->|"dim_agent_runtime::state::StateCell<dim_agent_capabilities::permission::PermissionState>@main"| p63
-  p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p28
+  p5 -->|"dim_agent_capabilities::host_platform::ExecHost"| p28
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p5
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p56
-  p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p56
+  p5 -->|"dim_agent_capabilities::host_platform::ExecHost"| p56
   p49 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p56
   p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p56
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p56
@@ -193,7 +194,7 @@ flowchart LR
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p51
   p33 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p51
   p33 -->|"dim_agent_runtime::scope::SessionLoader@session"| p51
-  p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p50
+  p5 -->|"dim_agent_capabilities::host_platform::ExecHost"| p50
   p49 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p50
   p42 -->|"dim_agent_capabilities::prompt_guide::GuideEntries@session"| p50
   p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p50
@@ -212,7 +213,8 @@ flowchart LR
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p45
   p33 -->|"dim_agent_runtime::config::SessionIdentity@session"| p45
   p33 -->|"dim_agent_runtime::config::SessionLifecycle@session"| p45
-  p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p44
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p44
+  p5 -->|"dim_agent_capabilities::host_platform::ExecHost"| p44
   p43 -->|"dim_agent_capabilities::prompt_registry::PromptRegistry@session"| p44
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p44
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p43
@@ -222,7 +224,7 @@ flowchart LR
   p49 -->|"dim_agent_capabilities::methods::SessionMethods@session"| p39
   p52 -->|"dim_agent_capabilities::timeline_tree::TreeCommands@session"| p39
   p33 -->|"dim_agent_capabilities::hooks::sources::HookSourcesHost@session"| p38
-  p5 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p38
+  p5 -->|"dim_agent_capabilities::host_platform::ExecHost"| p38
   p39 -->|"dim_agent_capabilities::input_queue::SubmitChecks@session"| p38
   p33 -->|"dim_agent_runtime::config::SessionConfig@session"| p38
   p33 -->|"dim_agent_runtime::config::SessionIdentity@session"| p38

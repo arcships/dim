@@ -12,7 +12,7 @@ flowchart LR
     p75["Report"]
     p74["goal"]
     p73["eventhub"]
-    p80["eventhub-ready"]
+    p77["eventhub-ready"]
     p72["Scheduler"]
     p71["Questions"]
     p70["PromptSuggestion"]
@@ -94,7 +94,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p73
   p14 -->|"dim_app_server::plugin_files::PluginFiles"| p73
   p38 -->|"dyn rutis_bridge::session::services::HostDispatch#sessions"| p73
-  p73 -->|"dim_event_hub::bridge::EventHub"| p80
+  p73 -->|"dim_event_hub::bridge::EventHub"| p77
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p72
   p3 -->|"dim_app_server::control::ProcessActivity"| p72
   p10 -->|"dim_app_server::methods::ManagementMethods"| p72
@@ -162,6 +162,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p37
   p2 -->|"rutis_loader::loader::Loader"| p37
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p36
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p36
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p36
   p10 -->|"dim_app_server::methods::ManagementMethods"| p36
   p10 -->|"dim_app_server::methods::ManagementMethods"| p35
@@ -171,13 +172,13 @@ flowchart LR
   p18 -->|"dim_app_server::settings::SettingsService"| p34
   p10 -->|"dim_app_server::methods::ManagementMethods"| p33
   p18 -->|"dim_app_server::settings::SettingsService"| p33
-  p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p32
+  p29 -->|"dim_agent_capabilities::host_platform::ExecHost"| p32
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p32
   p10 -->|"dim_app_server::methods::ManagementMethods"| p32
   p18 -->|"dim_app_server::settings::SettingsService"| p32
-  p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p31
+  p29 -->|"dim_agent_capabilities::host_platform::ExecHost"| p31
   p10 -->|"dim_app_server::methods::ManagementMethods"| p31
-  p29 -->|"dim_agent_capabilities::host_platform::HostPlatform"| p30
+  p29 -->|"dim_agent_capabilities::host_platform::ExecHost"| p30
   p10 -->|"dim_app_server::methods::ManagementMethods"| p30
   p25 -->|"dim_agent_capabilities::execution_settings::ExecutionSettingsHost"| p29
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p29
@@ -186,7 +187,7 @@ flowchart LR
   p18 -->|"dim_app_server::settings::declared::Settings"| p27
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p25
   p18 -->|"dim_app_server::settings::declared::Settings"| p25
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p24
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p24
   p1 -->|"dim_agent_capabilities::host::CredentialVariablesHost"| p24
   p46 -->|"dim_agent_runtime::parts::PartRegistry"| p24
   p23 -->|"dim_app_server::mcp::publication::Publication"| p24
@@ -201,6 +202,7 @@ flowchart LR
   p10 -->|"dim_app_server::methods::ManagementMethods"| p19
   p18 -->|"dim_app_server::settings::SettingsService"| p19
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p18
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p18
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p18
   p5 -->|"dim_agent_capabilities::host::ModelHost"| p17
   p40 -->|"dim_app_server::agents::AgentIndex"| p17
@@ -209,11 +211,11 @@ flowchart LR
   p13 -->|"dim_app_server::managed_provider::ManagedProviders#managedProviderOwner"| p17
   p10 -->|"dim_app_server::methods::ManagementMethods"| p17
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p17
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p16
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p16
   p10 -->|"dim_app_server::methods::ManagementMethods"| p16
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p15
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p15
   p10 -->|"dim_app_server::methods::ManagementMethods"| p15
-  p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p14
+  p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p14
   p10 -->|"dim_app_server::methods::ManagementMethods"| p13
   p4 -->|"dim_agent_capabilities::file_storage::face::FsHost"| p11
   p10 -->|"dim_app_server::methods::ManagementMethods"| p11

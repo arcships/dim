@@ -60,7 +60,7 @@ cancellation token terminates its process tree on close.
 | Service | Purpose |
 | --- | --- |
 | `S:HookSourcesHost` | Read the effective documents of the user, the workspace and the plugins. |
-| `P:HostPlatform` | Build each command's process spec, environment and process tree. |
+| `P:ExecHost` | Build each command's process spec, environment and process tree. |
 | `S:SessionConfig` | Pass the working directory, permission and collaboration-role facts to the payload. |
 | `S:SessionIdentity` | Name the Session in the payload and `DIM_SESSION_ID`. |
 | `S:SubmitChecks` | Register `hooks`, the `UserPromptSubmit` check the operator-input entries call. |
@@ -69,7 +69,7 @@ cancellation token terminates its process tree on close.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:HostPlatform`、`S:HookSourcesHost`、`S:SessionConfig`、`S:SessionIdentity`、`S:SubmitChecks` |
+| 注入 | `P:ExecHost`、`S:HookSourcesHost`、`S:SessionConfig`、`S:SessionIdentity`、`S:SubmitChecks` |
 | 提供 | `S:HooksRuntime` |
 | 被注入于 | `HooksBranch` |
 <!-- /generated -->

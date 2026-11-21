@@ -343,7 +343,7 @@ public API cannot produce reliably.
 | 作用域 | 进程 |
 | 注入 | — |
 | 提供 | `P:FileStorage`、`P:FsHost`、`P:dyn HostDispatch#fsHost` |
-| 被注入于 | `HostPlatform`、`WorkspaceTools` |
+| 被注入于 | `HostPlatform`、`PromptSources`、`WorkspaceTools` |
 <!-- /generated -->
 
 ## Native streaming reads

@@ -1841,6 +1841,11 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
             "scope": null,
             "status": "Ready"
@@ -1867,6 +1872,12 @@
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
+            "scope": null,
+            "provider": 5,
+            "generation": 1
+          },
           {
             "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
             "scope": null,
@@ -1899,6 +1910,12 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
+            "provider": 5,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_agent_capabilities::prompt_guide::GuideEntries@session",
             "provider": 42,
@@ -2271,7 +2288,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2288,7 +2305,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 5,
             "generation": 1
@@ -2308,7 +2325,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 5,
             "declared": true,
             "external": true
@@ -2410,7 +2427,7 @@
         "removing": false
       },
       {
-        "service": "dim_agent_capabilities::host_platform::HostPlatform",
+        "service": "dim_agent_capabilities::host_platform::ExecHost",
         "provider": 5,
         "generation": 1,
         "removing": false
@@ -2547,7 +2564,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -2580,7 +2597,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 5,
             "generation": 1
@@ -2624,7 +2641,7 @@
             "external": false
           },
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 5,
             "declared": true,
             "external": true
@@ -3068,7 +3085,7 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -3105,7 +3122,7 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 5,
             "generation": 1
@@ -3149,7 +3166,7 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 5,
             "declared": true,
             "external": true
@@ -3483,7 +3500,12 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -3500,7 +3522,13 @@
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "scope": null,
+            "provider": 4,
+            "generation": 1
+          },
+          {
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 5,
             "generation": 1
@@ -3520,7 +3548,13 @@
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::file_storage::face::FsHost",
+            "provider": 4,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 5,
             "declared": true,
             "external": true
@@ -3716,7 +3750,7 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "status": "Ready"
           },
@@ -3744,7 +3778,7 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "scope": null,
             "provider": 5,
             "generation": 1
@@ -3776,7 +3810,7 @@
             "external": false
           },
           {
-            "service": "dim_agent_capabilities::host_platform::HostPlatform",
+            "service": "dim_agent_capabilities::host_platform::ExecHost",
             "provider": 5,
             "declared": true,
             "external": true
