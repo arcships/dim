@@ -494,7 +494,7 @@ impl AgentIndex {
         Ok(LaunchReply {
             session_id: session.id().to_owned(),
             policy,
-            worktree: worktree.as_ref().map(|created| created.reply()),
+            worktree: worktree.map(|(managed, created)| managed.adopted(created)),
         })
     }
 

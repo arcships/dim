@@ -1402,7 +1402,8 @@ impl AgentIndex {
         origin: SessionOrigin,
         request: Option<CreateWorktree>,
         cancel: &CancellationToken,
-    ) -> Result<(Session, Option<CreatedWorktree>), CreateSessionError> {
+    ) -> Result<(Session, Option<(Arc<ManagedWorktrees>, CreatedWorktree)>), CreateSessionError>
+    {
         let managed = self.ctx.get().and_then(|ctx| ctx.get::<ManagedWorktrees>());
         let worktree = match (request, &managed) {
             (Some(request), Some(managed)) => Some(
@@ -1437,10 +1438,10 @@ impl AgentIndex {
             )
             .await
         {
-            Ok(session) => Ok((session, worktree)),
+            Ok(session) => Ok((session, managed.zip(worktree))),
             Err(error) => {
                 if let (Some(created), Some(managed)) = (&worktree, &managed) {
-                    managed.discard(created, cancel).await;
+                    let _ = managed.discard(&created.reply()).await;
                 }
                 Err(CreateSessionError::Agent(error))
             }

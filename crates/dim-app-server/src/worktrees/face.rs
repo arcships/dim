@@ -40,64 +40,6 @@ fn failure(error: WorktreeError) -> Error {
     )
 }
 
-impl ManagedWorktrees {
-    async fn handoff(&self, request: Create, cancel: CancellationToken) -> Reply {
-        let admission = self.preparing.token();
-        if self.closing.is_cancelled() {
-            return Err(failure(WorktreeError::Store(
-                "worktree owner is closing".into(),
-            )));
-        }
-        let (offer, delivery) = tokio::sync::oneshot::channel();
-        let (accept, mut accepted) = tokio::sync::oneshot::channel();
-        let owner = self.clone();
-        self.preparing.spawn(async move {
-            let created = match owner
-                .create(
-                    &request.source,
-                    request.base.as_deref(),
-                    request.branch.as_deref(),
-                    &cancel,
-                )
-                .await
-            {
-                Ok(created) => created,
-                Err(error) => {
-                    let _ = offer.send(Err(failure(error)));
-                    return;
-                }
-            };
-            let reply = created.reply();
-            owner
-                .preparations
-                .lock()
-                .unwrap()
-                .insert(created.task_id.clone(), created.clone());
-            let handed = offer.send(Ok(reply)).is_ok()
-                && tokio::select! {
-                    delivered = &mut accepted => delivered.is_ok(),
-                    _ = owner.closing.cancelled() => {
-                        accepted.close();
-                        accepted.try_recv().is_ok()
-                    }
-                };
-            if !handed {
-                owner.preparations.lock().unwrap().remove(&created.task_id);
-                owner.discard(&created, &CancellationToken::new()).await;
-            }
-        });
-        drop(admission);
-        let reply = delivery
-            .await
-            .map_err(|error| failure(WorktreeError::Store(error.to_string())))??;
-        let reply = rutis_bridge::session::arg(&reply)?;
-        accept
-            .send(())
-            .map_err(|_| failure(WorktreeError::Store("worktree preparation stopped".into())))?;
-        Ok(reply)
-    }
-}
-
 impl HostDispatch for ManagedWorktrees {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
@@ -120,28 +62,22 @@ impl HostDispatch for ManagedWorktrees {
         Ok(Value::cancellable_future(async move {
             let _guard = guard;
             if let Operation::Create(request) = operation {
-                return owner.handoff(request, cancel).await;
+                let created = owner
+                    .create(
+                        &request.source,
+                        request.base.as_deref(),
+                        request.branch.as_deref(),
+                        &cancel,
+                    )
+                    .await
+                    .map_err(failure)?;
+                return rutis_bridge::session::arg(&created.reply());
             }
             tokio::spawn(async move {
                 match operation {
                     Operation::Create(_) => unreachable!(),
                     Operation::Discard(reply) => {
-                        let prepared = {
-                            let mut pending = owner.preparations.lock().unwrap();
-                            match pending.entry(reply.task_id.clone()) {
-                                std::collections::hash_map::Entry::Occupied(entry)
-                                    if entry.get().reply() == reply =>
-                                {
-                                    entry.remove()
-                                }
-                                _ => {
-                                    return Err(failure(WorktreeError::Invalid(
-                                        "unknown worktree preparation".into(),
-                                    )));
-                                }
-                            }
-                        };
-                        owner.discard(&prepared, &cancel).await;
+                        owner.discard(&reply).await.map_err(failure)?;
                         Ok(Value::Undefined)
                     }
                     Operation::List(_) => {
@@ -232,14 +168,8 @@ mod tests {
         .await
         .unwrap();
         let owner = server.root.get::<ManagedWorktrees>().unwrap();
-        let mut handoff = Box::pin(owner.handoff(
-            Create {
-                source: repo.clone(),
-                base: None,
-                branch: Some("abandoned".into()),
-            },
-            CancellationToken::new(),
-        ));
+        let cancel = CancellationToken::new();
+        let mut handoff = Box::pin(owner.create(&repo, None, Some("abandoned"), &cancel));
         assert!(futures_util::poll!(&mut handoff).is_pending());
         let root = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
