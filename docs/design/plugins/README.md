@@ -46,11 +46,12 @@ A plugin is split by the owner of its state into parts, each placed in its owner
 | [Skills](Skills.md) (installation) | existing SkillsCatalog: preview of a local or Git source, selective installation into the user root, update and confirmed removal of loose Skills | — (discovery, enablement and the `skill` tool already belong to the Skills capability) | — | #740 |
 | [PluginManager](PluginManager.md) | plugin configuration (`plugins.json`), install, loader rows of plugin code, content registration | `PluginTools` (`plugin` tool) | — | M1 |
 | [RuntimeManager](RuntimeManager.md) | the Node and Python runtimes of plugin code: pinned download, verification, start; `runtime.*` | — | — | M1 (#476) |
+| [DshPackages](DshPackages.md) | one row per package: the hosted plugin packages of another harness, each run from a managed entry with its own files untouched | the package's tools, prompt sources and commands, registered by one copy per open Session; the copy's leases on the Session's owners | — | [#1753](https://github.com/arcships/dim/issues/1753) |
 
 ## By scope
 
 | Scope | Parts |
 | --- | --- |
-| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
-| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
+| Process parts | Provider (management supplement), Scheduler, Workflow, ExternalAgent, Modality, PluginManager, RuntimeManager, DshPackages, RemoteGateway, Skills (installation), PromptSuggestion (the Settings source), `CodeMode` when installed, light-ocr in the daemon, EventHub, Report; AcpGateway in its client host process; ClientView (the connection's viewed line) |
+| Session parts | Questions, ShellInput, Attachments, SessionTitle, Report, PromptSuggestion, Goal, Web, Recall, ImageUnderstanding, EventHub, Hooks, Scheduler, Workflow, PromptSources, Prompt (the entries table), DshPackages (one copy per package), Code Mode when enabled, SettingsTool (the one `settings` tool, registered by ExecutionSettings in v1) |
 | Branch parts | Goal (with Pursuit), ModelRecovery (proposed), Hooks, Prompt, Code Mode when enabled, EnvironmentClientsBranch (registered by Connection), SettingsSnapshotBranch (registered by ExecutionSettings) |
