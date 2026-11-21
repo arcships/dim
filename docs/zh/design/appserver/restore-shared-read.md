@@ -60,7 +60,7 @@ Agent::restore_session(id)
 | Permission | `history(Some(0))`、`local(..=S)` | 祖先链，本分支 `1..=S` | apply，第 1 波 |
 | ModelProvider | `local(..=S)` | 本分支 `1..=S` | apply，第 2 波（依赖 ContextPreparation） |
 | Approval | `local(..=S)` | 本分支 `1..=S` | apply，第 2 波（依赖 Permission） |
-| Prompt | `read_context(committed())` | 祖先链和本分支 `1..=S`，或从检查点的 `resume` 起 | apply，第 2 波（依赖 ContextPreparation 提供的 `ConfigurationPublisher`） |
+| Prompt | `read_context(committed())` | 祖先链和本分支 `1..=S`，或从检查点的 `resume` 起 | apply，第 2 波（依赖 `ContextPreparation`） |
 | ToolBinding | `read_context(sequence())` | 同 Prompt | apply，第 3 波（依赖 Prompt） |
 | Loop | `local(..=S)` | 本分支 `1..=S` | apply，第 4 波（依赖 ToolBinding） |
 | ToolExecutor | `local(..=S)` | 本分支 `1..=S` | apply，第 4 波（依赖 ToolBinding、Approval） |

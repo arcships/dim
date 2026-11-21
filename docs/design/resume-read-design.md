@@ -130,7 +130,7 @@ Hooks 不做历史恢复，按 [Hooks §3.5](plugins/Hooks.md#35-loading-and-rea
 | Usage | 数字owner；现有usage委托、计数/投影复用；原ContextPolicy.prepare/validate复用同一请求已算数值。 | 数字树、boundary与snapshot双写、request-base事实、ModelProvider/AgentLoop confirm/discard、事件计数载荷。 |
 | InputQueue | 原当前集合与发布；当前成员/决定/控制查询。 | recovered、entries节点/序列化、八类型源历史重放；公共pending合同改动。 |
 | Goal | 内存执行状态、完整业务事件、异常/关闭 paused、重载映射、owner get、文本/评估生命周期对齐。 | 完整运行快照、逐事件 checkpoint、节点装载、源后缀执行重放、每输入边界、重载后自动续行/评估。 |
-| Prompt | 精简引用、指定scope读取、原采用/退役批次合并、ConfigurationPublisher显式状态；按变化键生成输入。 | 逐生命周期结果、整集复制比较、通用QueryRows及调用方rows=None。 |
+| Prompt | 精简引用、指定scope读取、原采用/退役批次合并、ContextPreparation显式状态；按变化键生成输入。 | 逐生命周期结果、整集复制比较、通用QueryRows及调用方rows=None。 |
 | Store | query匹配、数组locator、v40输出ID/恢复成员、handover组及三个实际字段键、升级/复制/校验。 | 业务状态机SQL、任意字段索引注册、正文缓存、owner状态API。 |
 | 显示客户端 | 历史/实时协议、原 RPC 边界、worker、projection 和视图；ACP/Web 原窗口。 | offset 分块协议、完整 JSON 文本拼接、服务端 detail 缓存。 |
 | 验证及配套 | 真实受影响 flow、格式升级、生成声明与装配图。 | 泛化数组组合测试、仅机械补字段的调用方修改、手写生成图。 |
