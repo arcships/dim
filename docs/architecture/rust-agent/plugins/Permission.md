@@ -153,6 +153,11 @@ Tool allows and command allows cannot answer a file-scope question or lift a fil
 A read grant never permits a write.
 Without the facts service a read has the legacy unrestricted read-scope fallback, then the tool
 gate applies; workspace writes use the fallback below.
+Under `full-access`, Permission queries none of these facts for a read or write. A host that
+configures the file tools' root boundary still refuses a resolved path outside the roots that
+call's access allows with `outside_file_roots`, including under `full-access`; the boundary
+belongs to WorkspaceTools, not to these facts. The product configures none. Explicit disallows,
+deny command rules and tool advice still decide a call under `full-access`.
 
 ### On-demand worktree membership
 

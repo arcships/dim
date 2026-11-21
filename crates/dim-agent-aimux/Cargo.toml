@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+autotests = false
+
+[[test]]
+name = "agent_aimux_flow"
+path = "tests/agent_aimux_flow.rs"
 
 [dependencies]
 dim-agent-capabilities.workspace = true

@@ -4,8 +4,6 @@
 //! RPC cannot trigger reliably (an unload, a Session record gone before the
 //! commit, an inactive node) are driven at the `sessionMethods` contract Rpc
 //! dispatches to, over the real SessionStore.
-#![cfg(unix)]
-
 use dim_agent_aimux::{AimuxModels, config::ModelConfigFile};
 use dim_agent_capabilities::{
     adapters::MockTools,

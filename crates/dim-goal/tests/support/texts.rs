@@ -2,9 +2,9 @@
 //! compares Goal's inputs with these, byte for byte: the change triggers the
 //! Session part and the tool write, and the state records the branch part
 //! answers them with.
-#![expect(
+#![allow(
     dead_code,
-    reason = "each test binary uses the helpers it needs; the rest are shared"
+    reason = "shared Goal text fixture keeps unused helper hooks"
 )]
 
 /// The fact a state record answers: the change trigger it commits with (R5),

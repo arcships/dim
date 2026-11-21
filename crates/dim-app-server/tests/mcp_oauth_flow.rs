@@ -1,4 +1,3 @@
-#![cfg(unix)]
 //! MCP OAuth (F4) through the daemon's public methods: `mcp.auth.*`,
 //! `mcp.catalog` and `session.mcp`, against an in-process authorization
 //! server and an OAuth-protected MCP server (streamable HTTP and legacy SSE)

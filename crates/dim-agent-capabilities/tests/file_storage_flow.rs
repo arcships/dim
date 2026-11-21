@@ -1,5 +1,3 @@
-#![cfg(any(unix, windows))]
-
 use dim_agent_capabilities::file_storage::{
     DirectoryEntry, EntryKind, FileStorage, FileStorageError, FileStoragePlugin, FsRemove,
 };
@@ -990,17 +988,18 @@ fn removal_scales_with_directory_size() {
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "removal_scales_with_directory_size",
+                "file_storage_flow::removal_scales_with_directory_size",
                 "--nocapture",
             ])
             .env(SCALE_PROBE, "1")
             .output()
             .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stdout}{stderr}");
         assert!(
-            output.status.success(),
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
+            stdout.contains("1 passed;"),
+            "child scale probe ran no test:\n{stdout}{stderr}"
         );
         return;
     }
@@ -1211,14 +1210,20 @@ fn file_storage_flow() {
             let child_root = root_path.clone();
             let (dead_pid, child) = tokio::task::spawn_blocking(move || {
                 let child = Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact", "file_storage_flow", "--nocapture"])
+                    .args(["--exact", "file_storage_flow::file_storage_flow", "--nocapture"])
                     .env(PROBE_ROOT, child_root)
                     .stdout(Stdio::piped()).stderr(Stdio::piped())
                     .spawn().unwrap();
                 let pid = child.id();
                 (pid, child.wait_with_output().unwrap())
             }).await.unwrap();
-            assert!(child.status.success(), "{}{}", String::from_utf8_lossy(&child.stdout), String::from_utf8_lossy(&child.stderr));
+            let stdout = String::from_utf8_lossy(&child.stdout);
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert!(child.status.success(), "{stdout}{stderr}");
+            assert!(
+                stdout.contains("1 passed;"),
+                "child lock probe ran no test:\n{stdout}{stderr}"
+            );
 
             let mut bytes = lease.read(&cancel).await.unwrap();
             bytes.extend_from_slice(b"+second");
