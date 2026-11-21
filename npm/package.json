@@ -9,7 +9,7 @@
   "files": ["bin", "README.md", "LICENSE", "NOTICE", "plugin.d.ts", "branch-services.d.ts", "ui.d.ts", "client-protocol.d.ts"],
   "typesVersions": { "*": { "plugin": ["plugin.d.ts"], "ui": ["ui.d.ts"] } },
   "engines": { "node": "^22.19.0 || >=23.11.0" },
-  "peerDependencies": { "@arcships/rutis": "~0.19.0" },
+  "peerDependencies": { "@arcships/rutis": "~0.23.0" },
   "peerDependenciesMeta": { "@arcships/rutis": { "optional": true } },
   "optionalDependencies": {
     "dimcode-web": "0.1.0-alpha.27",

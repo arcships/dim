@@ -301,7 +301,7 @@ fn present<'de, D: Deserializer<'de>>(value: D) -> Result<Option<Title>, D::Erro
 /// One request object; anything else is the caller's programming error.
 fn request<T: DeserializeOwned>(args: RpcValue) -> Result<T, Error> {
     let invalid = |detail: String| {
-        Error::Value(format!(
+        Error::value(format!(
             "expected one sessionMetadata request object: {detail}"
         ))
     };
@@ -376,7 +376,7 @@ mod binding {
                         ))
                     }))
                 }
-                _ => Err(Error::Value(format!(
+                _ => Err(Error::value(format!(
                     "unknown sessionMetadata method {method}"
                 ))),
             }

@@ -2,7 +2,7 @@
 //! Permission and Approval, PromptSources and Skills; only the model is
 //! scripted.
 
-mod local_support;
+use crate::local_support;
 
 use dim_agent_capabilities::{
     approval::Approval,

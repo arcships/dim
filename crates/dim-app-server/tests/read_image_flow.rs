@@ -1,7 +1,5 @@
 //! #656, #687: workspace reads retain images in history; conversations send
 //! references even after user and tool images accumulate.
-#![cfg(unix)]
-
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, State},

@@ -277,6 +277,20 @@ async fn node_public_plugin_files_session_only_configuration() {
             client.rpc("session.files.write", params.clone()).await["result"],
             json!({"ok":true,"value":{"ok":true,"value":null}})
         );
+        let refused = client.rpc("session.files.too_large", params.clone()).await;
+        assert_eq!(refused["result"]["ok"], false, "{refused}");
+        assert_eq!(refused["result"]["name"], "BindingError", "{refused}");
+        assert_eq!(refused["result"]["code"], "bad-value", "{refused}");
+        assert!(
+            refused["result"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("16 MiB")),
+            "{refused}"
+        );
+        assert_eq!(
+            files_available(&mut client, "session.files.read", params.clone()).await,
+            json!({"ok":true,"value":{"ok":true,"value":"public Session text"}})
+        );
         let held = client.send("session.files.hold", params.clone()).await;
         let (mut release, _) = tokio::time::timeout(Duration::from_secs(10), gate.accept())
             .await

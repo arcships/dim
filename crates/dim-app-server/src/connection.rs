@@ -2590,9 +2590,8 @@ impl HostDispatch for ForeignCallChannel {
         // Read the caller inside `invoke`: a future returned here runs later
         // and no longer sees it.
         let row = caller_row().ok_or_else(|| {
-            BridgeError::Value(
-                "callChannel needs the calling row's context: only a row of a language runtime can call it"
-                    .into(),
+            BridgeError::value(
+                "callChannel needs the calling row's context: only a row of a language runtime can call it",
             )
         })?;
         let instance = row.instance();
@@ -2650,7 +2649,7 @@ struct ClosedRequest {
 /// One request object; anything else is the caller's programming error.
 fn request<T: DeserializeOwned>(args: BridgeValue) -> Result<T, BridgeError> {
     let invalid = |detail: String| {
-        BridgeError::Value(format!("expected one callChannel request object: {detail}"))
+        BridgeError::value(format!("expected one callChannel request object: {detail}"))
     };
     let Value::Array(args) = args.json()? else {
         return Err(invalid("not an argument list".into()));

@@ -1,9 +1,5 @@
 //! A real App Server with EventHub installed and a scripted model, plus a
 //! fixture producer row that declares a source and publishes.
-#![expect(
-    dead_code,
-    reason = "the three flow binaries share this fixture; each uses the parts it needs"
-)]
 pub mod fixture;
 use dim_agent_capabilities::{
     defaults, history::HistoryRenderer, host::*, workspace_tools::WorkspaceToolsConfig,

@@ -1,9 +1,9 @@
 //! A raw rutis root with EventHub, the real plugin files and a fixture
 //! `sessions` service, so a test can observe every input write, fail one on
 //! demand, and hold deliveries in flight together.
-#![expect(
+#![allow(
     dead_code,
-    reason = "the three flow binaries share this fixture; each uses the parts it needs"
+    reason = "shared EventHub test fixture keeps unused helper hooks"
 )]
 use super::wait_for;
 use dim_agent_capabilities::file_storage::FileStoragePlugin;
@@ -175,10 +175,10 @@ impl HostDispatch for FakeSessions {
     }
     fn invoke(&self, method: &str, args: Value) -> Reply {
         let Json::Array(args) = args.json()? else {
-            return Err(BridgeError::Value("expected one request object".into()));
+            return Err(BridgeError::value("expected one request object"));
         };
         let Ok([write]) = <[Json; 1]>::try_from(args) else {
-            return Err(BridgeError::Value("expected one request object".into()));
+            return Err(BridgeError::value("expected one request object"));
         };
         match method {
             // The `sessions.lookup` reply (design §2.4).
@@ -211,7 +211,7 @@ impl HostDispatch for FakeSessions {
             }
             "input" => {}
             other => {
-                return Err(BridgeError::Value(format!(
+                return Err(BridgeError::value(format!(
                     "the fixture sessions service has no method {other}"
                 )));
             }

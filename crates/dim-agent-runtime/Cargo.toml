@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+autotests = false
+
+[[test]]
+name = "agent_runtime_flow"
+path = "tests/agent_runtime_flow.rs"
 
 [dependencies]
 dim-agent-types.workspace = true

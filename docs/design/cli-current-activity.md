@@ -30,9 +30,16 @@ strip. The strip by itself establishes no foreground wait. An idle line
 keeps the existing idle treatment when there is no confirmed background
 work. `LineState::Waiting` means an open line with no running turn.
 
-In scrollback the run status is the composer’s top border title. Fullscreen
-keeps it in the lower dock. The place and unread badge continue to share the
-right side of the bottom border. Keep the existing notice slots and
+Both modes use the same composer layout: the run status, status slot
+(`esc interrupt`, notices, `permission required` / `answer required`,
+disconnect), background task count, goal and context usage share the left side
+of the composer’s bottom border. The place and unread badge continue to share
+the right side of the bottom border. The model label sits on the right side of
+the top border, while shell mode keeps the top-border left title. The footer
+line below the composer keeps only the permission mode in both modes. While a
+prompt replaces the composer, the composer is not drawn, so a notice or the
+disconnect state is drawn once, on the rows above the footer. Keep the existing
+notice slots and
 [notification and clipping priorities](timeline-ui.md#unread-replies).
 Shorten the status within its existing space by terminal cell width. Preserve
 the phase and any known object ahead of optional elapsed text.
@@ -46,29 +53,29 @@ Scrollback during a dispatched batch at the default tool detail setting:
 > Fix the issue and verify
   [committed tool history]
 
-  o CI checks                             2m13s
-+-- Tool batch pending ------------------------+
-| >                                            |
-+------------------------ Unread (1) · /lines -+
+  o CI checks                                     2m13s
++----------------------------------- provider / model -+
+| >                                                    |
++-- Tool batch pending ---------- Unread (1) · /lines -+
 ```
 
 Scrollback while the model generates and a server runs in the background:
 
 ```text
-  o Dev server                            8m02s
-+-- Generating · this turn 24s ----------------+
-| >                                            |
-+------------------------------------- ~/repo -+
+  o Dev server                                    8m02s
++----------------------------------- provider / model -+
+| >                                                    |
++-- Generating · this turn 24s --------------- ~/repo -+
 ```
 
 The same generating state in narrow scrollback, with both elapsed labels
-omitted and the task still visible:
+omitted, the model label dropped to fit, and the task still visible:
 
 ```text
   o Dev server
-+-- Generating ----------------+
++------------------------------+
 | >                            |
-+--------------------- ~/repo -+
++-- Generating ------- ~/repo -+
 ```
 
 The task row’s elapsed time comes from the task’s own start. Show “this turn”
@@ -166,19 +173,19 @@ an admitted wait with an authoritative start.
 Conditional scrollback and fullscreen examples:
 
 ```text
-  o CI checks                                      2m13s
-+-- Waiting for task: CI checks · wait 1m40s ----------+
-| >                                                    |
-+--------------------------------------------- ~/repo -+
+  o CI checks                                            2m13s
++----------------------------------------- provider / model -+
+| >                                                          |
++-- Waiting for task: CI checks · wait 1m40s ------- ~/repo -+
 
-+--------------------------------------------------------------+
-| [tool history at current detail setting]                     |
-|                                                              |
-| o CI checks                                            2m13s |
-| +----------------------------------------------------------+ |
-| | >                                                        | |
-| +-- Waiting for task: CI checks · wait 1m40s ----- ~/repo -+ |
-+--------------------------------------------------------------+
++----------------------------------------------------------------+
+| [tool history at current detail setting]                       |
+|                                                                |
+| o CI checks                                              2m13s |
+| +----------------------------------------- provider / model -+ |
+| | >                                                          | |
+| +-- Waiting for task: CI checks · wait 1m40s ------- ~/repo -+ |
++----------------------------------------------------------------+
 ```
 
 ## Cost and terminal signaling
@@ -212,10 +219,10 @@ adopted inputs. Repainting adds zero RPCs, history scans or remote CI polls.
   OSC bytes independently through the existing terminal status checks.
 - With a disposable `DIMCODE_HOME` and deterministic provider, capture
   both modes at 100, 60 and 32 columns using a synthetic “CI checks” task.
-  Check the scrollback top border and fullscreen lower dock, the
-  place/unread label and notifications, default visibility without
-  `/tasks`, history scroll, detail toggles, branch changes, disconnect,
-  stop and resume. This scenario can join the local tmux suite under
+  Check the unified composer borders (top-right model label and bottom-left
+  status dock) in both modes, the place/unread label and notifications, default
+  visibility without `/tasks`, history scroll, detail toggles, branch changes,
+  disconnect, stop and resume. This scenario can join the local tmux suite under
   [#1803](https://github.com/arcships/dim/issues/1803) when it lands.
   Until then, use the existing isolated local terminal harness.
 - After an owner contract is approved, separately verify the named status

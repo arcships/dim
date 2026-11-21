@@ -739,13 +739,13 @@ impl HostDispatch for ManagedSearch {
 
     fn invoke(&self, method: &str, args: ServiceValue) -> Reply {
         if method != "search" {
-            return Err(BridgeError::Value(format!(
+            return Err(BridgeError::value(format!(
                 "unknown managedSearch method {method}"
             )));
         }
         let [request]: [WebSearchRequest; 1] =
             serde_json::from_value(args.json()?).map_err(|error| {
-                BridgeError::Value(format!(
+                BridgeError::value(format!(
                     "expected one managedSearch request object: {error}"
                 ))
             })?;

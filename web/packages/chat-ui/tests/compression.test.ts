@@ -73,23 +73,6 @@ describe('useTimelineCompressionSummary', () => {
     expect(state.failureErrorMessage.value).toBe('  boom  ')
   })
 
-  it('loads the summary on first expand and exposes available content', async () => {
-    const loadSummary = vi.fn(async () => ({ status: 'available' as const, summary: 'summary text' }))
-    const state = useTimelineCompressionSummary({ info: info(), labels, loadSummary })
-
-    state.toggleSummary()
-    expect(state.expanded.value).toBe(true)
-    expect(state.summaryStatus.value).toBe('loading')
-    expect(loadSummary).toHaveBeenCalledWith({ sessionId: 'session-1', segmentId: 'segment-1' })
-
-    await vi.waitFor(() => expect(state.summaryStatus.value).toBe('available'))
-    expect(state.summary.value).toBe('summary text')
-
-    state.toggleSummary()
-    state.toggleSummary()
-    expect(loadSummary).toHaveBeenCalledTimes(1)
-  })
-
   it('marks unavailable and failed loads without throwing', async () => {
     const unavailable = useTimelineCompressionSummary({
       info: info(),

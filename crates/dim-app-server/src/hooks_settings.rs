@@ -526,7 +526,7 @@ impl rutis_bridge::session::HostDispatch for HooksService {
                 let PluginRequest { plugin } = face_request(args)?;
                 rutis_bridge::session::arg(&self.plugin_refusal(&plugin))
             }
-            _ => Err(rutis_bridge::session::Error::Value(format!(
+            _ => Err(rutis_bridge::session::Error::value(format!(
                 "unknown hooksService method {method}"
             ))),
         }

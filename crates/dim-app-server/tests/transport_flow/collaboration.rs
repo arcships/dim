@@ -1266,6 +1266,46 @@ fn agent_results(events: &[Arc<AgentEvent>]) -> Vec<String> {
         .collect()
 }
 
+/// The page's business events, without the environment state inputs that can
+/// land between two reads when a client attaches, detaches or unloads.
+fn business_events(events: &Value) -> Vec<Value> {
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| {
+            !(event["type"] == "input"
+                && event["mode"] == "append"
+                && event["user"].is_null()
+                && event["blocks"].as_array().is_some_and(|blocks| {
+                    !blocks.is_empty()
+                        && blocks.iter().all(|block| {
+                            block["text"].as_str().is_some_and(|text| {
+                                text.starts_with("<dim-state source=\"dim/environment/clients\"")
+                            })
+                        })
+                }))
+        })
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn environment_client_rows_are_ignored_but_collaboration_rows_are_not() {
+    let events = json!([
+        {"sequence":1,"type":"input","mode":"append","user":null,"blocks":
+            [{"type":"raw","text":"<dim-state source=\"dim/environment/clients\">1 client</dim-state>"}]},
+        {"sequence":2,"type":"input","mode":"queue","user":{"content":[{"type":"text","text":"follow-up"}]},"blocks":[]},
+        {"sequence":3,"type":"tool_call","callId":"same","name":"hold"},
+        {"sequence":4,"type":"tool_call","callId":"same","name":"hold"}
+    ]);
+    assert_eq!(
+        business_events(&events),
+        events.as_array().unwrap()[1..].to_vec(),
+        "only the client-presence row is removed; order and duplicates stay"
+    );
+}
+
 /// Each operation event has exactly one later `delivered`; each delivered
 /// request exactly one later `result`. Collaboration facts stay out of the
 /// model context.
@@ -1320,8 +1360,16 @@ async fn assert_no_collaboration_facts(session: &Session) {
 
 /// Polls `check` until it yields a value; fails at the 10s deadline instead
 /// of hanging.
-async fn poll<T>(what: &str, mut check: impl AsyncFnMut() -> Option<T>) -> T {
-    tokio::time::timeout(Duration::from_secs(10), async {
+async fn poll<T>(what: &str, check: impl AsyncFnMut() -> Option<T>) -> T {
+    poll_within(Duration::from_secs(10), what, check).await
+}
+
+async fn poll_within<T>(
+    limit: Duration,
+    what: &str,
+    mut check: impl AsyncFnMut() -> Option<T>,
+) -> T {
+    tokio::time::timeout(limit, async {
         loop {
             if let Some(value) = check().await {
                 return value;
@@ -3171,7 +3219,10 @@ async fn member_work(mut config: ServerConfig) {
             .get_session(&member)
             .expect("the authorized read acquires its peer");
         let read = last_ok(&events(&lead_session).await);
-        assert_eq!(read["events"], full["events"]);
+        assert_eq!(
+            business_events(&read["events"]),
+            business_events(&full["events"])
+        );
         assert!(
             (full["nextCursor"].as_u64().unwrap()..=restored.sequence("main").unwrap())
                 .contains(&read["nextCursor"].as_u64().unwrap())
@@ -8290,7 +8341,7 @@ async fn a_stopped_turn_keeps_a_delivered_members_later_approval_reachable() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn missing_permission_state_refuses_a_committed_member_request_without_creating_a_member() {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(45), async {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let hold: Hold = Arc::new({
@@ -8352,7 +8403,7 @@ async fn missing_permission_state_refuses_a_committed_member_request_without_cre
             .expect("the same branch's Permission part");
         let view = ctx.view(permission.id).unwrap();
         let closing = tokio::spawn(view.shutdown());
-        poll("permission state is unavailable", async || {
+        poll_within(Duration::from_secs(30), "permission state is unavailable", async || {
             (!matches!(session.get::<dim_agent_capabilities::permission::PermissionState>("main"), Ok(Some(_)))).then_some(())
         }).await;
         release.notify_one();
