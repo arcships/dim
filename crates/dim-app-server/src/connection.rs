@@ -6,7 +6,7 @@ use crate::{
     protocol::*,
     skills_management::skills_error,
 };
-use dim_agent_capabilities::prompt::SessionPrompt as _;
+use dim_agent_capabilities::prompt::{Prompt, SessionPrompt as _};
 use dim_agent_capabilities::{
     host::{ModelPortError, ModelSelectionRequest},
     methods::{Accepted, CallSite, CallerConnection, Callers, NotifyError, RpcError},
@@ -1569,11 +1569,9 @@ impl Connection {
                             "Startup preferences accept set values only",
                         ));
                     }
-                    let state = session
-                        .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&p.branch_id)?
-                        .ok_or_else(RpcError::reloading)?;
-                    let current = state
-                        .configuration
+                    let current = session
+                        .service::<Prompt>(&p.branch_id)?
+                        .adopted_configuration(Default::default())
                         .ok_or_else(|| RpcError::invalid("No model configuration is adopted"))?;
                     let provider = rpc
                         .ctx
@@ -1625,12 +1623,8 @@ impl Connection {
                                     ),
                                 ));
                             }
-                            let state = session
-                                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(
-                                    &p.branch_id,
-                                )?
-                                .ok_or_else(RpcError::reloading)?;
-                            let current = state.configuration.ok_or_else(|| {
+                            let current = session.service::<Prompt>(&p.branch_id)?
+                        .adopted_configuration(Default::default()).ok_or_else(|| {
                             RpcError::invalid(
                                 "No model configuration is adopted; supply providerId and modelId",
                             )
@@ -1655,8 +1649,8 @@ impl Connection {
                 // branch adopted: the record names the profile whose prompt
                 // the branch runs, so it carries over until another adoption.
                 if let Some(agent_id) = session
-                    .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(&p.branch_id)?
-                    .and_then(|state| state.configuration)
+                    .service::<Prompt>(&p.branch_id)?
+                    .adopted_configuration(Default::default())
                     .and_then(|configuration| configuration.metadata)
                     .and_then(|metadata| metadata.agent_id)
                 {
@@ -1758,8 +1752,8 @@ impl Connection {
         if let Some(source) = &source {
             let adopted = source
                 .session
-                .get::<dim_agent_capabilities::prompt_state::PromptSnapshot>(ROOT_BRANCH_ID)?
-                .and_then(|state| state.configuration.clone())
+                .service::<Prompt>(ROOT_BRANCH_ID)?
+                .adopted_configuration(Default::default())
                 .ok_or_else(|| RpcError::invalid("Source Session has no adopted model"))?;
             config.model = dim_agent_types::ModelSelection {
                 provider_id: adopted.provider_id,
