@@ -36,7 +36,10 @@ SessionStore，仓储操作通过其 [`store` 数据接口](resource-faces.md#52
 
 ## 3. 创建
 
-入口是 `session.create` 与非交互创建 `sessions.launch`：`cwd` 仍是源工作区，两者接受可选
+`managedWorktrees.create` 在交付结果前负责工作树清理。调用方放弃交付时，owner 完成回收。
+`discard` 接受该 owner 实际交付的完整创建结果。清理在 SessionStore 的归属锁内核对工作树目录、仓库、分支和创建时的提交。
+
+客户端入口是 `session.create` 与非交互创建 `sessions.launch`：`cwd` 仍是源工作区，两者接受可选
 `worktree: { base?: string, branch?: string }`。该成员存在时必须是对象（包括空对象）；`null`、数组、
 非字符串的 base/branch 与未知字段在输入边界拒绝，不开始 Git 创建。回复在可选 `worktree` 对象内给出 `taskId`、`root`
 （管理根）、`cwd`（Session 工作区）、`repository`、`base`、`branch`；未请求时不返回该对象。
@@ -80,7 +83,9 @@ Git 创建；调用方停止等待不会撤回该任务，Session 与 worktree �
 
 ## 5. 列出、删除与清理
 
-三个操作都是 host 管理方法，注册在 `managementMethods` 的 `worktree` 命名空间：它们是用户命令，不是
+插件通过 [managedWorktrees](contracts/process-owner-operations.md) 调用创建、撤销准备、列出、选择清理候选和移除操作。
+
+三个客户端操作都是 host 管理方法，注册在 `managementMethods` 的 `worktree` 命名空间：它们是用户命令，不是
 agent 工具，不经过 Permission 批准，也从不服务给配对设备的连接（[ADR 002](../adr/002-plugin-scope.md)、
 [management methods](appserver/management-methods.md)）。拒绝以类型化错误返回代号与阻塞方（Session id 或
 路径），`list` 预先给出同一原因，客户端只展示，不自行判断。
@@ -134,7 +139,7 @@ agent 工具，不经过 Permission 批准，也从不服务给配对设备的�
 | §4.4 核心机制 | 不适用：Timeline、Dispatcher 与门面不带 worktree 业务含义，也不为它加特例。 |
 | §4.5 批次 | 不适用：不新增 Timeline 批次；创建事务与记录删除由 SessionStore 自己提交。 |
 | §4.6 模型上下文 | 不适用：不向模型上下文加入新事实。 |
-| §4.7 公开事件与服务 | 新增的公开内容只有 `managementMethods` 的 `worktree` 命名空间与 `hello.features` 条目；两者都在 §6 说明消费者。 |
+| §4.7 公开事件与服务 | 插件调用 `managedWorktrees`；客户端使用 `managementMethods` 的 `worktree` 命名空间与 `hello.features` 条目，见 §6。 |
 | §4.8 基础设施 | 不修改 Timeline、Dispatcher、装配或门面；缺少的创建期写入与所有权锁复用属于 SessionStore 自己的合同。 |
 | §4.9 事实取舍 | 不新增 Timeline 事件；列表、计数、时间与路径是命令结果，不进 Timeline。 |
 | ADR 002 | 无接线模块、无第二套容器；管理方法归 Process owner，配对设备不服务；配置不参与装载行。 |

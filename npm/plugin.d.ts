@@ -85,6 +85,21 @@ export interface SessionMetadata {
     Promise<SessionMetadataResult<{ revision: number }>>;
 }
 
+export type WorktreeView = {
+  taskId: string; repository?: string; root: string; branch?: string; head?: string;
+  dirty: number; untracked: number; lastUsedAtMs?: number; sessions: string[];
+  missing: boolean; gitMissing: boolean; unknown: boolean; unregistered: boolean;
+};
+export interface ManagedWorktrees {
+  create(request: { source: string; base?: string; branch?: string }): Promise<WorktreeReply>;
+  discard(created: WorktreeReply): Promise<void>;
+  list(request: {}): Promise<WorktreeView[]>;
+  pruneSelection(request: { olderThanMs?: number; keep?: number; force: boolean }): Promise<{
+    candidates: WorktreeView[]; kept: { worktree: WorktreeView; reason: string }[];
+  }>;
+  remove(request: { taskId: string; force: boolean }): Promise<boolean>;
+}
+
 export interface ModelId { providerId: string; modelId: string }
 export interface AuxiliaryRequest {
   system?: string | null;

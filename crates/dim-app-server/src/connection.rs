@@ -2471,7 +2471,7 @@ impl RpcPlugin {
             collaboration: names.key()?,
             hub: names.key()?,
             control: names.key()?,
-            loader: names.key()?,
+            loader: Key::of(),
             management: names.key()?,
             callers: Key::of(),
         })

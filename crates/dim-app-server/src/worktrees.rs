@@ -5,6 +5,8 @@
 //! writes them in the Session's own transaction, and a removal runs under the
 //! store's ownership lock so a late association cannot slip in between the
 //! re-check and the record deletion. Git is the fact; a record is a candidate.
+mod face;
+
 use crate::methods::ManagementMethods;
 use crate::storage::{PreparedWorktree, Store, WorktreeDirectory, WorktreeDirectoryRecord};
 use dim_agent_capabilities::methods::{
@@ -29,9 +31,13 @@ const ALLOCATION_ATTEMPTS: usize = 3;
 
 /// The managed worktree root and the operations over it. It owns no Session
 /// or branch state; the records belong to SessionStore and Git to the host.
+#[derive(Clone)]
 pub struct ManagedWorktrees {
     root: PathBuf,
     sessions: Arc<Store>,
+    preparations: Arc<std::sync::Mutex<std::collections::HashMap<String, CreatedWorktree>>>,
+    preparing: tokio_util::task::TaskTracker,
+    closing: CancellationToken,
 }
 
 /// A worktree this call created, with what it needs to be reported or
@@ -140,7 +146,13 @@ impl From<AgentError> for WorktreeError {
 
 impl ManagedWorktrees {
     pub fn new(root: PathBuf, sessions: Arc<Store>) -> Self {
-        Self { root, sessions }
+        Self {
+            root,
+            sessions,
+            preparations: Default::default(),
+            preparing: Default::default(),
+            closing: CancellationToken::new(),
+        }
     }
 
     /// Creates one worktree for `source` at `$HOME/worktrees/<task-id>/<repo>`
@@ -185,9 +197,9 @@ impl ManagedWorktrees {
             .trim(),
         );
         let repository = canonical(repository).await?;
-        let base = base.unwrap_or("HEAD");
+        let revision = format!("{}^{{commit}}", base.unwrap_or("HEAD"));
         let base = self
-            .git(&top, &["rev-parse", "--verify", base], cancel)
+            .git(&top, &["rev-parse", "--verify", "--end-of-options", &revision], cancel)
             .await?
             .trim()
             .to_owned();
@@ -267,7 +279,7 @@ impl ManagedWorktrees {
             let root_dir = match canonical(directory.clone()).await {
                 Ok(root_dir) => root_dir,
                 Err(error) => {
-                    self.rollback_add(&repository, &directory, &branch_name)
+                    self.rollback_add(&repository, &directory, &branch_name, &base)
                         .await;
                     return Err(error);
                 }
@@ -275,7 +287,7 @@ impl ManagedWorktrees {
             let subtree = match checked_subtree(&root_dir, &relative).await {
                 Ok(subtree) => subtree,
                 Err(error) => {
-                    self.rollback_add(&repository, &root_dir, &branch_name)
+                    self.rollback_add(&repository, &root_dir, &branch_name, &base)
                         .await;
                     return Err(error);
                 }
@@ -300,13 +312,15 @@ impl ManagedWorktrees {
     /// exclusion, without `--force` and with a token that cannot be cancelled.
     /// The branch goes only after Git accepted the removal. A Session or
     /// content that appeared since the checkout keeps both.
-    async fn rollback_add(&self, repository: &Path, root: &Path, branch: &str) {
+    async fn rollback_add(&self, repository: &Path, root: &Path, branch: &str, base: &str) {
         let directory = WorktreeDirectory {
             repository: repository.to_owned(),
             root: root.to_owned(),
         };
         let repository = directory.repository.clone();
         let branch = branch.to_owned();
+        let base = base.to_owned();
+        let managed = self.root.clone();
         let _ = self
             .sessions
             .remove_worktree(directory, move |root| {
@@ -315,6 +329,43 @@ impl ManagedWorktrees {
                         AgentError::InvalidInput("the worktree path is not UTF-8".into())
                     })?;
                     let cancel = CancellationToken::new();
+                    let managed = canonical(managed)
+                        .await
+                        .map_err(|error| AgentError::Storage(error.message().into()))?;
+                    check_recorded_root(&root, &managed)
+                        .await
+                        .map_err(|error| AgentError::InvalidInput(error.message().into()))?;
+                    let actual_repository = git(
+                        &root,
+                        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+                        &cancel,
+                        GIT_READ_TIMEOUT,
+                    )
+                    .await
+                    .map_err(|error| AgentError::Storage(error.message().into()))?;
+                    let actual_repository = canonical(PathBuf::from(actual_repository.trim()))
+                        .await
+                        .map_err(|error| AgentError::Storage(error.message().into()))?;
+                    if actual_repository != repository {
+                        return Err(AgentError::InvalidInput(
+                            "the prepared worktree changed repository".into(),
+                        ));
+                    }
+                    let current_branch =
+                        git(&root, &["symbolic-ref", "HEAD"], &cancel, GIT_READ_TIMEOUT)
+                            .await
+                            .map_err(|error| AgentError::Storage(error.message().into()))?;
+                    let current_head =
+                        git(&root, &["rev-parse", "HEAD"], &cancel, GIT_READ_TIMEOUT)
+                            .await
+                            .map_err(|error| AgentError::Storage(error.message().into()))?;
+                    if current_branch.trim_end() != format!("refs/heads/{branch}")
+                        || current_head.trim_end() != base
+                    {
+                        return Err(AgentError::InvalidInput(
+                            "the prepared worktree changed".into(),
+                        ));
+                    }
                     git(
                         &repository,
                         &["worktree", "remove", text],
@@ -348,6 +399,7 @@ impl ManagedWorktrees {
             &created.prepared.directory.repository,
             &created.prepared.directory.root,
             &created.branch,
+            &created.base,
         )
         .await;
     }
@@ -694,9 +746,11 @@ impl ManagedWorktrees {
                     == Some(task_id)
         });
         let Some(record) = record else {
-            return self
+            let removed = self
                 .remove_unregistered(task_id, &root, force, cancel)
-                .await;
+                .await?;
+            self.preparations.lock().unwrap().remove(task_id);
+            return Ok(removed);
         };
         check_recorded_root(&record.directory.root, &root).await?;
         let directory = record.directory;
@@ -779,6 +833,7 @@ impl ManagedWorktrees {
             })
             .await
             .map_err(WorktreeError::from)?;
+        self.preparations.lock().unwrap().remove(task_id);
         Ok(removed)
     }
 
@@ -1162,8 +1217,8 @@ fn valid_task_id(task_id: &str) -> bool {
 
 /// The managed-worktree reply of `session.create` and `sessions.launch`: the
 /// task id, the management root, and the directory the Session starts in.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreatedWorktreeReply {
     pub task_id: String,
     pub root: String,
@@ -1221,7 +1276,19 @@ impl DynPlugin for ManagedWorktreesPlugin {
             let sessions = ctx.require_at(&self.sessions)?;
             let methods = ctx.require_at(&self.methods)?;
             let managed = Arc::new(ManagedWorktrees::new(self.root.clone(), sessions));
+            let preparing = managed.preparing.clone();
+            let closing = managed.closing.clone();
+            ctx.effect(move || async move {
+                closing.cancel();
+                preparing.close();
+                preparing.wait().await;
+                Ok(())
+            })?;
             ctx.provide_as::<ManagedWorktrees>(managed.clone())?;
+            ctx.provide_at::<dyn rutis_bridge::session::HostDispatch>(
+                rutis_bridge::session::host_key("managedWorktrees"),
+                managed.clone(),
+            )?;
             methods.register(
                 ctx,
                 "worktree",

@@ -766,6 +766,52 @@ async fn managed_worktree_ownership_and_tool_workspace_survive_host_restart() {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires DIM_TEST_NODE and DIM_TEST_JS_RUNTIME"]
+async fn node_prepares_lists_and_discards_a_worktree_on_its_owner() {
+    let work = Work::new();
+    let mut parts = super::session_typescript::fixture();
+    parts.rows = vec![
+        json!({"id":"worktree-owner","name":parts.anchor.parent().unwrap().join("fixtures/managed-worktrees.ts"),"provides":{},"config":{}}),
+    ];
+    let (server, _, _) = super::session_typescript::start(ServerConfig {
+        product_home: Some(work.home.clone()),
+        target_home: Some(work.home.join("rust")),
+        session_typescript: Some(parts),
+        ..Default::default()
+    })
+    .await;
+    let mut client = Client::new_version(&server, false, 3).await;
+    let result = super::process_typescript::files_available(
+        &mut client,
+        "worktreefixture.exercise",
+        json!({"source":work.repo.join("packages/a")}),
+    )
+    .await;
+    let created = &result["created"];
+    let root = Path::new(created["root"].as_str().unwrap());
+    assert_eq!(
+        Path::new(created["cwd"].as_str().unwrap()),
+        root.join("packages/a")
+    );
+    assert!(!root.exists());
+    assert_eq!(created["branch"], "wire-worktree");
+    assert!(work.repo.join("packages/a/seed.txt").is_file());
+    let branches = std::process::Command::new("git")
+        .args(["branch", "--list", "wire-worktree"])
+        .current_dir(&work.repo)
+        .output()
+        .unwrap();
+    assert!(branches.status.success());
+    assert!(branches.stdout.is_empty());
+    let listed = client.rpc("worktree.list", json!({})).await;
+    assert_ok(&listed);
+    assert_eq!(result["remaining"], json!([]));
+    assert_eq!(listed["result"]["worktrees"], result["remaining"]);
+    server.shutdown();
+    server.join().await.unwrap();
+}
+
 /// A home that never created a worktree has no root directory; listing and
 /// pruning there answer an empty set instead of a storage failure.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

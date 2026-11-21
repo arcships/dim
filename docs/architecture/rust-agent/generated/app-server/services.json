@@ -1787,6 +1787,11 @@
             "status": "Ready"
           },
           {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "rutis_loader::loader::Loader",
             "scope": null,
             "status": "Ready"
@@ -1803,6 +1808,12 @@
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "provider": 10,
+            "generation": 1
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#rutis/loader",
+            "scope": null,
+            "provider": 2,
             "generation": 1
           },
           {
@@ -3801,6 +3812,12 @@
       {
         "service": "dyn rutis_bridge::session::services::HostDispatch#managedSearch",
         "provider": 13,
+        "generation": 1,
+        "removing": false
+      },
+      {
+        "service": "dyn rutis_bridge::session::services::HostDispatch#managedWorktrees",
+        "provider": 9,
         "generation": 1,
         "removing": false
       },
