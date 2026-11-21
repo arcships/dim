@@ -54,6 +54,8 @@ pub struct ImportResult {
 }
 
 /// One legacy row, with its source identity and content digest.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LegacyRow {
     pub id: String,
     pub version: i64,
@@ -67,6 +69,8 @@ impl LegacyRow {
     }
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LegacySnapshot {
     pub schema: String,
     pub providers: Vec<LegacyRow>,
@@ -613,12 +617,35 @@ impl ProviderService {
         cancel: &CancellationToken,
     ) -> Result<ImportResult, HostError> {
         let owner = self.clone();
-        self.owned(cancel, move |cancel| Box::pin(async move {
-            let read_cancel = cancel.clone();
-            let snapshot = tokio::task::spawn_blocking(move || read_legacy_source(source_path, &read_cancel)).await.map_err(|_| failure("Legacy reader failed"))??;
-            owner.check(&cancel)?;
-            let bundled = owner.bundled.clone();
-            owner.db.run(move |connection| {
+        self.owned(cancel, move |cancel| {
+            Box::pin(async move {
+                let read_cancel = cancel.clone();
+                let snapshot = tokio::task::spawn_blocking(move || {
+                    read_legacy_source(source_path, &read_cancel)
+                })
+                .await
+                .map_err(|_| failure("Legacy reader failed"))??;
+                owner.check(&cancel)?;
+                let bundled = owner.bundled.clone();
+                owner
+                    .db
+                    .import_legacy(snapshot, bundled, cancel)
+                    .await
+                    .map_err(failure)
+            })
+        })
+        .await
+    }
+}
+
+impl SqliteStorage {
+    pub(crate) async fn import_legacy(
+        self: &Arc<Self>,
+        snapshot: LegacySnapshot,
+        bundled: Arc<BundledCatalog>,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<ImportResult> {
+        self.run(move |connection| {
                 if cancel.is_cancelled() { return Err(storage("Provider import cancelled")); }
                 let tx = connection.transaction().map_err(storage)?;
                 let mut items = Vec::new();
@@ -762,8 +789,7 @@ impl ProviderService {
                 }
                 tx.commit().map_err(storage)?;
                 Ok(ImportResult { items })
-            }).await.map_err(failure)
-        })).await
+            }).await
     }
 }
 

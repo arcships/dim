@@ -13,10 +13,65 @@ export default definePlugin({
     let release: (() => void) | undefined
     await ctx.use<ManagementMethods>('managementMethods').register(
       'storefixture',
-      ['status', 'commit_round', 'timeline_directory', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
+      ['status', 'provider_records', 'commit_round', 'timeline_directory', 'reserve_file', 'file_ownership', 'selection', 'agent_records', 'read_user', 'import_user', 'replace_user', 'report', 'create', 'cycle', 'remove', 'refuse', 'release', 'invalid_id'].map(name => ({ name: `storefixture.${name}`, mutating: true, interruption: 'report', progress: false })),
       async (call: { method: string; params: any }): Promise<MethodReply> => {
         const params = call.params
         if (call.method === 'storefixture.status') return { kind: 'value', value: {} }
+        if (call.method === 'storefixture.provider_records') {
+          const { providerId } = params
+          const header = await sqlite.readRecord({ providerId, projection: { kind: 'header' } })
+          assert.ok(header && header.kind !== 'managed')
+          assert.equal(await sqlite.readRecord({ providerId, projection: { kind: 'version' } }), header.version)
+          assert.equal(await sqlite.readRecord({ providerId: 'missing-fixture', projection: { kind: 'version' } }), null)
+          assert.equal(header.credential, 'fixture-inline')
+          assert.deepEqual(header.models, [])
+          const full = await sqlite.readRecord({ providerId, projection: { kind: 'all' } })
+          assert.ok(full)
+          assert.deepEqual(full.models.map(row => row.modelId), ['first', 'second'])
+          const one = await sqlite.readRecord({ providerId, projection: { kind: 'one', modelId: 'first' } })
+          assert.deepEqual(one?.models, full.models.slice(0, 1))
+          const selected = await sqlite.readRecord({ providerId, projection: { kind: 'selected', modelIds: ['second'] } })
+          assert.deepEqual(selected?.models, full.models.slice(1))
+          assert.equal(await sqlite.readRecord({ providerId: 'missing-fixture', projection: { kind: 'mutable' } }), null)
+          assert.ok((await sqlite.findCandidates({ kind: 'providers', modelId: 'first' })).includes(providerId))
+          assert.deepEqual(await sqlite.findCandidates({ kind: 'models', providers: [providerId] }),
+            ['first', 'second'].map(modelId => ({ providerId, modelId })))
+          const ordered = await sqlite.findCandidates({ kind: 'ordered', providerId, limit: 1 })
+          assert.deepEqual(ordered.map(row => row.modelId), ['first'])
+          const remaining = await sqlite.findCandidates({ kind: 'ordered', providerId, after: ordered[0], limit: 1 })
+          assert.deepEqual(remaining.map(row => row.modelId), ['second'])
+          const page = await sqlite.queryModels({ page: { providerId, limit: 1 }, accounts: { descriptors: [], accounts: {}, native: {} } })
+          assert.deepEqual(page.models.map(row => row.model.id), ['first'])
+          assert.deepEqual(page.next, { providerId, modelId: 'first' })
+          const listed = await sqlite.listProviders({})
+          const summary = listed.providers.find(row => row.providerId === providerId)
+          assert.ok(summary?.credentialConfigured)
+          assert.ok(!JSON.stringify(summary).includes('fixture-inline'))
+          assert.deepEqual(await sqlite.importLegacy({ batch: { schema: 'fixture', providers: [], selections: [] } }), { items: [] })
+          assert.ok(full.kind === 'custom')
+          const duplicate = await sqlite.readRecord({ providerId, projection: { kind: 'all' } })
+          assert.deepEqual(duplicate, full)
+          const copyId = '018ec73f-0000-7000-8000-000000000090'
+          const original = await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'create', record: full } })
+          assert.deepEqual(original, full)
+          await assert.rejects(() => sqlite.commitEdit({ providerId: copyId, edit: { kind: 'create', record: full } }),
+            (error: any) => error.code === 'provider_conflict')
+          const changed = { ...full, displayName: 'Changed', version: full.version + 1 }
+          assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'replaceConnection', expected: full, record: changed } }), changed)
+          await assert.rejects(() => sqlite.commitEdit({ providerId: copyId, edit: { kind: 'refreshStatic', expected: full, record: changed } }),
+            (error: any) => error.code === 'provider_conflict')
+          const window = await sqlite.managementPage({providerId: copyId, page: { limit: 1 }})
+          assert.equal(window.next, 'first')
+          assert.deepEqual(Object.keys(window.pageNames ?? {}), ['first'])
+          const catalog = await sqlite.commitEdit({providerId: copyId, edit: {kind: 'createModel', expectedVersion: changed.version, model: {...full.models[0], modelId:'third',displayName:'Third'}}})
+          assert.ok(catalog.models.some(model => model.id === 'third'))
+          const removed = await sqlite.commitEdit({providerId: copyId, edit: {kind: 'deleteModel', expectedVersion: changed.version + 1, modelId:'third'}})
+          assert.deepEqual(removed.models.map(model => model.id), ['first', 'second'])
+          assert.deepEqual(await sqlite.commitEdit({ providerId: copyId, edit: { kind: 'delete', expectedVersion: changed.version + 2 } }), {})
+          assert.equal(await sqlite.readRecord({ providerId: copyId, projection: { kind: 'header' } }), null)
+          assert.deepEqual(await sqlite.adoptProvider({id: providerId, revision:'fixture-source', baseFacts:{fingerprint:null, definition:null}}), {})
+          return { kind: 'value', value: { version: header.version } }
+        }
         if (call.method === 'storefixture.timeline_directory') {
           const { sessionId, config } = params
           if (config) await sqlite.createSession({ sessionId, config })

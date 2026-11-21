@@ -444,107 +444,24 @@ impl ProviderService {
         page: Option<ManagementModelPage>,
         cancel: &CancellationToken,
     ) -> Result<ManagementView, ProviderError> {
-        if page
-            .as_ref()
-            .is_some_and(|p| !(1..=128).contains(&p.limit.unwrap_or(32)))
-            || (page.is_some() && model_id.is_some())
-        {
-            return Err(ProviderError::InvalidConfig(
-                "A model page requires a limit in 1..=128 and no modelId".into(),
-            ));
-        }
+        ManagementModelPage::validate_window(model_id.as_deref(), page.as_ref())?;
         self.adopt_provider(&provider_id, cancel).await?;
         let db = self.db.clone();
         let id = provider_id.clone();
         let target = model_id.clone();
         let bundled = self.bundled.clone();
-        let (record,target_name,pending,next,page_names) = self
+        let ManagementWindow {
+            record,
+            target_name,
+            pending,
+            next,
+            page_names,
+        } = self
             .owned(cancel, move |cancel| {
                 Box::pin(async move {
-                    db.run_read(move |connection| {
-                        let tx=connection.transaction().map_err(storage)?;
-                        let pending = tx
-                            .query_row(
-                                "SELECT pending FROM provider_bundle WHERE provider_id=?1",
-                                [&id],
-                                |r| r.get::<_, bool>(0),
-                            )
-                            .optional()
-                            .map_err(storage)?
-                            .unwrap_or(false);
-                        let mut collisions = Vec::new();
-                        if pending {
-                            let mut statement = tx
-                                .prepare(
-                                    "SELECT model_id FROM provider_models WHERE provider_id=?1 AND source='user' ORDER BY position",
-                                )
-                                .map_err(storage)?;
-                            let rows = statement.query_map([&id], |r| r.get::<_, String>(0));
-                            for model in rows.map_err(storage)? {
-                                let model = model.map_err(storage)?;
-                                let bundled_match = bundled
-                                    .source()
-                                    .matching(&format!("t\0{id}\0{model}"))
-                                    .next()
-                                    .is_some();
-                                if bundled_match {
-                                    collisions.push(model);
-                                }
-                            }
-                        }
-                        let pending = pending.then_some(collisions);
-                        if let Some(target) = target {
-                            let record = read_model_record(&tx, &id, &target)?;
-                            let targets = std::slice::from_ref(&target);
-                            let mut listed = persistence::names(&tx, &bundled, &id, targets)?;
-                            let name = listed.remove(&target);
-                            return Ok((record, name, pending, None, None));
-                        }
-                        if let Some(page) = page {
-                            let limit = page.limit.unwrap_or(32);
-                            let query = page.query.unwrap_or_default().to_lowercase();
-                            let mut after = page.after.unwrap_or_default();
-                            let mut targets = Vec::new();
-                            loop {
-                                if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
-                                let keys = persistence::model_keys(
-                                    &tx,
-                                    &bundled,
-                                    &id,
-                                    None,
-                                    &after,
-                                    limit + 1 - targets.len(),
-                                )?;
-                                if keys.is_empty() { break; }
-                                for key in keys {
-                                    after = key.clone();
-                                    if !query.is_empty() {
-                                        let name = persistence::name(&tx, &bundled, &id, &key)?;
-                                        let hit = name.is_some_and(|n| {
-                                            n.model_id.to_lowercase().contains(&query)
-                                                || n.display_name.to_lowercase().contains(&query)
-                                        });
-                                        if !hit {
-                                            continue;
-                                        }
-                                    }
-                                    targets.push(key);
-                                }
-                                if targets.len() > limit { break; }
-                            }
-                            let more = targets.len() > limit;
-                            targets.truncate(limit);
-                            let next = more.then(|| targets.last().cloned()).flatten();
-                            let names = persistence::names(&tx, &bundled, &id, &targets)?;
-                            let selected = persistence::Models::Selected(&targets);
-                            let record = persistence::read(&tx, &id, selected)?;
-                            return Ok((record, None, pending, next, Some(names)));
-                        }
-                        let all = persistence::read(&tx, &id, persistence::Models::All)?;
-                        Ok((all, None, pending, None, None))
-                    })
-                    .await
-                    .map_err(ProviderError::from)
+                    db.management_window(id, target, page, true, bundled, cancel)
+                        .await
+                        .map_err(ProviderError::from)
                 })
             })
             .await?;
@@ -634,23 +551,14 @@ impl ProviderService {
         request: ManagementPageRequest,
         cancel: &CancellationToken,
     ) -> Result<ManagementPage, ProviderError> {
-        let limit = request.limit.unwrap_or(32);
-        if !(1..=128).contains(&limit) || (request.provider_id.is_some() && request.after.is_some())
-        {
-            return Err(ProviderError::InvalidConfig(
-                "Use a page size of 1..128 and either providerId or after".into(),
-            ));
-        }
+        let limit = request.page_limit()?;
         let mut descriptors = self.oauth.providers(cancel).await?;
         if let Some(id) = &request.provider_id {
             self.adopt_provider(id, cancel).await?;
         }
         let db = self.db.clone();
         let bundled = self.bundled.clone();
-        let target = request.provider_id.clone();
-        let after = request.after.clone();
-        let accounts_only = request.accounts_only;
-        let query_text = request.query.clone().unwrap_or_default().to_lowercase();
+        let targeted = request.provider_id.is_some();
         let account_ids: BTreeMap<_, _> = descriptors
             .iter()
             .map(|d| (d.provider_id.clone(), d.display_name.clone()))
@@ -658,77 +566,9 @@ impl ProviderService {
         let (records, next) = self
             .owned(cancel, move |cancel| {
                 Box::pin(async move {
-                    db.run(move |connection| {
-                        let tx = connection.transaction().map_err(storage)?;
-                        let mut ids = if let Some(target) = &target {
-                            BTreeSet::from([target.clone()])
-                        } else {
-                            persistence::ids(&tx, &bundled)?
-                        };
-                        if target.is_none() {
-                            ids.extend(account_ids.keys().cloned());
-                        }
-                        let mut records = Vec::new();
-                        for id in ids {
-                            if after.as_ref().is_some_and(|after| &id <= after) {
-                                continue;
-                            }
-                            let header = persistence::header(&tx, &id)?;
-                            if target.is_none() {
-                                if header.is_none() && !account_ids.contains_key(&id) {
-                                    continue;
-                                }
-                                if let Some((_, body)) = &header {
-                                    if let Ok(body) = serde_json::from_str::<Value>(body) {
-                                        let account = account_ids.contains_key(&id)
-                                            || body["kind"] == "managed"
-                                            || matches!(
-                                                body["credentialAuthority"].as_str(),
-                                                Some("openai_codex" | "grok")
-                                            );
-                                        let display = account_ids
-                                            .get(&id)
-                                            .map(String::as_str)
-                                            .or_else(|| body["displayName"].as_str())
-                                            .unwrap_or_default();
-                                        if (accounts_only && !account)
-                                            || (!id.to_lowercase().contains(&query_text)
-                                                && !display.to_lowercase().contains(&query_text))
-                                        {
-                                            continue;
-                                        }
-                                    }
-                                } else if !id.to_lowercase().contains(&query_text)
-                                    && !account_ids.get(&id).is_some_and(|name| {
-                                        name.to_lowercase().contains(&query_text)
-                                    })
-                                {
-                                    continue;
-                                }
-                            }
-                            persistence::adopt(&tx, &id, &bundled, &cancel)?;
-                            let record = if header.is_some() {
-                                Some(
-                                    persistence::read(&tx, &id, persistence::Models::Header)
-                                        .map_err(ProviderError::from)
-                                        .and_then(|record| record.ok_or(ProviderError::NotFound)),
-                                )
-                            } else {
-                                None
-                            };
-                            records.push((id, record));
-                            if records.len() > limit as usize {
-                                break;
-                            }
-                        }
-                        let next = (records.len() > limit as usize)
-                            .then(|| records[limit as usize - 1].0.clone());
-                        records.truncate(limit as usize);
-                        tx.commit().map_err(storage)?;
-                        Ok((records, next))
-                    })
-                    .await
-                    .map_err(ProviderError::from)
+                    db.management_page(request, limit, account_ids, bundled, cancel)
+                        .await
+                        .map_err(ProviderError::from)
                 })
             })
             .await?;
@@ -777,14 +617,14 @@ impl ProviderService {
             };
             match result {
                 Ok(info) => page.providers.push(info),
-                Err(error) if request.provider_id.is_some() => return Err(error),
+                Err(error) if targeted => return Err(error),
                 Err(error) => page.errors.push(ProviderRecordError {
                     provider_id: id,
                     message: error.to_string(),
                 }),
             }
         }
-        if request.provider_id.is_some() && page.providers.is_empty() {
+        if targeted && page.providers.is_empty() {
             return Err(ProviderError::NotFound);
         }
         self.check(cancel)?;
@@ -804,4 +644,248 @@ fn management_drivers() -> Vec<ManagementDriver> {
             remote_model_list: drivers::remote_model_list(driver),
         })
         .collect()
+}
+
+impl ManagementPageRequest {
+    pub(crate) fn page_limit(&self) -> Result<u32, ProviderError> {
+        let limit = self.limit.unwrap_or(32);
+        if !(1..=128).contains(&limit) || (self.provider_id.is_some() && self.after.is_some()) {
+            return Err(ProviderError::InvalidConfig(
+                "Use a page size of 1..128 and either providerId or after".into(),
+            ));
+        }
+        Ok(limit)
+    }
+}
+
+pub(crate) type ManagementRows = Vec<(
+    String,
+    Option<Result<PersistedProviderRecord, ProviderError>>,
+)>;
+
+impl SqliteStorage {
+    pub(crate) async fn management_page(
+        self: &Arc<Self>,
+        request: ManagementPageRequest,
+        limit: u32,
+        account_ids: BTreeMap<String, String>,
+        bundled: Arc<BundledCatalog>,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<(ManagementRows, Option<String>)> {
+        let target = request.provider_id;
+        let after = request.after;
+        let accounts_only = request.accounts_only;
+        let query_text = request.query.unwrap_or_default().to_lowercase();
+        self.run(move |connection| {
+            let tx = connection.transaction().map_err(storage)?;
+            let mut ids = if let Some(target) = &target {
+                BTreeSet::from([target.clone()])
+            } else {
+                persistence::ids(&tx, &bundled)?
+            };
+            if target.is_none() {
+                ids.extend(account_ids.keys().cloned());
+            }
+            let mut records = Vec::new();
+            for id in ids {
+                if after.as_ref().is_some_and(|after| &id <= after) {
+                    continue;
+                }
+                let header = persistence::header(&tx, &id)?;
+                if target.is_none() {
+                    if header.is_none() && !account_ids.contains_key(&id) {
+                        continue;
+                    }
+                    if let Some((_, body)) = &header {
+                        if let Ok(body) = serde_json::from_str::<Value>(body) {
+                            let account = account_ids.contains_key(&id)
+                                || body["kind"] == "managed"
+                                || matches!(
+                                    body["credentialAuthority"].as_str(),
+                                    Some("openai_codex" | "grok")
+                                );
+                            let display = account_ids
+                                .get(&id)
+                                .map(String::as_str)
+                                .or_else(|| body["displayName"].as_str())
+                                .unwrap_or_default();
+                            if (accounts_only && !account)
+                                || (!id.to_lowercase().contains(&query_text)
+                                    && !display.to_lowercase().contains(&query_text))
+                            {
+                                continue;
+                            }
+                        }
+                    } else if !id.to_lowercase().contains(&query_text)
+                        && !account_ids
+                            .get(&id)
+                            .is_some_and(|name| name.to_lowercase().contains(&query_text))
+                    {
+                        continue;
+                    }
+                }
+                persistence::adopt(&tx, &id, &bundled, &cancel)?;
+                let record = if header.is_some() {
+                    Some(
+                        persistence::read(&tx, &id, persistence::Models::Header)
+                            .map_err(ProviderError::from)
+                            .and_then(|record| record.ok_or(ProviderError::NotFound)),
+                    )
+                } else {
+                    None
+                };
+                records.push((id, record));
+                if records.len() > limit as usize {
+                    break;
+                }
+            }
+            let next =
+                (records.len() > limit as usize).then(|| records[limit as usize - 1].0.clone());
+            records.truncate(limit as usize);
+            tx.commit().map_err(storage)?;
+            Ok((records, next))
+        })
+        .await
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagementWindow {
+    pub(super) record: Option<PersistedProviderRecord>,
+    pub(super) target_name: Option<String>,
+    pending: Option<Vec<String>>,
+    next: Option<String>,
+    page_names: Option<HashMap<String, String>>,
+}
+
+impl ManagementModelPage {
+    pub(crate) fn validate_window(
+        model_id: Option<&str>,
+        page: Option<&Self>,
+    ) -> Result<(), ProviderError> {
+        if page
+            .as_ref()
+            .is_some_and(|p| !(1..=128).contains(&p.limit.unwrap_or(32)))
+            || (page.is_some() && model_id.is_some())
+        {
+            return Err(ProviderError::InvalidConfig(
+                "A model page requires a limit in 1..=128 and no modelId".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl SqliteStorage {
+    pub(crate) async fn management_window(
+        self: &Arc<Self>,
+        id: String,
+        target: Option<String>,
+        page: Option<ManagementModelPage>,
+        include_pending: bool,
+        bundled: Arc<BundledCatalog>,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<ManagementWindow> {
+        self.run_read(move |connection| {
+                        let tx=connection.transaction().map_err(storage)?;
+                        let pending = include_pending && tx
+                            .query_row(
+                                "SELECT pending FROM provider_bundle WHERE provider_id=?1",
+                                [&id],
+                                |r| r.get::<_, bool>(0),
+                            )
+                            .optional()
+                            .map_err(storage)?
+                            .unwrap_or(false);
+                        let mut collisions = Vec::new();
+                        if pending {
+                            let mut statement = tx
+                                .prepare(
+                                    "SELECT model_id FROM provider_models WHERE provider_id=?1 AND source='user' ORDER BY position",
+                                )
+                                .map_err(storage)?;
+                            let rows = statement.query_map([&id], |r| r.get::<_, String>(0));
+                            for model in rows.map_err(storage)? {
+                                let model = model.map_err(storage)?;
+                                let bundled_match = bundled
+                                    .source()
+                                    .matching(&format!("t\0{id}\0{model}"))
+                                    .next()
+                                    .is_some();
+                                if bundled_match {
+                                    collisions.push(model);
+                                }
+                            }
+                        }
+                        let pending = pending.then_some(collisions);
+                        if let Some(target) = target {
+                            let record = read_model_record(&tx, &id, &target)?;
+                            let targets = std::slice::from_ref(&target);
+                            let name = if record.is_some() { persistence::names(&tx, &bundled, &id, targets)?.remove(&target) } else { None };
+                            return Ok(ManagementWindow {
+                                record,
+                                target_name: name,
+                                pending,
+                                next: None,
+                                page_names: None,
+                            });
+                        }
+                        if let Some(page) = page {
+                            let limit = page.limit.unwrap_or(32);
+                            let query = page.query.unwrap_or_default().to_lowercase();
+                            let mut after = page.after.unwrap_or_default();
+                            let mut targets = Vec::new();
+                            loop {
+                                if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
+                                let keys = persistence::model_keys(
+                                    &tx,
+                                    &bundled,
+                                    &id,
+                                    None,
+                                    &after,
+                                    limit + 1 - targets.len(),
+                                )?;
+                                if keys.is_empty() { break; }
+                                for key in keys {
+                                    after = key.clone();
+                                    if !query.is_empty() {
+                                        let name = persistence::name(&tx, &bundled, &id, &key)?;
+                                        let hit = name.is_some_and(|n| {
+                                            n.model_id.to_lowercase().contains(&query)
+                                                || n.display_name.to_lowercase().contains(&query)
+                                        });
+                                        if !hit {
+                                            continue;
+                                        }
+                                    }
+                                    targets.push(key);
+                                }
+                                if targets.len() > limit { break; }
+                            }
+                            let more = targets.len() > limit;
+                            targets.truncate(limit);
+                            let next = more.then(|| targets.last().cloned()).flatten();
+                            let names = persistence::names(&tx, &bundled, &id, &targets)?;
+                            let selected = persistence::Models::Selected { model_ids: targets };
+                            let record = persistence::read(&tx, &id, selected)?;
+                            return Ok(ManagementWindow {
+                                record,
+                                target_name: None,
+                                pending,
+                                next,
+                                page_names: Some(names),
+                            });
+                        }
+                        let all = persistence::read(&tx, &id, persistence::Models::All)?;
+                        Ok(ManagementWindow {
+                            record: all,
+                            target_name: None,
+                            pending,
+                            next: None,
+                            page_names: None,
+                        })
+                    })
+                    .await
+    }
 }

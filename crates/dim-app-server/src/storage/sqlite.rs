@@ -1,3 +1,5 @@
+mod provider;
+
 use super::reclaim::Reclaimed;
 use dim_agent_runtime::{AgentError, Result, panic_message};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -2546,7 +2548,7 @@ struct SqliteDispatch(Arc<SqliteStorage>);
 impl HostDispatch for SqliteDispatch {
     fn methods(&self) -> Option<serde_json::Value> {
         Some(
-            serde_json::json!({"batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
+            serde_json::json!({"adoptProvider":"async","managementPage":"async","commitEdit":"async","queryModels":"async","findCandidates":"async","importLegacy":"async","listProviders":"async","readRecord":"async","activateSource":"async","batchEnd":"async","batchEndAt":"async","createSession":"async","sessionConfig":"async","branches":"async","head":"async","commitTimelineRound":"async","storageReport":"async","readUser":"async","importUserIfAbsent":"async","replaceUser":"async","agents":"async","owners":"async","save":"async","delete":"async","members":"async","ledMembers":"async","ownedAgents":"async","memberSessions":"async","agentOwner":"async","unfinishedOwned":"async","readSelection":"async","writeSelection":"async","readPreferences":"async","reserveFile":"async","commitFile":"async","abandonFile":"async","ownsFile":"async","ownsOutput":"async","ownedPaths":"async","registerOutput":"async"}),
         )
     }
 
@@ -2657,6 +2659,8 @@ impl HostDispatch for SqliteDispatch {
             },
             ImportUserIfAbsent(ImportUser),
             ReplaceUser(ReplaceUser),
+            #[serde(untagged)]
+            Provider(provider::ProviderOperation),
         }
         let request =
             serde_json::from_value(serde_json::json!({"method":method,"request":request}))
@@ -2755,6 +2759,7 @@ impl HostDispatch for SqliteDispatch {
                         .await
                         .map_err(storage_failure)?
                 ),
+                Request::Provider(operation) => operation.execute(&db).await?,
                 Request::ReadSelection { scope } => {
                     serde_json::json!(db.read_selection(scope).await.map_err(storage_failure)?)
                 }

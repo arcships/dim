@@ -53,7 +53,8 @@ pub struct ManagedModel {
     pub unavailable_reason: Option<String>,
     pub zdr: bool,
 }
-#[derive(Clone)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedCatalog {
     pub account: AccountSnapshot,
     pub models: Vec<ManagedModel>,

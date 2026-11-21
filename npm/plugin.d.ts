@@ -628,7 +628,68 @@ export type StoredAgentProfile = {
   name: string; description: string; systemPrompt: string; tools?: string[]; model?: ModelId;
 };
 export type StoredProviderSelection = { provider_id: string; model_id: string; version: number };
+export type ProviderRecordProjection =
+  | { kind: 'header' | 'all' | 'mutable' }
+  | { kind: 'one'; modelId: string }
+  | { kind: 'selected'; modelIds: string[] };
+export type PersistedProviderRecord = JsonObject & {
+  version: number;
+  models: JsonObject[];
+  modelConfigOverrides: JsonObject[];
+  disabledModelIds: string[];
+} & (
+  | { kind: 'managed'; account: JsonObject }
+  | { kind: 'builtin' | 'custom'; displayName: string; driverKind: string; baseUrl: string;
+      auth: JsonObject; credential: string | { secretRef: string } |
+        { accessKeyId: string; secretAccessKey: string; sessionToken?: string } | null; enabled: boolean }
+);
+export type OrderedProviderModel = { source: string; position: number; modelId: string };
+export type StoredModelId = { providerId: string; modelId: string };
+export type ProviderPageAccounts = {
+  descriptors: { providerId: string; displayName: string; loginMethods: string[]; defaultDirectory?: string }[];
+  accounts: Record<string, { credentialEpoch: string; generation: number; account?: {
+    issuer: string; subject: string; email?: string; name?: string; grantedScopes: string[]
+  } }>;
+  native: Record<string, boolean>;
+};
+export type LegacyProviderRow = { id: string; version: number; digest: string; fields: JsonObject };
 export interface SqliteStorage extends Pick<TimelineStore, "createSession" | "sessionConfig" | "branches" | "head" | "batchEnd" | "batchEndAt"> {
+  readRecord(request: { providerId: string; projection: { kind: 'version' } }): Promise<number | null>;
+  readRecord(request: { providerId: string; projection: ProviderRecordProjection }): Promise<PersistedProviderRecord | null>;
+  findCandidates(request: { kind: 'providers'; modelId?: string }): Promise<string[]>;
+  findCandidates(request: { kind: 'models'; providers: string[] }): Promise<StoredModelId[]>;
+  findCandidates(request: { kind: 'ordered'; providerId: string; after?: OrderedProviderModel; limit: number }): Promise<OrderedProviderModel[]>;
+  queryModels(request: {
+    page: { selectableOnly?: boolean; providerId?: string; modelId?: string; query?: string; after?: StoredModelId; limit?: number };
+    accounts: ProviderPageAccounts;
+  }): Promise<{
+    models: { providerId: string; providerName: string; model: import('./client-protocol.js').ProviderModel; version: number; preferences: JsonObject; disabled: boolean }[];
+    next: StoredModelId | null;
+    empty: { providerId: string; providerName: string; reason: { kind: 'no_models'; listable: boolean } | { kind: 'unreadable' } }[];
+  }>;
+  commitEdit(request: { providerId: string; edit:
+    | { kind: 'create'; record: PersistedProviderRecord & {kind:'builtin'|'custom'} }
+    | { kind: 'replaceConnection' | 'refreshStatic'; expected: PersistedProviderRecord; record: PersistedProviderRecord & {kind:'builtin'|'custom'} }
+    | { kind: 'patchHeader'; expectedVersion: number; patch: JsonObject; reply: 'full' | 'summary' }
+    | { kind: 'preferences'; expectedVersion: number; modelId: string; patch: JsonObject; account?: ProviderPageAccounts['accounts'][string] }
+    | { kind: 'refreshManaged'; expectedVersion: number | null; catalog: { account: ProviderPageAccounts['accounts'][string]; models: JsonObject[] }; current: ProviderPageAccounts['accounts'][string] }
+  }): Promise<PersistedProviderRecord>;
+  commitEdit(request: { providerId: string; edit: { kind: 'delete'; expectedVersion: number } }): Promise<{}>;
+  commitEdit(request: { providerId: string; edit: { kind: 'createModel'; expectedVersion: number; model: JsonObject } | { kind: 'deleteModel'; expectedVersion: number; modelId: string } }): Promise<import('./client-protocol.js').ProviderCatalog>;
+  commitEdit(request: { providerId: string; edit: { kind: 'enableModel'; expectedVersion: number; modelId: string; enabled: boolean; state: { available: boolean; account?: ProviderPageAccounts['accounts'][string] } } }): Promise<number>;
+  commitEdit(request: { providerId: string; edit: { kind: 'editModel'; expectedVersion: number; modelId: string; edit: JsonObject | null; state: { available: boolean; account?: ProviderPageAccounts['accounts'][string] } } | { kind: 'enableModels'; expectedVersion: number; modelIds: string[]; state: { available: boolean; account?: ProviderPageAccounts['accounts'][string] } } }): Promise<import('./client-protocol.js').ProviderCatalog>;
+  managementPage(request: { page: { providerId?: string; after?: string; limit?: number; accountsOnly?: boolean; query?: string }; accounts: Record<string,string> }): Promise<{
+    records: [string, { Ok: PersistedProviderRecord } | { Err: { code: number; message: string; data: JsonObject } } | null][];
+    next: string | null;
+  }>;
+  managementPage(request: { providerId: string; modelId?: string; includePending?: boolean; page?: { after?: string; limit?: number; query?: string } }): Promise<{
+    record: PersistedProviderRecord | null; targetName: string | null; pending: string[] | null;
+    next: string | null; pageNames: Record<string,string> | null;
+  }>;
+  adoptProvider(request: { id: string; revision: string; baseFacts: { fingerprint: string | null; definition: (PersistedProviderRecord & { kind: 'builtin' }) | null } }): Promise<{}>;
+  activateSource(request: { revision: string; baseFacts: number[] }): Promise<{}>;
+  listProviders(request: {}): Promise<{ providers: import('./client-protocol.js').ProviderSummary[]; errors: { providerId: string; message: string }[] }>;
+  importLegacy(request: { batch: { schema: string; providers: LegacyProviderRow[]; selections: LegacyProviderRow[] } }): Promise<{ items: { kind: 'provider' | 'selection'; id: string; status: 'imported' | 'already_imported' | 'rejected'; reason: string | null; omitted?: string[] }[] }>;
   commitTimelineRound(request: { batches: TimelineAppend[] }): Promise<{ sessions: { sessionId: string; result: { Ok: null } | { Err: { code: string; message: string } } }[] }>;
   readSelection(request: { scope: string }): Promise<StoredProviderSelection | null>;
   writeSelection(request: { scope: string; expectedVersion?: number | null; selection: ModelId }): Promise<StoredProviderSelection>;

@@ -55,12 +55,7 @@ impl ProviderService {
         input: ModelQuery,
         cancel: &CancellationToken,
     ) -> Result<ModelPage, ProviderError> {
-        let limit = input.limit.unwrap_or(32) as usize;
-        if !(1..=128).contains(&limit) {
-            return Err(ProviderError::InvalidConfig(
-                "limit must be between 1 and 128".into(),
-            ));
-        }
+        let limit = input.page_limit()?;
         let descriptors = self.oauth.providers(cancel).await?;
         let mut accounts = HashMap::new();
         for descriptor in &descriptors {
@@ -83,8 +78,62 @@ impl ProviderService {
         }
         let db = self.db.clone();
         let bundled = self.bundled.clone();
-        self.owned(cancel,move |cancel| Box::pin(async move {
-            db.run(move |connection| {
+        self.owned(cancel, move |cancel| {
+            Box::pin(async move {
+                db.query_models(
+                    input,
+                    limit,
+                    ModelQueryAccounts {
+                        descriptors,
+                        accounts,
+                        native,
+                    },
+                    bundled,
+                    cancel,
+                )
+                .await
+                .map_err(ProviderError::from)
+            })
+        })
+        .await
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelQueryAccounts {
+    descriptors: Vec<crate::managed_provider::ProviderDescriptor>,
+    accounts: HashMap<String, crate::managed_provider::AccountSnapshot>,
+    native: HashMap<String, bool>,
+}
+
+impl ModelQuery {
+    pub(crate) fn page_limit(&self) -> Result<usize, ProviderError> {
+        let limit = self.limit.unwrap_or(32) as usize;
+        if !(1..=128).contains(&limit) {
+            return Err(ProviderError::InvalidConfig(
+                "limit must be between 1 and 128".into(),
+            ));
+        }
+        Ok(limit)
+    }
+}
+
+impl SqliteStorage {
+    pub(crate) async fn query_models(
+        self: &Arc<Self>,
+        input: ModelQuery,
+        limit: usize,
+        facts: ModelQueryAccounts,
+        bundled: Arc<BundledCatalog>,
+        cancel: CancellationToken,
+    ) -> dim_agent_runtime::Result<ModelPage> {
+        let ModelQueryAccounts {
+            descriptors,
+            accounts,
+            native,
+        } = facts;
+        self.run(move |connection| {
                 #[cfg(feature="testing")]
                 read_work::reset();
                 let tx = connection.transaction().map_err(storage)?;
@@ -229,7 +278,7 @@ impl ProviderService {
                     let fields = if model_id.is_empty() {
                         persistence::Models::Header
                     } else {
-                        persistence::Models::One(&model_id)
+                        persistence::Models::One { model_id: model_id.clone() }
                     };
                     let record = persistence::read(&tx, &provider_id, fields);
                     if model_id.is_empty() {
@@ -325,7 +374,6 @@ impl ProviderService {
                 }
                 tx.commit().map_err(storage)?;
                 Ok(page)
-            }).await.map_err(ProviderError::from)
-        })).await
+            }).await
     }
 }
