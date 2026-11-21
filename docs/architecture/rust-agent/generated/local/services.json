@@ -886,11 +886,6 @@
             "status": "Ready"
           },
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
-            "scope": "rutis-loader/shared/dim-agent-values/2@28",
-            "status": "Ready"
-          },
-          {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "scope": null,
             "status": "Ready"
@@ -903,6 +898,11 @@
           {
             "service": "dim_agent_runtime::core::timeline::Timeline@main",
             "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+            "scope": "rutis-loader/shared/dim-agent-values/2@28",
             "status": "Ready"
           }
         ],
@@ -914,12 +914,6 @@
             "generation": 1
           },
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
-            "scope": "rutis-loader/shared/dim-agent-values/2@28",
-            "provider": 30,
-            "generation": 1
-          },
-          {
             "service": "dim_agent_runtime::config::TimelineIdentity@main",
             "scope": null,
             "provider": 60,
@@ -936,18 +930,18 @@
             "scope": null,
             "provider": 60,
             "generation": 1
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+            "scope": "rutis-loader/shared/dim-agent-values/2@28",
+            "provider": 30,
+            "generation": 1
           }
         ],
         "reads": [
           {
             "service": "dim_agent_capabilities::context_preparation::ContextPreparation@main",
             "provider": 66,
-            "declared": true,
-            "external": true
-          },
-          {
-            "service": "dim_agent_capabilities::host::ModelHost",
-            "provider": 30,
             "declared": true,
             "external": true
           },
@@ -974,6 +968,12 @@
             "provider": 60,
             "declared": true,
             "external": false
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+            "provider": 30,
+            "declared": true,
+            "external": true
           }
         ]
       },
@@ -3404,11 +3404,6 @@
         "generation": 1,
         "injects": [
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
-            "scope": "rutis-loader/shared/dim-agent-values/2@28",
-            "status": "Ready"
-          },
-          {
             "service": "dim_agent_capabilities::methods::SessionMethods@session",
             "scope": null,
             "status": "Ready"
@@ -3431,17 +3426,16 @@
           {
             "service": "dim_agent_runtime::config::SessionLifecycle@session",
             "scope": null,
+            "status": "Ready"
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+            "scope": "rutis-loader/shared/dim-agent-values/2@28",
             "status": "Ready"
           }
         ],
         "resolved": [
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
-            "scope": "rutis-loader/shared/dim-agent-values/2@28",
-            "provider": 30,
-            "generation": 1
-          },
-          {
             "service": "dim_agent_capabilities::methods::SessionMethods@session",
             "scope": null,
             "provider": 49,
@@ -3469,17 +3463,17 @@
             "service": "dim_agent_runtime::config::SessionLifecycle@session",
             "scope": null,
             "provider": 33,
+            "generation": 1
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+            "scope": "rutis-loader/shared/dim-agent-values/2@28",
+            "provider": 30,
             "generation": 1
           }
         ],
         "reads": [
           {
-            "service": "dim_agent_capabilities::host::ModelHost",
-            "provider": 30,
-            "declared": true,
-            "external": true
-          },
-          {
             "service": "dim_agent_capabilities::methods::SessionMethods@session",
             "provider": 49,
             "declared": true,
@@ -3508,6 +3502,12 @@
             "provider": 33,
             "declared": true,
             "external": false
+          },
+          {
+            "service": "dyn rutis_bridge::session::services::HostDispatch#modelHost",
+            "provider": 30,
+            "declared": true,
+            "external": true
           }
         ]
       },

@@ -202,7 +202,7 @@ flowchart LR
   p18 -->|"dim_app_server::settings::SettingsService"| p19
   p4 -->|"dim_agent_capabilities::file_storage::FileStorage"| p18
   p6 -->|"dim_app_server::storage::sqlite::SqliteStorage"| p18
-  p5 -->|"dim_agent_capabilities::host::ModelHost"| p17
+  p5 -->|"dim_agent_capabilities::host::ModelDriverHost"| p17
   p40 -->|"dim_app_server::agents::AgentIndex"| p17
   p15 -->|"dim_app_server::codex_oauth::OpenAICodexOAuthService"| p17
   p16 -->|"dim_app_server::grok_oauth::GrokOAuthService"| p17

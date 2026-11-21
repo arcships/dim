@@ -34,13 +34,12 @@ Each catalog name a part of the assembly provides or injects. `data` means share
 | `mcpService` | process | Mcp | data | `plugins` async, `refusal` sync, `register` async, `withdraw` async |
 | `mentionIndex` | process | WorkspaceToolsOwner | internal(host-resource) | — |
 | `modalityTargets` | process | Modality | data | `resolve` async |
-| `modelHost` | process | Aimux | internal(owner-api) | — |
+| `modelHost` | process | Provider | data | `invoke` async |
 | `openAICodexOAuthService` | process | OpenAICodexOAuth | internal(secret) | — |
 | `partRegistry` | process | PartRegistry | data | `registerDefinition` async |
 | `pluginFiles` | process | PluginFiles | data | `open` async |
 | `processActivity` | process | ServerControl | data | `activated` async, `hold` async, `release` async |
 | `promptSuggestionSettingsHost` | process | PromptSuggestionSettings | data | `read` async |
-| `providerConnectionResolver` | process | Provider | internal(host-resource) | — |
 | `providerService` | process | Provider | data | `applyPreferences` async, `complete` async, `configuration` async, `resolve` async, `selectableForModality` async, `selectableModels` async |
 | `reservedMethods` | process | root | data | `check` async |
 | `rutis/loader` | process | rutis-loader | data | `create` async, `reload` async, `remove` async, `status` async |

@@ -27,7 +27,7 @@ storage, no replay, no `model/usage` event.
 | `S:SessionLifecycle` | `closing()` clears the offer before the channel ends. |
 | `S:SessionMethods` | Registers `session.suggestion` from `apply`, until this generation unloads. |
 | `S:TreeCommands` | Resolves `main` for the context gate, which reads that branch's `ContextPreparation::usage`. |
-| `P:ModelHost` | Invokes the suggestion request. |
+| `P:dyn HostDispatch#modelHost` | Invokes the suggestion request. |
 
 `PromptSuggestionSettingsHost`, the `prompt-suggestion` source read at each
 decision, is provided by the App Server's execution-root assembly; where the
@@ -54,7 +54,7 @@ conversation.
 | 项 | 值 |
 | --- | --- |
 | 作用域 | Session |
-| 注入 | `P:ModelHost`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:SessionMethods`、`S:TreeCommands` |
+| 注入 | `P:dyn HostDispatch#modelHost`、`S:SessionConfig`、`S:SessionIdentity`、`S:SessionLifecycle`、`S:SessionMethods`、`S:TreeCommands` |
 | 提供 | — |
 | 被注入于 | — |
 <!-- /generated -->
