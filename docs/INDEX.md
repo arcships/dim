@@ -114,6 +114,7 @@ This index is navigation. Delivery status lives in issues, not here.
 - [Child tool batches across clients](design/appserver/child-tool-batches.md) (#1326): v4 child events, v3 visibility, TUI/CLI/web grouping and the Code Mode session gate
 - [Management methods](design/appserver/management-methods.md)
 - [Provider management for Desktop and CLI](design/appserver/provider-management.md) (#329)（[中文](zh/design/appserver/provider-management.md)）
+- [ChatGPT plan provider](design/appserver/chatgpt-plan.md)
 - [Settings service](design/appserver/settings-service.md)（[中文](zh/design/appserver/settings-service.md)）
 - [Prompt overrides](design/appserver/prompt-overrides.md) (#1314): the `prompts` Settings source, three owner ports and the client entry
 - [MCP OAuth](design/appserver/mcp-oauth.md)（[中文](zh/design/appserver/mcp-oauth.md)）

@@ -1,4 +1,5 @@
 //! Process-owned access to the managed-provider service and its typed contract.
+pub(crate) mod chatgpt;
 pub mod management;
 use crate::model_catalog::{MAX_MODEL_TOKENS, ModelEntry, ModelStatus};
 use dim_agent_capabilities::host::ModelProtocol;
@@ -118,6 +119,7 @@ impl From<ManagedError> for ManagedSearchError {
         match error {
             ManagedError::TokenMissing
             | ManagedError::RefreshRejected
+            | ManagedError::PlanNotGranted
             | ManagedError::InvalidStore
             | ManagedError::UnsupportedSchema
             | ManagedError::AccountRecoveryRequired
@@ -155,6 +157,7 @@ pub enum ManagedError {
     IdentityRejected,
     TokenMissing,
     RefreshRejected,
+    PlanNotGranted,
     ResetDenied,
     Transient,
     ConfigError,
@@ -315,6 +318,10 @@ impl From<ManagedError> for ManagedProviderError {
             ManagedError::AccountResetBlocked => {
                 ("account_reset_blocked", "Managed account reset is blocked")
             }
+            ManagedError::PlanNotGranted => (
+                "chatgpt_plan_not_granted",
+                "ChatGPT plan access was not granted. Allow plan usage in ChatGPT and sign in again.",
+            ),
             ManagedError::IdentityRejected => (
                 "account_identity_rejected",
                 "Managed account identity was rejected",
@@ -350,10 +357,10 @@ impl From<ManagedError> for ManagedProviderError {
     }
 }
 
-/// Process-owned access to the bound provider. Without a binding the process
-/// has no managed providers.
+/// Process-owned access to the configured account binding and the product ChatGPT account.
 pub struct ManagedProviders {
     provider: Mutex<Option<Bound>>,
+    chatgpt: Option<(u64, Arc<chatgpt::ChatGpt>)>,
     stop: CancellationToken,
 }
 /// A published provider and the identity of the binding that published it.
@@ -374,6 +381,9 @@ impl ManagedProviders {
     /// Called before Agent/RPC settlement, not only during plugin disposal.
     pub async fn quiesce(&self) {
         self.stop.cancel();
+        if let Some((_, chatgpt)) = &self.chatgpt {
+            chatgpt.close().await;
+        }
         let bound = self.provider.lock().unwrap().clone();
         if let Some(bound) = bound {
             bound.provider.quiesce().await;
@@ -411,6 +421,26 @@ impl ManagedProviders {
         &self,
         cancel: &CancellationToken,
     ) -> Result<Vec<ProviderDescriptor>, ManagedProviderError> {
+        let mut providers = self.external_providers(cancel).await?;
+        if self.chatgpt.is_some() {
+            providers.push(chatgpt::descriptor());
+        }
+        Ok(providers)
+    }
+    pub(crate) async fn legacy_codex_hidden(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<bool, ManagedProviderError> {
+        match &self.chatgpt {
+            Some((_, owner)) => Ok(owner.legacy_codex_hidden(cancel).await?),
+            None => Ok(false),
+        }
+    }
+
+    async fn external_providers(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<ProviderDescriptor>, ManagedProviderError> {
         let Some(Bound { provider, .. }) = self.provider.lock().unwrap().clone() else {
             return Ok(vec![]);
         };
@@ -418,7 +448,11 @@ impl ManagedProviders {
             return Err(unavailable());
         }
         let providers = provider.providers();
-        if !valid_descriptors(&providers) {
+        if !valid_descriptors(&providers)
+            || providers
+                .iter()
+                .any(|provider| provider.provider_id == chatgpt::ID)
+        {
             return Err(invalid());
         }
         Ok(providers)
@@ -439,6 +473,16 @@ impl ManagedProviders {
         id: &str,
         cancel: &CancellationToken,
     ) -> Result<AccountSnapshot, ManagedProviderError> {
+        if id == chatgpt::ID {
+            return checked_account(
+                self.chatgpt
+                    .as_ref()
+                    .ok_or_else(unavailable)?
+                    .1
+                    .status(cancel)
+                    .await?,
+            );
+        }
         checked_account(self.provider(cancel)?.status(id).await?)
     }
     pub async fn recover_account(
@@ -527,7 +571,16 @@ impl ManagedProviders {
         id: &str,
         cancel: &CancellationToken,
     ) -> Result<ManagedCatalog, ManagedProviderError> {
-        let catalog = self.provider(cancel)?.catalog(id, cancel.clone()).await?;
+        let catalog = if id == chatgpt::ID {
+            self.chatgpt
+                .as_ref()
+                .ok_or_else(unavailable)?
+                .1
+                .catalog(cancel)
+                .await?
+        } else {
+            self.provider(cancel)?.catalog(id, cancel.clone()).await?
+        };
         if !valid_catalog(&catalog) {
             return Err(invalid());
         }
@@ -539,9 +592,15 @@ impl ManagedProviders {
         model: &str,
         cancel: &CancellationToken,
     ) -> Result<CredentialLease, ManagedProviderError> {
-        let bound = self.bound(cancel)?;
-        let mut lease = checked_lease(bound.provider.credential(id, model).await?)?;
-        lease.binding = bound.binding;
+        let (binding, lease) = if id == chatgpt::ID {
+            let (binding, chatgpt) = self.chatgpt.as_ref().ok_or_else(unavailable)?;
+            (*binding, chatgpt.credential(None, cancel).await?)
+        } else {
+            let bound = self.bound(cancel)?;
+            (bound.binding, bound.provider.credential(id, model).await?)
+        };
+        let mut lease = checked_lease(lease)?;
+        lease.binding = binding;
         Ok(lease)
     }
     pub async fn recover(
@@ -549,9 +608,21 @@ impl ManagedProviders {
         lease: &CredentialLease,
         cancel: &CancellationToken,
     ) -> Result<CredentialLease, ManagedProviderError> {
-        let bound = self.issuer(lease, cancel)?;
-        let mut next = checked_lease(bound.provider.recover_rejected(lease).await?)?;
-        next.binding = bound.binding;
+        let (binding, next) = if let Some((binding, chatgpt)) = &self.chatgpt
+            && *binding == lease.binding
+        {
+            (
+                *binding,
+                chatgpt
+                    .credential(Some((&lease.account, &lease.bearer)), cancel)
+                    .await?,
+            )
+        } else {
+            let bound = self.issuer(lease, cancel)?;
+            (bound.binding, bound.provider.recover_rejected(lease).await?)
+        };
+        let mut next = checked_lease(next)?;
+        next.binding = binding;
         if next.account != lease.account {
             return Err(ManagedProviderError {
                 code: "account_changed",
@@ -669,12 +740,27 @@ pub fn owner_key() -> Key<ManagedProviders> {
 /// the `account` namespace where the profile hosts it.
 pub struct ManagedProvidersPlugin {
     account: Option<Key<crate::methods::ManagementMethods>>,
+    chatgpt: Option<(
+        Key<dim_agent_capabilities::file_storage::FileStorage>,
+        usize,
+    )>,
 }
 impl ManagedProvidersPlugin {
     /// `account` is the method table to place the `account` namespace on, as
     /// the product profile does; `None` serves the search face alone.
     pub fn new(account: Option<Key<crate::methods::ManagementMethods>>) -> Self {
-        Self { account }
+        Self {
+            account,
+            chatgpt: None,
+        }
+    }
+    pub(crate) fn with_chatgpt(
+        mut self,
+        files: Key<dim_agent_capabilities::file_storage::FileStorage>,
+        root: usize,
+    ) -> Self {
+        self.chatgpt = Some((files, root));
+        self
     }
 }
 impl DynPlugin for ManagedProvidersPlugin {
@@ -682,22 +768,49 @@ impl DynPlugin for ManagedProvidersPlugin {
         "ManagedProviders"
     }
     fn injects(&self) -> Vec<TypeKey> {
-        self.account.iter().map(Key::erase).collect()
+        self.account
+            .iter()
+            .map(Key::erase)
+            .chain(self.chatgpt.iter().map(|(files, _)| files.erase()))
+            .collect()
     }
     fn apply<'a>(&'a self, ctx: &'a Ctx) -> BoxFuture<'a, rutis::Result<Effect>> {
         Box::pin(async move {
+            let chatgpt = match &self.chatgpt {
+                Some((files, root)) => {
+                    let owner =
+                        chatgpt::ChatGpt::new(ctx.require_at(files)?, *root).map_err(|error| {
+                            rutis::Error::from(ErrorKind::PluginFailed(
+                                std::io::Error::other(ManagedProviderError::from(error).message)
+                                    .into(),
+                            ))
+                        })?;
+                    Some((
+                        NEXT_BINDING.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                        owner,
+                    ))
+                }
+                None => None,
+            };
             let service = Arc::new(ManagedProviders {
                 provider: Mutex::new(None),
+                chatgpt,
                 stop: CancellationToken::new(),
             });
             let owner = service.clone();
             ctx.effect(move || async move {
                 owner.stop.cancel();
+                if let Some((_, chatgpt)) = &owner.chatgpt {
+                    chatgpt.close().await;
+                }
                 Ok(())
             })?;
             if let Some(methods) = &self.account {
                 let methods = ctx.require_at(methods)?;
                 management::provide(ctx, &methods, service.clone())?;
+                if let Some((_, chatgpt)) = &service.chatgpt {
+                    chatgpt::provide(ctx, &methods, chatgpt.clone())?;
+                }
             }
             let search = Arc::new(ManagedSearch(service.clone()));
             ctx.provide_at(owner_key(), service)?;
@@ -780,7 +893,12 @@ impl DynPlugin for ManagedProviderBinding {
         Box::pin(async move {
             let owner = ctx.require_at(&owner_key())?;
             let provider = ctx.require::<dyn ManagedProvider>()?;
-            if !valid_descriptors(&provider.providers()) {
+            let descriptors = provider.providers();
+            if !valid_descriptors(&descriptors)
+                || descriptors
+                    .iter()
+                    .any(|provider| provider.provider_id == chatgpt::ID)
+            {
                 return Err(rutis::Error::from(ErrorKind::PluginFailed(
                     "Invalid managed provider description".into(),
                 )));

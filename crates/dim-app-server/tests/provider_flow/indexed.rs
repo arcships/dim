@@ -872,6 +872,12 @@ async fn fresh_builtin_enablement_writes_the_row_before_admitting_a_base() {
     let cancel = CancellationToken::new();
     signed_in_codex(&home);
     let (root, provider) = signed_in_provider_root(&home).await;
+    let list = provider.list(&cancel).await.unwrap();
+    assert!(
+        list.providers
+            .iter()
+            .any(|row| row.provider_id == "openai-codex" && row.credential_configured)
+    );
     let catalog = provider
         .catalog_for("openai-codex".into(), &cancel)
         .await
@@ -945,6 +951,18 @@ async fn fresh_builtin_enablement_writes_the_row_before_admitting_a_base() {
         page.models
             .iter()
             .any(|row| row.model.id == model && row.disabled)
+    );
+    root.get::<dim_app_server::codex_oauth::OpenAICodexOAuthService>()
+        .unwrap()
+        .logout(&cancel)
+        .await
+        .unwrap();
+    let list = provider.list(&cancel).await.unwrap();
+    assert!(
+        list.providers
+            .iter()
+            .any(|row| row.provider_id == "openai-codex" && !row.credential_configured),
+        "the saved model edit keeps the signed-out legacy provider discoverable"
     );
     root.shutdown().await.unwrap();
     std::fs::remove_dir_all(home).unwrap();

@@ -386,6 +386,11 @@ pub enum Command {
     },
     /// The `/login` panel opened: report the provider's account.
     LoginStatus(String),
+    ChatGptProfiles,
+    SelectChatGptProfile {
+        profile_id: String,
+        attempt: u64,
+    },
     /// The `/login` panel shows a signed-in account: report its usage.
     LoginUsage(String),
     /// `/web`: flip the daemon-owned Web entry switch.
@@ -868,6 +873,8 @@ pub struct OauthStart {
     pub namespace: String,
     pub device: bool,
     pub email: Option<String>,
+    pub profile_id: Option<String>,
+    pub migrate_legacy: bool,
 }
 
 /// A described account operation: the provider and its account namespace.
@@ -940,7 +947,7 @@ pub enum ProviderAction {
 }
 
 /// The signed-in Dim account, as `account.status` reports it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Account {
     pub issuer: String,
     pub subject: String,
@@ -1004,7 +1011,7 @@ pub struct UsageFeature {
 #[derive(Debug, Clone)]
 pub struct ProviderEntry {
     pub id: String,
-    pub version: u32,
+    pub version: Option<u32>,
     pub name: String,
     pub driver: String,
     pub status: String,
@@ -1434,6 +1441,7 @@ pub enum Update {
         attempt: u64,
         event: OauthEvent,
     },
+    ChatGptProfiles(Result<Vec<crate::login::ChatGptProfile>, String>),
     /// Output the run `run_id` has produced since the last; `skipped` bytes
     /// were left out before it.
     ShellProgress {

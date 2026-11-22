@@ -244,6 +244,11 @@ pub enum Effect {
     Logout(crate::model::session::AccountTarget),
     /// Read this account's state; the host reports it back.
     LoginStatus(String),
+    ChatGptProfiles,
+    SelectChatGptProfile {
+        profile_id: String,
+        attempt: u64,
+    },
     /// Report this account provider's usage again.
     LoginUsage(String),
     /// Open this page in the browser.

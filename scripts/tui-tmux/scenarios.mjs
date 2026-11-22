@@ -1297,6 +1297,34 @@ const scenarios = [
     },
   },
   {
+    name: 'chatgpt_plan_opens_at_connect',
+    area: 'providers',
+    title: 'ChatGPT plan has its own sign-in entry in the native provider panel',
+    async run(tui) {
+      await tui.setup({respond: () => ({text: ANSWER})});
+      const terminal = await tui.launch([], {waitForComposer: true, server: true});
+      terminal.send('/connect');
+      terminal.key('Enter');
+      terminal.send('OpenAI ChatGPT');
+      await terminal.waitFor(/OpenAI ChatGPT\s+Sign in/);
+      terminal.key('Enter');
+      await terminal.waitFor('Continue with ChatGPT');
+      await terminal.waitFor('Dim stores your ChatGPT connection on this computer.');
+      terminal.key('Escape');
+      await terminal.waitFor(/OpenAI ChatGPT\s+Sign in/);
+      terminal.key('Escape');
+      await terminal.waitFor('302.AI');
+      terminal.send('OpenAI Codex');
+      const codexSearch = await terminal.waitFor('> OpenAI Codex');
+      assert.equal(codexSearch.match(/OpenAI Codex/g)?.length, 1, 'Only the search input names Codex');
+      terminal.key('Escape');
+      await terminal.waitFor('302.AI');
+      terminal.key('Escape');
+      await terminal.waitForAbsent('Enter open');
+      await exitWith(terminal);
+    },
+  },
+  {
     name: 'provider_panel_adds_and_keeps_a_custom_provider',
     area: 'providers',
     title: 'The provider panel adds a custom provider against the fixture on the production App Server and keeps it after a restart',

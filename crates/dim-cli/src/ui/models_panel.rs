@@ -497,7 +497,11 @@ impl ModelsPanel {
         }
         let mut lines = Vec::new();
         if let Some(model) = self.selected_model() {
-            lines.push(fg(&truncate_cells(&self.summary(model), inner), &p.muted));
+            let mut summary = self.summary(model);
+            if model.provider_id == crate::login::CHATGPT_PROVIDER_ID {
+                summary = format!("{} · {summary}", t("Using ChatGPT plan"));
+            }
+            lines.push(fg(&truncate_cells(&summary, inner), &p.muted));
         }
         if let Some(policy) = &self.policy {
             lines.push(title_plain(t("Subagent models"), inner, p));

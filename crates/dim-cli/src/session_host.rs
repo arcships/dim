@@ -65,19 +65,6 @@ const PROVIDER_METHODS: [&str; 5] = [
     "provider.probe",
 ];
 
-struct ProviderSummary {
-    provider_id: String,
-    source: String,
-    display_name: String,
-    driver_kind: String,
-    auth: serde_json::Value,
-    base_url: String,
-    credential_configured: bool,
-    glued_prefix: Option<String>,
-    enabled: bool,
-    version: u32,
-    account: Option<AccountDescriptor>,
-}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ManagementInfo {
@@ -109,6 +96,12 @@ struct ManagementUpdateSummary {
 struct ManagementAccount {
     namespace: String,
     login_methods: Vec<String>,
+    state: Option<ManagementAccountState>,
+}
+
+#[derive(Deserialize)]
+struct ManagementAccountState {
+    account: Option<crate::model::session::Account>,
 }
 /// `provider.update`'s answer to what it did with the record's models when
 /// the patch changed its connection.
@@ -393,6 +386,7 @@ fn catalog_features(entry: Option<CatalogModel>) -> Update {
 struct Login {
     /// The panel's attempt tag for its updates.
     tag: u64,
+    migrate_legacy: bool,
     provider_id: String,
     /// The account namespace the attempt's methods belong to.
     namespace: String,
@@ -2009,6 +2003,30 @@ impl Worker {
                     .map_err(|error| error.to_string());
                 self.send(Update::Login(account));
             }
+            Command::ChatGptProfiles => self.chatgpt_profiles().await,
+            Command::SelectChatGptProfile {
+                profile_id,
+                attempt,
+            } => {
+                let result = self
+                    .client
+                    .rpc("account.chatgpt.select", json!({"profileId": profile_id}))
+                    .await;
+                match result {
+                    Ok(_) => {
+                        self.chatgpt_profiles().await;
+                        self.refresh_account_models(
+                            crate::login::CHATGPT_PROVIDER_ID,
+                            attempt,
+                            true,
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        self.login_event(attempt, OauthEvent::Done(Err(Some(error.to_string()))))
+                    }
+                }
+            }
             Command::LoginUsage(provider_id) => {
                 let usage = self.account_usage(&provider_id).await;
                 self.send(Update::Usage(usage));
@@ -2023,6 +2041,16 @@ impl Worker {
                     )
                     .await;
                 self.send(Update::Notice(match result {
+                    Ok(reply)
+                        if target.namespace == crate::login::CHATGPT_NAMESPACE
+                            && reply.get("revocationConfirmed").and_then(Value::as_bool)
+                                == Some(false) =>
+                    {
+                        format!(
+                            "Signed out. OpenAI did not confirm revocation. Disconnect Dim at {}.",
+                            crate::login::CHATGPT_USAGE
+                        )
+                    }
                     Ok(_) => "Signed out.".into(),
                     Err(error) => format!("Sign-out failed: {error}"),
                 }));
@@ -3371,38 +3399,84 @@ impl Worker {
         Ok(())
     }
 
-    /// The `/connect` list: every static provider the App Server knows (the
-    /// bundled catalog's and custom ones), as the panel shows them.
     async fn providers(&mut self) -> Result<Vec<ProviderEntry>, String> {
         let current = self.model.as_ref().map(|model| model.provider_id.clone());
-        let listed = self.provider_summaries().await.map_err(|e| e.to_string())?;
-        Ok(listed
+        let entries = self
+            .provider_summaries()
+            .await
+            .map_err(|error| error.to_string())?;
+        entries
             .into_iter()
-            .map(|summary| ProviderEntry {
-                status: if !summary.enabled {
-                    "disabled"
-                } else if summary.credential_configured || summary.auth["type"] == "anonymous" {
-                    "connected"
-                } else {
-                    "disconnected"
-                }
-                .into(),
-                is_current: current.as_deref() == Some(summary.provider_id.as_str()),
-                enabled: summary.enabled,
-                custom: summary.source == "custom",
-                base_url: Some(summary.base_url).filter(|url| !url.is_empty()),
-                api_key_preview: summary.credential_configured.then(|| "••••••••".into()),
-                glued_prefix: summary.glued_prefix,
-                id: summary.provider_id,
-                version: summary.version,
-                name: summary.display_name,
-                driver: summary.driver_kind,
-                account: summary.account,
+            .filter_map(|entry| {
+                let chatgpt = entry
+                    .account
+                    .as_ref()
+                    .is_some_and(|account| account.namespace == crate::login::CHATGPT_NAMESPACE);
+                let ready = entry
+                    .account
+                    .as_ref()
+                    .and_then(|account| account.state.as_ref())
+                    .is_some_and(|state| state.account.is_some());
+                let account = entry.account.map(|account| AccountDescriptor {
+                    namespace: account.namespace,
+                    login_methods: account.login_methods,
+                });
+                let result = match entry.connection {
+                    Some(connection) => {
+                        let Some(enabled) = entry.enabled else {
+                            return Some(Err("Static Provider enable flag is missing".into()));
+                        };
+                        if entry.version.is_none() {
+                            return Some(Err("Static Provider record version is missing".into()));
+                        }
+                        let status = if !enabled {
+                            "disabled"
+                        } else if connection.credential_configured
+                            || connection.auth["type"] == "anonymous"
+                        {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        };
+                        (
+                            status,
+                            enabled,
+                            connection.driver_kind,
+                            Some(connection.base_url).filter(|url| !url.is_empty()),
+                            connection.credential_configured.then(|| "••••••••".into()),
+                            connection.glued_prefix,
+                        )
+                    }
+                    None if chatgpt => (
+                        if ready { "connected" } else { "disconnected" },
+                        true,
+                        entry.provider_id.clone(),
+                        None,
+                        None,
+                        None,
+                    ),
+                    None => return None,
+                };
+                let (status, enabled, driver, base_url, api_key_preview, glued_prefix) = result;
+                Some(Ok(ProviderEntry {
+                    is_current: current.as_deref() == Some(entry.provider_id.as_str()),
+                    status: status.into(),
+                    enabled,
+                    custom: entry.source == "custom",
+                    base_url,
+                    api_key_preview,
+                    glued_prefix,
+                    id: entry.provider_id,
+                    version: entry.version,
+                    name: entry.display_name,
+                    driver,
+                    account,
+                }))
             })
-            .collect())
+            .collect()
     }
 
-    async fn provider_summaries(&mut self) -> crate::Result<Vec<ProviderSummary>> {
+    async fn provider_summaries(&mut self) -> crate::Result<Vec<ManagementInfo>> {
         if !self.client.supports(&PROVIDER_METHODS) {
             return Err("This daemon cannot manage providers".into());
         }
@@ -3429,33 +3503,7 @@ impl Worker {
                 break;
             }
         }
-        providers
-            .into_iter()
-            .filter_map(|entry| {
-                entry.connection.map(|connection| {
-                    Ok(ProviderSummary {
-                        provider_id: entry.provider_id,
-                        source: entry.source,
-                        display_name: entry.display_name,
-                        driver_kind: connection.driver_kind,
-                        auth: connection.auth,
-                        base_url: connection.base_url,
-                        credential_configured: connection.credential_configured,
-                        glued_prefix: connection.glued_prefix,
-                        enabled: entry
-                            .enabled
-                            .ok_or("Static Provider enable flag is missing")?,
-                        version: entry
-                            .version
-                            .ok_or("Static Provider record version is missing")?,
-                        account: entry.account.map(|account| AccountDescriptor {
-                            namespace: account.namespace,
-                            login_methods: account.login_methods,
-                        }),
-                    })
-                })
-            })
-            .collect()
+        Ok(providers)
     }
 
     /// Probe a new connection, then create once using the form's retained UUID.
@@ -4141,6 +4189,15 @@ impl Worker {
         }))
     }
 
+    async fn chatgpt_profiles(&mut self) {
+        let profiles = self
+            .client
+            .typed("account.chatgpt.profiles", json!({}))
+            .await
+            .map_err(|error| error.to_string());
+        self.send(Update::ChatGptProfiles(profiles));
+    }
+
     fn login_event(&self, tag: u64, event: OauthEvent) {
         self.send(Update::Oauth {
             attempt: tag,
@@ -4156,6 +4213,12 @@ impl Worker {
             attempt_id: String,
             authorization_url: String,
             expires_at: u64,
+        }
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum BrowserStep {
+            Browser(Browser),
+            Migrated { migrated: bool },
         }
         #[derive(Deserialize)]
         #[serde(rename_all = "camelCase")]
@@ -4205,17 +4268,55 @@ impl Worker {
                 Err(error) => Err(error),
             }
         } else {
-            if managed {
+            let chatgpt = start.namespace == crate::login::CHATGPT_NAMESPACE;
+            let local = std::env::var_os("SSH_CONNECTION").is_none()
+                && std::env::var_os("SSH_TTY").is_none();
+            let capture = if chatgpt && local {
+                crate::mcp::Capture::bind_ipv4("/auth/callback").await.ok()
+            } else {
+                None
+            };
+            if chatgpt {
+                let Some(capture) = &capture else {
+                    self.login_event(
+                        start.attempt,
+                        OauthEvent::Done(Err(Some(
+                            "Continue with ChatGPT from a terminal on this computer.".into(),
+                        ))),
+                    );
+                    return;
+                };
+                params["redirectUri"] = json!(capture.redirect_uri());
+                if start.migrate_legacy {
+                    params["migrateLegacy"] = json!(true);
+                }
+                if let Some(profile) = &start.profile_id {
+                    params["profileId"] = json!(profile);
+                }
+            } else if managed {
                 params["redirectUri"] = json!(self.options.redirect_uri);
             }
-            match self.client.typed::<Browser>(&method, params).await {
-                Ok(browser) => {
-                    let local = std::env::var_os("SSH_CONNECTION").is_none()
-                        && std::env::var_os("SSH_TTY").is_none();
+            match self.client.typed::<BrowserStep>(&method, params).await {
+                Ok(BrowserStep::Migrated { migrated: true }) if start.migrate_legacy => {
+                    self.login_event(start.attempt, OauthEvent::Exchanging);
+                    let providers = self.providers().await;
+                    self.send(Update::Providers(providers));
+                    self.refresh_account_models(&start.provider_id, start.attempt, true)
+                        .await;
+                    return;
+                }
+                Ok(BrowserStep::Migrated { .. }) => {
+                    self.login_event(
+                        start.attempt,
+                        OauthEvent::Done(Err(Some("Unexpected ChatGPT switch reply".into()))),
+                    );
+                    return;
+                }
+                Ok(BrowserStep::Browser(browser)) => {
                     let capture = if local && managed {
                         mcp::Capture::bind(&self.options.redirect_uri).await
                     } else {
-                        None
+                        capture
                     };
                     listener = capture.map(|capture| {
                         let now = std::time::SystemTime::now()
@@ -4253,6 +4354,7 @@ impl Worker {
             Ok(attempt_id) => {
                 self.login = Some(Login {
                     tag: start.attempt,
+                    migrate_legacy: start.migrate_legacy,
                     provider_id: start.provider_id,
                     namespace: start.namespace,
                     attempt_id,
@@ -4368,7 +4470,14 @@ impl Worker {
     }
 
     async fn login_done(&mut self, login: Login) {
-        if login.namespace == ACCOUNT_NAMESPACE {
+        if login.migrate_legacy {
+            let providers = self.providers().await;
+            self.send(Update::Providers(providers));
+        }
+        if matches!(
+            login.namespace.as_str(),
+            ACCOUNT_NAMESPACE | crate::login::CHATGPT_NAMESPACE
+        ) {
             if login.poll_at.is_some() {
                 self.login_event(login.tag, OauthEvent::Exchanging);
             }
@@ -4957,7 +5066,7 @@ impl Worker {
 }
 
 /// Answers the browser tab the local listener caught a callback from.
-async fn answer_browser(mut stream: tokio::net::TcpStream, completed: bool) {
+pub(crate) async fn answer_browser(mut stream: tokio::net::TcpStream, completed: bool) {
     use tokio::io::AsyncWriteExt;
     let page = if completed {
         "Sign-in completed. You can close this window."

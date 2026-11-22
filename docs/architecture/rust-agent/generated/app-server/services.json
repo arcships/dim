@@ -2829,6 +2829,11 @@
             "status": "Ready"
           },
           {
+            "service": "dim_app_server::storage::face::Store",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::storage::sqlite::SqliteStorage",
             "scope": null,
             "status": "Ready"
@@ -2872,6 +2877,12 @@
             "generation": 1
           },
           {
+            "service": "dim_app_server::storage::face::Store",
+            "scope": null,
+            "provider": 8,
+            "generation": 1
+          },
+          {
             "service": "dim_app_server::storage::sqlite::SqliteStorage",
             "scope": null,
             "provider": 6,
@@ -2912,6 +2923,12 @@
           {
             "service": "dim_app_server::methods::ManagementMethods",
             "provider": 10,
+            "declared": true,
+            "external": true
+          },
+          {
+            "service": "dim_app_server::storage::face::Store",
+            "provider": 8,
             "declared": true,
             "external": true
           },
@@ -3055,12 +3072,23 @@
         "generation": 1,
         "injects": [
           {
+            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "scope": null,
+            "status": "Ready"
+          },
+          {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
             "status": "Ready"
           }
         ],
         "resolved": [
+          {
+            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "scope": null,
+            "provider": 4,
+            "generation": 1
+          },
           {
             "service": "dim_app_server::methods::ManagementMethods",
             "scope": null,
@@ -3069,6 +3097,12 @@
           }
         ],
         "reads": [
+          {
+            "service": "dim_agent_capabilities::file_storage::FileStorage",
+            "provider": 4,
+            "declared": true,
+            "external": true
+          },
           {
             "service": "dim_app_server::methods::ManagementMethods",
             "provider": 10,

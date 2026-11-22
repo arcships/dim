@@ -1042,8 +1042,13 @@ struct ModelLabel {
 
 impl ModelLabel {
     fn new(configuration: &Configuration) -> Self {
+        let mut model = format!("{} / {}", configuration.provider_id, configuration.model_id);
+        if configuration.provider_id == crate::login::LEGACY_CODEX_ID {
+            model.push_str(" · ");
+            model.push_str(t("Legacy"));
+        }
         Self {
-            model: format!("{} / {}", configuration.provider_id, configuration.model_id),
+            model,
             effort: configuration
                 .model_preferences
                 .as_ref()
@@ -3015,6 +3020,12 @@ impl App {
             }
             Update::ForkFailed => self.end_switch(SwitchKind::Forked),
             Update::NewSessionDone => self.end_switch(SwitchKind::New),
+            Update::ChatGptProfiles(result) => {
+                if let Some(Prompt::Providers(panel)) = &mut self.prompt {
+                    let effect = panel.set_chatgpt_profiles(result);
+                    self.apply_effect(effect);
+                }
+            }
             Update::Oauth { attempt, event } => {
                 let effect = match &mut self.prompt {
                     Some(Prompt::Providers(panel)) => panel.oauth_event(attempt, event),
@@ -4498,8 +4509,15 @@ impl App {
                 if provider_id == DIM_OAUTH_ID {
                     self.signed_in = true;
                 }
-                self.prompt = Some(Prompt::Models(Box::new(ModelsPanel::new())));
-                self.host.send(Command::ListModels);
+                let mut models = ModelsPanel::new();
+                if provider_id == crate::login::CHATGPT_PROVIDER_ID {
+                    let effect = models.paste("OpenAI ChatGPT");
+                    self.prompt = Some(Prompt::Models(Box::new(models)));
+                    self.apply_effect(effect);
+                } else {
+                    self.prompt = Some(Prompt::Models(Box::new(models)));
+                    self.host.send(Command::ListModels);
+                }
             }
             Effect::OpenModels => {
                 self.prompt = Some(Prompt::Models(Box::new(ModelsPanel::new())));
@@ -4507,6 +4525,14 @@ impl App {
             }
             Effect::Logout(target) => self.host.send(Command::Logout(target)),
             Effect::LoginStatus(provider_id) => self.host.send(Command::LoginStatus(provider_id)),
+            Effect::ChatGptProfiles => self.host.send(Command::ChatGptProfiles),
+            Effect::SelectChatGptProfile {
+                profile_id,
+                attempt,
+            } => self.host.send(Command::SelectChatGptProfile {
+                profile_id,
+                attempt,
+            }),
             Effect::LoginUsage(provider_id) => self.host.send(Command::LoginUsage(provider_id)),
             Effect::OpenUrl(url) => {
                 let opened = crate::browser::open(&url);

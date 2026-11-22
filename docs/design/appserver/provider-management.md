@@ -47,7 +47,7 @@ with its existing owner; management never writes another owner's state.
 | Provider module boundary `stored_selection` (Rust) | Native data-boundary consumers such as Migration; §3.7 adds one pure function over an admitted record, not an RPC, host port or management method |
 | Provider host port `SelectableModelsHost` (core `dim-agent-capabilities`), provided by the profile's model owner (Provider, or the configured model file) | In-process owners that route by model capability (Modality) and the `agent` tool's `models` action; §3.6 adds two reads, not a management method or RPC method |
 | Provider host port `ModalityConnectionHost` (core `dim-agent-capabilities`), provided by the profile's model owner | Modality's process adapters for image generation, editing and enhancement; §3.6 defines one per-call resolution, not a management method or RPC method |
-| Existing `account`, `account.codex`, `account.grok` namespaces | Existing account operations; no new account method, event or managed host capability |
+| Account namespaces | Account owners provide login, usage and logout. The [ChatGPT plan provider](chatgpt-plan.md) owns `account.chatgpt`. |
 | `ProviderConnectionResolver`, `ModelSelectionHost` | Provider implements catalog/route decisions through existing types; no new core port |
 | `auxiliaryModel.complete` | Existing caller-selected S4 contract, unchanged |
 | `provider` Settings source, user scope (`provider.json`) | The Provider part registers it; it holds `userAgent`, the User-Agent override (§2, Model request identity), so a user's choice is a declared, validated document rather than a request-local input |

@@ -50,6 +50,8 @@ zip = { version = "9.1", default-features = false, features = ["deflate"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2"
 base64 = "0.22"
+ring = "0.17.14"
+time = { version = "0.3", features = ["parsing"] }
 serde_jcs = "0.2"
 toml = { version = "1", features = ["preserve_order"] }
 jsonschema = { version = "0.50.1", default-features = false }

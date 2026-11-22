@@ -623,6 +623,8 @@ unchanged transaction/backup/lifecycle behavior.
 
 ## Managed provider contract
 
+The product profile includes the local [ChatGPT plan provider](../../docs/design/appserver/chatgpt-plan.md). Its account operations live in `account.chatgpt` and its models use the managed catalog and connection path below.
+
 Catalog reads accept caller cancellation. Concurrent reads may share the account
 owner's in-flight request; cancellation removes that caller, while remaining
 callers retain their request. `account_cancelled` reports a cancelled catalog wait.

@@ -75,8 +75,12 @@ impl ProviderService {
                 );
             }
         }
+        let show_legacy = input.provider_id.is_some() || self.legacy_codex_visible(cancel).await;
         let mut native = HashMap::new();
-        for id in ["openai-codex", "grok-build"] {
+        for id in [LEGACY_CODEX_ID, "grok-build"] {
+            if id == LEGACY_CODEX_ID && !show_legacy {
+                continue;
+            }
             if input.provider_id.as_ref().is_none_or(|p| p == id) {
                 native.insert(id.to_owned(), self.account_available(id, cancel).await?);
             }
@@ -100,6 +104,7 @@ impl ProviderService {
                 let query = input.query.as_ref().map(|q|q.to_lowercase());
                 let mut candidates = Vec::new();
                 for id in provider_ids {
+                    if id == LEGACY_CODEX_ID && !show_legacy { continue; }
                     if cancel.is_cancelled() { return Err(storage("Provider query cancelled")); }
                     if input.after.as_ref().is_some_and(|a| id < a.provider_id) { continue; }
                     let mut header = persistence::read(&tx,&id,persistence::Models::Header);

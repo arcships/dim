@@ -5436,3 +5436,129 @@ async fn an_override_replaces_the_user_agent_and_keeps_the_library_parts() {
     root.shutdown().await.unwrap();
     server.close().await;
 }
+
+#[tokio::test]
+async fn chatgpt_plan_replays_namespaced_tool_calls_without_stored_responses() {
+    let server = NativeServer::start("openai-responses").await;
+    let root = rutis::Ctx::root().unwrap();
+    root.plugin(AimuxPlugin::default()).await.unwrap();
+    let host = root.get::<ModelHost>().unwrap();
+    let connection = || {
+        ModelConnection::Http(HttpModelConnection {
+            protocol: ModelProtocol::OpenaiResponses,
+            base_url: server.url.clone(),
+            network: Default::default(),
+            headers: Default::default(),
+            bearer: Some("chatgpt-plan-fixture".into()),
+            api_key: None,
+            preset: Some("openai-chatgpt".into()),
+        })
+    };
+    let mut request = ModelRequest::new(
+        "openai-chatgpt",
+        "gpt-5-mini",
+        vec![Message::text(Role::User, "use the local tool")],
+    );
+    request.system = Some(Arc::new(SystemPrompt::Text(
+        "Instructions stay in context".into(),
+    )));
+    request.tools = Some(MockTools.definitions().into());
+    request.config = Some(ModelConfig {
+        max_tokens: Some(2000.0),
+        temperature: Some(0.25),
+        top_p: Some(0.8),
+        ..Default::default()
+    });
+    let mut result = host
+        .0
+        .invoke(
+            Arc::new(request.clone()),
+            connection(),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let mut parts = None;
+    let mut stop = None;
+    while let Some(chunk) = result.next().await {
+        match chunk.unwrap() {
+            ModelChunk::Content(value) => parts = Some(value),
+            ModelChunk::MessageStop { reason, .. } => stop = Some(reason),
+            _ => {}
+        }
+    }
+    assert_eq!(stop, Some(ModelStopReason::ToolUse));
+    let parts = parts.unwrap();
+    let tool_results: Vec<_> = parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::ToolUse { id, .. } => Some(MessagePart::ToolResult {
+                tool_use_id: id.clone(),
+                content: "local result".into(),
+                is_error: None,
+                structured_content: None,
+            }),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(tool_results.len(), 2);
+    request.messages.extend([
+        Arc::new(Message {
+            role: Role::Assistant,
+            content: MessageContent::Parts(parts),
+        }),
+        Arc::new(Message {
+            role: Role::ToolResult,
+            content: MessageContent::Parts(tool_results),
+        }),
+    ]);
+    let mut result = host
+        .0
+        .invoke(Arc::new(request), connection(), CancellationToken::new())
+        .await
+        .unwrap();
+    let mut stop = None;
+    while let Some(chunk) = result.next().await {
+        if let ModelChunk::MessageStop { reason, .. } = chunk.unwrap() {
+            stop = Some(reason);
+        }
+    }
+    assert_eq!(stop, Some(ModelStopReason::EndTurn));
+
+    let requests = server.endpoint.requests.lock().unwrap().clone();
+    assert_eq!(requests.len(), 2);
+    for (uri, headers, body) in &requests {
+        assert_eq!(uri.path(), "/v1/responses");
+        assert_eq!(headers["authorization"], "Bearer chatgpt-plan-fixture");
+        assert!(!headers.contains_key("originator"));
+        assert!(!headers.contains_key("chatgpt-account-id"));
+        assert_eq!(body["store"], false);
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["input"][0]["role"], "developer");
+        assert_eq!(body["tools"][0]["type"], "namespace");
+        assert_eq!(body["tools"][0]["name"], "dim");
+        for field in [
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "previous_response_id",
+        ] {
+            assert!(body.get(field).is_none(), "unexpected {field}");
+        }
+    }
+    let replay = requests[1].2["input"].as_array().unwrap();
+    let call = replay
+        .iter()
+        .find(|item| item["type"] == "function_call")
+        .unwrap();
+    assert_eq!(call["namespace"], "dim");
+    assert!(
+        replay
+            .iter()
+            .any(|item| item["type"] == "function_call_output"
+                && item["call_id"] == call["call_id"]
+                && item["output"] == "local result")
+    );
+    root.shutdown().await.unwrap();
+    server.close().await;
+}

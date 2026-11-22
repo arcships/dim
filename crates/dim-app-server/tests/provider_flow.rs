@@ -6828,7 +6828,7 @@ async fn public_static_provider_selection_resolution_execution_and_lifecycle_flo
             .iter()
             .map(|e| e.provider_id.as_str())
             .collect::<Vec<_>>(),
-        ["0-broken", "anthropic", "grok-build", "openai-codex"]
+        ["0-broken", "anthropic", "grok-build"]
     );
     assert_eq!(
         usable

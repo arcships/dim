@@ -331,6 +331,11 @@ impl ProviderService {
             ]);
         }
         let version = record.as_ref().map(|record| record.version);
+        let namespace = if descriptor.provider_id == crate::managed_provider::chatgpt::ID {
+            crate::managed_provider::chatgpt::NAMESPACE
+        } else {
+            "account"
+        };
         ManagementInfo {
             provider_id: descriptor.provider_id,
             display_name: descriptor.display_name,
@@ -339,7 +344,7 @@ impl ProviderService {
             version,
             enabled: None,
             account: Some(ManagementAccount {
-                namespace: "account",
+                namespace,
                 login_methods: descriptor.login_methods,
                 state: AccountState::Package(account),
             }),
@@ -650,6 +655,7 @@ impl ProviderService {
         let target = request.provider_id.clone();
         let after = request.after.clone();
         let accounts_only = request.accounts_only;
+        let show_legacy = target.is_some() || self.legacy_codex_visible(cancel).await;
         let query_text = request.query.clone().unwrap_or_default().to_lowercase();
         let account_ids: BTreeMap<_, _> = descriptors
             .iter()
@@ -670,6 +676,9 @@ impl ProviderService {
                         }
                         let mut records = Vec::new();
                         for id in ids {
+                            if id == LEGACY_CODEX_ID && !show_legacy {
+                                continue;
+                            }
                             if after.as_ref().is_some_and(|after| &id <= after) {
                                 continue;
                             }

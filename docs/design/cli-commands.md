@@ -721,12 +721,10 @@ Loops on main (1):
 
 ## Provider accounts
 
-The native client signs in to every Provider whose `provider.management` entry
-carries an [`account` descriptor](appserver/provider-management.md#31-read-models).
-That descriptor is the only source: the client keeps no per-provider list, and
-it compares no Provider id. The described accounts are the provider list; the
-descriptor's `loginMethods` say which flow each one starts (`browser` or
-`device`); and the calls are the descriptor's namespace's —
+The native client discovers account providers through the
+[`account` descriptors](appserver/provider-management.md#31-read-models) returned
+by `provider.management`. The descriptor's `loginMethods` say which flow
+each account offers (`browser` or `device`). Calls use the descriptor's namespace:
 `<namespace>.login.begin` (device), `<namespace>.login.browser.begin`,
 `<namespace>.login.browser.complete`, `<namespace>.login.status`,
 `<namespace>.login.cancel` and `<namespace>.logout`. A namespace that the
@@ -736,15 +734,15 @@ flow that cannot finish.
 The `account` namespace is the Dim account. Its calls also carry `providerId`
 and the account directory, and `/login` keeps its account panel — identity,
 plan and usage, and the enterprise-email entry — because the descriptor carries
-neither identity nor usage. Every other namespace is a single account whose
+neither identity nor usage. Native Codex and Grok namespaces are single accounts whose
 calls carry only the attempt id.
 
-The terminal UI offers these operations on the `/connect` row of each described
-account. A signed-out account says `Sign in`, and opening it starts its only
-flow; a signed-in one shows its state and offers `Sign out`. A row whose
-namespace is `account` opens the Dim account's `/login` panel instead, with its
-identity, plan and usage. A Provider without a descriptor keeps the connection
-form, and opening it starts nothing. With a saved connection and no pending
+The terminal UI offers account actions on the `/connect` row. Opening a
+signed-out Grok Build row starts device sign-in. A signed-in row opens account
+status and offers `Sign out`. The Dim account opens its `/login` panel with
+identity, plan and usage. ChatGPT and legacy Codex have dedicated panels
+described below. Opening a Provider without a descriptor shows its connection form.
+With a saved connection and no pending
 edits, `Edit models` opens the Provider's [model management panel](#the-models-area)
 (`Models · <name>`), including when disabled. Ctrl+R in that management panel
 fetches the catalog when the Provider offers `refresh`.
@@ -752,19 +750,12 @@ fetches the catalog when the Provider offers `refresh`.
 ```text
 /connect
 ╭─ Providers ──────────────────────────────────╮
-│  OpenAI Codex                     Sign in    │
+│  OpenAI ChatGPT                   Sign in    │
 │  Grok Build                       Sign in    │
 │› Add custom provider                         │
 ╰─ Enter open · Esc clear/close ───────────────╯
-        │ Enter on a signed-out described row
+        │ Enter on the signed-out Grok Build row
         ▼
-╭─ OpenAI Codex OAuth ─────────────────────────╮
-│   Browser login                              │
-  https://…/authorize?…
-│   Callback URL: (paste here)                 │
-│   Submit callback                            │
-╰─ Select to copy · Enter opens link ──────────╯
-
 ╭─ Grok Build OAuth ───────────────────────────╮
 │   Device login                               │
 │   Enter code:    ABCD-EFGH                   │
@@ -797,6 +788,48 @@ retry command. The sign-in still succeeds.
 |   Error: Model list refresh failed: Relay timeout  |
 +---------------------- Up/Down move, Enter activate -+
 ```
+
+### ChatGPT plan
+
+Open `/connect`, select OpenAI ChatGPT, then choose Continue with ChatGPT.
+The panel explains what OpenAI processes before opening the browser. A
+successful loopback return refreshes models and opens `/models`. Escape
+cancels the pending attempt and closes the listener. A catalog error remains
+in the account panel, where Refresh model list retries the catalog request.
+The [ChatGPT plan provider](appserver/chatgpt-plan.md) owns the account contract.
+
+The legacy Codex account appears in discovery only for a previously
+configured product home. Its first action opens the ChatGPT switch flow.
+On successful authorization the old entry disappears immediately and the
+ChatGPT model list opens after refresh. With an already connected ChatGPT
+account the switch completes without external authorization. A refresh
+error keeps the ChatGPT panel open for retry.
+
+```text
++-- OpenAI Codex (Legacy) ---------------------------+
+| This sign-in method will be removed in a future    |
+| version.                                          |
+| > Switch to ChatGPT                               |
+|   Sign out                                        |
++------------------------------------------ Esc back +
+```
+
+```text
++-- OpenAI ChatGPT ----------------------------------+
+|  Using ChatGPT plan                                |
+|  user@example.com (1)                              |
+|> Open models                                       |
+|  Refresh model list                                |
+|  Manage usage                                      |
+|  Sign out                                          |
+|  Switch account: user@example.com (1) [Left/Right] |
+|  Add ChatGPT account                               |
++--------------------- Up/Down move, Enter activate -+
+```
+
+Up and Down move between actions. On Switch account, Left and Right cycle
+saved connections. Enter activates a signed-in connection or opens its
+browser sign-in. Manage usage opens ChatGPT settings in the browser.
 
 `dimcode login [PROVIDER]` starts the same flow in the line client and prints
 the URL or the code the daemon returns; without a PROVIDER it lists the

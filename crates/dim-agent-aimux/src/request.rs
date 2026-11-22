@@ -35,6 +35,7 @@ pub(crate) struct PreparedRequest {
 const TOOL_IMAGE_MARKER: &str = "[Image: sent in the following user message as tool output.]";
 /// Names the tool call an image came from, before that image.
 const TOOL_IMAGE_LABEL: &str = "Tool output from tool call";
+const CHATGPT_TOOL_NAMESPACE: &str = "dim";
 
 /// Anthropic's limit on cache breakpoints in one request.
 const ANTHROPIC_CACHE_BREAKPOINTS: usize = 4;
@@ -51,6 +52,7 @@ pub(crate) fn convert(
     kind: &ProviderKind,
     preset: Option<&str>,
 ) -> Result<PreparedRequest, HostError> {
+    let chatgpt = preset == Some(crate::driver::OPENAI_CHATGPT_PRESET);
     let mut tool_names = ToolNames::default();
     let mut prompt = Vec::new();
     let mut cache_breakpoints = 0;
@@ -130,9 +132,13 @@ pub(crate) fn convert(
                             &reason.to_string(),
                         )
                     })?;
-                    Ok(Tool::Function(
-                        FunctionTool::new(name, schema).with_description(&tool.description),
-                    ))
+                    let mut function = FunctionTool::new(name, schema).with_description(&tool.description);
+                    if chatgpt {
+                        function.provider_options = Some(provider_namespace("openai", json!({
+                            "namespace": {"name": CHATGPT_TOOL_NAMESPACE, "description": "Tools available in the Dim workspace"}
+                        })).expect("tool namespace is an object"));
+                    }
+                    Ok(Tool::Function(function))
                 })
                 .collect::<Result<Vec<_>, HostError>>()
         })
@@ -321,6 +327,39 @@ pub(crate) fn convert(
         }
         for _ in 0..dropped {
             warn_dropped(kind);
+        }
+    }
+    if chatgpt {
+        options.max_output_tokens = None;
+        options.temperature = None;
+        options.top_p = None;
+        let openai = options
+            .provider_options
+            .get_or_insert_default()
+            .entry("openai".into())
+            .or_default();
+        openai.remove("serviceTier");
+        openai.remove("forceServiceTier");
+        openai.insert("store".into(), Value::Bool(false));
+        openai.insert(
+            "systemMessageMode".into(),
+            Value::String("developer".into()),
+        );
+        for message in &mut options.prompt {
+            if let LanguageModelMessage::Assistant { content, .. } = message {
+                for part in content {
+                    if let AssistantPart::ToolCall(call) = part {
+                        call.provider_options
+                            .get_or_insert_default()
+                            .entry("openai".into())
+                            .or_default()
+                            .insert(
+                                "namespace".into(),
+                                Value::String(CHATGPT_TOOL_NAMESPACE.into()),
+                            );
+                    }
+                }
+            }
         }
     }
     let call_id = request

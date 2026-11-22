@@ -1142,6 +1142,21 @@ async fn local_product_management_starts_without_configuration_and_isolates_inva
         local.rpc("account.grok.status", json!({})).await["result"],
         managed_empty
     );
+    let chatgpt = local
+        .rpc(
+            "provider.management.list",
+            json!({"providerId":"openai-chatgpt"}),
+        )
+        .await;
+    assert_ok(&chatgpt);
+    let descriptor = &chatgpt["result"]["providers"][0];
+    assert_eq!(descriptor["account"]["namespace"], "account.chatgpt");
+    assert_eq!(descriptor["account"]["loginMethods"], json!(["browser"]));
+    assert!(descriptor["account"]["state"].get("account").is_none());
+    assert_eq!(
+        local.rpc("account.chatgpt.profiles", json!({})).await["result"],
+        json!([])
+    );
     let codex = local
         .rpc("account.codex.login.browser.begin", json!({}))
         .await;
@@ -1172,6 +1187,32 @@ async fn local_product_management_starts_without_configuration_and_isolates_inva
             )
             .await["error"]["data"]["appError"],
         "login_attempt_closed"
+    );
+    assert_ok(&local.rpc("account.codex.logout", json!({})).await);
+    let legacy = local
+        .rpc(
+            "provider.management.list",
+            json!({"accountsOnly":true,"query":"openai-codex"}),
+        )
+        .await;
+    assert_ok(&legacy);
+    assert_eq!(legacy["result"]["providers"], json!([]));
+    let legacy_models = local
+        .rpc("provider.models.query", json!({"query":"openai-codex"}))
+        .await;
+    assert_ok(&legacy_models);
+    assert_eq!(legacy_models["result"]["models"], json!([]));
+    assert_eq!(legacy_models["result"]["empty"], json!([]));
+    let explicit_legacy = local
+        .rpc(
+            "provider.management.list",
+            json!({"providerId":"openai-codex"}),
+        )
+        .await;
+    assert_ok(&explicit_legacy);
+    assert_eq!(
+        explicit_legacy["result"]["providers"][0]["providerId"],
+        "openai-codex"
     );
     assert_eq!(
         local
@@ -1236,6 +1277,8 @@ async fn local_product_management_starts_without_configuration_and_isolates_inva
         "account.codex.logout",
         "account.grok.status",
         "account.grok.logout",
+        "account.chatgpt.status",
+        "account.chatgpt.logout",
         "provider.refresh",
     ] {
         assert_eq!(

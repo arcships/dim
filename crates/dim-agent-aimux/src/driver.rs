@@ -25,6 +25,7 @@ use std::{
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const OPENAI_CODEX_PRESET: &str = "openai-codex";
+pub(crate) const OPENAI_CHATGPT_PRESET: &str = "openai-chatgpt";
 /// The vendor packages the compatible protocol builds by name: their
 /// provider-option namespace is mapped in [`request::reasoning`], and neither
 /// has a registry row. Every other accepted name is a registry row.

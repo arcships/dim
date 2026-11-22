@@ -848,9 +848,12 @@ pub async fn serve(mut builder: AgentBuilder, mut config: ServerConfig) -> Resul
             } else {
                 None
             };
-            Ok(Box::new(managed_provider::ManagedProvidersPlugin::new(
-                account,
-            )))
+            let owner = managed_provider::ManagedProvidersPlugin::new(account);
+            let owner = match product_root {
+                Some(root) => owner.with_chatgpt(names.key()?, root),
+                None => owner,
+            };
+            Ok(Box::new(owner))
         },
     )?);
     if let Some(home_root) = plugin_root {

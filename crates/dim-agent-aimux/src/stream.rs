@@ -546,7 +546,9 @@ fn classify(failure: &AiMuxError, locally_refused: bool) -> (HostErrorKind, Mode
                 classify_kind(origin, detail.status_code, &codes)
             };
             let chain = cause_chain(detail);
-            let reason = if origin == ApiCallErrorOrigin::Transport {
+            let reason = if codes.contains(&Some("subscription_sharing_usage_limit_exceeded")) {
+                Some("ChatGPT plan usage limit reached. Manage usage at https://chatgpt.com/settings/usage".into())
+            } else if origin == ApiCallErrorOrigin::Transport {
                 chain
                     .innermost
                     .clone()
@@ -712,7 +714,11 @@ enum CodeRole {
 
 fn code_role(code: &str) -> Option<CodeRole> {
     Some(match code {
-        "insufficient_quota" | "quota_exceeded" | "billing_error" | "credit_exhausted" => {
+        "insufficient_quota"
+        | "quota_exceeded"
+        | "billing_error"
+        | "credit_exhausted"
+        | "subscription_sharing_usage_limit_exceeded" => {
             CodeRole::Condition(ModelFailureKind::QuotaExhausted)
         }
         "invalid_api_key" => CodeRole::Condition(ModelFailureKind::AuthRejected),
@@ -726,7 +732,12 @@ fn code_role(code: &str) -> Option<CodeRole> {
         "rate_limit_exceeded" | "rate_limit_error" => {
             CodeRole::Condition(ModelFailureKind::RateLimited)
         }
-        "engine_overloaded" | "model_overloaded" | "server_busy" | "overloaded_error" => {
+        "engine_overloaded"
+        | "model_overloaded"
+        | "server_busy"
+        | "overloaded_error"
+        | "subscription_sharing_usage_unavailable"
+        | "subscription_sharing_user_unavailable" => {
             CodeRole::Condition(ModelFailureKind::ServerError)
         }
         "api_error" | "server_error" | "service_unavailable" | "request_timeout" | "timeout" => {
