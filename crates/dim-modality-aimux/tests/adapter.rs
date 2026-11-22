@@ -72,14 +72,16 @@ fn unauthorized() -> Reply {
     }
 }
 
-#[derive(Clone)]
-struct Scripted {
+struct Scripted<F> {
     requests: Arc<Mutex<Vec<Recorded>>>,
-    respond: Arc<dyn Fn(&Recorded) -> Option<Reply> + Send + Sync>,
+    respond: F,
 }
 
 #[async_trait]
-impl Fetch for Scripted {
+impl<F> Fetch for Scripted<F>
+where
+    F: Fn(&Recorded) -> Option<Reply> + Send + Sync + 'static,
+{
     async fn fetch(&self, request: FetchRequest) -> Result<FetchResponse, FetchError> {
         let recorded = Recorded {
             method: request.method.clone(),
@@ -116,7 +118,7 @@ fn scripted(
     let requests = Arc::new(Mutex::new(Vec::new()));
     let fetch: FetchFunction = Arc::new(Scripted {
         requests: requests.clone(),
-        respond: Arc::new(move |request| Some(respond(request))),
+        respond: move |request: &Recorded| Some(respond(request)),
     });
     (Arc::new(MediaAdapter::scripted(fetch)), requests)
 }
@@ -629,7 +631,7 @@ async fn the_dim_account_relay_does_not_retry_a_timed_out_post() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let adapter = Arc::new(MediaAdapter::scripted(Arc::new(Scripted {
         requests: requests.clone(),
-        respond: Arc::new(|_| None),
+        respond: |_: &Recorded| None,
     })));
     let dir = work_dir("relay-timeout");
     let error = run(
